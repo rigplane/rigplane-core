@@ -17,6 +17,7 @@ from rigplane.commands import (
     parse_civ_frame,
 )
 from rigplane.exceptions import CommandError, ConnectionError
+from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.types import AudioCodec
 from rigplane.types import bcd_encode
 
@@ -60,6 +61,16 @@ def _scope_wave_frame(
         0x27,
         sub=0x00,
         data=payload,
+    )
+
+
+def _scope_state_response(sub: int, enabled: bool) -> bytes:
+    return build_civ_frame(
+        CONTROLLER_ADDR,
+        IC_7610_ADDR,
+        0x27,
+        sub=sub,
+        data=bytes([enabled]),
     )
 
 
@@ -504,6 +515,122 @@ async def test_serial_scope_low_baud_guardrail_rejects_without_override() -> Non
     with pytest.raises(CommandError, match="baudrate"):
         await radio.enable_scope(policy="fast")
     await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_scope_session_restore_preserves_panel_and_output_state_exactly() -> None:
+    link = _FakeSerialCivLink()
+    link.queue_response_on_send(1, _scope_state_response(0x10, True))
+    link.queue_response_on_send(2, _scope_state_response(0x11, False))
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=link,
+    )
+    await radio.connect()
+
+    initial = await radio.get_scope_session_state()
+    await radio.enable_scope(policy="fast")
+    await radio.restore_scope_session_state(initial)
+    await radio.disconnect()
+
+    signatures = [
+        (frame.command, frame.sub, frame.data)
+        for payload in link.sent_frames
+        if len(payload) >= 6
+        for frame in [parse_civ_frame(payload)]
+    ]
+    assert initial == (True, False)
+    assert signatures == [
+        (0x27, 0x10, b""),
+        (0x27, 0x11, b""),
+        (0x27, 0x10, b"\x01"),
+        (0x27, 0x11, b"\x01"),
+        (0x27, 0x10, b"\x01"),
+        (0x27, 0x11, b"\x00"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rejected_low_baud_scope_enable_never_emits_scope_off() -> None:
+    from rigplane.web.radio_poller import (
+        CommandQueue,
+        DisableScope,
+        EnableScope,
+        RadioPoller,
+    )
+
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        baudrate=19200,
+        civ_link=link,
+    )
+    await radio.connect()
+    queue = CommandQueue()
+    poller = RadioPoller(radio, queue, radio_state=radio.radio_state)
+
+    with pytest.raises(CommandError, match="baudrate"):
+        await poller._execute(EnableScope(generation=1))
+    await poller._execute(DisableScope(generation=2))
+    await radio.disconnect()
+
+    signatures = [
+        (frame.command, frame.sub, frame.data)
+        for payload in link.sent_frames
+        if len(payload) >= 6
+        for frame in [parse_civ_frame(payload)]
+    ]
+    assert signatures == []
+    assert (0x27, 0x10, b"\x00") not in signatures
+    assert (0x27, 0x11, b"\x00") not in signatures
+
+
+@pytest.mark.asyncio
+async def test_verify_timeout_after_scope_on_rolls_back_exact_initial_state() -> None:
+    from rigplane.web.radio_poller import (
+        CommandQueue,
+        DisableScope,
+        EnableScope,
+        RadioPoller,
+    )
+
+    link = _FakeSerialCivLink()
+    link.queue_response_on_send(1, _scope_state_response(0x10, False))
+    link.queue_response_on_send(2, _scope_state_response(0x11, False))
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=link,
+    )
+    await radio.connect()
+    real_enable_scope = radio.enable_scope
+
+    async def enable_scope_with_short_verify(*, policy: str) -> None:
+        await real_enable_scope(policy=policy, timeout=0.01)
+
+    radio.enable_scope = enable_scope_with_short_verify  # type: ignore[method-assign]
+    poller = RadioPoller(radio, CommandQueue(), radio_state=radio.radio_state)
+
+    with pytest.raises(RigplaneTimeoutError, match="verification timed out"):
+        await poller._execute(EnableScope(policy="verify", generation=1))
+    sent_before_disable = len(link.sent_frames)
+    await poller._execute(DisableScope(generation=2))
+    assert len(link.sent_frames) == sent_before_disable
+    await radio.disconnect()
+
+    signatures = [
+        (frame.command, frame.sub, frame.data)
+        for payload in link.sent_frames
+        if len(payload) >= 6
+        for frame in [parse_civ_frame(payload)]
+    ]
+    assert signatures == [
+        (0x27, 0x10, b""),
+        (0x27, 0x11, b""),
+        (0x27, 0x10, b"\x01"),
+        (0x27, 0x11, b"\x01"),
+        (0x27, 0x10, b"\x00"),
+        (0x27, 0x11, b"\x00"),
+    ]
 
 
 @pytest.mark.asyncio

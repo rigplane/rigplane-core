@@ -194,6 +194,17 @@ def scope_on(
     )
 
 
+def get_scope_enabled(
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+) -> bytes:
+    """Query whether the radio's panel scope is currently enabled."""
+    if cmd_map is not None:
+        return _build_from_map(
+            cmd_map, "scope_on", to_addr=to_addr, from_addr=from_addr
+        )
+    return _scope_query(_SUB_SCOPE_ON, to_addr=to_addr, from_addr=from_addr)
+
+
 def scope_off(
     to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
 ) -> bytes:
@@ -227,6 +238,17 @@ def scope_data_output(
         sub=_SUB_SCOPE_DATA_OUTPUT,
         data=b"\x01" if on else b"\x00",
     )
+
+
+def get_scope_data_output_enabled(
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+) -> bytes:
+    """Query whether CI-V scope waveform output is currently enabled."""
+    if cmd_map is not None:
+        return _build_from_map(
+            cmd_map, "scope_data_output", to_addr=to_addr, from_addr=from_addr
+        )
+    return _scope_query(_SUB_SCOPE_DATA_OUTPUT, to_addr=to_addr, from_addr=from_addr)
 
 
 def scope_data_output_on(
@@ -806,6 +828,16 @@ def scope_set_rbw(
 
 
 # --- Parse functions ---
+
+
+def parse_scope_enabled_response(frame: CivFrame) -> bool:
+    """Parse a ``0x27 0x10`` panel-scope state response."""
+    return _decode_scope_bool(frame, _SUB_SCOPE_ON)
+
+
+def parse_scope_data_output_enabled_response(frame: CivFrame) -> bool:
+    """Parse a ``0x27 0x11`` waveform-output state response."""
+    return _decode_scope_bool(frame, _SUB_SCOPE_DATA_OUTPUT)
 
 
 def parse_scope_main_sub_response(frame: CivFrame) -> int:

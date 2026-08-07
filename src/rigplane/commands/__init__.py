@@ -250,6 +250,8 @@ from .dsp import (
 
 # --- scope.py ---
 from .scope import (
+    get_scope_data_output_enabled,
+    get_scope_enabled,
     get_scope_center_type,
     get_scope_during_tx,
     get_scope_edge,
@@ -264,6 +266,8 @@ from .scope import (
     get_scope_speed,
     get_scope_vbw,
     parse_scope_center_type_response,
+    parse_scope_data_output_enabled_response,
+    parse_scope_enabled_response,
     parse_scope_during_tx_response,
     parse_scope_edge_response,
     parse_scope_fixed_edge_response,
@@ -589,6 +593,8 @@ __all__ = [
     "scope_data_output",
     "scope_data_output_on",
     "scope_data_output_off",
+    "get_scope_data_output_enabled",
+    "get_scope_enabled",
     "get_scope_main_sub",
     "scope_main_sub",
     "get_scope_single_dual",
@@ -615,6 +621,8 @@ __all__ = [
     "scope_set_fixed_edge",
     "get_scope_rbw",
     "scope_set_rbw",
+    "parse_scope_data_output_enabled_response",
+    "parse_scope_enabled_response",
     "parse_scope_main_sub_response",
     "parse_scope_single_dual_response",
     "parse_scope_mode_response",

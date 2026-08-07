@@ -478,6 +478,8 @@ class RadioPoller:
         self._initial_fetch_done.set()
         self._scope_enable_deferred = False
         self._scope_demand_generation = queue.latest_scope_demand_generation
+        self._scope_session_state: tuple[bool, bool] | None = None
+        self._scope_session_active = False
         # Issue #715: track user-initiated freq/mode writes so the unselected-
         # slot poll subroutine can debounce around them, and per-receiver
         # timestamps so each receiver's unselected slot is refreshed no more
@@ -1330,6 +1332,74 @@ class RadioPoller:
         self._scope_demand_generation = generation
         return False
 
+    async def _enable_scope_session(self, *, policy: str) -> None:
+        """Capture scope state once, then enable through the existing wire lane."""
+        radio = self._radio
+        get_state = getattr(radio, "get_scope_session_state", None)
+        restore_state = getattr(radio, "restore_scope_session_state", None)
+        if get_state is None or restore_state is None:
+            raise CommandError(
+                "scope backend cannot preserve pre-session panel/output state"
+            )
+        if self._scope_session_state is None:
+            self._scope_session_state = await get_state()
+        try:
+            await radio.enable_scope(policy=policy)  # type: ignore[attr-defined]
+        except BaseException:
+            # Once enable starts, its wire effect is uncertain: FAST can fail
+            # after the panel ON write, and VERIFY can time out after both ON
+            # writes were applied.  Roll back before reporting failure.  The
+            # captured tuple remains owned if rollback itself fails, allowing a
+            # later DisableScope teardown to retry deterministically.
+            self._scope_session_active = True
+            try:
+                await self.restore_scope_session()
+            except BaseException:
+                logger.exception(
+                    "radio-poller: scope enable failed and rollback is pending"
+                )
+            raise
+        self._scope_session_active = True
+
+    async def restore_scope_session(self) -> None:
+        """Restore exactly what the first successful scope viewer inherited."""
+        if not self._scope_session_active or self._scope_session_state is None:
+            return
+        if getattr(self._radio, "external_cat_session_active", False) is True:
+            raise CommandError(
+                "scope restore deferred while an external CAT session owns the wire"
+            )
+        restore_state = getattr(self._radio, "restore_scope_session_state", None)
+        if restore_state is None:
+            raise CommandError(
+                "scope backend cannot restore pre-session panel/output state"
+            )
+        await restore_state(self._scope_session_state)
+        self._scope_session_active = False
+        self._scope_session_state = None
+
+    async def restore_scope_after_shutdown(self) -> None:
+        """Restore scope through this stopped poller's sole command executor.
+
+        ``stop_web_server`` calls this only after ``stop()`` and the final TX
+        safety drain.  Re-entering ``_execute`` therefore uses the same sole
+        poller executor as the live ``CommandQueue`` consumer, with no second
+        task or radio-control lane.  The backend write continues through its
+        existing ``_send_civ_raw`` / ``IcomCommander`` serialization.
+        """
+        if CAP_SCOPE not in self._caps:
+            raise CommandError("scope restore unavailable on this radio")
+        generation = (
+            max(
+                self._scope_demand_generation,
+                self._queue.latest_scope_demand_generation,
+            )
+            + 1
+        )
+        await self._execute(DisableScope(generation=generation))
+        if self._scope_session_active:
+            raise CommandError("scope restore did not settle")
+
     def _managed_tx(
         self, source: CommandSource, session_id: str | None
     ) -> ManagedTxApi | None:
@@ -2008,22 +2078,62 @@ class RadioPoller:
                         logger.warning("set_band: unknown bsr_code=%d", band)
             case SelectVfo(vfo=vfo):
                 self._last_user_write_ts = time.monotonic()
-                # Select the target receiver via the public
-                # ``ReceiverBankCapable.select_receiver`` (issue #1172).
-                # Pre-#771 this used a MAIN↔SUB swap (0x07 0xB0) as a hack
-                # so that LAN audio (MAIN-only at the time) would "follow"
-                # the selected receiver.  After #721/#755 introduced
-                # Phones L/R Mix + audio_config, audio routing is
-                # independent of which receiver is selected, and the swap
-                # hack actively corrupted user state on every click
-                # (frequencies/modes traded places).  Wave 4-A landed
-                # ``select_receiver`` (CI-V 0x07 0xD0/0xD1) on every
-                # backend, so the poller now goes through the typed API
-                # rather than a raw ``_civ`` write.  Idempotent: re-clicking
-                # the active receiver emits no CI-V (the state event still
-                # fires so UI listeners can refresh).
                 vfo_upper = vfo.upper()
-                is_sub = vfo_upper in ("SUB", "B")
+                slot: str | None = None
+                if vfo_upper in ("A", "B"):
+                    slot = vfo_upper
+                elif self._profile.receiver_count == 1 and vfo_upper in (
+                    "VFOA",
+                    "VFOB",
+                ):
+                    slot = vfo_upper[-1]
+                if slot is not None:
+                    active_name = self._current_active().upper()
+                    receiver = 1 if active_name == "SUB" else 0
+                    self._ensure_receiver_supported(
+                        receiver, operation="select_vfo_slot"
+                    )
+                    set_vfo_slot = getattr(radio, "set_vfo_slot", None)
+                    if set_vfo_slot is not None:
+                        await set_vfo_slot(slot, receiver=receiver)
+                        logger.info(
+                            "radio-poller: set_vfo_slot=%s receiver=%d",
+                            slot,
+                            receiver,
+                        )
+                    else:
+                        legacy_set_vfo = getattr(radio, "set_vfo", None)
+                        if legacy_set_vfo is None:
+                            logger.warning(
+                                "radio-poller: select_vfo(%s) — backend lacks "
+                                "set_vfo_slot and set_vfo; skipping",
+                                vfo,
+                            )
+                            return
+                        await legacy_set_vfo(slot)
+                        logger.info(
+                            "radio-poller: legacy set_vfo=%s "
+                            "(backend lacks VfoSlotCapable)",
+                            slot,
+                        )
+                    if self._radio_state is not None:
+                        self._radio_state.receiver(active_name).active_slot = slot
+                    if self._on_state_event:
+                        self._on_state_event(
+                            "vfo_changed", {"vfo": slot, "receiver": receiver}
+                        )
+                    return
+
+                if vfo_upper in ("SUB", "1") or (
+                    self._profile.receiver_count > 1 and vfo_upper == "VFOB"
+                ):
+                    is_sub = True
+                elif vfo_upper in ("MAIN", "0") or (
+                    self._profile.receiver_count > 1 and vfo_upper == "VFOA"
+                ):
+                    is_sub = False
+                else:
+                    raise CommandError(f"unknown VFO selection {vfo!r}")
                 if is_sub:
                     self._ensure_receiver_supported(1, operation="select_vfo")
                 current = self._current_active()
@@ -2093,10 +2203,6 @@ class RadioPoller:
                                 "radio-poller: scope follow failed",
                                 exc_info=True,
                             )
-                if self._radio_state is not None:
-                    # Compatibility mirror until web state delivery reads the
-                    # active-slot projection from StateStore.
-                    self._radio_state.main.active_slot = "B" if is_sub else "A"
                 if self._on_state_event:
                     self._on_state_event("vfo_changed", {"vfo": vfo})
             case VfoSwap():
@@ -2128,15 +2234,15 @@ class RadioPoller:
                     else:
                         if self._scope_demand_is_stale(generation):
                             return
-                        await radio.enable_scope(policy=policy)
+                        await self._enable_scope_session(policy=policy)
                         logger.info("radio-poller: scope enabled")
                         await self._fetch_scope_controls()
             case DisableScope(generation=generation):
                 if CAP_SCOPE in self._caps:
                     if self._scope_demand_is_stale(generation):
                         return
-                    await radio.disable_scope()
-                    logger.info("radio-poller: scope disabled")
+                    await self.restore_scope_session()
+                    logger.info("radio-poller: scope session state restored")
             case SwitchScopeReceiver(receiver=receiver):
                 # Fire-and-forget scope receiver select (0x27 0x12)
                 self._ensure_receiver_supported(
@@ -2836,141 +2942,20 @@ class RadioPoller:
             await self._send_one_state_query(cmd_byte, sub_byte, receiver)
         self._poll_index += 1
 
-    # Issue #715: unselected-slot slow-poll cycle.
-    # Rate-limit and debounce thresholds are conservative — this cycle
-    # is a correctness feature (populate vfo_b) not a throughput one.
+    # Issue #2303: passive observation must never select or exchange a VFO.
+    # Inactive A/B state may therefore remain unknown/stale until a genuinely
+    # non-mutating provider read exists for the active profile.
     _UNSELECTED_SLOT_INTERVAL: float = 5.0  # sec between refreshes per rx
     _UNSELECTED_SLOT_DEBOUNCE: float = 0.5  # sec after last user freq/mode write
 
     def _unselected_slot_gate(self, receiver: int) -> bool:
-        """Return True iff it is safe to read the unselected slot on *receiver*."""
-        if self._radio_state is None or getattr(self._radio_state, "ptt", False):
-            return False
-        if self._queue.has_commands:
-            return False
-        now = time.monotonic()
-        if (now - self._last_user_write_ts) < self._UNSELECTED_SLOT_DEBOUNCE:
-            return False
-        last = self._last_unselected_poll.get(receiver, 0.0)
-        if (now - last) < self._UNSELECTED_SLOT_INTERVAL:
-            return False
-        if not self._profile.supports_receiver(receiver):
-            return False
-        # Need a true A/B-within-receiver swap primitive. swap_main_sub_code
-        # is NOT a fallback — on IC-7610 the 0x07 0xB0 byte toggles MAIN↔SUB,
-        # not A↔B inside a receiver, which would flip the radio's active-RX
-        # state on every slow-poll cycle.
-        if self._profile.swap_ab_code is None:
-            return False
-        return True
+        """Return False: exchange-based inactive-slot reads mutate hardware."""
+        _ = receiver
+        return False
 
     async def _poll_unselected_slot(self, receiver: int) -> None:
-        """Read freq+mode of the inactive VFO slot on *receiver*.
-
-        Uses a transient ``host._vfo_slot_override`` flag so ``_civ_rx.py``
-        routes the 0x03/0x04 responses to the opposite slot.  On dual-RX
-        profiles the target receiver is selected first via ``0x07`` and
-        restored after.  Swap → query → swap-back keeps the radio's
-        active-slot state unchanged for the user.
-        """
-        if not self._unselected_slot_gate(receiver):
-            return
-        rs = self._radio_state
-        assert rs is not None  # gate guarantees
-        rx_name = "MAIN" if receiver == 0 else "SUB"
-        rx_state = rs.receiver(rx_name)
-        target_slot = "B" if rx_state.active_slot == "A" else "A"
-        swap_code = self._profile.swap_ab_code
-        assert swap_code is not None  # gate guarantees (see _unselected_slot_gate)
-        # Pre-select MAIN/SUB on dual-RX rigs so the swap hits the intended
-        # receiver.  Restore after the read.
-        pre_switched = False
-        pre_code: int | None = None
-        post_code: int | None = None
-        if self._profile.receiver_count > 1:
-            current = self._current_active()
-            if rx_name != current:
-                if rx_name == "SUB" and self._profile.vfo_sub_code is not None:
-                    pre_code = self._profile.vfo_sub_code
-                    post_code = self._profile.vfo_main_code
-                elif rx_name == "MAIN" and self._profile.vfo_main_code is not None:
-                    pre_code = self._profile.vfo_main_code
-                    post_code = self._profile.vfo_sub_code
-                if pre_code is None or post_code is None:
-                    return  # profile cannot switch — skip
-        override_map = getattr(self._radio, "_vfo_slot_override", None)
-        if not isinstance(override_map, dict):
-            override_map = {}
-            try:
-                self._radio._vfo_slot_override = override_map  # type: ignore[attr-defined]
-            except AttributeError:
-                return  # host refuses attribute — skip silently
-        try:
-            if pre_code is not None:
-                await self._civ(
-                    0x07,
-                    data=bytes([pre_code]),
-                    priority=Priority.BACKGROUND,
-                    wait_dispatch=False,
-                )
-                await asyncio.sleep(self._adaptive_gap())
-                pre_switched = True
-            # Swap A/B within the selected receiver.
-            await self._civ(
-                0x07,
-                data=bytes([swap_code]),
-                priority=Priority.BACKGROUND,
-                wait_dispatch=False,
-            )
-            await asyncio.sleep(self._adaptive_gap())
-            # Responses for the queries below must route to the opposite slot.
-            override_map[rx_name] = target_slot
-            await self._civ(
-                0x03, data=b"", priority=Priority.BACKGROUND, wait_dispatch=False
-            )
-            await asyncio.sleep(self._adaptive_gap())
-            await self._civ(
-                0x04, data=b"", priority=Priority.BACKGROUND, wait_dispatch=False
-            )
-            # Give the CI-V RX pump a moment to drain responses before we
-            # swap back (the override stays set until *after* swap-back
-            # so any late 0x03/0x04 response still routes to the
-            # opposite slot rather than polluting vfo_a via the property
-            # setter).
-            await asyncio.sleep(self._adaptive_gap() * 2)
-        finally:
-            # Always try to swap back so the radio ends in the original
-            # slot even when a query errored.  Override is cleared after
-            # the swap-back send + a gap to cover in-flight responses.
-            try:
-                await self._civ(
-                    0x07,
-                    data=bytes([swap_code]),
-                    priority=Priority.BACKGROUND,
-                    wait_dispatch=False,
-                )
-            except Exception:
-                logger.warning(
-                    "radio-poller: failed to restore VFO A/B on receiver=%d",
-                    receiver,
-                    exc_info=True,
-                )
-            await asyncio.sleep(self._adaptive_gap())
-            override_map.pop(rx_name, None)
-            if pre_switched and post_code is not None:
-                try:
-                    await self._civ(
-                        0x07,
-                        data=bytes([post_code]),
-                        priority=Priority.BACKGROUND,
-                        wait_dispatch=False,
-                    )
-                except Exception:
-                    logger.warning(
-                        "radio-poller: failed to restore MAIN/SUB selection",
-                        exc_info=True,
-                    )
-        self._last_unselected_poll[receiver] = time.monotonic()
+        """Intentionally do nothing; swap/query/swap is not passive polling."""
+        _ = receiver
 
     def _emit(self, name: str, data: dict[str, Any]) -> None:
         if self._on_state_event is not None:

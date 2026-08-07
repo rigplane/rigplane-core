@@ -374,6 +374,12 @@ class _IcomSerialRadioBase(CoreRadio):
     # Scope
     # ------------------------------------------------------------------
 
+    async def get_scope_session_state(self) -> tuple[bool, bool]:
+        """Reject unsupported serial scope sessions before any CI-V mutation."""
+        self._check_connected()
+        self._ensure_scope_baud_guardrail()
+        return await super().get_scope_session_state()
+
     async def enable_scope(
         self,
         *,

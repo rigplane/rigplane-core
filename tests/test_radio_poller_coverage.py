@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from rigplane.commands.commander import IcomCommander, Priority
+from rigplane.core.capabilities import CAP_SCOPE
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -137,8 +138,8 @@ class _InjectedAcquisitionExecutor:
         )
 
 
-def _make_radio(active: str = "MAIN") -> MagicMock:
-    profile = resolve_radio_profile(model="IC-7610")
+def _make_radio(active: str = "MAIN", *, model: str = "IC-7610") -> MagicMock:
+    profile = resolve_radio_profile(model=model)
     radio = MagicMock()
     radio.profile = profile
     radio.model = profile.model
@@ -220,6 +221,8 @@ def _make_radio(active: str = "MAIN") -> MagicMock:
     # QuickDwTrigger / QuickSplitTrigger composites.
     radio.enable_scope = AsyncMock()
     radio.disable_scope = AsyncMock()
+    radio.get_scope_session_state = AsyncMock(return_value=(False, False))
+    radio.restore_scope_session_state = AsyncMock()
     radio.on_scope_data = MagicMock()
     radio.capture_scope_frame = AsyncMock()
     radio.capture_scope_frames = AsyncMock()
@@ -1121,7 +1124,7 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
     await poller._execute(DisableScope())  # noqa: SLF001
     await poller._execute(SwitchScopeReceiver(1))  # noqa: SLF001
     radio.enable_scope.assert_awaited_once_with(policy="fast")
-    radio.disable_scope.assert_awaited_once()
+    radio.restore_scope_session_state.assert_awaited_once_with((False, False))
     with pytest.raises(CommandError, match="receiver=2"):
         await poller._execute(SwitchScopeReceiver(2))  # noqa: SLF001
 
@@ -1156,6 +1159,23 @@ async def test_select_vfo_legacy_backend_falls_back_to_set_vfo() -> None:
 
     radio.set_vfo.assert_awaited_once_with("SUB")
     assert any(name == "vfo_changed" for name, _ in events)
+
+
+@pytest.mark.asyncio
+async def test_single_receiver_vfo_b_selects_slot_without_sub_receiver() -> None:
+    state = RadioState()
+    state.active = "MAIN"
+    state.main.active_slot = "A"
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = state
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SelectVfo("B"))  # noqa: SLF001
+
+    radio.set_vfo_slot.assert_awaited_once_with("B", receiver=0)
+    radio.select_receiver.assert_not_awaited()
+    assert state.active == "MAIN"
+    assert state.main.active_slot == "B"
 
 
 @pytest.mark.asyncio
@@ -1625,7 +1645,7 @@ async def test_stale_deferred_enable_cannot_requeue_after_newer_disable() -> Non
         await poller._execute(command)  # noqa: SLF001
 
     radio.enable_scope.assert_not_awaited()
-    radio.disable_scope.assert_awaited_once()
+    radio.restore_scope_session_state.assert_not_awaited()
     assert queue.has_commands is False
 
 
@@ -1657,6 +1677,38 @@ async def test_current_scope_generation_preserves_recovery_enable() -> None:
     await poller._execute(EnableScope(generation=5))  # noqa: SLF001
 
     assert radio.enable_scope.await_count == 2
+    radio.get_scope_session_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial", [(True, False), (False, False)])
+async def test_scope_session_restores_exact_initial_state(
+    initial: tuple[bool, bool],
+) -> None:
+    radio = _make_radio()
+    radio.get_scope_session_state.return_value = initial
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(EnableScope(generation=1))  # noqa: SLF001
+    await poller._execute(EnableScope(generation=1))  # noqa: SLF001
+    await poller._execute(DisableScope(generation=2))  # noqa: SLF001
+
+    radio.get_scope_session_state.assert_awaited_once()
+    assert radio.enable_scope.await_count == 2
+    radio.restore_scope_session_state.assert_awaited_once_with(initial)
+
+
+@pytest.mark.asyncio
+async def test_failed_scope_enable_rolls_back_captured_state() -> None:
+    radio = _make_radio()
+    radio.enable_scope.side_effect = ConnectionError("scope unavailable at low baud")
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=RadioState())
+
+    with pytest.raises(ConnectionError, match="low baud"):
+        await poller._execute(EnableScope(generation=1))  # noqa: SLF001
+    await poller._execute(DisableScope(generation=2))  # noqa: SLF001
+
+    radio.restore_scope_session_state.assert_awaited_once_with((False, False))
 
 
 @pytest.mark.asyncio
@@ -2281,7 +2333,7 @@ async def test_select_vfo_success_keeps_pending_overlay_until_observation() -> N
     await service.execute(
         command_intent_from_request(
             "set_vfo",
-            {"vfo": "SUB"},
+            {"vfo": "SUB", "receiver_count": 2},
             source="websocket",
             command_id="ws-set-vfo",
         )
@@ -3209,7 +3261,11 @@ def _writable_control_session(queue: CommandQueue) -> ControlHandler:
 
 
 def _shutdown_server(
-    poller: RadioPoller, client_tasks: list[asyncio.Task[None]]
+    poller: RadioPoller | None,
+    client_tasks: list[asyncio.Task[None]],
+    *,
+    scope_enabled: bool = False,
+    scope_enable_failed: bool = False,
 ) -> SimpleNamespace:
     """The subset of ``WebServer`` that ``stop_web_server`` actually touches."""
     return SimpleNamespace(
@@ -3230,6 +3286,8 @@ def _shutdown_server(
         _client_tasks=client_tasks,
         _server=None,
         _server_was_running=True,
+        _scope_enabled=scope_enabled,
+        _scope_enable_failed=scope_enable_failed,
     )
 
 
@@ -3258,6 +3316,113 @@ async def test_server_shutdown_delivers_the_unkey_its_client_enqueues_late() -> 
     assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
     assert radio.calls == ["start_tx", *_TEARDOWN]
     assert queue.has_commands is False
+
+
+def _scope_shutdown_poller(
+    *, external_cat_session_active: bool = False
+) -> tuple[RadioPoller, _Radio, CommandQueue]:
+    """Stopped-poller restore harness over the same executor as the TX drain."""
+    radio = _Radio(None)
+    radio.capabilities.add(CAP_SCOPE)
+    radio.external_cat_session_active = external_cat_session_active
+    queue = CommandQueue()
+    poller = RadioPoller(radio, queue)  # type: ignore[arg-type]
+    poller._scope_session_state = (True, False)  # noqa: SLF001
+    poller._scope_session_active = True  # noqa: SLF001
+    return poller, radio, queue
+
+
+@pytest.mark.asyncio
+async def test_shutdown_restores_scope_after_final_unkey_on_same_executor() -> None:
+    """Scope restoration stays on the sole poller executor and follows PTT OFF."""
+    poller, radio, queue = _scope_shutdown_poller()
+
+    async def _restore_scope(state: tuple[bool, bool]) -> None:
+        radio.calls.append(f"restore_scope{state}")
+
+    radio.restore_scope_session_state = _restore_scope  # type: ignore[attr-defined]
+    queue.put(PttOff(), command_id="shutdown-off", source="websocket")
+    server = _shutdown_server(poller, [], scope_enabled=True)
+
+    with patch.object(poller, "_execute", wraps=poller._execute) as execute:  # noqa: SLF001
+        await stop_web_server(server)  # type: ignore[arg-type]
+
+    # Both writes entered through this one stopped poller's existing executor;
+    # no parallel queue consumer or second radio-control lane is created.
+    assert [type(call.args[0]) for call in execute.await_args_list] == [
+        PttOff,
+        DisableScope,
+    ]
+    assert radio.calls == [
+        "set_ptt(False)",
+        *_TEARDOWN,
+        "restore_scope(True, False)",
+    ]
+    assert not server._scope_enabled
+    assert not server._scope_enable_failed
+    assert poller._scope_session_state is None  # noqa: SLF001
+    assert poller._scope_session_active is False  # noqa: SLF001
+    assert queue.has_commands is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_external_cat_defers_scope_but_still_delivers_unkey(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    poller, radio, queue = _scope_shutdown_poller(external_cat_session_active=True)
+    restore = AsyncMock()
+    radio.restore_scope_session_state = restore  # type: ignore[attr-defined]
+    queue.put(PttOff(), command_id="shutdown-off", source="websocket")
+    server = _shutdown_server(poller, [], scope_enabled=True)
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
+        await stop_web_server(server)  # type: ignore[arg-type]
+
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+    restore.assert_not_awaited()
+    assert server._scope_enabled
+    assert poller._scope_session_state == (True, False)  # noqa: SLF001
+    assert poller._scope_session_active is True  # noqa: SLF001
+    assert "external CAT session owns the wire" in caplog.text
+    assert "state remains pending" in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout"])
+@pytest.mark.asyncio
+async def test_shutdown_scope_restore_failure_never_delays_final_unkey(
+    failure: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    poller, radio, queue = _scope_shutdown_poller()
+    restore_started = asyncio.Event()
+
+    async def _restore_scope(_state: tuple[bool, bool]) -> None:
+        restore_started.set()
+        if failure == "error":
+            raise ConnectionError("scope link failed")
+        await asyncio.Event().wait()
+
+    radio.restore_scope_session_state = _restore_scope  # type: ignore[attr-defined]
+    queue.put(PttOff(), command_id="shutdown-off", source="websocket")
+    server = _shutdown_server(poller, [], scope_enabled=True)
+
+    started = time.monotonic()
+    with (
+        patch("rigplane.web.web_startup._SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S", 0.02),
+        caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+    ):
+        await stop_web_server(server)  # type: ignore[arg-type]
+    elapsed = time.monotonic() - started
+
+    assert restore_started.is_set()
+    assert elapsed < 1.0
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+    assert server._scope_enabled
+    assert poller._scope_session_state == (True, False)  # noqa: SLF001
+    assert poller._scope_session_active is True  # noqa: SLF001
+    expected = "timed out" if failure == "timeout" else "failed"
+    assert expected in caplog.text
+    assert "state remains pending" in caplog.text
 
 
 # --- MOR-1220: the unmanaged max-key-down backstop -------------------------

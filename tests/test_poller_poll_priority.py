@@ -74,18 +74,14 @@ async def test_state_query_sends_background_priority() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unselected_slot_poll_sends_background_priority() -> None:
-    # IC-7300 has swap_ab_code set and receiver_count == 1, so the
-    # unselected-slot gate is satisfiable with a simple swap→query→swap-back.
+async def test_unselected_slot_poll_sends_no_vfo_selection_frames() -> None:
     radio = _make_radio(model="IC-7300", active="MAIN")
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    assert poller._unselected_slot_gate(0)  # noqa: SLF001  (sanity: gate open)
+    assert not poller._unselected_slot_gate(0)  # noqa: SLF001
     await poller._poll_unselected_slot(0)  # noqa: SLF001
 
-    assert radio.send_civ.await_count >= 1
-    for call in radio.send_civ.await_args_list:
-        assert _priority_of(call) == Priority.BACKGROUND
+    radio.send_civ.assert_not_awaited()
 
 
 @pytest.mark.asyncio

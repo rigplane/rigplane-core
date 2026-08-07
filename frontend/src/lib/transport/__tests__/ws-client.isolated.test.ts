@@ -595,6 +595,36 @@ describe('control channel singleton', () => {
     expect(patchActiveReceiver).toHaveBeenCalledWith({ dataMode: 2 });
   });
 
+  it('treats bare VFO B as a slot without switching MAIN to SUB', async () => {
+    radioStoreMock.current = makeState({
+      active: 'MAIN',
+      main: makeReceiver({ activeSlot: 'A' }),
+    });
+    const { sendCommand } = await import('../ws-client');
+
+    sendCommand('set_vfo', { vfo: 'B' });
+
+    expect(patchActiveReceiver).toHaveBeenCalledWith({ activeSlot: 'B' });
+    expect(patchRadioState).not.toHaveBeenCalled();
+    expect(radioStoreMock.current?.active).toBe('MAIN');
+    expect(radioStoreMock.current?.main.activeSlot).toBe('B');
+  });
+
+  it('treats explicit SUB as a receiver selection', async () => {
+    radioStoreMock.current = makeState({
+      active: 'MAIN',
+      main: makeReceiver({ activeSlot: 'A' }),
+    });
+    const { sendCommand } = await import('../ws-client');
+
+    sendCommand('set_vfo', { vfo: 'SUB' });
+
+    expect(patchRadioState).toHaveBeenCalledWith({ active: 'SUB' });
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
+    expect(radioStoreMock.current?.active).toBe('SUB');
+    expect(radioStoreMock.current?.main.activeSlot).toBe('A');
+  });
+
   it('sendCommand returns false and queues when not connected', async () => {
     const { sendCommand, isConnected } = await import('../ws-client');
     expect(isConnected()).toBe(false);

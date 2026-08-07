@@ -726,8 +726,15 @@ function _applyOptimistic(name: string, params: Record<string, unknown>): void {
     case 'set_vfo':
     case 'select_vfo':  // backward-compat alias
       if (typeof params.vfo === 'string') {
-        const isSub = ['SUB', 'B'].includes(params.vfo.toUpperCase());
-        patchRadioState({ active: isSub ? 'SUB' : 'MAIN' });
+        const vfo = params.vfo.toUpperCase();
+        if (vfo === 'A' || vfo === 'B') {
+          patchActiveReceiver({ activeSlot: vfo });
+        } else if (vfo === 'MAIN' || vfo === 'SUB') {
+          patchRadioState({ active: vfo });
+        } else if (vfo === 'VFOA' || vfo === 'VFOB') {
+          // Legacy dual-receiver aliases retain their historical meaning.
+          patchRadioState({ active: vfo === 'VFOB' ? 'SUB' : 'MAIN' });
+        }
       }
       break;
 
