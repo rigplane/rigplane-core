@@ -177,6 +177,67 @@ def test_relative_unselected_vfo_reset_removes_complete_public_object() -> None:
     )
 
 
+def test_relative_vfo_public_payload_does_not_flap_at_leaf_ttl() -> None:
+    clock = FreshnessClock(start=902_507.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=1,
+        max_age=31.0,
+        coherence_window=5.0,
+    )
+    values = {
+        FieldPath.active("0", "freq_mode", "freq_hz"): 14_284_000,
+        FieldPath.active("0", "freq_mode", "mode"): "USB",
+        FieldPath.active("0", "freq_mode", "filter_num"): 1,
+        FieldPath.active("0", "freq_mode", "data_mode"): 0,
+        FieldPath.unselected("0", "freq_mode", "freq_hz"): 14_075_000,
+        FieldPath.unselected("0", "freq_mode", "mode"): "USB",
+        FieldPath.unselected("0", "freq_mode", "filter_num"): 1,
+        FieldPath.unselected("0", "freq_mode", "data_mode"): 0,
+    }
+    store.apply_relative_vfo_observations(
+        tuple(
+            _observation(path, value, at=clock.now(), max_age=5.0)
+            for path, value in values.items()
+        ),
+        generation=1,
+    )
+
+    clock.advance(5.1)
+    assert store.mark_stale_due().freshness == ()
+    retained = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert retained["main"]["freqHz"] == 14_284_000
+    assert retained["main"]["unselectedVfo"]["freqHz"] == 14_075_000
+    assert all(
+        retained["fieldStatus"][path]["freshness"] == "fresh"
+        for path in (
+            "main.freqHz",
+            "main.mode",
+            "main.unselectedVfo.freqHz",
+            "main.unselectedVfo.mode",
+        )
+    )
+
+    store.apply_relative_vfo_observations(
+        (
+            _observation(
+                FieldPath.active("0", "freq_mode", "freq_hz"),
+                14_285_000,
+                at=clock.now(),
+                max_age=5.0,
+            ),
+        ),
+        generation=1,
+    )
+    patched = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert patched["main"]["freqHz"] == 14_285_000
+    assert patched["main"]["unselectedVfo"] == retained["main"]["unselectedVfo"]
+
+
 def test_web_server_publishes_single_receiver_main_from_topology_only() -> None:
     from rigplane.profiles import resolve_radio_profile
 
@@ -219,6 +280,41 @@ def test_production_radio_poller_resets_vfo_identity_on_reconnect() -> None:
     server._on_radio_reconnect()  # noqa: SLF001
 
     assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
+
+
+def test_radio_disconnect_immediately_clears_retained_relative_vfo() -> None:
+    from rigplane.profiles import resolve_radio_profile
+    from rigplane.web.radio_poller import CommandQueue, RadioPoller
+
+    store = StateStore()
+    radio = MagicMock()
+    radio.model = "IC-7300"
+    radio.profile = resolve_radio_profile(model="IC-7300")
+    radio.capabilities = set(radio.profile.capabilities)
+    radio.managed_tx = None
+    server = WebServer(radio)
+    server._radio_poller = RadioPoller(  # noqa: SLF001
+        radio, CommandQueue(), state_store=store
+    )
+    store.apply_relative_vfo_observations(
+        (
+            _observation(FieldPath.active("0", "freq_mode", "freq_hz"), 1, at=1.0),
+            _observation(FieldPath.active("0", "freq_mode", "mode"), "USB", at=1.0),
+            _observation(FieldPath.unselected("0", "freq_mode", "freq_hz"), 2, at=1.0),
+            _observation(FieldPath.unselected("0", "freq_mode", "mode"), "USB", at=1.0),
+        ),
+        generation=0,
+    )
+
+    server._on_radio_state_change(  # noqa: SLF001
+        "connection_state", {"connected": False}
+    )
+
+    assert not {
+        path
+        for path in store.snapshot().as_dict()
+        if ".active.freq_mode." in path or ".unselected.freq_mode." in path
+    }
 
 
 def _tx_target_field(

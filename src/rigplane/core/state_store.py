@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -185,6 +185,17 @@ class _FieldEntry:
     quality: tuple[str, ...]
 
 
+@dataclass(slots=True)
+class _RelativeVfoRetention:
+    generation: int
+    required_paths: frozenset[FieldPath]
+    paths: frozenset[FieldPath]
+    max_age: float
+    coherence_window: float
+    pending: dict[FieldPath, Observation]
+    expires_at: float | None = None
+
+
 class FreshnessClock:
     """Monotonic clock used by freshness expiration."""
 
@@ -235,6 +246,7 @@ class StateStore:
         "_history_floor_state_revision",
         "_max_history_count",
         "_observation_seq",
+        "_relative_vfo_retention",
         "_state_revision",
     )
 
@@ -251,6 +263,7 @@ class StateStore:
         self._state_revision = 0
         self._freshness_revision = 0
         self._observation_seq = 0
+        self._relative_vfo_retention: _RelativeVfoRetention | None = None
         self._entries: dict[FieldPath, _FieldEntry] = {}
         self._history: list[SnapshotDelta] = []
         self._history_floor_state_revision = 0
@@ -258,6 +271,18 @@ class StateStore:
 
     def apply(self, observation: Observation) -> ChangeSet:
         """Apply one confirmed observation and return its state ChangeSet."""
+
+        retention = self._relative_vfo_retention
+        if (
+            retention is not None
+            and observation.path in retention.paths
+            and observation.source.provider == "vfo_binding"
+        ):
+            retention.pending.clear()
+        return self._apply_one(observation)
+
+    def _apply_one(self, observation: Observation) -> ChangeSet:
+        """Apply one observation without relative-VFO staging."""
 
         self._observation_seq += 1
         previous_entry = self._entries.get(observation.path)
@@ -315,6 +340,226 @@ class StateStore:
         )
         return changeset
 
+    def configure_relative_vfo_retention(
+        self,
+        *,
+        generation: int,
+        max_age: float,
+        coherence_window: float,
+    ) -> None:
+        """Enable generation-scoped retention for Selected/Unselected tuples.
+
+        A complete frequency+mode base is required before relative fields enter
+        the canonical store. After that bootstrap, each same-generation leaf is
+        authoritative immediately; a complete coherent mandatory refresh is
+        required only to advance the common finite expiry deadline.
+        """
+
+        if generation < 0 or max_age <= 0 or coherence_window <= 0:
+            raise ValueError("relative VFO retention values must be positive")
+        paths = frozenset(
+            builder("0", "freq_mode", name)
+            for builder in (FieldPath.active, FieldPath.unselected)
+            for name in ("freq_hz", "mode", "filter_num", "data_mode")
+        )
+        now = self._freshness_clock.now()
+        existing = tuple(
+            Observation(
+                path=path,
+                value=entry.value,
+                source=entry.source,
+                timestamp_monotonic=entry.last_observed_monotonic,
+                quality=entry.quality,
+                max_age=entry.max_age,
+            )
+            for path, entry in self._entries.items()
+            if path in paths
+            and entry.freshness is FreshnessState.FRESH
+            and (
+                entry.max_age is None
+                or now - entry.last_observed_monotonic <= entry.max_age
+            )
+        )
+        self.discard(paths)
+        self._relative_vfo_retention = _RelativeVfoRetention(
+            generation=generation,
+            required_paths=frozenset(
+                path for path in paths if path.name in {"freq_hz", "mode"}
+            ),
+            paths=paths,
+            max_age=float(max_age),
+            coherence_window=float(coherence_window),
+            pending={},
+        )
+        self.apply_relative_vfo_observations(existing, generation=generation)
+
+    def reset_relative_vfo_retention(self, *, generation: int) -> ChangeSet:
+        """Clear all relative VFO proof and start one empty provider generation."""
+
+        retention = self._relative_vfo_retention
+        if retention is None:
+            return self._empty_changeset()
+        retention.generation = generation
+        retention.pending.clear()
+        retention.expires_at = None
+        return self.discard(retention.paths)
+
+    def apply_relative_vfo_observations(
+        self,
+        observations: Iterable[Observation],
+        *,
+        generation: int,
+    ) -> ChangeSet:
+        """Stage/bootstrap or immediately patch one relative VFO provider batch."""
+
+        batch = tuple(observations)
+        retention = self._relative_vfo_retention
+        if retention is None:
+            return self._apply_observation_batch(batch)
+        if not batch or generation != retention.generation:
+            return self._empty_changeset(
+                timestamp=max(
+                    (item.timestamp_monotonic for item in batch), default=None
+                ),
+            )
+
+        relative = tuple(
+            item
+            for item in batch
+            if item.path in retention.paths
+            and (
+                item.path not in self._entries
+                or item.timestamp_monotonic
+                >= self._entries[item.path].last_observed_monotonic
+            )
+        )
+        changesets: list[ChangeSet] = []
+        if not relative:
+            return self._empty_changeset()
+
+        newest_at = max(item.timestamp_monotonic for item in relative)
+        if retention.expires_at is not None and newest_at >= retention.expires_at:
+            expired = self.mark_stale_due(now=newest_at)
+            if expired.freshness:
+                changesets.append(
+                    replace(
+                        self._empty_changeset(timestamp=newest_at),
+                        freshness_paths=tuple(item.path for item in expired.freshness),
+                    )
+                )
+
+        if any(
+            item.path in retention.required_paths and item.value is None
+            for item in relative
+        ):
+            changesets.append(self.reset_relative_vfo_retention(generation=generation))
+            return self._merge_changesets(changesets)
+
+        for observation in relative:
+            previous = retention.pending.get(observation.path)
+            if (
+                previous is None
+                or observation.timestamp_monotonic >= previous.timestamp_monotonic
+            ):
+                retention.pending[observation.path] = observation
+
+        timestamps = (
+            retention.pending[path].timestamp_monotonic
+            for path in retention.required_paths
+            if path in retention.pending
+        )
+        required_times = tuple(timestamps)
+        complete = (
+            len(required_times) == len(retention.required_paths)
+            and max(required_times) - min(required_times) <= retention.coherence_window
+        )
+        if retention.expires_at is None:
+            if not complete:
+                return self._merge_changesets(changesets)
+            complete_at = max(required_times)
+            retention.expires_at = complete_at + retention.max_age
+            committed = tuple(
+                replace(
+                    item,
+                    max_age=retention.expires_at - item.timestamp_monotonic,
+                )
+                for item in retention.pending.values()
+                if abs(complete_at - item.timestamp_monotonic)
+                <= retention.coherence_window
+            )
+            changesets.append(self.discard(retention.paths))
+            changesets.append(self._apply_observation_batch(committed))
+        else:
+            immediate = tuple(
+                replace(
+                    item,
+                    max_age=retention.expires_at - item.timestamp_monotonic,
+                )
+                for item in relative
+            )
+            changesets.append(self._apply_observation_batch(immediate))
+            if not complete:
+                return self._merge_changesets(changesets)
+            retention.expires_at = max(required_times) + retention.max_age
+            for path in retention.paths:
+                entry = self._entries.get(path)
+                if entry is not None:
+                    entry.max_age = retention.expires_at - entry.last_observed_monotonic
+
+        retention.pending.clear()
+        return self._merge_changesets(changesets)
+
+    def _expire_relative_vfo(self, *, now: float) -> tuple[FieldPath, ...]:
+        retention = self._relative_vfo_retention
+        if retention is None or retention.expires_at is None:
+            return ()
+        if now < retention.expires_at:
+            return ()
+        retention.expires_at = None
+        retention.pending.clear()
+        return tuple(retention.paths)
+
+    def _apply_observation_batch(
+        self,
+        observations: tuple[Observation, ...],
+    ) -> ChangeSet:
+        return self._merge_changesets(
+            tuple(self._apply_one(item) for item in observations)
+        )
+
+    def _empty_changeset(self, *, timestamp: float | None = None) -> ChangeSet:
+        return ChangeSet(
+            revision=self._state_revision,
+            freshness_revision=self._freshness_revision,
+            observation_seq=self._observation_seq,
+            changes=(),
+            timestamp_monotonic=(
+                self._freshness_clock.now() if timestamp is None else timestamp
+            ),
+            sources=(),
+            coalesced=False,
+        )
+
+    def _merge_changesets(self, changesets: Iterable[ChangeSet]) -> ChangeSet:
+        parts = tuple(changesets)
+        if not parts:
+            return self._empty_changeset()
+        return ChangeSet(
+            revision=self._state_revision,
+            freshness_revision=self._freshness_revision,
+            observation_seq=self._observation_seq,
+            changes=tuple(change for part in parts for change in part.changes),
+            timestamp_monotonic=max(part.timestamp_monotonic for part in parts),
+            sources=tuple(source for part in parts for source in part.sources),
+            coalesced=any(part.coalesced for part in parts),
+            observed_paths=tuple(
+                path for part in parts for path in part.observed_paths
+            ),
+            freshness_paths=tuple(
+                path for part in parts for path in part.freshness_paths
+            ),
+        )
+
     def discard(self, paths: Iterable[FieldPath | str]) -> ChangeSet:
         """Remove session-scoped facts so a new provider epoch starts unknown.
 
@@ -368,10 +613,14 @@ class StateStore:
         timestamp = self._freshness_clock.now() if now is None else now
         transitions: list[FreshnessTransition] = []
         requests: list[ReconciliationRequest] = []
+        relative_due = set(self._expire_relative_vfo(now=timestamp))
         for path, entry in sorted(self._entries.items(), key=lambda item: str(item[0])):
             if entry.freshness is not FreshnessState.FRESH or entry.max_age is None:
                 continue
-            if timestamp - entry.last_observed_monotonic <= entry.max_age:
+            if (
+                path not in relative_due
+                and timestamp - entry.last_observed_monotonic <= entry.max_age
+            ):
                 continue
 
             self._freshness_revision += 1

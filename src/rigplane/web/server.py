@@ -1850,6 +1850,12 @@ class WebServer:
         This is the PRIMARY update path.  Called whenever the radio sends
         a CI-V frame (solicited response or unsolicited change).
         """
+        if (
+            name == "connection_state"
+            and not data.get("connected")
+            and isinstance(self._radio_poller, RadioPoller)
+        ):
+            self._radio_poller.reset_vfo_session()
         self.broadcast_event(name, data)
         self._broadcast_state_update()
         if name == "connection_state":

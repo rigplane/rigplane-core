@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from itertools import permutations
 from typing import Any
 
 import pytest
@@ -44,13 +46,83 @@ def _observation(
     *,
     at: float,
     max_age: float | None = None,
+    source: str = "poll_response",
 ) -> Observation:
     return Observation(
         path=path,
         value=value,
-        source=_source(),
+        source=SourceMetadata(
+            source=source,
+            provider="test",
+            transport="fake",
+            native_id="relative-vfo",
+        ),
         timestamp_monotonic=at,
         max_age=max_age,
+    )
+
+
+def _relative_vfo_observations(
+    *,
+    at: float,
+    selected_freq: int = 14_284_000,
+    selected_mode: str = "USB",
+    unselected_freq: int = 14_075_000,
+    unselected_mode: str = "USB",
+) -> tuple[Observation, ...]:
+    return (
+        _observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            selected_freq,
+            at=at,
+            max_age=5.0,
+        ),
+        _observation(
+            FieldPath.active("0", "freq_mode", "mode"),
+            selected_mode,
+            at=at + 0.2,
+            max_age=5.0,
+        ),
+        _observation(
+            FieldPath.active("0", "freq_mode", "filter_num"),
+            1,
+            at=at + 0.2,
+        ),
+        _observation(
+            FieldPath.active("0", "freq_mode", "data_mode"),
+            0,
+            at=at + 0.2,
+        ),
+        _observation(
+            FieldPath.unselected("0", "freq_mode", "freq_hz"),
+            unselected_freq,
+            at=at + 0.4,
+            max_age=5.0,
+        ),
+        _observation(
+            FieldPath.unselected("0", "freq_mode", "mode"),
+            unselected_mode,
+            at=at + 0.6,
+            max_age=5.0,
+        ),
+        _observation(
+            FieldPath.unselected("0", "freq_mode", "filter_num"),
+            1,
+            at=at + 0.6,
+        ),
+        _observation(
+            FieldPath.unselected("0", "freq_mode", "data_mode"),
+            0,
+            at=at + 0.6,
+        ),
+    )
+
+
+def _relative_vfo_deadline(store: StateStore) -> float:
+    return max(
+        field.last_observed_monotonic + field.max_age
+        for field in store.snapshot().fields
+        if field.max_age is not None
     )
 
 
@@ -86,6 +158,198 @@ def test_noop_observations_do_not_advance_state_revision() -> None:
     assert second.changes == ()
     assert store.snapshot().state_revision == 1
     assert store.snapshot().observation_seq == 2
+
+
+def test_relative_vfo_bootstrap_is_atomic_then_live_leaves_patch_immediately() -> None:
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=7,
+        max_age=31.0,
+        coherence_window=5.0,
+    )
+    base = _relative_vfo_observations(at=100.0)
+
+    for observation in base[:5]:
+        store.apply_relative_vfo_observations((observation,), generation=7)
+        assert store.snapshot().fields == ()
+
+    store.apply_relative_vfo_observations(base[5:], generation=7)
+    committed = store.snapshot()
+    assert committed.field("receiver.0.active.freq_mode.freq_hz").value == 14_284_000
+    assert (
+        committed.field("receiver.0.unselected.freq_mode.freq_hz").value == 14_075_000
+    )
+
+    knob_source = SourceMetadata(
+        source="civ_unsolicited",
+        provider="test",
+        transport="fake",
+        native_id="knob-frequency",
+    )
+    knob = Observation(
+        path=FieldPath.active("0", "freq_mode", "freq_hz"),
+        value=14_285_000,
+        source=knob_source,
+        timestamp_monotonic=101.0,
+        max_age=5.0,
+    )
+    store.apply_relative_vfo_observations((knob,), generation=7)
+
+    patched = store.snapshot()
+    selected = patched.field("receiver.0.active.freq_mode.freq_hz")
+    assert selected.value == 14_285_000
+    assert selected.last_observed_monotonic == 101.0
+    assert selected.source == knob_source
+    assert patched.field("receiver.0.active.freq_mode.mode").value == "USB"
+    assert patched.field("receiver.0.unselected.freq_mode.freq_hz").value == 14_075_000
+    assert _relative_vfo_deadline(store) == pytest.approx(131.6)
+
+    live_mode = (
+        _observation(
+            FieldPath.active("0", "freq_mode", "mode"),
+            "LSB",
+            at=101.1,
+            max_age=5.0,
+            source="civ_unsolicited",
+        ),
+        _observation(
+            FieldPath.active("0", "freq_mode", "filter_num"),
+            2,
+            at=101.1,
+            source="civ_unsolicited",
+        ),
+        _observation(
+            FieldPath.active("0", "freq_mode", "data_mode"),
+            1,
+            at=101.1,
+            source="civ_unsolicited",
+        ),
+    )
+    store.apply_relative_vfo_observations(live_mode, generation=7)
+    patched = store.snapshot()
+    assert patched.field("receiver.0.active.freq_mode.mode").value == "LSB"
+    assert patched.field("receiver.0.active.freq_mode.filter_num").value == 2
+    assert patched.field("receiver.0.active.freq_mode.data_mode").value == 1
+    assert _relative_vfo_deadline(store) == pytest.approx(131.6)
+
+
+def test_relative_vfo_mandatory_bootstrap_is_atomic_in_every_arrival_order() -> None:
+    mandatory = tuple(
+        item
+        for item in _relative_vfo_observations(at=10.0)
+        if item.path.name in {"freq_hz", "mode"}
+    )
+    for order in permutations(mandatory):
+        store = StateStore()
+        store.configure_relative_vfo_retention(
+            generation=1,
+            max_age=20.0,
+            coherence_window=5.0,
+        )
+        for item in order[:-1]:
+            store.apply_relative_vfo_observations((item,), generation=1)
+            assert store.snapshot().fields == ()
+        store.apply_relative_vfo_observations(order[-1:], generation=1)
+        assert {field.path for field in store.snapshot().fields} == {
+            item.path for item in mandatory
+        }
+
+
+def test_relative_vfo_complete_refresh_extends_one_common_expiry() -> None:
+    clock = FreshnessClock(start=902_507.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=3,
+        max_age=31.0,
+        coherence_window=5.0,
+    )
+    store.apply_relative_vfo_observations(
+        _relative_vfo_observations(at=902_507.0), generation=3
+    )
+    first_expiry = _relative_vfo_deadline(store)
+
+    clock.advance(13.13)
+    store.apply_relative_vfo_observations(
+        _relative_vfo_observations(at=clock.now()), generation=3
+    )
+    second_expiry = _relative_vfo_deadline(store)
+    assert second_expiry == pytest.approx(first_expiry + 13.13)
+
+    clock.advance(13.13)
+    store.apply_relative_vfo_observations(
+        _relative_vfo_observations(at=clock.now()), generation=3
+    )
+    assert _relative_vfo_deadline(store) == pytest.approx(second_expiry + 13.13)
+
+    clock.advance(5.1)
+    assert store.mark_stale_due().freshness == ()
+    assert all(
+        field.freshness is FreshnessState.FRESH for field in store.snapshot().fields
+    )
+
+
+def test_relative_vfo_expiry_is_atomic_and_lone_late_event_cannot_resurrect() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=4,
+        max_age=20.0,
+        coherence_window=5.0,
+    )
+    store.apply_relative_vfo_observations(
+        _relative_vfo_observations(at=10.0), generation=4
+    )
+    expires_at = _relative_vfo_deadline(store)
+
+    clock.advance(expires_at - clock.now())
+    delta = store.mark_stale_due()
+    assert len(delta.freshness) == 8
+    assert {transition.current for transition in delta.freshness} == {
+        FreshnessState.STALE
+    }
+    assert all(
+        field.freshness is FreshnessState.STALE for field in store.snapshot().fields
+    )
+
+    late_knob = _observation(
+        FieldPath.active("0", "freq_mode", "freq_hz"),
+        14_286_000,
+        at=clock.now() + 0.1,
+        max_age=5.0,
+        source="civ_unsolicited",
+    )
+    store.apply_relative_vfo_observations((late_knob,), generation=4)
+    assert all(
+        field.freshness is FreshnessState.STALE for field in store.snapshot().fields
+    )
+    assert store.snapshot().field(late_knob.path).value == 14_284_000
+
+
+def test_relative_vfo_reset_and_old_generation_are_fail_closed() -> None:
+    store = StateStore()
+    store.configure_relative_vfo_retention(
+        generation=1,
+        max_age=20.0,
+        coherence_window=5.0,
+    )
+    base = _relative_vfo_observations(at=10.0)
+    store.apply_relative_vfo_observations(base, generation=1)
+
+    store.reset_relative_vfo_retention(generation=2)
+    assert store.snapshot().fields == ()
+    store.apply_relative_vfo_observations(base, generation=1)
+    assert store.snapshot().fields == ()
+
+    store.apply_relative_vfo_observations(base[:1], generation=2)
+    assert store.snapshot().fields == ()
+
+    store.apply_relative_vfo_observations(base, generation=2)
+    store.apply_relative_vfo_observations(
+        (replace(base[0], value=None),),
+        generation=2,
+    )
+    assert store.snapshot().fields == ()
 
 
 def test_freshness_expiration_advances_freshness_without_state_change() -> None:
