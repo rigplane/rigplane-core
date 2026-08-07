@@ -227,9 +227,13 @@ jobs:
           npm ci
           npx playwright install chromium
 
+      - name: Install Playwright Chromium system dependencies
+        working-directory: frontend
+        run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
+
       # Blocking since MOR-1386 gate promotion — see the job header comment.
-      # The install step above already fails loud on its own if chromium
-      # provisioning breaks, so a red here means a fixture regression only.
+      # The browser and system-dependency steps above fail loud on their own,
+      # so a red here means a fixture regression only.
       - name: Run fixture-harness capture
         id: capture
         run: node frontend/fixtures/capture.mjs
