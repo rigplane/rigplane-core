@@ -18,7 +18,9 @@
  */
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-import { IDLE_TX, type ModGuardProps, type TxSnapshot } from './harness-state';
+import {
+  IDLE_TX, type AudioRuntimeState, type ModGuardProps, type TxSnapshot,
+} from './harness-state';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const stale = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale' };
@@ -326,6 +328,13 @@ export interface Expectation {
    * so existing fixtures are unaffected; set where the contrast matters.
    */
   rxAudioSurfacePresent?: boolean;
+  /** Browser-audio facts rendered by `RxAudioSurface` for an axis fixture. */
+  rxAudio?: {
+    monitorMode: 'local' | 'live' | 'mute';
+    volume: number | null;
+    connectionAudio: boolean;
+    linkPresent: boolean;
+  };
   /**
    * MOR-1085 checklist item 5. The `view.scope.{hardwareScope,audioFftScope}`
    * facts (MOR-1298/1299 vocabulary), checked directly against the real
@@ -350,6 +359,8 @@ export interface Fixture {
   caps: () => Capabilities | null;
   tx: TxSnapshot;
   modGuard?: ModGuardProps;
+  /** MOR-1392. Independent overrides of the fixture runtime's audio facts. */
+  audioRuntime?: Partial<AudioRuntimeState>;
   /**
    * MOR-1085. Which real component this fixture mounts: the
    * dual-receiver-cockpit shell (default, unchanged from MOR-1070) or
@@ -766,6 +777,7 @@ function toReferenceFixture(f: Fixture): Fixture {
     what: `${f.what} [reference layout: SemanticRadioSurfaces strips="single", the wiring `
       + 'desktop-v2/sdr-test compose today — see ReferenceLayout.svelte].',
     state: f.state, caps: f.caps, tx: f.tx, modGuard: f.modGuard,
+    audioRuntime: f.audioRuntime,
     layout: 'reference',
     expect: {
       ...f.expect,
@@ -776,6 +788,45 @@ function toReferenceFixture(f: Fixture): Fixture {
     },
   };
 }
+
+/**
+ * MOR-1392 — the browser-audio axis, isolated from topology/TX fixtures.
+ * These three cells share one radio and one reference layout; only the
+ * runtime audio facts vary. The down/up pair pins both link polarities while
+ * live is selected, and the mute/down cell proves `muted` wins over
+ * `rxEnabled` without making an epistemically false link-loss claim.
+ */
+const audioRuntimeFixture = (
+  id: string,
+  audioRuntime: Partial<AudioRuntimeState>,
+  rxAudio: NonNullable<Expectation['rxAudio']>,
+): Fixture => toReferenceFixture({
+  id,
+  what: `MOR-1392 audio-runtime axis: ${id}.`,
+  state: () => mainSubState('MAIN'),
+  caps: mainSubCaps,
+  tx: tx({}),
+  audioRuntime,
+  expect: mainSubExpect({ rxAudioSurfacePresent: true, rxAudio }),
+});
+
+const AUDIO_RUNTIME_FIXTURES: readonly Fixture[] = [
+  audioRuntimeFixture(
+    'rx-audio-live-link-down',
+    { rxEnabled: true, muted: false, volume: 37, connectionAudio: false },
+    { monitorMode: 'live', volume: 37, connectionAudio: false, linkPresent: true },
+  ),
+  audioRuntimeFixture(
+    'rx-audio-live-link-up',
+    { rxEnabled: true, muted: false, volume: 73, connectionAudio: true },
+    { monitorMode: 'live', volume: 73, connectionAudio: true, linkPresent: false },
+  ),
+  audioRuntimeFixture(
+    'rx-audio-muted-link-down',
+    { rxEnabled: true, muted: true, volume: 19, connectionAudio: false },
+    { monitorMode: 'mute', volume: null, connectionAudio: false, linkPresent: false },
+  ),
+];
 
 /**
  * MOR-1355 — the harness's first PLAN-FUL topology. `planned: true` makes
@@ -840,6 +891,7 @@ export const FIXTURES: readonly Fixture[] = [
   ...CORE_FIXTURES,
   ...CORE_FIXTURES.filter((f) => f.id !== 'tx-adjacent-alerts').map(toReferenceFixture),
   ...PLANNED_FIXTURES,
+  ...AUDIO_RUNTIME_FIXTURES,
 ];
 
 export const fixtureById = (id: string): Fixture | undefined =>

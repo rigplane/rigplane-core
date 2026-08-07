@@ -200,6 +200,12 @@ const MATRIX = [
     name: 'topology-2-main-sub--planned--desktop', fixture: 'topology-2-main-sub--planned',
     viewport: 'desktop',
   },
+  // S. MOR-1392 — a controlled audio-runtime axis on the reference layout.
+  // These are behavior-assertion cells, not PNG hash baselines (MOR-1390).
+  ...['rx-audio-live-link-down', 'rx-audio-live-link-up', 'rx-audio-muted-link-down']
+    .map((id) => ({
+      name: `${id}--reference--desktop`, fixture: `${id}--reference`, viewport: 'desktop',
+    })),
 ];
 
 /* ── build identity ────────────────────────────────────────────────────── */

@@ -32,7 +32,7 @@ import {
   runAssertions, styleProbe, tokenSnapshot, type AssertionOptions,
 } from './assertions';
 import { fixtureById } from './catalog';
-import { harness, IDLE_TX } from './harness-state';
+import { DEFAULT_AUDIO_RUNTIME, harness, IDLE_TX } from './harness-state';
 
 const params = new URLSearchParams(window.location.search);
 const id = params.get('fixture') ?? 'topology-2-main-sub';
@@ -79,6 +79,7 @@ harness.state = fixture.state();
 harness.caps = fixture.caps();
 harness.tx = { ...IDLE_TX, ...fixture.tx };
 harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
+harness.audioRuntime = { ...DEFAULT_AUDIO_RUNTIME, ...fixture.audioRuntime };
 harness.calls = [];
 
 /**
