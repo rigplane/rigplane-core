@@ -58,16 +58,18 @@ afterEach(() => {
 
 describe('MOR-1082 — density resolves against the ACTIVE design language', () => {
   it('honours the operator override where the language supports it', () => {
+    expect(densityActivation(studioline, 'desktop-v2', 'dense')).toBe('dense');
+    expect(densityActivation(studioline, 'desktop-v2', 'compact')).toBe('compact');
     expect(densityActivation(studioline, 'dual-receiver-cockpit', 'dense')).toBe('dense');
     expect(densityActivation(studioline, 'dual-receiver-cockpit', 'compact')).toBe('compact');
   });
 
-  it('is inert wherever the language itself is not active (no cutover here)', () => {
+  it('is inert on the explicit legacy LCD opt-outs and other unadopted layouts', () => {
     // Same gate as `[data-design-language]` (MOR-1081/MOR-1278): density can
-    // never activate on a layout the language has not declared, so every
-    // shipped v2 skin keeps its current, density-free presentation.
-    for (const layoutId of ['desktop-v2', 'lcd-cockpit', 'lcd-scope', 'mobile', 'sdr-test']) {
+    // never activate on a layout the language has not declared.
+    for (const layoutId of ['lcd-cockpit', 'lcd-scope', 'mobile', 'sdr-test']) {
       expect(densityActivation(studioline, layoutId, 'dense')).toBeNull();
+      expect(densityActivation(fieldline, layoutId, 'compact')).toBeNull();
     }
     expect(densityActivation(fieldline, 'dual-receiver-cockpit', 'compact')).toBeNull();
     expect(densityActivation(undefined, 'dual-receiver-cockpit', 'compact')).toBeNull();
@@ -91,6 +93,8 @@ describe('MOR-1082 — density resolves against the ACTIVE design language', () 
 
   it('clamps an out-of-clamp override down to the active language default', () => {
     expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'] });
+    expect(densityActivation(fieldline, 'desktop-v2', 'dense')).toBe('comfortable');
+    expect(densityActivation(fieldline, 'desktop-v2', 'compact')).toBe('compact');
     expect(densityActivation(activeFieldline, 'dual-receiver-cockpit', 'dense')).toBe('comfortable');
     expect(densityActivation(activeFieldline, 'dual-receiver-cockpit', 'compact')).toBe('compact');
   });
