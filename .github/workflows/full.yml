@@ -160,11 +160,15 @@ jobs:
     # it by matrix.python-version (3.11/3.12/3.13) would triple runner
     # minutes for zero additional coverage.
     #
-    # OWNER GATE (binding — mirrors visual.yml's MOR-1090 gate, see its
-    # header comment): `continue-on-error: true` for one cycle so failures
-    # can be observed without blocking the full matrix. Flipping to
-    # blocking — removing `continue-on-error` below — is an OWNER decision
-    # at v3 gate promotion (MOR-1382 follow-up), not a builder's call.
+    # BLOCKING since MOR-1386 (v3 gate promotion, session-9): this job used
+    # to run `continue-on-error: true` for one cycle (MOR-1382); that cycle
+    # is closed — quick-leg green on PR #2286 run 31127603844, full-leg
+    # green on dispatched run 31137987620 (capture-harness green alongside
+    # the 3.11/3.12/3.13 matrix) — so the owner flipped it to blocking here.
+    # The browser/deps install step below fails loud on its own (no
+    # `|| true` masking) so a chromium provisioning failure reads as
+    # "Install deps + Playwright chromium" red, never as a fixtures
+    # regression in the `Run fixture-harness capture` step.
     #
     # Same push guard as the `test` job above: on `push`, only runs when
     # the commit message contains `[full-ci]`; on `schedule`/
@@ -214,16 +218,20 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
 
+      # Fails loud on its own: no `|| true` masking. A chromium download or
+      # `npm ci` failure red-flags THIS step — reads as provisioning — and
+      # never reaches the capture step below.
       - name: Install deps + Playwright chromium
         run: |
           cd frontend
           npm ci
-          npx playwright install chromium >/dev/null 2>&1 || true
+          npx playwright install chromium
 
-      # continue-on-error: OWNER GATE, see the job header comment above.
+      # Blocking since MOR-1386 gate promotion — see the job header comment.
+      # The install step above already fails loud on its own if chromium
+      # provisioning breaks, so a red here means a fixture regression only.
       - name: Run fixture-harness capture
         id: capture
-        continue-on-error: true
         run: node frontend/fixtures/capture.mjs
 
       # Always uploaded (not just on failure) — this is the MOR-1091
@@ -239,4 +247,4 @@ jobs:
 
       - name: Annotate result
         if: always()
-        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::warning::Fixture-harness capture FAILED — non-blocking until the MOR-1382 owner gate flips it. See the fixture-harness-capture artifact." || true'
+        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
