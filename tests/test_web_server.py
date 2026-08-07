@@ -16,6 +16,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import struct
 from types import SimpleNamespace
 from typing import Any
@@ -293,10 +294,16 @@ def _add_scope_capable_attrs(radio: MagicMock) -> MagicMock:
 
     NOTE: Keep this in sync with `ScopeCapable` Protocol in `radio_protocol.py`.
     """
+    raw_capabilities = radio.__dict__.get("capabilities")
+    radio.capabilities = (
+        {*raw_capabilities, "scope"} if isinstance(raw_capabilities, set) else {"scope"}
+    )
     radio.on_scope_data = MagicMock()
     radio.scope_stream = MagicMock()
     radio.enable_scope = AsyncMock()
     radio.disable_scope = AsyncMock()
+    radio.get_scope_session_state = AsyncMock(return_value=(False, False))
+    radio.restore_scope_session_state = AsyncMock()
     radio.capture_scope_frame = AsyncMock()
     radio.capture_scope_frames = AsyncMock()
     radio.get_scope_during_tx = AsyncMock(return_value=False)
@@ -329,6 +336,48 @@ def _add_scope_capable_attrs(radio: MagicMock) -> MagicMock:
     radio.set_scope_hold = AsyncMock()
 
     return radio
+
+
+async def _drive_scope_pipeline(server: WebServer, awaitable: Any) -> list[Any]:
+    """Drive the real ordered queue/poller path for direct WebServer unit tests.
+
+    Production starts ``RadioPoller`` with the server.  The narrow lifecycle
+    tests below construct ``WebServer`` directly, so this harness services the
+    same queue entries and futures without inventing a runtime fallback path.
+    The poller is retained on the server so its captured scope-session state
+    survives from enable through restore.
+    """
+    from rigplane.web.radio_poller import RadioPoller
+
+    poller = server._radio_poller  # noqa: SLF001
+    if poller is None:
+        poller = RadioPoller(
+            server._radio,  # type: ignore[arg-type]  # noqa: SLF001
+            server._command_queue,  # noqa: SLF001
+            radio_state=server._radio_state,  # noqa: SLF001
+        )
+        server._radio_poller = poller  # noqa: SLF001
+
+    task = asyncio.ensure_future(awaitable)
+    executed: list[Any] = []
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.001)
+        for entry in server._command_queue.drain_entries():  # noqa: SLF001
+            executed.append(entry.command)
+            try:
+                await poller._execute(entry.command)  # noqa: SLF001
+            except Exception as exc:
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_exception(exc)
+            else:
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_result(None)
+        if task.done() and not server._command_queue.has_commands:  # noqa: SLF001
+            await task
+            return executed
+    task.cancel()
+    raise AssertionError("scope pipeline did not settle")
 
 
 # ---------------------------------------------------------------------------
@@ -2299,17 +2348,16 @@ class TestScopeLifecycle:
         server._scope_disable_grace = 0
 
         h = MagicMock()
-        await server.ensure_scope_enabled(h)
+        commands = await _drive_scope_pipeline(server, server.ensure_scope_enabled(h))
 
         server.unregister_scope_handler(h)
-        await asyncio.sleep(0.05)  # let async task complete
+        commands += await _drive_scope_pipeline(server, asyncio.sleep(0.05))
 
         # DisableScope goes through command queue, not direct radio call
         from rigplane.web.radio_poller import DisableScope, EnableScope, RadioPoller
 
-        cmds = server._command_queue.drain()
-        enable = next(c for c in cmds if isinstance(c, EnableScope))
-        disable = next(c for c in cmds if isinstance(c, DisableScope))
+        enable = next(c for c in commands if isinstance(c, EnableScope))
+        disable = next(c for c in commands if isinstance(c, DisableScope))
         assert disable.generation > enable.generation
 
         # A delayed old enable cannot roll back the queue watermark or revive
@@ -2318,7 +2366,7 @@ class TestScopeLifecycle:
         poller = RadioPoller(radio, server._command_queue, radio_state=RadioState())
         for command in server._command_queue.drain():
             await poller._execute(command)  # noqa: SLF001
-        radio.enable_scope.assert_not_awaited()
+        assert radio.enable_scope.await_count == 1
         assert not server._scope_enabled
 
     async def test_scope_flag_reset_on_disable(self) -> None:
@@ -2334,7 +2382,7 @@ class TestScopeLifecycle:
         h = MagicMock()
         server._scope_handlers.add(h)
         server.unregister_scope_handler(h)
-        await asyncio.sleep(0.05)
+        await _drive_scope_pipeline(server, asyncio.sleep(0.05))
 
         assert not server._scope_enabled
 
@@ -2353,6 +2401,34 @@ class TestScopeLifecycle:
         await asyncio.sleep(0.05)
 
         radio.disable_scope.assert_not_awaited()
+
+    async def test_shutdown_with_pending_scope_and_no_poller_is_fail_open(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A dead executor cannot block the later client-teardown phase."""
+        radio = _add_scope_capable_attrs(MagicMock())
+        server = WebServer(radio)
+        server._scope_enabled = True
+        client_teardown = asyncio.Event()
+
+        async def _client() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                client_teardown.set()
+
+        client = asyncio.create_task(_client())
+        await asyncio.sleep(0)
+        server._client_tasks.add(client)
+
+        with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
+            await asyncio.wait_for(server.stop(), timeout=0.5)
+
+        assert client_teardown.is_set()
+        assert server._radio_poller is None
+        assert server._scope_enabled  # retained as pending restoration evidence
+        assert not server._command_queue.has_commands
+        assert "radio poller is unavailable" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -2500,14 +2576,17 @@ class TestScopeEnableAtomic:
         handlers = [MagicMock() for _ in range(5)]
 
         # Call ensure_scope_enabled for all 5 handlers concurrently
-        await asyncio.gather(*[server.ensure_scope_enabled(h) for h in handlers])
+        commands = await _drive_scope_pipeline(
+            server,
+            asyncio.gather(*[server.ensure_scope_enabled(h) for h in handlers]),
+        )
 
         # EnableScope goes through command queue
         from rigplane.web.radio_poller import EnableScope
 
-        cmds = server._command_queue.drain()
-        enable_cmds = [c for c in cmds if isinstance(c, EnableScope)]
-        assert len(enable_cmds) >= 1, "At least one EnableScope should be queued"
+        enable_cmds = [c for c in commands if isinstance(c, EnableScope)]
+        assert len(enable_cmds) == 1
+        radio.enable_scope.assert_awaited_once()
         assert len(server._scope_handlers) == 5
 
     async def test_all_handlers_registered_after_concurrent_enables(self) -> None:
@@ -2519,7 +2598,10 @@ class TestScopeEnableAtomic:
         server = WebServer(radio)
         handlers = [MagicMock() for _ in range(5)]
 
-        await asyncio.gather(*[server.ensure_scope_enabled(h) for h in handlers])
+        await _drive_scope_pipeline(
+            server,
+            asyncio.gather(*[server.ensure_scope_enabled(h) for h in handlers]),
+        )
 
         for h in handlers:
             assert h in server._scope_handlers
@@ -2556,16 +2638,21 @@ class TestScopeEnableAtomic:
         server = WebServer(radio)
 
         h1, h2, h3 = MagicMock(), MagicMock(), MagicMock()
-        await server.ensure_scope_enabled(h1)
-        await server.ensure_scope_enabled(h2)
-        await server.ensure_scope_enabled(h3)
+        commands = await _drive_scope_pipeline(
+            server,
+            asyncio.gather(
+                server.ensure_scope_enabled(h1),
+                server.ensure_scope_enabled(h2),
+                server.ensure_scope_enabled(h3),
+            ),
+        )
 
         # EnableScope goes through command queue
         from rigplane.web.radio_poller import EnableScope
 
-        cmds = server._command_queue.drain()
-        enable_cmds = [c for c in cmds if isinstance(c, EnableScope)]
-        assert len(enable_cmds) >= 1, "At least one EnableScope should be queued"
+        enable_cmds = [c for c in commands if isinstance(c, EnableScope)]
+        assert len(enable_cmds) == 1
+        radio.enable_scope.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -2586,16 +2673,15 @@ class TestScopeReconnect:
         server = WebServer(radio)
         server._scope_disable_grace = 0
         h = MagicMock()
-        await server.ensure_scope_enabled(h)
+        commands = await _drive_scope_pipeline(server, server.ensure_scope_enabled(h))
         assert server._scope_enabled
 
         server.unregister_scope_handler(h)
-        await asyncio.sleep(0.05)
+        commands += await _drive_scope_pipeline(server, asyncio.sleep(0.05))
 
         from rigplane.web.radio_poller import DisableScope
 
-        cmds = server._command_queue.drain()
-        assert any(isinstance(c, DisableScope) for c in cmds)
+        assert any(isinstance(c, DisableScope) for c in commands)
         assert not server._scope_enabled
 
     async def test_enable_scope_queued_again_after_full_disconnect(self) -> None:
@@ -2612,21 +2698,17 @@ class TestScopeReconnect:
 
         # First connect
         h1 = MagicMock()
-        await server.ensure_scope_enabled(h1)
+        await _drive_scope_pipeline(server, server.ensure_scope_enabled(h1))
 
         # Disconnect
         server.unregister_scope_handler(h1)
-        await asyncio.sleep(0.05)
+        await _drive_scope_pipeline(server, asyncio.sleep(0.05))
         assert not server._scope_enabled
-
-        # Drain queue
-        server._command_queue.drain()
 
         # Reconnect — must queue EnableScope again
         h2 = MagicMock()
-        await server.ensure_scope_enabled(h2)
-        cmds = server._command_queue.drain()
-        assert any(isinstance(c, EnableScope) for c in cmds)
+        commands = await _drive_scope_pipeline(server, server.ensure_scope_enabled(h2))
+        assert any(isinstance(c, EnableScope) for c in commands)
 
     async def test_disable_task_aborts_if_new_handler_reconnects(self) -> None:
         """If a new handler connects before the disable task runs,
@@ -2639,10 +2721,10 @@ class TestScopeReconnect:
         server = WebServer(radio)
 
         h1 = MagicMock()
-        await server.ensure_scope_enabled(h1)
+        commands = await _drive_scope_pipeline(server, server.ensure_scope_enabled(h1))
         from rigplane.web.radio_poller import EnableScope
 
-        (initial_enable,) = server._command_queue.drain()
+        (initial_enable,) = commands
         assert isinstance(initial_enable, EnableScope)
 
         # Unregister h1 — schedules disable task but doesn't await it yet
@@ -2650,7 +2732,7 @@ class TestScopeReconnect:
 
         # Register h2 before the event loop runs the disable task
         h2 = MagicMock()
-        await server.ensure_scope_enabled(h2)
+        await _drive_scope_pipeline(server, server.ensure_scope_enabled(h2))
 
         # Now let the event loop run the disable task
         await asyncio.sleep(0.05)
@@ -2673,13 +2755,13 @@ class TestScopeReconnect:
         server = WebServer(radio)
 
         h1 = MagicMock()
-        await server.ensure_scope_enabled(h1)
+        await _drive_scope_pipeline(server, server.ensure_scope_enabled(h1))
         server.unregister_scope_handler(h1)
         await asyncio.sleep(0.05)
 
         h2 = MagicMock()
         h2._running = True
-        await server.ensure_scope_enabled(h2)
+        await _drive_scope_pipeline(server, server.ensure_scope_enabled(h2))
 
         frame = ScopeFrame(0, 0, 14_000_000, 14_350_000, bytes(10), False)
         server._broadcast_scope(frame)
@@ -2729,25 +2811,24 @@ class TestScopeDemandGeneration:
     async def test_scope_health_recovery_uses_current_generation(self) -> None:
         server, _ = self._make_server()
         handler = MagicMock()
-        await server.ensure_scope_enabled(handler)
+        commands = await _drive_scope_pipeline(
+            server, server.ensure_scope_enabled(handler)
+        )
 
         from rigplane.web.radio_poller import EnableScope
 
-        (initial_enable,) = server._command_queue.drain()
+        (initial_enable,) = commands
         assert isinstance(initial_enable, EnableScope)
         server._scope_health_interval = 0
         server._scope_health_max_retries = 1
         server._scope_last_nonzero = -1
 
         monitor = asyncio.create_task(server._scope_health_monitor())
-        for _ in range(10):
-            await asyncio.sleep(0)
-            if server._command_queue.has_commands:
-                break
+        recovery_commands = await _drive_scope_pipeline(server, asyncio.sleep(0.01))
         monitor.cancel()
         await monitor
 
-        (recovery,) = server._command_queue.drain()
+        (recovery,) = [c for c in recovery_commands if isinstance(c, EnableScope)]
         assert isinstance(recovery, EnableScope)
         assert recovery.generation == initial_enable.generation > 0
 
@@ -2755,15 +2836,19 @@ class TestScopeDemandGeneration:
         server, radio = self._make_server()
         radio._fetch_initial_state = AsyncMock()
         handler = MagicMock()
-        await server.ensure_scope_enabled(handler)
+        commands = await _drive_scope_pipeline(
+            server, server.ensure_scope_enabled(handler)
+        )
 
         from rigplane.web.radio_poller import EnableScope
 
-        (initial_enable,) = server._command_queue.drain()
+        (initial_enable,) = commands
         server._on_radio_reconnect()
-        await asyncio.gather(*list(server._bg_tasks))
+        reconnect_commands = await _drive_scope_pipeline(
+            server, asyncio.gather(*list(server._bg_tasks))
+        )
 
-        (reconnect_enable,) = server._command_queue.drain()
+        (reconnect_enable,) = reconnect_commands
         assert isinstance(reconnect_enable, EnableScope)
         assert reconnect_enable.generation == initial_enable.generation
 
@@ -2782,23 +2867,25 @@ class TestScopeDemandGeneration:
         radio._fetch_initial_state = delayed_fetch
         server._scope_disable_grace = 0.01
         first = MagicMock()
-        await server.ensure_scope_enabled(first)
-        (initial_enable,) = server._command_queue.drain()
+        commands = await _drive_scope_pipeline(
+            server, server.ensure_scope_enabled(first)
+        )
+        (initial_enable,) = commands
 
         server._on_radio_reconnect()
         await fetch_started.wait()
         server.unregister_scope_handler(first)
         if viewer_returns:
-            await server.ensure_scope_enabled(MagicMock())
+            await _drive_scope_pipeline(
+                server, server.ensure_scope_enabled(MagicMock())
+            )
         release_fetch.set()
-        await asyncio.sleep(0.02)
+        scope_commands = await _drive_scope_pipeline(server, asyncio.sleep(0.02))
 
         from rigplane.web.radio_poller import EnableScope
 
         enables = [
-            command
-            for command in server._command_queue.drain()
-            if isinstance(command, EnableScope)
+            command for command in scope_commands if isinstance(command, EnableScope)
         ]
         if viewer_returns:
             assert len(enables) == 1
@@ -2812,18 +2899,19 @@ class TestScopeDemandGeneration:
         server, _ = self._make_server()
         server._scope_disable_grace = 0.01
         first, second = MagicMock(), MagicMock()
-        await server.ensure_scope_enabled(first)
-        server._command_queue.drain()
+        await _drive_scope_pipeline(server, server.ensure_scope_enabled(first))
 
         from rigplane.web.radio_poller import DisableScope
 
         with patch.object(
-            server._command_queue, "put", wraps=server._command_queue.put
+            server._command_queue,
+            "put_ordered",
+            wraps=server._command_queue.put_ordered,
         ) as put_spy:
             server.unregister_scope_handler(first)
-            await server.ensure_scope_enabled(second)
+            await _drive_scope_pipeline(server, server.ensure_scope_enabled(second))
             server.unregister_scope_handler(second)
-            await asyncio.sleep(0.02)
+            await _drive_scope_pipeline(server, asyncio.sleep(0.02))
 
         disables = [
             call.args[0]

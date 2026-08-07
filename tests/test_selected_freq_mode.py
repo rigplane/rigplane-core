@@ -356,8 +356,7 @@ class TestVfoSlotOverrideCivRx:
 
 
 class TestPollerUnselectedSlotGate:
-    """Poller gates the unselected-slot read behind PTT, queue pressure,
-    recent user writes, and a per-receiver rate limit."""
+    """Passive polling never exchanges foreground A/B or MAIN/SUB state."""
 
     def _make_poller(self, model: str, active: str = "MAIN"):
         from types import SimpleNamespace
@@ -395,11 +394,23 @@ class TestPollerUnselectedSlotGate:
         assert radio.send_civ.await_count == 0
 
     @pytest.mark.asyncio
-    async def test_ic7300_single_receiver_polls_vfo_b(self) -> None:
-        poller, radio, state = self._make_poller("IC-7300")
-        await poller._poll_unselected_slot(0)
-        # swap + 0x03 + 0x04 + swap-back = 4 sends
-        assert radio.send_civ.await_count == 4
+    @pytest.mark.parametrize("model", ["IC-7300", "IC-705", "IC-7610"])
+    async def test_passive_unselected_slot_poll_emits_zero_vfo_frames(
+        self, model: str
+    ) -> None:
+        poller, radio, state = self._make_poller(model)
+        state.main.active_slot = "A"
+        state.main.freq = 14_213_000
+        state.main.active_slot = "B"
+        state.main.freq = 14_075_000
+        state.main.active_slot = "A"
+        before = state.to_dict()
+
+        for _ in range(3):
+            await poller._poll_unselected_slot(0)
+
+        radio.send_civ.assert_not_awaited()
+        assert state.to_dict() == before
 
     @pytest.mark.asyncio
     async def test_gate_skips_when_ptt_active(self) -> None:

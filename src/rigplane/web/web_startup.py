@@ -32,6 +32,8 @@ __all__ = ["start_web_server", "stop_web_server"]
 
 logger = logging.getLogger(__name__)
 
+_SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S = 1.0
+
 
 def _reuse_port_supported() -> bool:
     return sys.platform != "win32"
@@ -317,6 +319,45 @@ async def stop_web_server(server: WebServer) -> None:
     #    pending PttOff entries and discards the rest (MOR-1181).
     if radio_poller is not None:
         await radio_poller.drain_tx_safety_commands()
+
+    # 10. Scope restoration is intentionally subordinate to the final unkey.
+    # A queued DisableScope cannot complete once the poller is stopped (and may
+    # never have been serviceable if it already crashed), while waiting for it
+    # before step 9 can prevent a teardown PttOff from even being enqueued.
+    # With the poller loop gone, restore its owned snapshot directly on the same
+    # radio lane, bounded so a failed link cannot hold shutdown open.  On every
+    # incomplete path the flags/snapshot stay intact and the log records that
+    # restoration remains pending.
+    scope_restore_pending = bool(
+        getattr(server, "_scope_enabled", False)
+        or getattr(server, "_scope_enable_failed", False)
+    )
+    if scope_restore_pending:
+        if radio_poller is None:
+            logger.warning(
+                "scope: shutdown restore pending; radio poller is unavailable"
+            )
+        else:
+            try:
+                await asyncio.wait_for(
+                    radio_poller.restore_scope_after_shutdown(),
+                    timeout=_SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "scope: shutdown restore timed out after %.1fs; state remains "
+                    "pending",
+                    _SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "scope: shutdown restore failed; state remains pending: %s",
+                    exc,
+                )
+            else:
+                server._scope_enabled = False
+                server._scope_enable_failed = False
+                logger.info("scope: pre-session state restored during shutdown")
 
     # Radio disconnect is handled by the caller's context manager
     # (async with radio: in _run). Do NOT disconnect here.

@@ -18,6 +18,8 @@ from rigplane import IC_7610_ADDR
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
+    get_scope_data_output_enabled,
+    get_scope_enabled,
     get_scope_center_type,
     get_scope_during_tx,
     get_scope_edge,
@@ -31,6 +33,9 @@ from rigplane.commands import (
     get_scope_span,
     get_scope_speed,
     get_scope_vbw,
+    parse_civ_frame,
+    parse_scope_data_output_enabled_response,
+    parse_scope_enabled_response,
     scope_data_output_off,
     scope_data_output_on,
     scope_main_sub,
@@ -695,6 +700,19 @@ class TestScopeCommandBuilders:
         assert frame[5] == 0x10
         assert frame[6] == 0x00
 
+    def test_get_scope_enabled_is_read_only(self) -> None:
+        assert get_scope_enabled() == b"\xfe\xfe\x98\xe0\x27\x10\xfd"
+
+    def test_parse_scope_enabled_response(self) -> None:
+        off = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0x10, data=b"\x00")
+        )
+        on = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0x10, data=b"\x01")
+        )
+        assert parse_scope_enabled_response(off) is False
+        assert parse_scope_enabled_response(on) is True
+
     def test_scope_data_output_on(self) -> None:
         frame = scope_data_output_on()
         assert frame[4] == 0x27
@@ -706,6 +724,19 @@ class TestScopeCommandBuilders:
         assert frame[4] == 0x27
         assert frame[5] == 0x11
         assert frame[6] == 0x00
+
+    def test_get_scope_data_output_enabled_is_read_only(self) -> None:
+        assert get_scope_data_output_enabled() == b"\xfe\xfe\x98\xe0\x27\x11\xfd"
+
+    def test_parse_scope_data_output_enabled_response(self) -> None:
+        off = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0x11, data=b"\x00")
+        )
+        on = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0x11, data=b"\x01")
+        )
+        assert parse_scope_data_output_enabled_response(off) is False
+        assert parse_scope_data_output_enabled_response(on) is True
 
     def test_scope_main_sub_main(self) -> None:
         frame = scope_main_sub(0)

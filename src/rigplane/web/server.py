@@ -839,7 +839,9 @@ class WebServer:
         self._client_tasks: set[asyncio.Task[None]] = set()
         self._scope_handlers: set["ScopeHandler"] = set()
         self._audio_scope_handlers: set["ScopeHandler"] = set()
+        # Confirmed hardware-session state only.  A queued command is not proof.
         self._scope_enabled = False
+        self._scope_enable_failed = False
         self._scope_demand_generation = 0
         self._scope_enable_lock: asyncio.Lock = asyncio.Lock()
         self._scope_disable_grace: float = 2.0
@@ -1103,10 +1105,15 @@ class WebServer:
                         len(self._scope_handlers),
                     )
                     return
+                if self._scope_enable_failed:
+                    logger.debug("scope: enable previously rejected; not retrying")
+                    return
                 if self._radio_ready():
-                    self._command_queue.put(EnableScope(generation=generation))
-                    self._scope_enabled = True
-                    logger.info("scope: enable queued")
+                    if await self._execute_scope_command(
+                        EnableScope(generation=generation)
+                    ):
+                        self._scope_enabled = True
+                        logger.info("scope: enable confirmed")
                 else:
                     self._schedule_scope_enable_when_ready(
                         reason="handler_connect", generation=generation
@@ -1128,34 +1135,58 @@ class WebServer:
             and self._hardware_scope_available
         ):
             self._set_scope_data_callback(None)
-            if self._scope_enabled:
+            if self._scope_enabled or self._scope_enable_failed:
                 self._spawn(
                     self._disable_scope_async(generation=self._scope_demand_generation)
                 )
+
+    async def _execute_scope_command(self, command: EnableScope | DisableScope) -> bool:
+        """Execute a scope command through the existing ordered command pipeline."""
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._command_queue.put_ordered(command, future=future)
+        try:
+            await future
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if isinstance(command, EnableScope) and not self._scope_enabled:
+                self._scope_enable_failed = True
+            logger.warning("scope: %s failed: %s", type(command).__name__, exc)
+            return False
+        if isinstance(command, EnableScope):
+            self._scope_enable_failed = False
+        return True
 
     async def _disable_scope_async(self, *, generation: int) -> None:
         """Disable scope on the radio when no more handlers are connected."""
         if self._radio is None or not self._hardware_scope_available:
             return
         await asyncio.sleep(self._scope_disable_grace)
-        if self._scope_handlers:
-            logger.debug("scope: disable task aborted — handler reconnected")
-            if self._radio is not None:
-                self._set_scope_data_callback(self._broadcast_scope)
-            return
-        if generation != self._scope_demand_generation:
-            logger.debug("scope: disable task superseded by newer viewer demand")
-            return
-        self._command_queue.put(DisableScope(generation=generation))
-        if not self._scope_handlers:
-            self._scope_enabled = False
-            logger.info("scope: disable queued (no active handlers)")
-        else:
-            logger.debug(
-                "scope: disable queued but new handler present — will re-enable"
-            )
-            if self._radio is not None:
-                self._set_scope_data_callback(self._broadcast_scope)
+        async with self._scope_enable_lock:
+            if self._scope_handlers:
+                logger.debug("scope: disable task aborted — handler reconnected")
+                if self._radio is not None:
+                    self._set_scope_data_callback(self._broadcast_scope)
+                return
+            if generation != self._scope_demand_generation:
+                logger.debug("scope: disable task superseded by newer viewer demand")
+                return
+            if await self._execute_scope_command(DisableScope(generation=generation)):
+                self._scope_enabled = False
+                self._scope_enable_failed = False
+                logger.info("scope: pre-session state restored (no active handlers)")
+
+    async def restore_scope_before_shutdown(self) -> None:
+        """Restore confirmed scope ownership before the poller is stopped."""
+        async with self._scope_enable_lock:
+            if not self._scope_enabled and not self._scope_enable_failed:
+                return
+            self._scope_demand_generation += 1
+            if await self._execute_scope_command(
+                DisableScope(generation=self._scope_demand_generation)
+            ):
+                self._scope_enabled = False
+                self._scope_enable_failed = False
 
     def _dispatch_audio_fft_frame(self, frame: Any) -> None:
         """Fan out an audio FFT frame to the relevant scope channels.
@@ -1944,16 +1975,17 @@ class WebServer:
                 self._scope_handlers
                 and self._radio is not None
                 and self._hardware_scope_available
+                and not self._scope_enable_failed
             ):
                 self._set_scope_data_callback(self._broadcast_scope)
-                self._command_queue.put(
+                if await self._execute_scope_command(
                     EnableScope(generation=self._scope_demand_generation)
-                )
-                self._scope_enabled = True
-                logger.info(
-                    "scope: re-enable queued after reconnect (%d handlers)",
-                    len(self._scope_handlers),
-                )
+                ):
+                    self._scope_enabled = True
+                    logger.info(
+                        "scope: re-enable confirmed after reconnect (%d handlers)",
+                        len(self._scope_handlers),
+                    )
 
         self._spawn(_refetch_and_reenable())
 
@@ -1995,15 +2027,19 @@ class WebServer:
                     return
                 if not self._hardware_scope_available:
                     return
+                if self._scope_enable_failed:
+                    return
                 if self._radio_ready():
                     self._set_scope_data_callback(self._broadcast_scope)
-                    self._command_queue.put(EnableScope(generation=generation))
-                    self._scope_enabled = True
-                    logger.info(
-                        "scope: enable queued after %s (%d handlers)",
-                        reason,
-                        len(self._scope_handlers),
-                    )
+                    if await self._execute_scope_command(
+                        EnableScope(generation=generation)
+                    ):
+                        self._scope_enabled = True
+                        logger.info(
+                            "scope: enable confirmed after %s (%d handlers)",
+                            reason,
+                            len(self._scope_handlers),
+                        )
                     return
                 if time.monotonic() >= deadline:
                     logger.warning(
@@ -2055,6 +2091,8 @@ class WebServer:
                     self._scope_last_nonzero = time.monotonic()  # reset timer
                     retries = 0
                     continue
+                if not self._scope_enabled:
+                    continue
                 now = time.monotonic()
                 if self._scope_last_nonzero == 0.0:
                     # Never seen non-zero — might be starting up
@@ -2071,7 +2109,7 @@ class WebServer:
                             )
                             retries += 1  # log once
                         continue
-                    self._command_queue.put(
+                    await self._execute_scope_command(
                         EnableScope(generation=self._scope_demand_generation)
                     )
                     self._scope_last_nonzero = now  # reset to avoid spam

@@ -2434,9 +2434,10 @@ async def test_ensure_scope_enabled_skips_when_scope_capability_absent() -> None
 
 @pytest.mark.asyncio
 async def test_scope_health_monitor_disconnected_and_reenable() -> None:
-    radio = _scope_radio(connected=False)
+    radio = _scope_radio(ready=False, connected=False)
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
     srv._scope_health_interval = 0.01
     srv._scope_last_nonzero = 0.0
 
@@ -2447,6 +2448,7 @@ async def test_scope_health_monitor_disconnected_and_reenable() -> None:
     assert srv._scope_last_nonzero > 0
 
     radio.connected = True
+    radio.radio_ready = True
     srv._scope_last_nonzero = time.monotonic() - 1.0
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     await asyncio.sleep(0.03)
@@ -2454,6 +2456,23 @@ async def test_scope_health_monitor_disconnected_and_reenable() -> None:
     await asyncio.gather(task, return_exceptions=True)
     cmds = srv.command_queue.drain()
     assert any(isinstance(c, EnableScope) for c in cmds)
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_unconfirmed_session_does_not_reenable() -> None:
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = False
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    await asyncio.sleep(0.03)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert not srv.command_queue.has_commands
 
 
 @pytest.mark.asyncio

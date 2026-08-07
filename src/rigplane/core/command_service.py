@@ -916,13 +916,13 @@ def command_intent_from_request(
         normalized["rit_tx"] = hz != 0
     elif command_name in ("set_vfo", "select_vfo"):
         raw_vfo = normalized.get("vfo", "A")
-        active_slot = _active_slot_value(raw_vfo)
+        receiver_count = _receiver_count_value(normalized)
+        active_slot = _active_slot_value(raw_vfo, receiver_count=receiver_count)
         if active_slot is not None:
             normalized["active_slot"] = active_slot
-        active = _active_receiver_value(raw_vfo)
+        active = _active_receiver_value(raw_vfo, receiver_count=receiver_count)
         if active is not None:
             normalized["active"] = active
-        receiver_count = _receiver_count_value(normalized)
         if receiver_count is not None:
             normalized["receiver_count"] = receiver_count
     elif command_name == "set_level":
@@ -1088,20 +1088,20 @@ def _ptt_value(name: str, params: Mapping[str, Any]) -> bool:
     return False
 
 
-def _active_slot_value(value: Any) -> str | None:
+def _active_slot_value(value: Any, *, receiver_count: int | None) -> str | None:
     text = str(value).strip().upper()
-    if text in ("B", "VFOB", "SUB", "1"):
+    if text == "B" or (text == "VFOB" and (receiver_count or 1) < 2):
         return "B"
-    if text in ("A", "VFOA", "MAIN", "0"):
+    if text == "A" or (text == "VFOA" and (receiver_count or 1) < 2):
         return "A"
     return None
 
 
-def _active_receiver_value(value: Any) -> str | None:
+def _active_receiver_value(value: Any, *, receiver_count: int | None) -> str | None:
     text = str(value).strip().upper()
-    if text in ("B", "VFOB", "SUB", "1"):
+    if text in ("SUB", "1") or (text == "VFOB" and (receiver_count or 1) >= 2):
         return "SUB"
-    if text in ("A", "VFOA", "MAIN", "0"):
+    if text in ("MAIN", "0") or (text == "VFOA" and (receiver_count or 1) >= 2):
         return "MAIN"
     return None
 

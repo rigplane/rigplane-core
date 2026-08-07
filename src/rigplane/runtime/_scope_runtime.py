@@ -21,8 +21,10 @@ from rigplane.commands import (
     parse_ack_nak,
     parse_civ_frame,
     parse_scope_center_type_response,
+    parse_scope_data_output_enabled_response,
     parse_scope_during_tx_response,
     parse_scope_edge_response,
+    parse_scope_enabled_response,
     parse_scope_fixed_edge_response,
     parse_scope_hold_response,
     parse_scope_main_sub_response,
@@ -34,6 +36,10 @@ from rigplane.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
+from rigplane.commands import (
+    get_scope_data_output_enabled as _get_scope_data_output_enabled_cmd,
+)
+from rigplane.commands import get_scope_enabled as _get_scope_enabled_cmd
 from rigplane.commands import get_scope_center_type as _get_scope_center_type_cmd
 from rigplane.commands import get_scope_during_tx as _get_scope_during_tx_cmd
 from rigplane.commands import get_scope_edge as _get_scope_edge_cmd
@@ -49,6 +55,7 @@ from rigplane.commands import get_scope_speed as _get_scope_speed_cmd
 from rigplane.commands import get_scope_vbw as _get_scope_vbw_cmd
 from rigplane.commands import scope_data_output as _scope_data_output_cmd
 from rigplane.commands import scope_main_sub as _scope_main_sub_cmd
+from rigplane.commands import scope_off as _scope_off_cmd
 from rigplane.commands import scope_on as _scope_on_cmd
 from rigplane.commands import scope_set_center_type as _scope_set_center_type_cmd
 from rigplane.commands import scope_set_during_tx as _scope_set_during_tx_cmd
@@ -161,6 +168,37 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 )
             except asyncio.TimeoutError:
                 raise TimeoutError("Scope enable verification timed out (no data seen)")
+
+    async def get_scope_session_state(self) -> tuple[bool, bool]:
+        """Read panel-scope and waveform-output state without changing either."""
+        self._check_connected()
+        panel_response = await self._send_civ_expect(
+            _get_scope_enabled_cmd(to_addr=self._radio_addr),
+            label="get_scope_enabled",
+        )
+        output_response = await self._send_civ_expect(
+            _get_scope_data_output_enabled_cmd(to_addr=self._radio_addr),
+            label="get_scope_data_output_enabled",
+        )
+        return (
+            parse_scope_enabled_response(panel_response),
+            parse_scope_data_output_enabled_response(output_response),
+        )
+
+    async def restore_scope_session_state(self, state: tuple[bool, bool]) -> None:
+        """Restore the exact panel/output state captured before a web session."""
+        self._check_connected()
+        panel_enabled, output_enabled = state
+        await self._send_civ_raw(
+            (_scope_on_cmd if panel_enabled else _scope_off_cmd)(
+                to_addr=self._radio_addr
+            ),
+            wait_response=False,
+        )
+        await self._send_civ_raw(
+            _scope_data_output_cmd(output_enabled, to_addr=self._radio_addr),
+            wait_response=False,
+        )
 
     async def disable_scope(
         self, *, policy: ScopeCompletionPolicy | str = ScopeCompletionPolicy.FAST

@@ -1174,6 +1174,37 @@ def test_command_intent_targets_observable_production_write_paths(
     assert observation.value == expected_value
 
 
+@pytest.mark.parametrize(
+    ("vfo", "receiver_count", "expected_slot", "expected_receiver"),
+    [
+        ("A", 1, "A", None),
+        ("B", 1, "B", None),
+        ("B", 2, "B", None),
+        ("MAIN", 2, None, "MAIN"),
+        ("SUB", 2, None, "SUB"),
+        ("VFOA", 1, "A", None),
+        ("VFOB", 1, "B", None),
+        ("VFOA", 2, None, "MAIN"),
+        ("VFOB", 2, None, "SUB"),
+    ],
+)
+def test_vfo_intent_keeps_slot_and_receiver_namespaces_separate(
+    vfo: str,
+    receiver_count: int,
+    expected_slot: str | None,
+    expected_receiver: str | None,
+) -> None:
+    intent = command_intent_from_request(
+        "set_vfo",
+        {"vfo": vfo, "receiver_count": receiver_count},
+        source="websocket",
+        command_id=f"vfo-{vfo}-{receiver_count}",
+    )
+
+    assert intent.params.get("active_slot") == expected_slot
+    assert intent.params.get("active") == expected_receiver
+
+
 @pytest.mark.asyncio
 async def test_set_level_command_overlay_keeps_raw_byte_value_for_current_contract() -> (
     None
