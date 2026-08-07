@@ -41,9 +41,9 @@ The last two additions came from `verify-mor-1090.md`'s representative-set adequ
 
 ## Platform note
 
-These baselines were captured on macOS. `.github/workflows/visual.yml` runs on a Linux self-hosted runner and is `continue-on-error: true` for exactly this reason — font/antialiasing differences could redden a non-regression on first landing. Per MOR-1090's acceptance criteria, regenerate this set from a Linux CI run before the owner flips the job to blocking.
+MOR-1396 re-pinned this set on the Linux ARM64 Core runner. The provisioning run was `31180561550` at branch head `ad37689d`; its `visual-diff-report` artifact contains real Linux `*-actual.png` outputs for the 12 captures whose macOS baseline exceeded the comparator tolerance. The remaining two captures, `ptt-idle--mobile` and `ptt-held--mobile`, passed the same Linux comparison and therefore emitted no failure-only actual file. `manifest.json` records the exact Linux regeneration environment. `.github/workflows/visual.yml` is now blocking.
 
-**Regenerating from Linux (the required pre-blocking re-pin — do NOT do this on macOS):** the workflow already produces the Linux renders as a side effect of a failing run — `steps.visual.outcome == 'failure'` uploads `frontend/test-results/`, and every failing capture's `*-actual.png` inside it IS the Linux render (Playwright's own output naming for the actual-vs-expected-vs-diff trio). To re-pin from Linux:
+**Regenerating from Linux (required for a future platform re-pin — do NOT do this on macOS):** the workflow produces Linux renders as a side effect of a failing run — `steps.visual.outcome == 'failure'` uploads `frontend/test-results/`, and every failing capture's `*-actual.png` inside it IS the Linux render (Playwright's own output naming for the actual-vs-expected-vs-diff trio). To re-pin from Linux:
 
 ```bash
 # 1. Trigger visual.yml on a PR (or push [full-ci]-style if a push trigger
@@ -68,7 +68,7 @@ git add frontend/fixtures/approved-baselines/
 
 Do not regenerate this set on macOS for the pre-blocking re-pin — that reproduces the exact platform mismatch the Platform note warns about, just with a fresher timestamp.
 
-**Batching (do not regenerate per rework slice).** S6a/S7/S8/MOR-1355 and future S-slices each change what the cockpit renders on `desktop-v2`. If every slice regenerated this set, reviewers would rubber-stamp the image diff within two rounds and each pass burns ~700KB of unreclaimable binary into git history (PNGs do not delta-compress) for a job that isn't even gating yet. **Keep `continue-on-error: true` through the rework series, regenerate ONCE at series end on Linux, right before the flip** — between now and then this job's value is diagnostic (the uploaded diff artifacts show what each slice changed), not gating, and that is a coherent use of a non-blocking job.
+**Batching (do not regenerate per rework slice).** S6a/S7/S8/MOR-1355 and future S-slices each change what the cockpit renders on `desktop-v2`. If every slice regenerated this set, reviewers would rubber-stamp the image diff within two rounds and each pass burns ~700KB of unreclaimable binary into git history (PNGs do not delta-compress). Regenerate only for an intentional, reviewed visual change, using Linux output so the blocking gate keeps one platform provenance.
 
 ## Updating baselines (intentional change)
 
