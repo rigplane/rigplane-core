@@ -6,19 +6,27 @@ name: Visual regression (pixel-diff)
 # isolated so a pixel-diff never blocks the Python lint/test gate quick.yml
 # exists for.
 #
-# BLOCKING since MOR-1386 (v3 gate promotion, session-9): this job used to
-# run `continue-on-error: true` on first landing (MOR-1090) so the
-# Linux/macOS render divergence could be measured over a real cycle before
-# it blocked anything. That cycle is closed and the owner flipped it to
-# blocking here — see MOR-1386 for the batch decision covering both this
-# job and full.yml/quick.yml's capture-harness legs together.
+# advisory until MOR-1396 (runner browser deps + Linux baseline regen);
+# flip deferred from MOR-1386 — this leg's `continue-on-error: true` stays
+# in place. MOR-1386 originally flipped this job to blocking alongside
+# full.yml/quick.yml's capture-harness legs, but MOR-1396 found this leg
+# has never actually executed on CI: `npx playwright install chromium`
+# does not install the OS-level libs (libnspr4/libnss3) Chromium needs, so
+# `browserType.launch()` has failed on the self-hosted runner
+# (mm-build-core-1) on 100% of runs since this workflow's introduction —
+# masked, until the MOR-1386 flip, by this very `continue-on-error: true`.
+# Blocking on a leg that has never produced a real pixel comparison would
+# gate on noise, not signal. Re-flip to blocking only after MOR-1396 fixes
+# the runner's browser deps AND the approved baselines are re-pinned from
+# genuine Linux `*-actual.png` output (see the Platform note in
+# frontend/fixtures/approved-baselines/README.md).
 #
-# BATCHING (verify-mor-1090.md §7.4, superseded by the MOR-1386 flip):
-# `continue-on-error: true` was kept through the S6a-S12 rework series so
-# per-slice reddened captures wouldn't burn PNG history for no gating
-# benefit; the owner decided the flip timing is "at v3 gate promotion"
-# (session-9 batch) rather than a separate baseline-regeneration cutover —
-# see MOR-1386.
+# BATCHING (verify-mor-1090.md §7.4): `continue-on-error: true` was kept
+# through the S6a-S12 rework series so per-slice reddened captures
+# wouldn't burn PNG history for no gating benefit; MOR-1386 batched this
+# job's flip with full.yml/quick.yml's capture-harness legs, but MOR-1396
+# split it back out — the capture-harness flips in full.yml/quick.yml
+# stand (proven green on ubuntu-latest), only this leg is deferred.
 #
 # PR-ONLY GAP: this workflow triggers on `pull_request` only, not `push`, so
 # it never runs on `main` — two individually-green PRs that each touch
@@ -61,20 +69,25 @@ jobs:
           npm ci
           npx playwright install chromium
 
-      # Blocking since MOR-1386 gate promotion — see the header comment.
-      # The install step above already fails loud on its own if chromium
-      # provisioning breaks, so a red here means a real pixel-diff only.
+      # Advisory (continue-on-error) until MOR-1396 — see the header
+      # comment. Not blocking: this leg has never produced a real
+      # pixel-diff on the self-hosted runner (missing browser OS deps), so
+      # a red here is not yet trustworthy signal. The install step above
+      # already fails loud on its own if chromium provisioning breaks.
       - name: Pixel-diff vs approved baselines
         id: visual
+        continue-on-error: true
         run: cd frontend && npm run test:e2e:visual
 
-      # `always() &&` is load-bearing since the MOR-1386 flip: GitHub inserts
-      # an implicit `success()` into any step `if:` that names no status-check
-      # function, so a bare `steps.visual.outcome == 'failure'` was fine only
-      # while the pixel-diff step carried `continue-on-error: true` (which
-      # kept the job successful). With the gate blocking, that form SKIPS the
-      # upload on exactly the failure it exists to capture — red gate, no
-      # evidence. Same shape quick.yml's capture upload already uses.
+      # `always() &&` is correct under either blocking or advisory mode: with
+      # `continue-on-error: true` on the pixel-diff step, GitHub remaps its
+      # *conclusion* to success (so a bare `steps.visual.outcome ==
+      # 'failure'` — implicitly ANDed with `success()` — would still fire on
+      # a failing *outcome*), but `always()` makes that explicit and keeps
+      # this upload correct if/when MOR-1396 re-flips the step back to
+      # blocking, where relying on the implicit `success()` would silently
+      # skip the upload on exactly the failure it exists to capture. Same
+      # shape quick.yml's capture upload already uses.
       - name: Upload diff report
         if: always() && steps.visual.outcome == 'failure'
         uses: actions/upload-artifact@v4
@@ -85,4 +98,4 @@ jobs:
 
       - name: Annotate result
         if: always()
-        run: '[ "${{ steps.visual.outcome }}" = "failure" ] && echo "::error::Visual pixel-diff FAILED — blocking since MOR-1386 gate promotion. See the visual-diff-report artifact." || true'
+        run: '[ "${{ steps.visual.outcome }}" = "failure" ] && echo "::warning::Visual pixel-diff FAILED — advisory until MOR-1396 (runner browser deps + Linux baseline regen). See the visual-diff-report artifact." || true'
