@@ -68,8 +68,15 @@ jobs:
         id: visual
         run: cd frontend && npm run test:e2e:visual
 
+      # `always() &&` is load-bearing since the MOR-1386 flip: GitHub inserts
+      # an implicit `success()` into any step `if:` that names no status-check
+      # function, so a bare `steps.visual.outcome == 'failure'` was fine only
+      # while the pixel-diff step carried `continue-on-error: true` (which
+      # kept the job successful). With the gate blocking, that form SKIPS the
+      # upload on exactly the failure it exists to capture — red gate, no
+      # evidence. Same shape quick.yml's capture upload already uses.
       - name: Upload diff report
-        if: steps.visual.outcome == 'failure'
+        if: always() && steps.visual.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: visual-diff-report
