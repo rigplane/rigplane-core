@@ -69,6 +69,10 @@ jobs:
           npm ci
           npx playwright install chromium
 
+      - name: Install Playwright Chromium system dependencies
+        working-directory: frontend
+        run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
+
       # Advisory (continue-on-error) until MOR-1396 — see the header
       # comment. Not blocking: this leg has never produced a real
       # pixel-diff on the self-hosted runner (missing browser OS deps), so
