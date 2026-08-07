@@ -1416,9 +1416,12 @@ class CivRuntime:
                         self._remember_raw_received_frame_bytes(frame, frame_bytes)
                         self.deliver_raw_civ(frame_bytes)
                         try:
+                            generation = source_generation
+                            if self._host._civ_rx_task is asyncio.current_task():
+                                generation = self._host._civ_epoch
                             await self._route_civ_frame(
                                 frame,
-                                generation=self._host._civ_epoch,
+                                generation=generation,
                             )
                         except Exception:
                             logger.exception(
@@ -1468,7 +1471,12 @@ class CivRuntime:
             event = CivEvent(type=CivEventType.NAK, frame=frame)
         else:
             event = CivEvent(type=CivEventType.RESPONSE, frame=frame)
-            self._update_state_cache_from_frame(frame)
+            if generation != self._host._civ_epoch:
+                return
+            self._update_state_cache_from_frame(
+                frame,
+                source_generation=generation,
+            )
         self._publish_civ_event(event)
         claimed: _CivDataTransaction | None = None
         if self._host._civ_request_tracker.resolve(event, generation=generation):
@@ -1546,9 +1554,24 @@ class CivRuntime:
             except Exception:  # noqa: BLE001 — isolate listener failures
                 logger.exception("Raw CI-V listener raised")
 
-    def _update_state_cache_from_frame(self, frame: CivFrame) -> None:
+    def _update_state_cache_from_frame(
+        self,
+        frame: CivFrame,
+        *,
+        source_generation: int | None = None,
+    ) -> None:
         """Best-effort update of state cache from an incoming CI-V frame."""
-        self._apply_state_store_observations(frame)
+        current_generation = getattr(self._host, "_civ_epoch", 0)
+        if not isinstance(current_generation, int) or isinstance(
+            current_generation, bool
+        ):
+            current_generation = 0
+        self._apply_state_store_observations(
+            frame,
+            generation=(
+                current_generation if source_generation is None else source_generation
+            ),
+        )
 
         host = self._host
         _rs = getattr(host, "_radio_state", None)
@@ -1732,7 +1755,12 @@ class CivRuntime:
         except Exception:
             logger.warning("civ-rx: unexpected error in state update", exc_info=True)
 
-    def _apply_state_store_observations(self, frame: CivFrame) -> None:
+    def _apply_state_store_observations(
+        self,
+        frame: CivFrame,
+        *,
+        generation: int | None = None,
+    ) -> None:
         """Project supported CI-V ingress fields into the runtime StateStore."""
 
         try:
@@ -1752,6 +1780,21 @@ class CivRuntime:
                 frame.sub or 0,
                 exc_info=True,
             )
+            return
+
+        if (
+            frame.command in (0x00, 0x01, 0x03, 0x04, 0x25, 0x26)
+            and getattr(self._host._profile, "vfo_readback", "none")
+            == "selected_unselected"
+        ):
+            changeset = self._host._state_store.apply_relative_vfo_observations(
+                observations,
+                generation=(
+                    self._host._civ_epoch if generation is None else generation
+                ),
+            )
+            self._record_scheduler_results_for_changeset(changeset)
+            self._notify_state_store_changed(changeset)
             return
 
         for observation in observations:

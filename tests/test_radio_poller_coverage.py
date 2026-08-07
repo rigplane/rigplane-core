@@ -1292,6 +1292,26 @@ async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None
     assert fields["global.tx_state.ptt"]["value"] is False
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_seconds"),
+    (("IC-7300", 31.0), ("IC-705", 11.1)),
+)
+def test_relative_vfo_retention_window_follows_provider_poll_cadence(
+    model: str,
+    expected_seconds: float,
+) -> None:
+    radio = _make_radio(model=model)
+    radio._civ_ready_idle_timeout = 5.0
+
+    poller = RadioPoller(radio, CommandQueue())
+
+    expected_rotation = 2 * len(poller._STATE_QUERIES) * poller._fast_interval
+    assert poller._relative_vfo_retention_max_age == pytest.approx(
+        2 * expected_rotation + 5.0
+    )
+    assert poller._relative_vfo_retention_max_age == pytest.approx(expected_seconds)
+
+
 @pytest.mark.asyncio
 async def test_select_vfo_no_capability_logs_and_skips() -> None:
     """SelectVfo on a backend with neither new methods nor set_vfo: skip cleanly."""

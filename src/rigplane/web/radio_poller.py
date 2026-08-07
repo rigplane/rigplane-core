@@ -465,6 +465,15 @@ class RadioPoller:
             self._FAST_CMDS_SERIAL if self._is_serial else self._FAST_CMDS_LAN
         )
         self._STATE_QUERIES = self._build_state_queries()
+        self._relative_vfo_retention_max_age: float | None = None
+        if self._profile.vfo_readback == "selected_unselected":
+            retention_age, coherence_window = self._relative_vfo_retention_policy()
+            self._relative_vfo_retention_max_age = retention_age
+            self._state_store.configure_relative_vfo_retention(
+                generation=self._provider_generation(),
+                max_age=retention_age,
+                coherence_window=coherence_window,
+            )
         if self._acquisition_executor is None:
             raw_executor = getattr(radio, "__dict__", {}).get("_acquisition_executor")
             execute = getattr(raw_executor, "execute", None)
@@ -500,6 +509,32 @@ class RadioPoller:
         # connect starts unarmed; overridable for tests.
         self._max_key_down_seconds: float = _MAX_KEY_DOWN_SECONDS
         self._max_key_down_timer: asyncio.TimerHandle | None = None
+
+    def _provider_generation(self) -> int:
+        generation = getattr(self._radio, "_civ_epoch", 0)
+        return (
+            generation
+            if isinstance(generation, int) and not isinstance(generation, bool)
+            else 0
+        )
+
+    def _relative_vfo_retention_policy(self) -> tuple[float, float]:
+        """Derive a finite tuple window from this provider's expected cadence."""
+
+        health_grace = getattr(self._radio, "_civ_ready_idle_timeout", 2.0)
+        if not isinstance(health_grace, (int, float)) or isinstance(health_grace, bool):
+            health_grace = 2.0
+        health_grace = max(0.1, float(health_grace))
+        acquisition = self._profile.state_acquisition
+        cadence = (
+            None if acquisition is None else acquisition.default_policy.cadence_seconds
+        )
+        expected_rotation = (
+            float(cadence)
+            if cadence is not None
+            else 2.0 * len(self._STATE_QUERIES) * self._fast_interval
+        )
+        return (2.0 * expected_rotation + health_grace, health_grace)
 
     def _apply_bsr_readback_observations(
         self,
@@ -2995,6 +3030,9 @@ class RadioPoller:
         """Invalidate connection-epoch A/B proof without touching TX facts."""
 
         self._vfo_binding_generation += 1
+        relative_reset = self._state_store.reset_relative_vfo_retention(
+            generation=self._provider_generation()
+        )
         try:
             setattr(self._radio, "_relative_vfo_observations_suspended", False)
         except Exception:
@@ -3013,7 +3051,7 @@ class RadioPoller:
                     for name in self._relative_vfo_fields()
                 )
         changeset = self._state_store.discard(paths)
-        if changeset.changes and self._on_state_event:
+        if (relative_reset.changes or changeset.changes) and self._on_state_event:
             self._on_state_event("vfo_identity_reset", {})
 
     def _discard_vfo_identity(self, receiver: int) -> None:

@@ -55,6 +55,7 @@ from rigplane.core.state_acquisition_policy import (
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.exceptions import ConnectionError
+from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
@@ -126,6 +127,75 @@ def _acquisition_profile(
         ),
         default_policy=acquisition_policy,
     )
+
+
+@pytest.mark.asyncio
+async def test_relative_vfo_ingress_bootstraps_then_transceive_patches_immediately(
+    radio: IcomRadio,
+) -> None:
+    radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
+    radio._state_store.configure_relative_vfo_retention(  # noqa: SLF001
+        generation=radio._civ_epoch,  # noqa: SLF001
+        max_age=31.0,
+        coherence_window=5.0,
+    )
+    radio.send_civ = AsyncMock()  # type: ignore[method-assign]
+
+    for frame in (
+        _make_frame(cmd=0x25, data=b"\x00" + bcd_encode(14_284_000)),
+        _make_frame(cmd=0x26, data=bytes([0, Mode.USB.value, 0, 1])),
+        _make_frame(cmd=0x25, data=b"\x01" + bcd_encode(14_075_000)),
+        _make_frame(cmd=0x26, data=bytes([1, Mode.USB.value, 0, 1])),
+    ):
+        await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+            frame,
+            generation=radio._civ_epoch,  # noqa: SLF001
+        )
+
+    before = radio._state_store.snapshot()  # noqa: SLF001
+    old_mode = before.field("receiver.0.active.freq_mode.mode")
+    old_unselected = before.field("receiver.0.unselected.freq_mode.freq_hz")
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(
+            cmd=0x00,
+            data=bcd_encode(14_285_000),
+            to_addr=0x00,
+        ),
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+
+    after = radio._state_store.snapshot()  # noqa: SLF001
+    knob = after.field("receiver.0.active.freq_mode.freq_hz")
+    assert knob.value == 14_285_000
+    assert knob.source.source == "civ_unsolicited"
+    assert knob.last_observed_monotonic > old_mode.last_observed_monotonic
+    assert after.field(old_mode.path).value == old_mode.value
+    assert after.field(old_unselected.path).value == old_unselected.value
+    radio.send_civ.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_relative_vfo_stale_or_invalid_generation_cannot_repopulate(
+    radio: IcomRadio,
+) -> None:
+    radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
+    radio._state_store.configure_relative_vfo_retention(  # noqa: SLF001
+        generation=radio._civ_epoch,  # noqa: SLF001
+        max_age=31.0,
+        coherence_window=5.0,
+    )
+    frame = _make_frame(cmd=0x25, data=b"\x00" + bcd_encode(14_285_000))
+
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=radio._civ_epoch - 1,  # noqa: SLF001
+    )
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=MagicMock(),
+    )
+
+    assert radio._state_store.snapshot().fields == ()  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
@@ -2427,12 +2497,15 @@ async def test_route_civ_frame_contains_observation_decode_failures(
         "_publish_civ_event",
         side_effect=published.append,
     ):
-        await radio._civ_runtime._route_civ_frame(frame, generation=17)
+        await radio._civ_runtime._route_civ_frame(
+            frame,
+            generation=radio._civ_epoch,
+        )
 
     assert len(published) == 1
     assert published[0].frame == frame
     radio._civ_request_tracker.resolve.assert_called_once_with(
-        published[0], generation=17
+        published[0], generation=radio._civ_epoch
     )
     assert radio._state_store.snapshot().observation_seq == 0
 

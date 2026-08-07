@@ -247,6 +247,68 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(s?.fieldStatus?.['main.freqHz']).toEqual(nextFieldStatus['main.freqHz']);
   });
 
+  it('keeps a retained relative tuple visible and applies a live leaf delta', async () => {
+    const { wsClient, store } = await loadModules();
+    const status = (at: number) => ({
+      storePath: 'receiver.0.active.freq_mode.freq_hz',
+      observed: true,
+      freshness: 'fresh' as const,
+      availability: 'available' as const,
+      lastObservedMonotonic: at,
+      source: { provider: 'icom_civ' },
+    });
+    const fieldStatus = {
+      'main.freqHz': status(902_507),
+      'main.mode': status(902_507),
+      'main.unselectedVfo.freqHz': status(902_507),
+      'main.unselectedVfo.mode': status(902_507),
+    };
+    const initial = makeState({
+      revision: 5,
+      stateRevision: 5,
+      observationSeq: 8,
+      main: makeReceiver({
+        freqHz: 14_284_000,
+        mode: 'USB',
+        unselectedVfo: {
+          freqHz: 14_075_000, mode: 'USB', filterNum: 1, dataMode: 0,
+        },
+      }),
+      fieldStatus,
+    });
+
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(initial));
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(
+        makeState({
+          revision: 5, stateRevision: 5, freshnessRevision: 2,
+          observationSeq: 8,
+        }),
+        { fieldStatus },
+      ),
+    );
+
+    let current = store.getRadioState() as ServerStateWithObservation;
+    expect(current.main.freqHz).toBe(14_284_000);
+    expect(current.main.unselectedVfo?.freqHz).toBe(14_075_000);
+
+    const liveMain = { ...current.main, freqHz: 14_285_000 };
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(
+        makeState({ revision: 6, stateRevision: 6, observationSeq: 9 }),
+        { main: liveMain, fieldStatus: { ...fieldStatus, 'main.freqHz': status(902_512) } },
+      ),
+    );
+
+    current = store.getRadioState() as ServerStateWithObservation;
+    expect(current.main.freqHz).toBe(14_285_000);
+    expect(current.main.unselectedVfo?.freqHz).toBe(14_075_000);
+  });
+
   it('rejects a stale delta even when observationSeq advances', async () => {
     const { wsClient, store } = await loadModules();
 
