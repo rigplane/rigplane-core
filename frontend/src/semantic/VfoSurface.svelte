@@ -144,14 +144,25 @@
    */
   let vfoPool = $derived(selectionPoolSize ?? viewModel.vfos.length);
   let hasVfoPair = $derived(vfoPool > 1);
+  let relativeIdentityUnknown = $derived(viewModel.vfos.some((vfo) => vfo.slot.kind === 'relative'));
+  let relativeReceiver = $derived(
+    viewModel.vfos.find((vfo) => vfo.slot.kind === 'relative')?.receiver ?? null,
+  );
+  let relativeSelectionPending = $state(false);
+  const relativeSelectionHelp = 'Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.';
 
   function slotKey(slot: VfoSlot): string {
-    return slot.kind === 'slotted' ? slot.id : slot.kind;
+    if (slot.kind === 'slotted') return slot.id;
+    if (slot.kind === 'relative') return slot.role;
+    return slot.kind;
   }
 
   function roleLabel(vfo: VfoViewModel): string {
     const { slot } = vfo;
     if (slot.kind === 'slotted') return `${vfo.receiver} ${slot.id}`;
+    if (slot.kind === 'relative') {
+      return slot.role === 'selected' ? 'Selected VFO' : 'Unselected VFO';
+    }
     if (slot.kind === 'unknown') return `${vfo.receiver} (${t('core.vfo.state.unknown')})`;
     return vfo.receiver;
   }
@@ -238,12 +249,19 @@
   }
 
   function isSelectable(vfo: VfoViewModel): boolean {
-    return hasVfoPair && !vfo.isActive;
+    return hasVfoPair && vfo.slot.kind !== 'relative' && !vfo.isActive;
   }
 
   function selectVfo(vfo: VfoViewModel): void {
     if (!isSelectable(vfo) || vfo.slot.kind === 'unknown' || disabled) return;
     onSelectVfo?.({ receiver: vfo.receiver, slot: vfo.slot });
+  }
+
+  function selectAbsoluteSlot(id: 'A' | 'B'): void {
+    if (disabled || relativeSelectionPending || relativeReceiver === null) return;
+    relativeSelectionPending = true;
+    onSelectVfo?.({ receiver: relativeReceiver, slot: { kind: 'slotted', id } });
+    window.setTimeout(() => { relativeSelectionPending = false; }, 2500);
   }
 
   function triState(fact: BooleanFact): 'true' | 'false' | 'mixed' {
@@ -279,12 +297,12 @@
    * unrelated unknown would invent a dependency the radio does not have.
    */
   function quickSplit(): void {
-    if (viewModel.split.status !== 'known') return;
+    if (relativeIdentityUnknown || viewModel.split.status !== 'known') return;
     onQuickSplit?.();
   }
 
   function quickDualWatch(): void {
-    if (viewModel.dualWatch.status !== 'known') return;
+    if (relativeIdentityUnknown || viewModel.dualWatch.status !== 'known') return;
     onQuickDualWatch?.();
   }
 
@@ -380,6 +398,22 @@
       </div>
     {/each}
   </div>
+  {#if relativeIdentityUnknown && relativeReceiver !== null}
+    <div class="vfo-identity-selectors" data-testid="vfo-identity-selectors">
+      <button
+        type="button" class="vfo-select" data-vfo-select-absolute="A"
+        title={relativeSelectionHelp} aria-label="Select VFO A"
+        disabled={disabled || relativeSelectionPending}
+        onclick={() => selectAbsoluteSlot('A')}
+      >Select VFO A</button>
+      <button
+        type="button" class="vfo-select" data-vfo-select-absolute="B"
+        title={relativeSelectionHelp} aria-label="Select VFO B"
+        disabled={disabled || relativeSelectionPending}
+        onclick={() => selectAbsoluteSlot('B')}
+      >Select VFO B</button>
+    </div>
+  {/if}
   {/if}
 
   {#if showRadioWideFacts}
@@ -417,23 +451,29 @@
       Button text is the accessible name; no `aria-label` duplicates it.
     -->
     {#if hasVfoPair}
-      <div class="vfo-ops" data-testid="vfo-ops">
-        <button type="button" class="vfo-op" data-vfo-equalize onclick={() => onEqualizeVfos?.()}>
+      <div
+        class="vfo-ops" data-testid="vfo-ops"
+        data-disabled-reason={relativeIdentityUnknown ? 'vfo-identity-unknown' : undefined}
+        title={relativeIdentityUnknown ? relativeSelectionHelp : undefined}
+      >
+        <button type="button" class="vfo-op" data-vfo-equalize
+          disabled={relativeIdentityUnknown} onclick={() => { if (!relativeIdentityUnknown) onEqualizeVfos?.(); }}>
           {t('core.vfo.ops.equalize')}
         </button>
-        <button type="button" class="vfo-op" data-vfo-swap onclick={() => onSwapVfos?.()}>
+        <button type="button" class="vfo-op" data-vfo-swap
+          disabled={relativeIdentityUnknown} onclick={() => { if (!relativeIdentityUnknown) onSwapVfos?.(); }}>
           {t('core.vfo.ops.swap')}
         </button>
         <button
           type="button" class="vfo-op" data-vfo-quick-split
-          disabled={viewModel.split.status === 'unknown'}
+          disabled={relativeIdentityUnknown || viewModel.split.status === 'unknown'}
           onclick={quickSplit}
         >
           {t('core.vfo.ops.quickSplit')}
         </button>
         <button
           type="button" class="vfo-op" data-vfo-quick-dual-watch
-          disabled={viewModel.dualWatch.status === 'unknown'}
+          disabled={relativeIdentityUnknown || viewModel.dualWatch.status === 'unknown'}
           onclick={quickDualWatch}
         >
           {t('core.vfo.ops.quickDualWatch')}
@@ -463,7 +503,7 @@
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
   .vfo-select, .fact-toggle, .vfo-op { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
   .vfo-select:disabled, .fact-toggle:disabled, .vfo-op:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
-  .fact-toggles, .vfo-ops { display: flex; gap: 6px; flex-wrap: wrap; }
+  .fact-toggles, .vfo-ops, .vfo-identity-selectors { display: flex; gap: 6px; flex-wrap: wrap; }
   .split-digest { display: flex; gap: 8px; margin: 0; font-size: 11px; color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   .split-digest[data-split-active='false'] { opacity: 0.64; }
 </style>

@@ -23,6 +23,7 @@ from rigplane.commands import (
     get_freq,
     get_mode,
     parse_frequency_response,
+    parse_ack_nak,
     parse_mode_response,
     set_freq,
     set_mode,
@@ -32,6 +33,7 @@ from rigplane.commands import get_selected_mode as _get_selected_mode_cmd
 from rigplane.commands import set_selected_mode as _set_selected_mode_cmd
 from rigplane.commands import get_unselected_freq as _get_unselected_freq_cmd
 from rigplane.commands import get_unselected_mode as _get_unselected_mode_cmd
+from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.commands import (
     parse_selected_freq_response as _parse_selected_freq_response,
 )
@@ -279,6 +281,27 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         _rcvr, mode, _data_mode, filt = _parse_selected_mode_response(resp)
         return mode, filt
 
+    async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
+        """Read one Selected/Unselected tuple without changing radio state."""
+
+        freq_cmd = _get_selected_freq_cmd if selected else _get_unselected_freq_cmd
+        mode_cmd = _get_selected_mode_cmd if selected else _get_unselected_mode_cmd
+        role = "selected" if selected else "unselected"
+        freq_resp = await self._send_civ_expect(
+            freq_cmd(to_addr=self._radio_addr), label=f"get_{role}_freq"
+        )
+        _receiver, freq = _parse_selected_freq_response(freq_resp)
+        mode_resp = await self._send_civ_expect(
+            mode_cmd(to_addr=self._radio_addr), label=f"get_{role}_mode"
+        )
+        _receiver, mode, data_mode, filt = _parse_selected_mode_response(mode_resp)
+        return RelativeVfoState(
+            freq_hz=freq,
+            mode=mode.name,
+            filter_num=filt,
+            data_mode=0 if data_mode is None else int(data_mode),
+        )
+
     # ------------------------------------------------------------------
     # Explicit swap/equalize — MAIN/SUB vs A/B (issue #714)
     # ------------------------------------------------------------------
@@ -512,20 +535,36 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         Raises :class:`ValueError` for an invalid slot or out-of-range
         receiver index.
         """
+        await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=False)
+
+    async def _set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
+        """Private ACK-confirmed path; public ``set_vfo_slot`` stays fire-and-forget."""
+
+        await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=True)
+
+    async def _set_vfo_slot_impl(
+        self, slot: str, *, receiver: int, confirmed: bool
+    ) -> None:
+        operation = "set_vfo_slot_confirmed" if confirmed else "set_vfo_slot"
+
         self._check_connected()
-        self._check_vfo_slot_receiver(receiver, operation="set_vfo_slot")
+        self._check_vfo_slot_receiver(receiver, operation=operation)
         norm_slot = self._normalize_vfo_slot(slot)
         slot_code = 0x00 if norm_slot == "A" else 0x01
 
-        async def _emit_slot() -> None:
+        async def emit() -> None:
             civ = build_civ_frame(
                 self._radio_addr,
                 CONTROLLER_ADDR,
                 _CMD_VFO,
                 data=bytes([slot_code]),
             )
-            await self._send_civ_raw(civ, wait_response=False)
-            # Update cached per-receiver active_slot for subsequent get_vfo_slot.
+            if confirmed:
+                response = await self._send_civ_expect(civ, label=operation)
+                if parse_ack_nak(response) is not True:
+                    raise CommandError(f"Radio rejected VFO slot {norm_slot}")
+            else:
+                await self._send_civ_raw(civ, wait_response=False)
             rx_state = (
                 self._radio_state.sub
                 if (receiver == 1 and self.receiver_count > 1)
@@ -536,8 +575,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if self.receiver_count > 1:
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,
-                operation="set_vfo_slot",
-                action=_emit_slot,
+                operation=operation,
+                action=emit,
             )
         else:
-            await _emit_slot()
+            await emit()

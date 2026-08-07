@@ -77,6 +77,7 @@ export interface ControlRange {
 }
 
 export type VfoScheme = 'single' | 'ab' | 'ab_shared' | 'main_sub';
+export type VfoReadback = 'absolute' | 'selected_unselected' | 'none';
 
 export interface WebRtcCapabilities {
   available: boolean;
@@ -101,6 +102,8 @@ export interface Capabilities {
   capabilities: string[];
   receivers: number;
   vfoScheme: VfoScheme;
+  /** Provider identity semantics; absent on older compatible servers. */
+  vfoReadback?: VfoReadback;
   freqRanges: FreqRange[];
   modes: string[];
   filters: string[];
@@ -248,6 +251,12 @@ export function validateCapabilities(value: unknown): Capabilities {
   const expectedReceivers = raw.vfoScheme === 'single' || raw.vfoScheme === 'ab' ? 1 : 2;
   if (raw.receivers !== expectedReceivers) {
     invalid('$.vfoScheme', `${String(raw.vfoScheme)} with receivers=${expectedReceivers}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'vfoReadback')) {
+    const readbacks: readonly VfoReadback[] = ['absolute', 'selected_unselected', 'none'];
+    if (!readbacks.includes(raw.vfoReadback as VfoReadback)) {
+      invalid('$.vfoReadback', readbacks.join(' | '));
+    }
   }
 
   if (!Array.isArray(raw.freqRanges)) invalid('$.freqRanges', 'an array');

@@ -226,6 +226,95 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
 // ── Selection intents: payload correctness + disabled/absent gating ────────
 
 describe('VFO selection intent', () => {
+  it('relative bootstrap shows honest values and explicit A/B selectors with duplicate protection', () => {
+    vi.useFakeTimers();
+    const onSelectVfo = vi.fn();
+    const base = topologyFixtures['1/ab'];
+    const model: RadioViewModel = validateRadioViewModel({
+      ...base,
+      vfos: [
+        {
+          ...base.vfos[0], slot: { kind: 'relative', role: 'selected' },
+          label: 'Selected VFO', isActive: true, isActiveSlot: true,
+        },
+        {
+          ...base.vfos[1], slot: { kind: 'relative', role: 'unselected' },
+          label: 'Unselected VFO', isActive: false, isActiveSlot: false,
+        },
+      ],
+    });
+    const target = mountSurface({ viewModel: model, onSelectVfo });
+    const selected = target.querySelector<HTMLElement>('[data-vfo-slot="selected"]')!;
+    const unselected = target.querySelector<HTMLElement>('[data-vfo-slot="unselected"]')!;
+    expect(selected.textContent).toContain('Selected VFO');
+    expect(unselected.textContent).toContain('Unselected VFO');
+    expect(target.querySelector('[data-vfo-active="true"]')).toBe(selected);
+
+    const a = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="A"]')!;
+    const b = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="B"]')!;
+    expect(a.textContent).toBe('Select VFO A');
+    expect(b.textContent).toBe('Select VFO B');
+    expect(a.title).toBe('Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.');
+    b.click();
+    flushSync();
+    a.click();
+    expect(onSelectVfo).toHaveBeenCalledOnce();
+    expect(onSelectVfo).toHaveBeenCalledWith({
+      receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' },
+    });
+    expect(a.disabled).toBe(true);
+    expect(b.disabled).toBe(true);
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+  });
+
+  it('relative bootstrap disables identity-dependent VFO operations', () => {
+    const base = topologyFixtures['1/ab'];
+    const model: RadioViewModel = validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((vfo, index) => ({
+        ...vfo,
+        slot: {
+          kind: 'relative', role: index === 0 ? 'selected' : 'unselected',
+        },
+        label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
+        isActive: index === 0,
+        isActiveSlot: index === 0,
+      })),
+    });
+    const target = mountSurface({ viewModel: model });
+    const ops = target.querySelector<HTMLElement>('[data-testid="vfo-ops"]')!;
+    expect(ops.dataset.disabledReason).toBe('vfo-identity-unknown');
+    expect(Array.from(ops.querySelectorAll<HTMLButtonElement>('button')).every((button) => button.disabled)).toBe(true);
+  });
+
+  it('selected-only bootstrap keeps the selected value and marks unselected unavailable', () => {
+    const base = topologyFixtures['1/ab'];
+    const model: RadioViewModel = validateRadioViewModel({
+      ...base,
+      vfos: [
+        {
+          ...base.vfos[0], slot: { kind: 'relative', role: 'selected' },
+          label: 'Selected VFO', frequencyHz: 14_250_000,
+          isActive: true, isActiveSlot: true,
+        },
+        {
+          ...base.vfos[1], slot: { kind: 'relative', role: 'unselected' },
+          label: 'Unselected VFO', frequencyHz: null, mode: null, filter: null,
+          isActive: false, isActiveSlot: false,
+        },
+      ],
+    });
+    const target = mountSurface({ viewModel: model });
+    expect(target.querySelector('[data-vfo-slot="selected"] .vfo-freq')?.textContent)
+      .toContain('14.250000 MHz');
+    expect(target.querySelector('[data-vfo-slot="unselected"] .vfo-freq')?.textContent)
+      .toBe('—');
+    expect(target.querySelector('[data-testid="vfo-ops"]')?.getAttribute('data-disabled-reason'))
+      .toBe('vfo-identity-unknown');
+    expect(target.querySelectorAll('[data-vfo-select-absolute]')).toHaveLength(2);
+  });
+
   it('clicking a selectable inactive VFO emits onSelectVfo with the exact receiver+slot payload', () => {
     const onSelectVfo = vi.fn();
     const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'], onSelectVfo });

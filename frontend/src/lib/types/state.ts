@@ -145,6 +145,7 @@ export interface ReceiverStatePublic {
   vfoA?: VfoSlotPublic;
   vfoB?: VfoSlotPublic;
   activeSlot?: string;
+  unselectedVfo?: VfoSlotPublic | null;
   freqHz: number;
   mode: string;
   filter: number | null;

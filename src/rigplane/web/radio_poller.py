@@ -1,8 +1,9 @@
-"""RadioPoller — fire-and-forget CI-V serialiser.
+"""RadioPoller — CI-V command and acquisition serialiser.
 
 ## ARCHITECTURE PRINCIPLE: FIRE-AND-FORGET ONLY
 
-All CI-V communication MUST be fire-and-forget.  Never await a CI-V response.
+Background CI-V acquisition MUST be fire-and-forget.  Do not await responses
+from the streaming poll path.
 
 Why: The IC-7610 scope streams ~225 CI-V packets/sec on port 50002.  When
 a request-response command waits for a specific reply, the response packet
@@ -20,8 +21,10 @@ How it works:
    RadioState mirrors remain compatibility surfaces only.
 4. Poll freshness stays local to the poller; broadcast events notify on changes.
 
-DO NOT add request-response (await get_frequency, await get_mode, etc.)
-to this module. If you need new data, add parsing to the CI-V RX path instead.
+The one deliberate request-response exception is an explicit user command
+whose positive ACK is itself required evidence.  Such a transaction remains
+on the provider's existing serialized command lane and may perform bounded,
+read-only post-ACK readback; it must never be used by background acquisition.
 """
 
 from __future__ import annotations
@@ -86,7 +89,10 @@ from ..core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from ..core.radio_protocol import ManagedTxApi
+from ..core.radio_protocol import (
+    ManagedTxApi,
+    RelativeVfoReadbackCapable,
+)
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import StateStore
 from ..core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS, TxOutcome
@@ -486,6 +492,7 @@ class RadioPoller:
         # than once per _UNSELECTED_SLOT_INTERVAL.
         self._last_user_write_ts: float = 0.0
         self._last_unselected_poll: dict[int, float] = {}
+        self._vfo_binding_generation = 0
         # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
         # a change triggers a refetch of the per-DATA-group MOD-input sources.
         self._mod_input_data_modes: tuple[int, int] | None = None
@@ -872,7 +879,19 @@ class RadioPoller:
         does not park the poll loop on the commander future (MOR-497ii); the
         response still arrives via the CI-V RX path.
         """
-        if receiver is not None:
+        if (
+            receiver is None
+            and cmd_byte in (0x25, 0x26)
+            and sub_byte == 0x01
+            and self._profile.vfo_readback == "selected_unselected"
+        ):
+            await self._civ(
+                cmd_byte,
+                data=b"\x01",
+                priority=priority,
+                wait_dispatch=False,
+            )
+        elif receiver is not None:
             if cmd_byte in (0x25, 0x26):
                 await self._civ(
                     cmd_byte,
@@ -2093,35 +2112,36 @@ class RadioPoller:
                     self._ensure_receiver_supported(
                         receiver, operation="select_vfo_slot"
                     )
-                    set_vfo_slot = getattr(radio, "set_vfo_slot", None)
-                    if set_vfo_slot is not None:
-                        await set_vfo_slot(slot, receiver=receiver)
-                        logger.info(
-                            "radio-poller: set_vfo_slot=%s receiver=%d",
+                    if self._profile.vfo_readback == "selected_unselected":
+                        await self._select_and_bind_vfo_slot(
                             slot,
-                            receiver,
+                            receiver=receiver,
+                            active_name=active_name,
+                            command_id=command_id,
+                            source=source,
+                            session_id=session_id,
+                            command_service=command_service,
                         )
                     else:
-                        legacy_set_vfo = getattr(radio, "set_vfo", None)
-                        if legacy_set_vfo is None:
-                            logger.warning(
-                                "radio-poller: select_vfo(%s) — backend lacks "
-                                "set_vfo_slot and set_vfo; skipping",
-                                vfo,
+                        set_vfo_slot = getattr(radio, "set_vfo_slot", None)
+                        if set_vfo_slot is not None:
+                            await set_vfo_slot(slot, receiver=receiver)
+                        else:
+                            legacy_set_vfo = getattr(radio, "set_vfo", None)
+                            if legacy_set_vfo is None:
+                                logger.warning(
+                                    "radio-poller: select_vfo(%s) — backend lacks "
+                                    "set_vfo_slot and set_vfo; skipping",
+                                    vfo,
+                                )
+                                return
+                            await legacy_set_vfo(slot)
+                        if self._radio_state is not None:
+                            self._radio_state.receiver(active_name).active_slot = slot
+                        if self._on_state_event:
+                            self._on_state_event(
+                                "vfo_changed", {"vfo": slot, "receiver": receiver}
                             )
-                            return
-                        await legacy_set_vfo(slot)
-                        logger.info(
-                            "radio-poller: legacy set_vfo=%s "
-                            "(backend lacks VfoSlotCapable)",
-                            slot,
-                        )
-                    if self._radio_state is not None:
-                        self._radio_state.receiver(active_name).active_slot = slot
-                    if self._on_state_event:
-                        self._on_state_event(
-                            "vfo_changed", {"vfo": slot, "receiver": receiver}
-                        )
                     return
 
                 if vfo_upper in ("SUB", "1") or (
@@ -2956,6 +2976,145 @@ class RadioPoller:
     async def _poll_unselected_slot(self, receiver: int) -> None:
         """Intentionally do nothing; swap/query/swap is not passive polling."""
         _ = receiver
+
+    @staticmethod
+    def _relative_vfo_fields() -> tuple[str, ...]:
+        return ("freq_hz", "mode", "filter_num", "data_mode")
+
+    def _vfo_identity_paths(self, receiver: int) -> tuple[FieldPath, ...]:
+        receiver_id = str(receiver)
+        paths: list[FieldPath] = [FieldPath.active_slot(receiver_id)]
+        for slot in ("A", "B"):
+            paths.extend(
+                FieldPath.vfo_slot(receiver_id, slot, "freq_mode", name)
+                for name in self._relative_vfo_fields()
+            )
+        return tuple(paths)
+
+    def reset_vfo_session(self) -> None:
+        """Invalidate connection-epoch A/B proof without touching TX facts."""
+
+        self._vfo_binding_generation += 1
+        try:
+            setattr(self._radio, "_relative_vfo_observations_suspended", False)
+        except Exception:
+            pass
+        paths: list[FieldPath] = []
+        for receiver in range(self._profile.receiver_count):
+            paths.extend(self._vfo_identity_paths(receiver))
+            receiver_id = str(receiver)
+            paths.extend(
+                FieldPath.unselected(receiver_id, "freq_mode", name)
+                for name in self._relative_vfo_fields()
+            )
+            if self._profile.vfo_readback == "selected_unselected":
+                paths.extend(
+                    FieldPath.active(receiver_id, "freq_mode", name)
+                    for name in self._relative_vfo_fields()
+                )
+        changeset = self._state_store.discard(paths)
+        if changeset.changes and self._on_state_event:
+            self._on_state_event("vfo_identity_reset", {})
+
+    def _discard_vfo_identity(self, receiver: int) -> None:
+        self._state_store.discard(self._vfo_identity_paths(receiver))
+
+    async def _select_and_bind_vfo_slot(
+        self,
+        slot: str,
+        *,
+        receiver: int,
+        active_name: str,
+        command_id: str | None,
+        source: CommandSource,
+        session_id: str | None,
+        command_service: CommandService | None,
+    ) -> None:
+        """Select once, then bind only transaction-scoped passive readback."""
+
+        self._vfo_binding_generation += 1
+        generation = self._vfo_binding_generation
+        selection_confirmed = False
+        setattr(self._radio, "_relative_vfo_observations_suspended", True)
+
+        def apply(path: FieldPath, value: Any) -> None:
+            observation = Observation(
+                path=path,
+                value=value,
+                source=SourceMetadata(
+                    source="command_response",
+                    provider="vfo_binding",
+                    command_source=source,
+                    session_id=session_id,
+                    native_id="explicit_slot_ack_readback",
+                ),
+                timestamp_monotonic=time.monotonic(),
+                correlation_id=command_id,
+            )
+            if command_service is not None:
+                command_service.apply_observation(observation)
+            else:
+                self._state_store.apply(observation)
+
+        try:
+            confirmed_select = getattr(self._radio, "_set_vfo_slot_confirmed", None)
+            if confirmed_select is None or not asyncio.iscoroutinefunction(
+                confirmed_select
+            ):
+                raise CommandError(
+                    "selected/unselected provider lacks confirmed VFO selection"
+                )
+            await confirmed_select(slot, receiver=receiver)
+            if generation != self._vfo_binding_generation:
+                return
+
+            self._discard_vfo_identity(receiver)
+            selection_confirmed = True
+            apply(FieldPath.active_slot(str(receiver)), slot)
+            if self._radio_state is not None:
+                self._radio_state.receiver(active_name).active_slot = slot
+
+            if not isinstance(self._radio, RelativeVfoReadbackCapable):
+                raise CommandError("provider lacks relative VFO readback")
+            selected = await self._radio.read_relative_vfo(selected=True)
+            unselected = await self._radio.read_relative_vfo(selected=False)
+            if generation != self._vfo_binding_generation:
+                return
+            receiver_id = str(receiver)
+            for state, relative_slot, absolute_slot in (
+                (selected, "selected", slot),
+                (unselected, "unselected", "B" if slot == "A" else "A"),
+            ):
+                for name in self._relative_vfo_fields():
+                    value = getattr(state, name)
+                    relative_path = (
+                        FieldPath.active(receiver_id, "freq_mode", name)
+                        if relative_slot == "selected"
+                        else FieldPath.unselected(receiver_id, "freq_mode", name)
+                    )
+                    apply(relative_path, value)
+                    apply(
+                        FieldPath.vfo_slot(
+                            receiver_id, absolute_slot, "freq_mode", name
+                        ),
+                        value,
+                    )
+            logger.info(
+                "radio-poller: confirmed VFO slot=%s receiver=%d generation=%d",
+                slot,
+                receiver,
+                generation,
+            )
+            if self._on_state_event:
+                self._on_state_event("vfo_changed", {"vfo": slot, "receiver": receiver})
+        except BaseException:
+            # After ACK the target remains known even if passive readback fails.
+            if generation == self._vfo_binding_generation and not selection_confirmed:
+                self._discard_vfo_identity(receiver)
+            raise
+        finally:
+            if generation == self._vfo_binding_generation:
+                setattr(self._radio, "_relative_vfo_observations_suspended", False)
 
     def _emit(self, name: str, data: dict[str, Any]) -> None:
         if self._on_state_event is not None:

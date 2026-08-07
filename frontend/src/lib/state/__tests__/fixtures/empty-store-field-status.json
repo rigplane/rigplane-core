@@ -419,6 +419,30 @@
     "observed": false,
     "storePath": "receiver.main.operator_toggles.twin_peak_filter"
   },
+  "main.unselectedVfo.dataMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.unselected.freq_mode.data_mode"
+  },
+  "main.unselectedVfo.filterNum": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.unselected.freq_mode.filter_num"
+  },
+  "main.unselectedVfo.freqHz": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.unselected.freq_mode.freq_hz"
+  },
+  "main.unselectedVfo.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.unselected.freq_mode.mode"
+  },
   "main.vfoA.dataMode": {
     "availability": "missing",
     "freshness": "unknown",
@@ -994,6 +1018,30 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "receiver.sub.operator_toggles.twin_peak_filter"
+  },
+  "sub.unselectedVfo.dataMode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.unselected.freq_mode.data_mode"
+  },
+  "sub.unselectedVfo.filterNum": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.unselected.freq_mode.filter_num"
+  },
+  "sub.unselectedVfo.freqHz": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.unselected.freq_mode.freq_hz"
+  },
+  "sub.unselectedVfo.mode": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.unselected.freq_mode.mode"
   },
   "sub.vfoA.dataMode": {
     "availability": "missing",

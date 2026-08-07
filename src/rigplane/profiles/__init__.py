@@ -154,6 +154,9 @@ class RadioProfile:
     swap_main_sub_code: int | None = None
     equal_main_sub_code: int | None = None
     vfo_scheme: str = "main_sub"
+    # How provider readbacks identify VFO state. ``selected_unselected``
+    # exposes relative radio facts without claiming absolute A/B identity.
+    vfo_readback: str = "none"
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()

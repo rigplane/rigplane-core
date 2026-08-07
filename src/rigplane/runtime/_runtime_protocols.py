@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from rigplane.civ import CivEvent, CivRequestTracker
     from rigplane.commander import IcomCommander
     from rigplane.radio_state import RadioState
+    from rigplane.profiles import RadioProfile
     from rigplane.core.state_store import StateStore
     from rigplane.scope import ScopeAssembler, ScopeFrame
     from rigplane.transport import IcomTransport
@@ -85,6 +86,8 @@ class CivRuntimeHost(Protocol):
     _last_vfo: "str | None"
     _civ_retry_slice_timeout: float
     _radio_addr: int
+    _profile: "RadioProfile"
+    _relative_vfo_observations_suspended: bool
 
     # Global radio state and callbacks
     _radio_state: "RadioState"

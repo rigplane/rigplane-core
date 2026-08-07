@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -313,6 +314,46 @@ class StateStore:
             reconciliation_requests=(),
         )
         return changeset
+
+    def discard(self, paths: Iterable[FieldPath | str]) -> ChangeSet:
+        """Remove session-scoped facts so a new provider epoch starts unknown.
+
+        This is deliberately not an observation: removing prior-session proof
+        must not manufacture a fresh value or source. A semantic revision is
+        emitted when at least one field existed so snapshot consumers publish
+        the corresponding ``missing`` field status.
+        """
+
+        removed: list[FieldChange] = []
+        for item in paths:
+            path = FieldPath.parse(item) if isinstance(item, str) else item
+            entry = self._entries.pop(path, None)
+            if entry is None:
+                continue
+            removed.append(
+                FieldChange(
+                    path=path,
+                    previous=_copy_value(entry.value),
+                    current=None,
+                )
+            )
+        changes = tuple(removed)
+        if changes:
+            self._state_revision += 1
+            self._append_history(
+                changes=changes,
+                freshness=(),
+                reconciliation_requests=(),
+            )
+        return ChangeSet(
+            revision=self._state_revision,
+            freshness_revision=self._freshness_revision,
+            observation_seq=self._observation_seq,
+            changes=changes,
+            timestamp_monotonic=self._freshness_clock.now(),
+            sources=(),
+            coalesced=False,
+        )
 
     def mark_stale_due(self, *, now: float | None = None) -> SnapshotDelta:
         """Mark overdue fresh fields stale and emit reconciliation hints.

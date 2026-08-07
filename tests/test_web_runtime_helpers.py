@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from itertools import permutations
 from typing import Any
 
 import pytest
@@ -106,6 +107,118 @@ def _observation(
         max_age=max_age,
         quality=quality,
     )
+
+
+def test_relative_unselected_vfo_projects_only_as_complete_public_object() -> None:
+    values = {
+        "freq_hz": 7_100_000,
+        "mode": "LSB",
+        "filter_num": 2,
+        "data_mode": 0,
+    }
+    for order in permutations(values):
+        store = StateStore()
+        for index, name in enumerate(order):
+            store.apply(
+                _observation(
+                    FieldPath.unselected("0", "freq_mode", name),
+                    values[name],
+                    at=10.0 + index,
+                )
+            )
+            payload = build_public_state_payload_from_snapshot(
+                store.snapshot(), radio=None, receiver_count=1
+            )
+            if index < len(values) - 1:
+                assert "unselectedVfo" not in payload["main"]
+                public_leaf = {
+                    "freq_hz": "freqHz",
+                    "mode": "mode",
+                    "filter_num": "filterNum",
+                    "data_mode": "dataMode",
+                }[name]
+                assert (
+                    payload["fieldStatus"][f"main.unselectedVfo.{public_leaf}"][
+                        "observed"
+                    ]
+                    is True
+                )
+            else:
+                assert payload["main"]["unselectedVfo"] == {
+                    "freqHz": 7_100_000,
+                    "mode": "LSB",
+                    "filterNum": 2,
+                    "dataMode": 0,
+                }
+
+
+def test_relative_unselected_vfo_reset_removes_complete_public_object() -> None:
+    store = StateStore()
+    paths = [
+        FieldPath.unselected("0", "freq_mode", name)
+        for name in ("freq_hz", "mode", "filter_num", "data_mode")
+    ]
+    for path, value in zip(paths, (7_100_000, "LSB", 2, 0), strict=True):
+        store.apply(_observation(path, value, at=10.0))
+
+    before = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert before["main"]["unselectedVfo"]["freqHz"] == 7_100_000
+
+    store.discard(paths)
+    after = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert "unselectedVfo" not in after["main"]
+    assert all(
+        after["fieldStatus"][f"main.unselectedVfo.{leaf}"]["observed"] is False
+        for leaf in ("freqHz", "mode", "filterNum", "dataMode")
+    )
+
+
+def test_web_server_publishes_single_receiver_main_from_topology_only() -> None:
+    from rigplane.profiles import resolve_radio_profile
+
+    store = StateStore()
+    radio = MagicMock()
+    radio.model = "IC-7300"
+    radio.profile = resolve_radio_profile(model="IC-7300")
+    radio.state_store = store
+    radio.capabilities = set(radio.profile.capabilities)
+    radio.managed_tx = None
+
+    WebServer(radio)
+
+    snapshot = store.snapshot()
+    assert snapshot.field("global.slow_state.active").value == "MAIN"
+    assert "global.tx_state.ptt" not in snapshot.as_dict()
+    assert "receiver.0.vfo.active_slot" not in snapshot.as_dict()
+
+
+def test_production_radio_poller_resets_vfo_identity_on_reconnect() -> None:
+    from rigplane.profiles import resolve_radio_profile
+    from rigplane.web.radio_poller import CommandQueue, RadioPoller
+
+    store = StateStore()
+    radio = MagicMock()
+    radio.model = "IC-7300"
+    radio.profile = resolve_radio_profile(model="IC-7300")
+    radio.state_store = store
+    radio.capabilities = set(radio.profile.capabilities)
+    radio.managed_tx = None
+    server = WebServer(radio)
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    server._radio_poller = poller  # noqa: SLF001
+    store.apply(_observation(FieldPath.active_slot("0"), "B", at=10.0))
+
+    def close_spawned(coro: Any) -> None:
+        coro.close()
+
+    server._spawn = close_spawned  # type: ignore[method-assign]  # noqa: SLF001
+    server._on_radio_reconnect()  # noqa: SLF001
+
+    assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
 
 
 def _tx_target_field(

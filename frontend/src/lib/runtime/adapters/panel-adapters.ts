@@ -133,7 +133,7 @@ export function deriveAudioSpectrumProps() {
 
 // ── Memory Panel ──
 export function deriveMemoryPanelProps() {
-  return toMemoryPanelProps(runtime.state);
+  return toMemoryPanelProps(runtime.state, runtime.caps);
 }
 
 // ── Amber Telemetry ──
