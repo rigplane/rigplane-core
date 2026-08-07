@@ -246,3 +246,7 @@ jobs:
           fi
           echo "Core checks selected: ${{ steps.filter.outputs.core }}"
           echo "Frontend checks selected: ${{ steps.filter.outputs.frontend }}"
+
+      - name: Controlled red probe (do not merge)
+        if: steps.filter.outputs.core == 'true'
+        run: exit 42
