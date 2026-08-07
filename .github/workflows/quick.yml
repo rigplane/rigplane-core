@@ -3,24 +3,12 @@ name: Tests (quick)
 on:
   push:
     branches: [main]
-    paths:
-      - "src/**"
-      - "tests/**"
-      - "frontend/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".importlinter"
-      - ".github/workflows/**"
   pull_request:
     branches: [main]
-    paths:
-      - "src/**"
-      - "tests/**"
-      - "frontend/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".importlinter"
-      - ".github/workflows/**"
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: tests-quick-${{ github.workflow }}-${{ github.ref }}
@@ -44,17 +32,26 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Detect frontend changes
+      - name: Detect quick-check changes
         id: filter
         uses: dorny/paths-filter@v4
         with:
           filters: |
+            core:
+              - 'src/**'
+              - 'tests/**'
+              - 'frontend/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.importlinter'
+              - '.github/workflows/**'
             frontend:
               - 'frontend/**'
               - 'src/rigplane/web/**'
               - '.github/workflows/quick.yml'
 
       - name: Install uv
+        if: steps.filter.outputs.core == 'true' || steps.filter.outputs.frontend == 'true'
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
@@ -63,20 +60,25 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
+        if: steps.filter.outputs.core == 'true' || steps.filter.outputs.frontend == 'true'
         run: uv python install 3.11
 
       - name: Install dependencies
+        if: steps.filter.outputs.core == 'true' || steps.filter.outputs.frontend == 'true'
         run: uv sync --extra dev --extra bridge
 
       - name: Ruff (lint + format check)
+        if: steps.filter.outputs.core == 'true'
         run: |
           uv run ruff check src/ tests/
           uv run ruff format --check src/ tests/
 
       - name: Lint architecture (import-linter)
+        if: steps.filter.outputs.core == 'true'
         run: uv run lint-imports
 
       - name: Validation dry-run golden gate (IC-7610)
+        if: steps.filter.outputs.core == 'true'
         # Native dry-run matrix vs the committed golden artifact: a
         # registry/declaration regression fails CI (MOR-648). Dry-run only —
         # no hardware, sub-second. Regen after an intentional matrix change:
@@ -88,11 +90,13 @@ jobs:
           --gate tests/golden/validation/ic7610.dry-run.json
 
       - name: Validation dry-run golden gate (X6200)
+        if: steps.filter.outputs.core == 'true'
         run: >-
           uv run rigplane --model X6200 validate --provider native --dry-run
           --gate tests/golden/validation/x6200.dry-run.json
 
       - name: Validation dry-run golden gate (FTX-1)
+        if: steps.filter.outputs.core == 'true'
         run: >-
           uv run rigplane --model FTX-1 validate --provider native --dry-run
           --gate tests/golden/validation/ftx1.dry-run.json
@@ -118,32 +122,9 @@ jobs:
           mkdir -p ../src/rigplane/web/static
           cp -r dist/* ../src/rigplane/web/static/
 
-      - name: Frontend i18n visual smoke (RP-ML-006)
-        if: steps.filter.outputs.frontend == 'true'
-        # Runs the localization screenshot pack against the freshly built
-        # `frontend/dist/`. The self-hosted Mac mini Linux runner needs the
-        # Playwright system deps (libnss3, libnspr4, etc.) installed at the
-        # OS level via `npx playwright install --with-deps chromium` (one
-        # time, by the runner operator) before this step can pass. Marked
-        # continue-on-error until provisioning lands; the baseline tests
-        # still run + the screenshots upload as artifacts for review.
-        continue-on-error: true
-        run: |
-          cd frontend
-          npx playwright install chromium >/dev/null 2>&1 || true
-          npm run test:e2e:i18n
-
-      # Explicit, fail-loud chromium provisioning check ahead of the capture
-      # step below. The i18n smoke step above also installs chromium, but
-      # that install is masked by `|| true` AND the whole step is
-      # `continue-on-error: true` (RP-ML-006, untouched by MOR-1386) — a
-      # chromium download failure there would surface silently and only
-      # show up downstream as a missing-browser crash in the capture step,
-      # indistinguishable from a fixture regression. `playwright install` is
-      # idempotent (no-op if the browser is already cached), so this is
-      # cheap when the i18n step's install already succeeded, and fails
-      # loud on its own step — reading as "provisioning", not "fixtures" —
-      # when it didn't.
+      # Explicit, fail-loud browser provisioning ahead of both browser test
+      # suites. A red install step reads as provisioning, not as a fixture
+      # regression.
       - name: Ensure Playwright chromium for capture
         if: steps.filter.outputs.frontend == 'true'
         run: |
@@ -154,6 +135,11 @@ jobs:
         if: steps.filter.outputs.frontend == 'true'
         working-directory: frontend
         run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
+
+      - name: Frontend i18n visual smoke (RP-ML-006)
+        if: steps.filter.outputs.frontend == 'true'
+        run: npm run test:e2e:i18n
+        working-directory: frontend
 
       # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
       # capture (`frontend/fixtures/capture.mjs`) into the PR leg. Gated by
@@ -185,7 +171,10 @@ jobs:
 
       - name: Annotate fixture-harness capture result
         if: always() && steps.filter.outputs.frontend == 'true'
-        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture-pr artifact." || true'
+        run: |
+          if [ "${{ steps.capture.outcome }}" = "failure" ]; then
+            echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture-pr artifact."
+          fi
 
       - name: Type-check web boundary
         if: steps.filter.outputs.frontend == 'true'
@@ -193,6 +182,7 @@ jobs:
 
       - name: Run tests
         id: tests
+        if: steps.filter.outputs.core == 'true'
         run: |
           # Without pipefail the pipe's exit status is tee's (always 0), so
           # pytest failures were swallowed and the step reported success.
@@ -208,14 +198,14 @@ jobs:
           exit "$rc"
 
       - name: Extract version
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.filter.outputs.core == 'true'
         id: version
         run: |
           VERSION=$(uv run python -c "from importlib.metadata import version; print(version('rigplane'))")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Update tests badge
-        if: github.ref == 'refs/heads/main' && always()
+        if: github.ref == 'refs/heads/main' && steps.filter.outputs.core == 'true' && always()
         uses: schneegans/dynamic-badges-action@v1.8.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
@@ -226,7 +216,7 @@ jobs:
           color: ${{ steps.tests.outcome == 'success' && 'brightgreen' || 'red' }}
 
       - name: Update version badge
-        if: github.ref == 'refs/heads/main' && always()
+        if: github.ref == 'refs/heads/main' && steps.filter.outputs.core == 'true' && always()
         uses: schneegans/dynamic-badges-action@v1.8.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
@@ -237,7 +227,7 @@ jobs:
           color: blue
 
       - name: Update mypy badge
-        if: github.ref == 'refs/heads/main' && always()
+        if: github.ref == 'refs/heads/main' && steps.filter.outputs.frontend == 'true' && always()
         uses: schneegans/dynamic-badges-action@v1.8.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
@@ -246,3 +236,13 @@ jobs:
           label: mypy
           message: "0 errors"
           color: blue
+
+      - name: Summarize quick-check selection
+        if: always()
+        run: |
+          if [ "${{ steps.filter.outcome }}" != "success" ]; then
+            echo "::error::Changed-path classification failed."
+            exit 1
+          fi
+          echo "Core checks selected: ${{ steps.filter.outputs.core }}"
+          echo "Frontend checks selected: ${{ steps.filter.outputs.frontend }}"
