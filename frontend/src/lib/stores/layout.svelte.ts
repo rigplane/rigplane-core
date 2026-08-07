@@ -3,7 +3,7 @@
  * store (`presentation/workspace/store.svelte.ts`), which owns the selection,
  * its validation and its persistence.
  *
- * 'auto'        = standard layout when any scope available (HW or audio FFT), LCD otherwise
+ * 'auto'        = desktop-v2 (the v3 default) on every non-mobile viewport
  * 'lcd'         = legacy alias for 'lcd-cockpit'
  * 'lcd-cockpit' = force LCD cockpit (TS-990S-style dual-cockpit)
  * 'lcd-scope'   = force LCD scope (IC-7300-style scope-dominant)
@@ -84,7 +84,8 @@ export function cycleLayoutMode(hasAnyScope: boolean): void {
     const idx = order.indexOf(normalizeLayoutMode(getLayoutMode()));
     setLayoutMode(order[(idx + 1) % order.length]);
   } else {
-    // No scope at all: always LCD, no toggle needed
+    // No scope: the legacy cycle shortcut explicitly selects LCD. This is an
+    // opt-out from the auto desktop-v2 default, not auto's resolution policy.
     setLayoutMode('lcd-cockpit');
   }
 }

@@ -56,8 +56,8 @@ describe('skin registry', () => {
 
   it.each([
     [true, 'desktop-v2'],
-    [false, 'lcd-cockpit'],
-  ] as const)('resolves auto according to scope availability (%s)', (hasAnyScope, skinId) => {
+    [false, 'desktop-v2'],
+  ] as const)('resolves auto to the v3 desktop default regardless of scope availability (%s)', (hasAnyScope, skinId) => {
     expect(resolve({ hasAnyScope })).toBe(skinId);
   });
 
@@ -105,7 +105,7 @@ describe('MOR-1257: QA-only dual-receiver-cockpit reachability', () => {
   // unmodified 'resolves forced %s preference to %s' cases above.
   it('leaves every other forced preference unaffected', () => {
     expect(resolve({ layoutPreference: 'standard' })).toBe('desktop-v2');
-    expect(resolve({ layoutPreference: 'auto', hasAnyScope: false })).toBe('lcd-cockpit');
+    expect(resolve({ layoutPreference: 'auto', hasAnyScope: false })).toBe('desktop-v2');
   });
 
   // Documents the chosen behaviour for the ticket's mobile/QA-override

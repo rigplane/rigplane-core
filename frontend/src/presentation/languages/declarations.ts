@@ -35,7 +35,10 @@ export const studioline: DesignLanguageManifest = {
   // The mirror of fieldline's declaration below: two borderless channel
   // strips sharing one optical margin is the natural dual-receiver form
   // (MOR-977 §4.2.2), so the reference language says so as a manifest fact.
-  layoutCompatibility: [{ layoutId: 'dual-receiver-cockpit', compatible: true }],
+  layoutCompatibility: [
+    { layoutId: 'dual-receiver-cockpit', compatible: true },
+    { layoutId: 'desktop-v2', compatible: true },
+  ],
   renderers: {
     frequencyDisplay: studiolineFrequency,
     meters: studiolineMeter,
@@ -49,11 +52,14 @@ export const fieldline: DesignLanguageManifest = {
   tokens: FIELDLINE_TOKENS,
   // dense clamped out — fieldline runs at 0.6 relative density (MOR-977 §4.4).
   density: { kind: 'clamped', supported: ['comfortable', 'compact'] },
-  layoutCompatibility: [{
-    layoutId: 'dual-receiver-cockpit',
-    compatible: false,
-    reason: 'fieldline cannot serve as the desktop dual-receiver default at 0.6 relative density (MOR-977 §4.4).',
-  }],
+  layoutCompatibility: [
+    {
+      layoutId: 'dual-receiver-cockpit',
+      compatible: false,
+      reason: 'fieldline cannot serve as the desktop dual-receiver default at 0.6 relative density (MOR-977 §4.4).',
+    },
+    { layoutId: 'desktop-v2', compatible: true },
+  ],
   renderers: {
     frequencyDisplay: fieldlineFrequency,
     meters: fieldlineMeter,

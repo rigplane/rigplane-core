@@ -43,7 +43,7 @@ describe('the desktop-v2 entrypoint is registered in the real registry', () => {
     const loaders = source.slice(start, source.indexOf('};', start));
     expect(loaders).toContain("'desktop-v2':");
     expect(source).toContain("if (layoutPreference === 'standard') return 'desktop-v2';");
-    expect(source).toContain('return ctx.hasAnyScope ? \'desktop-v2\' : \'lcd-cockpit\';');
+    expect(source).toContain("return 'desktop-v2';");
   });
 
   // Kills: a manifest that declares no compiled loader at all.

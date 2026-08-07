@@ -180,7 +180,7 @@ describe('MOR-1081 — one workspace field set owns the selection', () => {
 });
 
 describe('MOR-1081 — capabilities cannot mutate the persisted preference', () => {
-  it('resolves `auto` against the rig at resolution time and leaves `auto` persisted', () => {
+  it('resolves `auto` to desktop-v2 without persisting the resolved skin', () => {
     const rec = recorder({
       [WORKSPACE_STORAGE_KEY]: workspaceJson({ layout: 'auto' }),
       [WORKSPACE_MIGRATION_SENTINEL_KEY]: '1',
@@ -196,7 +196,7 @@ describe('MOR-1081 — capabilities cannot mutate the persisted preference', () 
     });
 
     expect(withScope).toBe('desktop-v2');
-    expect(withoutScope).toBe('lcd-cockpit');
+    expect(withoutScope).toBe('desktop-v2');
     // The resolved skin is never written back over the preference.
     expect(getWorkspace().layout).toBe('auto');
     expect(rec.writes).toEqual([]);
@@ -267,13 +267,16 @@ describe('MOR-1257 — the ?layout= QA override survives adoption byte-exactly',
 });
 
 describe('MOR-1278 — the workspace is the only source [data-design-language] is written from', () => {
-  it('activates the selected language where its own manifest declares the layout', () => {
+  it('activates both selectable languages on the desktop-v2 cutover path', () => {
+    expect(designLanguageActivation(studioline, 'desktop-v2')).toBe('studioline');
+    expect(designLanguageActivation(fieldline, 'desktop-v2')).toBe('fieldline');
     expect(designLanguageActivation(studioline, 'dual-receiver-cockpit')).toBe('studioline');
   });
 
-  it('stays inert for a layout the language has not declared (no cutover here)', () => {
-    for (const layoutId of ['desktop-v2', 'lcd-cockpit', 'lcd-scope', 'mobile', 'sdr-test']) {
+  it('stays inert on the explicit legacy LCD opt-outs and other unadopted layouts', () => {
+    for (const layoutId of ['lcd-cockpit', 'lcd-scope', 'mobile', 'sdr-test']) {
       expect(designLanguageActivation(studioline, layoutId)).toBeNull();
+      expect(designLanguageActivation(fieldline, layoutId)).toBeNull();
     }
   });
 
@@ -283,6 +286,54 @@ describe('MOR-1278 — the workspace is the only source [data-design-language] i
 
   it('is inert when the selected id resolves to no registered manifest', () => {
     expect(designLanguageActivation(undefined, 'dual-receiver-cockpit')).toBeNull();
+  });
+
+  it('round-trips desktop -> LCD -> desktop without changing the selected language or legacy bytes', () => {
+    const rec = recorder({
+      [WORKSPACE_STORAGE_KEY]: workspaceJson({
+        layout: 'standard',
+        designLanguage: 'fieldline',
+        density: 'compact',
+        futureBenign: { preserved: true },
+      }),
+      [WORKSPACE_MIGRATION_SENTINEL_KEY]: '1',
+      [LEGACY_LAYOUT_KEY]: 'lcd-scope',
+      [LEGACY_THEME_KEY]: 'nord',
+    });
+    initWorkspaceStore(rec.storage);
+    const legacyBefore = new Map([
+      [LEGACY_LAYOUT_KEY, rec.data.get(LEGACY_LAYOUT_KEY)],
+      [LEGACY_THEME_KEY, rec.data.get(LEGACY_THEME_KEY)],
+    ]);
+
+    expect(designLanguageActivation(fieldline, resolveSkinId({
+      capabilities: null, layoutPreference: getLayoutMode(), isMobile: false, hasAnyScope: false,
+    }))).toBe('fieldline');
+
+    setLayoutMode('lcd-cockpit');
+    expect(designLanguageActivation(fieldline, resolveSkinId({
+      capabilities: null, layoutPreference: getLayoutMode(), isMobile: false, hasAnyScope: false,
+    }))).toBeNull();
+    expect(getWorkspace().designLanguage).toBe('fieldline');
+    expect(getWorkspace().density).toBe('compact');
+
+    setLayoutMode('standard');
+    expect(designLanguageActivation(fieldline, resolveSkinId({
+      capabilities: null, layoutPreference: getLayoutMode(), isMobile: false, hasAnyScope: false,
+    }))).toBe('fieldline');
+    expect(getWorkspace().designLanguage).toBe('fieldline');
+    expect(getWorkspace().density).toBe('compact');
+    expect(JSON.parse(rec.data.get(WORKSPACE_STORAGE_KEY)!)).toMatchObject({
+      layout: 'standard',
+      designLanguage: 'fieldline',
+      density: 'compact',
+      futureBenign: { preserved: true },
+    });
+    expect(new Map([
+      [LEGACY_LAYOUT_KEY, rec.data.get(LEGACY_LAYOUT_KEY)],
+      [LEGACY_THEME_KEY, rec.data.get(LEGACY_THEME_KEY)],
+    ])).toEqual(legacyBefore);
+    expect(foreignWrites(rec)).toEqual([]);
   });
 });
 

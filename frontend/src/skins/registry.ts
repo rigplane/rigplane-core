@@ -43,7 +43,8 @@ export interface SkinResolutionContext {
  * - User forced 'lcd' or 'lcd-cockpit' → lcd-cockpit
  * - User forced 'lcd-scope' → lcd-scope
  * - User forced 'standard' → desktop-v2
- * - Auto: use desktop-v2 if any scope is available, lcd-cockpit otherwise
+ * - Auto: use desktop-v2 (the v3 default); explicit LCD choices are the
+ *   recoverable compatibility-window opt-out
  */
 export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (ctx.isMobile) return 'mobile';
@@ -59,8 +60,10 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (layoutPreference === 'lcd-cockpit') return 'lcd-cockpit';
   if (layoutPreference === 'lcd-scope') return 'lcd-scope';
   if (layoutPreference === 'standard') return 'desktop-v2';
-  // auto: scope available → desktop, otherwise LCD
-  return ctx.hasAnyScope ? 'desktop-v2' : 'lcd-cockpit';
+  // MOR-1097 cutover: every non-mobile auto start uses the reworked
+  // desktop-v2 composition. Scope availability remains presentation data, not
+  // default-selection policy; explicit LCD preferences stay selectable.
+  return 'desktop-v2';
 }
 
 /**
