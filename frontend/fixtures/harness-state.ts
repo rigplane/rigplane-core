@@ -32,6 +32,20 @@ export interface ModGuardProps {
   sourceLabel: string | null;
 }
 
+export interface AudioRuntimeState {
+  rxEnabled: boolean;
+  muted: boolean;
+  volume: number;
+  connectionAudio: boolean;
+}
+
+export const DEFAULT_AUDIO_RUNTIME: AudioRuntimeState = {
+  rxEnabled: false,
+  muted: false,
+  volume: 50,
+  connectionAudio: false,
+};
+
 export const IDLE_TX: TxSnapshot = {
   phase: 'idle', intent: null, guard: null,
   radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
@@ -47,6 +61,7 @@ export const harness = {
   caps: null as Capabilities | null,
   tx: { ...IDLE_TX } as TxSnapshot,
   modGuard: { visible: false, sourceLabel: null } as ModGuardProps,
+  audioRuntime: { ...DEFAULT_AUDIO_RUNTIME } as AudioRuntimeState,
   calls: [] as HarnessCall[],
   listeners: new Set<(next: TxSnapshot) => void>(),
 };

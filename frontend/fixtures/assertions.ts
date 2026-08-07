@@ -556,6 +556,25 @@ export function runAssertions(
     check('rx-audio-surface-presence', present === expected.rxAudioSurfacePresent,
       `rx-audio-surface present=${present} · expected ${expected.rxAudioSurfacePresent}`);
   }
+  if (expected.rxAudio !== undefined) {
+    const monitor = q<HTMLElement>('[data-testid="rx-audio-monitor"]');
+    const liveChoice = q<HTMLElement>('[data-testid="rx-audio-monitor-live"]');
+    const af = q<HTMLInputElement>('[data-testid="rx-audio-af"] input[type="range"]');
+    const actualMode = monitor?.dataset.monitorMode ?? null;
+    const actualConnection = liveChoice?.dataset.liveLink === undefined
+      ? null : liveChoice.dataset.liveLink === 'true';
+    const actualVolume = actualMode === 'live' && af ? af.valueAsNumber * 100 : null;
+    check('rx-audio-runtime-axis',
+      actualMode === expected.rxAudio.monitorMode
+      && actualConnection === expected.rxAudio.connectionAudio
+      && actualVolume === expected.rxAudio.volume,
+      `mode=${actualMode} volume=${actualVolume} connectionAudio=${actualConnection} · expected `
+      + `${expected.rxAudio.monitorMode}/${expected.rxAudio.volume}/`
+      + `${expected.rxAudio.connectionAudio}`);
+    const linkPresent = q('[data-testid="rx-audio-link"]') !== null;
+    check('rx-audio-link-presence', linkPresent === expected.rxAudio.linkPresent,
+      `rx-audio-link present=${linkPresent} · expected ${expected.rxAudio.linkPresent}`);
+  }
   // The `scope`/`scopeControls` FACTS (MOR-1298/1299) exist in the view
   // model regardless of which composition mounts it — computed here by
   // calling the real, unmodified adapter with the fixture's own state/caps
