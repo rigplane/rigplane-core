@@ -132,23 +132,39 @@ jobs:
           npx playwright install chromium >/dev/null 2>&1 || true
           npm run test:e2e:i18n
 
+      # Explicit, fail-loud chromium provisioning check ahead of the capture
+      # step below. The i18n smoke step above also installs chromium, but
+      # that install is masked by `|| true` AND the whole step is
+      # `continue-on-error: true` (RP-ML-006, untouched by MOR-1386) — a
+      # chromium download failure there would surface silently and only
+      # show up downstream as a missing-browser crash in the capture step,
+      # indistinguishable from a fixture regression. `playwright install` is
+      # idempotent (no-op if the browser is already cached), so this is
+      # cheap when the i18n step's install already succeeded, and fails
+      # loud on its own step — reading as "provisioning", not "fixtures" —
+      # when it didn't.
+      - name: Ensure Playwright chromium for capture
+        if: steps.filter.outputs.frontend == 'true'
+        run: |
+          cd frontend
+          npx playwright install chromium
+
       # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
       # capture (`frontend/fixtures/capture.mjs`) into the PR leg. Gated by
       # the SAME `steps.filter.outputs.frontend` path filter as the rest of
       # this frontend block (frontend/** or src/rigplane/web/** changed) —
       # minimum Actions minutes is a hard project policy (CLAUDE.md), so
-      # this never runs on an unrelated push/PR. Reuses the Playwright
-      # chromium install from the i18n smoke step directly above rather
-      # than installing (or caching) it a second time in this same job.
+      # this never runs on an unrelated push/PR.
       #
-      # OWNER GATE (binding — mirrors visual.yml's MOR-1090 gate and
-      # full.yml's capture-harness job, see their header comments):
-      # `continue-on-error: true` for one cycle, then flip to blocking
-      # (owner-gated flip, MOR-1382 follow-up) — not a builder's call.
+      # BLOCKING since MOR-1386 (v3 gate promotion, session-9): this step
+      # used to run `continue-on-error: true` for one cycle (MOR-1382);
+      # that cycle is closed — quick-leg green on PR #2286 run 31127603844,
+      # full-leg green on dispatched run 31137987620 — so the owner flipped
+      # it to blocking here. The chromium provisioning step above fails
+      # loud on its own, so a red here means a fixture regression only.
       - name: Frontend fixture-harness capture
         id: capture
         if: steps.filter.outputs.frontend == 'true'
-        continue-on-error: true
         run: node frontend/fixtures/capture.mjs
 
       - name: Upload fixture-harness capture (PR)
@@ -161,7 +177,7 @@ jobs:
 
       - name: Annotate fixture-harness capture result
         if: always() && steps.filter.outputs.frontend == 'true'
-        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::warning::Fixture-harness capture FAILED — non-blocking until the MOR-1382 owner gate flips it. See the fixture-harness-capture-pr artifact." || true'
+        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture-pr artifact." || true'
 
       - name: Type-check web boundary
         if: steps.filter.outputs.frontend == 'true'
