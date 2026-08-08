@@ -142,6 +142,7 @@ class CommandService:
         self._record_intent_overlay(intent)
         self.emit_lifecycle(intent, "queued")
         self.emit_lifecycle(intent, "sent")
+        provider_generation = self._state_store.provider_generation
 
         try:
             executor_result = await self._executor.execute(intent)
@@ -165,7 +166,14 @@ class CommandService:
         self.emit_lifecycle(intent, "acknowledged", details=executor_result.details)
         changes: list[ChangeSet] = []
         for observation in executor_result.observations:
-            changes.append(self.apply_observation(observation))
+            changes.append(
+                self.apply_observation(
+                    replace(
+                        observation,
+                        provider_generation=provider_generation,
+                    )
+                )
+            )
 
         return CommandServiceResult(
             lifecycle_events=tuple(self._events[start:]),
@@ -178,7 +186,11 @@ class CommandService:
 
         observation = self._normalize_correlated_readback_observation(observation)
         changeset = self._state_store.apply(observation)
-        self._reconcile_observation(observation, changeset)
+        if (
+            changeset.observed_paths
+            and observation.provider_generation == self._state_store.provider_generation
+        ):
+            self._reconcile_observation(observation, changeset)
         return changeset
 
     def fail_command(

@@ -512,12 +512,7 @@ class RadioPoller:
         self._max_key_down_timer: asyncio.TimerHandle | None = None
 
     def _provider_generation(self) -> int:
-        generation = getattr(self._radio, "_civ_epoch", 0)
-        return (
-            generation
-            if isinstance(generation, int) and not isinstance(generation, bool)
-            else 0
-        )
+        return cast(int, self._state_store.provider_generation)
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
         """Derive a finite tuple window from this provider's expected cadence."""
@@ -546,6 +541,7 @@ class RadioPoller:
         source: CommandSource,
         session_id: str | None,
         command_service: CommandService | None,
+        provider_generation: int,
     ) -> None:
         observed_at = time.monotonic()
         metadata = SourceMetadata(
@@ -562,6 +558,7 @@ class RadioPoller:
                 source=metadata,
                 timestamp_monotonic=observed_at,
                 correlation_id=f"{command_id}:freq" if command_id else None,
+                provider_generation=provider_generation,
             ),
             Observation(
                 path=FieldPath.active("0", "freq_mode", "mode"),
@@ -569,6 +566,7 @@ class RadioPoller:
                 source=metadata,
                 timestamp_monotonic=observed_at,
                 correlation_id=f"{command_id}:mode" if command_id else None,
+                provider_generation=provider_generation,
             ),
         )
         for observation in observations:
@@ -1043,6 +1041,7 @@ class RadioPoller:
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: CommandService | None = None,
+        provider_generation: int,
     ) -> None:
         """Apply a confirmed global readback value to the StateStore.
 
@@ -1065,6 +1064,7 @@ class RadioPoller:
             ),
             timestamp_monotonic=time.monotonic(),
             correlation_id=f"{command_id}:{name}" if command_id else None,
+            provider_generation=provider_generation,
         )
         if command_service is not None:
             command_service.apply_observation(observation)
@@ -1085,6 +1085,7 @@ class RadioPoller:
         """
         if CAP_NB not in self._caps:
             return
+        provider_generation = self._provider_generation()
         radio: Any = self._radio
         getters: tuple[tuple[str, str, Any], ...] = (
             ("nb_depth", "get_nb_depth", getattr(radio, "get_nb_depth", None)),
@@ -1098,7 +1099,11 @@ class RadioPoller:
             except Exception:
                 logger.debug("radio-poller: %s failed", label, exc_info=True)
                 continue
-            self._apply_global_control_observation(name, value)
+            self._apply_global_control_observation(
+                name,
+                value,
+                provider_generation=provider_generation,
+            )
         logger.info("radio-poller: NB controls fetched")
 
     async def _read_mod_input(
@@ -1109,12 +1114,18 @@ class RadioPoller:
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: CommandService | None = None,
+        provider_generation: int | None = None,
     ) -> None:
         """Read one DATA-group MOD-input source into the StateStore + mirror.
 
         Resilient: a read error or timeout is logged at debug and never kills
         the caller (mirrors ``_fetch_nb_controls``).
         """
+        generation = (
+            self._provider_generation()
+            if provider_generation is None
+            else provider_generation
+        )
         getter = getattr(self._radio, f"get_{name}", None)
         if getter is None:
             return
@@ -1133,6 +1144,7 @@ class RadioPoller:
             source=source,
             session_id=session_id,
             command_service=command_service,
+            provider_generation=generation,
         )
 
     async def _fetch_mod_inputs(self) -> None:
@@ -1539,6 +1551,7 @@ class RadioPoller:
         command_service: CommandService | None = None,
     ) -> None:
         radio = self._radio
+        provider_generation = self._provider_generation()
         _r: Any = radio  # cast for capability methods not on base Radio protocol
         # Alias the command source under a distinct name: ``source`` is reused as
         # a match capture variable by several ``case Set*ModInput(source=...)``
@@ -2094,6 +2107,7 @@ class RadioPoller:
                             source=source,
                             session_id=session_id,
                             command_service=command_service,
+                            provider_generation=provider_generation,
                         )
                         # Update local state immediately (don't wait for transceive echo)
                         if self._radio_state:
@@ -2157,6 +2171,7 @@ class RadioPoller:
                             source=source,
                             session_id=session_id,
                             command_service=command_service,
+                            provider_generation=provider_generation,
                         )
                     else:
                         set_vfo_slot = getattr(radio, "set_vfo_slot", None)
@@ -2513,6 +2528,7 @@ class RadioPoller:
                             source=command_source,
                             session_id=session_id,
                             command_service=command_service,
+                            provider_generation=provider_generation,
                         )
             case SetNbWidth(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb_width")
@@ -2536,6 +2552,7 @@ class RadioPoller:
                             source=command_source,
                             session_id=session_id,
                             command_service=command_service,
+                            provider_generation=provider_generation,
                         )
             case SetDashRatio(value=value):
                 if CAP_CW in self._caps:
@@ -2595,6 +2612,7 @@ class RadioPoller:
                         source=command_source,
                         session_id=session_id,
                         command_service=command_service,
+                        provider_generation=provider_generation,
                     )
             case SetData1ModInput(source=mod_source):
                 if CAP_DATA_MODE in self._caps:
@@ -2605,6 +2623,7 @@ class RadioPoller:
                         source=command_source,
                         session_id=session_id,
                         command_service=command_service,
+                        provider_generation=provider_generation,
                     )
             case SetData2ModInput(source=mod_source):
                 if CAP_DATA_MODE in self._caps:
@@ -2615,6 +2634,7 @@ class RadioPoller:
                         source=command_source,
                         session_id=session_id,
                         command_service=command_service,
+                        provider_generation=provider_generation,
                     )
             case SetData3ModInput(source=mod_source):
                 if CAP_DATA_MODE in self._caps:
@@ -2625,6 +2645,7 @@ class RadioPoller:
                         source=command_source,
                         session_id=session_id,
                         command_service=command_service,
+                        provider_generation=provider_generation,
                     )
             case SetAudioPeakFilter(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_audio_peak_filter")
@@ -3068,6 +3089,7 @@ class RadioPoller:
         source: CommandSource,
         session_id: str | None,
         command_service: CommandService | None,
+        provider_generation: int,
     ) -> None:
         """Select once, then bind only transaction-scoped passive readback."""
 
@@ -3089,6 +3111,7 @@ class RadioPoller:
                 ),
                 timestamp_monotonic=time.monotonic(),
                 correlation_id=command_id,
+                provider_generation=provider_generation,
             )
             if command_service is not None:
                 command_service.apply_observation(observation)
@@ -3104,7 +3127,10 @@ class RadioPoller:
                     "selected/unselected provider lacks confirmed VFO selection"
                 )
             await confirmed_select(slot, receiver=receiver)
-            if generation != self._vfo_binding_generation:
+            if (
+                generation != self._vfo_binding_generation
+                or provider_generation != self._provider_generation()
+            ):
                 return
 
             self._discard_vfo_identity(receiver)
@@ -3116,8 +3142,16 @@ class RadioPoller:
             if not isinstance(self._radio, RelativeVfoReadbackCapable):
                 raise CommandError("provider lacks relative VFO readback")
             selected = await self._radio.read_relative_vfo(selected=True)
+            if (
+                generation != self._vfo_binding_generation
+                or provider_generation != self._provider_generation()
+            ):
+                return
             unselected = await self._radio.read_relative_vfo(selected=False)
-            if generation != self._vfo_binding_generation:
+            if (
+                generation != self._vfo_binding_generation
+                or provider_generation != self._provider_generation()
+            ):
                 return
             receiver_id = str(receiver)
             for state, relative_slot in (
@@ -3142,7 +3176,11 @@ class RadioPoller:
                 self._on_state_event("vfo_changed", {"vfo": slot, "receiver": receiver})
         except BaseException:
             # After ACK the target remains known even if passive readback fails.
-            if generation == self._vfo_binding_generation and not selection_confirmed:
+            if (
+                generation == self._vfo_binding_generation
+                and provider_generation == self._provider_generation()
+                and not selection_confirmed
+            ):
                 self._discard_vfo_identity(receiver)
             raise
         finally:

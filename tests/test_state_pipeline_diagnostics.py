@@ -7,6 +7,7 @@ from typing import Any
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core._state_cache import StateCache
 from rigplane.core.state_pipeline_contracts import (
+    ChangeSet,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -22,6 +23,7 @@ class _FakeCivHost:
     def __init__(self, diagnostics: StateDiagnosticsRecorder) -> None:
         self._radio_state = RadioState()
         self._state_cache = StateCache()
+        self._state_store = _NoopStateStore()
         self._on_state_change = self._on_notify
         self._notifications: list[tuple[str, dict[str, Any]]] = []
         self._state_diagnostics = diagnostics
@@ -32,6 +34,22 @@ class _FakeCivHost:
 
     def _on_notify(self, name: str, data: dict[str, Any]) -> None:
         self._notifications.append((name, data))
+
+
+class _NoopStateStore:
+    """Keep this legacy-diagnostic host intentionally outside Store delivery."""
+
+    provider_generation = 0
+
+    def apply(self, observation: Observation) -> ChangeSet:
+        return ChangeSet(
+            revision=0,
+            freshness_revision=0,
+            observation_seq=0,
+            changes=(),
+            timestamp_monotonic=observation.timestamp_monotonic,
+            sources=(),
+        )
 
 
 def test_state_diagnostics_are_inert_until_enabled() -> None:

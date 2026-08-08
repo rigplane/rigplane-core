@@ -138,8 +138,10 @@ async def test_relative_vfo_ingress_bootstraps_then_transceive_patches_immediate
     radio: IcomRadio,
 ) -> None:
     radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
+    store_generation = radio._state_store.begin_provider_generation()  # noqa: SLF001
+    assert store_generation != radio._civ_epoch  # noqa: SLF001
     radio._state_store.configure_relative_vfo_retention(  # noqa: SLF001
-        generation=radio._civ_epoch,  # noqa: SLF001
+        generation=store_generation,
         max_age=31.0,
         coherence_window=5.0,
     )
@@ -169,6 +171,7 @@ async def test_relative_vfo_ingress_bootstraps_then_transceive_patches_immediate
                 native_id="explicit_slot_ack_readback",
             ),
             timestamp_monotonic=time.monotonic(),
+            provider_generation=store_generation,
         )
     )
     for frame in (
@@ -213,6 +216,7 @@ async def test_relative_vfo_ingress_bootstraps_then_transceive_patches_immediate
     assert knob.last_observed_monotonic > old_mode.last_observed_monotonic
     assert after.field(old_mode.path).value == old_mode.value
     assert after.field(old_unselected.path).value == old_unselected.value
+    assert knob.provider_generation == store_generation
     radio.send_civ.assert_not_awaited()
 
 
@@ -920,7 +924,13 @@ async def test_civ_rx_loop_drains_extra_packets_from_queue(
 
     frames_routed = [0]
 
-    async def counting_route(frame: CivFrame, *, generation: int) -> None:
+    async def counting_route(
+        frame: CivFrame,
+        *,
+        generation: int,
+        store_provider_generation: int | None = None,
+    ) -> None:
+        del store_provider_generation
         frames_routed[0] += 1
 
     # Run rx loop briefly: get the queued packet, drain extra, then timeout and exit
@@ -981,7 +991,13 @@ async def test_civ_rx_loop_skips_short_packets(
 
     frames_routed = [0]
 
-    async def counting_route(frame: CivFrame, *, generation: int) -> None:
+    async def counting_route(
+        frame: CivFrame,
+        *,
+        generation: int,
+        store_provider_generation: int | None = None,
+    ) -> None:
+        del store_provider_generation
         frames_routed[0] += 1
 
     with patch.object(
@@ -1023,7 +1039,13 @@ async def test_civ_rx_loop_skips_invalid_civ_frames(
 
     frames_routed = [0]
 
-    async def counting_route(frame: CivFrame, *, generation: int) -> None:
+    async def counting_route(
+        frame: CivFrame,
+        *,
+        generation: int,
+        store_provider_generation: int | None = None,
+    ) -> None:
+        del store_provider_generation
         frames_routed[0] += 1
 
     with patch.object(
@@ -1047,7 +1069,13 @@ async def test_civ_rx_loop_handles_route_exception(
     civ = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x03, data=freq_data)
     transport.queue_response(_wrap_civ_in_udp(civ))
 
-    async def exploding_route(frame: CivFrame, *, generation: int) -> None:
+    async def exploding_route(
+        frame: CivFrame,
+        *,
+        generation: int,
+        store_provider_generation: int | None = None,
+    ) -> None:
+        del store_provider_generation
         raise RuntimeError("route exploded")
 
     with patch.object(
@@ -1062,6 +1090,130 @@ async def test_civ_rx_loop_handles_route_exception(
             except asyncio.CancelledError:
                 pass
     # Loop should have survived the exception
+
+
+@pytest.mark.asyncio
+async def test_running_old_pump_is_not_relabelled_when_host_civ_epoch_advances(
+    radio: IcomRadio, transport: MockTransport
+) -> None:
+    """The captured CI-V epoch remains the first stale-pump guard."""
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_receive = transport.receive_packet
+
+    async def delayed_receive(*, timeout: float) -> bytes:
+        entered.set()
+        await release.wait()
+        return await original_receive(timeout=timeout)
+
+    freq = 14_074_000
+    frame_bytes = build_civ_frame(
+        CONTROLLER_ADDR,
+        IC_7610_ADDR,
+        0x03,
+        data=bcd_encode(freq),
+    )
+    transport.queue_response(_wrap_civ_in_udp(frame_bytes))
+    transport.receive_packet = delayed_receive  # type: ignore[method-assign]
+    old_store_generation = radio._state_store.provider_generation  # noqa: SLF001
+
+    radio._civ_runtime.start_pump()  # noqa: SLF001
+    await entered.wait()
+    radio._civ_epoch = radio._civ_request_tracker.advance_generation(  # noqa: SLF001
+        ConnectionError("test epoch advance")
+    )
+    assert radio._state_store.provider_generation == old_store_generation  # noqa: SLF001
+    release.set()
+    await asyncio.sleep(0.05)
+    await radio._civ_runtime.stop_pump()  # noqa: SLF001
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(  # noqa: SLF001
+            "receiver.0.freq_mode.freq_hz"
+        )
+
+
+def test_advance_generation_advances_independent_store_token(radio: IcomRadio) -> None:
+    radio._state_store.begin_provider_generation()  # noqa: SLF001
+    old_civ = radio._civ_epoch  # noqa: SLF001
+    old_store = radio._state_store.provider_generation  # noqa: SLF001
+
+    radio._civ_runtime.advance_generation("test replacement")  # noqa: SLF001
+
+    assert radio._civ_epoch != old_civ  # noqa: SLF001
+    assert radio._state_store.provider_generation == old_store + 1  # noqa: SLF001
+    assert radio._state_store.provider_generation != radio._civ_epoch  # noqa: SLF001
+
+
+def test_old_generation_generic_civ_result_changes_no_store_state(
+    radio: IcomRadio,
+) -> None:
+    old_store_generation = radio._state_store.provider_generation  # noqa: SLF001
+    radio._civ_runtime.advance_generation("test replacement")  # noqa: SLF001
+    before = radio._state_store.snapshot().to_dict()  # noqa: SLF001
+    before.pop("generatedAtMonotonic")
+
+    radio._civ_runtime._apply_state_store_observations(  # noqa: SLF001
+        _make_frame(cmd=0x14, sub=0x01, data=_bcd2(128)),
+        generation=old_store_generation,
+    )
+
+    after = radio._state_store.snapshot().to_dict()  # noqa: SLF001
+    after.pop("generatedAtMonotonic")
+    assert after == before
+
+
+def test_current_generation_generic_civ_result_is_accepted(radio: IcomRadio) -> None:
+    radio._civ_runtime.advance_generation("test replacement")  # noqa: SLF001
+    current_store_generation = radio._state_store.provider_generation  # noqa: SLF001
+
+    radio._civ_runtime._apply_state_store_observations(  # noqa: SLF001
+        _make_frame(cmd=0x14, sub=0x01, data=_bcd2(128)),
+        generation=current_store_generation,
+    )
+
+    field = radio._state_store.snapshot().field(  # noqa: SLF001
+        "receiver.0.operator_controls.af_level"
+    )
+    assert field.provider_generation == current_store_generation
+
+
+def test_old_generation_queued_meter_flush_mutates_nothing_after_reconnect(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(  # noqa: SLF001
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()  # noqa: SLF001
+    generation = radio._state_store.provider_generation  # noqa: SLF001
+
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.0):
+        radio._civ_runtime._apply_state_store_observations(  # noqa: SLF001
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111)),
+            generation=generation,
+        )
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.05):
+        radio._civ_runtime._apply_state_store_observations(  # noqa: SLF001
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(222)),
+            generation=generation,
+        )
+    assert radio._meter_observation_coalescer._pending  # noqa: SLF001
+
+    radio._civ_runtime.advance_generation("test replacement")  # noqa: SLF001
+    before = radio._state_store.snapshot().to_dict()  # noqa: SLF001
+    before.pop("generatedAtMonotonic")
+    radio._civ_runtime.flush_due_meter_observations(now=100.3)  # noqa: SLF001
+
+    after = radio._state_store.snapshot().to_dict()  # noqa: SLF001
+    after.pop("generatedAtMonotonic")
+    assert after == before
 
 
 # ---------------------------------------------------------------------------

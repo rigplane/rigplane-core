@@ -1228,7 +1228,9 @@ class TestAckSinkRobustness:
     ) -> None:
         radio._civ_runtime.start_pump()
         try:
+            await radio._civ_runtime.stop_pump()
             radio._civ_runtime.advance_generation("unit-test-reconnect")
+            radio._civ_runtime.start_pump()
 
             mock_transport.queue_response_on_send(1, _freq_response(14_074_000))
             mock_transport.queue_response_on_send(2, _mode_response(Mode.USB))

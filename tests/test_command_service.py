@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -214,6 +216,60 @@ async def test_execute_acknowledges_without_confirming_state_when_executor_has_n
         session_id="ws-a",
         paths=(_freq_path(),),
     ) == {_freq_path(): 14_074_000}
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_execute_captures_generation_before_awaited_executor_result() -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+    store = StateStore()
+
+    class DelayedExecutor:
+        async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+            started.set()
+            await release.wait()
+            return CommandExecutionResult(
+                observations=(
+                    replace(
+                        _observation(_freq_path(), 14_074_000, at=10.0),
+                        provider_generation=store.provider_generation,
+                    ),
+                )
+            )
+
+    service = CommandService(executor=DelayedExecutor(), state_store=store)
+    task = asyncio.create_task(service.execute(_intent()))
+    await started.wait()
+    store.begin_provider_generation()
+    release.set()
+    await task
+
+    assert _states(service.lifecycle_events())[-1] == "acknowledged"
+    assert service.pending_overlays(source="websocket", session_id="ws-a")
+    assert _freq_path() not in {field.path for field in store.snapshot().fields}
+
+
+@pytest.mark.parametrize("stale", (True, False), ids=("rejected", "current"))
+def test_only_current_non_empty_changeset_reconciles_overlay(stale: bool) -> None:
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    service = CommandService(executor=FakeExecutor(), state_store=store)
+    intent = _intent()
+    service.emit_lifecycle(intent, "accepted")
+    service._record_intent_overlay(intent)  # noqa: SLF001
+    if stale:
+        store.begin_provider_generation()
+
+    changeset = service.apply_observation(
+        replace(
+            _observation(_freq_path(), 14_074_000, at=10.0),
+            provider_generation=generation,
+        )
+    )
+
+    pending = service.pending_overlays(source="websocket", session_id="ws-a")
+    assert bool(changeset.observed_paths) is not stale
+    assert bool(pending) is stale
+    assert ("reconciled" in _states(service.lifecycle_events())) is not stale
 
 
 def test_pending_overlays_are_projected_by_source_session_command_and_path() -> None:

@@ -584,8 +584,13 @@ class CivRuntime:
     def start_pump(self) -> None:
         """Start always-on CI-V receive pump."""
         if self._host._civ_rx_task is None or self._host._civ_rx_task.done():
+            source_generation = self._host._civ_epoch
+            store_provider_generation = self._host._state_store.provider_generation
             self._host._civ_rx_task = asyncio.create_task(
-                self._civ_rx_loop(source_generation=self._host._civ_epoch)
+                self._civ_rx_loop(
+                    source_generation=source_generation,
+                    store_provider_generation=store_provider_generation,
+                )
             )
 
     def bind_ptt_observer(
@@ -854,6 +859,7 @@ class CivRuntime:
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
+        self._host._state_store.begin_provider_generation()
         for token in self._managed_tx_ports.values():
             if token.civ_source_generation == source_generation:
                 self._poison_managed_tx_port(token)
@@ -1376,7 +1382,12 @@ class CivRuntime:
         )
         return non_scope_packets + kept_scope
 
-    async def _civ_rx_loop(self, *, source_generation: int) -> None:
+    async def _civ_rx_loop(
+        self,
+        *,
+        source_generation: int,
+        store_provider_generation: int,
+    ) -> None:
         """Continuously consume CI-V transport packets and route events."""
         assert self._host._civ_transport is not None
         self._active_rx_source_generation = source_generation
@@ -1416,12 +1427,10 @@ class CivRuntime:
                         self._remember_raw_received_frame_bytes(frame, frame_bytes)
                         self.deliver_raw_civ(frame_bytes)
                         try:
-                            generation = source_generation
-                            if self._host._civ_rx_task is asyncio.current_task():
-                                generation = self._host._civ_epoch
                             await self._route_civ_frame(
                                 frame,
-                                generation=generation,
+                                generation=source_generation,
+                                store_provider_generation=store_provider_generation,
                             )
                         except Exception:
                             logger.exception(
@@ -1434,7 +1443,13 @@ class CivRuntime:
             if self._active_rx_source_generation == source_generation:
                 self._active_rx_source_generation = None
 
-    async def _route_civ_frame(self, frame: CivFrame, *, generation: int) -> None:
+    async def _route_civ_frame(
+        self,
+        frame: CivFrame,
+        *,
+        generation: int,
+        store_provider_generation: int | None = None,
+    ) -> None:
         """Route one parsed CI-V frame into command/scope event paths."""
         if frame.from_addr != self._host._radio_addr:
             return
@@ -1476,6 +1491,7 @@ class CivRuntime:
             self._update_state_cache_from_frame(
                 frame,
                 source_generation=generation,
+                store_provider_generation=store_provider_generation,
             )
         self._publish_civ_event(event)
         claimed: _CivDataTransaction | None = None
@@ -1559,17 +1575,15 @@ class CivRuntime:
         frame: CivFrame,
         *,
         source_generation: int | None = None,
+        store_provider_generation: int | None = None,
     ) -> None:
         """Best-effort update of state cache from an incoming CI-V frame."""
-        current_generation = getattr(self._host, "_civ_epoch", 0)
-        if not isinstance(current_generation, int) or isinstance(
-            current_generation, bool
-        ):
-            current_generation = 0
         self._apply_state_store_observations(
             frame,
             generation=(
-                current_generation if source_generation is None else source_generation
+                self._host._state_store.provider_generation
+                if store_provider_generation is None
+                else store_provider_generation
             ),
         )
 
@@ -1782,6 +1796,19 @@ class CivRuntime:
             )
             return
 
+        store_provider_generation = (
+            self._host._state_store.provider_generation
+            if generation is None
+            else generation
+        )
+        observations = tuple(
+            _replace_dataclass(
+                observation,
+                provider_generation=store_provider_generation,
+            )
+            for observation in observations
+        )
+
         if (
             frame.command in (0x00, 0x01, 0x03, 0x04, 0x25, 0x26)
             and getattr(self._host._profile, "vfo_readback", "none")
@@ -1789,9 +1816,7 @@ class CivRuntime:
         ):
             changeset = self._host._state_store.apply_relative_vfo_observations(
                 observations,
-                generation=(
-                    self._host._civ_epoch if generation is None else generation
-                ),
+                generation=store_provider_generation,
             )
             self._record_scheduler_results_for_changeset(changeset)
             self._notify_state_store_changed(changeset)
