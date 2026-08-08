@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..core.radio_protocol import ObservationPollable, StatePollable
+from ..core.radio_protocol import ObservationPollable, StatePollable, StateStoreCapable
 from ..core.state_pipeline_contracts import Observation
 from ..radio_state import RadioState
 from ..startup_checks import assert_radio_startup_ready
@@ -97,10 +97,18 @@ async def start_web_server(server: WebServer) -> None:
 
         # --- Request-response observation poller (Yaesu CAT, rigctld client, etc.) ---
         if isinstance(server._radio, ObservationPollable):
+            shared_store = isinstance(server._radio, StateStoreCapable) and (
+                server._radio.state_store is server.command_state_store
+            )
+            fallback_store = not shared_store
 
             def _observation_cb(observations: Sequence[Observation]) -> None:
+                accepted = False
                 for observation in observations:
-                    server.command_service.apply_observation(observation)
+                    changeset = server.command_service.apply_observation(observation)
+                    accepted = accepted or bool(changeset.observed_paths)
+                if not accepted:
+                    return
                 server.state_diagnostics.record(
                     "backend_read",
                     "web.observation_poller",
@@ -112,6 +120,33 @@ async def start_web_server(server: WebServer) -> None:
                 callback=_observation_cb,
                 command_queue=server._command_queue,
             )
+            bind_generation = getattr(
+                server._state_poller, "bind_provider_generation", None
+            )
+            if fallback_store and not callable(bind_generation):
+                server._server.close()
+                await server._server.wait_closed()
+                server._server = None
+                server._server_was_running = False
+                raise RuntimeError(
+                    "fallback observation poller must bind provider generation"
+                )
+            if callable(bind_generation):
+                bind_generation(
+                    capture=lambda: server.command_state_store.provider_generation,
+                    advance=(
+                        server.command_state_store.begin_provider_generation
+                        if fallback_store
+                        else None
+                    ),
+                )
+            setattr(
+                server._state_poller,
+                "_uses_fallback_provider_generation",
+                fallback_store,
+            )
+            if fallback_store:
+                server.command_state_store.begin_provider_generation()
             server._spawn(server._state_poller.start())
             logger.info("observation poller started")
         # --- Legacy request-response state poller compatibility path ---
@@ -223,6 +258,8 @@ async def stop_web_server(server: WebServer) -> None:
         radio_poller.stop()
         server._radio_poller = None
     if server._state_poller is not None:
+        if getattr(server._state_poller, "_uses_fallback_provider_generation", False):
+            server.command_state_store.begin_provider_generation()
         try:
             await asyncio.wait_for(server._state_poller.stop(), timeout=2.0)
         except TimeoutError:

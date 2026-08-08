@@ -143,6 +143,7 @@ def _store_observation(
     *,
     at: float,
     max_age: float | None = None,
+    generation: int = 0,
 ) -> Observation:
     return Observation(
         path=path,
@@ -150,6 +151,7 @@ def _store_observation(
         source=_state_store_source(),
         timestamp_monotonic=at,
         max_age=max_age,
+        provider_generation=generation,
     )
 
 
@@ -248,6 +250,12 @@ class _FakeObservationPoller:
     async def stop(self) -> None:
         self.stopped = True
 
+    def bind_provider_generation(
+        self, *, capture: object, advance: object = None
+    ) -> None:
+        self.capture = capture
+        self.advance = advance
+
 
 class _ObservationStatePollableRadio:
     backend_id = "yaesu_cat"
@@ -276,6 +284,25 @@ class _ObservationStatePollableRadio:
         self, *, callback: object, **_kwargs: object
     ) -> object:
         self.observation_poller = _FakeObservationPoller(callback)
+        return self.observation_poller
+
+
+class _FallbackObservationPollableRadio:
+    backend_id = model = "fallback"
+    capabilities: set[str] = set()
+    connected = control_connected = radio_ready = True
+    radio_state = RadioState()
+
+    def __init__(self, bound: bool = True) -> None:
+        self.bound = bound
+        self.observation_poller: object | None = None
+
+    def create_observation_poller(
+        self, *, callback: object, **_kwargs: object
+    ) -> object:
+        self.observation_poller = (
+            _FakeObservationPoller(callback) if self.bound else object()
+        )
         return self.observation_poller
 
 
@@ -380,6 +407,56 @@ async def test_start_routes_observation_pollable_radio_through_observation_store
     snapshot = srv.command_state_store.snapshot()
     values = {str(field.path): field.value for field in snapshot.fields}
     assert values["receiver.main.active.freq_mode.freq_hz"] == 14_074_000
+    assert radio.state_store.provider_generation == 0
+
+
+@pytest.mark.asyncio
+async def test_web_fallback_observation_store_advances_before_attach_and_detach() -> (
+    None
+):
+    radio = _FallbackObservationPollableRadio()
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+    with patch(
+        "rigplane.web.web_startup.asyncio.start_server",
+        new=AsyncMock(return_value=_FakeAsyncServer()),
+    ):
+        await server.start()
+        await asyncio.sleep(0)
+        poller = radio.observation_poller
+        assert isinstance(poller, _FakeObservationPoller)
+        assert server.command_state_store.provider_generation == 1
+        assert poller.capture() == 1  # type: ignore[operator]
+        server._broadcast_state_update = MagicMock()
+        path = FieldPath.active("main", "freq_mode", "freq_hz")
+        stale = _store_observation(path, 7_074_000, at=time.monotonic())
+        poller._callback((stale,))
+        assert path not in {
+            item.path for item in server.command_state_store.snapshot().fields
+        }
+        server._broadcast_state_update.assert_not_called()
+        current = _store_observation(path, 7_074_000, at=time.monotonic(), generation=1)
+        poller._callback((current,))
+        poller._callback((current,))
+        assert server._broadcast_state_update.call_count == 2
+        await server.stop()
+
+    assert server.command_state_store.provider_generation == 2
+
+
+@pytest.mark.asyncio
+async def test_web_fallback_rejects_unbound_observation_poller() -> None:
+    server = WebServer(
+        _FallbackObservationPollableRadio(False),
+        WebConfig(host="127.0.0.1", port=0, discovery=False),
+    )
+    with (
+        patch(
+            "rigplane.web.web_startup.asyncio.start_server",
+            new=AsyncMock(return_value=_FakeAsyncServer()),
+        ),
+        pytest.raises(RuntimeError, match="must bind provider generation"),
+    ):
+        await server.start()
 
 
 def test_state_store_s_meter_change_broadcasts_without_legacy_revision_event() -> None:
