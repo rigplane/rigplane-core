@@ -331,6 +331,38 @@ async def test_get_freq_radio_state_fallback_records_state_store_observation(
     )
     assert field.value == 14_074_000
     assert field.source.source == "state_poller"
+    assert field.provider_generation == handler._state_store.provider_generation  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_handler_captures_fallback_store_token_before_awaited_get(
+    mock_radio: AsyncMock,
+) -> None:
+    """An old request may return a response, but cannot relabel its readback."""
+    store = StateStore()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_get_freq() -> int:
+        started.set()
+        await release.wait()
+        return 14_074_000
+
+    mock_radio.get_freq.side_effect = delayed_get_freq
+    handler = RigctldHandler(mock_radio, RigctldConfig(), state_store=store)
+    request = asyncio.create_task(handler.execute(get_cmd("get_freq")))
+    await started.wait()
+    store.begin_provider_generation()
+    before = store.snapshot()
+    release.set()
+    response = await request
+
+    assert response.values == ["14074000"]
+    after = store.snapshot()
+    assert after.state_revision == before.state_revision
+    assert after.freshness_revision == before.freshness_revision
+    assert after.observation_seq == before.observation_seq
+    assert after.fields == before.fields
 
 
 @pytest.mark.asyncio
@@ -3409,6 +3441,36 @@ async def test_yaesu_get_level_af_backend_fallback_records_state_store(
     field = store.snapshot().field("receiver.main.operator_controls.af_level")
     assert field.value == 128
     assert field.source.source == "hamlib_response"
+
+
+@pytest.mark.asyncio
+async def test_routed_handler_readback_uses_request_captured_generation(
+    yaesu_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_get_af_level() -> int:
+        started.set()
+        await release.wait()
+        return 128
+
+    yaesu_radio.get_af_level.side_effect = delayed_get_af_level
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+    request = asyncio.create_task(handler.execute(get_cmd("get_level", "AF")))
+    await started.wait()
+    store.begin_provider_generation()
+    before = store.snapshot()
+    release.set()
+    response = await request
+
+    assert response.ok
+    after = store.snapshot()
+    assert after.state_revision == before.state_revision
+    assert after.freshness_revision == before.freshness_revision
+    assert after.observation_seq == before.observation_seq
+    assert after.fields == before.fields
 
 
 @pytest.mark.asyncio

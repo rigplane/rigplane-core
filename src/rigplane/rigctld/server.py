@@ -154,6 +154,8 @@ class RigctldServer:
         self._circuit_breaker: CircuitBreaker | None = _circuit_breaker
         self._server_was_running: bool = False
         self._state_store: StateStore | None = None
+        self._uses_fallback_state_store = False
+        self._fallback_state_store_attached = False
         self._acquisition_scheduler: AcquisitionScheduler | None = None
         self._state_model_service: StateModelService | None = None
         self._state_freshness_service: StateFreshnessService | None = None
@@ -379,6 +381,11 @@ class RigctldServer:
     def _bootstrap_state_acquisition(self) -> None:
         """Prepare StateStore-backed acquisition services for standalone rigctld."""
         self._state_store = self._radio_state_store()
+        self._uses_fallback_state_store = self._state_store is None
+        if self._state_store is None:
+            # The standalone server owns one fallback Store and passes that
+            # exact instance to its default handler. It is never handler-local.
+            self._state_store = StateStore()
         self._state_model_service = self._radio_state_model_service()
         self._state_freshness_service = self._radio_state_freshness_service()
         self._acquisition_executor = self._provided_acquisition_executor()
@@ -386,8 +393,6 @@ class RigctldServer:
         acquisition_profile = self._profile_state_acquisition()
         if acquisition_profile is None:
             return
-        if self._state_store is None:
-            self._state_store = StateStore()
         if self._state_model_service is not None:
             scheduler = getattr(self._radio, "_acquisition_scheduler", None)
             if isinstance(scheduler, AcquisitionScheduler):
@@ -681,16 +686,32 @@ class RigctldServer:
 
             self._protocol = _proto_mod
 
+        if self._state_store is None:
+            self._bootstrap_state_acquisition()
+
         if self._rig_handler is None:
             from . import handler as _handler_mod  # noqa: PLC0415, TID251
 
-            self._bootstrap_state_acquisition()
             self._rig_handler = _handler_mod.RigctldHandler(
                 self._radio,
                 self._config,
                 state_store=self._state_store,
                 state_model_service=self._state_model_service,
             )
+
+        store = self._state_store
+        if store is not None:
+            bind_provider_generation = getattr(
+                self._rig_handler, "bind_provider_generation", None
+            )
+            if callable(bind_provider_generation):
+                bind_provider_generation(lambda: store.provider_generation)
+            if (
+                self._uses_fallback_state_store
+                and not self._fallback_state_store_attached
+            ):
+                store.begin_provider_generation()
+                self._fallback_state_store_attached = True
 
         self._server = await asyncio.start_server(
             self._accept_client,
@@ -708,6 +729,14 @@ class RigctldServer:
 
     async def stop(self) -> None:
         """Close the listener and cancel all active client tasks."""
+        if (
+            self._uses_fallback_state_store
+            and self._fallback_state_store_attached
+            and self._state_store is not None
+        ):
+            self._state_store.begin_provider_generation()
+            self._fallback_state_store_attached = False
+
         if self._state_acquisition_drain_task is not None:
             self._state_acquisition_drain_task.cancel()
             try:
