@@ -150,6 +150,50 @@ async def test_retirement_prevents_stale_on_after_replacement() -> None:
     assert writes == [False]
 
 
+async def test_replacement_waits_for_stubborn_old_write_to_be_terminal() -> None:
+    started, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    events: list[str] = []
+    port = _Port(object())
+
+    async def stubborn_write(on: bool) -> None:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        events.append(f"wire:{on}")
+
+    async def read() -> bool:
+        return False
+
+    lifecycle = _lifecycle(port, write=stubborn_write, read=read, drain_timeout=0.01)
+    assert lifecycle._capture_managed_tx_port(1, lambda _observation: None)
+    stale_on = asyncio.create_task(lifecycle._write_managed_ptt(1, True))
+    await started.wait()
+
+    before = time.monotonic()
+    await lifecycle._retire_managed_tx_port(1)
+    elapsed = time.monotonic() - before
+    assert cancelled.is_set()
+    assert elapsed < 0.2
+    assert not stale_on.done()
+
+    port.current = object()
+    try:
+        with pytest.raises(ConnectionError, match="write.*pending"):
+            lifecycle._capture_managed_tx_port(2, lambda _observation: None)
+    finally:
+        release.set()
+        with pytest.raises(ConnectionError, match="stale"):
+            await stale_on
+
+    assert events == ["wire:True"]
+    assert lifecycle._capture_managed_tx_port(2, lambda _observation: None)
+    events.append("replacement:valid")
+    assert events == ["wire:True", "replacement:valid"]
+
+
 @pytest.mark.parametrize("result", [RuntimeError("read failed"), 1])
 async def test_read_failure_or_malformed_value_never_becomes_truth(
     result: BaseException | int,

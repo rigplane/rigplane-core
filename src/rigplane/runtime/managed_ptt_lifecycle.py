@@ -50,6 +50,7 @@ class ProviderTxLifecycle:
         self._observation_sequence = 0
         self._retired_provider_generations: set[int] = set()
         self._inflight: dict[asyncio.Task[object], _Binding] = {}
+        self._inflight_writes: set[asyncio.Task[object]] = set()
 
     def _live_port_token(self) -> object | None:
         try:
@@ -89,6 +90,8 @@ class ProviderTxLifecycle:
             raise ValueError("provider_generation must be a non-negative integer")
         if self._binding is not None:
             raise ConnectionError("managed TX physical port is already captured")
+        if self._inflight_writes:
+            raise ConnectionError("managed TX prior write is still pending")
         if provider_generation in self._retired_provider_generations:
             raise ConnectionError("managed TX provider generation is terminal")
         token = self._live_port_token()
@@ -137,11 +140,13 @@ class ProviderTxLifecycle:
     async def _write_managed_ptt(self, provider_generation: int, on: bool) -> None:
         binding = self._require_current(provider_generation)
         task = self._track_current_task(binding)
+        self._inflight_writes.add(task)
         try:
             self._require_binding(binding)
             await self._write_ptt(on)
             self._require_binding(binding)
         finally:
+            self._inflight_writes.discard(task)
             self._untrack(task, binding)
 
     async def _request_authoritative_ptt_read(
