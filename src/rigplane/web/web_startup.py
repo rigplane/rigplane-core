@@ -103,8 +103,12 @@ async def start_web_server(server: WebServer) -> None:
             fallback_store = not shared_store
 
             def _observation_cb(observations: Sequence[Observation]) -> None:
+                accepted = False
                 for observation in observations:
-                    server.command_service.apply_observation(observation)
+                    changeset = server.command_service.apply_observation(observation)
+                    accepted = accepted or bool(changeset.observed_paths)
+                if not accepted:
+                    return
                 server.state_diagnostics.record(
                     "backend_read",
                     "web.observation_poller",
@@ -136,7 +140,11 @@ async def start_web_server(server: WebServer) -> None:
                         else None
                     ),
                 )
-            server._state_poller_uses_fallback_generation = fallback_store
+            setattr(
+                server._state_poller,
+                "_uses_fallback_provider_generation",
+                fallback_store,
+            )
             if fallback_store:
                 server.command_state_store.begin_provider_generation()
             server._spawn(server._state_poller.start())
@@ -250,14 +258,13 @@ async def stop_web_server(server: WebServer) -> None:
         radio_poller.stop()
         server._radio_poller = None
     if server._state_poller is not None:
-        if getattr(server, "_state_poller_uses_fallback_generation", False):
+        if getattr(server._state_poller, "_uses_fallback_provider_generation", False):
             server.command_state_store.begin_provider_generation()
         try:
             await asyncio.wait_for(server._state_poller.stop(), timeout=2.0)
         except TimeoutError:
             logger.warning("state poller stop timed out")
         server._state_poller = None
-        server._state_poller_uses_fallback_generation = False
     if server._state_store_freshness_task is not None:
         server._state_store_freshness_task.cancel()
         try:

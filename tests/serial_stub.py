@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from rigplane.core.state_pipeline_contracts import (
@@ -679,13 +679,29 @@ class _MockObservationPoller:
         self._callback = callback
         self._command_queue = command_queue
         self._task: asyncio.Task[None] | None = None
+        self._capture_provider_generation: Callable[[], int] = lambda: 0
+
+    def bind_provider_generation(
+        self,
+        *,
+        capture: Callable[[], int],
+        advance: Callable[[], int] | None = None,
+    ) -> None:
+        del advance
+        self._capture_provider_generation = capture
+
+    def _observations(self, generation: int) -> tuple[Observation, ...]:
+        return tuple(
+            replace(item, provider_generation=generation)
+            for item in self._radio.baseline_observations()
+        )
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         # Seed the StateStore immediately so the first /api/v1/state read after
         # startup already observation-backs the v2 fields.
-        self._callback(self._radio.baseline_observations())
+        self._callback(self._observations(self._capture_provider_generation()))
         self._task = asyncio.get_running_loop().create_task(
             self._run(), name="serial-mock-observation-poller"
         )
@@ -707,9 +723,10 @@ class _MockObservationPoller:
         try:
             while True:
                 if self._command_queue is not None and self._command_queue.has_commands:
+                    generation = self._capture_provider_generation()
                     changed = await self._drain_commands()
                     if changed:
-                        self._callback(self._radio.baseline_observations())
+                        self._callback(self._observations(generation))
                 if self._command_queue is not None:
                     await self._command_queue.wait(timeout=self._DRAIN_INTERVAL)
                 else:

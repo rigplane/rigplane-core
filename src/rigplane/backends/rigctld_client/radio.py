@@ -88,8 +88,6 @@ class RigctldClientObservationPoller:
         capture: Callable[[], int],
         advance: Callable[[], int] | None = None,
     ) -> None:
-        """Bind immutable observation tokens and the radio reconnect lifecycle."""
-
         self._capture_provider_generation = capture
         self._radio.bind_provider_generation(advance=advance)
 
@@ -102,6 +100,10 @@ class RigctldClientObservationPoller:
             replace(observation, provider_generation=generation)
             for observation in observations
         )
+
+    def _provider_generation_is_current(self, generation: int | None) -> bool:
+        capture = self._capture_provider_generation
+        return capture is None or generation == capture()
 
     async def start(self) -> None:
         if self._tasks:
@@ -150,6 +152,8 @@ class RigctldClientObservationPoller:
         observations.extend(
             await _read_drained_slow_control_readbacks(adapter, drained_entries)
         )
+        if not self._provider_generation_is_current(provider_generation):
+            return
         self._callback(
             self._stamp_provider_generation(
                 self._annotate_readback_observations(observations),
@@ -163,12 +167,12 @@ class RigctldClientObservationPoller:
         capture = self._capture_provider_generation
         provider_generation = None if capture is None else capture()
         adapter = RigctldClientObservationAdapter(self._radio)
+        observations = await adapter.read_slow_controls()
+        if not self._provider_generation_is_current(provider_generation):
+            return
         self._callback(
             self._stamp_provider_generation(
-                self._annotate_readback_observations(
-                    await adapter.read_slow_controls()
-                ),
-                provider_generation,
+                self._annotate_readback_observations(observations), provider_generation
             )
         )
 

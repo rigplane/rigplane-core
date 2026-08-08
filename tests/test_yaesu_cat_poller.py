@@ -429,23 +429,23 @@ def _target_observation(
 
 
 @pytest.mark.asyncio
-async def test_yaesu_poller_stamps_captured_provider_generation_before_await() -> None:
-    radio = make_radio()
+@pytest.mark.parametrize("error", (False, True))
+async def test_stale_yaesu_medium_has_no_callback_or_mirror_side_effects(
+    error: bool,
+) -> None:
+    radio = _tx_target_radio()
     emitted: list[Observation] = []
     store = StateStore()
     gate = asyncio.Event()
 
     async def delayed_medium() -> tuple[Observation, ...]:
         await gate.wait()
+        if error:
+            raise CatTimeoutError("stale")
         return (
             ProviderObservationAdapter(
-                _profile_state_acquisition(),
-                source="yaesu_poll_response",
-                transport="serial",
-            ).observation(
-                FieldPath.active("main", "freq_mode", "freq_hz"),
-                14_074_000,
-            ),
+                _profile_state_acquisition(), "yaesu_poll_response", "serial"
+            ).observation(FieldPath.global_("tx_state", "ptt"), True),
         )
 
     poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
@@ -458,47 +458,51 @@ async def test_yaesu_poller_stamps_captured_provider_generation_before_await() -
         task = asyncio.create_task(poller._emit_medium_observations())  # noqa: SLF001
         await asyncio.sleep(0)
         store.begin_provider_generation()
+        radio._transport.stats.reconnects += 1
         gate.set()
         await task
 
-    assert emitted and {item.provider_generation for item in emitted} == {0}
-    before = store.snapshot()
-    for observation in emitted:
-        store.apply(observation)
-    after = store.snapshot()
-    assert (
-        after.state_revision,
-        after.freshness_revision,
-        after.observation_seq,
-        after.fields,
-        after.provider_generation,
-    ) == (
-        before.state_revision,
-        before.freshness_revision,
-        before.observation_seq,
-        before.fields,
-        before.provider_generation,
-    )
+    assert emitted == []
+    assert poller._last_ptt is False  # noqa: SLF001
+    assert poller._tx_target_known_generation is None  # noqa: SLF001
+    radio._transport._maybe_reconnect_needed = lambda: True
+    await poller._try_reconnect()  # noqa: SLF001
+    assert store.provider_generation == 2
+    assert emitted and {item.provider_generation for item in emitted} == {2}
 
 
 @pytest.mark.asyncio
-async def test_yaesu_reconnect_advances_bound_store_once_before_reconnect() -> None:
-    radio = _tx_target_radio()
-    radio._transport._maybe_reconnect_needed = lambda: True
+async def test_stale_yaesu_fast_and_slow_have_no_ema_or_callback() -> None:
+    radio = make_radio()
     store = StateStore()
     emitted: list[Observation] = []
     poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
-    poller.bind_provider_generation(
-        capture=lambda: store.provider_generation,
-        advance=store.begin_provider_generation,
-    )
+    poller.bind_provider_generation(capture=lambda: store.provider_generation)
+    gate = asyncio.Event()
 
-    await poller._try_reconnect()  # noqa: SLF001
+    async def fast(*, smooth_s_meter: object) -> tuple[Observation, ...]:
+        await gate.wait()
+        smooth_s_meter(0, 100)  # type: ignore[operator]
+        return ()
 
-    radio._transport.reconnect.assert_awaited_once()
-    assert store.provider_generation == 1
-    assert emitted
-    assert {item.provider_generation for item in emitted} == {1}
+    async def slow() -> tuple[Observation, ...]:
+        await gate.wait()
+        return ()
+
+    adapter = MagicMock()
+    adapter.poll_rx_meters = fast
+    adapter.poll_slow_controls = slow
+    adapter.poll_tx_controls = AsyncMock(return_value=())
+    with patch.object(YaesuObservationAdapter, "from_radio", return_value=adapter):
+        fast_task = asyncio.create_task(poller._emit_fast_observations())  # noqa: SLF001
+        slow_task = asyncio.create_task(poller._emit_slow_control_observations())  # noqa: SLF001
+        await asyncio.sleep(0)
+        store.begin_provider_generation()
+        gate.set()
+        await asyncio.gather(fast_task, slow_task)
+
+    assert emitted == []
+    assert poller._ema_s_main is None  # noqa: SLF001
 
 
 def _state_write_target(node: ast.AST) -> str | None:

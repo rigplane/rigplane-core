@@ -746,19 +746,39 @@ async def test_radio_observation_poller_emits_adapter_covered_reads() -> None:
 
 
 @pytest.mark.asyncio
-async def test_external_rigctld_poll_stamps_captured_generation_after_await() -> None:
+@pytest.mark.parametrize("slow", (False, True))
+async def test_stale_external_rigctld_poll_preserves_correlation_for_next_cycle(
+    slow: bool,
+) -> None:
     async with FakeRigctldServer() as server:
-        radio = RigctldClientRadio(host=server.host, port=server.port)
-        await radio.connect()
-        try:
+        async with RigctldClientRadio(host=server.host, port=server.port) as radio:
             store = StateStore()
-            observations: list[Observation] = []
-            poller = radio.create_observation_poller(callback=observations.extend)
+            queue = CommandQueue()
+            service = CommandService(executor=_NoopCommandExecutor(), state_store=store)
+            command = SetPreamp(2) if slow else SetFreq(7_050_000)
+            intent = command_intent_from_request(
+                "set_preamp" if slow else "set_freq",
+                {"level": 2} if slow else {"freq": 7_050_000},
+                source="websocket",
+                command_id="g2",
+            )
+            await service.execute(intent)
+            queue.put_ordered(
+                command,
+                command_id="g2",
+                source="websocket",
+                command_service=service,
+            )
+            poller = radio.create_observation_poller(
+                callback=lambda batch: list(map(service.apply_observation, batch)),
+                command_queue=queue,
+            )
             poller.bind_provider_generation(
                 capture=lambda: store.provider_generation,
                 advance=store.begin_provider_generation,
             )
-            original = RigctldClientObservationAdapter.read_freq_mode_controls
+            method = "read_slow_controls" if slow else "read_freq_mode_controls"
+            original = getattr(RigctldClientObservationAdapter, method)
             started = asyncio.Event()
             release = asyncio.Event()
 
@@ -770,59 +790,32 @@ async def test_external_rigctld_poll_stamps_captured_generation_after_await() ->
                 return await original(self)
 
             with pytest.MonkeyPatch.context() as patch:
-                patch.setattr(
-                    RigctldClientObservationAdapter,
-                    "read_freq_mode_controls",
-                    delayed,
-                )
-                task = asyncio.create_task(poller._poll_medium())  # noqa: SLF001
+                if slow:
+                    await poller._drain_commands()  # noqa: SLF001
+                patch.setattr(RigctldClientObservationAdapter, method, delayed)
+                poll = poller._poll_slow if slow else poller._poll_medium  # noqa: SLF001
+                task = asyncio.create_task(poll())
                 await started.wait()
+                assert len(poller._pending_readback_entries) == 1  # noqa: SLF001
                 store.begin_provider_generation()
                 release.set()
                 await task
 
-            assert observations
-            assert {item.provider_generation for item in observations} == {0}
-            before = store.snapshot()
-            for observation in observations:
-                store.apply(observation)
-            after = store.snapshot()
-            assert (
-                after.state_revision,
-                after.freshness_revision,
-                after.observation_seq,
-                after.fields,
-                after.provider_generation,
-            ) == (
-                before.state_revision,
-                before.freshness_revision,
-                before.observation_seq,
-                before.fields,
-                before.provider_generation,
+            assert len(poller._pending_readback_entries) == 1  # noqa: SLF001
+            assert service.readback_expectations(
+                command_id="g2", source="websocket", session_id=None
             )
-        finally:
+            assert service.pending_overlays(
+                source="websocket", command_id="g2", session_id=None
+            )
+            await poll()
+            assert poller._pending_readback_entries == []  # noqa: SLF001
+            assert any(
+                event.state == "reconciled" for event in service.lifecycle_events()
+            )
             await radio.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_external_rigctld_explicit_reconnect_advances_bound_generation_once() -> (
-    None
-):
-    async with FakeRigctldServer() as server:
-        radio = RigctldClientRadio(host=server.host, port=server.port)
-        await radio.connect()
-        store = StateStore()
-        poller = radio.create_observation_poller(callback=lambda _items: None)
-        poller.bind_provider_generation(
-            capture=lambda: store.provider_generation,
-            advance=store.begin_provider_generation,
-        )
-        await radio.disconnect()
-        await radio.connect()
-        try:
-            assert store.provider_generation == 1
-        finally:
-            await radio.disconnect()
+            await radio.connect()
+            assert store.provider_generation == 2
 
 
 def test_command_response_observations_use_external_rigctld_provider() -> None:
