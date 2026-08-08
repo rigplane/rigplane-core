@@ -47,7 +47,12 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchRadioState: () => {},
   resetRadioState: () => {},
 }));
-vi.mock('$lib/stores/capabilities.svelte', () => ({ getCapabilities: () => h.caps }));
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: () => h.caps,
+  capabilitiesMatchGeneration: () => true,
+  clearCapabilities: () => {},
+  setCapabilities: () => true,
+}));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({
     startTx: h.start,

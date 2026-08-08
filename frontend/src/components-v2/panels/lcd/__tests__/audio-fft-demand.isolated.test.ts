@@ -86,6 +86,8 @@ const canonicalCapabilities: Capabilities = {
   audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: null,
+  stateContractVersion: 1,
+  providerGeneration: 0,
 };
 
 function radioState(revision: number) {
@@ -96,6 +98,7 @@ function radioState(revision: number) {
   };
   return {
     revision, stateRevision: revision, active: 'MAIN',
+    stateContractVersion: 1, providerGeneration: 0,
     main: receiver, sub: { ...receiver },
   } as never;
 }

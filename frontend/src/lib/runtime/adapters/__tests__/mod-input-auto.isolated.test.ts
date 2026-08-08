@@ -95,6 +95,8 @@ function makeState(overrides: Record<string, unknown> = {}): ServerState {
     split: false,
     dualWatch: false,
     tunerStatus: 0,
+    stateContractVersion: 1,
+    providerGeneration: 0,
     main: receiver(0),
     sub: receiver(0),
     ...overrides,
@@ -168,7 +170,7 @@ beforeEach(() => {
   vi.mocked(runtime.startTx).mockResolvedValue(null);
   vi.mocked(runtime.stopTx).mockClear();
   resetRadioState();
-  setCapabilities({ capabilities: ['data_mode'] } as never);
+  setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
   dismissModInputTxGuard();
 });
 
@@ -193,10 +195,10 @@ describe('toggle (MOR-618)', () => {
     setState({ main: receiver(1), data1ModInput: 0 });
     expect(deriveAutoLanModInputProps().available).toBe(true);
 
-    setCapabilities({ capabilities: [] } as never);
+    setCapabilities({ capabilities: [], stateContractVersion: 1, providerGeneration: 0 } as never);
     expect(deriveAutoLanModInputProps().available).toBe(false);
 
-    setCapabilities({ capabilities: ['data_mode'] } as never);
+    setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
     setState({
       main: receiver(1),
       data1ModInput: 0,
@@ -277,7 +279,7 @@ describe('auto-set at TX start (MOR-618)', () => {
 
   it('does nothing without the data_mode capability', async () => {
     setAutoLanModInputEnabled(true);
-    setCapabilities({ capabilities: [] } as never);
+    setCapabilities({ capabilities: [], stateContractVersion: 1, providerGeneration: 0 } as never);
     setState({ main: receiver(1), data1ModInput: 0 });
 
     await getTxAudioControl().startTx();

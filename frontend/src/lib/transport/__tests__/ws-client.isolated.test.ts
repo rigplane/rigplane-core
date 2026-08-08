@@ -81,6 +81,16 @@ vi.mock('../../stores/radio.svelte', () => ({
   }),
 }));
 
+vi.mock('../../stores/capabilities.svelte', () => ({
+  capabilitiesMatchGeneration: vi.fn(() => true),
+  clearCapabilities: vi.fn(),
+  setCapabilities: vi.fn(() => true),
+}));
+
+vi.mock('../http-client', () => ({
+  fetchCapabilities: vi.fn(() => new Promise(() => {})),
+}));
+
 import { isLiveRadioAvailable, setRadioStatus, setWsConnected } from '../../stores/connection.svelte';
 import { patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../../stores/radio.svelte';
 
@@ -144,6 +154,8 @@ function makeState(
       controlConnected: true,
       ...connection,
     },
+    stateContractVersion: 1,
+    providerGeneration: 0,
     ...topLevel,
     txTarget: txTarget ?? { status: 'unknown', reason: 'not-observed' },
   };
@@ -160,6 +172,8 @@ function fullEnvelope(state: ServerStateWithObservation): Record<string, unknown
     observationSeq: state.observationSeq,
     publicStateSeq: state.publicStateSeq,
     transportSeq: state.transportSeq,
+    stateContractVersion: state.stateContractVersion,
+    providerGeneration: state.providerGeneration,
   };
 }
 
@@ -179,6 +193,8 @@ function deltaEnvelope(
     observationSeq: state.observationSeq,
     publicStateSeq: state.publicStateSeq,
     transportSeq: state.transportSeq,
+    stateContractVersion: state.stateContractVersion,
+    providerGeneration: state.providerGeneration,
   };
 }
 
@@ -997,7 +1013,7 @@ describe('control channel singleton', () => {
     expect(setRadioStatus).not.toHaveBeenCalled();
   });
 
-  it('replaces accumulated state when a full snapshot follows a revision reset', async () => {
+  it('rejects a same-session full snapshot that rolls revision truth backward', async () => {
     const { connect } = await import('../ws-client');
     connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
@@ -1007,10 +1023,10 @@ describe('control channel singleton', () => {
 
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, ptt: false, split: false })));
 
-    expect(setRadioState).toHaveBeenCalledTimes(1);
-    expect(radioStoreMock.current?.revision).toBe(1);
-    expect(radioStoreMock.current?.ptt).toBe(false);
-    expect(radioStoreMock.current?.split).toBe(false);
+    expect(setRadioState).not.toHaveBeenCalled();
+    expect(radioStoreMock.current?.revision).toBe(20);
+    expect(radioStoreMock.current?.ptt).toBe(true);
+    expect(radioStoreMock.current?.split).toBe(true);
   });
 
 });

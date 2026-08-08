@@ -31,7 +31,8 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
     receivers: 1, vfoScheme: 'single', freqRanges: [], modes: [], filters: [],
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },
-    txBands: [], scopeSource: 'hardware', audioFftAvailable: false, ...overrides,
+    txBands: [], scopeSource: 'hardware', audioFftAvailable: false,
+    stateContractVersion: 1, providerGeneration: 0, ...overrides,
   } as Capabilities;
 }
 

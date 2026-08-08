@@ -80,6 +80,8 @@ function makeState(overrides: Record<string, unknown> = {}): ServerState {
     split: false,
     dualWatch: false,
     tunerStatus: 0,
+    stateContractVersion: 1,
+    providerGeneration: 0,
     main: receiver(0),
     sub: receiver(0),
     ...overrides,
@@ -105,7 +107,7 @@ beforeEach(() => {
   vi.mocked(runtime.startTx).mockClear();
   vi.mocked(runtime.stopTx).mockClear();
   resetRadioState();
-  setCapabilities({ capabilities: ['data_mode'] } as never);
+  setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
   dismissModInputTxGuard();
 });
 
@@ -149,7 +151,7 @@ describe('armModInputTxGuard (MOR-617)', () => {
   });
 
   it('does not fire without the data_mode capability', () => {
-    setCapabilities({ capabilities: [] } as never);
+    setCapabilities({ capabilities: [], stateContractVersion: 1, providerGeneration: 0 } as never);
     setState({ main: receiver(1), data1ModInput: 0 });
 
     armModInputTxGuard();

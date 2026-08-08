@@ -1,6 +1,7 @@
 import type { ServerState, ReceiverState } from '../types/state';
 import { setRadioPowerOn, setRigConnected, setRadioReady, setControlConnected, setRadioHealth } from './connection.svelte';
 import { getFieldStatus, isFieldAvailable } from '../state/field-status';
+import { capabilitiesMatchGeneration } from './capabilities.svelte';
 
 /**
  * Shared radio state — class-based $state pattern for cross-module reactivity.
@@ -208,7 +209,42 @@ export function resetRadioState(): void {
   notifyRadioStateSubscribers();
 }
 
-export function setRadioState(state: ServerState): void {
+function validProviderGeneration(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+function hasCurrentEpoch(state: ServerState): boolean {
+  const record = state as unknown as Record<string, unknown>;
+  return record.stateContractVersion === 1
+    && validProviderGeneration(record.providerGeneration)
+    && capabilitiesMatchGeneration(record.providerGeneration);
+}
+
+function clearGenerationBookkeeping(): void {
+  lastRevision = -1;
+  lastFreshnessRevision = -1;
+  lastObservationSeq = -1;
+  lastHealthRevision = -1;
+  optimisticMain.clear();
+  optimisticSub.clear();
+  optimisticTopLevel.clear();
+  lockedFields.clear();
+}
+
+export function setRadioState(state: ServerState): boolean {
+  if (!hasCurrentEpoch(state)) return false;
+
+  const nextGeneration = (state as unknown as Record<string, unknown>).providerGeneration as number;
+  const currentGeneration = radio.current
+    ? (radio.current as unknown as Record<string, unknown>).providerGeneration
+    : null;
+  if (currentGeneration !== null && currentGeneration !== nextGeneration) {
+    // A new provider is a new revision domain. Never carry an optimistic
+    // patch or lock from the retired provider into its observed state.
+    clearGenerationBookkeeping();
+  }
   const nextStateRevision = stateRevision(state);
   const nextFreshnessRevision = freshnessRevision(state);
   const nextObservationSeq = observationSeq(state);
@@ -259,7 +295,9 @@ export function setRadioState(state: ServerState): void {
     if (state.radioHealth !== undefined) {
       setRadioHealth(state.radioHealth);
     }
+    return true;
   }
+  return false;
 }
 
 const OPTIMISTIC_TTL = 5000; // hard timeout — normally cleared by server confirmation

@@ -8,12 +8,15 @@ import {
   patchActiveReceiver,
 } from './radio.svelte';
 import type { ServerState } from '../types/state';
+import { setCapabilities } from './capabilities.svelte';
 
 function makeState(revision: number): ServerState {
   return {
     revision,
     stateRevision: revision,
     freshnessRevision: 1,
+    stateContractVersion: 1,
+    providerGeneration: 0,
     active: 'MAIN',
     powerOn: true,
     ptt: false,
@@ -54,6 +57,13 @@ describe('resetRadioState', () => {
   beforeEach(() => {
     // Ensure clean state
     resetRadioState();
+    setCapabilities({
+      model: 'TEST', scope: false, audio: false, tx: false, capabilities: [],
+      receivers: 1, vfoScheme: 'single', freqRanges: [], modes: [], filters: [],
+      audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+      webrtc: { available: false, enabled: false }, txBands: null,
+      stateContractVersion: 1, providerGeneration: 0,
+    });
   });
 
   it('clears radio.current to null', () => {
@@ -90,7 +100,16 @@ describe('resetRadioState', () => {
 });
 
 describe('StateStore-only VFO truth', () => {
-  beforeEach(() => resetRadioState());
+  beforeEach(() => {
+    resetRadioState();
+    setCapabilities({
+      model: 'TEST', scope: false, audio: false, tx: false, capabilities: [],
+      receivers: 1, vfoScheme: 'single', freqRanges: [], modes: [], filters: [],
+      audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+      webrtc: { available: false, enabled: false }, txBands: null,
+      stateContractVersion: 1, providerGeneration: 0,
+    });
+  });
 
   it('does not let VFO optimistic patches overwrite the observed snapshot', () => {
     const initial = makeState(10);

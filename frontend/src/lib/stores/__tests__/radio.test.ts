@@ -137,6 +137,8 @@ function makeState(overrides: Partial<ServerStateWithObservation> = {}): ServerS
       fixedEdge: { rangeIndex: 0, edge: 0, startHz: 0, endHz: 0 },
     },
     txTarget,
+    stateContractVersion: 1,
+    providerGeneration: 0,
     ...stateOverrides,
   };
 }
@@ -147,6 +149,14 @@ describe('radio store', () => {
   beforeEach(async () => {
     vi.resetModules();
     store = await import('../radio.svelte');
+    const capabilities = await import('../capabilities.svelte');
+    capabilities.setCapabilities({
+      model: 'TEST', scope: false, audio: false, tx: false, capabilities: [],
+      receivers: 1, vfoScheme: 'single', freqRanges: [], modes: [], filters: [],
+      audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+      webrtc: { available: false, enabled: false }, txBands: null,
+      stateContractVersion: 1, providerGeneration: 0,
+    });
   });
 
   it('starts with null state', () => {
@@ -157,6 +167,40 @@ describe('radio store', () => {
     const s = makeState({ revision: 1 });
     store.setRadioState(s);
     expect(store.getRadioState()).toStrictEqual(s);
+  });
+
+  it('rejects a state whose epoch does not match capabilities before touching connection truth', async () => {
+    const connection = await import('../connection.svelte');
+    const capabilities = await import('../capabilities.svelte');
+    expect(store.setRadioState(makeState({ providerGeneration: 0 }))).toBe(true);
+    expect(store.setRadioState(makeState({ revision: 2, providerGeneration: 1, ptt: true }))).toBe(false);
+    expect(store.getRadioState()?.providerGeneration).toBe(0);
+    expect(connection.getRadioReady()).toBe(true);
+
+    capabilities.setCapabilities({
+      ...(capabilities.getCapabilities()!), providerGeneration: 1,
+    });
+    expect(store.setRadioState(makeState({ revision: 1, providerGeneration: 1, ptt: true }))).toBe(true);
+    expect(store.getRadioState()?.providerGeneration).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+  });
+
+  it('drops optimistic patches and revision locks when accepting a new provider epoch', async () => {
+    const capabilities = await import('../capabilities.svelte');
+    store.setRadioState(makeState({ providerGeneration: 0, main: { ...makeState().main, afLevel: 10 } }));
+    store.patchActiveReceiver({ afLevel: 42 }, true);
+    expect(store.getRadioState()?.main.afLevel).toBe(42);
+
+    capabilities.setCapabilities({
+      ...(capabilities.getCapabilities()!), providerGeneration: 1,
+    });
+    store.setRadioState(makeState({
+      revision: 1,
+      providerGeneration: 1,
+      main: { ...makeState().main, afLevel: 12 },
+    }));
+    expect(store.getRadioState()?.providerGeneration).toBe(1);
+    expect(store.getRadioState()?.main.afLevel).toBe(12);
   });
 
   it('accepts initial revision 0 state when store is empty', () => {

@@ -98,6 +98,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 
 /**
@@ -142,6 +143,7 @@ function liveState(over: Partial<ServerState> = {}, mode = 'CW'): ServerState {
   });
   return {
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
+    stateContractVersion: 1, providerGeneration: 0,
     breakIn: 1, breakInDelay: 64, keySpeed: 24, cwPitch: 600, dashRatio: 0,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000, 0), sub: receiver(14300000, 2),
@@ -162,6 +164,7 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  stateContractVersion: 1, providerGeneration: 0,
 } as unknown as Capabilities);
 
 /** A full CW radio: keyer, break-in, APF and the twin-peak filter. */
@@ -200,6 +203,7 @@ function useState(state: ServerState): void {
 }
 
 beforeEach(() => {
+  setCapabilities(liveCaps(CW_TAGS));
   useState(liveState());
   h.caps = liveCaps(CW_TAGS);
   h.snapshot = { ...IDLE };

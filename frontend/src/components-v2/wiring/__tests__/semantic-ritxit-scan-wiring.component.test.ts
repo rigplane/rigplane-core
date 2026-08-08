@@ -83,6 +83,7 @@ import { sendCommand } from '$lib/transport/ws-client';
 // agree with `h.state` (below) keeps the toggle direction deterministic and
 // independent of whatever a prior test in this file left behind.
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 
 const IDLE: Snapshot = {
@@ -109,6 +110,7 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
   });
   return {
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
+    stateContractVersion: 1, providerGeneration: 0,
     ritOn: true, ritTx: false, ritFreq: 250, scanning: false, scanType: 0x01, scanResumeMode: 1,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
@@ -124,6 +126,7 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  stateContractVersion: 1, providerGeneration: 0,
 } as unknown as Capabilities);
 
 /** `rit`/`xit` capability tags are what makes the ritXit group present;
@@ -153,6 +156,7 @@ function useState(state: ServerState): void {
 
 beforeEach(() => {
   resetRadioState();
+  setCapabilities(liveCaps(RIT_XIT_TAGS));
   useState(liveState());
   h.caps = liveCaps(RIT_XIT_TAGS);
   h.snapshot = { ...IDLE };
