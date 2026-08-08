@@ -431,10 +431,8 @@ def _target_observation(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error", (False, True))
 async def test_stale_yaesu_medium_has_no_side_effects(error: bool) -> None:
-    radio = _tx_target_radio()
+    radio, store, gate = _tx_target_radio(), StateStore(), asyncio.Event()
     emitted: list[Observation] = []
-    store = StateStore()
-    gate = asyncio.Event()
 
     async def delayed_medium() -> tuple[Observation, ...]:
         await gate.wait()
@@ -466,12 +464,10 @@ async def test_stale_yaesu_medium_has_no_side_effects(error: bool) -> None:
 
 @pytest.mark.asyncio
 async def test_stale_yaesu_fast_and_slow_have_no_ema_or_callback() -> None:
-    radio = make_radio()
-    store = StateStore()
+    radio, store, gate = make_radio(), StateStore(), asyncio.Event()
     emitted: list[Observation] = []
     poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
     poller.bind_provider_generation(capture=lambda: store.provider_generation)
-    gate = asyncio.Event()
 
     async def fast(*, smooth_s_meter: object) -> tuple[Observation, ...]:
         await gate.wait()
