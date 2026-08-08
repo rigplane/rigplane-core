@@ -143,6 +143,13 @@ function makeState(overrides: Partial<ServerStateWithObservation> = {}): ServerS
   };
 }
 
+function singleReceiverWireState(
+  overrides: Partial<ServerStateWithObservation> = {},
+): ServerStateWithObservation {
+  const { sub: _sub, ...wireState } = makeState(overrides);
+  return wireState as ServerStateWithObservation;
+}
+
 describe('radio store', () => {
   let store: typeof import('../radio.svelte');
 
@@ -167,6 +174,23 @@ describe('radio store', () => {
     const s = makeState({ revision: 1 });
     store.setRadioState(s);
     expect(store.getRadioState()).toStrictEqual(s);
+  });
+
+  it('accepts canonical single-receiver wire state with omitted or null sub through the legacy HTTP writer', () => {
+    const omitted = singleReceiverWireState({ revision: 1 });
+    expect(store.isValidServerState(omitted)).toBe(true);
+    expect(store.setRadioState(omitted)).toBe(true);
+    expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
+
+    const nullSub = { ...singleReceiverWireState({ revision: 2 }), sub: null } as unknown as ServerStateWithObservation;
+    expect(store.isValidServerState(nullSub)).toBe(true);
+    expect(store.setRadioState(nullSub)).toBe(true);
+    expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
+  });
+
+  it('still rejects metadata-only and malformed single-receiver wire bodies', () => {
+    expect(store.isValidServerState({ stateContractVersion: 1, providerGeneration: 0 })).toBe(false);
+    expect(store.isValidServerState({ ...singleReceiverWireState(), main: 'corrupt' })).toBe(false);
   });
 
   it('rejects a state whose epoch does not match capabilities before touching connection truth', async () => {

@@ -283,7 +283,7 @@ export function isValidServerState(value: unknown): value is ServerState {
     || typeof state.tunerStatus !== 'number'
     || !Number.isFinite(state.tunerStatus)
     || !validReceiver(state.main)
-    || (state.sub !== null && !validReceiver(state.sub))
+    || (state.sub !== undefined && state.sub !== null && !validReceiver(state.sub))
     || !validConnection(state.connection)
     || !validTxTarget(state.txTarget)
   ) return false;
@@ -299,6 +299,19 @@ export function isValidServerState(value: unknown): value is ServerState {
     if (state[key] !== undefined && (!state[key] || typeof state[key] !== 'object' || Array.isArray(state[key]))) return false;
   }
   return true;
+}
+
+/**
+ * The generated public contract omits ``sub`` for a single-receiver radio,
+ * while the established client-side merged-state type keeps a structural
+ * receiver slot for consumers that index by MAIN/SUB. This is a local alias
+ * of the observed MAIN receiver, never a newly observed SUB radio: capability
+ * gates remain the authority for whether a SUB surface can be displayed.
+ */
+function normalizeValidatedState(state: ServerState): ServerState {
+  const wireState = state as unknown as { sub?: ReceiverState | null };
+  if (wireState.sub !== undefined && wireState.sub !== null) return state;
+  return { ...state, sub: { ...state.main } };
 }
 
 function hasCurrentEpoch(state: ServerState): boolean {
@@ -321,7 +334,9 @@ function clearGenerationBookkeeping(): void {
 export function setRadioState(state: ServerState): boolean {
   if (!hasCurrentEpoch(state)) return false;
 
-  const nextGeneration = (state as unknown as Record<string, unknown>).providerGeneration as number;
+  const nextState = normalizeValidatedState(state);
+
+  const nextGeneration = (nextState as unknown as Record<string, unknown>).providerGeneration as number;
   const currentGeneration = radio.current
     ? (radio.current as unknown as Record<string, unknown>).providerGeneration
     : null;
@@ -330,19 +345,19 @@ export function setRadioState(state: ServerState): boolean {
     // patch or lock from the retired provider into its observed state.
     clearGenerationBookkeeping();
   }
-  const nextStateRevision = stateRevision(state);
-  const nextFreshnessRevision = freshnessRevision(state);
-  const nextObservationSeq = observationSeq(state);
+  const nextStateRevision = stateRevision(nextState);
+  const nextFreshnessRevision = freshnessRevision(nextState);
+  const nextObservationSeq = observationSeq(nextState);
   const isInitial = radio.current === null;
-  const nextHealthRevision = state.healthRevision ?? 0;
+  const nextHealthRevision = nextState.healthRevision ?? 0;
   const healthAdvanced = nextHealthRevision > lastHealthRevision;
   const freshnessAdvanced = nextFreshnessRevision > lastFreshnessRevision;
   const observationAdvanced = nextObservationSeq > lastObservationSeq;
   const semanticAdvanced = nextStateRevision > lastRevision;
   const semanticCurrent = nextStateRevision === lastRevision;
   const liveMetadataAdvanced = semanticCurrent
-    && deliverySeq(state) > deliverySeq(radio.current)
-    && hasOnlyLiveMetadataChanges(radio.current, state);
+    && deliverySeq(nextState) > deliverySeq(radio.current)
+    && hasOnlyLiveMetadataChanges(radio.current, nextState);
   const metadataAdvanced = semanticCurrent && (
     freshnessAdvanced
     || observationAdvanced
@@ -358,20 +373,20 @@ export function setRadioState(state: ServerState): boolean {
     lastFreshnessRevision = nextFreshnessRevision;
     lastObservationSeq = nextObservationSeq;
     lastHealthRevision = nextHealthRevision;
-    radio.current = applyOptimistic(state);
+    radio.current = applyOptimistic(nextState);
     notifyRadioStateSubscribers();
     // Sync power status to connection store
-    if (state.powerOn !== undefined) {
-      setRadioPowerOn(state.powerOn);
+    if (nextState.powerOn !== undefined) {
+      setRadioPowerOn(nextState.powerOn);
     }
     // Sync connection readiness fields
-    if (state.connection) {
-      setRigConnected(state.connection.rigConnected);
-      setRadioReady(state.connection.radioReady);
-      setControlConnected(state.connection.controlConnected);
+    if (nextState.connection) {
+      setRigConnected(nextState.connection.rigConnected);
+      setRadioReady(nextState.connection.radioReady);
+      setControlConnected(nextState.connection.controlConnected);
     }
-    if (state.radioHealth !== undefined) {
-      setRadioHealth(state.radioHealth);
+    if (nextState.radioHealth !== undefined) {
+      setRadioHealth(nextState.radioHealth);
     }
     return true;
   }

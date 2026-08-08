@@ -101,6 +101,13 @@ function makeState(
   };
 }
 
+function singleReceiverWireState(
+  overrides: Partial<ServerStateWithObservation> = {},
+): ServerStateWithObservation {
+  const { sub: _sub, ...wireState } = makeState(overrides);
+  return wireState as ServerStateWithObservation;
+}
+
 function fullEnvelope(state: ServerStateWithObservation): Record<string, unknown> {
   return {
     type: 'full',
@@ -191,6 +198,21 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(s?.stateRevision).toBe(5);
     expect(s?.ptt).toBe(false);
     expect(store.getLastRevision()).toBe(5);
+  });
+
+  it('accepts canonical single-receiver full bodies with omitted or null sub', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    sendStateUpdate(instances[0], fullEnvelope(singleReceiverWireState({ revision: 1 })));
+    expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
+
+    const nullSub = { ...singleReceiverWireState({ revision: 2 }), sub: null } as unknown as ServerStateWithObservation;
+    sendStateUpdate(instances[0], fullEnvelope(nullSub));
+    expect(store.getRadioState()?.revision).toBe(2);
+    expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
   });
 
   it('applies a delta with a higher stateRevision through the real store', async () => {
