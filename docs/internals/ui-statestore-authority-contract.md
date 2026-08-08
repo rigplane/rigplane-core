@@ -43,8 +43,11 @@ Enforcement is structural first:
 - the sanctioned WS reducer owns final observed-state writes;
 - adapters/view models and props are the read-only UI seam;
 - command bus/runtime command facades are the typed intent seam;
-- presentation cannot import, export, re-export, or dynamically import raw
-  writer/transport/command capabilities;
+- every direct static import/export/re-export of a raw StateStore or transport
+  origin is rejected at its first project hop unless that module is a declared
+  owner, read-only selector seam, or typed intent seam;
+- authority-sensitive presentation may use dynamic import/`require` only with
+  a finite string literal; literal non-radio loaders remain available;
 - persistent preference, sample-plane, and acquisition owners are declared;
 - new owner/debt paths fail reachable-base monotonic comparison.
 
@@ -58,8 +61,11 @@ A local ESLint plugin enforces four finite rules with deterministic IDs:
 4. `radio-authority/recurring-control` — recurring callbacks crossing a
    radio read/write/transport seam.
 
-The sink rule supports a deliberately small algebra: imported authority
-symbols, direct aliases, properties/elements, finite literals,
+The first-hop rule is intentionally not whole-program provenance: a forbidden
+facade is rejected where it directly touches the sanctioned origin, while its
+consumer is outside this rule's graph. The sink rule supports a deliberately
+small algebra: imported authority symbols, direct aliases, properties/elements,
+finite literals,
 conditional/nullish composition, and calls receiving an authority argument.
 An unsupported helper result is rejected only when it reaches a declared
 authority sink. The guard does not analyze unrelated frontend code.

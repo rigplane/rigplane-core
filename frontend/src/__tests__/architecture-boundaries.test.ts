@@ -503,6 +503,32 @@ describe('v3 package boundaries (MOR-1061)', () => {
 });
 
 describe('radio authority boundary (MOR-1406)', () => {
+  it('rejects the first hop of a two-file writer facade', async () => {
+    const facade = await authorityRuleIds(
+      `export { setRadioState as commit } from '$lib/stores/radio.svelte';`,
+      'src/lib/features/writer-facade.ts',
+    );
+    const consumer = await authorityRuleIds(
+      `import { commit } from '$lib/features/writer-facade';\ncommit(snapshot);`,
+      'src/semantic/WriterFacadeConsumer.ts',
+    );
+    expect(facade).toContain('radio-authority/structural-boundary');
+    expect(consumer).toEqual([]);
+  });
+
+  it('rejects the first hop of a two-file wildcard transport facade', async () => {
+    const facade = await authorityRuleIds(
+      `export * from '$lib/transport/ws-client';`,
+      'src/lib/features/transport-facade.ts',
+    );
+    const consumer = await authorityRuleIds(
+      `import { sendCommand } from '$lib/features/transport-facade';\nsendCommand('set_freq', {freq: 7100000});`,
+      'src/components-v2/controls/TransportFacadeConsumer.svelte',
+    );
+    expect(facade).toContain('radio-authority/structural-boundary');
+    expect(consumer).toEqual([]);
+  });
+
   it.each([
     {
       name: 'writer capability direct import and call',
@@ -589,6 +615,42 @@ describe('radio authority boundary (MOR-1406)', () => {
       code: `<script lang="ts">import { sendCommand } from '$lib/transport/ws-client'; sendCommand('set_freq', {freq: 7100000});</script>`,
     },
     {
+      name: 'named transport facade outside presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/lib/features/named-transport-facade.ts',
+      code: `export { sendCommand as dispatch } from '$lib/transport/ws-client';`,
+    },
+    {
+      name: 'namespace transport facade outside presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/lib/features/namespace-transport-facade.ts',
+      code: `export * as transport from '$lib/transport/ws-client';`,
+    },
+    {
+      name: 'namespace writer import outside presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/lib/features/namespace-writer-facade.ts',
+      code: `import * as radioStore from '$lib/stores/radio.svelte';\nexport { radioStore };`,
+    },
+    {
+      name: 'local string dynamic target in presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/semantic/LocalDynamicTransport.ts',
+      code: `const modulePath='$lib/transport/ws-client';\nvoid import(modulePath);`,
+    },
+    {
+      name: 'computed dynamic target in presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/semantic/ComputedDynamicTransport.ts',
+      code: `const leaf='ws-client';\nvoid import('$lib/transport/' + leaf);`,
+    },
+    {
+      name: 'local string require target in presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/semantic/LocalRequireTransport.ts',
+      code: `declare const require: (path:string)=>unknown;\nconst modulePath='$lib/transport/ws-client';\nrequire(modulePath);`,
+    },
+    {
       name: 'actual authority writer imported under an alias',
       rule: 'radio-authority/authority-sink',
       path: 'src/lib/features/aliased-writer.ts',
@@ -654,6 +716,26 @@ describe('radio authority boundary (MOR-1406)', () => {
       name: 'unrelated availability fallback',
       path: 'src/semantic/Availability.ts',
       code: `declare const label: string|undefined; export const shown=label ?? 'Unavailable';`,
+    },
+    {
+      name: 'declared read-only StateStore seam',
+      path: 'src/lib/runtime/adapters/read-only-radio.ts',
+      code: `import { getRadioState } from '$lib/stores/radio.svelte';\nexport const current = () => getRadioState();`,
+    },
+    {
+      name: 'declared typed intent transport seam',
+      path: 'src/lib/runtime/commands/tune-intent.ts',
+      code: `import { sendCommand } from '$lib/transport/ws-client';\nexport const tune = (freq:number) => sendCommand('set_freq', {freq});`,
+    },
+    {
+      name: 'literal presentation loader outside radio authority',
+      path: 'src/presentation/layouts/LazySkin.ts',
+      code: `export const load = () => import('../../skins/lcd-scope/LcdScopeSkin.svelte');`,
+    },
+    {
+      name: 'type-only transport contract outside an owner',
+      path: 'src/lib/features/transport-contract.ts',
+      code: `import type { ConnectionState } from '$lib/transport/ws-client';\nexport type State = ConnectionState;`,
     },
   ])('allows $name outside the authority boundary', async ({ path: filePath, code }) => {
     expect(await authorityRuleIds(code, filePath)).toEqual([]);

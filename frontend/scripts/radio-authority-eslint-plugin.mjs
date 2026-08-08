@@ -12,9 +12,6 @@ const WRITER_EXPORTS = new Set([
 const RADIO_SOURCE_EXPORTS = new Set([
   'getActiveReceiver', 'getRadioState', 'radio', 'subscribeRadioState',
 ]);
-const RAW_TRANSPORT_EXPORTS = new Set([
-  'connect', 'disconnectAll', 'getChannel', 'sendCommand', 'sendRaw',
-]);
 const SCOPE_METADATA = new Set([
   'centerHz', 'edgeHighHz', 'edgeLowHz', 'edges', 'mode', 'receiver',
   'span', 'spanHz',
@@ -59,6 +56,20 @@ const SCOPE_METADATA_OWNERS = new Set([
   'src/components/spectrum/SpectrumPanel.svelte',
   'src/lib/runtime/adapters/scope-adapter.ts',
 ]);
+const READ_ONLY_SEAMS = [
+  'src/lib/runtime/adapters',
+  'src/lib/runtime/props',
+  'src/semantic/radio-view-model.ts',
+  'src/lib/radio/mode-filter-memory.ts',
+];
+const INTENT_FACADES = [
+  'src/components-v2/wiring/command-bus.ts',
+  'src/lib/runtime/commands',
+];
+const DIRECT_ORIGIN_OWNERS = new Set([
+  'src/components/shared/Toast.svelte',
+  'src/lib/local-extensions/host-api.ts',
+]);
 
 function projectPath(filename) {
   return filename.replaceAll('\\', '/').replace(/^.*\/frontend\//, '');
@@ -92,6 +103,14 @@ function isCommandModule(source) {
 
 function isPresentation(path) {
   return /^src\/(?:semantic|presentation|primitives|skins|components\/spectrum|components-v2\/(?:controls|display|layout|meters|panels|vfo))\//.test(path);
+}
+
+function isPathOrChild(path, root) {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function matchesAnyPath(path, roots) {
+  return roots.some((root) => isPathOrChild(path, root));
 }
 
 function importedName(specifier) {
@@ -129,32 +148,57 @@ const structuralBoundary = {
   } },
   create(context) {
     const path = projectPath(context.filename);
-    if (!isPresentation(path) || LEGACY_PRESENTATION_AUTHORITY.has(path)) return {};
-    function check(node) {
+    function isTypeOnly(node) {
+      if (node.importKind === 'type' || node.exportKind === 'type') return true;
+      if (!node.specifiers?.length) return false;
+      return node.specifiers.every((specifier) =>
+        specifier.importKind === 'type' || specifier.exportKind === 'type');
+    }
+    function isReadOnlyRadioImport(node, source) {
+      if (node.type !== 'ImportDeclaration' || !isRadioStore(source)) return false;
+      const valueSpecifiers = node.specifiers.filter((specifier) =>
+        specifier.importKind !== 'type' && node.importKind !== 'type');
+      return valueSpecifiers.length > 0 && valueSpecifiers.every((specifier) =>
+        specifier.type === 'ImportSpecifier' && RADIO_SOURCE_EXPORTS.has(importedName(specifier)));
+    }
+    function allowsStaticOrigin(node, source) {
+      if (isTypeOnly(node)) return true;
+      if (LEGACY_PRESENTATION_AUTHORITY.has(path) || LEGACY_WRITER_OWNERS.has(path)
+        || ACQUISITION_OWNERS.has(path) || DIRECT_ORIGIN_OWNERS.has(path)) return true;
+      if (matchesAnyPath(path, READ_ONLY_SEAMS) && isReadOnlyRadioImport(node, source)) return true;
+      return matchesAnyPath(path, INTENT_FACADES)
+        && (isTransport(source) || isCommandModule(source));
+    }
+    function report(node, source) {
+      context.report({ node, messageId: 'boundary', data: { source } });
+    }
+    function checkStatic(node) {
       const source = sourceText(node);
       if (!source) return;
       const restricted = isRadioStore(source) || isTransport(source) || isCommandModule(source);
       if (!restricted) return;
-      if (node.type === 'ImportDeclaration') {
-        const valueSpecifiers = node.specifiers.filter((specifier) =>
-          specifier.importKind !== 'type' && node.importKind !== 'type');
-        if (!valueSpecifiers.length) return;
-        if (isTransport(source)) {
-          const names = valueSpecifiers.map(importedName);
-          if (!names.some((name) => name === '*' || RAW_TRANSPORT_EXPORTS.has(name))) return;
-        }
-        if (isRadioStore(source)) {
-          const names = valueSpecifiers.map(importedName);
-          if (!names.some((name) => name === '*' || WRITER_EXPORTS.has(name) || RADIO_SOURCE_EXPORTS.has(name))) return;
-        }
+      if (!allowsStaticOrigin(node, source)) report(node, source);
+    }
+    function checkDynamic(node, target) {
+      if (!isPresentation(path) || LEGACY_PRESENTATION_AUTHORITY.has(path)) return;
+      const source = sourceText(target);
+      if (!source) {
+        report(node, '<non-literal dynamic target>');
+      } else if (isRadioStore(source) || isTransport(source) || isCommandModule(source)) {
+        report(node, source);
       }
-      context.report({ node, messageId: 'boundary', data: { source } });
     }
     return {
-      ImportDeclaration: check,
-      ExportAllDeclaration: check,
-      ExportNamedDeclaration(node) { if (node.source) check(node); },
-      ImportExpression: check,
+      ImportDeclaration: checkStatic,
+      ExportAllDeclaration: checkStatic,
+      ExportNamedDeclaration(node) { if (node.source) checkStatic(node); },
+      ImportExpression(node) { checkDynamic(node, node.source); },
+      CallExpression(node) {
+        const callee = unwrap(node.callee);
+        if (callee?.type === 'Identifier' && callee.name === 'require') {
+          checkDynamic(node, node.arguments[0]);
+        }
+      },
     };
   },
 };

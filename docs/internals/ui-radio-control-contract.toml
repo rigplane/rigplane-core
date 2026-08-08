@@ -520,10 +520,15 @@ read_only_seams = [
   "frontend/src/lib/runtime/adapters",
   "frontend/src/lib/runtime/props",
   "frontend/src/semantic/radio-view-model.ts",
+  "frontend/src/lib/radio/mode-filter-memory.ts",
 ]
 intent_facades = [
   "frontend/src/components-v2/wiring/command-bus.ts",
   "frontend/src/lib/runtime/commands",
+]
+direct_origin_owners = [
+  "frontend/src/components/shared/Toast.svelte",
+  "frontend/src/lib/local-extensions/host-api.ts",
 ]
 persistence_owner_roots = [
   "frontend/src/presentation/workspace",

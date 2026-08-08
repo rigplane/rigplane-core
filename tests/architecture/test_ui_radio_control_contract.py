@@ -388,7 +388,7 @@ def test_authority_boundary_and_ten_class_adversarial_corpus_pass() -> None:
         "--reporter=dot",
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "26 passed" in completed.stdout
+    assert "38 passed" in completed.stdout
 
 
 def test_production_frontend_satisfies_structural_boundary() -> None:
