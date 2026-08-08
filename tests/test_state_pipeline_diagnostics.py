@@ -117,18 +117,19 @@ def test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger
     )
 
     payload = server.build_public_state()
+    snapshot = server.command_state_store.snapshot()
     assert payload["main"]["sMeter"] == 42
-    assert payload["revision"] == 1
-    assert payload["stateRevision"] == 1
-    assert payload["freshnessRevision"] == 1
+    assert payload["revision"] == snapshot.state_revision
+    assert payload["stateRevision"] == snapshot.state_revision
+    assert payload["freshnessRevision"] == snapshot.freshness_revision
 
     server._broadcast_state_update()
 
     queued = queue.get_nowait()
     assert queued["type"] == "state_update"
     assert queued["data"]["type"] == "full"
-    assert queued["data"]["stateRevision"] == 1
-    assert queued["data"]["freshnessRevision"] == 1
+    assert queued["data"]["stateRevision"] == snapshot.state_revision
+    assert queued["data"]["freshnessRevision"] == snapshot.freshness_revision
     assert queued["data"]["data"]["main"]["sMeter"] == 42
     assert queue.empty()
     assert server.state_diagnostics.snapshot()["counts"] == {

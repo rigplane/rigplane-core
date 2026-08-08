@@ -11,6 +11,7 @@ intent_lifecycle = "ephemeral-only"
 public_metadata_fields = [
   "server.revision", "server.stateRevision", "server.freshnessRevision",
   "server.observationSeq", "server.healthRevision", "server.updatedAt",
+  "server.stateContractVersion", "server.providerGeneration",
   "server.main", "server.sub", "server.scopeControls",
   "server.connection", "server.radioDetail", "server.radioHealth",
   "server.wsClients", "server.fieldStatus", "server.publicStateSeq",

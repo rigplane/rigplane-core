@@ -275,6 +275,10 @@ class ServerStatePublic(_Strict):
     observationSeq: int
     healthRevision: int = 0
     updatedAt: str
+    # Additive wire-contract metadata. Runtime B2 emission requires both;
+    # defaults preserve generated compile-time compatibility for old consumers.
+    stateContractVersion: Literal[1] = 1
+    providerGeneration: int = 0
 
     # Global slow-state / TX flags.
     # ``active`` is set to "MAIN"/"SUB" in exactly three places:

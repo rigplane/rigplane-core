@@ -17,6 +17,8 @@ export interface ServerStatePublic {
   observationSeq: number;
   healthRevision?: number;
   updatedAt: string;
+  stateContractVersion?: 1;
+  providerGeneration?: number;
   active: "MAIN" | "SUB";
   powerOn?: boolean;
   ptt: boolean;
