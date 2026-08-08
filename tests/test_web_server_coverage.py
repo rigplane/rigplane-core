@@ -81,6 +81,29 @@ class _FakeWriter:
         return default
 
 
+class _GenerationAdvanceOnApplyStore(StateStore):
+    """Deterministically retire a captured lifecycle token during apply."""
+
+    def __init__(self, *, advance_on_apply: int) -> None:
+        super().__init__()
+        self.advance_on_apply = advance_on_apply
+        self.apply_calls = 0
+
+    def apply(self, observation: Observation):  # type: ignore[no-untyped-def]
+        self.apply_calls += 1
+        if self.apply_calls == self.advance_on_apply:
+            self.begin_provider_generation()
+        return super().apply(observation)
+
+
+class _GenerationAdvanceEveryApplyStore(StateStore):
+    """Force bounded lifecycle publication to fail closed under continuous churn."""
+
+    def apply(self, observation: Observation):  # type: ignore[no-untyped-def]
+        self.begin_provider_generation()
+        return super().apply(observation)
+
+
 def _reader_with(data: bytes) -> asyncio.StreamReader:
     reader = asyncio.StreamReader()
     reader.feed_data(data)
@@ -2259,6 +2282,115 @@ def test_lifecycle_observations_are_current_generation_and_idempotent() -> None:
     assert after_second.state_revision == after_first.state_revision
     assert after_second.freshness_revision == after_first.freshness_revision
     assert after_second.observation_seq == after_first.observation_seq
+
+
+@pytest.mark.parametrize("advance_on_apply", [1, 5])
+def test_lifecycle_retry_after_generation_advance_has_one_complete_current_tuple(
+    advance_on_apply: int,
+) -> None:
+    srv = WebServer(None)
+    store = _GenerationAdvanceOnApplyStore(advance_on_apply=advance_on_apply)
+    srv.command_state_store = store
+
+    payload = srv.build_public_state()
+    snapshot = store.snapshot()
+    lifecycle = {
+        field
+        for field in snapshot.fields
+        if str(field.path).startswith(("connection.connection.", "health.health."))
+    }
+    before_repeat = (
+        snapshot.state_revision,
+        snapshot.freshness_revision,
+        snapshot.observation_seq,
+    )
+
+    assert payload["providerGeneration"] == 1
+    assert snapshot.provider_generation == 1
+    assert len(lifecycle) == 9
+    assert {field.provider_generation for field in lifecycle} == {1}
+    assert {field.source.provider for field in lifecycle} == {"web_lifecycle"}
+    assert len({field.last_observed_monotonic for field in lifecycle}) == 1
+
+    srv.build_public_state()
+    repeated = store.snapshot()
+    assert (
+        repeated.state_revision,
+        repeated.freshness_revision,
+        repeated.observation_seq,
+    ) == before_repeat
+
+
+@pytest.mark.parametrize("wire", ["public", "websocket"])
+def test_public_and_ws_retry_when_profile_projection_retires_generation(
+    wire: str,
+) -> None:
+    srv = WebServer(None)
+    store = srv.command_state_store
+    get_profile = srv._get_profile  # noqa: SLF001
+    fired = False
+
+    def advancing_profile():
+        nonlocal fired
+        if not fired:
+            fired = True
+            store.begin_provider_generation()
+        return get_profile()
+
+    srv._get_profile = advancing_profile  # type: ignore[method-assign]
+    payload = (
+        srv.build_public_state()
+        if wire == "public"
+        else srv.build_state_update_envelope()["data"]
+    )
+
+    assert payload["providerGeneration"] == store.provider_generation == 1
+    assert payload["stateContractVersion"] == 1
+
+
+@pytest.mark.asyncio
+async def test_capabilities_retry_when_profile_build_retires_generation() -> None:
+    srv = WebServer(None)
+    store = srv.command_state_store
+    get_profile = srv._get_profile  # noqa: SLF001
+    fired = False
+
+    def advancing_profile():
+        nonlocal fired
+        if not fired:
+            fired = True
+            store.begin_provider_generation()
+        return get_profile()
+
+    srv._get_profile = advancing_profile  # type: ignore[method-assign]
+    writer = _FakeWriter()
+    await srv._serve_capabilities(writer)  # noqa: SLF001
+    status, payload = _response_json(writer)
+
+    assert status == 200
+    assert payload["providerGeneration"] == store.provider_generation == 1
+    assert payload["stateContractVersion"] == 1
+
+
+@pytest.mark.asyncio
+async def test_continuous_lifecycle_generation_churn_fails_closed_without_state_event() -> (
+    None
+):
+    srv = WebServer(None)
+    srv.command_state_store = _GenerationAdvanceEveryApplyStore()
+    queue: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=2)
+    srv.register_control_event_queue(queue)
+
+    with pytest.raises(RuntimeError, match="lifecycle ensure"):
+        srv.build_public_state()
+    srv._broadcast_state_update(force=True)  # noqa: SLF001
+    assert queue.empty()
+
+    writer = _FakeWriter()
+    await srv._serve_capabilities(writer)  # noqa: SLF001
+    status, payload = _response_json(writer)
+    assert status == 503
+    assert payload == {"error": "provider_generation_churn"}
 
 
 @pytest.mark.asyncio

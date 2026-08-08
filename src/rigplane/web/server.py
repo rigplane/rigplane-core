@@ -176,6 +176,7 @@ _RADIO_MODEL_UNSPECIFIED = "unspecified"
 _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
 _MAX_COMMAND_BATCH_STEPS = 128
 _COMMAND_BATCH_STEP_TIMEOUT = 10.0
+_DELIVERY_EPOCH_ATTEMPTS = 2
 # Ceiling on the managed TX rebind that fronts recovery, derived from what the
 # rebind actually costs: one provider retirement (a transport disconnect) plus
 # one serviced effect chain — the durable OFF write and the authoritative PTT
@@ -1415,7 +1416,11 @@ class WebServer:
             self._pending_state_broadcast_task.cancel()
             self._pending_state_broadcast_task = None
 
-        snapshot = self._snapshot_for_delivery()
+        try:
+            snapshot = self._snapshot_for_delivery()
+        except RuntimeError:
+            logger.warning("state broadcast skipped: provider generation churned")
+            return
         # Keep audio FFT scope center freq and mode bandwidth in sync
         # from the same canonical snapshot used for Web delivery.
         self._update_fft_scope_freq(snapshot)
@@ -1424,7 +1429,14 @@ class WebServer:
         # subscribed (a connecting client gets initial state on connect via force=True).
         if not force and not self._control_event_queues:
             return
-        body = self._build_public_state_from_snapshot(snapshot)
+        try:
+            snapshot, body = self._build_public_state_for_delivery()
+        except RuntimeError:
+            logger.warning("state broadcast skipped: provider generation churned")
+            return
+        if self.command_state_store.provider_generation != snapshot.provider_generation:
+            logger.warning("state broadcast skipped: provider generation changed")
+            return
         state_key = self._public_state_delivery_key(
             snapshot,
             health_revision=int(body.get("healthRevision", 0)),
@@ -1462,8 +1474,10 @@ class WebServer:
 
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
-        snapshot = self._snapshot_for_delivery()
-        return self._build_public_state_from_snapshot(snapshot, updated_at=updated_at)
+        snapshot, payload = self._build_public_state_for_delivery(updated_at=updated_at)
+        if self.command_state_store.provider_generation != snapshot.provider_generation:
+            raise RuntimeError("provider generation changed during public delivery")
+        return payload
 
     def _public_state_delivery_key(
         self,
@@ -1554,9 +1568,28 @@ class WebServer:
         self, *, force_full: bool = False
     ) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
-        snapshot = self._snapshot_for_delivery()
-        body = self._build_public_state_from_snapshot(snapshot)
+        snapshot, body = self._build_public_state_for_delivery()
+        if self.command_state_store.provider_generation != snapshot.provider_generation:
+            raise RuntimeError("provider generation changed before state encoding")
         return self._encode_state_update(snapshot, body, force_full=force_full)
+
+    def _build_public_state_for_delivery(
+        self,
+        *,
+        updated_at: str | None = None,
+    ) -> tuple[StateSnapshot, dict[str, Any]]:
+        """Build a public body only from a still-current Store generation."""
+        for _attempt in range(_DELIVERY_EPOCH_ATTEMPTS):
+            snapshot = self._snapshot_for_delivery()
+            body = self._build_public_state_from_snapshot(
+                snapshot, updated_at=updated_at
+            )
+            if (
+                self.command_state_store.provider_generation
+                == snapshot.provider_generation
+            ):
+                return snapshot, body
+        raise RuntimeError("provider generation changed during public-state build")
 
     def _encode_state_update(
         self,
@@ -1588,73 +1621,97 @@ class WebServer:
 
     def _snapshot_for_delivery(self) -> StateSnapshot:
         """Synchronously ensure Web lifecycle facts before a public snapshot."""
-        snapshot = self.command_state_store.snapshot()
-        generation = snapshot.provider_generation
-        radio = self._radio
-        raw_connected = (
-            getattr(radio, "connected", False) if radio is not None else False
-        )
-        connected = raw_connected if isinstance(raw_connected, bool) else False
-        raw_control_connected = (
-            getattr(radio, "control_connected", False) if radio is not None else False
-        )
-        control_connected = (
-            raw_control_connected if isinstance(raw_control_connected, bool) else False
-        )
-        conn_state = getattr(radio, "conn_state", None) if radio is not None else None
-        raw_status = getattr(conn_state, "value", None)
-        status = (
-            raw_status
-            if isinstance(raw_status, str)
-            else "connected"
-            if connected
-            else "disconnected"
-        )
-        health = self._build_radio_health()
-        source = SourceMetadata(
-            source="local_reconcile",
-            provider="web_lifecycle",
-            transport="web",
-        )
-        values = (
-            (FieldPath.parse("connection.connection.connected"), connected),
-            (FieldPath.parse("connection.connection.radio_ready"), radio_ready(radio)),
-            (
-                FieldPath.parse("connection.connection.control_connected"),
-                control_connected,
-            ),
-            (FieldPath.parse("connection.connection.status"), status),
-            (
-                FieldPath.parse("health.health.server_reachable"),
-                health["serverReachable"],
-            ),
-            (FieldPath.parse("health.health.radio_link"), health["radioLink"]),
-            (FieldPath.parse("health.health.readiness"), health["readiness"]),
-            (FieldPath.parse("health.health.likely_cause"), health["likelyCause"]),
-            (FieldPath.parse("health.health.last_error"), health["lastError"]),
-        )
-        existing = {field.path: field for field in snapshot.fields}
-        if all(
-            (field := existing.get(path)) is not None
-            and field.value == value
-            and field.provider_generation == generation
-            and field.source == source
-            and field.quality == ("confirmed",)
-            for path, value in values
-        ):
-            return snapshot
-        timestamp = time.monotonic()
-        for path, value in values:
-            self.command_state_store.apply(
-                Observation(
-                    path=path,
-                    value=value,
-                    source=source,
-                    timestamp_monotonic=timestamp,
-                    provider_generation=generation,
-                )
+        for _attempt in range(_DELIVERY_EPOCH_ATTEMPTS):
+            snapshot = self.command_state_store.snapshot()
+            generation = snapshot.provider_generation
+            radio = self._radio
+            raw_connected = (
+                getattr(radio, "connected", False) if radio is not None else False
             )
-        return self.command_state_store.snapshot()
+            connected = raw_connected if isinstance(raw_connected, bool) else False
+            raw_control_connected = (
+                getattr(radio, "control_connected", False)
+                if radio is not None
+                else False
+            )
+            control_connected = (
+                raw_control_connected
+                if isinstance(raw_control_connected, bool)
+                else False
+            )
+            conn_state = (
+                getattr(radio, "conn_state", None) if radio is not None else None
+            )
+            raw_status = getattr(conn_state, "value", None)
+            status = (
+                raw_status
+                if isinstance(raw_status, str)
+                else "connected"
+                if connected
+                else "disconnected"
+            )
+            health = self._build_radio_health()
+            source = SourceMetadata(
+                source="local_reconcile",
+                provider="web_lifecycle",
+                transport="web",
+            )
+            values = (
+                (FieldPath.parse("connection.connection.connected"), connected),
+                (
+                    FieldPath.parse("connection.connection.radio_ready"),
+                    radio_ready(radio),
+                ),
+                (
+                    FieldPath.parse("connection.connection.control_connected"),
+                    control_connected,
+                ),
+                (FieldPath.parse("connection.connection.status"), status),
+                (
+                    FieldPath.parse("health.health.server_reachable"),
+                    health["serverReachable"],
+                ),
+                (FieldPath.parse("health.health.radio_link"), health["radioLink"]),
+                (FieldPath.parse("health.health.readiness"), health["readiness"]),
+                (
+                    FieldPath.parse("health.health.likely_cause"),
+                    health["likelyCause"],
+                ),
+                (FieldPath.parse("health.health.last_error"), health["lastError"]),
+            )
+            existing = {field.path: field for field in snapshot.fields}
+            complete = all(
+                (field := existing.get(path)) is not None
+                and field.value == value
+                and field.provider_generation == generation
+                and field.source == source
+                and field.quality == ("confirmed",)
+                for path, value in values
+            )
+            if not complete:
+                timestamp = time.monotonic()
+                for path, value in values:
+                    self.command_state_store.apply(
+                        Observation(
+                            path=path,
+                            value=value,
+                            source=source,
+                            timestamp_monotonic=timestamp,
+                            provider_generation=generation,
+                        )
+                    )
+            result = self.command_state_store.snapshot()
+            result_fields = {field.path: field for field in result.fields}
+            if result.provider_generation == generation and all(
+                (field := result_fields.get(path)) is not None
+                and field.value == value
+                and field.provider_generation == generation
+                and field.source == source
+                and field.quality == ("confirmed",)
+                for path, value in values
+            ):
+                return result
+        raise RuntimeError("provider generation changed during lifecycle ensure")
 
     def sync_state_store_from_radio_state(
         self,
@@ -2974,8 +3031,18 @@ class WebServer:
     async def _serve_state(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
-        snapshot = self._snapshot_for_delivery()
-        body_dict = self._build_public_state_from_snapshot(snapshot)
+        try:
+            snapshot, body_dict = self._build_public_state_for_delivery()
+        except RuntimeError:
+            body = b'{"error":"provider_generation_churn"}'
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
         revision = int(body_dict.get("stateRevision", body_dict.get("revision", 0)))
         freshness_revision = int(body_dict.get("freshnessRevision", 0))
         health_revision = int(body_dict.get("healthRevision", 0))
@@ -3043,9 +3110,24 @@ class WebServer:
         return result
 
     async def _serve_capabilities(
-        self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None = None,
+        *,
+        _delivery_attempt: int = 0,
     ) -> None:
-        snapshot = self._snapshot_for_delivery()
+        try:
+            snapshot = self._snapshot_for_delivery()
+        except RuntimeError:
+            body = b'{"error":"provider_generation_churn"}'
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
         caps = _runtime_capabilities(self._radio)
         tx_audio = browser_tx_audio_facts(self._radio)
         _raw_model = (
@@ -3075,76 +3157,91 @@ class WebServer:
             for r in profile.freq_ranges
         ]
 
-        body = json.dumps(
-            {
-                "stateContractVersion": 1,
-                "providerGeneration": snapshot.provider_generation,
-                "model": model,
-                "scope": "scope" in caps,
-                "audio": "audio" in caps,
-                "tx": "tx" in caps,
-                "audioTx": tx_audio.available,
-                "audioTxRoute": tx_audio.route,
-                "audioTxRequiredModInputSource": tx_audio.required_mod_input_source,
-                "capabilities": sorted(caps),
-                "receivers": profile.receiver_count,
-                "vfoScheme": profile.vfo_scheme,
-                "vfoReadback": profile.vfo_readback,
-                "freqRanges": freq_ranges,
-                "modes": list(profile.modes),
-                "filters": list(profile.filters),
-                "filterWidthMin": profile.filter_width_min,
-                "filterWidthMax": profile.filter_width_max,
-                "filterConfig": _serialize_filter_config(profile),
-                "attValues": list(profile.att_values) if profile.att_values else [0],
-                "attLabels": profile.att_labels if profile.att_labels else {},
-                "preValues": list(profile.pre_values) if profile.pre_values else [0],
-                "preLabels": profile.pre_labels if profile.pre_labels else {},
-                "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
-                "agcLabels": profile.agc_labels if profile.agc_labels else {},
-                "dataModeCount": profile.data_mode_count,
-                "dataModeLabels": (
-                    profile.data_mode_labels if profile.data_mode_labels else {}
+        payload = {
+            "stateContractVersion": 1,
+            "providerGeneration": snapshot.provider_generation,
+            "model": model,
+            "scope": "scope" in caps,
+            "audio": "audio" in caps,
+            "tx": "tx" in caps,
+            "audioTx": tx_audio.available,
+            "audioTxRoute": tx_audio.route,
+            "audioTxRequiredModInputSource": tx_audio.required_mod_input_source,
+            "capabilities": sorted(caps),
+            "receivers": profile.receiver_count,
+            "vfoScheme": profile.vfo_scheme,
+            "vfoReadback": profile.vfo_readback,
+            "freqRanges": freq_ranges,
+            "modes": list(profile.modes),
+            "filters": list(profile.filters),
+            "filterWidthMin": profile.filter_width_min,
+            "filterWidthMax": profile.filter_width_max,
+            "filterConfig": _serialize_filter_config(profile),
+            "attValues": list(profile.att_values) if profile.att_values else [0],
+            "attLabels": profile.att_labels if profile.att_labels else {},
+            "preValues": list(profile.pre_values) if profile.pre_values else [0],
+            "preLabels": profile.pre_labels if profile.pre_labels else {},
+            "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
+            "agcLabels": profile.agc_labels if profile.agc_labels else {},
+            "dataModeCount": profile.data_mode_count,
+            "dataModeLabels": (
+                profile.data_mode_labels if profile.data_mode_labels else {}
+            ),
+            "keyboard": _serialize_keyboard_config(profile),
+            "scopeSource": (
+                "hardware"
+                if self._hardware_scope_available
+                else ("audio_fft" if self._audio_fft_scope is not None else None)
+            ),
+            "audioFftAvailable": self._audio_fft_scope is not None,
+            "scopeConfig": {
+                "centerMode": True,
+                "amplitudeMax": 160,
+                "defaultSpan": (
+                    (self._audio_fft_scope.bandwidth_hz or 48000)
+                    if self._audio_fft_scope is not None
+                    else 500000
                 ),
-                "keyboard": _serialize_keyboard_config(profile),
-                "scopeSource": (
-                    "hardware"
-                    if self._hardware_scope_available
-                    else ("audio_fft" if self._audio_fft_scope is not None else None)
-                ),
-                "audioFftAvailable": self._audio_fft_scope is not None,
-                "scopeConfig": {
-                    "centerMode": True,
-                    "amplitudeMax": 160,
-                    "defaultSpan": (
-                        (self._audio_fft_scope.bandwidth_hz or 48000)
-                        if self._audio_fft_scope is not None
-                        else 500000
-                    ),
-                },
-                "audioConfig": {
-                    "sampleRate": 48000,
-                    "channels": 1,
-                    "codecs": ["opus"],
-                    "jitterFloorMs": get_audio_rx_jitter_floor_ms(),
-                    "jitterCeilingMs": get_audio_rx_jitter_ceiling_ms(),
-                },
-                "antennas": profile.antenna_tx_count,
-                "webrtc": {
-                    "available": webrtc_available(),
-                    "enabled": self._config.webrtc_enabled,
-                },
-                **({"controls": profile.controls} if profile.controls else {}),
-                "txBands": [
-                    {"name": b.name, "start": b.start, "end": b.end}
-                    for fr in profile.freq_ranges
-                    for b in fr.bands
-                ]
-                or None,
-                **self._get_meter_cal_payload(),
             },
-            separators=(",", ":"),
-        ).encode()
+            "audioConfig": {
+                "sampleRate": 48000,
+                "channels": 1,
+                "codecs": ["opus"],
+                "jitterFloorMs": get_audio_rx_jitter_floor_ms(),
+                "jitterCeilingMs": get_audio_rx_jitter_ceiling_ms(),
+            },
+            "antennas": profile.antenna_tx_count,
+            "webrtc": {
+                "available": webrtc_available(),
+                "enabled": self._config.webrtc_enabled,
+            },
+            **({"controls": profile.controls} if profile.controls else {}),
+            "txBands": [
+                {"name": b.name, "start": b.start, "end": b.end}
+                for fr in profile.freq_ranges
+                for b in fr.bands
+            ]
+            or None,
+            **self._get_meter_cal_payload(),
+        }
+        if self.command_state_store.provider_generation != snapshot.provider_generation:
+            if _delivery_attempt + 1 < _DELIVERY_EPOCH_ATTEMPTS:
+                await self._serve_capabilities(
+                    writer,
+                    headers,
+                    _delivery_attempt=_delivery_attempt + 1,
+                )
+                return
+            body = b'{"error":"provider_generation_churn"}'
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
+        body = json.dumps(payload, separators=(",", ":")).encode()
         await _send_json(writer, body, headers)
 
     async def _serve_dx_spots(self, writer: asyncio.StreamWriter) -> None:
