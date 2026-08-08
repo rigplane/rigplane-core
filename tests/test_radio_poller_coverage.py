@@ -95,6 +95,48 @@ from rigplane.web.web_startup import stop_web_server
 from test_web_managed_tx_owner import _KEY, _TEARDOWN, _poller, _Radio, _Supervisor
 
 
+@pytest.mark.asyncio
+async def test_direct_getter_result_started_in_old_generation_is_rejected() -> None:
+    store = StateStore()
+    started_generation = store.begin_provider_generation()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    radio = _make_radio(model="IC-7300")
+
+    async def delayed_getter() -> int:
+        started.set()
+        await release.wait()
+        return 2
+
+    radio.get_data1_mod_input = delayed_getter
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    task = asyncio.create_task(poller._read_mod_input("data1_mod_input"))  # noqa: SLF001
+    await started.wait()
+    replacement_generation = store.begin_provider_generation()
+    assert replacement_generation != started_generation
+    release.set()
+    await task
+
+    with pytest.raises(KeyError):
+        store.snapshot().field("global.slow_state.data1_mod_input")
+
+
+@pytest.mark.asyncio
+async def test_current_generation_direct_getter_result_is_accepted() -> None:
+    store = StateStore()
+    current_generation = store.begin_provider_generation()
+    radio = _make_radio(model="IC-7300")
+    radio.get_data1_mod_input = AsyncMock(return_value=3)
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller._read_mod_input("data1_mod_input")  # noqa: SLF001
+
+    field = store.snapshot().field("global.slow_state.data1_mod_input")
+    assert field.value == 3
+    assert field.provider_generation == current_generation
+
+
 class _NoopCommandExecutor:
     async def execute(self, intent: object) -> CommandExecutionResult:
         del intent
@@ -1263,6 +1305,7 @@ async def test_relative_vfo_ack_maps_selected_and_complement_then_rebinds() -> N
         RelativeVfoState(14_250_000, "USB", 1, 0),
     )
     store = StateStore()
+    current_generation = store.begin_provider_generation()
     poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
 
     assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
@@ -1271,6 +1314,9 @@ async def test_relative_vfo_ack_maps_selected_and_complement_then_rebinds() -> N
     assert first.field("receiver.0.vfo.active_slot").value == "B"
     assert first.field("receiver.0.slot.B.freq_mode.freq_hz").value == 14_200_000
     assert first.field("receiver.0.slot.A.freq_mode.freq_hz").value == 7_100_000
+    assert first.field("receiver.0.vfo.active_slot").provider_generation == (
+        current_generation
+    )
 
     await poller._execute(SelectVfo("A"))  # noqa: SLF001
     second = store.snapshot()

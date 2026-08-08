@@ -13,6 +13,7 @@ import pytest
 
 from rigplane.runtime._civ_rx import CivRuntime
 from rigplane.exceptions import ConnectionError
+from rigplane.core.state_store import StateStore
 
 
 @dataclass
@@ -35,6 +36,7 @@ class _FakeCivHost:
         self._civ_request_tracker = _DummyTracker()
         self._civ_epoch = self._civ_request_tracker.generation
         self._civ_transport = object()
+        self._state_store = StateStore()
 
 
 class TestCivRuntimeHost:
@@ -49,6 +51,7 @@ class TestCivRuntimeHost:
         runtime.advance_generation("unit-test")
 
         assert host._civ_epoch == 1
+        assert host._state_store.provider_generation == 1
         assert tracker.last_error is not None
         assert "unit-test" in str(tracker.last_error)
 
