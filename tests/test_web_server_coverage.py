@@ -248,6 +248,12 @@ class _FakeObservationPoller:
     async def stop(self) -> None:
         self.stopped = True
 
+    def bind_provider_generation(
+        self, *, capture: object, advance: object = None
+    ) -> None:
+        self.capture = capture
+        self.advance = advance
+
 
 class _ObservationStatePollableRadio:
     backend_id = "yaesu_cat"
@@ -380,6 +386,112 @@ async def test_start_routes_observation_pollable_radio_through_observation_store
     snapshot = srv.command_state_store.snapshot()
     values = {str(field.path): field.value for field in snapshot.fields}
     assert values["receiver.main.active.freq_mode.freq_hz"] == 14_074_000
+
+
+@pytest.mark.asyncio
+async def test_web_fallback_observation_store_advances_before_attach_and_detach() -> (
+    None
+):
+    class FallbackRadio:
+        backend_id = "fallback"
+        capabilities: set[str] = set()
+        connected = control_connected = radio_ready = True
+        model = "fallback"
+        radio_state = RadioState()
+
+        def supports_command(self, _command: str) -> bool:
+            return False
+
+        def create_observation_poller(
+            self, *, callback: object, **_kwargs: object
+        ) -> object:
+            return _FakeObservationPoller(callback)
+
+    radio = FallbackRadio()
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+    poller: _FakeObservationPoller | None = None
+
+    original_factory = radio.create_observation_poller
+
+    def factory(**kwargs: object) -> object:
+        nonlocal poller
+        poller = original_factory(**kwargs)
+        return poller
+
+    radio.create_observation_poller = factory  # type: ignore[method-assign]
+    fake_server = _FakeAsyncServer()
+    with patch(
+        "rigplane.web.web_startup.asyncio.start_server",
+        new=AsyncMock(return_value=fake_server),
+    ):
+        await server.start()
+        await asyncio.sleep(0)
+        assert poller is not None
+        assert server.command_state_store.provider_generation == 1
+        assert poller.capture() == 1  # type: ignore[operator]
+        before = server.command_state_store.snapshot()
+        poller._callback(  # type: ignore[union-attr]
+            (
+                _store_observation(
+                    FieldPath.active("main", "freq_mode", "freq_hz"),
+                    7_074_000,
+                    at=time.monotonic(),
+                ),
+            )
+        )
+        after = server.command_state_store.snapshot()
+        assert (after.state_revision, after.observation_seq, after.fields) == (
+            before.state_revision,
+            before.observation_seq,
+            before.fields,
+        )
+        await server.stop()
+
+    assert server.command_state_store.provider_generation == 2
+
+
+@pytest.mark.asyncio
+async def test_web_shared_store_does_not_advance_provider_generation() -> None:
+    radio = _ObservationStatePollableRadio()
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+    fake_server = _FakeAsyncServer()
+    with patch(
+        "rigplane.web.web_startup.asyncio.start_server",
+        new=AsyncMock(return_value=fake_server),
+    ):
+        await server.start()
+        await asyncio.sleep(0)
+        await server.stop()
+
+    assert radio.state_store.provider_generation == 0
+
+
+@pytest.mark.asyncio
+async def test_web_fallback_rejects_unbound_observation_poller() -> None:
+    class UnboundPoller:
+        pass
+
+    class FallbackRadio:
+        backend_id = "fallback"
+        capabilities: set[str] = set()
+        connected = control_connected = radio_ready = True
+        model = "fallback"
+        radio_state = RadioState()
+
+        def create_observation_poller(self, **_kwargs: object) -> object:
+            return UnboundPoller()
+
+    server = WebServer(
+        FallbackRadio(), WebConfig(host="127.0.0.1", port=0, discovery=False)
+    )
+    with (
+        patch(
+            "rigplane.web.web_startup.asyncio.start_server",
+            new=AsyncMock(return_value=_FakeAsyncServer()),
+        ),
+        pytest.raises(RuntimeError, match="must bind provider generation"),
+    ):
+        await server.start()
 
 
 def test_state_store_s_meter_change_broadcasts_without_legacy_revision_event() -> None:

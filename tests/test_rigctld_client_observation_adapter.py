@@ -745,6 +745,86 @@ async def test_radio_observation_poller_emits_adapter_covered_reads() -> None:
             await radio.disconnect()
 
 
+@pytest.mark.asyncio
+async def test_external_rigctld_poll_stamps_captured_generation_after_await() -> None:
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            store = StateStore()
+            observations: list[Observation] = []
+            poller = radio.create_observation_poller(callback=observations.extend)
+            poller.bind_provider_generation(
+                capture=lambda: store.provider_generation,
+                advance=store.begin_provider_generation,
+            )
+            original = RigctldClientObservationAdapter.read_freq_mode_controls
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def delayed(
+                self: RigctldClientObservationAdapter,
+            ) -> tuple[Observation, ...]:
+                started.set()
+                await release.wait()
+                return await original(self)
+
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(
+                    RigctldClientObservationAdapter,
+                    "read_freq_mode_controls",
+                    delayed,
+                )
+                task = asyncio.create_task(poller._poll_medium())  # noqa: SLF001
+                await started.wait()
+                store.begin_provider_generation()
+                release.set()
+                await task
+
+            assert observations
+            assert {item.provider_generation for item in observations} == {0}
+            before = store.snapshot()
+            for observation in observations:
+                store.apply(observation)
+            after = store.snapshot()
+            assert (
+                after.state_revision,
+                after.freshness_revision,
+                after.observation_seq,
+                after.fields,
+                after.provider_generation,
+            ) == (
+                before.state_revision,
+                before.freshness_revision,
+                before.observation_seq,
+                before.fields,
+                before.provider_generation,
+            )
+        finally:
+            await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_external_rigctld_explicit_reconnect_advances_bound_generation_once() -> (
+    None
+):
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        store = StateStore()
+        poller = radio.create_observation_poller(callback=lambda _items: None)
+        poller.bind_provider_generation(
+            capture=lambda: store.provider_generation,
+            advance=store.begin_provider_generation,
+        )
+        await radio.disconnect()
+        await radio.connect()
+        try:
+            assert store.provider_generation == 1
+        finally:
+            await radio.disconnect()
+
+
 def test_command_response_observations_use_external_rigctld_provider() -> None:
     adapter = RigctldClientObservationAdapter(None, clock=_clock)
     intent = command_intent_from_request(
