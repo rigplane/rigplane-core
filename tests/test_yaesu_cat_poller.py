@@ -430,9 +430,7 @@ def _target_observation(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error", (False, True))
-async def test_stale_yaesu_medium_has_no_callback_or_mirror_side_effects(
-    error: bool,
-) -> None:
+async def test_stale_yaesu_medium_has_no_side_effects(error: bool) -> None:
     radio = _tx_target_radio()
     emitted: list[Observation] = []
     store = StateStore()
@@ -462,13 +460,8 @@ async def test_stale_yaesu_medium_has_no_callback_or_mirror_side_effects(
         gate.set()
         await task
 
-    assert emitted == []
-    assert poller._last_ptt is False  # noqa: SLF001
+    assert not emitted and not poller._last_ptt  # noqa: SLF001
     assert poller._tx_target_known_generation is None  # noqa: SLF001
-    radio._transport._maybe_reconnect_needed = lambda: True
-    await poller._try_reconnect()  # noqa: SLF001
-    assert store.provider_generation == 2
-    assert emitted and {item.provider_generation for item in emitted} == {2}
 
 
 @pytest.mark.asyncio
@@ -501,8 +494,24 @@ async def test_stale_yaesu_fast_and_slow_have_no_ema_or_callback() -> None:
         gate.set()
         await asyncio.gather(fast_task, slow_task)
 
-    assert emitted == []
-    assert poller._ema_s_main is None  # noqa: SLF001
+    assert not emitted and poller._ema_s_main is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_each_serialized_reconnect_invalidates_its_store_generation() -> None:
+    radio = _tx_target_radio()
+    radio._transport._maybe_reconnect_needed = lambda: True
+    store, emitted = StateStore(), []
+    poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    await poller._try_reconnect()  # noqa: SLF001
+    await poller._try_reconnect()  # noqa: SLF001
+    poller._invalidate_tx_target(provider_generation=2)  # noqa: SLF001
+    assert (radio._transport.reconnect.await_count, store.provider_generation) == (2, 2)
+    assert [item.provider_generation for item in emitted] == [1, 2]
 
 
 def _state_write_target(node: ast.AST) -> str | None:

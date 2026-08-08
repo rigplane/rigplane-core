@@ -105,7 +105,7 @@ class YaesuCatPoller:
         self._ema_s_sub: float | None = None
         self._last_ptt = bool(getattr(radio.radio_state, "ptt", False))
         self._tx_target_generation = self._current_tx_target_generation()
-        self._tx_target_invalidated_generation: tuple[str | None, int] | None = None
+        self._tx_target_invalidation: tuple[str | None, int, int | None] | None = None
         self._tx_target_known_generation: tuple[str | None, int] | None = None
         self._capture_provider_generation: Callable[[], int] | None = None
         self._advance_provider_generation: Callable[[], int] | None = None
@@ -214,6 +214,10 @@ class YaesuCatPoller:
         callback = self._observation_callback
         profile = self._tx_target_profile()
         generation = self._current_tx_target_generation()
+        store_generation = provider_generation
+        if store_generation is None:
+            store_generation = self._captured_provider_generation()
+        invalidation_generation = (*generation, store_generation)
         known = self._tx_target_known_generation == self._tx_target_generation
         if generation != self._tx_target_generation:
             self._tx_target_known_generation = None
@@ -221,7 +225,7 @@ class YaesuCatPoller:
         if (
             callback is None
             or profile is None
-            or self._tx_target_invalidated_generation == generation
+            or self._tx_target_invalidation == invalidation_generation
         ):
             return
         adapter = ProviderObservationAdapter(
@@ -236,15 +240,8 @@ class YaesuCatPoller:
                 native_id="connection_generation",
             ),
         )
-        observations = self._stamp_provider_generation(
-            observations,
-            (
-                self._captured_provider_generation()
-                if provider_generation is None
-                else provider_generation
-            ),
-        )
-        self._tx_target_invalidated_generation = generation
+        observations = self._stamp_provider_generation(observations, store_generation)
+        self._tx_target_invalidation = invalidation_generation
         try:
             callback(observations)
         except (Exception, asyncio.CancelledError):
@@ -286,7 +283,7 @@ class YaesuCatPoller:
             if observation.path == YAESU_PTT_PATH:
                 self._last_ptt = bool(observation.value)
             elif observation.path == _TX_TARGET_PATH:
-                self._tx_target_invalidated_generation = None
+                self._tx_target_invalidation = None
                 if isinstance(observation.value, KnownTxTarget):
                     self._tx_target_known_generation = generation
         self._observation_callback(observations)
@@ -370,7 +367,7 @@ class YaesuCatPoller:
             generation = self._current_tx_target_generation()
             if generation != self._tx_target_generation:
                 self._tx_target_known_generation = None
-                self._tx_target_invalidated_generation = None
+                self._tx_target_invalidation = None
             self._tx_target_generation = generation
             self._reconnecting = False
 
