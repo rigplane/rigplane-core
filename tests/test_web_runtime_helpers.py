@@ -238,6 +238,61 @@ def test_relative_vfo_public_payload_does_not_flap_at_leaf_ttl() -> None:
     assert patched["main"]["unselectedVfo"] == retained["main"]["unselectedVfo"]
 
 
+def test_bound_vfo_public_projection_tracks_live_selected_and_retains_sibling() -> None:
+    store = StateStore()
+    store.configure_relative_vfo_retention(
+        generation=1,
+        max_age=31.0,
+        coherence_window=5.0,
+    )
+    base = {
+        FieldPath.active("0", "freq_mode", "freq_hz"): 14_164_000,
+        FieldPath.active("0", "freq_mode", "mode"): "USB",
+        FieldPath.active("0", "freq_mode", "filter_num"): 1,
+        FieldPath.active("0", "freq_mode", "data_mode"): 0,
+        FieldPath.unselected("0", "freq_mode", "freq_hz"): 14_076_000,
+        FieldPath.unselected("0", "freq_mode", "mode"): "USB",
+        FieldPath.unselected("0", "freq_mode", "filter_num"): 1,
+        FieldPath.unselected("0", "freq_mode", "data_mode"): 0,
+    }
+    store.apply_relative_vfo_observations(
+        tuple(_observation(path, value, at=10.0) for path, value in base.items()),
+        generation=1,
+    )
+    store.apply(_observation(FieldPath.active_slot("0"), "A", at=10.1))
+    store.apply_relative_vfo_observations(
+        tuple(_observation(path, value, at=10.2) for path, value in base.items()),
+        generation=1,
+    )
+
+    for revision_freq in (14_130_000, 14_123_000):
+        store.apply_relative_vfo_observations(
+            (
+                Observation(
+                    path=FieldPath.active("0", "freq_mode", "freq_hz"),
+                    value=revision_freq,
+                    source=SourceMetadata(
+                        source="civ_unsolicited",
+                        provider="icom_civ",
+                        native_id="civ:00",
+                    ),
+                    timestamp_monotonic=11.0,
+                ),
+            ),
+            generation=1,
+        )
+        payload = build_public_state_payload_from_snapshot(
+            store.snapshot(), radio=None, receiver_count=1
+        )
+        assert payload["main"]["freqHz"] == revision_freq
+        assert payload["main"]["vfoA"]["freqHz"] == revision_freq
+        assert payload["main"]["vfoB"]["freqHz"] == 14_076_000
+        assert (
+            payload["fieldStatus"]["main.freqHz"]["source"]
+            == payload["fieldStatus"]["main.vfoA.freqHz"]["source"]
+        )
+
+
 def test_web_server_publishes_single_receiver_main_from_topology_only() -> None:
     from rigplane.profiles import resolve_radio_profile
 

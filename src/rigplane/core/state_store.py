@@ -15,6 +15,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
     SourceMetadata,
+    VfoSlot,
 )
 
 _DEFAULT_MAX_HISTORY_COUNT = 4096
@@ -278,7 +279,9 @@ class StateStore:
             and observation.path in retention.paths
             and observation.source.provider == "vfo_binding"
         ):
-            retention.pending.clear()
+            return self.apply_relative_vfo_observations(
+                (observation,), generation=retention.generation
+            )
         return self._apply_one(observation)
 
     def _apply_one(self, observation: Observation) -> ChangeSet:
@@ -402,7 +405,7 @@ class StateStore:
         retention.generation = generation
         retention.pending.clear()
         retention.expires_at = None
-        return self.discard(retention.paths)
+        return self.discard(self._relative_vfo_session_paths(retention))
 
     def apply_relative_vfo_observations(
         self,
@@ -488,7 +491,11 @@ class StateStore:
                 <= retention.coherence_window
             )
             changesets.append(self.discard(retention.paths))
-            changesets.append(self._apply_observation_batch(committed))
+            changesets.append(
+                self._apply_observation_batch(
+                    self._with_bound_relative_vfo_aliases(committed)
+                )
+            )
         else:
             immediate = tuple(
                 replace(
@@ -497,7 +504,11 @@ class StateStore:
                 )
                 for item in relative
             )
-            changesets.append(self._apply_observation_batch(immediate))
+            changesets.append(
+                self._apply_observation_batch(
+                    self._with_bound_relative_vfo_aliases(immediate)
+                )
+            )
             if not complete:
                 return self._merge_changesets(changesets)
             retention.expires_at = max(required_times) + retention.max_age
@@ -505,9 +516,82 @@ class StateStore:
                 entry = self._entries.get(path)
                 if entry is not None:
                     entry.max_age = retention.expires_at - entry.last_observed_monotonic
+                alias_path = self._bound_relative_vfo_alias_path(path)
+                alias_entry = (
+                    None if alias_path is None else self._entries.get(alias_path)
+                )
+                if alias_entry is not None:
+                    alias_entry.max_age = (
+                        retention.expires_at - alias_entry.last_observed_monotonic
+                    )
 
         retention.pending.clear()
         return self._merge_changesets(changesets)
+
+    def _relative_vfo_session_paths(
+        self,
+        retention: _RelativeVfoRetention,
+    ) -> frozenset[FieldPath]:
+        """Return relative values plus all identity-bound aliases for reset."""
+
+        receiver_ids = {
+            path.receiver_id for path in retention.paths if path.receiver_id is not None
+        }
+        identity = {
+            path
+            for receiver_id in receiver_ids
+            for path in (
+                FieldPath.active_slot(receiver_id),
+                *(
+                    FieldPath.vfo_slot(receiver_id, slot, "freq_mode", name)
+                    for slot in ("A", "B")
+                    for name in ("freq_hz", "mode", "filter_num", "data_mode")
+                ),
+            )
+        }
+        return retention.paths | frozenset(identity)
+
+    def _bound_relative_vfo_alias_path(
+        self,
+        path: FieldPath,
+    ) -> FieldPath | None:
+        """Map one relative path through current observed A/B identity."""
+
+        if path.receiver_id is None or path.slot not in {
+            VfoSlot.ACTIVE,
+            VfoSlot.UNSELECTED,
+        }:
+            return None
+        binding = self._entries.get(FieldPath.active_slot(path.receiver_id))
+        if (
+            binding is None
+            or binding.freshness is not FreshnessState.FRESH
+            or binding.value not in {"A", "B"}
+        ):
+            return None
+        selected_slot = str(binding.value)
+        slot = (
+            selected_slot
+            if path.slot is VfoSlot.ACTIVE
+            else "B"
+            if selected_slot == "A"
+            else "A"
+        )
+        return FieldPath.vfo_slot(path.receiver_id, slot, path.family.value, path.name)
+
+    def _with_bound_relative_vfo_aliases(
+        self,
+        observations: tuple[Observation, ...],
+    ) -> tuple[Observation, ...]:
+        """Mirror confirmed relative leaves into bound aliases in one batch."""
+
+        expanded: list[Observation] = []
+        for observation in observations:
+            expanded.append(observation)
+            alias_path = self._bound_relative_vfo_alias_path(observation.path)
+            if alias_path is not None:
+                expanded.append(replace(observation, path=alias_path))
+        return tuple(expanded)
 
     def _expire_relative_vfo(self, *, now: float) -> tuple[FieldPath, ...]:
         retention = self._relative_vfo_retention

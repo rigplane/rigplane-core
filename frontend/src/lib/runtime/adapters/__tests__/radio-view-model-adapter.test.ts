@@ -271,6 +271,30 @@ describe('unobserved facts survive as the explicit unknown branch', () => {
     expect(view.vfos.filter((v) => v.isActive).map((v) => v.label)).toEqual(['MAIN A']);
   });
 
+  it('projects each newer coherent bound alias revision without client arbitration', () => {
+    const capabilities = caps({
+      vfoScheme: 'ab', receivers: 1, capabilities: SINGLE,
+      vfoReadback: 'selected_unselected',
+    });
+    for (const frequencyHz of [14_164_000, 14_130_000, 14_123_000]) {
+      const base = observedState();
+      const view = model({
+        ...base,
+        main: {
+          ...base.main,
+          freqHz: frequencyHz,
+          vfoA: slot(frequencyHz),
+          vfoB: slot(14_076_000),
+          activeSlot: 'A',
+        },
+      } as ServerState, capabilities);
+      expect(view.vfos.map((vfo) => [vfo.label, vfo.frequencyHz])).toEqual([
+        ['MAIN A', frequencyHz],
+        ['MAIN B', 14_076_000],
+      ]);
+    }
+  });
+
   // ── MOR-1335 (G4): the per-receiver active slot ─────────────────────────
   //
   // `isActive` answers "is this the ACTIVE RECEIVER's active VFO" and is

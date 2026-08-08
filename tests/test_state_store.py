@@ -12,6 +12,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
     SourceMetadata,
+    VfoSlot,
 )
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
@@ -232,6 +233,199 @@ def test_relative_vfo_bootstrap_is_atomic_then_live_leaves_patch_immediately() -
     assert patched.field("receiver.0.active.freq_mode.filter_num").value == 2
     assert patched.field("receiver.0.active.freq_mode.data_mode").value == 1
     assert _relative_vfo_deadline(store) == pytest.approx(131.6)
+
+
+@pytest.mark.parametrize("active_slot", ["A", "B"])
+@pytest.mark.parametrize("source", ["civ_unsolicited", "command_response"])
+def test_bound_relative_vfo_leaf_updates_matching_absolute_alias_atomically(
+    active_slot: str,
+    source: str,
+) -> None:
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=7,
+        max_age=31.0,
+        coherence_window=5.0,
+    )
+    store.apply_relative_vfo_observations(
+        _relative_vfo_observations(at=100.0), generation=7
+    )
+    store.apply(_observation(FieldPath.active_slot("0"), active_slot, at=100.1))
+
+    selected_slot = active_slot
+    unselected_slot = "B" if active_slot == "A" else "A"
+    for relative, absolute, values in (
+        ("active", selected_slot, (14_130_000, "LSB", 2, 1)),
+        ("unselected", unselected_slot, (14_076_000, "CW", 3, 1)),
+    ):
+        paths = tuple(
+            (
+                FieldPath.active("0", "freq_mode", name)
+                if relative == "active"
+                else FieldPath.unselected("0", "freq_mode", name)
+            )
+            for name in ("freq_hz", "mode", "filter_num", "data_mode")
+        )
+        observations = tuple(
+            _observation(path, value, at=101.0, max_age=5.0, source=source)
+            for path, value in zip(paths, values, strict=True)
+        )
+        before = store.snapshot()
+        changeset = store.apply_relative_vfo_observations(observations, generation=7)
+        after = store.snapshot()
+
+        assert changeset.revision == after.state_revision
+        assert after.state_revision == before.state_revision + 8
+        for path, value in zip(paths, values, strict=True):
+            relative_field = after.field(path)
+            alias_path = FieldPath.vfo_slot("0", absolute, "freq_mode", path.name)
+            alias_field = after.field(alias_path)
+            assert alias_field.value == value == relative_field.value
+            assert alias_field.source == relative_field.source
+            assert (
+                alias_field.last_observed_monotonic
+                == relative_field.last_observed_monotonic
+            )
+            assert alias_field.max_age == relative_field.max_age
+            assert alias_path in changeset.observed_paths
+            assert path in changeset.observed_paths
+
+    snapshot = store.snapshot()
+    assert (
+        snapshot.field(
+            FieldPath.vfo_slot("0", selected_slot, "freq_mode", "freq_hz")
+        ).value
+        == 14_130_000
+    )
+    assert (
+        snapshot.field(
+            FieldPath.vfo_slot("0", unselected_slot, "freq_mode", "freq_hz")
+        ).value
+        == 14_076_000
+    )
+
+
+def test_bound_relative_vfo_aliases_expire_and_old_generation_cannot_repopulate() -> (
+    None
+):
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=1,
+        max_age=20.0,
+        coherence_window=5.0,
+    )
+    store.apply_relative_vfo_observations(
+        _relative_vfo_observations(at=10.0), generation=1
+    )
+    store.apply(_observation(FieldPath.active_slot("0"), "A", at=10.1))
+    knob = _observation(
+        FieldPath.active("0", "freq_mode", "freq_hz"),
+        14_130_000,
+        at=11.0,
+        max_age=5.0,
+        source="civ_unsolicited",
+    )
+    store.apply_relative_vfo_observations((knob,), generation=1)
+    alias = FieldPath.vfo_slot("0", "A", "freq_mode", "freq_hz")
+    assert store.snapshot().field(alias).value == 14_130_000
+
+    store.reset_relative_vfo_retention(generation=2)
+    store.discard((FieldPath.active_slot("0"), alias))
+    store.apply_relative_vfo_observations(
+        (replace(knob, value=14_123_000),), generation=1
+    )
+
+    with pytest.raises(KeyError):
+        store.snapshot().field(alias)
+
+
+def test_bound_relative_vfo_alias_shares_complete_pair_expiry() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=1,
+        max_age=20.0,
+        coherence_window=5.0,
+    )
+    store.apply_relative_vfo_observations(
+        _relative_vfo_observations(at=10.0), generation=1
+    )
+    store.apply(_observation(FieldPath.active_slot("0"), "A", at=10.1))
+    store.apply_relative_vfo_observations(
+        (
+            _observation(
+                FieldPath.active("0", "freq_mode", "freq_hz"),
+                14_130_000,
+                at=11.0,
+                max_age=5.0,
+                source="civ_unsolicited",
+            ),
+        ),
+        generation=1,
+    )
+    alias = FieldPath.vfo_slot("0", "A", "freq_mode", "freq_hz")
+    relative = FieldPath.active("0", "freq_mode", "freq_hz")
+    assert (
+        store.snapshot().field(alias).max_age
+        == store.snapshot().field(relative).max_age
+    )
+
+    clock.advance(20.7)
+    store.mark_stale_due()
+    snapshot = store.snapshot()
+    assert snapshot.field(relative).freshness is FreshnessState.STALE
+    assert snapshot.field(alias).freshness is FreshnessState.STALE
+
+
+def test_explicit_binding_readback_uses_same_retention_and_alias_semantics() -> None:
+    clock = FreshnessClock(start=50.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=3,
+        max_age=20.0,
+        coherence_window=5.0,
+    )
+    store.apply_relative_vfo_observations(
+        _relative_vfo_observations(at=50.0), generation=3
+    )
+    store.apply(_observation(FieldPath.active_slot("0"), "A", at=51.0))
+    binding_source = SourceMetadata(
+        source="command_response",
+        provider="vfo_binding",
+        transport="fake",
+        native_id="explicit_slot_ack_readback",
+    )
+    binding = tuple(
+        replace(item, source=binding_source, timestamp_monotonic=51.0)
+        for item in _relative_vfo_observations(
+            at=51.0,
+            selected_freq=14_164_000,
+            unselected_freq=14_076_000,
+        )
+    )
+    for observation in binding:
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    for relative_slot, absolute_slot in (
+        (VfoSlot.ACTIVE, "A"),
+        (VfoSlot.UNSELECTED, "B"),
+    ):
+        for name in ("freq_hz", "mode", "filter_num", "data_mode"):
+            relative = next(
+                field
+                for field in snapshot.fields
+                if field.path.slot is relative_slot and field.path.name == name
+            )
+            alias = snapshot.field(
+                FieldPath.vfo_slot("0", absolute_slot, "freq_mode", name)
+            )
+            assert alias.value == relative.value
+            assert alias.source == relative.source == binding_source
+            assert alias.max_age == relative.max_age
+            assert alias.max_age is not None
 
 
 def test_relative_vfo_mandatory_bootstrap_is_atomic_in_every_arrival_order() -> None:

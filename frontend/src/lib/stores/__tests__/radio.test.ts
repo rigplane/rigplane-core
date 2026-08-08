@@ -556,18 +556,18 @@ describe('radio store', () => {
     expect(store.getRadioState()?.ptt).toBe(false);
   });
 
-  it('patchActiveReceiver patches MAIN when active is MAIN', () => {
+  it('patchActiveReceiver cannot overwrite StateStore-owned MAIN VFO truth', () => {
     store.setRadioState(makeState({ active: 'MAIN' }));
     store.patchActiveReceiver({ freqHz: 21074000 });
-    expect(store.getMainReceiver()?.freqHz).toBe(21074000);
+    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
     // SUB should remain unchanged
     expect(store.getSubReceiver()?.freqHz).toBe(7100000);
   });
 
-  it('patchActiveReceiver patches SUB when active is SUB', () => {
+  it('patchActiveReceiver cannot overwrite StateStore-owned SUB VFO truth', () => {
     store.setRadioState(makeState({ active: 'SUB' }));
     store.patchActiveReceiver({ freqHz: 3500000 });
-    expect(store.getSubReceiver()?.freqHz).toBe(3500000);
+    expect(store.getSubReceiver()?.freqHz).toBe(7100000);
     // MAIN should remain unchanged
     expect(store.getMainReceiver()?.freqHz).toBe(14074000);
   });
@@ -587,9 +587,9 @@ describe('radio store', () => {
     expect(store.getActiveReceiver()).toBeNull();
   });
 
-  // --- freq optimistic overlay vs causal advance (MOR-475) ---
+  // --- StateStore-owned VFO truth vs legacy optimistic intent (MOR-1403) ---
 
-  it('keeps an unlocked freqHz overlay when a causally-newer DIFFERING snapshot arrives (no false clear)', () => {
+  it('shows a causally-newer differing StateStore frequency instead of unlocked intent', () => {
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -598,14 +598,13 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14074000 },
     }));
 
-    // Unlocked optimistic patch (click-to-tune) to a new freq.
+    // Old MOR-475 expectation: the requested frequency immediately became
+    // displayed truth. MOR-1403 assigns that fact exclusively to StateStore.
     store.patchActiveReceiver({ freqHz: 14100000 });
-    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
 
-    // Server emits a causally-newer snapshot (observationSeq + freshnessRevision
-    // advance) reporting a DIFFERENT freq well outside the 500 Hz tolerance.
-    // This is the classic in-flight stale poll: causal advance alone must NOT
-    // drop the unlocked overlay, or the commanded freq would flash away.
+    // A confirmed radio-side value owns the display even when it contradicts
+    // the requested intent.
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -614,13 +613,11 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14200000 },
     }));
 
-    // The overlay must HOLD the commanded value — value-match (tolerance) or the
-    // freq TTL are the only legitimate clear conditions, not a bare causal advance.
-    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
-    expect(store.getFrequency()).toBe(14100000);
+    expect(store.getMainReceiver()?.freqHz).toBe(14200000);
+    expect(store.getFrequency()).toBe(14200000);
   });
 
-  it('does not flash the stale freq: unlocked overlay survives an in-flight causal stale poll, clears on value-match', () => {
+  it('changes VFO truth only when each confirmed StateStore observation arrives', () => {
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -629,13 +626,11 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14074000 },
     }));
 
-    // Click-to-tune: unlocked optimistic patch to the commanded freq.
+    // Intent alone is not radio truth.
     store.patchActiveReceiver({ freqHz: 14100000 });
-    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
 
-    // An in-flight poll captured BEFORE the click lands: causally newer
-    // (observationSeq + freshnessRevision advance) but still carrying the OLD freq.
-    // The overlay must survive — otherwise the display flashes the stale 14074000.
+    // A newer observation carrying the same value remains the displayed fact.
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -643,10 +638,9 @@ describe('radio store', () => {
       freshnessRevision: 2,
       main: { ...makeState().main, freqHz: 14074000 },
     }));
-    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
 
-    // The backend (post MOR-484) now reports the live commanded freq: value-match
-    // within tolerance clears the overlay and the display equals the server value.
+    // The confirmed readback then advances the display.
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -657,7 +651,7 @@ describe('radio store', () => {
     expect(store.getMainReceiver()?.freqHz).toBe(14100000);
   });
 
-  it('keeps a locked freqHz overlay despite a causally-newer differing snapshot', () => {
+  it('does not let a locked VFO intent hide a newer StateStore observation', () => {
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -666,9 +660,9 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14074000 },
     }));
 
-    // Locked optimistic patch (rapid input) — must survive the lock window.
+    // Legacy lock metadata cannot own a displayed radio fact.
     store.patchActiveReceiver({ freqHz: 14100000 }, true);
-    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
 
     // Causally-newer differing snapshot arrives within the lock window.
     store.setRadioState(makeState({
@@ -679,11 +673,10 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14150000 },
     }));
 
-    // Lock holds: causal advance must NOT override a locked overlay.
-    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+    expect(store.getMainReceiver()?.freqHz).toBe(14150000);
   });
 
-  it('falls back to server freq after the lowered freq TTL with no causal advance', () => {
+  it('does not give VFO intent a TTL ownership window over StateStore', () => {
     vi.useFakeTimers();
     store.setRadioState(makeState({
       revision: 1,
@@ -693,9 +686,9 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14074000 },
     }));
 
-    // Unlocked freq patch.
+    // VFO intent never becomes observed radio truth, before or after any TTL.
     store.patchActiveReceiver({ freqHz: 14100000 });
-    expect(store.getMainReceiver()?.freqHz).toBe(14100000);
+    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
 
     // Advance past the lowered freq TTL (1500ms) but under the old 5000ms TTL.
     vi.advanceTimersByTime(2000);
@@ -709,7 +702,7 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14080000 },
     }));
 
-    // Freq TTL elapsed → server value wins.
+    // The next accepted StateStore revision is visible immediately.
     expect(store.getMainReceiver()?.freqHz).toBe(14080000);
 
     vi.useRealTimers();
