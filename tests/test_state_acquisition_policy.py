@@ -402,7 +402,7 @@ def test_loader_rejects_coerced_state_acquisition_values(
 def test_known_profiles_load_with_state_acquisition_compatibility() -> None:
     profiles = {rig.model: rig.to_profile() for rig in discover_rigs(RIGS_DIR).values()}
 
-    for expected in ("IC-7610", "FTX-1", "X6200"):
+    for expected in ("IC-7300", "IC-7610", "FTX-1", "X6200"):
         assert expected in profiles
         assert profiles[expected].state_acquisition is not None
 
@@ -415,7 +415,7 @@ def test_known_profiles_load_with_state_acquisition_compatibility() -> None:
 
 
 def test_known_profiles_stream_like_meters_use_fast_non_decaying_policies() -> None:
-    for model in ("IC-7610", "FTX-1", "X6200"):
+    for model in ("IC-7300", "IC-7610", "FTX-1", "X6200"):
         profile = get_radio_profile(model)
         acquisition = profile.state_acquisition
         assert acquisition is not None
@@ -463,3 +463,64 @@ def test_ftx1_profile_declares_slow_control_policies_for_polling_adapter() -> No
     assert ftx1.state_acquisition.capability_for(ptt).can_poll is True
     assert ftx1.state_acquisition.policy_for(af_level).freshness_ttl_seconds == 120.0
     assert ftx1.state_acquisition.policy_for(af_level).cadence_seconds == 30.0
+
+
+def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
+    profile = get_radio_profile("IC-7300")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    assert acquisition.provider == "icom_civ"
+
+    expected_pollable = {
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.unselected("main", "freq_mode", "freq_hz"),
+        FieldPath.unselected("main", "freq_mode", "mode"),
+        FieldPath.receiver("main", "meters", "s_meter"),
+        FieldPath.receiver("main", "operator_controls", "af_level"),
+        FieldPath.receiver("main", "operator_controls", "rf_gain"),
+        FieldPath.receiver("main", "operator_controls", "squelch"),
+        FieldPath.receiver("main", "operator_controls", "att"),
+        FieldPath.receiver("main", "operator_controls", "preamp"),
+        FieldPath.receiver("main", "operator_controls", "agc"),
+        FieldPath.receiver("main", "operator_toggles", "nb"),
+        FieldPath.receiver("main", "operator_toggles", "nr"),
+        FieldPath.global_("operator_controls", "power_level"),
+        FieldPath.global_("tx_state", "compressor_on"),
+        FieldPath.global_("operator_controls", "compressor_level"),
+        FieldPath.global_("tx_state", "ptt"),
+        FieldPath.global_("operator_controls", "tuner_status"),
+        FieldPath.global_("tx_state", "split"),
+    }
+
+    assert set(acquisition.pollable_paths()) == expected_pollable
+    assert all(
+        acquisition.capability_for(path).availability is FieldAvailability.SUPPORTED
+        for path in expected_pollable
+    )
+    for path in (
+        FieldPath.global_("operator_controls", "power_level"),
+        FieldPath.global_("tx_state", "compressor_on"),
+        FieldPath.global_("operator_controls", "compressor_level"),
+    ):
+        assert acquisition.capability_for(path).command_response_observable is True
+
+    assert (
+        acquisition.capability_for(
+            FieldPath.receiver("sub", "operator_controls", "af_level")
+        ).availability
+        is FieldAvailability.UNKNOWN
+    )
+    assert profile.cmd29_routes == frozenset()
+
+
+def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
+    ftx1 = get_radio_profile("FTX-1")
+    acquisition = ftx1.state_acquisition
+    assert acquisition is not None
+
+    assert acquisition.provider == "yaesu_cat"
+    assert len(acquisition.capabilities) == 53
+    assert len(acquisition.field_policies) == 46
+    assert acquisition.default_policy.cadence_seconds == 2.0
+    assert acquisition.default_policy.freshness_ttl_seconds == 8.0

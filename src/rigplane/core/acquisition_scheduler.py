@@ -52,6 +52,7 @@ __all__ = [
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
 AcquisitionQuerySender = Callable[[int, int | None, int | None], Awaitable[None]]
+CivCmd29Support = Callable[[int, int | None], bool]
 
 
 class AcquisitionPriority(StrEnum):
@@ -287,10 +288,16 @@ _CIV_ACQUISITION_PROVIDERS = frozenset(("icom_civ", "xiegu_civ"))
 class IcomCivAcquisitionExecutor:
     """CI-V path-to-query executor for compatible CI-V acquisition profiles."""
 
-    __slots__ = ("_send_query",)
+    __slots__ = ("_send_query", "_supports_cmd29")
 
-    def __init__(self, send_query: AcquisitionQuerySender) -> None:
+    def __init__(
+        self,
+        send_query: AcquisitionQuerySender,
+        *,
+        supports_cmd29: CivCmd29Support | None = None,
+    ) -> None:
         self._send_query = send_query
+        self._supports_cmd29 = supports_cmd29
 
     async def execute(
         self,
@@ -300,19 +307,33 @@ class IcomCivAcquisitionExecutor:
     ) -> AcquisitionExecutionResult:
         sent: list[FieldPath] = []
         failed: list[FieldPath] = []
+        failure_reason = ""
         for path in request.paths:
             if path in already_sent_paths:
                 continue
             query = self.query_for_path(path)
             if query is None:
                 failed.append(path)
+                failure_reason = failure_reason or "no_civ_query_mapping"
                 continue
-            await self._send_query(*query)
+            command, sub, receiver = query
+            if (
+                receiver is not None
+                and command not in (0x25, 0x26)
+                and self._supports_cmd29 is not None
+                and not self._supports_cmd29(command, sub)
+            ):
+                if receiver != 0:
+                    failed.append(path)
+                    failure_reason = failure_reason or "no_civ_receiver_route"
+                    continue
+                receiver = None
+            await self._send_query(command, sub, receiver)
             sent.append(path)
         return AcquisitionExecutionResult(
             sent_paths=tuple(sent),
             failed_paths=tuple(failed),
-            failure_reason="no_civ_query_mapping" if failed else "",
+            failure_reason=failure_reason,
         )
 
     def query_for_path(
@@ -323,11 +344,19 @@ class IcomCivAcquisitionExecutor:
         if path.scope.value == "receiver" and receiver is None:
             return None
         if path.scope.value == "receiver" and path.family.value == "freq_mode":
+            slot = None if path.slot is None else path.slot.value
+            if slot in {"A", "B"}:
+                return None
+            selector = 1 if slot == "unselected" else receiver
+            if slot == "unselected" and receiver != 0:
+                return None
             if path.name == "freq_hz":
-                return (0x25, None, receiver)
+                return (0x25, None, selector)
             if path.name == "mode":
-                return (0x26, None, receiver)
+                return (0x26, None, selector)
             if path.name == "filter_width":
+                if slot == "unselected":
+                    return None
                 return (0x1A, 0x03, receiver)
             return None
         if path.scope.value == "receiver" and path.family.value == "meters":
@@ -373,12 +402,17 @@ class IcomCivAcquisitionExecutor:
 def civ_acquisition_executor_for_provider(
     provider: str,
     send_query: AcquisitionQuerySender,
+    *,
+    supports_cmd29: CivCmd29Support | None = None,
 ) -> AcquisitionExecutor | None:
     """Return the shared CI-V executor for providers using this query envelope."""
 
     if provider not in _CIV_ACQUISITION_PROVIDERS:
         return None
-    return IcomCivAcquisitionExecutor(send_query)
+    return IcomCivAcquisitionExecutor(
+        send_query,
+        supports_cmd29=supports_cmd29,
+    )
 
 
 _PRIORITY_RANK: dict[AcquisitionPriority, int] = {
