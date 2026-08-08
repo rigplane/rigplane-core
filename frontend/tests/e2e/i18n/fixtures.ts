@@ -49,6 +49,9 @@ const subReceiver: ReceiverState = {
 
 export const mockState: ServerState = {
   revision: 1,
+  stateRevision: 1,
+  freshnessRevision: 1,
+  observationSeq: 1,
   updatedAt: '2026-05-19T00:00:00Z',
   active: 'MAIN',
   powerOn: true,
@@ -56,6 +59,10 @@ export const mockState: ServerState = {
   split: false,
   dualWatch: false,
   tunerStatus: 0,
+  txTarget: {
+    status: 'unknown',
+    reason: 'not-observed',
+  },
   main: baseReceiver,
   sub: subReceiver,
   connection: {
@@ -73,7 +80,6 @@ export const mockState: ServerState = {
   },
   radioDetail: {
     status: 'connected',
-    uptimeSeconds: 600,
   },
   meterSource: 'S',
   cwPitch: 600,
@@ -105,7 +111,6 @@ export const mockDisconnectedState: ServerState = {
   },
   radioDetail: {
     status: 'disconnected',
-    uptimeSeconds: 0,
   },
 };
 
@@ -167,6 +172,26 @@ export const mockCapabilities: Capabilities = {
     amplitudeMax: 100,
     defaultSpan: 100_000,
   },
+  // Keep this complete public capability group in sync with
+  // `validateCapabilities()`. The companion contract test deliberately
+  // removes a required member to prove that CI catches future drift.
+  audioConfig: {
+    sampleRate: 48_000,
+    channels: 2,
+    codecs: ['pcm_f32le'],
+  },
+  webrtc: {
+    available: false,
+    enabled: false,
+  },
+  txBands: [
+    { name: '160m', start: 1_800_000, end: 2_000_000 },
+    { name: '80m', start: 3_500_000, end: 4_000_000 },
+    { name: '40m', start: 7_000_000, end: 7_300_000 },
+    { name: '20m', start: 14_000_000, end: 14_350_000 },
+    { name: '15m', start: 21_000_000, end: 21_450_000 },
+    { name: '10m', start: 28_000_000, end: 29_700_000 },
+  ],
 };
 
 export const mockInfo = {

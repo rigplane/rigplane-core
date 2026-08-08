@@ -143,9 +143,6 @@ jobs:
 
       - name: Frontend i18n visual smoke (RP-ML-006)
         if: steps.filter.outputs.frontend == 'true'
-        # RP-ML-006 remains an explicitly advisory pre-existing suite. Do not
-        # count this step as blocking evidence for the quick check.
-        continue-on-error: true
         run: npm run test:e2e:i18n
         working-directory: frontend
 
