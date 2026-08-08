@@ -216,6 +216,16 @@ def _python_poll_counts(sources: dict[str, str]) -> Counter[str]:
                         "anyio",
                     }:
                         direct_sleep.add(local)
+            elif (
+                isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None
+            ):
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                if isinstance(node.value, ast.Name) and node.value.id == "getattr":
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            aliases[target.id] = "builtins.getattr"
         module_names[source_path] = aliases
         sleep_names[source_path] = direct_sleep
         Collector(source_path).visit(tree)
@@ -235,6 +245,11 @@ def _python_poll_counts(sources: dict[str, str]) -> Counter[str]:
             for child in ast.walk(node)
             if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
         }
+        getattr_aliases = {
+            name
+            for name, qualified in aliases.items()
+            if qualified == "builtins.getattr"
+        } | {"getattr"}
         for child in ast.walk(node):
             for nested in ast.iter_child_nodes(child):
                 parents[nested] = child
@@ -247,6 +262,37 @@ def _python_poll_counts(sources: dict[str, str]) -> Counter[str]:
                     for target in targets:
                         if isinstance(target, ast.Name):
                             string_values[target.id] = value
+        alias_changed = True
+        while alias_changed:
+            alias_changed = False
+            for child in ast.walk(node):
+                if (
+                    not isinstance(child, (ast.Assign, ast.AnnAssign))
+                    or child.value is None
+                ):
+                    continue
+                value_is_getattr = (
+                    isinstance(child.value, ast.Name)
+                    and child.value.id in getattr_aliases
+                ) or (
+                    isinstance(child.value, ast.Attribute)
+                    and child.value.attr == "getattr"
+                    and isinstance(child.value.value, ast.Name)
+                    and aliases.get(child.value.value.id, child.value.value.id)
+                    == "builtins"
+                )
+                if not value_is_getattr:
+                    continue
+                targets = (
+                    child.targets if isinstance(child, ast.Assign) else [child.target]
+                )
+                for target in targets:
+                    if (
+                        isinstance(target, ast.Name)
+                        and target.id not in getattr_aliases
+                    ):
+                        getattr_aliases.add(target.id)
+                        alias_changed = True
 
         def literal_strings(
             expression: ast.expr,
@@ -275,20 +321,9 @@ def _python_poll_counts(sources: dict[str, str]) -> Counter[str]:
                 return static_getattr_target(expression.value)
             return False
 
-        def radio_getattr_target(expression: ast.expr) -> bool:
-            names = {
-                _normalized(child.id if isinstance(child, ast.Name) else child.attr)
-                for child in ast.walk(expression)
-                if isinstance(child, (ast.Name, ast.Attribute))
-            }
-            return any("radio" in name or name.startswith("rig") for name in names)
-
         def is_getattr(expression: ast.expr) -> bool:
             if isinstance(expression, ast.Name):
-                return (
-                    expression.id == "getattr"
-                    or aliases.get(expression.id) == "builtins.getattr"
-                )
+                return expression.id in getattr_aliases
             if isinstance(expression, ast.Attribute):
                 if expression.attr != "getattr" or not isinstance(
                     expression.value, ast.Name
@@ -298,6 +333,28 @@ def _python_poll_counts(sources: dict[str, str]) -> Counter[str]:
                     aliases.get(expression.value.id, expression.value.id) == "builtins"
                 )
             return False
+
+        def qualified_call_name(expression: ast.expr) -> str:
+            if isinstance(expression, ast.Name):
+                return aliases.get(expression.id, expression.id)
+            if isinstance(expression, ast.Attribute) and isinstance(
+                expression.value, ast.Name
+            ):
+                owner = aliases.get(expression.value.id, expression.value.id)
+                return f"{owner}.{expression.attr}"
+            return ""
+
+        def is_unbounded_iterator(expression: ast.expr) -> bool:
+            if not isinstance(expression, ast.Call):
+                return False
+            qualified = qualified_call_name(expression.func)
+            if qualified in {"itertools.count", "itertools.cycle"}:
+                return True
+            return (
+                qualified == "itertools.repeat"
+                and len(expression.args) < 2
+                and not any(keyword.arg == "times" for keyword in expression.keywords)
+            )
 
         def getattr_is_invoked(call: ast.Call) -> bool:
             parent = parents.get(call)
@@ -324,7 +381,12 @@ def _python_poll_counts(sources: dict[str, str]) -> Counter[str]:
             for child in ast.walk(node)
         )
         has_periodic_loop = any(
-            isinstance(child, ast.While) for child in ast.walk(node)
+            isinstance(child, ast.While)
+            or (
+                isinstance(child, (ast.For, ast.AsyncFor))
+                and is_unbounded_iterator(child.iter)
+            )
+            for child in ast.walk(node)
         )
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
@@ -333,17 +395,13 @@ def _python_poll_counts(sources: dict[str, str]) -> Counter[str]:
                 if not getattr_is_invoked(child):
                     continue
                 if len(child.args) < 2:
-                    if child.args and radio_getattr_target(child.args[0]):
-                        has_dynamic_getattr = True
+                    has_dynamic_getattr = True
                     continue
                 names = literal_strings(child.args[1])
                 if not names:
-                    if radio_getattr_target(child.args[0]):
-                        has_dynamic_getattr = True
+                    has_dynamic_getattr = True
                     continue
-                if not static_getattr_target(child.args[0]) and radio_getattr_target(
-                    child.args[0]
-                ):
+                if not static_getattr_target(child.args[0]):
                     has_dynamic_getattr = True
                 for name in names:
                     normalized = _normalized(name)
@@ -942,16 +1000,15 @@ def test_restricted_authority_constructs_and_imports_fail_loud() -> None:
                 "export const value = import('$lib/authority-does-not-exist');"
             ),
         },
-        "allowed_outside_authority": {
+        "outside_authority_is_still_authority": {
             "frontend/src/plugin-loader.ts": (
                 "export function load(specifier: string) { return import(specifier); }"
             ),
         },
     }
     result = _frontend_analysis(scenarios)
-    for name in scenarios.keys() - {"allowed_outside_authority"}:
+    for name in scenarios:
         assert result["errors"][name], f"did not fail loud: {name}"
-    assert result["errors"]["allowed_outside_authority"] == []
 
 
 def test_python_getattr_dispatch_is_resolved_or_conservatively_rejected() -> None:
@@ -1011,6 +1068,228 @@ def test_python_getattr_dispatch_is_resolved_or_conservatively_rejected() -> Non
         ]
         == 0
     )
+
+
+def test_fixed_point_store_and_scopeframe_provenance_variants_are_rejected() -> None:
+    scenarios = {
+        "object_wrapper": {
+            "frontend/src/lib/stores/object-wrapper.svelte.ts": (
+                "export let live = $state({ controls: {} as Record<string, number> });\n"
+                "const wrapper = { alias: live };\n"
+                "const { alias } = wrapper;\n"
+                "alias.rfPower = 50;\n"
+            )
+        },
+        "array_wrapper": {
+            "frontend/src/lib/stores/array-wrapper.svelte.ts": (
+                "export let live = $state([{} as Record<string, string>]);\n"
+                "const wrapper = [live];\n"
+                "const [alias] = wrapper;\n"
+                "alias.mode = 'USB';\n"
+            )
+        },
+        "later_assignment": {
+            "frontend/src/lib/stores/later-assignment.svelte.ts": (
+                "export let live = $state({} as Record<string, number>);\n"
+                "let alias;\n"
+                "alias = live;\n"
+                "alias.rfPower = 50;\n"
+            )
+        },
+        "identity_return": {
+            "frontend/src/lib/stores/identity-return.svelte.ts": (
+                "function identity<T>(value: T): T { return value; }\n"
+                "export let live = $state({} as Record<string, string>);\n"
+                "const alias = identity(live);\n"
+                "alias.mode = 'USB';\n"
+            )
+        },
+        "identity_chain": {
+            "frontend/src/lib/stores/identity-chain.svelte.ts": (
+                "function identity<T>(value: T): T { return value; }\n"
+                "function second<T>(value: T): T { return identity(value); }\n"
+                "export let live = $state({} as Record<string, number>);\n"
+                "second(live).rfPower = 50;\n"
+            )
+        },
+        "parameter_flow": {
+            "frontend/src/lib/stores/parameter-flow.svelte.ts": (
+                "export let live = $state({} as Record<string, number>);\n"
+                "function mutate(value: Record<string, number>) { value.rfPower = 50; }\n"
+                "mutate(live);\n"
+            )
+        },
+        "readonly_scope": {
+            "frontend/src/lib/runtime/adapters/readonly-scope.ts": (
+                "import type { ScopeFrame } from './scope-adapter';\n"
+                "export function labels(frame: Readonly<ScopeFrame>) {\n"
+                "  return [frame.mode, frame.receiver];\n"
+                "}\n"
+            )
+        },
+        "utility_alias_scope": {
+            "frontend/src/lib/runtime/adapters/utility-alias-scope.ts": (
+                "import type { ScopeFrame } from './scope-adapter';\n"
+                "type Wrapped = Readonly<ScopeFrame>;\n"
+                "export function labels(frame: Wrapped) { return [frame.mode, frame.receiver]; }\n"
+            )
+        },
+        "opaque_envelope_scope": {
+            "frontend/src/lib/runtime/adapters/opaque-envelope-scope.ts": (
+                "import type { ScopeFrame } from './scope-adapter';\n"
+                "type Envelope<T> = { value: T; mode: string };\n"
+                "export function labels(frame: Envelope<ScopeFrame>) { return frame.mode; }\n"
+            )
+        },
+    }
+    results = _frontend_counts(scenarios)
+    for name in (
+        "object_wrapper",
+        "array_wrapper",
+        "later_assignment",
+        "identity_return",
+        "identity_chain",
+        "parameter_flow",
+    ):
+        path = next(iter(scenarios[name]))
+        assert results[name]["parallel_truth_store"].get(path, 0) > 0, name
+    for name in ("readonly_scope", "utility_alias_scope"):
+        path = next(iter(scenarios[name]))
+        assert results[name]["spectrum_metadata"].get(path, 0) == 2, name
+    opaque_path = next(iter(scenarios["opaque_envelope_scope"]))
+    assert (
+        results["opaque_envelope_scope"]["spectrum_metadata"].get(opaque_path, 0) == 0
+    )
+
+
+def test_restricted_wrapper_ui_roots_and_locale_template_boundary() -> None:
+    scenarios = {
+        "eval_call": {
+            "frontend/src/components-v2/controls/EvalCall.svelte": (
+                "<script>declare const source: string; eval.call(globalThis, source);</script>"
+            )
+        },
+        "eval_bind": {
+            "frontend/src/components-v2/controls/EvalBind.svelte": (
+                "<script>declare const source: string; const run = eval.bind(globalThis); run(source);</script>"
+            )
+        },
+        "function_call": {
+            "frontend/src/components-v2/controls/FunctionCall.svelte": (
+                "<script>Function.call(null, 'return 1');</script>"
+            )
+        },
+        "proxy_revocable": {
+            "frontend/src/components-v2/wiring/proxy-revocable.ts": (
+                "import { patchRadioState } from '$lib/stores/radio.svelte';\n"
+                "export const wrapped = Proxy.revocable(patchRadioState, {}).proxy;\n"
+            )
+        },
+        "reflect_apply": {
+            "frontend/src/App.svelte": (
+                "<script>declare const source: string; Reflect.apply(eval, globalThis, [source]);</script>"
+            )
+        },
+        "wiring_nonfinite": {
+            "frontend/src/components-v2/wiring/nonfinite.ts": (
+                "export function load(specifier: string) { return import(specifier); }"
+            )
+        },
+        "app_unresolved": {
+            "frontend/src/App.svelte": (
+                "<script>import { missing } from '$lib/authority-does-not-exist'; void missing;</script>"
+            )
+        },
+        "control_transport": {
+            "frontend/src/components-v2/controls/direct-transport.ts": (
+                "import { sendCommand } from '$lib/transport/ws-client';\n"
+                "sendCommand('set_freq');\n"
+            )
+        },
+        "allowed_locale_template": {
+            "frontend/src/lib/i18n/locale-loader.ts": (
+                "declare const locale: 'en-US' | 'ja-JP' | 'ru-RU';\n"
+                "export const catalog = import(`./locales/${locale}.json`);\n"
+            )
+        },
+        "unsafe_locale_template": {
+            "frontend/src/lib/i18n/unsafe-locale-loader.ts": (
+                "declare const locale: string;\n"
+                "export const catalog = import(`./locales/${locale}.json`);\n"
+            )
+        },
+        "traversal_locale_template": {
+            "frontend/src/lib/i18n/traversal-locale-loader.ts": (
+                "declare const locale: 'en-US' | '../secrets';\n"
+                "export const catalog = import(`./locales/${locale}.json`);\n"
+            )
+        },
+        "locale_template_outside_root": {
+            "frontend/src/components-v2/controls/locale-loader.ts": (
+                "declare const locale: 'en-US' | 'ja-JP';\n"
+                "export const catalog = import(`./locales/${locale}.json`);\n"
+            )
+        },
+        "local_eval_shadow": {
+            "frontend/src/components-v2/controls/local-eval.ts": (
+                "function eval(source: string) { return source; } eval('safe');"
+            )
+        },
+    }
+    result = _frontend_analysis(scenarios)
+    allowed = "allowed_locale_template"
+    for name in scenarios.keys() - {allowed, "control_transport", "local_eval_shadow"}:
+        assert result["errors"][name], f"did not fail loud: {name}"
+    assert result["errors"][allowed] == []
+    assert result["errors"]["local_eval_shadow"] == []
+    transport_path = next(iter(scenarios["control_transport"]))
+    assert result["errors"]["control_transport"] == []
+    assert (
+        result["scenarios"]["control_transport"]["presentation_transport"].get(
+            transport_path, 0
+        )
+        > 0
+    )
+
+
+def test_python_dispatch_alias_and_unbounded_iterator_variants_are_rejected() -> None:
+    cases = {
+        "src/rigplane/web/device_dispatch.py": (
+            "import asyncio\n"
+            "async def worker(device, method):\n"
+            "    while True:\n"
+            "        await getattr(device, method)()\n"
+            "        await asyncio.sleep(1)\n"
+        ),
+        "src/rigplane/web/assigned_getattr.py": (
+            "import asyncio\n"
+            "resolve = getattr\n"
+            "async def worker(device):\n"
+            "    while True:\n"
+            "        await resolve(device, 'get_rf_power')()\n"
+            "        await asyncio.sleep(1)\n"
+        ),
+        "src/rigplane/web/count_dispatch.py": (
+            "import asyncio\n"
+            "import itertools\n"
+            "async def worker(device, method):\n"
+            "    for _ in itertools.count():\n"
+            "        await getattr(device, method)()\n"
+            "        await asyncio.sleep(1)\n"
+        ),
+        "src/rigplane/web/count_alias_dispatch.py": (
+            "import asyncio\n"
+            "from itertools import count as forever\n"
+            "async def worker(device, method):\n"
+            "    for _ in forever():\n"
+            "        await getattr(device, method)()\n"
+            "        await asyncio.sleep(1)\n"
+        ),
+    }
+    sources = _python_sources(cases)
+    counts = _python_poll_counts(sources)
+    for path in cases:
+        assert counts[path] > 0, path
 
 
 def test_matching_same_pr_manifest_expansion_is_still_rejected() -> None:
