@@ -3119,9 +3119,9 @@ class RadioPoller:
             if generation != self._vfo_binding_generation:
                 return
             receiver_id = str(receiver)
-            for state, relative_slot, absolute_slot in (
-                (selected, "selected", slot),
-                (unselected, "unselected", "B" if slot == "A" else "A"),
+            for state, relative_slot in (
+                (selected, "selected"),
+                (unselected, "unselected"),
             ):
                 for name in self._relative_vfo_fields():
                     value = getattr(state, name)
@@ -3131,12 +3131,6 @@ class RadioPoller:
                         else FieldPath.unselected(receiver_id, "freq_mode", name)
                     )
                     apply(relative_path, value)
-                    apply(
-                        FieldPath.vfo_slot(
-                            receiver_id, absolute_slot, "freq_mode", name
-                        ),
-                        value,
-                    )
             logger.info(
                 "radio-poller: confirmed VFO slot=%s receiver=%d generation=%d",
                 slot,

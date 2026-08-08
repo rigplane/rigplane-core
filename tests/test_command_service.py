@@ -130,6 +130,62 @@ async def test_execute_emits_lifecycle_events_and_applies_response_observations(
     assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
 
 
+def test_apply_observation_projects_relative_web_command_to_bound_vfo() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=1,
+        max_age=30.0,
+        coherence_window=5.0,
+    )
+    relative = (
+        _observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"), 14_190_000, at=10.0
+        ),
+        _observation(FieldPath.active("0", "freq_mode", "mode"), "USB", at=10.1),
+        _observation(
+            FieldPath.unselected("0", "freq_mode", "freq_hz"),
+            14_075_000,
+            at=10.2,
+        ),
+        _observation(FieldPath.unselected("0", "freq_mode", "mode"), "USB", at=10.3),
+    )
+    store.apply_relative_vfo_observations(relative, generation=1)
+    store.apply(_observation(FieldPath.active_slot("0"), "A", at=10.4))
+    store.apply_relative_vfo_observations(relative, generation=1)
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=store,
+        clock=clock.now,
+    )
+    command = Observation(
+        path=FieldPath.active("0", "freq_mode", "freq_hz"),
+        value=14_130_000,
+        source=SourceMetadata(
+            source="command_response",
+            provider="web_command",
+            transport="websocket",
+            command_source="websocket",
+            session_id="ws-a",
+        ),
+        timestamp_monotonic=11.0,
+        correlation_id="spectrum-drag",
+    )
+
+    changeset = service.apply_observation(command)
+    snapshot = store.snapshot()
+
+    assert {change.path for change in changeset.changes} == {
+        command.path,
+        FieldPath.vfo_slot("0", "A", "freq_mode", "freq_hz"),
+    }
+    assert snapshot.field(command.path).value == 14_130_000
+    assert (
+        snapshot.field(FieldPath.vfo_slot("0", "A", "freq_mode", "freq_hz")).value
+        == 14_130_000
+    )
+
+
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
 async def test_execute_acknowledges_without_confirming_state_when_executor_has_no_observation() -> (
     None

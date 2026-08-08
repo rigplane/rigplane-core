@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-475)', () => {
-  it('scroll after an in-flight stale causal poll steps from the COMMANDED freq, not the stale server value', () => {
+  it('scroll steps from the last StateStore frequency, never an unconfirmed intent', () => {
     // Initial server freq.
     store.setRadioState(makeMinimalState({
       revision: 1,
@@ -106,17 +106,16 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
       main: { ...makeMinimalState().main, freqHz: 14074000 },
     }));
 
-    // Drive the prop through the real adapter — the overlay must SURVIVE the
-    // stale poll so this reflects the commanded freq (14100000), no flash.
+    // Old MOR-475 expectation stepped from the command intent. MOR-1403 makes
+    // the StateStore observation the sole VFO truth seen by the adapter.
     const vfo = toVfoProps(store.getRadioState(), 'main');
-    expect(vfo.freq).toBe(14100000);
+    expect(vfo.freq).toBe(14074000);
 
     const onFreqChange = vi.fn();
     const t = mountDisplay({ freq: vfo.freq, onFreqChange });
 
-    // Digits in DOM order for 14100000: MHz[1,4] kHz[1,0,0] Hz[0,0,0].
-    // The 1 kHz digit (multiplier 1000) is the 5th .digit (index 4) — re-derived
-    // against splitFrequencyToDigits/groupDigitsForDisplay for 14100000.
+    // Digits in DOM order for 14074000: MHz[1,4] kHz[0,7,4] Hz[0,0,0].
+    // The 1 kHz digit (multiplier 1000) remains index 4.
     const digits = Array.from(t.querySelectorAll<HTMLElement>('.digit'));
     const oneKhzDigit = digits[4];
     expect(oneKhzDigit).toBeDefined();
@@ -124,9 +123,9 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
     oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     flushSync();
 
-    // Relative tune steps from the commanded 14100000, not the stale 14074000.
+    // Relative tune steps from confirmed 14074000, not requested 14100000.
     expect(onFreqChange).toHaveBeenCalledTimes(1);
-    expect(onFreqChange).toHaveBeenCalledWith(14101000);
-    expect(onFreqChange).not.toHaveBeenCalledWith(14075000);
+    expect(onFreqChange).toHaveBeenCalledWith(14075000);
+    expect(onFreqChange).not.toHaveBeenCalledWith(14101000);
   });
 });

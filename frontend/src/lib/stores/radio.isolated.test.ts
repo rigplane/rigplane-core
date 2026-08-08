@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { radio, setRadioState, resetRadioState, getRadioState, getLastRevision } from './radio.svelte';
+import {
+  radio,
+  setRadioState,
+  resetRadioState,
+  getRadioState,
+  getLastRevision,
+  patchActiveReceiver,
+} from './radio.svelte';
 import type { ServerState } from '../types/state';
 
 function makeState(revision: number): ServerState {
@@ -79,5 +86,55 @@ describe('resetRadioState', () => {
     setRadioState(makeState(5));
     resetRadioState();
     expect(getRadioState()).toBeNull();
+  });
+});
+
+describe('StateStore-only VFO truth', () => {
+  beforeEach(() => resetRadioState());
+
+  it('does not let VFO optimistic patches overwrite the observed snapshot', () => {
+    const initial = makeState(10);
+    initial.main.activeSlot = 'A';
+    setRadioState(initial);
+
+    patchActiveReceiver({
+      freqHz: 14_200_000,
+      mode: 'LSB',
+      filter: 2,
+      dataMode: 1,
+      activeSlot: 'B',
+    }, true);
+
+    expect(getRadioState()?.main).toMatchObject({
+      freqHz: 14_074_000,
+      mode: 'USB',
+      filter: 1,
+      dataMode: 0,
+      activeSlot: 'A',
+    });
+
+    const observed = makeState(11);
+    Object.assign(observed.main, {
+      freqHz: 14_123_000,
+      mode: 'CW',
+      filter: 3,
+      dataMode: 1,
+      activeSlot: 'B',
+    });
+    setRadioState(observed);
+    expect(getRadioState()?.main).toMatchObject({
+      freqHz: 14_123_000,
+      mode: 'CW',
+      filter: 3,
+      dataMode: 1,
+      activeSlot: 'B',
+    });
+  });
+
+  it('retains optimistic support for non-VFO fields outside MOR-1403', () => {
+    setRadioState(makeState(20));
+
+    patchActiveReceiver({ afLevel: 42 }, true);
+    expect(getRadioState()?.main.afLevel).toBe(42);
   });
 });

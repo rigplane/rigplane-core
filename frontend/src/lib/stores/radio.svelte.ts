@@ -98,6 +98,14 @@ const optimisticSub = new Map<string, { value: unknown; expires: number; serverV
 // Kept until server confirms or TTL expires.
 const optimisticTopLevel = new Map<string, { value: unknown; expires: number }>();
 
+// VFO readouts are observed radio truth. Commands may be pending elsewhere,
+// but their requested values must never cover a newer StateStore snapshot.
+// MOR-1405 owns removal of the remaining non-VFO optimistic surfaces.
+const VFO_TRUTH_FIELDS = new Set([
+  'freqHz', 'mode', 'filter', 'dataMode', 'activeSlot',
+  'vfoA', 'vfoB', 'unselectedVfo', 'filterWidth', 'filterShape',
+]);
+
 // Top-level structural keys that should never be held optimistically
 const STRUCTURAL_KEYS = new Set(['revision', 'main', 'sub', 'active', 'connection', 'updatedAt']);
 
@@ -112,6 +120,11 @@ function applyOptimistic(state: ServerState): ServerState {
     const rx = { ...serverRx };
     let changed = false;
     for (const [field, entry] of map) {
+      if (VFO_TRUTH_FIELDS.has(field)) {
+        map.delete(field);
+        lockedFields.delete(`${key}.${field}`);
+        continue;
+      }
       // Check if field is locked (rapid input protection)
       const lockKey = `${key}.${field}`;
       const lockExpires = lockedFields.get(lockKey);
@@ -266,8 +279,10 @@ export function patchActiveReceiver(patch: Partial<ReceiverState>, lock = false)
   const key = s.active === 'SUB' ? 'sub' : 'main';
   const map = key === 'sub' ? optimisticSub : optimisticMain;
   const currentRx = s[key];
+  const accepted: Partial<ReceiverState> = {};
 
   for (const [field, value] of Object.entries(patch)) {
+    if (VFO_TRUTH_FIELDS.has(field)) continue;
     // Skip updating locked fields from WS echo (preserve user input lock)
     const lockKey = `${key}.${field}`;
     const lockExpires = lockedFields.get(lockKey);
@@ -283,10 +298,12 @@ export function patchActiveReceiver(patch: Partial<ReceiverState>, lock = false)
     }
     const expires = Date.now() + (field === 'freqHz' ? OPTIMISTIC_FREQ_TTL : OPTIMISTIC_TTL);
     map.set(field, { value, expires, serverValueAtPatch: (currentRx as any)[field] });
+    (accepted as any)[field] = value;
   }
+  if (Object.keys(accepted).length === 0) return;
   radio.current = {
     ...s,
-    [key]: { ...s[key], ...patch },
+    [key]: { ...s[key], ...accepted },
   };
   notifyRadioStateSubscribers();
 }
@@ -302,8 +319,10 @@ export function patchReceiver(receiver: 0 | 1, patch: Partial<ReceiverState>, lo
   const key = receiver === 1 ? 'sub' : 'main';
   const map = key === 'sub' ? optimisticSub : optimisticMain;
   const currentRx = s[key];
+  const accepted: Partial<ReceiverState> = {};
 
   for (const [field, value] of Object.entries(patch)) {
+    if (VFO_TRUTH_FIELDS.has(field)) continue;
     const lockKey = `${key}.${field}`;
     const lockExpires = lockedFields.get(lockKey);
     if (lockExpires && Date.now() < lockExpires && !lock) {
@@ -314,10 +333,12 @@ export function patchReceiver(receiver: 0 | 1, patch: Partial<ReceiverState>, lo
     }
     const expires = Date.now() + (field === 'freqHz' ? OPTIMISTIC_FREQ_TTL : OPTIMISTIC_TTL);
     map.set(field, { value, expires, serverValueAtPatch: (currentRx as any)[field] });
+    (accepted as any)[field] = value;
   }
+  if (Object.keys(accepted).length === 0) return;
   radio.current = {
     ...s,
-    [key]: { ...s[key], ...patch },
+    [key]: { ...s[key], ...accepted },
   };
   notifyRadioStateSubscribers();
 }

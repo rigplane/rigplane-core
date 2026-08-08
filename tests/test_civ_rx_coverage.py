@@ -53,7 +53,11 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.exceptions import ConnectionError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
@@ -152,21 +156,59 @@ async def test_relative_vfo_ingress_bootstraps_then_transceive_patches_immediate
             generation=radio._civ_epoch,  # noqa: SLF001
         )
 
+    # The explicit A selection is already ACK-confirmed at this boundary.
+    # Replaying the existing relative readback binds both aliases without any
+    # select/swap/write side path.
+    radio._state_store.apply(  # noqa: SLF001
+        Observation(
+            path=FieldPath.active_slot("0"),
+            value="A",
+            source=SourceMetadata(
+                source="command_response",
+                provider="vfo_binding",
+                native_id="explicit_slot_ack_readback",
+            ),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+    for frame in (
+        _make_frame(cmd=0x25, data=b"\x00" + bcd_encode(14_284_000)),
+        _make_frame(cmd=0x26, data=bytes([0, Mode.USB.value, 0, 1])),
+        _make_frame(cmd=0x25, data=b"\x01" + bcd_encode(14_075_000)),
+        _make_frame(cmd=0x26, data=bytes([1, Mode.USB.value, 0, 1])),
+    ):
+        await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+            frame,
+            generation=radio._civ_epoch,  # noqa: SLF001
+        )
+
     before = radio._state_store.snapshot()  # noqa: SLF001
     old_mode = before.field("receiver.0.active.freq_mode.mode")
     old_unselected = before.field("receiver.0.unselected.freq_mode.freq_hz")
-    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
-        _make_frame(
-            cmd=0x00,
-            data=bcd_encode(14_285_000),
-            to_addr=0x00,
-        ),
-        generation=radio._civ_epoch,  # noqa: SLF001
-    )
+    old_b = before.field("receiver.0.slot.B.freq_mode.freq_hz")
+    for frequency in (14_130_000, 14_123_000):
+        await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+            _make_frame(
+                cmd=0x00,
+                data=bcd_encode(frequency),
+                to_addr=0x00,
+            ),
+            generation=radio._civ_epoch,  # noqa: SLF001
+        )
+        same_revision = radio._state_store.snapshot()  # noqa: SLF001
+        assert (
+            same_revision.field("receiver.0.active.freq_mode.freq_hz").value
+            == frequency
+        )
+        assert (
+            same_revision.field("receiver.0.slot.A.freq_mode.freq_hz").value
+            == frequency
+        )
+        assert same_revision.field(old_b.path).value == old_b.value
 
     after = radio._state_store.snapshot()  # noqa: SLF001
     knob = after.field("receiver.0.active.freq_mode.freq_hz")
-    assert knob.value == 14_285_000
+    assert knob.value == 14_123_000
     assert knob.source.source == "civ_unsolicited"
     assert knob.last_observed_monotonic > old_mode.last_observed_monotonic
     assert after.field(old_mode.path).value == old_mode.value
