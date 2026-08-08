@@ -11,12 +11,18 @@ Covers:
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.profiles import resolve_radio_profile
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.web.radio_poller import (
@@ -119,6 +125,45 @@ def _bsr_response_frame(
     )
 
 
+def _bootstrap_selected_unselected(poller: RadioPoller) -> None:
+    observed_at = time.monotonic()
+    source = SourceMetadata(
+        source="poll_response",
+        provider="test",
+        transport="fake",
+        native_id="initial_vfo_pair",
+    )
+    pair = tuple(
+        Observation(
+            path=path,
+            value=value,
+            source=source,
+            timestamp_monotonic=observed_at,
+        )
+        for path, value in (
+            (FieldPath.active("0", "freq_mode", "freq_hz"), 14_190_000),
+            (FieldPath.active("0", "freq_mode", "mode"), "USB"),
+            (FieldPath.unselected("0", "freq_mode", "freq_hz"), 14_075_000),
+            (FieldPath.unselected("0", "freq_mode", "mode"), "USB"),
+        )
+    )
+    generation = poller._provider_generation()  # noqa: SLF001
+    poller._state_store.apply_relative_vfo_observations(  # noqa: SLF001
+        pair, generation=generation
+    )
+    poller._state_store.apply(  # noqa: SLF001
+        Observation(
+            path=FieldPath.active_slot("0"),
+            value="A",
+            source=source,
+            timestamp_monotonic=observed_at,
+        )
+    )
+    poller._state_store.apply_relative_vfo_observations(  # noqa: SLF001
+        pair, generation=generation
+    )
+
+
 # ---------------------------------------------------------------------------
 # SetBand handler tests
 # ---------------------------------------------------------------------------
@@ -153,6 +198,7 @@ class TestSetBandBSRRecall:
         radio.send_civ = AsyncMock(return_value=bsr_resp)
 
         poller = _make_poller(radio, model="IC-7300")
+        _bootstrap_selected_unselected(poller)
         snapshot_before = poller._state_store.snapshot()  # noqa: SLF001
 
         await poller._execute(SetBand(band=3))  # noqa: SLF001
@@ -169,8 +215,58 @@ class TestSetBandBSRRecall:
         assert mode_field.source.source == "poll_response"
         assert mode_field.source.provider == "web_poller"
         assert mode_field.source.native_id == "bsr_readback"
+        assert (
+            snapshot_after.field("receiver.0.slot.A.freq_mode.freq_hz").value == 7207000
+        )
+        assert snapshot_after.field("receiver.0.slot.A.freq_mode.mode").value == "LSB"
         assert poller._radio_state.main.freq == 7207000  # noqa: SLF001
         assert poller._radio_state.main.mode == "LSB"  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_bsr_readback_stages_until_initial_pair_is_complete(self) -> None:
+        radio = _make_radio(model="IC-7300")
+        freq_bcd = b"\x00\x70\x20\x07\x00"  # 7207000 in BCD
+        radio.send_civ = AsyncMock(
+            return_value=_bsr_response_frame(0x03, 0x01, freq_bcd, 0x00, 0x01)
+        )
+        poller = _make_poller(radio, model="IC-7300")
+
+        await poller._execute(SetBand(band=3))  # noqa: SLF001
+
+        assert poller._state_store.snapshot().fields == ()  # noqa: SLF001
+        observed_at = time.monotonic()
+        source = SourceMetadata(
+            source="poll_response",
+            provider="test",
+            transport="fake",
+            native_id="initial_unselected_pair",
+        )
+        poller._state_store.apply_relative_vfo_observations(  # noqa: SLF001
+            (
+                Observation(
+                    path=FieldPath.unselected("0", "freq_mode", "freq_hz"),
+                    value=14_075_000,
+                    source=source,
+                    timestamp_monotonic=observed_at,
+                ),
+                Observation(
+                    path=FieldPath.unselected("0", "freq_mode", "mode"),
+                    value="USB",
+                    source=source,
+                    timestamp_monotonic=observed_at,
+                ),
+            ),
+            generation=poller._provider_generation(),  # noqa: SLF001
+        )
+
+        snapshot = poller._state_store.snapshot()  # noqa: SLF001
+        assert snapshot.field("receiver.0.active.freq_mode.freq_hz").value == 7207000
+        assert snapshot.field("receiver.0.active.freq_mode.mode").value == "LSB"
+        assert (
+            snapshot.field("receiver.0.unselected.freq_mode.freq_hz").value
+            == 14_075_000
+        )
+        assert snapshot.field("receiver.0.unselected.freq_mode.mode").value == "USB"
 
     @pytest.mark.asyncio
     async def test_bsr_recall_emits_events(self) -> None:

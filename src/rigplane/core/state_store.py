@@ -271,14 +271,16 @@ class StateStore:
         self._history_floor_freshness_revision = 0
 
     def apply(self, observation: Observation) -> ChangeSet:
-        """Apply one confirmed observation and return its state ChangeSet."""
+        """Apply one synchronous/current-provider observation.
+
+        Generation-bearing producers must use
+        :meth:`apply_relative_vfo_observations`; the generic callers that can
+        supply relative VFO paths are synchronous command/readback boundaries
+        and therefore have no detached producer generation to relabel here.
+        """
 
         retention = self._relative_vfo_retention
-        if (
-            retention is not None
-            and observation.path in retention.paths
-            and observation.source.provider == "vfo_binding"
-        ):
+        if retention is not None and observation.path in retention.paths:
             return self.apply_relative_vfo_observations(
                 (observation,), generation=retention.generation
             )
