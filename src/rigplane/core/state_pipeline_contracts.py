@@ -934,6 +934,15 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
         spec(FieldPath.unselected(receiver_id, "freq_mode", "mode"), "str"),
         spec(FieldPath.unselected(receiver_id, "freq_mode", "filter_num"), "int"),
         spec(FieldPath.unselected(receiver_id, "freq_mode", "data_mode"), "int"),
+        *(
+            spec(
+                FieldPath.vfo_slot(receiver_id, slot, "freq_mode", name),
+                "int",
+                writable=True,
+            )
+            for slot in ("A", "B")
+            for name in ("filter_num", "data_mode")
+        ),
         spec(
             FieldPath.vfo_slot(receiver_id, "A", "freq_mode", "freq_hz"),
             "int",
@@ -1040,6 +1049,19 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             "int",
             writable=True,
         ),
+        *(
+            spec(
+                FieldPath.receiver(receiver_id, "operator_controls", name),
+                "int",
+                writable=True,
+            )
+            for name in (
+                "manual_notch_width",
+                "filter_shape",
+                "digisel_shift",
+                "apf_freq",
+            )
+        ),
         spec(
             FieldPath.receiver(receiver_id, "operator_toggles", "auto_notch"),
             "bool",
@@ -1054,6 +1076,14 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             FieldPath.receiver(receiver_id, "operator_toggles", "manual_notch"),
             "bool",
             writable=True,
+        ),
+        *(
+            spec(
+                FieldPath.receiver(receiver_id, "operator_toggles", name),
+                "bool",
+                writable=True,
+            )
+            for name in ("af_mute", "apf_on")
         ),
         spec(
             FieldPath.receiver(receiver_id, "operator_toggles", "repeater_tone"),
@@ -1128,6 +1158,11 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             "int",
             writable=True,
         ),
+        spec(
+            FieldPath.receiver(receiver_id, "slow_state", "contour"),
+            "int",
+            writable=True,
+        ),
     )
 
 
@@ -1160,6 +1195,7 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.global_("tx_state", "monitor_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "vox_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "tx_freq_monitor"), "bool", writable=True),
+        spec(FieldPath.global_("tx_state", "main_sub_tracking"), "bool", writable=True),
         spec(
             FieldPath.global_("operator_controls", "power_level"),
             "float",
@@ -1229,8 +1265,37 @@ def _global_specs() -> tuple[FieldSpec, ...]:
             "int",
             writable=True,
         ),
+        *(
+            spec(
+                FieldPath.global_("operator_controls", name),
+                "int",
+                writable=True,
+            )
+            for name in (
+                "notch_filter",
+                "nb_depth",
+                "nb_width",
+                "drive_gain",
+                "dash_ratio",
+                "ref_adjust",
+                "ssb_tx_bandwidth",
+            )
+        ),
         spec(FieldPath.global_("slow_state", "active"), "str"),
         spec(FieldPath.global_("slow_state", "cw_spot"), "bool"),
+        *(
+            spec(FieldPath.global_("slow_state", name), value_type, writable=True)
+            for name, value_type in (
+                ("scanning", "bool"),
+                ("scan_type", "int"),
+                ("scan_resume_mode", "int"),
+                ("data_off_mod_input", "int"),
+                ("data1_mod_input", "int"),
+                ("data2_mod_input", "int"),
+                ("data3_mod_input", "int"),
+                ("tx_band_edges", "object"),
+            )
+        ),
         spec(
             FieldPath.global_("slow_state", "tuning_step"),
             "int",
@@ -1283,6 +1348,37 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.scope_control("display", "vbw_narrow"), "bool"),
         spec(FieldPath.scope_control("display", "rbw"), "int"),
         spec(FieldPath.scope_control("display", "fixed_edge"), "object"),
+        *(
+            spec(
+                FieldPath(scope=scope, family=family, name=name),
+                value_type,
+            )
+            for scope, family, rows in (
+                (
+                    FieldScope.CONNECTION,
+                    FieldFamily.CONNECTION,
+                    (
+                        ("connected", "bool"),
+                        ("radio_ready", "bool"),
+                        ("control_connected", "bool"),
+                        ("status", "str"),
+                    ),
+                ),
+                (
+                    FieldScope.HEALTH,
+                    FieldFamily.HEALTH,
+                    (
+                        ("server_reachable", "bool"),
+                        ("radio_link", "str"),
+                        ("readiness", "str"),
+                        ("likely_cause", "str"),
+                        ("since_ms", "int"),
+                        ("last_error", "str"),
+                    ),
+                ),
+            )
+            for name, value_type in rows
+        ),
     )
 
 
