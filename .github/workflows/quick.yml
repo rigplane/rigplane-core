@@ -44,6 +44,7 @@ jobs:
               - 'pyproject.toml'
               - 'uv.lock'
               - '.importlinter'
+              - '.github/scripts/**'
               - '.github/workflows/**'
             frontend:
               - 'frontend/**'
@@ -66,6 +67,10 @@ jobs:
       - name: Install dependencies
         if: steps.filter.outputs.core == 'true' || steps.filter.outputs.frontend == 'true'
         run: uv sync --extra dev --extra bridge
+
+      - name: Agent Review Gate parser tests
+        if: steps.filter.outputs.core == 'true'
+        run: node --test .github/scripts/agent-review-gate.test.js
 
       - name: Ruff (lint + format check)
         if: steps.filter.outputs.core == 'true'
