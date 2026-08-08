@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 
+import rigplane.rig_loader as rig_loader
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.backends.yaesu_cat import radio as yaesu_radio
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
 from rigplane.exceptions import CommandError
@@ -51,6 +53,24 @@ def test_instantiation_with_string_profile():
     r = YaesuCatRadio("/dev/null", profile="ftx1")
     assert r.model == "FTX-1"
     assert not r.connected
+
+
+def test_string_profile_uses_shared_rig_resource_resolver(monkeypatch, config):
+    """String profiles must not depend on backend-local filesystem paths."""
+    observed: dict[str, str] = {}
+
+    def fake_load_rig_resource(name_or_id: str):
+        observed["name_or_id"] = name_or_id
+        return config
+
+    def fail_load_rig(_path: Path):
+        raise AssertionError("Yaesu string profiles must use load_rig_resource()")
+
+    monkeypatch.setattr(rig_loader, "load_rig_resource", fake_load_rig_resource)
+    monkeypatch.setattr(rig_loader, "load_rig", fail_load_rig)
+
+    assert yaesu_radio._load_config("FTX-1") is config
+    assert observed == {"name_or_id": "FTX-1"}
 
 
 def test_instantiation_with_rig_config(config):

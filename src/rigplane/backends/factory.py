@@ -50,6 +50,7 @@ def create_radio(config: BackendConfig) -> Radio:
         return YaesuCatRadio(
             device=config.device,
             baudrate=config.baudrate,
+            profile=config.model or "ftx1",
             rx_device=config.rx_device,
             tx_device=config.tx_device,
             audio_sample_rate=config.audio_sample_rate,
@@ -71,6 +72,7 @@ def create_radio(config: BackendConfig) -> Radio:
             return YaesuCatRadio(
                 device=config.device,
                 baudrate=config.baudrate or 38400,
+                profile=config.profile or config.model or "ftx1",
                 rx_device=config.rx_device,
                 tx_device=config.tx_device,
                 audio_sample_rate=config.audio_sample_rate or 48000,
