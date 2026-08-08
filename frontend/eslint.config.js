@@ -22,6 +22,7 @@ import tsParser from '@typescript-eslint/parser';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import sveltePlugin from 'eslint-plugin-svelte';
 import svelteParser from 'svelte-eslint-parser';
+import radioAuthorityPlugin from './scripts/radio-authority-eslint-plugin.mjs';
 
 /** Modules that only the runtime/wiring layer may import. */
 const FORBIDDEN_RUNTIME_IMPORTS = {
@@ -281,6 +282,22 @@ export default [
     rules: {},
   },
 
+  // ── Radio authority capability/sink boundary (MOR-1406) ──
+  // Finite structural ownership plus authority-sensitive sinks. This does
+  // not attempt whole-program provenance through arbitrary JavaScript.
+  {
+    files: ['src/**/*.ts', 'src/**/*.svelte', 'src/**/*.svelte.ts'],
+    plugins: {
+      'radio-authority': radioAuthorityPlugin,
+    },
+    rules: {
+      'radio-authority/structural-boundary': 'error',
+      'radio-authority/authority-sink': 'error',
+      'radio-authority/scope-metadata': 'error',
+      'radio-authority/recurring-control': 'error',
+    },
+  },
+
   // ── Import boundary: presentation components ──
   // Panels, layouts, LCD, skins, and app entry — must NOT import runtime/transport directly.
   {
@@ -455,6 +472,10 @@ export default [
     files: ['src/**/__tests__/**', 'src/**/*.test.ts'],
     rules: {
       'no-restricted-imports': 'off',
+      'radio-authority/structural-boundary': 'off',
+      'radio-authority/authority-sink': 'off',
+      'radio-authority/scope-metadata': 'off',
+      'radio-authority/recurring-control': 'off',
     },
   },
 ];

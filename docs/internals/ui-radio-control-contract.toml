@@ -509,174 +509,104 @@ automated_proof = "recursive surface inventory and no direct transport/truth wri
 hardware_proof = "covered by child radio-fact families; no separate hardware mutation"
 gap_owner = "MOR-1409"
 
-# Current architectural violations are temporary, explicit debt. Every
-# exception is exact: code and manifest must change together when debt shrinks;
-# any expansion fails.
+# The boundary is structural and finite. Paths below are capabilities/owners,
+# not claims of whole-program JavaScript provenance. New owner paths fail the
+# reachable-base monotonic comparison.
+
+[authority_boundaries]
+state_store_module = "frontend/src/lib/stores/radio.svelte.ts"
+ws_writer_owner = "frontend/src/lib/transport/ws-client.ts"
+read_only_seams = [
+  "frontend/src/lib/runtime/adapters",
+  "frontend/src/lib/runtime/props",
+  "frontend/src/semantic/radio-view-model.ts",
+]
+intent_facades = [
+  "frontend/src/components-v2/wiring/command-bus.ts",
+  "frontend/src/lib/runtime/commands",
+]
+persistence_owner_roots = [
+  "frontend/src/presentation/workspace",
+  "frontend/src/lib/i18n",
+  "frontend/src/lib/stores",
+  "frontend/src/lib/radio",
+]
+sample_plane_owners = [
+  "frontend/src/components/spectrum",
+  "frontend/src/lib/audio",
+  "frontend/src/lib/runtime/adapters/scope-adapter.ts",
+]
+python_acquisition_owners = [
+  "src/rigplane/cli/__init__.py",
+  "src/rigplane/rigctld/handler.py",
+  "src/rigplane/rigctld/poller.py",
+  "src/rigplane/runtime/_civ_rx.py",
+  "src/rigplane/runtime/radio_initial_state.py",
+  "src/rigplane/web/handlers/control.py",
+  "src/rigplane/web/radio_poller.py",
+  "src/rigplane/web/server.py",
+]
+stop_rule = "A bypass blocks only when production-valid code crosses a declared boundary or finite source-to-sink rule in a plausible new equivalence class; deeper carrier spelling alone is non-blocking."
 
 [[guards]]
-id = "frontend_radio_truth_patch"
-kind = "truth_patch_calls"
+id = "presentation_authority_capability"
+kind = "legacyPresentationAuthority"
 owner = "MOR-1409"
-reason = "Resolve imported aliases/re-exports; only the StateStore WS reducer writes radio truth"
+reason = "Presentation consumes read-only view models and typed intent facades; exact legacy edges may only shrink"
 exceptions = [
-  { path = "frontend/src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/wiring/command-bus.ts", count = 99, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/wiring/state-adapter.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components/spectrum/SpectrumPanel.svelte", count = 4, owner = "MOR-1409" },
-  { path = "frontend/src/lib/media/media-session.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/adapters/mod-input-auto.svelte.ts", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/commands/panel-commands.ts", count = 67, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/frontend-runtime.ts", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/props/panel-props.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/commands.svelte.ts", count = 3, owner = "MOR-1409" },
-  { path = "frontend/src/lib/transport/ws-client.ts", count = 46, owner = "MOR-1409" },
+  { path = "src/components-v2/layout/StatusBar.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/ScopeSettingsPopover.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/SpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/SpectrumToolbar.svelte", count = 1, owner = "MOR-1409" },
 ]
 
 [[guards]]
-id = "parallel_radio_state_writer"
-kind = "parallel_state_writers"
+id = "live_writer_capability"
+kind = "legacyWriterOwners"
 owner = "MOR-1409"
-reason = "Resolve aliases/re-exports; HTTP/bootstrap/command code cannot race the WS reducer"
+reason = "Only the WS reducer is the final owner; exact migration debt cannot expand"
 exceptions = [
-  { path = "frontend/src/lib/runtime/frontend-runtime.ts", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/lib/transport/ws-client.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/wiring/command-bus.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/wiring/state-adapter.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/SpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/media/media-session.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/adapters/mod-input-auto.svelte.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/commands/panel-commands.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/frontend-runtime.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/props/panel-props.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/system-controller.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/stores/commands.svelte.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/transport/ws-client.ts", count = 1, owner = "MOR-1409" },
 ]
 
 [[guards]]
-id = "presentation_direct_transport"
-kind = "presentation_transport"
-owner = "MOR-1409"
-reason = "Static, re-exported, and dynamic direct transport access is forbidden in presentation"
-exceptions = [
-  { path = "frontend/src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components/spectrum/ScopeSettingsPopover.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components/spectrum/SpectrumToolbar.svelte", count = 1, owner = "MOR-1409" },
-]
-
-[[guards]]
-id = "fabricated_radio_default"
-kind = "fabricated_defaults"
-owner = "MOR-1409"
-reason = "Radio-truth nullish/logical fallbacks cannot fabricate values of any literal"
-exceptions = [
-  { path = "frontend/src/components-v2/layout/MobileRadioLayout.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/layout/RadioLayout.svelte", count = 11, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/layout/layout-utils.ts", count = 4, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/AgcPanel.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/CwPanel.svelte", count = 9, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/DspPanel.svelte", count = 11, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/FilterPanel.svelte", count = 6, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/MemoryPanel.svelte", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/TxPanel.svelte", count = 8, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/lcd/AmberCockpit.svelte", count = 34, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/lcd/AmberScope.svelte", count = 24, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/wiring/SemanticRadioSurfaces.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/wiring/command-bus.ts", count = 44, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/wiring/state-adapter.ts", count = 96, owner = "MOR-1409" },
-  { path = "frontend/src/components/spectrum/SpectrumPanel.svelte", count = 6, owner = "MOR-1409" },
-  { path = "frontend/src/components/spectrum/SpectrumToolbar.svelte", count = 5, owner = "MOR-1409" },
-  { path = "frontend/src/lib/local-extensions/dock-layout.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/renderers/spectrum-renderer.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/adapters/mod-input-auto.svelte.ts", count = 3, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/adapters/mod-input-tx-guard.svelte.ts", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/adapters/presentation-capabilities.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts", count = 7, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/commands/panel-commands.ts", count = 22, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/props/panel-props.ts", count = 107, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/tx-controller/app-authority.ts", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/capabilities.svelte.ts", count = 13, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/radio.svelte.ts", count = 10, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/tuning.svelte.ts", count = 3, owner = "MOR-1409" },
-  { path = "frontend/src/lib/transport/http-client.ts", count = 5, owner = "MOR-1409" },
-  { path = "frontend/src/semantic/VfoSurface.svelte", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/semantic/rx-tx-surface.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/skins/sdr-test/SdrVfoScreen.svelte", count = 8, owner = "MOR-1409" },
-]
-
-[[guards]]
-id = "radio_truth_persistence"
-kind = "truth_persistence"
-owner = "MOR-1409"
-reason = "Storage aliases and multiline calls may persist preferences, never radio truth"
-exceptions = []
-
-[[guards]]
-id = "scope_metadata_second_authority"
-kind = "spectrum_metadata"
-owner = "MOR-1409"
-reason = "Frame aliases may carry pixels, not frequency/mode/span/bounds/receiver metadata authority"
-exceptions = [
-  { path = "frontend/src/components-v2/panels/audio-scope/AudioSpectrumPanel.svelte", count = 4, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/lcd/AmberCockpit.svelte", count = 4, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/lcd/AmberScope.svelte", count = 4, owner = "MOR-1409" },
-  { path = "frontend/src/components/spectrum/SpectrumPanel.svelte", count = 6, owner = "MOR-1409" },
-]
-
-[[guards]]
-id = "frontend_control_timers"
-kind = "frontend_timers"
-owner = "MOR-1409"
-reason = "Every setInterval/setTimeout is inventoried regardless filename; no per-control timer may appear"
-exceptions = [
-  { path = "frontend/src/App.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/controls/BottomSheet.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/controls/ControlButtonDemo.svelte", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/controls/PttFab.svelte", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/controls/value-control/BipolarRenderer.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/controls/value-control/DiscreteRenderer.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/controls/value-control/DualParamRenderer.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/controls/value-control/HBarRenderer.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/controls/value-control/value-control-core.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/dialogs/SendReportDialog.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/layout/KeyboardHandler.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/layout/MobileRadioLayout.svelte", count = 3, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/layout/StatusBar.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/meters/BarGauge.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/DspPanel.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/MetersDockPanel.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/TxPanel.svelte", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/panels/lcd/AmberTelemetryStrip.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/wiring/command-bus.ts", count = 3, owner = "MOR-1409" },
-  { path = "frontend/src/components-v2/wiring/double-click.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components/shared/Toast.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components/spectrum/BandPlanOverlay.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/audio/audio-manager.ts", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/lib/gestures/gesture-recognizer.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/commands/panel-commands.ts", count = 2, owner = "MOR-1409" },
-  { path = "frontend/src/lib/runtime/tx-controller/browser-dependencies.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/commands.svelte.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/connection.svelte.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/qsy-history.svelte.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/transport/http-client.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/transport/ws-client.ts", count = 3, owner = "MOR-1409" },
-  { path = "frontend/src/semantic/VfoSurface.svelte", count = 1, owner = "MOR-1409" },
-]
-
-[[guards]]
-id = "parallel_radio_or_capability_store"
-kind = "parallel_truth_store"
-owner = "MOR-1409"
-reason = "State shape, not filename, identifies mutable parallel radio/capability stores"
-exceptions = [
-  { path = "frontend/src/lib/stores/capabilities.svelte.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/connection.svelte.ts", count = 1, owner = "MOR-1409" },
-  { path = "frontend/src/lib/stores/radio.svelte.ts", count = 1, owner = "MOR-1409" },
-]
-
-[[guards]]
-id = "python_control_poll_loop"
-kind = "python_control_poll_loop"
+id = "recurring_control_acquisition"
+kind = "acquisitionOwners"
 owner = "MOR-1407"
-reason = "Control-aware sleep loops must remain in the existing shared acquisition machinery"
+reason = "Recurring radio reads/writes stay in declared acquisition owners"
 exceptions = [
-  { path = "src/rigplane/cli/__init__.py", count = 1, owner = "MOR-1407" },
-  { path = "src/rigplane/rigctld/handler.py", count = 1, owner = "MOR-1407" },
-  { path = "src/rigplane/rigctld/poller.py", count = 1, owner = "MOR-1407" },
-  { path = "src/rigplane/runtime/_civ_rx.py", count = 1, owner = "MOR-1407" },
-  { path = "src/rigplane/runtime/radio_initial_state.py", count = 1, owner = "MOR-1407" },
-  { path = "src/rigplane/web/handlers/control.py", count = 2, owner = "MOR-1407" },
-  { path = "src/rigplane/web/radio_poller.py", count = 3, owner = "MOR-1407" },
-  { path = "src/rigplane/web/server.py", count = 4, owner = "MOR-1407" },
+  { path = "src/components-v2/wiring/command-bus.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/runtime/commands/panel-commands.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/runtime/frontend-runtime.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/runtime/scope-controller.svelte.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/runtime/tx-controller/browser-dependencies.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/stores/connection.svelte.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/transport/http-client.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/transport/ws-client.ts", count = 1, owner = "MOR-1407" },
+]
+
+[[guards]]
+id = "scope_metadata_owner"
+kind = "scopeMetadataOwners"
+owner = "MOR-1409"
+reason = "Pixels/samples are payload; radio metadata remains in declared ingress/projection owners"
+exceptions = [
+  { path = "src/components-v2/panels/audio-scope/AudioSpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/panels/lcd/AmberCockpit.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/panels/lcd/AmberScope.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/SpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/adapters/scope-adapter.ts", count = 1, owner = "MOR-1409" },
 ]
