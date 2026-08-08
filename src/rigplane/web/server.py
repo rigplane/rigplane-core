@@ -912,6 +912,9 @@ class WebServer:
         self._pending_state_broadcast_task: asyncio.Task[None] | None = None
         # Delta encoder for efficient state broadcasting
         self._delta_encoder: DeltaEncoder = DeltaEncoder(full_state_interval=100)
+        # This is an encoder baseline only, derived from Store snapshots.  Web
+        # never owns or advances the provider generation itself.
+        self._last_delta_encoder_generation: int | None = None
         self._last_broadcast_state_key: tuple[object, ...] | None = None
         self._cached_public_state_key: tuple[object, ...] | None = None
         self._cached_public_state_payload: dict[str, Any] | None = None
@@ -1412,7 +1415,7 @@ class WebServer:
             self._pending_state_broadcast_task.cancel()
             self._pending_state_broadcast_task = None
 
-        snapshot = self.command_state_store.snapshot()
+        snapshot = self._snapshot_for_delivery()
         # Keep audio FFT scope center freq and mode bandwidth in sync
         # from the same canonical snapshot used for Web delivery.
         self._update_fft_scope_freq(snapshot)
@@ -1429,13 +1432,7 @@ class WebServer:
         if state_key == self._last_broadcast_state_key:
             return
 
-        # Encode state as delta to reduce bandwidth
-        delta = self._delta_encoder.encode(
-            body,
-            state_revision=snapshot.state_revision,
-            freshness_revision=snapshot.freshness_revision,
-            observation_seq=snapshot.observation_seq,
-        )
+        delta = self._encode_state_update(snapshot, body)
         self._last_broadcast_state_key = state_key
         event = {"type": "state_update", "data": delta}
         self._state_diagnostics.record(
@@ -1465,28 +1462,8 @@ class WebServer:
 
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
-        snapshot = self.command_state_store.snapshot()
+        snapshot = self._snapshot_for_delivery()
         return self._build_public_state_from_snapshot(snapshot, updated_at=updated_at)
-
-    def _live_connection_metadata_key(
-        self,
-    ) -> tuple[bool, bool, bool, str | None]:
-        radio = self._radio
-        raw_connected = getattr(radio, "connected", False) if radio else False
-        connected = raw_connected if isinstance(raw_connected, bool) else False
-        raw_control_connected = (
-            getattr(radio, "control_connected", False) if radio else False
-        )
-        control_connected = (
-            raw_control_connected if isinstance(raw_control_connected, bool) else False
-        )
-        conn_state_val = getattr(radio, "conn_state", None) if radio else None
-        conn_state: str | None = None
-        if conn_state_val is not None and hasattr(conn_state_val, "value"):
-            raw_conn_state = conn_state_val.value
-            if isinstance(raw_conn_state, str):
-                conn_state = raw_conn_state
-        return (connected, control_connected, radio_ready(radio), conn_state)
 
     def _public_state_delivery_key(
         self,
@@ -1498,8 +1475,8 @@ class WebServer:
             snapshot.state_revision,
             snapshot.freshness_revision,
             snapshot.observation_seq,
+            snapshot.provider_generation,
             health_revision,
-            *self._live_connection_metadata_key(),
             len(self._scope_handlers),
             len(self._control_event_queues),
             len(self._audio_broadcaster._clients),
@@ -1566,6 +1543,8 @@ class WebServer:
             health_revision=self._health_revision,
         )
         payload["publicStateSeq"] = public_state_seq
+        payload["stateContractVersion"] = 1
+        payload["providerGeneration"] = snapshot.provider_generation
         if updated_at is None:
             self._cached_public_state_key = cache_key
             self._cached_public_state_payload = copy.deepcopy(payload)
@@ -1575,18 +1554,107 @@ class WebServer:
         self, *, force_full: bool = False
     ) -> dict[str, Any]:
         """Return a WS state-update envelope from the canonical StateStore view."""
-        snapshot = self.command_state_store.snapshot()
+        snapshot = self._snapshot_for_delivery()
         body = self._build_public_state_from_snapshot(snapshot)
+        return self._encode_state_update(snapshot, body, force_full=force_full)
+
+    def _encode_state_update(
+        self,
+        snapshot: StateSnapshot,
+        body: dict[str, Any],
+        *,
+        force_full: bool = False,
+    ) -> dict[str, Any]:
+        """Encode one Store snapshot with its non-optional wire epoch."""
         encoder = (
             DeltaEncoder(full_state_interval=100) if force_full else self._delta_encoder
         )
-        return encoder.encode(
+        generation_changed = (
+            not force_full
+            and self._last_delta_encoder_generation != snapshot.provider_generation
+        )
+        result: dict[str, Any] = encoder.encode(
             body,
-            force_full=force_full,
+            force_full=force_full or generation_changed,
             state_revision=snapshot.state_revision,
             freshness_revision=snapshot.freshness_revision,
             observation_seq=snapshot.observation_seq,
         )
+        if not force_full:
+            self._last_delta_encoder_generation = snapshot.provider_generation
+        result["stateContractVersion"] = 1
+        result["providerGeneration"] = snapshot.provider_generation
+        return result
+
+    def _snapshot_for_delivery(self) -> StateSnapshot:
+        """Synchronously ensure Web lifecycle facts before a public snapshot."""
+        snapshot = self.command_state_store.snapshot()
+        generation = snapshot.provider_generation
+        radio = self._radio
+        raw_connected = (
+            getattr(radio, "connected", False) if radio is not None else False
+        )
+        connected = raw_connected if isinstance(raw_connected, bool) else False
+        raw_control_connected = (
+            getattr(radio, "control_connected", False) if radio is not None else False
+        )
+        control_connected = (
+            raw_control_connected if isinstance(raw_control_connected, bool) else False
+        )
+        conn_state = getattr(radio, "conn_state", None) if radio is not None else None
+        raw_status = getattr(conn_state, "value", None)
+        status = (
+            raw_status
+            if isinstance(raw_status, str)
+            else "connected"
+            if connected
+            else "disconnected"
+        )
+        health = self._build_radio_health()
+        source = SourceMetadata(
+            source="local_reconcile",
+            provider="web_lifecycle",
+            transport="web",
+        )
+        values = (
+            (FieldPath.parse("connection.connection.connected"), connected),
+            (FieldPath.parse("connection.connection.radio_ready"), radio_ready(radio)),
+            (
+                FieldPath.parse("connection.connection.control_connected"),
+                control_connected,
+            ),
+            (FieldPath.parse("connection.connection.status"), status),
+            (
+                FieldPath.parse("health.health.server_reachable"),
+                health["serverReachable"],
+            ),
+            (FieldPath.parse("health.health.radio_link"), health["radioLink"]),
+            (FieldPath.parse("health.health.readiness"), health["readiness"]),
+            (FieldPath.parse("health.health.likely_cause"), health["likelyCause"]),
+            (FieldPath.parse("health.health.last_error"), health["lastError"]),
+        )
+        existing = {field.path: field for field in snapshot.fields}
+        if all(
+            (field := existing.get(path)) is not None
+            and field.value == value
+            and field.provider_generation == generation
+            and field.source == source
+            and field.quality == ("confirmed",)
+            for path, value in values
+        ):
+            return snapshot
+        timestamp = time.monotonic()
+        for path, value in values:
+            self.command_state_store.apply(
+                Observation(
+                    path=path,
+                    value=value,
+                    source=source,
+                    timestamp_monotonic=timestamp,
+                    provider_generation=generation,
+                )
+            )
+        return self.command_state_store.snapshot()
 
     def sync_state_store_from_radio_state(
         self,
@@ -2264,7 +2332,9 @@ class WebServer:
 
     def _on_reconnect_status(self, status: dict[str, Any]) -> None:
         self._connection_status = dict(status)
+        self._snapshot_for_delivery()
         self.broadcast_event("connection_status", dict(status))
+        self._broadcast_state_update()
 
     async def start(self) -> None:
         """Start the HTTP/WS listener and RadioPoller (if radio is connected)."""
@@ -2904,7 +2974,7 @@ class WebServer:
     async def _serve_state(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
-        snapshot = self.command_state_store.snapshot()
+        snapshot = self._snapshot_for_delivery()
         body_dict = self._build_public_state_from_snapshot(snapshot)
         revision = int(body_dict.get("stateRevision", body_dict.get("revision", 0)))
         freshness_revision = int(body_dict.get("freshnessRevision", 0))
@@ -2975,6 +3045,7 @@ class WebServer:
     async def _serve_capabilities(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
+        snapshot = self._snapshot_for_delivery()
         caps = _runtime_capabilities(self._radio)
         tx_audio = browser_tx_audio_facts(self._radio)
         _raw_model = (
@@ -3006,6 +3077,8 @@ class WebServer:
 
         body = json.dumps(
             {
+                "stateContractVersion": 1,
+                "providerGeneration": snapshot.provider_generation,
                 "model": model,
                 "scope": "scope" in caps,
                 "audio": "audio" in caps,

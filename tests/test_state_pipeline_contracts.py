@@ -845,7 +845,10 @@ def test_web_poller_command_response_no_op_remains_removed() -> None:
 async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision() -> (
     None
 ):
-    server, snapshot = _server_with_conflicting_legacy_state()
+    server, _ = _server_with_conflicting_legacy_state()
+    # B2 seeds the current-generation lifecycle tuple before first delivery.
+    server._snapshot_for_delivery()  # noqa: SLF001
+    snapshot = server.command_state_store.snapshot()
 
     public_payload = server.build_public_state()
     _assert_delivered_from_snapshot(public_payload, snapshot)
@@ -876,7 +879,9 @@ async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision()
 
 
 def test_web_state_change_callback_broadcasts_snapshot_without_revision_path() -> None:
-    server, snapshot = _server_with_conflicting_legacy_state()
+    server, _ = _server_with_conflicting_legacy_state()
+    server._snapshot_for_delivery()  # noqa: SLF001
+    snapshot = server.command_state_store.snapshot()
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=16)
     server.register_control_event_queue(queue)
 

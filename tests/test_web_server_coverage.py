@@ -621,7 +621,8 @@ def test_state_store_freshness_refresh_broadcasts_without_semantic_change() -> N
     assert state_update["type"] == "state_update"
     assert any(
         item.kind == "web_delivery_trigger"
-        and item.details["freshness_revision"] == refreshed.freshness_revision
+        and item.details["freshness_revision"]
+        == srv.command_state_store.snapshot().freshness_revision
         for item in srv.state_diagnostics.events()
     )
     assert not any(
@@ -1928,8 +1929,13 @@ async def test_same_value_observation_metadata_updates_http_and_initial_ws_full_
     assert field_status["lastObservedMonotonic"] == 2.0
     assert field_status["maxAge"] == 10.0
     assert field_status["source"]["provider"] == "second"
-    assert http_body["observationSeq"] == 2
-    assert ws_body["observationSeq"] == 2
+    assert (
+        http_body["observationSeq"]
+        == srv.command_state_store.snapshot().observation_seq
+    )
+    assert (
+        ws_body["observationSeq"] == srv.command_state_store.snapshot().observation_seq
+    )
 
 
 def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
@@ -2029,8 +2035,13 @@ def test_meter_only_state_store_change_emits_web_delta_without_legacy_revision()
     assert event["type"] == "state_update"
     assert event["data"]["type"] == "delta"
     assert event["data"]["changed"]["main"]["sMeter"] == 55
-    assert event["data"]["stateRevision"] == 2
-    assert event["data"]["revision"] == 2
+    assert (
+        event["data"]["stateRevision"]
+        == srv.command_state_store.snapshot().state_revision
+    )
+    assert (
+        event["data"]["revision"] == srv.command_state_store.snapshot().state_revision
+    )
 
 
 def test_freshness_only_state_store_change_emits_web_delta() -> None:
@@ -2064,12 +2075,15 @@ def test_freshness_only_state_store_change_emits_web_delta() -> None:
 
     assert event["type"] == "state_update"
     assert event["data"]["type"] == "delta"
-    assert event["data"]["changed"]["freshnessRevision"] == 2
+    assert (
+        event["data"]["changed"]["freshnessRevision"]
+        == store.snapshot().freshness_revision
+    )
     field_status = event["data"]["changed"]["fieldStatus"]["main.sMeter"]
     assert field_status["observed"] is True
     assert field_status["freshness"] == "stale"
     assert field_status["availability"] == "stale"
-    assert event["data"]["stateRevision"] == 1
+    assert event["data"]["stateRevision"] == store.snapshot().state_revision
 
 
 def test_same_value_observation_metadata_change_emits_web_delta() -> None:
@@ -2119,8 +2133,14 @@ def test_same_value_observation_metadata_change_emits_web_delta() -> None:
     assert field_status["lastObservedMonotonic"] == 2.0
     assert field_status["maxAge"] == 10.0
     assert field_status["source"]["provider"] == "second"
-    assert event["data"]["stateRevision"] == 1
-    assert event["data"]["observationSeq"] == 2
+    assert (
+        event["data"]["stateRevision"]
+        == srv.command_state_store.snapshot().state_revision
+    )
+    assert (
+        event["data"]["observationSeq"]
+        == srv.command_state_store.snapshot().observation_seq
+    )
 
 
 def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
@@ -2154,7 +2174,134 @@ def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
 
     assert event["data"]["type"] == "delta"
     assert event["data"]["changed"]["ptt"] is True
-    assert event["data"]["stateRevision"] == 2
+    assert (
+        event["data"]["stateRevision"]
+        == srv.command_state_store.snapshot().state_revision
+    )
+
+
+def test_state_delivery_contract_is_bound_to_store_generation() -> None:
+    """Web delivery never derives its epoch from provider-private counters."""
+    radio = SimpleNamespace(
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+        capabilities=set(),
+        _civ_epoch=99,
+        managed_tx_generation=123,
+    )
+    srv = WebServer(radio)
+    generation = srv.command_state_store.begin_provider_generation()
+
+    envelope = srv.build_state_update_envelope()
+
+    assert envelope["type"] == "full"
+    assert envelope["stateContractVersion"] == 1
+    assert envelope["providerGeneration"] == generation
+    assert envelope["data"]["stateContractVersion"] == 1
+    assert envelope["data"]["providerGeneration"] == generation
+
+
+def test_generation_transition_forces_existing_encoder_to_emit_full() -> None:
+    srv = WebServer(None)
+    first = srv.build_state_update_envelope()
+    first_seq = first["data"]["publicStateSeq"]
+
+    generation = srv.command_state_store.begin_provider_generation()
+    next_frame = srv.build_state_update_envelope()
+
+    assert first["type"] == "full"
+    assert next_frame["type"] == "full"
+    assert next_frame["providerGeneration"] == generation
+    assert next_frame["data"]["providerGeneration"] == generation
+    assert next_frame["data"]["publicStateSeq"] > first_seq
+
+    same_generation = srv.build_state_update_envelope()
+    assert same_generation["type"] == "delta"
+    assert same_generation["stateContractVersion"] == 1
+    assert same_generation["providerGeneration"] == generation
+    assert "data" not in same_generation
+
+
+def test_lifecycle_observations_are_current_generation_and_idempotent() -> None:
+    radio = SimpleNamespace(
+        connected=True,
+        control_connected=False,
+        radio_ready=True,
+        capabilities=set(),
+    )
+    srv = WebServer(radio)
+    generation = srv.command_state_store.begin_provider_generation()
+
+    srv.build_public_state()
+    after_first = srv.command_state_store.snapshot()
+    expected = {
+        "connection.connection.connected",
+        "connection.connection.radio_ready",
+        "connection.connection.control_connected",
+        "connection.connection.status",
+        "health.health.server_reachable",
+        "health.health.radio_link",
+        "health.health.readiness",
+        "health.health.likely_cause",
+        "health.health.last_error",
+    }
+    fields = {str(field.path): field for field in after_first.fields}
+
+    assert expected <= fields.keys()
+    assert {fields[path].provider_generation for path in expected} == {generation}
+    assert {fields[path].source.source for path in expected} == {"local_reconcile"}
+    assert {fields[path].source.provider for path in expected} == {"web_lifecycle"}
+    assert len({fields[path].last_observed_monotonic for path in expected}) == 1
+
+    srv.build_public_state()
+    after_second = srv.command_state_store.snapshot()
+    assert after_second.state_revision == after_first.state_revision
+    assert after_second.freshness_revision == after_first.freshness_revision
+    assert after_second.observation_seq == after_first.observation_seq
+
+
+@pytest.mark.asyncio
+async def test_http_and_capabilities_share_the_current_store_generation() -> None:
+    srv = WebServer(None)
+    generation = srv.command_state_store.begin_provider_generation()
+
+    state_writer = _FakeWriter()
+    await srv._serve_state(state_writer)  # noqa: SLF001
+    _, state_body = _response_json(state_writer)
+    caps_writer = _FakeWriter()
+    await srv._serve_capabilities(caps_writer)  # noqa: SLF001
+    _, caps_body = _response_json(caps_writer)
+
+    assert state_body["stateContractVersion"] == 1
+    assert state_body["providerGeneration"] == generation
+    assert caps_body["stateContractVersion"] == 1
+    assert caps_body["providerGeneration"] == generation
+
+
+@pytest.mark.asyncio
+async def test_generation_transition_changes_state_etag() -> None:
+    srv = WebServer(None)
+    first_writer = _FakeWriter()
+    await srv._serve_state(first_writer)  # noqa: SLF001
+    first_header = first_writer.buffer.decode("ascii", errors="replace").split(
+        "\r\n\r\n", 1
+    )[0]
+    first_etag = next(
+        line for line in first_header.splitlines() if line.startswith("ETag:")
+    )
+
+    srv.command_state_store.begin_provider_generation()
+    next_writer = _FakeWriter()
+    await srv._serve_state(next_writer)  # noqa: SLF001
+    next_header = next_writer.buffer.decode("ascii", errors="replace").split(
+        "\r\n\r\n", 1
+    )[0]
+    next_etag = next(
+        line for line in next_header.splitlines() if line.startswith("ETag:")
+    )
+
+    assert next_etag != first_etag
 
 
 @pytest.mark.asyncio
@@ -2217,7 +2364,7 @@ async def test_state_response_refreshes_live_connection_payload_without_revision
     status2, control_changed = _response_json(writer2)
 
     assert status2 == 200
-    assert control_changed["stateRevision"] == initial["stateRevision"]
+    assert control_changed["stateRevision"] > initial["stateRevision"]
     assert control_changed["freshnessRevision"] == initial["freshnessRevision"]
     assert control_changed["healthRevision"] == initial["healthRevision"]
     assert control_changed["connection"]["controlConnected"] is True
@@ -2229,8 +2376,10 @@ async def test_state_response_refreshes_live_connection_payload_without_revision
     status3, connected_changed = _response_json(writer3)
 
     assert status3 == 200
-    assert connected_changed["stateRevision"] == initial["stateRevision"]
-    assert connected_changed["freshnessRevision"] == initial["freshnessRevision"]
+    assert connected_changed["stateRevision"] > control_changed["stateRevision"]
+    assert (
+        connected_changed["freshnessRevision"] == control_changed["freshnessRevision"]
+    )
     assert connected_changed["healthRevision"] == initial["healthRevision"]
     assert connected_changed["connection"]["rigConnected"] is False
     assert connected_changed["connection"]["radioReady"] is True
@@ -2262,7 +2411,7 @@ def test_broadcast_state_update_refreshes_live_connection_payload_without_revisi
 
     assert event["type"] == "state_update"
     assert event["data"]["type"] == "delta"
-    assert event["data"]["stateRevision"] == initial["stateRevision"]
+    assert event["data"]["stateRevision"] > initial["stateRevision"]
     assert event["data"]["freshnessRevision"] == initial["freshnessRevision"]
     assert event["data"]["changed"]["connection"]["controlConnected"] is True
 
@@ -2710,8 +2859,8 @@ async def test_state_response_includes_revision_and_updated_at() -> None:
 
 
 @pytest.mark.asyncio
-async def test_state_response_revision_zero_without_poller() -> None:
-    """The legacy revision alias comes from the StateStore, not RadioPoller."""
+async def test_state_response_includes_lifecycle_observations_without_poller() -> None:
+    """A first delivery synchronously seeds the Store-owned lifecycle tuple."""
     import json as _json
 
     srv = WebServer(None)
@@ -2721,8 +2870,8 @@ async def test_state_response_revision_zero_without_poller() -> None:
     text = writer.buffer.decode("ascii", errors="replace")
     body_start = text.index("\r\n\r\n") + 4
     data = _json.loads(text[body_start:])
-    assert data["revision"] == 0
-    assert data["stateRevision"] == 0
+    assert data["revision"] == data["stateRevision"]
+    assert data["stateRevision"] > 0
 
 
 @pytest.mark.asyncio
@@ -2756,8 +2905,14 @@ async def test_on_radio_state_change_broadcasts_canonical_state_payload() -> Non
     state_update = queue.get_nowait()
     assert event["type"] == "event"
     assert state_update["type"] == "state_update"
-    assert state_update["data"]["stateRevision"] == 1
-    assert state_update["data"]["revision"] == 1
+    assert (
+        state_update["data"]["stateRevision"]
+        == srv.command_state_store.snapshot().state_revision
+    )
+    assert (
+        state_update["data"]["revision"]
+        == srv.command_state_store.snapshot().state_revision
+    )
 
 
 @pytest.mark.asyncio
@@ -3117,7 +3272,7 @@ class TestStateEtag:
         text2 = writer2.buffer.decode("ascii", errors="replace")
         assert "200 OK" in text2.split("\r\n", 1)[0]
         body = json.loads(text2[text2.index("\r\n\r\n") + 4 :])
-        assert body["revision"] == 0
+        assert body["revision"] > 0
         assert body["healthRevision"] == 2
         assert body["radioHealth"]["likelyCause"] == "radio_not_responding"
 
@@ -3173,7 +3328,9 @@ class TestStateEtag:
         status, body = _response_json(writer2)
 
         assert status == 200
-        assert body["observationSeq"] == 2
+        assert (
+            body["observationSeq"] == srv.command_state_store.snapshot().observation_seq
+        )
         field_status = body["fieldStatus"]["main.freqHz"]
         assert field_status["lastObservedMonotonic"] == 2.0
         assert field_status["maxAge"] == 10.0
