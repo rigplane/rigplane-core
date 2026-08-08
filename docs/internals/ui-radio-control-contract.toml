@@ -1,0 +1,617 @@
+contract_version = 1
+issue = "MOR-1406"
+parent_issue = "MOR-1405"
+github_issue = 2314
+authority = "StateStore"
+ws_message = "state_update"
+intent_lifecycle = "ephemeral-only"
+
+# These are delivery metadata or container objects rather than UI radio facts.
+# Every other generated public field must be owned by exactly one family below.
+public_metadata_fields = [
+  "server.revision", "server.stateRevision", "server.freshnessRevision",
+  "server.observationSeq", "server.healthRevision", "server.updatedAt",
+  "server.main", "server.sub", "server.scopeControls",
+  "server.connection", "server.radioDetail", "server.radioHealth",
+  "server.wsClients", "server.fieldStatus", "server.publicStateSeq",
+]
+
+# Explicit payload-plane exceptions. Values that label, gate, route, or map these
+# streams are still owned by the StateStore families below.
+data_plane_exceptions = [
+  "audio PCM/Opus samples and FFT bins",
+  "spectrum/waterfall pixel payloads",
+  "transport correlation and delivery counters",
+]
+
+[[profiles]]
+path = "rigs/ftx1.toml"
+provider = "yaesu_cat"
+required_proof = "MOR-1410 real FTX-1"
+
+[[profiles]]
+path = "rigs/ic705.toml"
+provider = "icom_civ"
+required_proof = "generic fixture plus profile conformance"
+
+[[profiles]]
+path = "rigs/ic7300.toml"
+provider = "icom_civ"
+required_proof = "MOR-1410 real IC-7300"
+
+[[profiles]]
+path = "rigs/ic7610.toml"
+provider = "icom_civ"
+required_proof = "generic fixture plus historical regression"
+
+[[profiles]]
+path = "rigs/ic9700.toml"
+provider = "icom_civ"
+required_proof = "generic fixture plus profile conformance"
+
+[[profiles]]
+path = "rigs/tx500.toml"
+provider = "kenwood_cat"
+required_proof = "provider contract fixture"
+
+[[profiles]]
+path = "rigs/x6100.toml"
+provider = "xiegu_civ"
+required_proof = "provider contract fixture"
+
+[[profiles]]
+path = "rigs/x6200.toml"
+provider = "xiegu_civ"
+required_proof = "provider contract fixture"
+
+# Each family is an infrastructure-coverage row, never permission for a
+# per-control reader, timer, handler, writer, or frontend mirror.
+
+[[families]]
+id = "vfo_identity_topology"
+capabilities = ["vfo", "dual_rx", "vfo_ab", "split", "dual_watch"]
+intents = ["set_vfo", "select_vfo", "vfo_swap", "vfo_equalize", "set_split", "get_dual_watch", "set_dual_watch", "set_main_sub_tracking", "quick_dualwatch", "quick_split", "get_quick_split", "set_quick_split", "get_quick_dual_watch", "set_quick_dual_watch"]
+command_route = "existing CommandService -> serialized provider command -> ACK/readback"
+observation_route = "existing provider active-slot/receiver/split observation or acquisition; MOR-1404 owns one-byte Icom command-07 A/B promotion"
+field_paths = ["receiver.main.vfo.active_slot", "receiver.sub.vfo.active_slot", "global.slow_state.active", "global.tx_state.split", "global.tx_state.dual_watch"]
+field_path_gaps = ["mainSubTracking and legacy vfoSelect need canonical registration/projection in MOR-1408"]
+public_fields = ["server.active", "server.split", "server.dualWatch", "server.mainSubTracking", "server.vfoSelect", "receiver.activeSlot"]
+ws_property = "state_update data/changed: active, split, dualWatch, mainSubTracking, main/sub.activeSlot"
+selector = "radio-view-model-adapter VFO topology selector"
+pending = "selection/swap/equalize lifecycle only; never slot truth"
+surfaces = ["frontend/src/semantic/VfoSurface.svelte", "frontend/src/components-v2/panels/vfo/DualVfoDisplay.svelte", "frontend/src/components-v2/panels/lcd/AmberIndStrip.svelte"]
+automated_proof = "provider active-slot observation -> StateStore -> public WS; command emits exactly once"
+hardware_proof = "MOR-1404 A/B zero-send ingress and MOR-1410 both radios"
+gap_owner = "MOR-1404,MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "vfo_tuning_mode_filter"
+capabilities = ["frequency", "mode", "filter", "data_mode", "band"]
+intents = ["set_freq", "set_band", "set_mode", "set_filter", "set_filter_width", "set_data_mode", "get_tuning_step", "set_tuning_step", "set_dial_lock"]
+command_route = "existing typed tuning/mode/filter intent and read-after-write path"
+observation_route = "existing Icom 00/03/04/05/06/25/26/1A or provider observation/acquisition"
+field_paths = ["receiver.main.active.freq_mode.freq_hz", "receiver.main.active.freq_mode.mode", "receiver.main.active.freq_mode.filter_num", "receiver.main.active.freq_mode.filter_width", "receiver.main.active.freq_mode.data_mode", "receiver.main.unselected.freq_mode.freq_hz", "receiver.main.unselected.freq_mode.mode", "receiver.main.unselected.freq_mode.filter_num", "receiver.main.unselected.freq_mode.data_mode", "receiver.main.slot.A.freq_mode.freq_hz", "receiver.main.slot.A.freq_mode.mode", "receiver.main.slot.B.freq_mode.freq_hz", "receiver.main.slot.B.freq_mode.mode", "receiver.sub.active.freq_mode.freq_hz", "receiver.sub.active.freq_mode.mode", "receiver.sub.active.freq_mode.filter_num", "receiver.sub.active.freq_mode.filter_width", "receiver.sub.active.freq_mode.data_mode", "receiver.sub.unselected.freq_mode.freq_hz", "receiver.sub.unselected.freq_mode.mode", "receiver.sub.unselected.freq_mode.filter_num", "receiver.sub.unselected.freq_mode.data_mode", "receiver.sub.slot.A.freq_mode.freq_hz", "receiver.sub.slot.A.freq_mode.mode", "receiver.sub.slot.B.freq_mode.freq_hz", "receiver.sub.slot.B.freq_mode.mode", "global.slow_state.tuning_step", "global.tx_state.dial_lock"]
+field_path_gaps = ["absolute-slot filter/data leaves are not registered; MOR-1408 owns canonical additive coverage"]
+public_fields = ["server.tuningStep", "server.dialLock", "receiver.vfoA", "receiver.vfoB", "receiver.unselectedVfo", "receiver.freqHz", "receiver.mode", "receiver.filter", "receiver.dataMode", "receiver.filterWidth", "vfo.freqHz", "vfo.mode", "vfo.filterNum", "vfo.dataMode"]
+ws_property = "state_update main/sub slot and derived scalar fields"
+selector = "radio-view-model-adapter canonical VFO reading selector"
+pending = "tune/mode/filter intent status only"
+surfaces = ["frontend/src/semantic/VfoSurface.svelte", "frontend/src/semantic/BandSurface.svelte", "frontend/src/semantic/FilterSurface.svelte", "frontend/src/components-v2/panels/ModePanel.svelte", "frontend/src/components-v2/panels/FilterPanel.svelte", "frontend/src/components-v2/panels/lcd/AmberFrequency.svelte", "frontend/src/components-v2/panels/lcd/VfoControlPanel.svelte"]
+automated_proof = "MOR-1403 knob/drag/arrow regressions plus mode/filter observation fixtures"
+hardware_proof = "MOR-1410 knob, drag, arrows, mode and filter"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "receiver_audio_levels"
+capabilities = ["af_gain", "rf_gain", "squelch", "af_mute"]
+intents = ["set_af_level", "set_rf_gain", "set_sql", "set_squelch", "get_af_mute", "set_af_mute"]
+command_route = "existing normalized level command/ACK/readback route"
+observation_route = "existing provider level observation or shared acquisition family"
+field_paths = ["receiver.main.operator_controls.af_level", "receiver.main.operator_controls.rf_gain", "receiver.main.operator_controls.squelch", "receiver.sub.operator_controls.af_level", "receiver.sub.operator_controls.rf_gain", "receiver.sub.operator_controls.squelch"]
+field_path_gaps = ["afMute lacks a registered canonical path; MOR-1408 owns it"]
+public_fields = ["receiver.afLevel", "receiver.rfGain", "receiver.squelch", "receiver.afMute"]
+ws_property = "state_update main/sub receiver controls"
+selector = "shared Rx audio/RF view model"
+pending = "slider lifecycle only"
+surfaces = ["frontend/src/semantic/RxAudioSurface.svelte", "frontend/src/components-v2/panels/RxAudioPanel.svelte"]
+automated_proof = "level-family bidirectional fixture"
+hardware_proof = "MOR-1410 representative physical and Web levels"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "receiver_front_end"
+capabilities = ["attenuator", "preamp", "digisel", "ipplus"]
+intents = ["set_att", "set_attenuator", "set_preamp", "set_digisel", "set_digisel_shift", "set_ip_plus", "set_ipplus"]
+command_route = "existing RF front-end command/ACK/readback route"
+observation_route = "existing Icom 11/16 or provider observation/acquisition"
+field_paths = ["receiver.main.operator_controls.att", "receiver.main.operator_controls.preamp", "receiver.main.operator_toggles.digisel", "receiver.main.operator_toggles.ipplus", "receiver.sub.operator_controls.att", "receiver.sub.operator_controls.preamp", "receiver.sub.operator_toggles.digisel", "receiver.sub.operator_toggles.ipplus"]
+field_path_gaps = ["digiselShift lacks a registered canonical path; MOR-1408 owns it"]
+public_fields = ["receiver.att", "receiver.preamp", "receiver.digisel", "receiver.digiselShift", "receiver.ipplus"]
+ws_property = "state_update main/sub RF front-end fields"
+selector = "shared RF front-end view model"
+pending = "control lifecycle only"
+surfaces = ["frontend/src/semantic/RfFrontEndSurface.svelte", "frontend/src/components-v2/panels/RfFrontEnd.svelte"]
+automated_proof = "front-end family observation and command fixtures"
+hardware_proof = "MOR-1410 representative ATT/PRE"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "receiver_dsp_noise_notch"
+capabilities = ["nb", "nr", "notch", "apf", "twin_peak", "contour"]
+intents = ["set_nb", "set_nr", "set_nr_level", "set_nb_level", "set_nb_depth", "set_nb_width", "set_auto_notch", "set_manual_notch", "set_notch_filter", "set_manual_notch_width", "set_apf", "set_twin_peak", "set_audio_peak_filter"]
+command_route = "existing DSP command/ACK/readback route"
+observation_route = "existing provider toggle/level observation tables and shared acquisition"
+field_paths = ["receiver.main.operator_toggles.nb", "receiver.main.operator_toggles.nr", "receiver.main.operator_toggles.auto_notch", "receiver.main.operator_toggles.manual_notch", "receiver.main.operator_toggles.twin_peak_filter", "receiver.main.operator_controls.nr_level", "receiver.main.operator_controls.nb_level", "receiver.main.operator_controls.manual_notch_freq", "receiver.main.operator_controls.audio_peak_filter", "receiver.main.operator_controls.apf_type_level", "receiver.sub.operator_toggles.nb", "receiver.sub.operator_toggles.nr", "receiver.sub.operator_toggles.auto_notch", "receiver.sub.operator_toggles.manual_notch", "receiver.sub.operator_toggles.twin_peak_filter", "receiver.sub.operator_controls.nr_level", "receiver.sub.operator_controls.nb_level", "receiver.sub.operator_controls.manual_notch_freq", "receiver.sub.operator_controls.audio_peak_filter", "receiver.sub.operator_controls.apf_type_level"]
+field_path_gaps = ["notchFilter, nbDepth/Width, APF on/frequency, contour and manualNotchWidth need canonical registration in MOR-1408"]
+public_fields = ["server.notchFilter", "server.nbDepth", "server.nbWidth", "receiver.nb", "receiver.nr", "receiver.audioPeakFilter", "receiver.autoNotch", "receiver.manualNotch", "receiver.twinPeakFilter", "receiver.apfTypeLevel", "receiver.apfOn", "receiver.apfFreq", "receiver.nrLevel", "receiver.nbLevel", "receiver.contour", "receiver.manualNotchFreq", "receiver.manualNotchWidth"]
+ws_property = "state_update DSP fields"
+selector = "shared DSP view model"
+pending = "toggle/slider lifecycle only"
+surfaces = ["frontend/src/semantic/DspSurface.svelte", "frontend/src/components-v2/panels/DspPanel.svelte"]
+automated_proof = "generic DSP family matrix"
+hardware_proof = "MOR-1410 representative toggle and level"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "receiver_filter_agc_pbt"
+capabilities = ["agc", "pbt", "if_shift", "filter_shape"]
+intents = ["set_agc", "set_agc_time_constant", "set_pbt_inner", "set_pbt_outer", "set_if_shift", "set_filter_shape"]
+command_route = "existing filter-control command/ACK/readback route"
+observation_route = "existing provider AGC/PBT/filter observation/acquisition"
+field_paths = ["receiver.main.operator_controls.agc", "receiver.main.operator_controls.agc_time_constant", "receiver.main.operator_controls.pbt_inner", "receiver.main.operator_controls.pbt_outer", "receiver.main.operator_controls.if_shift", "receiver.main.operator_toggles.narrow", "receiver.sub.operator_controls.agc", "receiver.sub.operator_controls.agc_time_constant", "receiver.sub.operator_controls.pbt_inner", "receiver.sub.operator_controls.pbt_outer", "receiver.sub.operator_controls.if_shift", "receiver.sub.operator_toggles.narrow"]
+field_path_gaps = ["filterShape lacks a registered canonical path; MOR-1408 owns it"]
+public_fields = ["receiver.agc", "receiver.filterShape", "receiver.agcTimeConstant", "receiver.pbtInner", "receiver.pbtOuter", "receiver.ifShift", "receiver.narrow"]
+ws_property = "state_update receiver filter-control fields"
+selector = "shared filter/AGC view model"
+pending = "control lifecycle only"
+surfaces = ["frontend/src/semantic/FilterSurface.svelte", "frontend/src/components-v2/panels/AgcPanel.svelte", "frontend/src/components-v2/panels/FilterPanel.svelte", "frontend/src/components-v2/panels/lcd/AmberFilterGhost.svelte"]
+automated_proof = "filter-control family matrix"
+hardware_proof = "MOR-1410 representative AGC/PBT/filter"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "tx_power_mic_drive"
+capabilities = ["rf_power", "mic_gain", "drive_gain"]
+intents = ["set_rf_power", "set_power", "set_mic_gain", "set_drive_gain"]
+command_route = "existing normalized TX-level command/ACK/readback route"
+observation_route = "existing Icom 14:0A/0B and provider observation/acquisition"
+field_paths = ["global.operator_controls.power_level", "global.operator_controls.mic_gain"]
+field_path_gaps = ["driveGain lacks a registered canonical path; MOR-1408 owns it"]
+public_fields = ["server.powerLevel", "server.micGain", "server.driveGain"]
+ws_property = "state_update powerLevel/micGain/driveGain"
+selector = "shared TX auxiliary view model"
+pending = "slider lifecycle only"
+surfaces = ["frontend/src/semantic/TxAuxSurface.svelte", "frontend/src/components-v2/panels/TxPanel.svelte"]
+automated_proof = "normalized-level family including 14:0A"
+hardware_proof = "MOR-1410 physical/Web RF Power"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "compressor_monitor"
+capabilities = ["compressor", "monitor"]
+intents = ["set_comp", "set_compressor", "set_compressor_level", "set_monitor", "set_monitor_gain"]
+command_route = "existing toggle/level command/ACK/readback route"
+observation_route = "existing Icom 16:44/45 and 14:0E/15 or provider observation/acquisition"
+field_paths = ["global.tx_state.compressor_on", "global.operator_controls.compressor_level", "global.tx_state.monitor_on", "global.operator_controls.monitor_gain"]
+field_path_gaps = []
+public_fields = ["server.compressorOn", "server.compressorLevel", "server.monitorOn", "server.monitorGain"]
+ws_property = "state_update compressor/monitor fields"
+selector = "shared TX auxiliary view model"
+pending = "toggle/slider lifecycle only"
+surfaces = ["frontend/src/semantic/TxAuxSurface.svelte", "frontend/src/components-v2/panels/TxPanel.svelte"]
+automated_proof = "toggle/level family including 16:44 and 14:0E"
+hardware_proof = "MOR-1410 physical/Web COMP"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "vox_controls"
+capabilities = ["vox"]
+intents = ["set_vox", "set_vox_gain", "set_anti_vox_gain", "set_vox_delay"]
+command_route = "existing VOX command/ACK/readback route"
+observation_route = "existing provider VOX observation/acquisition"
+field_paths = ["global.tx_state.vox_on", "global.operator_controls.vox_gain", "global.operator_controls.anti_vox_gain", "global.operator_controls.vox_delay"]
+field_path_gaps = []
+public_fields = ["server.voxOn", "server.voxGain", "server.antiVoxGain", "server.voxDelay"]
+ws_property = "state_update VOX fields"
+selector = "shared VOX view model"
+pending = "control lifecycle only"
+surfaces = ["frontend/src/components-v2/panels/VoxPanel.svelte"]
+automated_proof = "VOX family matrix"
+hardware_proof = "MOR-1410 representative safe VOX controls"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "cw_controls"
+capabilities = ["cw"]
+intents = ["set_cw_pitch", "set_key_speed", "set_break_in", "get_break_in_delay", "set_break_in_delay", "get_dash_ratio", "set_dash_ratio", "send_cw_text", "stop_cw_text", "cw_auto_tune"]
+command_route = "existing CW command/ACK/readback route"
+observation_route = "existing provider CW observation/acquisition"
+field_paths = ["global.operator_controls.cw_pitch", "global.operator_controls.key_speed", "global.operator_controls.break_in", "global.operator_controls.break_in_delay", "global.slow_state.cw_spot"]
+field_path_gaps = ["dashRatio lacks a registered canonical path; MOR-1408 owns it"]
+public_fields = ["server.cwPitch", "server.keySpeed", "server.breakInDelay", "server.cwSpot", "server.breakIn", "server.dashRatio"]
+ws_property = "state_update CW fields"
+selector = "shared CW/keyer view model"
+pending = "keyer lifecycle only; sent text is not radio truth"
+surfaces = ["frontend/src/semantic/CwKeyerSurface.svelte", "frontend/src/components-v2/panels/CwPanel.svelte"]
+automated_proof = "CW observation matrix and existing command golden tests"
+hardware_proof = "MOR-1410 readback only unless separately authorized"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "rit_xit"
+capabilities = ["rit", "xit"]
+intents = ["set_rit_status", "set_rit_tx_status", "set_rit_frequency"]
+command_route = "existing RIT/XIT command/ACK/readback route"
+observation_route = "existing provider RIT/XIT observation/acquisition"
+field_paths = ["global.operator_controls.rit_freq", "global.tx_state.rit_on", "global.tx_state.rit_tx"]
+field_path_gaps = []
+public_fields = ["server.ritFreq", "server.ritOn", "server.ritTx"]
+ws_property = "state_update RIT/XIT fields"
+selector = "shared RIT/XIT view model"
+pending = "control lifecycle only"
+surfaces = ["frontend/src/semantic/RitXitScanSurface.svelte", "frontend/src/components-v2/panels/RitXitPanel.svelte"]
+automated_proof = "RIT/XIT family matrix"
+hardware_proof = "MOR-1410 representative readback"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "scan_memory_bandstack"
+capabilities = ["scan", "memory", "band_stack"]
+intents = ["scan_start", "scan_stop", "scan_set_df_span", "scan_set_resume", "set_memory_mode", "memory_write", "memory_to_vfo", "memory_clear", "set_memory_contents", "set_bsr"]
+command_route = "existing scan/memory command route"
+observation_route = "existing provider read/event where supported; explicit unsupported/write-only otherwise"
+field_paths = []
+field_path_gaps = ["scanning, scanType and scanResumeMode need canonical registration in MOR-1408"]
+public_fields = ["server.scanning", "server.scanType", "server.scanResumeMode"]
+ws_property = "state_update scan facts; user memory records remain separate data"
+selector = "shared scan/memory view model"
+pending = "operation lifecycle and stored user records only"
+surfaces = ["frontend/src/semantic/RitXitScanSurface.svelte", "frontend/src/components-v2/panels/ScanPanel.svelte", "frontend/src/components-v2/panels/MemoryPanel.svelte", "frontend/src/components-v2/panels/lcd/AmberMemoryStrip.svelte"]
+automated_proof = "explicit supported/write-only matrix and no fabricated live memory state"
+hardware_proof = "MOR-1410 safe representative memory/scan readback"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "repeater_tones"
+capabilities = ["tones"]
+intents = ["set_tone_freq", "set_tsql_freq", "set_repeater_tone", "set_repeater_tsql"]
+command_route = "existing tone command/ACK/readback route"
+observation_route = "existing provider tone observation/acquisition"
+field_paths = ["receiver.main.operator_toggles.repeater_tone", "receiver.main.operator_toggles.repeater_tsql", "receiver.main.operator_controls.tone_freq", "receiver.main.operator_controls.tsql_freq", "receiver.sub.operator_toggles.repeater_tone", "receiver.sub.operator_toggles.repeater_tsql", "receiver.sub.operator_controls.tone_freq", "receiver.sub.operator_controls.tsql_freq"]
+field_path_gaps = []
+public_fields = ["receiver.repeaterTone", "receiver.repeaterTsql", "receiver.toneFreq", "receiver.tsqlFreq"]
+ws_property = "state_update receiver tone fields"
+selector = "shared mode/repeater selector"
+pending = "control lifecycle only"
+surfaces = ["frontend/src/components-v2/panels/ModePanel.svelte"]
+automated_proof = "tone family matrix"
+hardware_proof = "profile fixture; hardware when supported"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "antenna_routing"
+capabilities = ["antenna"]
+intents = ["set_antenna_1", "set_antenna_2", "set_rx_antenna_ant1", "set_rx_antenna_ant2", "set_rx_antenna"]
+command_route = "existing antenna command/ACK/readback route"
+observation_route = "existing provider readback when supported; explicit write-only otherwise"
+field_paths = ["global.operator_controls.tx_antenna", "global.slow_state.rx_antenna_1", "global.slow_state.rx_antenna_2"]
+field_path_gaps = []
+public_fields = ["server.txAntenna", "server.rxAntenna1", "server.rxAntenna2"]
+ws_property = "state_update antenna fields"
+selector = "shared antenna view model"
+pending = "control lifecycle only; write-only cannot fabricate confirmation"
+surfaces = ["frontend/src/semantic/AntennaSurface.svelte", "frontend/src/components-v2/panels/AntennaPanel.svelte"]
+automated_proof = "supported/write-only antenna matrix"
+hardware_proof = "MOR-1410 where safely supported"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "power_tuner_ptt_tx_target"
+capabilities = ["power", "tuner", "ptt", "tx_target"]
+intents = ["set_powerstat", "get_tuner_status", "set_tuner_status", "ptt", "ptt_on", "ptt_off"]
+command_route = "existing power/tuner path and frozen managed-TX/PTT pipeline"
+observation_route = "existing provider power/PTT/tuner observations and fail-closed TX target derivation"
+field_paths = ["global.tx_state.power_on", "global.tx_state.ptt", "global.tx_state.tx_target", "global.operator_controls.tuner_status"]
+field_path_gaps = []
+public_fields = ["server.powerOn", "server.ptt", "server.tunerStatus", "server.txTarget"]
+ws_property = "state_update powerOn/ptt/tunerStatus/txTarget"
+selector = "shared RX/TX safety view model"
+pending = "TX controller phase/delivery/risk only; observed PTT remains StateStore-only"
+surfaces = ["frontend/src/semantic/RxTxSurface.svelte", "frontend/src/components-v2/panels/TxPanel.svelte", "frontend/src/components-v2/panels/EssentialsPanel.svelte"]
+automated_proof = "existing managed-TX exact ordering/OFF/teardown suites plus read-only selector guard"
+hardware_proof = "MOR-1410 RX-only by default; no TX/TUNE without owner authorization"
+gap_owner = "MOR-1408,MOR-1409"
+
+[[families]]
+id = "meters"
+capabilities = ["meters"]
+intents = []
+command_route = "read-only; no UI write intent"
+observation_route = "existing provider meter stream/acquisition"
+field_paths = ["receiver.main.meters.s_meter", "receiver.main.operator_toggles.dcd", "receiver.sub.meters.s_meter", "receiver.sub.operator_toggles.dcd", "global.meters.comp", "global.meters.vd", "global.meters.id", "global.meters.power", "global.meters.swr", "global.meters.alc"]
+field_path_gaps = []
+public_fields = ["server.compMeter", "server.vdMeter", "server.idMeter", "server.powerMeter", "server.swrMeter", "server.alcMeter", "receiver.sMeter", "receiver.sMeterSqlOpen", "receiver.dcd"]
+ws_property = "state_update meter fields"
+selector = "shared meter view model"
+pending = "none; meter display preferences are local but values are StateStore-only"
+surfaces = ["frontend/src/semantic/MetersSurface.svelte", "frontend/src/components-v2/panels/MeterPanel.svelte", "frontend/src/components-v2/panels/DockMeterPanel.svelte", "frontend/src/components-v2/panels/MetersDockPanel.svelte", "frontend/src/components-v2/panels/lcd/AmberSmeter.svelte", "frontend/src/components-v2/panels/lcd/AmberSparkline.svelte", "frontend/src/components-v2/panels/lcd/AmberTelemetryStrip.svelte"]
+automated_proof = "meter observation -> StateStore -> selector"
+hardware_proof = "MOR-1410 passive representative meters"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "scope_controls_metadata"
+capabilities = ["scope"]
+intents = ["switch_scope_receiver", "set_scope_during_tx", "set_scope_center_type", "set_scope_edge", "set_scope_fixed_edge", "set_scope_vbw", "set_scope_rbw", "set_scope_dual", "set_scope_mode", "set_scope_span", "set_scope_speed", "set_scope_ref", "set_scope_hold"]
+command_route = "existing scope-control command/ACK/readback route"
+observation_route = "existing Icom 27 control observations/acquisition"
+field_paths = ["scope_controls.receiver.main.display.span", "scope_controls.receiver.sub.display.span", "scope_controls.global.display.receiver", "scope_controls.global.display.dual", "scope_controls.global.display.mode", "scope_controls.global.display.span", "scope_controls.global.display.edge", "scope_controls.global.display.hold", "scope_controls.global.display.ref_db", "scope_controls.global.display.speed", "scope_controls.global.display.during_tx", "scope_controls.global.display.center_type", "scope_controls.global.display.vbw_narrow", "scope_controls.global.display.rbw", "scope_controls.global.display.fixed_edge"]
+field_path_gaps = ["overflow is a delivery condition, not a registered radio FieldPath"]
+public_fields = ["server.overflow", "scope.receiver", "scope.dual", "scope.mode", "scope.span", "scope.edge", "scope.hold", "scope.refDb", "scope.speed", "scope.duringTx", "scope.centerType", "scope.vbwNarrow", "scope.rbw", "scope.fixedEdge", "fixed.rangeIndex", "fixed.edge", "fixed.startHz", "fixed.endHz"]
+ws_property = "state_update scopeControls"
+selector = "shared scope-control/geometry selector"
+pending = "scope command lifecycle only"
+surfaces = ["frontend/src/semantic/ScopeControlsSurface.svelte", "frontend/src/semantic/ScopeDisplaySurface.svelte", "frontend/src/components-v2/panels/lcd/AmberScope.svelte"]
+automated_proof = "scope metadata remains StateStore-derived while binary pixels vary independently"
+hardware_proof = "MOR-1410 scope controls and unchanged pixel stream"
+gap_owner = "MOR-1408,MOR-1409"
+
+[[families]]
+id = "spectrum_payload"
+capabilities = ["scope"]
+intents = []
+command_route = "none; gestures emit registered VFO/scope intents"
+observation_route = "existing binary scope stream payload only"
+field_paths = []
+field_path_gaps = []
+public_fields = []
+ws_property = "not StateStore payload; pixels only"
+selector = "renderer pixels plus StateStore-owned metadata selector"
+pending = "renderer-local buffers only"
+surfaces = ["frontend/src/components/spectrum/SpectrumPanel.svelte"]
+automated_proof = "pixel/bounds fixture cannot change radio labels or tuning facts"
+hardware_proof = "MOR-1410 unchanged spectrum stream"
+gap_owner = "MOR-1409"
+
+[[families]]
+id = "audio_payload_and_routing"
+capabilities = ["audio", "mod_input"]
+intents = ["set_acc1_mod_level", "set_usb_mod_level", "set_lan_mod_level", "get_acc1_mod_level", "get_usb_mod_level", "get_lan_mod_level", "get_data_off_mod_input", "set_data_off_mod_input", "get_data1_mod_input", "set_data1_mod_input", "get_data2_mod_input", "set_data2_mod_input", "get_data3_mod_input", "set_data3_mod_input"]
+command_route = "existing modulation/routing command path; frozen audio transport"
+observation_route = "existing provider routing readback; PCM/Opus/FFT remains data-plane"
+field_paths = []
+field_path_gaps = ["dataOff/Data1/Data2/Data3 modulation routing needs canonical registration in MOR-1408"]
+public_fields = ["server.dataOffModInput", "server.data1ModInput", "server.data2ModInput", "server.data3ModInput"]
+ws_property = "state_update routing facts; audio payload remains separate"
+selector = "shared audio-routing view model"
+pending = "routing intent and audio transport lifecycle only"
+surfaces = ["frontend/src/components-v2/panels/AudioRoutingControl.svelte", "frontend/src/components-v2/panels/ModInputTxWarning.svelte", "frontend/src/components-v2/panels/audio-scope/AudioSpectrumCanvas.svelte", "frontend/src/components-v2/panels/audio-scope/AudioSpectrumPanel.svelte", "frontend/src/components-v2/panels/lcd/AmberAfScope.svelte"]
+automated_proof = "routing observation matrix plus unchanged audio golden suites"
+hardware_proof = "MOR-1410 no unintended audio start"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "connection_identity_health"
+capabilities = ["runtime_identity"]
+intents = []
+command_route = "runtime lifecycle, not a radio command"
+observation_route = "existing runtime connection/profile facts"
+field_paths = []
+field_path_gaps = ["connection/radioDetail/radioHealth values are injected outside DEFAULT_FIELD_REGISTRY and need MOR-1408 canonicalization"]
+public_fields = ["connection.rigConnected", "connection.radioReady", "connection.controlConnected", "radioDetail.status", "radioHealth.serverReachable", "radioHealth.radioLink", "radioHealth.readiness", "radioHealth.likelyCause", "radioHealth.sinceMs", "radioHealth.lastError"]
+ws_property = "same versioned state epoch as radio truth"
+selector = "shared connection/readiness selector"
+pending = "WS/audio/scope transport session lifecycle may remain local and distinctly named"
+surfaces = []
+automated_proof = "reconnect/old-generation rejection and single epoch"
+hardware_proof = "MOR-1410 reconnect and clean release"
+gap_owner = "MOR-1408,MOR-1409"
+
+[[families]]
+id = "capabilities_availability"
+capabilities = ["all profile-declared capability tags and ranges"]
+intents = []
+command_route = "static provider/profile contract; no radio command"
+observation_route = "provider generation/profile attachment"
+field_paths = []
+field_path_gaps = ["versioned capability/availability StateStore contract is owned by MOR-1408"]
+public_fields = []
+ws_property = "same versioned state epoch as live values (MOR-1408)"
+selector = "pure capability/availability selector (MOR-1409)"
+pending = "none; capability fetch is not radio truth"
+surfaces = []
+automated_proof = "all rig profiles represented and capability epoch cannot go stale"
+hardware_proof = "MOR-1410 profile identity and unsupported controls"
+gap_owner = "MOR-1408,MOR-1409"
+
+[[families]]
+id = "system_configuration"
+capabilities = ["system_config"]
+intents = ["get_system_date", "set_system_date", "get_system_time", "set_system_time", "get_ref_adjust", "set_ref_adjust", "get_civ_transceive", "set_civ_transceive", "get_civ_output_ant", "set_civ_output_ant", "get_utc_offset", "set_utc_offset"]
+command_route = "existing system/config command route"
+observation_route = "existing explicit readback; not assumed live UI truth unless promoted to StateStore"
+field_paths = []
+field_path_gaps = ["refAdjust lacks a registered canonical path; MOR-1408 owns it"]
+public_fields = ["server.refAdjust"]
+ws_property = "state_update only for promoted live UI facts"
+selector = "settings selector; read response is lifecycle/data unless confirmed into StateStore"
+pending = "request/result lifecycle only"
+surfaces = []
+automated_proof = "all system intents registered and no response patch into radio truth"
+hardware_proof = "not part of automated hardware mutation"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "provider_extension_state"
+capabilities = ["provider_extension"]
+intents = []
+command_route = "provider-neutral typed intents remain authoritative; no frontend provider branch"
+observation_route = "existing provider adapter promotes canonical facts; legacy opaque extension is compatibility-only"
+field_paths = []
+field_path_gaps = ["opaque provider extension state must be replaced by canonical fields in MOR-1408"]
+public_fields = ["server.yaesu"]
+ws_property = "state_update compatibility field until MOR-1408 canonicalizes required facts"
+selector = "no radio-truth selector may depend on opaque provider tokens"
+pending = "none"
+surfaces = []
+automated_proof = "provider profiles map required UI facts to canonical families"
+hardware_proof = "MOR-1410 FTX-1 uses the same canonical matrix"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "tx_band_advanced"
+capabilities = ["tx_band", "tx_monitor", "ssb_tx_bandwidth"]
+intents = ["set_ssb_tx_bw", "get_band_edge_freq", "get_xfc_status", "set_xfc_status", "get_tx_freq_monitor", "set_tx_freq_monitor"]
+command_route = "existing TX-band/control command route"
+observation_route = "existing provider readback/acquisition when supported"
+field_paths = ["global.tx_state.tx_freq_monitor"]
+field_path_gaps = ["ssbTxBandwidth and txBandEdges need canonical registration in MOR-1408"]
+public_fields = ["server.ssbTxBandwidth", "server.txFreqMonitor", "server.txBandEdges"]
+ws_property = "state_update TX-band facts"
+selector = "shared TX auxiliary selector"
+pending = "control lifecycle only"
+surfaces = ["frontend/src/semantic/TxAuxSurface.svelte"]
+automated_proof = "supported/unsupported provider matrix"
+hardware_proof = "MOR-1410 safe readback only"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+
+[[families]]
+id = "diagnostic_speech"
+capabilities = ["diagnostic", "speech"]
+intents = ["send_civ", "speak"]
+command_route = "existing restricted diagnostic/speech route"
+observation_route = "no UI radio truth may be inferred from ACK/result"
+field_paths = []
+field_path_gaps = []
+public_fields = []
+ws_property = "none unless provider emits a registered Observation"
+selector = "none"
+pending = "request lifecycle only"
+surfaces = []
+automated_proof = "ACK isolation and existing command safety tests"
+hardware_proof = "excluded from automated acceptance"
+gap_owner = "MOR-1409"
+
+[[families]]
+id = "composite_presentation_preferences"
+capabilities = ["presentation-only composition and display preferences"]
+intents = []
+command_route = "none; presentation preferences cannot emit radio commands"
+observation_route = "all nested radio facts arrive through registered shared selectors"
+field_paths = []
+field_path_gaps = []
+public_fields = []
+ws_property = "no independent radio state; composite renders child selectors"
+selector = "shared child view models plus local display-only preferences"
+pending = "layout/display preference only"
+surfaces = ["frontend/src/components-v2/panels/lcd/AmberCockpit.svelte", "frontend/src/components-v2/panels/lcd/AmberLcdDisplay.svelte", "frontend/src/components-v2/panels/lcd/LcdContrastControl.svelte", "frontend/src/components-v2/panels/lcd/LcdDisplayModeControl.svelte"]
+automated_proof = "recursive surface inventory and no direct transport/truth writer"
+hardware_proof = "covered by child radio-fact families; no separate hardware mutation"
+gap_owner = "MOR-1409"
+
+# The boundary is structural and finite. Paths below are capabilities/owners,
+# not claims of whole-program JavaScript provenance. New owner paths fail the
+# reachable-base monotonic comparison.
+
+[authority_boundaries]
+state_store_module = "frontend/src/lib/stores/radio.svelte.ts"
+ws_writer_owner = "frontend/src/lib/transport/ws-client.ts"
+read_only_seams = [
+  "frontend/src/lib/runtime/adapters",
+  "frontend/src/lib/runtime/props",
+  "frontend/src/semantic/radio-view-model.ts",
+  "frontend/src/lib/radio/mode-filter-memory.ts",
+]
+intent_facades = [
+  "frontend/src/components-v2/wiring/command-bus.ts",
+  "frontend/src/lib/runtime/commands",
+]
+direct_origin_owners = [
+  "frontend/src/components/shared/Toast.svelte",
+  "frontend/src/lib/local-extensions/host-api.ts",
+]
+persistence_owner_roots = [
+  "frontend/src/presentation/workspace",
+  "frontend/src/lib/i18n",
+  "frontend/src/lib/stores",
+  "frontend/src/lib/radio",
+]
+sample_plane_owners = [
+  "frontend/src/components/spectrum",
+  "frontend/src/lib/audio",
+  "frontend/src/lib/runtime/adapters/scope-adapter.ts",
+]
+python_acquisition_owners = [
+  "src/rigplane/cli/__init__.py",
+  "src/rigplane/rigctld/handler.py",
+  "src/rigplane/rigctld/poller.py",
+  "src/rigplane/runtime/_civ_rx.py",
+  "src/rigplane/runtime/radio_initial_state.py",
+  "src/rigplane/web/handlers/control.py",
+  "src/rigplane/web/radio_poller.py",
+  "src/rigplane/web/server.py",
+]
+stop_rule = "A bypass blocks only when production-valid code crosses a declared boundary or finite source-to-sink rule in a plausible new equivalence class; deeper carrier spelling alone is non-blocking."
+
+[[guards]]
+id = "presentation_authority_capability"
+kind = "legacyPresentationAuthority"
+owner = "MOR-1409"
+reason = "Presentation consumes read-only view models and typed intent facades; exact legacy edges may only shrink"
+exceptions = [
+  { path = "src/components-v2/layout/StatusBar.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/ScopeSettingsPopover.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/SpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/SpectrumToolbar.svelte", count = 1, owner = "MOR-1409" },
+]
+
+[[guards]]
+id = "live_writer_capability"
+kind = "legacyWriterOwners"
+owner = "MOR-1409"
+reason = "Only the WS reducer is the final owner; exact migration debt cannot expand"
+exceptions = [
+  { path = "src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/wiring/command-bus.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/wiring/state-adapter.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/SpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/media/media-session.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/adapters/mod-input-auto.svelte.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/commands/panel-commands.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/frontend-runtime.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/props/panel-props.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/system-controller.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/stores/commands.svelte.ts", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/transport/ws-client.ts", count = 1, owner = "MOR-1409" },
+]
+
+[[guards]]
+id = "recurring_control_acquisition"
+kind = "acquisitionOwners"
+owner = "MOR-1407"
+reason = "Recurring radio reads/writes stay in declared acquisition owners"
+exceptions = [
+  { path = "src/components-v2/wiring/command-bus.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/runtime/commands/panel-commands.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/runtime/frontend-runtime.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/runtime/scope-controller.svelte.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/runtime/tx-controller/browser-dependencies.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/stores/connection.svelte.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/transport/http-client.ts", count = 1, owner = "MOR-1407" },
+  { path = "src/lib/transport/ws-client.ts", count = 1, owner = "MOR-1407" },
+]
+
+[[guards]]
+id = "scope_metadata_owner"
+kind = "scopeMetadataOwners"
+owner = "MOR-1409"
+reason = "Pixels/samples are payload; radio metadata remains in declared ingress/projection owners"
+exceptions = [
+  { path = "src/components-v2/panels/audio-scope/AudioSpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/panels/lcd/AmberCockpit.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components-v2/panels/lcd/AmberScope.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/components/spectrum/SpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
+  { path = "src/lib/runtime/adapters/scope-adapter.ts", count = 1, owner = "MOR-1409" },
+]

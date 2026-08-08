@@ -36,6 +36,21 @@ async function restrictedImportHits(code: string, filePath: string): Promise<num
   return result.messages.filter((m) => RESTRICTED_IMPORT_RULES.has(m.ruleId ?? '')).length;
 }
 
+const RADIO_AUTHORITY_RULES = new Set([
+  'radio-authority/structural-boundary',
+  'radio-authority/authority-sink',
+  'radio-authority/scope-metadata',
+  'radio-authority/recurring-control',
+]);
+
+async function authorityRuleIds(code: string, filePath: string): Promise<string[]> {
+  const eslint = new ESLint({ cwd: FRONTEND_ROOT });
+  const [result] = await eslint.lintText(code, { filePath });
+  return result.messages
+    .map((message) => message.ruleId ?? '')
+    .filter((ruleId) => RADIO_AUTHORITY_RULES.has(ruleId));
+}
+
 describe('v3 package boundaries (MOR-1061)', () => {
   it('rejects semantic importing skins', async () => {
     const hits = await restrictedImportHits(
@@ -484,5 +499,245 @@ describe('v3 package boundaries (MOR-1061)', () => {
       'src/skins/sdr-test/SdrVfoScreen.svelte',
     );
     expect(hits).toBe(0);
+  });
+});
+
+describe('radio authority boundary (MOR-1406)', () => {
+  it('rejects the first hop of a two-file writer facade', async () => {
+    const facade = await authorityRuleIds(
+      `export { setRadioState as commit } from '$lib/stores/radio.svelte';`,
+      'src/lib/features/writer-facade.ts',
+    );
+    const consumer = await authorityRuleIds(
+      `import { commit } from '$lib/features/writer-facade';\ncommit(snapshot);`,
+      'src/semantic/WriterFacadeConsumer.ts',
+    );
+    expect(facade).toContain('radio-authority/structural-boundary');
+    expect(consumer).toEqual([]);
+  });
+
+  it('rejects the first hop of a two-file wildcard transport facade', async () => {
+    const facade = await authorityRuleIds(
+      `export * from '$lib/transport/ws-client';`,
+      'src/lib/features/transport-facade.ts',
+    );
+    const consumer = await authorityRuleIds(
+      `import { sendCommand } from '$lib/features/transport-facade';\nsendCommand('set_freq', {freq: 7100000});`,
+      'src/components-v2/controls/TransportFacadeConsumer.svelte',
+    );
+    expect(facade).toContain('radio-authority/structural-boundary');
+    expect(consumer).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: 'writer capability direct import and call',
+      rule: 'radio-authority/authority-sink',
+      path: 'src/semantic/DirectWriter.ts',
+      code: `import { setRadioState } from '$lib/stores/radio.svelte';\nsetRadioState(snapshot);`,
+    },
+    {
+      name: 'writer capability alias re-export',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/semantic/WriterExport.ts',
+      code: `export { setRadioState as commit } from '$lib/stores/radio.svelte';`,
+    },
+    {
+      name: 'transport wildcard re-export from presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/presentation/layouts/TransportExport.ts',
+      code: `export * from '$lib/transport/ws-client';`,
+    },
+    {
+      name: 'constant dynamic import of transport from presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/semantic/DynamicTransport.ts',
+      code: `const transport = import('$lib/transport/ws-client');`,
+    },
+    {
+      name: 'ACK value written to competing live writer',
+      rule: 'radio-authority/authority-sink',
+      path: 'src/lib/features/ack-writer.ts',
+      code: `import { setRadioState as commit } from '$lib/stores/radio.svelte';\ncommit(ack.state);`,
+    },
+    {
+      name: 'helper-returned object enters module live store',
+      rule: 'radio-authority/authority-sink',
+      path: 'src/lib/features/object-live-store.svelte.ts',
+      code: `import { radio } from '$lib/stores/radio.svelte';\nfunction box<T>(value:T){return {nested:{value}}}\nlet live=$state(box(radio.current).nested.value);`,
+    },
+    {
+      name: 'helper-returned array enters module live store',
+      rule: 'radio-authority/authority-sink',
+      path: 'src/lib/features/array-live-store.svelte.ts',
+      code: `import { radio } from '$lib/stores/radio.svelte';\nfunction box<T>(value:T){return [[value]]}\nlet live=$state(box(radio.current)[0][0]);`,
+    },
+    {
+      name: 'nullish observed value enters module live store',
+      rule: 'radio-authority/authority-sink',
+      path: 'src/lib/features/nullish-live-store.svelte.ts',
+      code: `import { radio } from '$lib/stores/radio.svelte';\nlet live=$state(radio.current ?? radio.current);`,
+    },
+    {
+      name: 'observed radio value persisted outside an owner',
+      rule: 'radio-authority/authority-sink',
+      path: 'src/lib/features/radio-cache.ts',
+      code: `import { radio } from '$lib/stores/radio.svelte';\nlocalStorage.setItem('mode', radio.current?.main?.mode ?? '');`,
+    },
+    {
+      name: 'literal fallback replaces observed selector value',
+      rule: 'radio-authority/authority-sink',
+      path: 'src/lib/runtime/adapters/unsafe-default.ts',
+      code: `import { radio } from '$lib/stores/radio.svelte';\nexport const mode = radio.current?.main?.mode ?? 'USB';`,
+    },
+    {
+      name: 'ScopeFrame metadata becomes browser authority',
+      rule: 'radio-authority/scope-metadata',
+      path: 'src/components/spectrum/UnsafeFrame.ts',
+      code: `import type { ScopeFrame } from '$lib/runtime/adapters/scope-adapter';\nexport function center(frame: ScopeFrame){ return frame.centerHz; }`,
+    },
+    {
+      name: 'timer performs radio read outside acquisition owner',
+      rule: 'radio-authority/recurring-control',
+      path: 'src/lib/features/radio-timer.ts',
+      code: `import { getRadioState } from '$lib/stores/radio.svelte';\nsetInterval(() => getRadioState(), 100);`,
+    },
+    {
+      name: 'timer wrapper performs radio read outside acquisition owner',
+      rule: 'radio-authority/recurring-control',
+      path: 'src/lib/features/wrapped-radio-timer.ts',
+      code: `import { getRadioState } from '$lib/stores/radio.svelte';\nfunction tick(){ getRadioState(); }\nsetTimeout(tick, 100);`,
+    },
+    {
+      name: 'component constructs raw command through transport',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/components-v2/controls/RawCommand.svelte',
+      code: `<script lang="ts">import { sendCommand } from '$lib/transport/ws-client'; sendCommand('set_freq', {freq: 7100000});</script>`,
+    },
+    {
+      name: 'named transport facade outside presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/lib/features/named-transport-facade.ts',
+      code: `export { sendCommand as dispatch } from '$lib/transport/ws-client';`,
+    },
+    {
+      name: 'namespace transport facade outside presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/lib/features/namespace-transport-facade.ts',
+      code: `export * as transport from '$lib/transport/ws-client';`,
+    },
+    {
+      name: 'namespace writer import outside presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/lib/features/namespace-writer-facade.ts',
+      code: `import * as radioStore from '$lib/stores/radio.svelte';\nexport { radioStore };`,
+    },
+    {
+      name: 'local string dynamic target in presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/semantic/LocalDynamicTransport.ts',
+      code: `const modulePath='$lib/transport/ws-client';\nvoid import(modulePath);`,
+    },
+    {
+      name: 'computed dynamic target in presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/semantic/ComputedDynamicTransport.ts',
+      code: `const leaf='ws-client';\nvoid import('$lib/transport/' + leaf);`,
+    },
+    {
+      name: 'local string require target in presentation',
+      rule: 'radio-authority/structural-boundary',
+      path: 'src/semantic/LocalRequireTransport.ts',
+      code: `declare const require: (path:string)=>unknown;\nconst modulePath='$lib/transport/ws-client';\nrequire(modulePath);`,
+    },
+    {
+      name: 'actual authority writer imported under an alias',
+      rule: 'radio-authority/authority-sink',
+      path: 'src/lib/features/aliased-writer.ts',
+      code: `import { setRadioState as localWriter } from '$lib/stores/radio.svelte';\nlocalWriter(snapshot);`,
+    },
+  ])('rejects $name with the exact bounded rule', async ({ rule, path: filePath, code }) => {
+    const ids = await authorityRuleIds(code, filePath);
+    expect(ids).toContain(rule);
+  });
+
+  it.each([
+    {
+      name: 'sanctioned WS reducer',
+      path: 'src/lib/transport/ws-client.ts',
+      code: `import { setRadioState } from '../stores/radio.svelte';\nsetRadioState(snapshot);`,
+    },
+    {
+      name: 'typed intent facade',
+      path: 'src/components-v2/controls/IntentConsumer.svelte',
+      code: `<script lang="ts">import type { VfoProps } from '$lib/runtime/props/vfo-props'; export let props: VfoProps; props.onTune?.(7100000);</script>`,
+    },
+    {
+      name: 'pending and error lifecycle store',
+      path: 'src/lib/features/pending.svelte.ts',
+      code: `let pending=$state({requested: 7100000, error: null as string|null});`,
+    },
+    {
+      name: 'theme and layout persistence',
+      path: 'src/presentation/workspace/preferences.ts',
+      code: `const theme='dark'; localStorage.setItem('theme', theme); setTimeout(() => applyLayout(), 10);`,
+    },
+    {
+      name: 'user memory catalog',
+      path: 'src/lib/memory/user-memory.ts',
+      code: `const channels=[{freqHz:7100000,name:'Home'}]; localStorage.setItem('memories', JSON.stringify(channels));`,
+    },
+    {
+      name: 'ScopeFrame pixel payload',
+      path: 'src/components/spectrum/Pixels.ts',
+      code: `import type { ScopeFrame } from '$lib/runtime/adapters/scope-adapter';\nexport function pixels(frame: ScopeFrame){ return frame.pixels; }`,
+    },
+    {
+      name: 'opaque ScopeFrame envelope',
+      path: 'src/components/spectrum/Opaque.ts',
+      code: `import type { ScopeFrame } from '$lib/runtime/adapters/scope-adapter';\ntype Envelope<T>={value:T}; export function opaque(value: Envelope<ScopeFrame>){ return value; }`,
+    },
+    {
+      name: 'visual animation timer',
+      path: 'src/primitives/Animation.ts',
+      code: `setInterval(() => draw(nextPixel()), 16);`,
+    },
+    {
+      name: 'local writer and builtin shadows',
+      path: 'src/lib/features/shadows.ts',
+      code: `const setRadioState=(value:number)=>value; const eval=(value:string)=>value; const Reflect={apply:(v:number)=>v}; setRadioState(1); eval('safe'); Reflect.apply(1);`,
+    },
+    {
+      name: 'opaque domain store without authority source',
+      path: 'src/lib/features/opaque-store.svelte.ts',
+      code: `declare const envelope: {value: unknown}; let local=$state(envelope.value);`,
+    },
+    {
+      name: 'unrelated availability fallback',
+      path: 'src/semantic/Availability.ts',
+      code: `declare const label: string|undefined; export const shown=label ?? 'Unavailable';`,
+    },
+    {
+      name: 'declared read-only StateStore seam',
+      path: 'src/lib/runtime/adapters/read-only-radio.ts',
+      code: `import { getRadioState } from '$lib/stores/radio.svelte';\nexport const current = () => getRadioState();`,
+    },
+    {
+      name: 'declared typed intent transport seam',
+      path: 'src/lib/runtime/commands/tune-intent.ts',
+      code: `import { sendCommand } from '$lib/transport/ws-client';\nexport const tune = (freq:number) => sendCommand('set_freq', {freq});`,
+    },
+    {
+      name: 'literal presentation loader outside radio authority',
+      path: 'src/presentation/layouts/LazySkin.ts',
+      code: `export const load = () => import('../../skins/lcd-scope/LcdScopeSkin.svelte');`,
+    },
+    {
+      name: 'type-only transport contract outside an owner',
+      path: 'src/lib/features/transport-contract.ts',
+      code: `import type { ConnectionState } from '$lib/transport/ws-client';\nexport type State = ConnectionState;`,
+    },
+  ])('allows $name outside the authority boundary', async ({ path: filePath, code }) => {
+    expect(await authorityRuleIds(code, filePath)).toEqual([]);
   });
 });
