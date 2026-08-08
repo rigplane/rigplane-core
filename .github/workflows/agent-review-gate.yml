@@ -39,6 +39,8 @@ jobs:
               repo,
               pull_number: number,
             });
+            core.setOutput('number', String(number));
+            core.setOutput('head_sha', pull.head.sha);
             const {data: commit} = await github.rest.repos.getCommit({
               owner,
               repo,
@@ -48,11 +50,17 @@ jobs:
               commit.commit.committer?.date ??
               commit.commit.author?.date ??
               pull.updated_at;
-            core.setOutput('number', String(number));
-            core.setOutput('head_sha', pull.head.sha);
             core.setOutput('committed_at', committedAt);
 
+      - name: Check out the workflow revision
+        if: always() && steps.pr.outputs.head_sha != ''
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
       - name: Update required Agent Review Gate status
+        if: always() && steps.pr.outputs.head_sha != ''
         uses: actions/github-script@v7
         with:
           script: |
@@ -60,29 +68,55 @@ jobs:
             const head_sha = '${{ steps.pr.outputs.head_sha }}';
             const committed_at = new Date('${{ steps.pr.outputs.committed_at }}');
             const {owner, repo} = context.repo;
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number: pull_number,
-              per_page: 100,
-            });
-            const pass = comments.some((comment) =>
-              !comment.minimized &&
-              typeof comment.body === 'string' &&
-              comment.body.includes('Agent Review: PASS') &&
-              new Date(comment.updated_at ?? comment.created_at) >= committed_at
-            );
-            await github.rest.repos.createCommitStatus({
-              owner,
-              repo,
-              sha: head_sha,
-              state: pass ? 'success' : 'failure',
-              context: 'Agent Review Gate',
-              description: pass
-                ? 'Agent Review PASS comment found for the current PR head.'
-                : 'Missing Agent Review PASS comment for the current PR head.',
-              target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
-            });
-            if (!pass) {
-              core.notice('Missing required PR comment containing "Agent Review: PASS" posted or edited after the current PR head commit.');
+            let result = {state: 'failure', passCount: 0, blockedCount: 0, malformedBlockedCount: 0};
+            let evaluationError = null;
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: pull_number,
+                per_page: 100,
+              });
+              const parserPath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/agent-review-gate.js`;
+              const {evaluateReviewGate} = require(parserPath);
+              result = evaluateReviewGate({
+                comments,
+                headSha: head_sha,
+                committedAt: committed_at,
+              });
+            } catch (error) {
+              evaluationError = error;
+              const message = error instanceof Error ? error.message : String(error);
+              core.error(`Agent Review Gate evaluation failed closed: ${message}`);
+            }
+            let status;
+            try {
+              const parserPath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/agent-review-gate.js`;
+              const {buildCommitStatus} = require(parserPath);
+              status = buildCommitStatus({
+                owner,
+                repo,
+                headSha: head_sha,
+                targetUrl: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+                result,
+                evaluationFailed: evaluationError !== null,
+              });
+            } catch (error) {
+              evaluationError ??= error;
+              status = {
+                owner,
+                repo,
+                sha: head_sha,
+                state: 'failure',
+                context: 'Agent Review Gate',
+                description: 'Agent Review Gate evaluation failed closed.',
+                target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              };
+            }
+            await github.rest.repos.createCommitStatus(status);
+            if (result.state !== 'success') {
+              core.notice(`Agent Review Gate denied: ${result.passCount} eligible PASS, ${result.blockedCount} binding BLOCKED, ${result.malformedBlockedCount} malformed BLOCKED.`);
+            }
+            if (evaluationError !== null) {
+              core.setFailed('Agent Review Gate evaluation failed; a failure status was published.');
             }
