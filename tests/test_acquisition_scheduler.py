@@ -8,6 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
@@ -2253,3 +2255,96 @@ def test_ic7610_real_profile_tuner_pollable_tone_absent() -> None:
         if (cmd, sub) in {(0x16, 0x42), (0x16, 0x43), (0x1B, 0x00), (0x1B, 0x01)}
     }
     assert tone_tsql_cmds == set()
+
+
+@pytest.mark.asyncio
+async def test_ic7300_route_uses_plain_main_reads_and_fails_closed_for_sub() -> None:
+    """A no-cmd29 profile must never wrap MAIN reads or invent SUB routing."""
+
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(
+        send_query,
+        supports_cmd29=lambda _command, _sub: False,
+    )
+    main_af = FieldPath.receiver("main", "operator_controls", "af_level")
+    sub_af = FieldPath.receiver("sub", "operator_controls", "af_level")
+    scheduler = AcquisitionScheduler(profile=_profile([main_af, sub_af]))
+    requests = scheduler.due_requests()
+
+    results = [
+        await executor.execute(request, already_sent_paths=frozenset())
+        for request in requests
+    ]
+
+    assert sent == [(0x14, 0x01, None)]
+    assert {path for result in results for path in result.sent_paths} == {main_af}
+    assert {path for result in results for path in result.failed_paths} == {sub_af}
+    assert all(
+        result.failure_reason in {"", "no_civ_receiver_route"} for result in results
+    )
+
+
+def test_ic7300_relative_vfo_paths_use_selected_unselected_25_26_selectors() -> None:
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        del command, sub, receiver
+
+    executor = IcomCivAcquisitionExecutor(
+        send_query,
+        supports_cmd29=lambda _command, _sub: False,
+    )
+
+    assert executor.query_for_path(
+        FieldPath.active("main", "freq_mode", "freq_hz")
+    ) == (0x25, None, 0)
+    assert executor.query_for_path(
+        FieldPath.unselected("main", "freq_mode", "freq_hz")
+    ) == (0x25, None, 1)
+    assert executor.query_for_path(FieldPath.active("main", "freq_mode", "mode")) == (
+        0x26,
+        None,
+        0,
+    )
+    assert executor.query_for_path(
+        FieldPath.unselected("main", "freq_mode", "mode")
+    ) == (0x26, None, 1)
+
+
+@pytest.mark.asyncio
+async def test_ic7300_executor_preserves_dedupe_for_plain_profile_route() -> None:
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    power = FieldPath.global_("operator_controls", "power_level")
+    compressor = FieldPath.global_("tx_state", "compressor_on")
+    scheduler = AcquisitionScheduler(profile=_profile([power, compressor]))
+    executor = IcomCivAcquisitionExecutor(
+        send_query,
+        supports_cmd29=lambda _command, _sub: False,
+    )
+
+    for request in scheduler.due_requests():
+        result = await executor.execute(
+            request,
+            already_sent_paths=frozenset({power}),
+        )
+        assert power not in result.sent_paths
+
+    assert sent == [(0x16, 0x44, None)]

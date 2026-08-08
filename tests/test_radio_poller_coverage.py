@@ -376,9 +376,9 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
         wait_dispatch=False,
     )
     radio.send_civ.assert_any_await(
-        0x29,
-        sub=None,
-        data=b"\x00\x15\x02",
+        0x15,
+        sub=0x02,
+        data=b"",
         wait_response=False,
         priority=Priority.BACKGROUND,
         wait_dispatch=False,
@@ -414,6 +414,65 @@ async def test_xiegu_civ_scheduler_due_request_uses_civ_executor() -> None:
         priority=Priority.BACKGROUND,
         wait_dispatch=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_ic7300_profile_scheduler_emits_only_passive_exact_wire_reads() -> None:
+    """IC-7300 joins the existing poller lane without cmd29 or another service."""
+
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    assert poller._acquisition_scheduler is scheduler  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_any_await(
+        0x25,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x25,
+        sub=None,
+        data=b"\x01",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x26,
+        sub=None,
+        data=b"\x00",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    radio.send_civ.assert_any_await(
+        0x26,
+        sub=None,
+        data=b"\x01",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+    for command, sub in ((0x14, 0x0A), (0x16, 0x44), (0x14, 0x0E)):
+        radio.send_civ.assert_any_await(
+            command,
+            sub=sub,
+            data=b"",
+            wait_response=False,
+            priority=Priority.BACKGROUND,
+            wait_dispatch=False,
+        )
+    assert all(call_.args[0] != 0x29 for call_ in radio.send_civ.await_args_list)
+    assert scheduler.pending_requests()
 
 
 @pytest.mark.asyncio
@@ -1294,7 +1353,7 @@ async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None
 
 @pytest.mark.parametrize(
     ("model", "expected_seconds"),
-    (("IC-7300", 31.0), ("IC-705", 11.1)),
+    (("IC-7300", 8.0), ("IC-705", 11.1)),
 )
 def test_relative_vfo_retention_window_follows_provider_poll_cadence(
     model: str,
@@ -1305,7 +1364,13 @@ def test_relative_vfo_retention_window_follows_provider_poll_cadence(
 
     poller = RadioPoller(radio, CommandQueue())
 
-    expected_rotation = 2 * len(poller._STATE_QUERIES) * poller._fast_interval
+    acquisition = radio.profile.state_acquisition
+    expected_rotation = (
+        acquisition.default_policy.cadence_seconds
+        if acquisition is not None
+        else 2 * len(poller._STATE_QUERIES) * poller._fast_interval
+    )
+    assert expected_rotation is not None
     assert poller._relative_vfo_retention_max_age == pytest.approx(
         2 * expected_rotation + 5.0
     )
