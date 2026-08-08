@@ -277,6 +277,9 @@ function analyzeFrontend(
     ) {
       current = current.expression;
     }
+    while (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      current = unwrap(current.right);
+    }
     return current;
   }
 
@@ -284,6 +287,7 @@ function analyzeFrontend(
     const current = unwrap(expression);
     if (ts.isPropertyAccessExpression(current)) return current.name.text;
     if (ts.isElementAccessExpression(current)) {
+      if (ts.isNumericLiteral(current.argumentExpression)) return current.argumentExpression.text;
       const values = literalStrings(current.argumentExpression);
       return values.size === 1 ? [...values][0] : undefined;
     }
@@ -293,6 +297,13 @@ function analyzeFrontend(
 
   function directSymbol(expression: ts.Expression): ts.Symbol | undefined {
     const current = unwrap(expression);
+    if (
+      ts.isIdentifier(current) &&
+      ts.isShorthandPropertyAssignment(current.parent) &&
+      current.parent.name === current
+    ) {
+      return checker.getShorthandAssignmentValueSymbol(current.parent) ?? checker.getSymbolAtLocation(current);
+    }
     if (ts.isPropertyAccessExpression(current)) return checker.getSymbolAtLocation(current.name);
     if (ts.isElementAccessExpression(current)) {
       const name = accessName(current);
@@ -405,6 +416,75 @@ function analyzeFrontend(
 
   const returnParameterIndexes = new Map<ts.FunctionLikeDeclaration, Set<number>>();
   for (const declaration of allFunctions) returnParameterIndexes.set(declaration, new Set());
+
+  function returnedParameterIndexes(
+    expression: ts.Expression,
+    declaration: ts.FunctionLikeDeclaration,
+    seen = new Set<ts.Symbol>(),
+  ): Set<number> {
+    const current = unwrap(expression);
+    if (ts.isConditionalExpression(current)) {
+      return new Set([
+        ...returnedParameterIndexes(current.whenTrue, declaration, new Set(seen)),
+        ...returnedParameterIndexes(current.whenFalse, declaration, new Set(seen)),
+      ]);
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const name = accessName(current);
+      if (name) {
+        const projected = expressionsAtPath(current.expression, [name]);
+        if (projected.length) {
+          return new Set(projected.flatMap((value) => [
+            ...returnedParameterIndexes(value, declaration, new Set(seen)),
+          ]));
+        }
+      }
+      return new Set();
+    }
+    if (ts.isCallExpression(current)) {
+      const indexes = new Set<number>();
+      for (const target of functionLikeDeclarations(current.expression)) {
+        for (const targetIndex of returnParameterIndexes.get(target) ?? []) {
+          const argument = current.arguments[targetIndex];
+          if (!argument) continue;
+          for (const index of returnedParameterIndexes(argument, declaration, new Set(seen))) {
+            indexes.add(index);
+          }
+        }
+      }
+      return indexes;
+    }
+    if (!ts.isIdentifier(current)) return new Set();
+    const symbol = directSymbol(current);
+    if (!symbol || seen.has(symbol)) return new Set();
+    const direct = declaration.parameters.findIndex(
+      (parameter) => checker.getSymbolAtLocation(parameter.name) === symbol,
+    );
+    if (direct >= 0) return new Set([direct]);
+    const nestedSeen = new Set(seen).add(symbol);
+    const indexes = new Set<number>();
+    for (const symbolDeclaration of symbol.declarations ?? []) {
+      if (ts.isVariableDeclaration(symbolDeclaration) && symbolDeclaration.initializer) {
+        for (const index of returnedParameterIndexes(symbolDeclaration.initializer, declaration, new Set(nestedSeen))) {
+          indexes.add(index);
+        }
+      }
+      if (ts.isBindingElement(symbolDeclaration)) {
+        for (const source of bindingSources(symbolDeclaration)) {
+          for (const index of returnedParameterIndexes(source, declaration, new Set(nestedSeen))) {
+            indexes.add(index);
+          }
+        }
+      }
+    }
+    for (const source of assignedSources.get(symbolKey(symbol)) ?? []) {
+      for (const index of returnedParameterIndexes(source, declaration, new Set(nestedSeen))) {
+        indexes.add(index);
+      }
+    }
+    return indexes;
+  }
+
   let returnChanged = true;
   while (returnChanged) {
     returnChanged = false;
@@ -421,28 +501,10 @@ function analyzeFrontend(
         collectReturns(declaration.body);
       }
       for (const returned of returns) {
-        const current = unwrap(returned);
-        if (ts.isIdentifier(current)) {
-          const returnedSymbol = directSymbol(current);
-          declaration.parameters.forEach((parameter, index) => {
-            if (returnedSymbol && returnedSymbol === checker.getSymbolAtLocation(parameter.name) && !indexes.has(index)) {
-              indexes.add(index);
-              returnChanged = true;
-            }
-          });
-        }
-        if (ts.isCallExpression(current)) {
-          for (const target of functionLikeDeclarations(current.expression)) {
-            for (const targetIndex of returnParameterIndexes.get(target) ?? []) {
-              const argument = current.arguments[targetIndex];
-              const argumentSymbol = argument && directSymbol(argument);
-              declaration.parameters.forEach((parameter, index) => {
-                if (argumentSymbol && argumentSymbol === checker.getSymbolAtLocation(parameter.name) && !indexes.has(index)) {
-                  indexes.add(index);
-                  returnChanged = true;
-                }
-              });
-            }
+        for (const index of returnedParameterIndexes(returned, declaration)) {
+          if (!indexes.has(index)) {
+            indexes.add(index);
+            returnChanged = true;
           }
         }
       }
@@ -1018,26 +1080,31 @@ function analyzeFrontend(
     return touches;
   }
 
-  function restrictedConstruct(expression: ts.Expression, seen = new Set<ts.Symbol>()): string | undefined {
+  type RestrictedConstruct = { name: string; origin: ts.Node };
+
+  function restrictedConstruct(
+    expression: ts.Expression,
+    seen = new Set<ts.Symbol>(),
+  ): RestrictedConstruct | undefined {
     const current = unwrap(expression);
     if (ts.isCallExpression(current)) {
       const callee = unwrap(current.expression);
-      if (
-        (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) &&
-        accessName(callee) === 'apply' && globalBuiltinName(callee.expression, new Set(['Reflect'])) === 'Reflect'
-      ) return current.arguments[0] ? restrictedConstruct(current.arguments[0], seen) : undefined;
+      if (isReflectApplyCallable(callee)) {
+        return current.arguments[0] ? restrictedConstruct(current.arguments[0], seen) : undefined;
+      }
       return restrictedConstruct(callee, seen);
     }
     if (ts.isNewExpression(current)) return restrictedConstruct(current.expression, seen);
     if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
       const member = accessName(current);
-      if (member === 'revocable' && restrictedConstruct(current.expression, seen) === 'Proxy') return 'Proxy';
+      const receiverRestricted = restrictedConstruct(current.expression, seen);
+      if (member === 'revocable' && receiverRestricted?.name === 'Proxy') return receiverRestricted;
       if (member === 'call' || member === 'bind' || member === 'apply') {
         return restrictedConstruct(current.expression, seen);
       }
     }
     const direct = globalBuiltinName(current, RESTRICTED_CONSTRUCTS);
-    if (direct) return direct;
+    if (direct) return { name: direct, origin: current };
     const symbol = directSymbol(current);
     if (symbol && !seen.has(symbol)) {
       const nestedSeen = new Set(seen).add(symbol);
@@ -1059,9 +1126,38 @@ function analyzeFrontend(
         (origin.declarations ?? []).every(
           (declaration) => !project.displayPath.has(declaration.getSourceFile().fileName),
         )
-      ) return origin.getName();
+      ) return { name: origin.getName(), origin: current };
     }
     return undefined;
+  }
+
+  function isReflectApplyCallable(expression: ts.Expression, seen = new Set<ts.Symbol>()): boolean {
+    const current = unwrap(expression);
+    if (
+      (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) &&
+      accessName(current) === 'apply' &&
+      globalBuiltinName(current.expression, new Set(['Reflect'])) === 'Reflect'
+    ) return true;
+    const symbol = directSymbol(current);
+    if (!symbol || seen.has(symbol)) return false;
+    const nestedSeen = new Set(seen).add(symbol);
+    for (const declaration of symbol.declarations ?? []) {
+      if (
+        ts.isVariableDeclaration(declaration) && declaration.initializer &&
+        isReflectApplyCallable(declaration.initializer, nestedSeen)
+      ) return true;
+      if (ts.isBindingElement(declaration)) {
+        const initializer = bindingInitializer(declaration);
+        if (
+          initializer &&
+          bindingPropertyNames(declaration).includes('apply') &&
+          globalBuiltinName(initializer, new Set(['Reflect'])) === 'Reflect'
+        ) return true;
+      }
+    }
+    return (assignedSources.get(symbolKey(symbol)) ?? []).some(
+      (source) => isReflectApplyCallable(source, nestedSeen),
+    );
   }
 
   function globalBuiltinName(expression: ts.Expression, names: Set<string>): string | undefined {
@@ -1167,6 +1263,7 @@ function analyzeFrontend(
   }
 
   const frameAccesses = new Map<string, Array<{ source: ts.SourceFile; name: string; base: ts.Expression }>>();
+  const restrictedErrorKeys = new Set<string>();
 
   for (const source of sourceFiles) {
     const transportInvolved = sourceTouchesTransport(source);
@@ -1205,9 +1302,22 @@ function analyzeFrontend(
           restricted &&
           (isAuthoritySensitive(source) || transportInvolved || node.arguments.some(expressionTouchesAuthority))
         ) {
-          project.errors.push(
-            `restricted ${restricted} construct in ${project.displayPath.get(source.fileName)}`,
-          );
+          const originSource = restricted.origin.getSourceFile();
+          const originPosition = originSource.getLineAndCharacterOfPosition(restricted.origin.getStart(originSource));
+          const key = [
+            'restricted',
+            project.displayPath.get(source.fileName) ?? source.fileName,
+            project.displayPath.get(originSource.fileName) ?? originSource.fileName,
+            originPosition.line,
+            originPosition.character,
+            restricted.name,
+          ].join(':');
+          if (!restrictedErrorKeys.has(key)) {
+            restrictedErrorKeys.add(key);
+            project.errors.push(
+              `restricted ${restricted.name} construct in ${project.displayPath.get(source.fileName)}`,
+            );
+          }
         }
 
         if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {

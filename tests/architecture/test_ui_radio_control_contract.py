@@ -965,7 +965,7 @@ def test_restricted_authority_constructs_and_imports_fail_loud() -> None:
     scenarios = {
         "eval": {
             "frontend/src/semantic/EvalSurface.svelte": (
-                "<script>declare const source: string; eval(source);</script>"
+                "<script lang='ts'>declare const source: string; eval(source);</script>"
             ),
         },
         "function_call": {
@@ -1134,6 +1134,49 @@ def test_fixed_point_store_and_scopeframe_provenance_variants_are_rejected() -> 
                 "export function labels(frame: Wrapped) { return [frame.mode, frame.receiver]; }\n"
             )
         },
+        "local_alias_return": {
+            "frontend/src/lib/stores/local-alias-return.svelte.ts": (
+                "function identity<T>(value: T): T { const result = value; return result; }\n"
+                "export let live = $state({} as Record<string, number>);\n"
+                "identity(live).rfPower = 50;\n"
+            )
+        },
+        "conditional_return": {
+            "frontend/src/lib/stores/conditional-return.svelte.ts": (
+                "function identity<T>(value: T, flag: boolean): T { return flag ? value : value; }\n"
+                "export let live = $state({} as Record<string, string>);\n"
+                "identity(live, true).mode = 'USB';\n"
+            )
+        },
+        "object_projection_return": {
+            "frontend/src/lib/stores/object-projection-return.svelte.ts": (
+                "function identity<T>(value: T): T { return { value }.value; }\n"
+                "export let live = $state({} as Record<string, number>);\n"
+                "identity(live).rfPower = 50;\n"
+            )
+        },
+        "arrow_alias_return": {
+            "frontend/src/lib/stores/arrow-alias-return.svelte.ts": (
+                "const identity = <T>(value: T): T => { const alias = value; return alias; };\n"
+                "export let live = $state({} as Record<string, string>);\n"
+                "identity(live).mode = 'USB';\n"
+            )
+        },
+        "array_projection_return": {
+            "frontend/src/lib/stores/array-projection-return.svelte.ts": (
+                "function identity<T>(value: T): T { return [value][0]; }\n"
+                "export let live = $state({} as Record<string, number>);\n"
+                "identity(live).rfPower = 50;\n"
+            )
+        },
+        "delegated_alias_return": {
+            "frontend/src/lib/stores/delegated-alias-return.svelte.ts": (
+                "const inner = <T>(value: T): T => { const alias = value; return alias; };\n"
+                "function outer<T>(value: T): T { return inner(value); }\n"
+                "export let live = $state({} as Record<string, string>);\n"
+                "outer(live).mode = 'USB';\n"
+            )
+        },
         "opaque_envelope_scope": {
             "frontend/src/lib/runtime/adapters/opaque-envelope-scope.ts": (
                 "import type { ScopeFrame } from './scope-adapter';\n"
@@ -1150,6 +1193,12 @@ def test_fixed_point_store_and_scopeframe_provenance_variants_are_rejected() -> 
         "identity_return",
         "identity_chain",
         "parameter_flow",
+        "local_alias_return",
+        "conditional_return",
+        "object_projection_return",
+        "arrow_alias_return",
+        "array_projection_return",
+        "delegated_alias_return",
     ):
         path = next(iter(scenarios[name]))
         assert results[name]["parallel_truth_store"].get(path, 0) > 0, name
@@ -1166,12 +1215,12 @@ def test_restricted_wrapper_ui_roots_and_locale_template_boundary() -> None:
     scenarios = {
         "eval_call": {
             "frontend/src/components-v2/controls/EvalCall.svelte": (
-                "<script>declare const source: string; eval.call(globalThis, source);</script>"
+                "<script lang='ts'>declare const source: string; eval.call(globalThis, source);</script>"
             )
         },
         "eval_bind": {
             "frontend/src/components-v2/controls/EvalBind.svelte": (
-                "<script>declare const source: string; const run = eval.bind(globalThis); run(source);</script>"
+                "<script lang='ts'>declare const source: string; const run = eval.bind(globalThis); run(source);</script>"
             )
         },
         "function_call": {
@@ -1187,7 +1236,30 @@ def test_restricted_wrapper_ui_roots_and_locale_template_boundary() -> None:
         },
         "reflect_apply": {
             "frontend/src/App.svelte": (
-                "<script>declare const source: string; Reflect.apply(eval, globalThis, [source]);</script>"
+                "<script lang='ts'>declare const source: string; Reflect.apply(eval, globalThis, [source]);</script>"
+            )
+        },
+        "sequence_eval": {
+            "frontend/src/components-v2/controls/SequenceEval.svelte": (
+                "<script lang='ts'>declare const source: string; (0, eval)(source);</script>"
+            )
+        },
+        "reflect_apply_alias": {
+            "frontend/src/components-v2/controls/ReflectAlias.svelte": (
+                "<script lang='ts'>declare const source: string; const invoke = Reflect.apply; "
+                "invoke(eval, globalThis, [source]);</script>"
+            )
+        },
+        "reflect_apply_destructure": {
+            "frontend/src/components-v2/controls/ReflectDestructure.svelte": (
+                "<script lang='ts'>declare const source: string; const { apply: invoke } = Reflect; "
+                "invoke(eval, globalThis, [source]);</script>"
+            )
+        },
+        "reflect_apply_alias_chain": {
+            "frontend/src/components-v2/controls/ReflectAliasChain.svelte": (
+                "<script lang='ts'>declare const source: string; const first = Reflect.apply; "
+                "const invoke = first; invoke(eval, globalThis, [source]);</script>"
             )
         },
         "wiring_nonfinite": {
@@ -1242,6 +1314,19 @@ def test_restricted_wrapper_ui_roots_and_locale_template_boundary() -> None:
         assert result["errors"][name], f"did not fail loud: {name}"
     assert result["errors"][allowed] == []
     assert result["errors"]["local_eval_shadow"] == []
+    restricted_eval = {
+        "eval_call",
+        "eval_bind",
+        "reflect_apply",
+        "sequence_eval",
+        "reflect_apply_alias",
+        "reflect_apply_destructure",
+        "reflect_apply_alias_chain",
+    }
+    for name in restricted_eval:
+        path = next(iter(scenarios[name]))
+        expected = f"restricted eval construct in {path}"
+        assert result["errors"][name] == [expected]
     transport_path = next(iter(scenarios["control_transport"]))
     assert result["errors"]["control_transport"] == []
     assert (
