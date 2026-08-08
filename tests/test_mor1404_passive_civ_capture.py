@@ -1,172 +1,133 @@
-"""MOR-1404 passive raw CI-V capture and deterministic replay gates."""
-
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
-from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from support.mor1404_passive_civ_capture import (
-    CAPTURE_SCHEMA,
-    PassiveCivCapture,
-    install_capture,
-    replay_capture,
-)
+from support import mor1404_passive_civ_capture as evidence
 
 
-def _capture(
-    path: Path,
-    frames: tuple[str, ...],
-    *,
-    wall: tuple[int, ...] | None = None,
-    monotonic: tuple[int, ...] | None = None,
-) -> Path:
-    wall = wall or tuple(range(1, len(frames) + 1))
-    monotonic = monotonic or tuple(range(10, 10 * len(frames) + 1, 10))
-    sink = PassiveCivCapture(
-        path,
-        wall_time_ns=iter(wall).__next__,
-        monotonic_ns=iter(monotonic).__next__,
-    )
-    for frame in frames:
-        sink.record(bytes.fromhex(frame))
-    sink.close()
-    return path
+# fmt: off
+def _line(row: dict[str, object]) -> bytes:
+    return (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
-
-@pytest.fixture
-def selector_capture(tmp_path: Path) -> Path:
-    return _capture(
-        tmp_path / "selector.jsonl",
-        (
-            "FE FE 00 94 00 00 40 42 14 00 FD",
-            "FE FE 00 94 07 01 FD",
-            "FE FE E0 94 25 00 00 40 42 14 00 FD",
-        ),
-        wall=(10, 20, 30),
-        monotonic=(100, 200, 350),
-    )
-
-
-def test_capture_and_replay_preserve_exact_selector_evidence(
-    selector_capture: Path,
-) -> None:
-    rows = [json.loads(line) for line in selector_capture.read_text().splitlines()]
-    assert rows[0] == {"kind": "session", "schema": CAPTURE_SCHEMA}
-    assert [row["seq"] for row in rows[1:]] == [0, 1, 2]
-    assert [row["wall_time_ns"] for row in rows[1:]] == [10, 20, 30]
-    assert [row["monotonic_ns"] for row in rows[1:]] == [100, 200, 350]
-
-    replay = replay_capture(selector_capture)
-    assert replay["verdict"] == "selector_07_present"
-    assert replay["selector_07_present"] is True
-    evidence = replay["selector_07_frames"][0]
-    assert evidence["frame_hex"] == "fefe00940701fd"
-    assert evidence["data_hex"] == "01"
-    assert evidence["delta_ns"] == 100
-    assert (evidence["from_addr"], evidence["to_addr"]) == ("94", "00")
-    assert [row["frame_hex"] for row in replay["timeline"]] == [
-        row["frame_hex"] for row in rows[1:]
+def _events(*, outbound: bool = False, transition: bool = False, transport: str = "uart") -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = [
+        {"kind": "line", "timestamp_ns": 100, "line": "dtr", "state": False},
+        {"kind": "line", "timestamp_ns": 100, "line": "rts", "state": False},
+        {"kind": "action", "timestamp_ns": 101, "name": "capture_start"},
+        {"kind": "byte", "timestamp_ns": 102, "transport": transport, "direction": "radio_to_controller", "value": 0x99},
     ]
-    with pytest.raises(FileExistsError):
-        PassiveCivCapture(selector_capture)
+    for offset, value in enumerate(bytes.fromhex("FE FE E0 94 07 01 FD"), 103):
+        rows.append({"kind": "byte", "timestamp_ns": offset, "transport": transport, "direction": "radio_to_controller", "value": value})
+    rows.extend({"kind": "action", "timestamp_ns": timestamp, "name": name} for timestamp, name in ((111, "ab_1"), (112, "tune_1"), (113, "ab_2"), (114, "tune_2")))
+    if outbound:
+        rows.append({"kind": "byte", "timestamp_ns": 115, "transport": transport, "direction": "controller_to_radio", "value": 0xFE})
+    if transition:
+        rows.append({"kind": "line", "timestamp_ns": 116, "line": "dtr", "state": True})
+    rows.extend([{"kind": "byte", "timestamp_ns": 117, "transport": transport, "direction": "radio_to_controller", "value": 0xFE}, {"kind": "action", "timestamp_ns": 118, "name": "capture_end"}])
+    return [row | {"seq": seq} for seq, row in enumerate(rows)]
 
-
-def test_frequency_frames_cannot_invent_selector_identity(tmp_path: Path) -> None:
-    path = _capture(
-        tmp_path / "frequency-only.jsonl",
-        (
-            "FE FE 00 94 00 00 40 42 14 00 FD",
-            "FE FE E0 94 25 00 00 40 42 14 00 FD",
-        ),
-    )
-    replay = replay_capture(path)
-    assert replay["verdict"] == "selector_07_absent"
-    assert replay["command_07_frames"] == replay["selector_07_frames"] == []
-    assert "frequency" not in json.dumps(replay).lower()
-
-
-@pytest.mark.parametrize(
-    ("raw", "data"),
-    [
-        ("FE FE E0 94 07 D1 01 FD", "d101"),
-        ("FE FE 94 E0 07 01 FD", "01"),
-    ],
-)
-def test_non_selector_or_echoed_07_stays_blocked(
-    tmp_path: Path, raw: str, data: str
-) -> None:
-    replay = replay_capture(_capture(tmp_path / "other-07.jsonl", (raw,)))
-    assert replay["command_07_present"] is True
-    assert replay["selector_07_present"] is False
-    assert replay["command_07_frames"][0]["data_hex"] == data
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda rows: rows.__setitem__(2, {**rows[2], "seq": 7}),
-        lambda rows: rows.__setitem__(2, {**rows[2], "monotonic_ns": 50}),
-        lambda rows: rows.__setitem__(2, {**rows[2], "frame_hex": "00"}),
-    ],
-)
-def test_replay_rejects_corrupt_order_or_bytes(
-    selector_capture: Path, mutation
-) -> None:
-    rows = [json.loads(line) for line in selector_capture.read_text().splitlines()]
-    mutation(rows)
-    selector_capture.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
-    with pytest.raises(ValueError):
-        replay_capture(selector_capture)
-
-
-def test_installation_tees_inbound_iterator_without_changing_bytes(
-    tmp_path: Path,
-) -> None:
-    frames = [bytes.fromhex("FE FE 00 94 07 00 FD"), bytes.fromhex("FE FE E0 94 FB FD")]
-
-    def original(payload: bytes) -> Iterator[bytes]:
-        assert payload == b"payload"
-        yield from frames
-
-    module = SimpleNamespace(iter_civ_frames=original)
-    installation = install_capture(tmp_path / "capture.jsonl", civ_rx_module=module)
-    assert list(module.iter_civ_frames(b"payload")) == frames
-    installation.close()
-    assert module.iter_civ_frames is original
-
-
-def test_capture_and_sitecustomize_have_no_radio_write_surface() -> None:
-    forbidden_imports = {"serial", "serial_asyncio"}
-    forbidden_calls = {
-        "send",
-        "send_civ",
-        "send_civ_raw_fire_and_forget",
-        "write_packet",
-        "set_dtr",
-        "set_rts",
-        "poll",
-        "select",
+def _package(tmp_path: Path, events: list[dict[str, object]], source_kind: str = "logic_tap") -> tuple[Path, Path]:
+    artifact = tmp_path / "capture.sal"
+    artifact.write_bytes(b"immutable-native-analyzer-artifact")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    actions = [{"name": row["name"], "seq": row["seq"], "timestamp_ns": row["timestamp_ns"]} for row in events if row["kind"] == "action"]
+    byte_count = sum(row["kind"] == "byte" for row in events)
+    package = {
+        "schema": evidence.PACKAGE_SCHEMA,
+        "source": {"kind": source_kind, "artifact": artifact.name, "sha256": digest, "size": artifact.stat().st_size},
+        "capture": {"tool": "Saleae Logic", "model": "Logic Pro 8", "version": "2.4.14", "mapping": {"radio_to_controller": "digital-0", "controller_to_radio": "digital-1", "dtr": "digital-2", "rts": "digital-3"}, "sample_rate_hz": 1_000_000, "baud": 115200, "data_bits": 8, "parity": "N", "stop_bits": 1},
+        "timing": {"start_ns": 100, "end_ns": 118},
+        "completion": {"complete": True, "truncated": False, "dropped_records": 0, "timestamp_gaps": 0, "records": len(events), "bytes": byte_count, "channels": {"radio_to_controller": True, "controller_to_radio": True, "dtr": True, "rts": True}},
+        "actions": actions,
     }
-    for path in (
-        Path("tests/support/mor1404_passive_civ_capture.py"),
-        Path("tests/support/mor1404_sitecustomize/sitecustomize.py"),
-    ):
-        tree = ast.parse(path.read_text(), filename=str(path))
-        imports = {
-            alias.name.split(".", 1)[0]
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Import, ast.ImportFrom))
-            for alias in node.names
-        }
-        calls = {
-            node.func.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        }
-        assert imports.isdisjoint(forbidden_imports)
-        assert calls.isdisjoint(forbidden_calls)
+    package_path = tmp_path / "package.json"
+    package_path.write_bytes(_line(package))
+    header = {"kind": "session", "schema": evidence.RAW_SCHEMA, "source_sha256": digest, "source_size": artifact.stat().st_size, "start_ns": 100, "end_ns": 118}
+    body = b"".join(_line(row) for row in [header, *events])
+    footer = {"kind": "footer", "schema": evidence.RAW_SCHEMA, "source_sha256": digest, "records": len(events), "bytes": byte_count, "dropped_records": 0, "timestamp_gaps": 0, "truncated": False, "complete": True, "channels": package["completion"]["channels"], "stream_sha256": hashlib.sha256(body).hexdigest()}
+    raw_path = tmp_path / "raw.jsonl"
+    raw_path.write_bytes(body + _line(footer))
+    return package_path, raw_path
+
+def test_offline_evidence_preserves_raw_and_adjudicates_selector(tmp_path: Path) -> None:
+    for source_kind, transport in (("logic_tap", "uart"), ("inline_usb", "usb")):
+        package, raw = _package(tmp_path, _events(transport=transport), source_kind)
+        result = evidence.adjudicate(package, raw)
+        assert result["safety"] == {"verdict": "PASS", "outbound_count": 0, "modem_transition_count": 0}
+        assert result["selector_07_present"] is True
+        assert [frame["hex"] for frame in result["inbound_07"]] == ["fefee0940701fd"]
+        assert result["outbound_payloads"] == []
+        assert result["modem_transitions"] == []
+        assert result["raw_events"] == _events(transport=transport)
+        assert result["unframed_byte_seqs"] == [3, len(_events()) - 2]
+
+def test_any_outbound_or_modem_transition_fails_safety(tmp_path: Path) -> None:
+    package, raw = _package(tmp_path, _events(outbound=True, transition=True))
+    result = evidence.adjudicate(package, raw)
+    assert result["safety"]["verdict"] == "FAIL"
+    assert [(row["direction"], row["value"]) for row in result["outbound_payloads"]] == [("controller_to_radio", 0xFE)]
+    assert result["modem_transitions"] == [{"line": "dtr", "seq": 16, "timestamp_ns": 116, "from": False, "to": True}]
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda package, raw: package["completion"].__setitem__("dropped_records", 1), "dropped"),
+        (lambda package, raw: package["completion"].__setitem__("timestamp_gaps", 1), "timestamp gaps"),
+        (lambda package, raw: package.__setitem__("actions", package["actions"][:-1]), "action markers"),
+        (lambda package, raw: package["capture"]["mapping"].__setitem__("rts", "digital-2"), "mapping"),
+    ],
+)
+def test_rejects_incomplete_or_ambiguous_package(tmp_path: Path, mutate, message: str) -> None:
+    package_path, raw_path = _package(tmp_path, _events())
+    package = json.loads(package_path.read_text())
+    mutate(package, raw_path)
+    package_path.write_bytes(_line(package))
+    with pytest.raises(evidence.EvidenceError, match=message):
+        evidence.adjudicate(package_path, raw_path)
+
+def test_rejects_hash_footer_sequence_and_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    package, raw = _package(tmp_path, _events())
+    (tmp_path / "capture.sal").write_bytes(b"changed")
+    with pytest.raises(evidence.EvidenceError, match="artifact"):
+        evidence.adjudicate(package, raw)
+    package, raw = _package(tmp_path, _events())
+    raw.write_bytes(b"".join(raw.read_bytes().splitlines(keepends=True)[:-1]))
+    with pytest.raises(evidence.EvidenceError, match="footer"):
+        evidence.adjudicate(package, raw)
+    for field, value, message in (("seq", 9, "sequence"), ("timestamp_ns", 99, "timestamp")):
+        package, raw = _package(tmp_path, _events())
+        rows = [json.loads(line) for line in raw.read_bytes().splitlines()]
+        rows[2][field] = value
+        body = b"".join(_line(row) for row in rows[:-1])
+        rows[-1]["stream_sha256"] = hashlib.sha256(body).hexdigest()
+        raw.write_bytes(body + _line(rows[-1]))
+        with pytest.raises(evidence.EvidenceError, match=message):
+            evidence.adjudicate(package, raw)
+    package, raw = _package(tmp_path, _events())
+    monkeypatch.setattr(evidence, "MAX_RECORDS", 2)
+    with pytest.raises(evidence.EvidenceError, match="records"):
+        evidence.adjudicate(package, raw)
+
+def test_atomic_report_has_complete_checksum_and_cli(tmp_path: Path) -> None:
+    package, raw = _package(tmp_path, _events())
+    output = tmp_path / "report.json"
+    assert evidence.main([str(package), str(raw), "--output", str(output)]) == 0
+    document = json.loads(output.read_text())
+    payload = json.dumps(document["payload"], sort_keys=True, separators=(",", ":")).encode()
+    assert document["footer"] == {"complete": True, "payload_sha256": hashlib.sha256(payload).hexdigest()}
+    with pytest.raises(evidence.EvidenceError, match="exists"):
+        evidence.write_report(document["payload"], output)
+
+def test_actual_entrypoint_closure_is_offline_files_only() -> None:
+    path = Path("tests/support/mor1404_passive_civ_capture.py")
+    tree = ast.parse(path.read_text(), filename=str(path))
+    imports = {node.module.split(".", 1)[0] if isinstance(node, ast.ImportFrom) else alias.name.split(".", 1)[0] for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom)) for alias in node.names}
+    assert imports <= {"__future__", "argparse", "hashlib", "json", "pathlib", "stat", "typing"}
+    forbidden = {"serial", "serial_asyncio", "termios", "tty", "CoreRadio", "web", "poller", "backend", "Popen", "system", "execv", "atexit", "_exit"}
+    assert forbidden.isdisjoint({node.id for node in ast.walk(tree) if isinstance(node, ast.Name)})
+    assert not Path("tests/support/mor1404_sitecustomize/sitecustomize.py").exists()
