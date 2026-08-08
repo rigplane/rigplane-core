@@ -293,6 +293,88 @@ def test_bound_vfo_public_projection_tracks_live_selected_and_retains_sibling() 
         )
 
 
+@pytest.mark.parametrize("active_slot", ["A", "B"])
+def test_bound_vfo_public_projection_expires_together_at_exact_deadline(
+    active_slot: str,
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=1,
+        max_age=20.0,
+        coherence_window=5.0,
+    )
+    values = {
+        FieldPath.active("0", "freq_mode", "freq_hz"): 14_164_000,
+        FieldPath.active("0", "freq_mode", "mode"): "USB",
+        FieldPath.active("0", "freq_mode", "filter_num"): 1,
+        FieldPath.active("0", "freq_mode", "data_mode"): 0,
+        FieldPath.unselected("0", "freq_mode", "freq_hz"): 14_076_000,
+        FieldPath.unselected("0", "freq_mode", "mode"): "USB",
+        FieldPath.unselected("0", "freq_mode", "filter_num"): 1,
+        FieldPath.unselected("0", "freq_mode", "data_mode"): 0,
+    }
+    pair = tuple(_observation(path, value, at=10.0) for path, value in values.items())
+    store.apply_relative_vfo_observations(pair, generation=1)
+    store.apply(_observation(FieldPath.active_slot("0"), active_slot, at=10.7))
+    store.apply_relative_vfo_observations(
+        tuple(
+            Observation(
+                path=item.path,
+                value=item.value,
+                source=item.source,
+                timestamp_monotonic=10.7,
+                max_age=item.max_age,
+            )
+            for item in pair
+        ),
+        generation=1,
+    )
+    deadline = max(
+        field.last_observed_monotonic + field.max_age
+        for field in store.snapshot().fields
+        if field.max_age is not None
+    )
+    public_paths = (
+        "main.freqHz",
+        "main.mode",
+        "main.filter",
+        "main.dataMode",
+        "main.unselectedVfo.freqHz",
+        "main.unselectedVfo.mode",
+        "main.unselectedVfo.filterNum",
+        "main.unselectedVfo.dataMode",
+        "main.vfoA.freqHz",
+        "main.vfoA.mode",
+        "main.vfoA.filterNum",
+        "main.vfoA.dataMode",
+        "main.vfoB.freqHz",
+        "main.vfoB.mode",
+        "main.vfoB.filterNum",
+        "main.vfoB.dataMode",
+    )
+
+    store.mark_stale_due(now=deadline - 0.001)
+    before = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert all(
+        before["fieldStatus"][path]["freshness"] == "fresh"
+        and before["fieldStatus"][path]["availability"] == "available"
+        for path in public_paths
+    )
+
+    store.mark_stale_due(now=deadline)
+    exact = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert all(
+        exact["fieldStatus"][path]["freshness"] == "stale"
+        and exact["fieldStatus"][path]["availability"] == "stale"
+        for path in public_paths
+    )
+
+
 def test_web_server_publishes_single_receiver_main_from_topology_only() -> None:
     from rigplane.profiles import resolve_radio_profile
 

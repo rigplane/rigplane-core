@@ -601,7 +601,12 @@ class StateStore:
             return ()
         retention.expires_at = None
         retention.pending.clear()
-        return tuple(retention.paths)
+        aliases = {
+            alias
+            for path in retention.paths
+            if (alias := self._bound_relative_vfo_alias_path(path)) is not None
+        }
+        return tuple(retention.paths | aliases)
 
     def _apply_observation_batch(
         self,
@@ -699,13 +704,13 @@ class StateStore:
         requests: list[ReconciliationRequest] = []
         relative_due = set(self._expire_relative_vfo(now=timestamp))
         for path, entry in sorted(self._entries.items(), key=lambda item: str(item[0])):
-            if entry.freshness is not FreshnessState.FRESH or entry.max_age is None:
+            if entry.freshness is not FreshnessState.FRESH:
                 continue
-            if (
-                path not in relative_due
-                and timestamp - entry.last_observed_monotonic <= entry.max_age
-            ):
-                continue
+            if path not in relative_due:
+                if entry.max_age is None:
+                    continue
+                if timestamp - entry.last_observed_monotonic <= entry.max_age:
+                    continue
 
             self._freshness_revision += 1
             entry.freshness = FreshnessState.STALE

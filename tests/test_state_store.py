@@ -379,6 +379,64 @@ def test_bound_relative_vfo_alias_shares_complete_pair_expiry() -> None:
     assert snapshot.field(alias).freshness is FreshnessState.STALE
 
 
+@pytest.mark.parametrize("active_slot", ["A", "B"])
+def test_bound_relative_vfo_pair_and_all_aliases_expire_at_exact_deadline(
+    active_slot: str,
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.configure_relative_vfo_retention(
+        generation=1,
+        max_age=20.0,
+        coherence_window=5.0,
+    )
+    pair = _relative_vfo_observations(at=10.0)
+    store.apply_relative_vfo_observations(pair, generation=1)
+    store.apply(_observation(FieldPath.active_slot("0"), active_slot, at=10.7))
+    store.apply_relative_vfo_observations(
+        tuple(replace(item, timestamp_monotonic=10.7) for item in pair),
+        generation=1,
+    )
+    deadline = _relative_vfo_deadline(store)
+    tuple_paths = {
+        path
+        for builder in (FieldPath.active, FieldPath.unselected)
+        for path in (
+            builder("0", "freq_mode", name)
+            for name in ("freq_hz", "mode", "filter_num", "data_mode")
+        )
+    }
+    alias_paths = {
+        FieldPath.vfo_slot("0", slot, "freq_mode", name)
+        for slot in ("A", "B")
+        for name in ("freq_hz", "mode", "filter_num", "data_mode")
+    }
+    all_value_paths = tuple_paths | alias_paths
+    assert all(
+        store.snapshot().field(path).freshness is FreshnessState.FRESH
+        for path in all_value_paths
+    )
+
+    assert store.mark_stale_due(now=deadline - 0.001).freshness == ()
+    assert all(
+        store.snapshot().field(path).freshness is FreshnessState.FRESH
+        for path in all_value_paths
+    )
+
+    exact = store.mark_stale_due(now=deadline)
+    assert {transition.path for transition in exact.freshness} == all_value_paths
+    assert all(
+        store.snapshot().field(path).freshness is FreshnessState.STALE
+        for path in all_value_paths
+    )
+    assert (
+        store.snapshot().field(FieldPath.active_slot("0")).freshness
+        is FreshnessState.FRESH
+    )
+
+    assert store.mark_stale_due(now=deadline + 1.0).freshness == ()
+
+
 def test_explicit_binding_readback_uses_same_retention_and_alias_semantics() -> None:
     clock = FreshnessClock(start=50.0)
     store = StateStore(freshness_clock=clock)
