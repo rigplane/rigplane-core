@@ -1177,6 +1177,69 @@ def test_fixed_point_store_and_scopeframe_provenance_variants_are_rejected() -> 
                 "outer(live).mode = 'USB';\n"
             )
         },
+        "nested_object_projection": {
+            "frontend/src/lib/stores/nested-object-projection.svelte.ts": (
+                "function identity<T>(value: T): T { return { outer: { inner: value } }.outer.inner; }\n"
+                "export let live = $state({} as Record<string, number>);\n"
+                "identity(live).rfPower = 50;\n"
+            )
+        },
+        "nested_array_projection": {
+            "frontend/src/lib/stores/nested-array-projection.svelte.ts": (
+                "function identity<T>(value: T): T { return [[value]][0][0]; }\n"
+                "export let live = $state({} as Record<string, string>);\n"
+                "identity(live).mode = 'USB';\n"
+            )
+        },
+        "delegated_nested_projection": {
+            "frontend/src/lib/stores/delegated-nested-projection.svelte.ts": (
+                "function inner<T>(value: T): T { return ({ x: [value] }).x[0]; }\n"
+                "function outer<T>(value: T): T { return inner(value); }\n"
+                "export let live = $state({} as Record<string, number>);\n"
+                "outer(live).rfPower = 50;\n"
+            )
+        },
+        "identifier_nested_projection": {
+            "frontend/src/lib/stores/identifier-nested-projection.svelte.ts": (
+                "function identity<T>(value: T): T { const box = { outer: { inner: value } }; return box.outer.inner; }\n"
+                "export let live = $state({} as Record<string, string>);\n"
+                "identity(live).mode = 'USB';\n"
+            )
+        },
+        "conditional_nested_projection": {
+            "frontend/src/lib/stores/conditional-nested-projection.svelte.ts": (
+                "function identity<T>(value: T, flag: boolean): T { const box = flag ? { outer: { inner: value } } : { outer: { inner: value } }; return box.outer.inner; }\n"
+                "export let live = $state({} as Record<string, number>);\n"
+                "identity(live, true).rfPower = 50;\n"
+            )
+        },
+        "spread_nested_projection": {
+            "frontend/src/lib/stores/spread-nested-projection.svelte.ts": (
+                "function identity<T>(value: T): T { return ({ ...{ outer: { inner: value } } }).outer.inner; }\n"
+                "export let live = $state({} as Record<string, string>);\n"
+                "identity(live).mode = 'USB';\n"
+            )
+        },
+        "array_spread_projection": {
+            "frontend/src/lib/stores/array-spread-projection.svelte.ts": (
+                "function identity<T>(value: T): T { return [...[[value]]][0][0]; }\n"
+                "export let live = $state({} as Record<string, number>);\n"
+                "identity(live).rfPower = 50;\n"
+            )
+        },
+        "mixed_callsite_projection": {
+            "frontend/src/lib/stores/mixed-callsite-projection.svelte.ts": (
+                "function identity<T>(value: T): T { return { outer: { inner: value } }.outer.inner; }\n"
+                "const preference = { theme: 'dark' }; identity(preference).theme = 'light';\n"
+                "export let live = $state({} as Record<string, string>); identity(live).mode = 'USB';\n"
+            )
+        },
+        "preference_only_projection": {
+            "frontend/src/lib/runtime/preferences/projection.ts": (
+                "function identity<T>(value: T): T { return { outer: { inner: value } }.outer.inner; }\n"
+                "const preference = { theme: 'dark' }; identity(preference).theme = 'light';\n"
+            )
+        },
         "opaque_envelope_scope": {
             "frontend/src/lib/runtime/adapters/opaque-envelope-scope.ts": (
                 "import type { ScopeFrame } from './scope-adapter';\n"
@@ -1199,6 +1262,14 @@ def test_fixed_point_store_and_scopeframe_provenance_variants_are_rejected() -> 
         "arrow_alias_return",
         "array_projection_return",
         "delegated_alias_return",
+        "nested_object_projection",
+        "nested_array_projection",
+        "delegated_nested_projection",
+        "identifier_nested_projection",
+        "conditional_nested_projection",
+        "spread_nested_projection",
+        "array_spread_projection",
+        "mixed_callsite_projection",
     ):
         path = next(iter(scenarios[name]))
         assert results[name]["parallel_truth_store"].get(path, 0) > 0, name
@@ -1208,6 +1279,13 @@ def test_fixed_point_store_and_scopeframe_provenance_variants_are_rejected() -> 
     opaque_path = next(iter(scenarios["opaque_envelope_scope"]))
     assert (
         results["opaque_envelope_scope"]["spectrum_metadata"].get(opaque_path, 0) == 0
+    )
+    preference_path = next(iter(scenarios["preference_only_projection"]))
+    assert (
+        results["preference_only_projection"]["parallel_truth_store"].get(
+            preference_path, 0
+        )
+        == 0
     )
 
 
@@ -1262,6 +1340,45 @@ def test_restricted_wrapper_ui_roots_and_locale_template_boundary() -> None:
                 "const invoke = first; invoke(eval, globalThis, [source]);</script>"
             )
         },
+        "reflect_owner_alias_destructure": {
+            "frontend/src/components-v2/controls/ReflectOwnerAlias.svelte": (
+                "<script lang='ts'>declare const source: string; const R = Reflect; "
+                "const { apply: invoke } = R; invoke(eval, globalThis, [source]);</script>"
+            )
+        },
+        "reflect_object_carrier": {
+            "frontend/src/components-v2/controls/ReflectObjectCarrier.svelte": (
+                "<script lang='ts'>declare const source: string; const holder = { invoke: Reflect.apply }; "
+                "holder.invoke(eval, globalThis, [source]);</script>"
+            )
+        },
+        "reflect_array_carrier": {
+            "frontend/src/components-v2/controls/ReflectArrayCarrier.svelte": (
+                "<script lang='ts'>declare const source: string; "
+                "[Reflect.apply][0](eval, globalThis, [source]);</script>"
+            )
+        },
+        "reflect_conditional_carrier": {
+            "frontend/src/components-v2/controls/ReflectConditionalCarrier.svelte": (
+                "<script lang='ts'>declare const source: string; declare const flag: boolean; "
+                "const invoke = flag ? Reflect.apply : Reflect.apply; "
+                "invoke(eval, globalThis, [source]);</script>"
+            )
+        },
+        "reflect_nested_carrier": {
+            "frontend/src/components-v2/controls/ReflectNestedCarrier.svelte": (
+                "<script lang='ts'>declare const source: string; "
+                "const holder = { outer: { invoke: Reflect.apply } }; "
+                "holder.outer.invoke(eval, globalThis, [source]);</script>"
+            )
+        },
+        "reflect_spread_carrier": {
+            "frontend/src/components-v2/controls/ReflectSpreadCarrier.svelte": (
+                "<script lang='ts'>declare const source: string; "
+                "const holder = { ...{ invoke: Reflect.apply } }; "
+                "holder.invoke(eval, globalThis, [source]);</script>"
+            )
+        },
         "wiring_nonfinite": {
             "frontend/src/components-v2/wiring/nonfinite.ts": (
                 "export function load(specifier: string) { return import(specifier); }"
@@ -1307,13 +1424,21 @@ def test_restricted_wrapper_ui_roots_and_locale_template_boundary() -> None:
                 "function eval(source: string) { return source; } eval('safe');"
             )
         },
+        "local_reflect_shadow": {
+            "frontend/src/components-v2/controls/LocalReflect.svelte": (
+                "<script lang='ts'>const Reflect = { apply: (value: number) => value }; "
+                "const holder = { invoke: Reflect.apply }; holder.invoke(1);</script>"
+            )
+        },
     }
     result = _frontend_analysis(scenarios)
     allowed = "allowed_locale_template"
-    for name in scenarios.keys() - {allowed, "control_transport", "local_eval_shadow"}:
+    clean = {allowed, "control_transport", "local_eval_shadow", "local_reflect_shadow"}
+    for name in scenarios.keys() - clean:
         assert result["errors"][name], f"did not fail loud: {name}"
     assert result["errors"][allowed] == []
     assert result["errors"]["local_eval_shadow"] == []
+    assert result["errors"]["local_reflect_shadow"] == []
     restricted_eval = {
         "eval_call",
         "eval_bind",
@@ -1322,6 +1447,12 @@ def test_restricted_wrapper_ui_roots_and_locale_template_boundary() -> None:
         "reflect_apply_alias",
         "reflect_apply_destructure",
         "reflect_apply_alias_chain",
+        "reflect_owner_alias_destructure",
+        "reflect_object_carrier",
+        "reflect_array_carrier",
+        "reflect_conditional_carrier",
+        "reflect_nested_carrier",
+        "reflect_spread_carrier",
     }
     for name in restricted_eval:
         path = next(iter(scenarios[name]))

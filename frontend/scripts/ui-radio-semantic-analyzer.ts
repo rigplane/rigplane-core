@@ -632,8 +632,21 @@ function analyzeFrontend(
       }
       return values;
     }
+    if (ts.isConditionalExpression(current)) {
+      return [
+        ...expressionsAtPath(current.whenTrue, segments, new Set(seen)),
+        ...expressionsAtPath(current.whenFalse, segments, new Set(seen)),
+      ];
+    }
     if (ts.isCallExpression(current) && stateCall(current) && current.arguments[0]) {
       return expressionsAtPath(current.arguments[0], segments, seen);
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const property = accessName(current);
+      if (!property) return [];
+      return expressionsAtPath(current.expression, [property], new Set(seen)).flatMap(
+        (value) => expressionsAtPath(value, segments, new Set(seen)),
+      );
     }
     const [head, ...tail] = segments;
     if (ts.isObjectLiteralExpression(current)) {
@@ -655,11 +668,63 @@ function analyzeFrontend(
     }
     if (ts.isArrayLiteralExpression(current)) {
       const index = Number(head);
-      const element = Number.isInteger(index) ? current.elements[index] : undefined;
-      if (!element || ts.isOmittedExpression(element)) return [];
-      return expressionsAtPath(ts.isSpreadElement(element) ? element.expression : element, tail, seen);
+      if (!Number.isInteger(index)) return [];
+      const slots = finiteArraySlots(current, seen);
+      return (slots?.[index] ?? []).flatMap(
+        (element) => expressionsAtPath(element, tail, new Set(seen)),
+      );
     }
     return [];
+  }
+
+  function finiteArraySlots(
+    expression: ts.Expression,
+    seen = new Set<ts.Symbol>(),
+  ): ts.Expression[][] | undefined {
+    const current = unwrap(expression);
+    if (ts.isConditionalExpression(current)) {
+      const left = finiteArraySlots(current.whenTrue, new Set(seen));
+      const right = finiteArraySlots(current.whenFalse, new Set(seen));
+      if (!left || !right || left.length !== right.length) return undefined;
+      return left.map((slot, index) => [...slot, ...right[index]]);
+    }
+    if (ts.isIdentifier(current)) {
+      const symbol = directSymbol(current);
+      if (!symbol || seen.has(symbol)) return undefined;
+      const nestedSeen = new Set(seen).add(symbol);
+      const candidates: ts.Expression[][][] = [];
+      for (const declaration of symbol.declarations ?? []) {
+        if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+          const slots = finiteArraySlots(declaration.initializer, new Set(nestedSeen));
+          if (slots) candidates.push(slots);
+        }
+      }
+      for (const assigned of assignedSources.get(symbolKey(symbol)) ?? []) {
+        const slots = finiteArraySlots(assigned, new Set(nestedSeen));
+        if (slots) candidates.push(slots);
+      }
+      if (!candidates.length || candidates.some((slots) => slots.length !== candidates[0].length)) {
+        return undefined;
+      }
+      return candidates[0].map((slot, index) => [
+        ...slot,
+        ...candidates.slice(1).flatMap((slots) => slots[index]),
+      ]);
+    }
+    if (!ts.isArrayLiteralExpression(current)) return undefined;
+    const slots: ts.Expression[][] = [];
+    for (const element of current.elements) {
+      if (ts.isOmittedExpression(element)) {
+        slots.push([]);
+      } else if (ts.isSpreadElement(element)) {
+        const spread = finiteArraySlots(element.expression, new Set(seen));
+        if (!spread) return undefined;
+        slots.push(...spread);
+      } else {
+        slots.push([element]);
+      }
+    }
+    return slots;
   }
 
   function bindingSources(element: ts.BindingElement): ts.Expression[] {
@@ -1087,6 +1152,10 @@ function analyzeFrontend(
     seen = new Set<ts.Symbol>(),
   ): RestrictedConstruct | undefined {
     const current = unwrap(expression);
+    if (ts.isConditionalExpression(current)) {
+      return restrictedConstruct(current.whenTrue, new Set(seen)) ??
+        restrictedConstruct(current.whenFalse, new Set(seen));
+    }
     if (ts.isCallExpression(current)) {
       const callee = unwrap(current.expression);
       if (isReflectApplyCallable(callee)) {
@@ -1102,6 +1171,12 @@ function analyzeFrontend(
       if (member === 'call' || member === 'bind' || member === 'apply') {
         return restrictedConstruct(current.expression, seen);
       }
+      if (member) {
+        for (const value of expressionsAtPath(current.expression, [member])) {
+          const nested = restrictedConstruct(value, new Set(seen));
+          if (nested) return nested;
+        }
+      }
     }
     const direct = globalBuiltinName(current, RESTRICTED_CONSTRUCTS);
     if (direct) return { name: direct, origin: current };
@@ -1112,6 +1187,20 @@ function analyzeFrontend(
         if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
           const nested = restrictedConstruct(declaration.initializer, nestedSeen);
           if (nested) return nested;
+        }
+        if (ts.isPropertyAssignment(declaration)) {
+          const nested = restrictedConstruct(declaration.initializer, nestedSeen);
+          if (nested) return nested;
+        }
+        if (ts.isShorthandPropertyAssignment(declaration)) {
+          const nested = restrictedConstruct(declaration.name, nestedSeen);
+          if (nested) return nested;
+        }
+        if (ts.isBindingElement(declaration)) {
+          for (const source of bindingSources(declaration)) {
+            const nested = restrictedConstruct(source, nestedSeen);
+            if (nested) return nested;
+          }
         }
       }
       for (const source of assignedSources.get(symbolKey(symbol)) ?? []) {
@@ -1133,11 +1222,21 @@ function analyzeFrontend(
 
   function isReflectApplyCallable(expression: ts.Expression, seen = new Set<ts.Symbol>()): boolean {
     const current = unwrap(expression);
+    if (ts.isConditionalExpression(current)) {
+      return isReflectApplyCallable(current.whenTrue, new Set(seen)) ||
+        isReflectApplyCallable(current.whenFalse, new Set(seen));
+    }
     if (
       (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) &&
       accessName(current) === 'apply' &&
       globalBuiltinName(current.expression, new Set(['Reflect'])) === 'Reflect'
     ) return true;
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const member = accessName(current);
+      if (member && expressionsAtPath(current.expression, [member]).some(
+        (value) => isReflectApplyCallable(value, new Set(seen)),
+      )) return true;
+    }
     const symbol = directSymbol(current);
     if (!symbol || seen.has(symbol)) return false;
     const nestedSeen = new Set(seen).add(symbol);
@@ -1151,12 +1250,39 @@ function analyzeFrontend(
         if (
           initializer &&
           bindingPropertyNames(declaration).includes('apply') &&
-          globalBuiltinName(initializer, new Set(['Reflect'])) === 'Reflect'
+          isGlobalReflectOwner(initializer)
         ) return true;
+        for (const source of bindingSources(declaration)) {
+          if (isReflectApplyCallable(source, nestedSeen)) return true;
+        }
+      }
+      if (ts.isPropertyAssignment(declaration) && isReflectApplyCallable(declaration.initializer, nestedSeen)) {
+        return true;
       }
     }
     return (assignedSources.get(symbolKey(symbol)) ?? []).some(
       (source) => isReflectApplyCallable(source, nestedSeen),
+    );
+  }
+
+  function isGlobalReflectOwner(expression: ts.Expression, seen = new Set<ts.Symbol>()): boolean {
+    const current = unwrap(expression);
+    if (globalBuiltinName(current, new Set(['Reflect'])) === 'Reflect') return true;
+    if (ts.isConditionalExpression(current)) {
+      return isGlobalReflectOwner(current.whenTrue, new Set(seen)) ||
+        isGlobalReflectOwner(current.whenFalse, new Set(seen));
+    }
+    const symbol = directSymbol(current);
+    if (!symbol || seen.has(symbol)) return false;
+    const nestedSeen = new Set(seen).add(symbol);
+    for (const declaration of symbol.declarations ?? []) {
+      if (
+        ts.isVariableDeclaration(declaration) && declaration.initializer &&
+        isGlobalReflectOwner(declaration.initializer, nestedSeen)
+      ) return true;
+    }
+    return (assignedSources.get(symbolKey(symbol)) ?? []).some(
+      (source) => isGlobalReflectOwner(source, nestedSeen),
     );
   }
 
