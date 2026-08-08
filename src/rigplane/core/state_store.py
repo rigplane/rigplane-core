@@ -93,6 +93,8 @@ class FieldSnapshot:
     max_age: float | None
     source: SourceMetadata
     quality: tuple[str, ...] = ("confirmed",)
+    provider_generation: int = 0
+    clock_domain: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +105,8 @@ class FieldSnapshot:
             "maxAge": self.max_age,
             "source": self.source.to_dict(),
             "quality": list(self.quality),
+            "providerGeneration": self.provider_generation,
+            "clockDomain": self.clock_domain,
         }
 
 
@@ -115,6 +119,7 @@ class StateSnapshot:
     observation_seq: int
     generated_at_monotonic: float
     fields: tuple[FieldSnapshot, ...]
+    provider_generation: int = 0
 
     @classmethod
     def empty(cls) -> StateSnapshot:
@@ -124,6 +129,7 @@ class StateSnapshot:
             observation_seq=0,
             generated_at_monotonic=0.0,
             fields=(),
+            provider_generation=0,
         )
 
     def field(self, path: FieldPath | str) -> FieldSnapshot:
@@ -142,6 +148,7 @@ class StateSnapshot:
             "freshnessRevision": self.freshness_revision,
             "observationSeq": self.observation_seq,
             "generatedAtMonotonic": self.generated_at_monotonic,
+            "providerGeneration": self.provider_generation,
             "fields": [field.to_dict() for field in self.fields],
         }
 
@@ -161,6 +168,7 @@ class SnapshotDelta:
     freshness: tuple[FreshnessTransition, ...] = ()
     reconciliation_requests: tuple[ReconciliationRequest, ...] = ()
     requires_full_snapshot: bool = False
+    provider_generation: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -173,6 +181,7 @@ class SnapshotDelta:
                 request.to_dict() for request in self.reconciliation_requests
             ],
             "requiresFullSnapshot": self.requires_full_snapshot,
+            "providerGeneration": self.provider_generation,
         }
 
 
@@ -184,6 +193,8 @@ class _FieldEntry:
     max_age: float | None
     source: SourceMetadata
     quality: tuple[str, ...]
+    provider_generation: int
+    clock_domain: str | None
 
 
 @dataclass(slots=True)
@@ -247,6 +258,7 @@ class StateStore:
         "_history_floor_state_revision",
         "_max_history_count",
         "_observation_seq",
+        "_provider_generation",
         "_relative_vfo_retention",
         "_state_revision",
     )
@@ -264,20 +276,48 @@ class StateStore:
         self._state_revision = 0
         self._freshness_revision = 0
         self._observation_seq = 0
+        self._provider_generation = 0
         self._relative_vfo_retention: _RelativeVfoRetention | None = None
         self._entries: dict[FieldPath, _FieldEntry] = {}
         self._history: list[SnapshotDelta] = []
         self._history_floor_state_revision = 0
         self._history_floor_freshness_revision = 0
 
-    def apply(self, observation: Observation) -> ChangeSet:
-        """Apply one synchronous/current-provider observation.
+    @property
+    def provider_generation(self) -> int:
+        """Store-owned provider token; independent of transport/TX counters."""
 
-        Generation-bearing producers must use
-        :meth:`apply_relative_vfo_observations`; the generic callers that can
-        supply relative VFO paths are synchronous command/readback boundaries
-        and therefore have no detached producer generation to relabel here.
-        """
+        return self._provider_generation
+
+    def begin_provider_generation(self) -> int:
+        """Advance the provider token and atomically invalidate prior proof."""
+
+        self._provider_generation += 1
+        retention = self._relative_vfo_retention
+        if retention is not None:
+            retention.pending.clear()
+            retention.expires_at = None
+        removed = tuple(
+            FieldChange(path=path, previous=_copy_value(entry.value), current=None)
+            for path, entry in sorted(
+                self._entries.items(), key=lambda item: str(item[0])
+            )
+        )
+        self._entries.clear()
+        if removed:
+            self._state_revision += 1
+            self._append_history(
+                changes=removed,
+                freshness=(),
+                reconciliation_requests=(),
+            )
+        return self._provider_generation
+
+    def apply(self, observation: Observation) -> ChangeSet:
+        """Apply an explicitly generation-bound observation, or reject it."""
+
+        if not self._is_current_observation(observation):
+            return self._empty_changeset(timestamp=observation.timestamp_monotonic)
 
         retention = self._relative_vfo_retention
         if retention is not None and observation.path in retention.paths:
@@ -286,11 +326,24 @@ class StateStore:
             )
         return self._apply_one(observation)
 
+    def apply_current(self, observation: Observation) -> ChangeSet:
+        """Bind a synchronous observation; callers must cross no await/detach."""
+
+        return self.apply(
+            replace(observation, provider_generation=self._provider_generation)
+        )
+
     def _apply_one(self, observation: Observation) -> ChangeSet:
         """Apply one observation without relative-VFO staging."""
 
-        self._observation_seq += 1
         previous_entry = self._entries.get(observation.path)
+        if not self._is_current_observation(observation) or (
+            previous_entry is not None
+            and self._strictly_older_than_entry(observation, previous_entry)
+        ):
+            return self._empty_changeset(timestamp=observation.timestamp_monotonic)
+
+        self._observation_seq += 1
         previous_freshness = (
             FreshnessState.UNKNOWN
             if previous_entry is None
@@ -324,6 +377,8 @@ class StateStore:
             max_age=observation.max_age,
             source=observation.source,
             quality=observation.quality,
+            provider_generation=self._provider_generation,
+            clock_domain=observation.clock_domain,
         )
         changeset = ChangeSet(
             revision=self._state_revision,
@@ -376,6 +431,8 @@ class StateStore:
                 timestamp_monotonic=entry.last_observed_monotonic,
                 quality=entry.quality,
                 max_age=entry.max_age,
+                provider_generation=entry.provider_generation,
+                clock_domain=entry.clock_domain,
             )
             for path, entry in self._entries.items()
             if path in paths
@@ -421,7 +478,11 @@ class StateStore:
         retention = self._relative_vfo_retention
         if retention is None:
             return self._apply_observation_batch(batch)
-        if not batch or generation != retention.generation:
+        if (
+            not batch
+            or generation != retention.generation
+            or any(not self._is_current_observation(item) for item in batch)
+        ):
             return self._empty_changeset(
                 timestamp=max(
                     (item.timestamp_monotonic for item in batch), default=None
@@ -434,8 +495,7 @@ class StateStore:
             if item.path in retention.paths
             and (
                 item.path not in self._entries
-                or item.timestamp_monotonic
-                >= self._entries[item.path].last_observed_monotonic
+                or not self._strictly_older_than_entry(item, self._entries[item.path])
             )
         )
         changesets: list[ChangeSet] = []
@@ -462,9 +522,8 @@ class StateStore:
 
         for observation in relative:
             previous = retention.pending.get(observation.path)
-            if (
-                previous is None
-                or observation.timestamp_monotonic >= previous.timestamp_monotonic
+            if previous is None or not self._strictly_older_than_observation(
+                observation, previous
             ):
                 retention.pending[observation.path] = observation
 
@@ -614,6 +673,12 @@ class StateStore:
         self,
         observations: tuple[Observation, ...],
     ) -> ChangeSet:
+        if any(not self._is_current_observation(item) for item in observations):
+            return self._empty_changeset(
+                timestamp=max(
+                    (item.timestamp_monotonic for item in observations), default=None
+                )
+            )
         return self._merge_changesets(
             tuple(self._apply_one(item) for item in observations)
         )
@@ -743,6 +808,7 @@ class StateStore:
             changes=(),
             freshness=freshness,
             reconciliation_requests=reconciliation_requests,
+            provider_generation=self._provider_generation,
         )
         self._append_history(
             changes=(),
@@ -759,6 +825,7 @@ class StateStore:
             freshness_revision=self._freshness_revision,
             observation_seq=self._observation_seq,
             generated_at_monotonic=self._freshness_clock.now(),
+            provider_generation=self._provider_generation,
             fields=tuple(
                 FieldSnapshot(
                     path=path,
@@ -768,6 +835,8 @@ class StateStore:
                     max_age=entry.max_age,
                     source=entry.source,
                     quality=entry.quality,
+                    provider_generation=entry.provider_generation,
+                    clock_domain=entry.clock_domain,
                 )
                 for path, entry in sorted(
                     self._entries.items(),
@@ -788,6 +857,7 @@ class StateStore:
                 freshness=(),
                 reconciliation_requests=(),
                 requires_full_snapshot=True,
+                provider_generation=self._provider_generation,
             )
 
         changes: list[FieldChange] = []
@@ -814,11 +884,13 @@ class StateStore:
             changes=_copy_changes(tuple(changes)),
             freshness=tuple(freshness),
             reconciliation_requests=tuple(requests),
+            provider_generation=self._provider_generation,
         )
 
     def _requires_full_snapshot(self, snapshot: StateSnapshot) -> bool:
         return (
-            snapshot.state_revision < self._history_floor_state_revision
+            snapshot.provider_generation != self._provider_generation
+            or snapshot.state_revision < self._history_floor_state_revision
             or snapshot.freshness_revision < self._history_floor_freshness_revision
         )
 
@@ -857,9 +929,35 @@ class StateStore:
                 changes=_copy_changes(changes),
                 freshness=freshness,
                 reconciliation_requests=reconciliation_requests,
+                provider_generation=self._provider_generation,
             )
         )
         self._prune_history()
+
+    def _is_current_observation(self, observation: Observation) -> bool:
+        return observation.provider_generation == self._provider_generation
+
+    @staticmethod
+    def _strictly_older_than_entry(
+        observation: Observation, entry: _FieldEntry
+    ) -> bool:
+        return (
+            observation.provider_generation == entry.provider_generation
+            and observation.clock_domain is not None
+            and observation.clock_domain == entry.clock_domain
+            and observation.timestamp_monotonic < entry.last_observed_monotonic
+        )
+
+    @staticmethod
+    def _strictly_older_than_observation(
+        observation: Observation, previous: Observation
+    ) -> bool:
+        return (
+            observation.provider_generation == previous.provider_generation
+            and observation.clock_domain is not None
+            and observation.clock_domain == previous.clock_domain
+            and observation.timestamp_monotonic < previous.timestamp_monotonic
+        )
 
     def _prune_history(self) -> None:
         while len(self._history) > self._max_history_count:

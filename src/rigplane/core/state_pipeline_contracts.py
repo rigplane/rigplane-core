@@ -16,6 +16,7 @@ from rigplane.core.tx_target import tx_target_from_dict, validate_tx_target
 __all__ = [
     "CapabilityMetadata",
     "ChangeSet",
+    "LOCAL_MONOTONIC_CLOCK_DOMAIN",
     "CommandIntent",
     "CommandLifecycleEvent",
     "CommandLifecycleState",
@@ -33,6 +34,8 @@ __all__ = [
     "SourceMetadata",
     "VfoSlot",
 ]
+
+LOCAL_MONOTONIC_CLOCK_DOMAIN = "local_monotonic"
 
 
 ObservationSource = Literal[
@@ -654,10 +657,23 @@ class Observation:
     quality: tuple[str, ...] = ("confirmed",)
     correlation_id: str | None = None
     max_age: float | None = None
+    # Fixed bootstrap token for source compatibility; never late-bound by Store.apply.
+    provider_generation: int | None = 0
+    clock_domain: str | None = None
 
     def __post_init__(self) -> None:
         if self.max_age is not None and self.max_age < 0:
             raise ValueError("max_age must be non-negative")
+        if self.provider_generation is not None and (
+            not isinstance(self.provider_generation, int)
+            or isinstance(self.provider_generation, bool)
+            or self.provider_generation < 0
+        ):
+            raise ValueError("provider_generation must be a non-negative integer")
+        if self.clock_domain is not None and (
+            not isinstance(self.clock_domain, str) or not self.clock_domain
+        ):
+            raise ValueError("clock_domain must not be empty")
         for item in self.quality:
             _validate_token(item, label="quality")
         if str(self.path) == _TX_TARGET_PATH:
@@ -682,6 +698,8 @@ class Observation:
             "quality": list(self.quality),
             "correlationId": self.correlation_id,
             "maxAge": self.max_age,
+            "providerGeneration": self.provider_generation,
+            "clockDomain": self.clock_domain,
         }
 
     @classmethod
@@ -698,6 +716,20 @@ class Observation:
                 else str(value["correlationId"])
             ),
             max_age=None if value.get("maxAge") is None else float(value["maxAge"]),
+            provider_generation=(
+                0
+                if "providerGeneration" not in value
+                else None
+                if value["providerGeneration"] is None
+                else int(value["providerGeneration"])
+            ),
+            clock_domain=(
+                None
+                if "clockDomain" not in value
+                else None
+                if value["clockDomain"] is None
+                else str(value["clockDomain"])
+            ),
         )
 
 
