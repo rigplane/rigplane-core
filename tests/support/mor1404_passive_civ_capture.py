@@ -5,72 +5,59 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import stat
 from pathlib import Path
 from typing import Any
 
 # fmt: off
-PACKAGE_SCHEMA = "rigplane.mor1404.external-package.v1"
-RAW_SCHEMA = "rigplane.mor1404.raw-events.v1"
-REPORT_SCHEMA = "rigplane.mor1404.replay-report.v1"
-MAX_PACKAGE_BYTES = 64 * 1024
-MAX_RAW_BYTES = 512 * 1024
-MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
-MAX_REPORT_BYTES = 1024 * 1024
-MAX_RECORDS = 25_000
-MAX_DURATION_NS = 120_000_000_000
-REQUIRED_ACTIONS = ("capture_start", "ab_1", "tune_1", "ab_2", "tune_2", "capture_end")
-CHANNELS = ("radio_to_controller", "controller_to_radio", "dtr", "rts")
-FIELDS = {
-    name: set(fields.split())
-    for name, fields in {
-        "package": "schema source capture timing completion actions",
-        "source": "kind artifact sha256 size",
-        "capture": "tool model version mapping sample_rate_hz baud data_bits parity stop_bits",
-        "timing": "start_ns end_ns",
-        "completion": "complete truncated dropped_records timestamp_gaps records bytes channels",
-        "action marker": "name seq timestamp_ns",
-        "session header": "kind schema source_sha256 source_size start_ns end_ns",
-        "session footer": "kind schema source_sha256 records bytes dropped_records timestamp_gaps truncated complete channels stream_sha256",
-        "byte": "kind seq timestamp_ns transport direction value",
-        "line": "kind seq timestamp_ns line state",
-        "action": "kind seq timestamp_ns name",
-    }.items()
-}
-
+PACKAGE_SCHEMA, RAW_SCHEMA, REPORT_SCHEMA = "rigplane.mor1404.external-package.v1", "rigplane.mor1404.raw-events.v1", "rigplane.mor1404.replay-report.v1"
+MAX_PACKAGE_BYTES, MAX_RAW_BYTES, MAX_ARTIFACT_BYTES, MAX_REPORT_BYTES = 64 * 1024, 512 * 1024, 64 * 1024 * 1024, 1024 * 1024
+MAX_RECORDS, MAX_DURATION_NS = 25_000, 120_000_000_000
+MAX_INTERBYTE_GAP_NS = (20 * 10 * 1_000_000_000 + 115_200 - 1) // 115_200  # Twenty 115200-8N1 character times.
+REQUIRED_ACTIONS, CHANNELS = ("capture_start", "ab_1", "tune_1", "ab_2", "tune_2", "capture_end"), ("radio_to_controller", "controller_to_radio", "dtr", "rts")
+FIELDS = {name: set(fields.split()) for name, fields in {"package": "schema source capture timing completion actions", "source": "kind artifact sha256 size", "capture": "tool model version mapping sample_rate_hz baud data_bits parity stop_bits", "timing": "start_ns end_ns", "completion": "complete truncated dropped_records timestamp_gaps records bytes channels", "action marker": "name seq timestamp_ns", "session header": "kind schema source_sha256 source_size start_ns end_ns", "session footer": "kind schema source_sha256 records bytes dropped_records timestamp_gaps truncated complete channels stream_sha256", "byte": "kind seq timestamp_ns transport direction value", "line": "kind seq timestamp_ns line state", "action": "kind seq timestamp_ns name"}.items()}
 class EvidenceError(ValueError):
-    """Evidence is incomplete, ambiguous, unbound, or outside hard limits."""
-
+    pass
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise EvidenceError(message)
-
-
 def _exact(value: Any, label: str, fields: set[str] | None = None) -> dict[str, Any]:
     expected = FIELDS[label] if fields is None else fields
     _require(isinstance(value, dict) and set(value) == expected, f"invalid {label} fields")
     return value
-
-
 def _integer(value: Any, label: str) -> int:
     _require(not isinstance(value, bool) and isinstance(value, int) and value >= 0, f"invalid {label}")
     return value
-
-
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-
-
 def _read(path: Path, limit: int, label: str) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
     try:
-        info = path.stat(follow_symlinks=False)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb", buffering=0) as handle:
+            descriptor = -1
+            before = os.fstat(handle.fileno())
+            _require(stat.S_ISREG(before.st_mode), f"{label} must be a regular file")
+            _require(0 < before.st_size <= limit, f"{label} exceeds size bound")
+            data = handle.read(limit + 1)
+            after = os.fstat(handle.fileno())
+            current = os.stat(path, follow_symlinks=False)
+            stable = (before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode)) == (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode)) == (current.st_dev, current.st_ino, stat.S_IFMT(current.st_mode)) and (before.st_size, before.st_mtime_ns, before.st_ctime_ns) == (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            _require(stable, f"{label} changed during read")
+            _require(len(data) == before.st_size <= limit, f"{label} exceeds size bound or changed during read")
+            return data
+    except EvidenceError:
+        raise
     except OSError as exc:
         raise EvidenceError(f"cannot read {label}") from exc
-    _require(not path.is_symlink() and stat.S_ISREG(info.st_mode), f"{label} must be a regular file")
-    _require(0 < info.st_size <= limit, f"{label} exceeds size bound")
-    return path.read_bytes()
-
-
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 def _load_package(path: Path) -> tuple[dict[str, Any], Path]:
     try:
         package = _exact(json.loads(_read(path, MAX_PACKAGE_BYTES, "package")), "package")
@@ -85,14 +72,12 @@ def _load_package(path: Path) -> tuple[dict[str, Any], Path]:
     native = _read(artifact, MAX_ARTIFACT_BYTES, "artifact")
     _require(_integer(source["size"], "artifact size") == len(native), "artifact size mismatch")
     _require(source["sha256"] == hashlib.sha256(native).hexdigest(), "artifact hash mismatch")
-
     capture = _exact(package["capture"], "capture")
     _require(all(isinstance(capture[name], str) and capture[name] for name in ("tool", "model", "version")), "invalid capture identity")
     mapping = _exact(capture["mapping"], "channel mapping", set(CHANNELS))
     _require(all(isinstance(value, str) and value for value in mapping.values()) and len(set(mapping.values())) == len(CHANNELS), "ambiguous channel mapping")
     _require(_integer(capture["sample_rate_hz"], "sample rate") >= 230_400, "invalid sample rate")
     _require((capture["baud"], capture["data_bits"], capture["parity"], capture["stop_bits"]) == (115200, 8, "N", 1), "capture must be 115200 8N1")
-
     timing = _exact(package["timing"], "timing")
     start, end = (_integer(timing["start_ns"], "start timestamp"), _integer(timing["end_ns"], "end timestamp"))
     _require(start < end and end - start <= MAX_DURATION_NS, "capture duration exceeds bound")
@@ -104,7 +89,6 @@ def _load_package(path: Path) -> tuple[dict[str, Any], Path]:
     _require(_integer(completion["timestamp_gaps"], "timestamp gaps") == 0, "capture reports timestamp gaps")
     _require(_integer(completion["records"], "records") <= MAX_RECORDS, "records exceed bound")
     _require(_integer(completion["bytes"], "byte count") <= MAX_RAW_BYTES, "byte count exceeds bound")
-
     actions = package["actions"]
     _require(isinstance(actions, list) and [row.get("name") for row in actions if isinstance(row, dict)] == list(REQUIRED_ACTIONS), "incomplete action markers")
     for row in actions:
@@ -112,8 +96,6 @@ def _load_package(path: Path) -> tuple[dict[str, Any], Path]:
         _integer(row["seq"], "action sequence")
         _integer(row["timestamp_ns"], "action timestamp")
     return package, artifact
-
-
 def _load_events(path: Path, package: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     raw = _read(path, MAX_RAW_BYTES, "raw event file")
     _require(raw.endswith(b"\n"), "raw event footer is not complete")
@@ -165,7 +147,6 @@ def _load_events(path: Path, package: dict[str, Any]) -> tuple[list[dict[str, An
     _require(actions == package["actions"], "action markers mismatch")
     return events, stream_hash
 
-
 def _derive_frames(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[int]]:
     frames: list[dict[str, Any]] = []
     used: set[int] = set()
@@ -177,6 +158,10 @@ def _derive_frames(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
                 index += 1
                 continue
             end = next((pos for pos in range(index + 2, len(stream)) if stream[pos]["value"] == 0xFD), None)
+            gap = next((pos for pos in range(index + 1, (end + 1) if end is not None else len(stream)) if stream[pos]["timestamp_ns"] - stream[pos - 1]["timestamp_ns"] > MAX_INTERBYTE_GAP_NS), None)
+            if gap is not None:
+                index = gap
+                continue
             nested = next((pos for pos in range(index + 2, end or len(stream) - 1) if stream[pos]["value"] == 0xFE and stream[pos + 1]["value"] == 0xFE), None)
             if nested is not None:
                 index = nested
@@ -195,9 +180,7 @@ def _derive_frames(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
     unframed = [row["seq"] for row in events if row["kind"] == "byte" and row["seq"] not in used]
     return frames, unframed
 
-
 def adjudicate(package_path: Path, raw_path: Path) -> dict[str, Any]:
-    """Validate bound external evidence and produce a deterministic replay result."""
     package, artifact = _load_package(Path(package_path))
     events, stream_hash = _load_events(Path(raw_path), package)
     frames, unframed = _derive_frames(events)
@@ -212,56 +195,41 @@ def adjudicate(package_path: Path, raw_path: Path) -> dict[str, Any]:
             transitions.append(dict(line=row["line"], seq=row["seq"], timestamp_ns=row["timestamp_ns"], **{"from": previous[row["line"]], "to": row["state"]}))
         previous[row["line"]] = row["state"]
     safety = dict(verdict="FAIL" if outbound or transitions else "PASS", outbound_count=len(outbound), modem_transition_count=len(transitions))
-    native = dict(path=artifact.name, **package["source"])
-    return dict(
-        schema=REPORT_SCHEMA,
-        native_artifact=native,
-        raw_stream_sha256=stream_hash,
-        raw_events=events,
-        frames=frames,
-        unframed_byte_seqs=unframed,
-        inbound_07=inbound_07,
-        selector_07=selectors,
-        selector_07_present=bool(selectors),
-        outbound_payloads=outbound,
-        modem_line_states=line_states,
-        modem_transitions=transitions,
-        safety=safety,
-    )
-
-
+    return dict(schema=REPORT_SCHEMA, frame_gap_ns=MAX_INTERBYTE_GAP_NS, native_artifact=dict(path=artifact.name, **package["source"]), raw_stream_sha256=stream_hash, raw_events=events, frames=frames, unframed_byte_seqs=unframed, inbound_07=inbound_07, selector_07=selectors, selector_07_present=bool(selectors), outbound_payloads=outbound, modem_line_states=line_states, modem_transitions=transitions, safety=safety)
 def write_report(payload: dict[str, Any], output: Path) -> None:
-    """Write one bounded checksummed report through an adjacent temporary file."""
     output = Path(output)
-    _require(not output.exists(), "output already exists")
     _require(output.parent.is_dir(), "output parent is missing")
     payload_bytes = _canonical(payload)
     document = dict(schema=REPORT_SCHEMA, payload=payload, footer=dict(complete=True, payload_sha256=hashlib.sha256(payload_bytes).hexdigest()))
     rendered = _canonical(document) + b"\n"
     _require(len(rendered) <= MAX_REPORT_BYTES, "report exceeds size bound")
     temporary = output.with_name(f".{output.name}.partial")
-    _require(not temporary.exists(), "temporary output already exists")
     try:
         with temporary.open("xb") as handle:
             handle.write(rendered)
             handle.flush()
-        temporary.replace(output)
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, output)
+        except FileExistsError as exc:
+            raise EvidenceError("output already exists") from exc
+    except EvidenceError:
+        raise
+    except FileExistsError as exc:
+        raise EvidenceError("temporary output already exists") from exc
+    except OSError as exc:
+        raise EvidenceError("cannot publish output") from exc
     finally:
         temporary.unlink(missing_ok=True)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("package", type=Path)
-    parser.add_argument("raw_events", type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    for arguments in (("package",), ("raw_events",), ("--output",)):
+        parser.add_argument(*arguments, **({"required": True} if arguments[0].startswith("--") else {}), type=Path)
     args = parser.parse_args(argv)
     try:
         write_report(adjudicate(args.package, args.raw_events), args.output)
     except EvidenceError as exc:
         parser.error(str(exc))
     return 0
-
-
 if __name__ == "__main__":
     raise SystemExit(main())
