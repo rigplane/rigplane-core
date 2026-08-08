@@ -318,7 +318,9 @@ class ServerStatePublic(_Strict):
     dialLock: bool = False
     driveGain: int = 0
     monitorGain: int = 0
+    # Compatibility alias derived from canonical ``active``; never Store truth.
     vfoSelect: int = 0
+    # Opaque compatibility only; generic controls must not treat it as truth.
     yaesu: dict[str, int | None] | None = None
     voxOn: bool = False
     voxGain: int = 0
@@ -372,6 +374,9 @@ class StateUpdateEnvelope(_Strict):
     type: Literal["full", "delta"]
     revision: int
     transportSeq: int
+    # Additive declarations; PR B begins emitting both on every frame.
+    stateContractVersion: Literal[1] = 1
+    providerGeneration: int = 0
     data: ServerStatePublic | None = None
     changed: dict[str, object] | None = None
     removed: list[str] | None = None
