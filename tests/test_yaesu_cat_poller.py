@@ -7,7 +7,7 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,6 +17,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+from rigplane.core.state_store import StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
@@ -425,6 +426,79 @@ def _target_observation(
         value,
         native_id="read_tx_target",
     )
+
+
+@pytest.mark.asyncio
+async def test_yaesu_poller_stamps_captured_provider_generation_before_await() -> None:
+    radio = make_radio()
+    emitted: list[Observation] = []
+    store = StateStore()
+    gate = asyncio.Event()
+
+    async def delayed_medium() -> tuple[Observation, ...]:
+        await gate.wait()
+        return (
+            ProviderObservationAdapter(
+                _profile_state_acquisition(),
+                source="yaesu_poll_response",
+                transport="serial",
+            ).observation(
+                FieldPath.active("main", "freq_mode", "freq_hz"),
+                14_074_000,
+            ),
+        )
+
+    poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    with patch.object(YaesuObservationAdapter, "from_radio") as adapter:
+        adapter.return_value.poll_medium = delayed_medium
+        task = asyncio.create_task(poller._emit_medium_observations())  # noqa: SLF001
+        await asyncio.sleep(0)
+        store.begin_provider_generation()
+        gate.set()
+        await task
+
+    assert emitted and {item.provider_generation for item in emitted} == {0}
+    before = store.snapshot()
+    for observation in emitted:
+        store.apply(observation)
+    after = store.snapshot()
+    assert (
+        after.state_revision,
+        after.freshness_revision,
+        after.observation_seq,
+        after.fields,
+        after.provider_generation,
+    ) == (
+        before.state_revision,
+        before.freshness_revision,
+        before.observation_seq,
+        before.fields,
+        before.provider_generation,
+    )
+
+
+@pytest.mark.asyncio
+async def test_yaesu_reconnect_advances_bound_store_once_before_reconnect() -> None:
+    radio = _tx_target_radio()
+    radio._transport._maybe_reconnect_needed = lambda: True
+    store = StateStore()
+    emitted: list[Observation] = []
+    poller = YaesuCatPoller(radio, observation_callback=emitted.extend)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+
+    await poller._try_reconnect()  # noqa: SLF001
+
+    radio._transport.reconnect.assert_awaited_once()
+    assert store.provider_generation == 1
+    assert emitted
+    assert {item.provider_generation for item in emitted} == {1}
 
 
 def _state_write_target(node: ast.AST) -> str | None:

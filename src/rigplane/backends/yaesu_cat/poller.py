@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from rigplane.core.observation_adapter import ProviderObservationAdapter
@@ -106,6 +107,35 @@ class YaesuCatPoller:
         self._tx_target_generation = self._current_tx_target_generation()
         self._tx_target_invalidated_generation: tuple[str | None, int] | None = None
         self._tx_target_known_generation: tuple[str | None, int] | None = None
+        self._capture_provider_generation: Callable[[], int] | None = None
+        self._advance_provider_generation: Callable[[], int] | None = None
+
+    def bind_provider_generation(
+        self,
+        *,
+        capture: Callable[[], int],
+        advance: Callable[[], int] | None = None,
+    ) -> None:
+        """Bind the Web fallback Store lifecycle without owning a new store."""
+
+        self._capture_provider_generation = capture
+        self._advance_provider_generation = advance
+
+    def _captured_provider_generation(self) -> int | None:
+        capture = self._capture_provider_generation
+        return None if capture is None else capture()
+
+    def _stamp_provider_generation(
+        self,
+        observations: Sequence["Observation"],
+        generation: int | None,
+    ) -> tuple["Observation", ...]:
+        if generation is None:
+            return tuple(observations)
+        return tuple(
+            replace(observation, provider_generation=generation)
+            for observation in observations
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -185,7 +215,7 @@ class YaesuCatPoller:
             reconnects = 0
         return (None if profile is None else profile.provider, reconnects)
 
-    def _invalidate_tx_target(self) -> None:
+    def _invalidate_tx_target(self, *, provider_generation: int | None = None) -> None:
         callback = self._observation_callback
         profile = self._tx_target_profile()
         generation = self._current_tx_target_generation()
@@ -211,6 +241,14 @@ class YaesuCatPoller:
                 native_id="connection_generation",
             ),
         )
+        observations = self._stamp_provider_generation(
+            observations,
+            (
+                self._captured_provider_generation()
+                if provider_generation is None
+                else provider_generation
+            ),
+        )
         self._tx_target_invalidated_generation = generation
         try:
             callback(observations)
@@ -229,18 +267,22 @@ class YaesuCatPoller:
         from .observations import YAESU_PTT_PATH, YaesuObservationAdapter
 
         generation = self._sync_tx_target_generation()
+        provider_generation = self._captured_provider_generation()
         try:
             observations = await YaesuObservationAdapter.from_radio(
                 self._radio
             ).poll_medium()
         except (RadioConnectionError, ConnectionError, OSError, CatTransportError):
-            self._invalidate_tx_target()
+            self._invalidate_tx_target(provider_generation=provider_generation)
             raise
         if self._current_tx_target_generation() != generation:
             observations = tuple(
                 item for item in observations if item.path != _TX_TARGET_PATH
             )
             self._invalidate_tx_target()
+        observations = self._stamp_provider_generation(
+            observations, provider_generation
+        )
         for observation in observations:
             if observation.path == YAESU_PTT_PATH:
                 self._last_ptt = bool(observation.value)
@@ -257,13 +299,16 @@ class YaesuCatPoller:
         from .observations import YaesuObservationAdapter
 
         adapter = YaesuObservationAdapter.from_radio(self._radio)
+        provider_generation = self._captured_provider_generation()
         if self._last_ptt:
             observations = await adapter.poll_tx_meters()
         else:
             observations = await adapter.poll_rx_meters(
                 smooth_s_meter=self._smooth_s_meter
             )
-        self._observation_callback(observations)
+        self._observation_callback(
+            self._stamp_provider_generation(observations, provider_generation)
+        )
         return True
 
     async def _emit_slow_control_observations(self) -> bool:
@@ -272,10 +317,13 @@ class YaesuCatPoller:
         from .observations import YaesuObservationAdapter
 
         adapter = YaesuObservationAdapter.from_radio(self._radio)
+        provider_generation = self._captured_provider_generation()
         observations = (
             await adapter.poll_slow_controls() + await adapter.poll_tx_controls()
         )
-        self._observation_callback(observations)
+        self._observation_callback(
+            self._stamp_provider_generation(observations, provider_generation)
+        )
         return True
 
     # ------------------------------------------------------------------
@@ -297,9 +345,11 @@ class YaesuCatPoller:
             return  # Another loop is already reconnecting
 
         self._reconnecting = True
+        advance = self._advance_provider_generation
+        provider_generation = None if advance is None else advance()
         try:
             logger.warning("YaesuCatPoller: triggering auto-reconnect")
-            self._invalidate_tx_target()
+            self._invalidate_tx_target(provider_generation=provider_generation)
             await transport.reconnect()
             logger.info("YaesuCatPoller: reconnected successfully")
         except Exception:

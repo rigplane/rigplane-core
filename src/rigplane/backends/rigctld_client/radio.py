@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
@@ -80,6 +80,28 @@ class RigctldClientObservationPoller:
         self._slow_interval = slow_interval
         self._tasks: list[asyncio.Task[None]] = []
         self._pending_readback_entries: list[_ReadbackCorrelation] = []
+        self._capture_provider_generation: Callable[[], int] | None = None
+
+    def bind_provider_generation(
+        self,
+        *,
+        capture: Callable[[], int],
+        advance: Callable[[], int] | None = None,
+    ) -> None:
+        """Bind immutable observation tokens and the radio reconnect lifecycle."""
+
+        self._capture_provider_generation = capture
+        self._radio.bind_provider_generation(advance=advance)
+
+    def _stamp_provider_generation(
+        self, observations: Sequence[Observation], generation: int | None
+    ) -> tuple[Observation, ...]:
+        if generation is None:
+            return tuple(observations)
+        return tuple(
+            replace(observation, provider_generation=generation)
+            for observation in observations
+        )
 
     async def start(self) -> None:
         if self._tasks:
@@ -114,6 +136,8 @@ class RigctldClientObservationPoller:
     async def _poll_medium(self) -> None:
         from .observations import RigctldClientObservationAdapter
 
+        capture = self._capture_provider_generation
+        provider_generation = None if capture is None else capture()
         drained_entries = await self._drain_commands()
         adapter = RigctldClientObservationAdapter(self._radio)
         observations: list["Observation"] = list(
@@ -126,14 +150,26 @@ class RigctldClientObservationPoller:
         observations.extend(
             await _read_drained_slow_control_readbacks(adapter, drained_entries)
         )
-        self._callback(self._annotate_readback_observations(observations))
+        self._callback(
+            self._stamp_provider_generation(
+                self._annotate_readback_observations(observations),
+                provider_generation,
+            )
+        )
 
     async def _poll_slow(self) -> None:
         from .observations import RigctldClientObservationAdapter
 
+        capture = self._capture_provider_generation
+        provider_generation = None if capture is None else capture()
         adapter = RigctldClientObservationAdapter(self._radio)
         self._callback(
-            self._annotate_readback_observations(await adapter.read_slow_controls())
+            self._stamp_provider_generation(
+                self._annotate_readback_observations(
+                    await adapter.read_slow_controls()
+                ),
+                provider_generation,
+            )
         )
 
     async def _drain_commands(self) -> tuple["CommandQueueEntry", ...]:
@@ -401,10 +437,24 @@ class RigctldClientRadio:
         self._model = model or "External rigctld"
         self._state = RadioState()
         self._vfo_supported = False
+        self._provider_generation_advance: Callable[[], int] | None = None
+        self._has_connected = False
+
+    def bind_provider_generation(
+        self, *, advance: Callable[[], int] | None = None
+    ) -> None:
+        """Let the Web fallback Store fence an explicit replacement connection."""
+
+        self._provider_generation_advance = advance
 
     async def connect(self) -> None:
+        if self._has_connected and not self.connected:
+            advance = self._provider_generation_advance
+            if advance is not None:
+                advance()
         await self._transport.connect()
         await self._probe_vfo_support()
+        self._has_connected = True
 
     async def disconnect(self) -> None:
         await self._transport.close()
