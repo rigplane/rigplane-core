@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -69,6 +69,10 @@ __all__ = ["RigctldHandler"]
 logger = logging.getLogger(__name__)
 _RIGCTLD_SESSION_ID: ContextVar[str | None] = ContextVar(
     "rigctld_session_id",
+    default=None,
+)
+_RIGCTLD_PROVIDER_GENERATION: ContextVar[int | None] = ContextVar(
+    "rigctld_provider_generation",
     default=None,
 )
 
@@ -563,6 +567,9 @@ class RigctldHandler:
             # server-driven freshness service) via ``state_store``.
             state_store = StateStore()
         self._state_store = state_store
+        self._provider_generation_capture: Callable[[], int] = lambda: (
+            self._state_store.provider_generation
+        )
         if state_model_service is None and isinstance(radio, StateModelCapable):
             state_model_service = radio.state_model_service
         if not isinstance(state_model_service, StateModelService):
@@ -573,6 +580,10 @@ class RigctldHandler:
             executor=_RigctldCommandExecutor(self),
             state_store=state_store,
         )
+
+    def bind_provider_generation(self, capture: Callable[[], int]) -> None:
+        """Bind the server-owned provider token capture for request ingress."""
+        self._provider_generation_capture = capture
 
     def _packet_data_mode_value(self) -> int | bool:
         value = self._config.wsjtx_data_mode
@@ -880,6 +891,9 @@ class RigctldHandler:
         source: Literal["hamlib_response", "state_poller"],
         max_age: float | None = None,
     ) -> None:
+        provider_generation = _RIGCTLD_PROVIDER_GENERATION.get()
+        if provider_generation is None:
+            return
         self._state_store.apply(
             Observation(
                 path=FieldPath.parse(path) if isinstance(path, str) else path,
@@ -891,6 +905,7 @@ class RigctldHandler:
                 ),
                 timestamp_monotonic=time.monotonic(),
                 max_age=max_age,
+                provider_generation=provider_generation,
             )
         )
 
@@ -974,6 +989,9 @@ class RigctldHandler:
         Returns:
             Response to send back.
         """
+        provider_token = _RIGCTLD_PROVIDER_GENERATION.set(
+            self._provider_generation_capture()
+        )
         token = _RIGCTLD_SESSION_ID.set(session_id)
         # Read-only gate
         try:
@@ -1018,6 +1036,7 @@ class RigctldHandler:
                 return _err(HamlibError.EINTERNAL)
         finally:
             _RIGCTLD_SESSION_ID.reset(token)
+            _RIGCTLD_PROVIDER_GENERATION.reset(provider_token)
 
     async def release_session_tx(self, session_id: str) -> None:
         """Hand back any managed TX lease ``session_id`` still holds.

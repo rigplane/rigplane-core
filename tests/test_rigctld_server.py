@@ -208,6 +208,7 @@ class _ApplyingAcquisitionExecutor:
                 ),
                 timestamp_monotonic=3.0,
                 max_age=request.policy.freshness_ttl_seconds,
+                provider_generation=store.provider_generation,
             )
         )
         scheduler.record_acquisition_result(request, change_set)
@@ -285,7 +286,7 @@ def _apply_store_value(
     *,
     max_age: float | None = None,
 ) -> None:
-    store.apply(
+    store.apply_current(
         Observation(
             path=path,
             value=value,
@@ -547,7 +548,7 @@ class TestLifecycle:
             state_model_service=model_service,
         )
 
-    async def test_start_without_acquisition_profile_keeps_handler_local_fallback(
+    async def test_standalone_fallback_store_begin_and_detach_each_advance_once(
         self, cfg: RigctldConfig
     ) -> None:
         radio = _ProfiledStandaloneRadio(
@@ -564,9 +565,16 @@ class TestLifecycle:
         ):
             srv = RigctldServer(radio, cfg)
             await srv.start()
+            assert isinstance(srv._state_store, StateStore)
+            assert srv._state_store.provider_generation == 1
+            await srv.stop()
             await srv.stop()
 
-        assert srv._state_store is None
+        assert isinstance(srv._state_store, StateStore)
+        # The standalone server, rather than its default handler, owns the
+        # one fallback Store. Attach and detach are the only lifecycle
+        # transitions it advances.
+        assert srv._state_store.provider_generation == 2
         assert srv._acquisition_scheduler is None
         assert srv._state_model_service is None
         assert srv._state_freshness_service is None
@@ -574,9 +582,70 @@ class TestLifecycle:
         handler_cls.assert_called_once_with(
             radio,
             cfg,
-            state_store=None,
+            state_store=srv._state_store,
             state_model_service=None,
         )
+
+    async def test_standalone_shared_store_is_never_advanced_by_server(
+        self, cfg: RigctldConfig
+    ) -> None:
+        radio = _ProfiledStandaloneRadio(
+            profile=type("Profile", (), {"state_acquisition": None})()
+        )
+        store = StateStore()
+        radio.state_store = store
+        fake_server = _FakeAsyncServer()
+
+        with patch(
+            "rigplane.rigctld.server.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            assert store.provider_generation == 0
+            await srv.stop()
+
+        assert store.provider_generation == 0
+
+    async def test_standalone_stop_rejects_delayed_handler_readback_without_mutation(
+        self, cfg: RigctldConfig
+    ) -> None:
+        radio = _ProfiledStandaloneRadio(
+            profile=type("Profile", (), {"state_acquisition": None})()
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_get_freq() -> int:
+            started.set()
+            await release.wait()
+            return 14_074_000
+
+        radio.get_freq.side_effect = delayed_get_freq
+        srv = RigctldServer(radio, cfg)
+        await srv.start()
+        try:
+            assert isinstance(srv._state_store, StateStore)
+            handler = srv._rig_handler
+            request = asyncio.create_task(
+                handler.execute(_FREQ_CMD, session_id="delayed-readback")
+            )
+            await started.wait()
+            before = srv._state_store.snapshot()
+            stopping = asyncio.create_task(srv.stop())
+            await asyncio.sleep(0)
+            assert srv._state_store.provider_generation == 2
+            release.set()
+            await request
+            after = srv._state_store.snapshot()
+            assert after.state_revision == before.state_revision
+            assert after.freshness_revision == before.freshness_revision
+            assert after.observation_seq == before.observation_seq
+            assert after.fields == before.fields
+            await stopping
+        finally:
+            if srv._server is not None:
+                await srv.stop()
 
     async def test_stale_standalone_state_store_queues_acquisition_via_server_service(
         self, cfg: RigctldConfig
@@ -906,6 +975,7 @@ class TestLifecycle:
                         ),
                         timestamp_monotonic=3.0,
                         max_age=request.policy.freshness_ttl_seconds,
+                        provider_generation=srv._state_store.provider_generation,
                     )
                 )
                 srv._acquisition_scheduler.record_acquisition_result(
