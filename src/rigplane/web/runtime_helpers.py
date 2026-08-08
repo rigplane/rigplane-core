@@ -168,7 +168,6 @@ _GLOBAL_SLOW_STATE_FIELDS = {
     "tuning_step",
     "overflow",
     "cw_spot",
-    "vfo_select",
     "rx_antenna_1",
     "rx_antenna_2",
     "tx_band_edges",
@@ -179,6 +178,20 @@ _GLOBAL_SLOW_STATE_FIELDS = {
     "data1_mod_input",
     "data2_mod_input",
     "data3_mod_input",
+}
+_CONNECTION_PUBLIC_PATHS = {
+    "connected": "connection.rigConnected",
+    "radio_ready": "connection.radioReady",
+    "control_connected": "connection.controlConnected",
+    "status": "radioDetail.status",
+}
+_HEALTH_PUBLIC_PATHS = {
+    "server_reachable": "radioHealth.serverReachable",
+    "radio_link": "radioHealth.radioLink",
+    "readiness": "radioHealth.readiness",
+    "likely_cause": "radioHealth.likelyCause",
+    "since_ms": "radioHealth.sinceMs",
+    "last_error": "radioHealth.lastError",
 }
 # Public ``scopeControls.<suffix>`` leaves the toolbar/LCD gate on, mapped to
 # their backend scope-control field name. The whole group is unobserved until
@@ -302,8 +315,18 @@ def _snapshot_field_public_paths(path: FieldPath) -> tuple[str, ...]:
             path.family is FieldFamily.SLOW_STATE
             and path.name in _GLOBAL_SLOW_STATE_FIELDS
         ):
+            if path.name == "active":
+                return ("active", "vfoSelect")
             return (_to_camel(path.name),)
         return ()
+
+    if path.scope is FieldScope.CONNECTION and path.family is FieldFamily.CONNECTION:
+        public_path = _CONNECTION_PUBLIC_PATHS.get(path.name)
+        return () if public_path is None else (public_path,)
+
+    if path.scope is FieldScope.HEALTH and path.family is FieldFamily.HEALTH:
+        public_path = _HEALTH_PUBLIC_PATHS.get(path.name)
+        return () if public_path is None else (public_path,)
 
     if path.scope is FieldScope.SCOPE_CONTROLS and path.family is FieldFamily.DISPLAY:
         paths: list[str] = []
@@ -471,6 +494,14 @@ def _default_snapshot_field_status(receiver_count: int) -> dict[str, dict[str, A
             _to_camel(name),
             FieldPath.global_("slow_state", name),
         )
+    # PR-A compatibility fallback: until PR B publishes lifecycle observations,
+    # an empty snapshot keeps the legacy alias seed. An observed canonical
+    # ``active`` field replaces this status through ``_snapshot_field_public_paths``.
+    _set_missing_field_status(
+        statuses,
+        "vfoSelect",
+        FieldPath.global_("slow_state", "vfo_select"),
+    )
     for public_suffix, control_name in _SCOPE_CONTROL_PUBLIC_FIELDS.items():
         _set_missing_field_status(
             statuses,
@@ -993,7 +1024,23 @@ def _apply_snapshot_field(
             and path.name in _GLOBAL_SLOW_STATE_FIELDS
         ):
             state[path.name] = value
+            if path.name == "active" and value in {"MAIN", "SUB"}:
+                state["vfo_select"] = 0 if value == "MAIN" else 1
             return
+
+    if path.scope is FieldScope.CONNECTION and path.family is FieldFamily.CONNECTION:
+        if path.name in {"connected", "radio_ready", "control_connected"}:
+            state[path.name] = value
+        elif path.name == "status":
+            state["radio_detail"] = {"status": value}
+        return
+
+    if path.scope is FieldScope.HEALTH and path.family is FieldFamily.HEALTH:
+        if path.name in _HEALTH_PUBLIC_PATHS:
+            health = state.setdefault("radio_health", {})
+            if isinstance(health, dict):
+                health[path.name] = value
+        return
 
     if path.scope is FieldScope.SCOPE_CONTROLS and path.family is FieldFamily.DISPLAY:
         scope_controls = state.get("scope_controls")
@@ -1054,14 +1101,29 @@ def _build_public_state_payload_from_dict(
         "tx_target",
         {"status": "unknown", "reason": "not-observed"},
     )
-    raw_connected = getattr(radio, "connected", False) if radio else False
-    state["connected"] = raw_connected if isinstance(raw_connected, bool) else False
-    state["radio_ready"] = radio_ready(radio)
-    raw_control_connected = (
+    runtime_connected = getattr(radio, "connected", False) if radio else False
+    raw_connected = state.get("connected")
+    state["connected"] = (
+        raw_connected
+        if isinstance(raw_connected, bool)
+        else runtime_connected
+        if isinstance(runtime_connected, bool)
+        else False
+    )
+    stored_ready = state.get("radio_ready")
+    state["radio_ready"] = (
+        stored_ready if isinstance(stored_ready, bool) else radio_ready(radio)
+    )
+    runtime_control_connected = (
         getattr(radio, "control_connected", False) if radio else False
     )
+    raw_control_connected = state.get("control_connected")
     state["control_connected"] = (
-        raw_control_connected if isinstance(raw_control_connected, bool) else False
+        raw_control_connected
+        if isinstance(raw_control_connected, bool)
+        else runtime_control_connected
+        if isinstance(runtime_control_connected, bool)
+        else False
     )
     state["revision"] = revision
     state["state_revision"] = state_revision
@@ -1080,12 +1142,22 @@ def _build_public_state_payload_from_dict(
         raw_val = conn_state_val.value
         if isinstance(raw_val, str):
             radio_status = raw_val
-    elif raw_connected:
+    elif state["connected"]:
         radio_status = "connected"
+    stored_detail = state.get("radio_detail")
+    stored_status = (
+        stored_detail.get("status") if isinstance(stored_detail, dict) else None
+    )
     state["radio_detail"] = {
-        "status": radio_status,
+        "status": stored_status if isinstance(stored_status, str) else radio_status,
     }
-    state["radio_health"] = radio_health or classify_radio_health(radio)
+    public_health = dict(radio_health or classify_radio_health(radio))
+    stored_health = state.get("radio_health")
+    if isinstance(stored_health, dict):
+        for name in _HEALTH_PUBLIC_PATHS:
+            if name in stored_health:
+                public_health[_to_camel(name)] = stored_health[name]
+    state["radio_health"] = public_health
     state["ws_clients"] = {
         "scope": scope_clients,
         "control": control_clients,

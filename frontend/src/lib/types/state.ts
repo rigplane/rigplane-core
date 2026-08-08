@@ -273,6 +273,8 @@ export interface StateUpdateEnvelope {
   type: "full" | "delta";
   revision: number;
   transportSeq: number;
+  stateContractVersion?: 1;
+  providerGeneration?: number;
   data?: ServerStatePublic | null;
   changed?: {
     [k: string]: unknown;
