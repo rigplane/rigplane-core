@@ -36,6 +36,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Architecture debt guards compare HEAD with the reachable PR base.
+          fetch-depth: 2
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0

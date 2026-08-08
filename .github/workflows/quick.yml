@@ -31,6 +31,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Architecture debt guards compare HEAD with the reachable PR base.
+          fetch-depth: 2
 
       - name: Detect quick-check changes
         id: filter
