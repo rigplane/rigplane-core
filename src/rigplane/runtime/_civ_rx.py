@@ -2342,25 +2342,44 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x07 and len(frame.data) >= 2:
-            sub07 = frame.data[0]
-            val07 = frame.data[1]
-            if sub07 == 0xD2:
+        elif frame.command == 0x07:
+            profile = self._host._profile
+            if (
+                len(frame.data) == 1
+                and frame.data[0] in (0x00, 0x01)
+                and profile.receiver_count == 1
+                and profile.vfo_scheme == "ab"
+                and profile.vfo_readback == "selected_unselected"
+                and frame.receiver is None
+            ):
                 observations.append(
                     self._observation(
-                        FieldPath.global_("slow_state", "active"),
-                        "SUB" if val07 else "MAIN",
+                        FieldPath.active_slot(receiver_id),
+                        "A" if frame.data[0] == 0x00 else "B",
                         frame=frame,
+                        source_override="civ_unsolicited",
+                        retain_for_generation=True,
                     )
                 )
-            elif sub07 == 0xC2:
-                observations.append(
-                    self._observation(
-                        FieldPath.global_("tx_state", "dual_watch"),
-                        bool(val07),
-                        frame=frame,
+            elif len(frame.data) >= 2:
+                sub07 = frame.data[0]
+                val07 = frame.data[1]
+                if sub07 == 0xD2:
+                    observations.append(
+                        self._observation(
+                            FieldPath.global_("slow_state", "active"),
+                            "SUB" if val07 else "MAIN",
+                            frame=frame,
+                        )
                     )
-                )
+                elif sub07 == 0xC2:
+                    observations.append(
+                        self._observation(
+                            FieldPath.global_("tx_state", "dual_watch"),
+                            bool(val07),
+                            frame=frame,
+                        )
+                    )
         elif frame.command == 0x0F and frame.data:
             observations.append(
                 self._observation(
@@ -2569,8 +2588,10 @@ class CivRuntime:
         *,
         frame: CivFrame,
         quality: tuple[str, ...] = ("confirmed",),
+        source_override: ObservationSource | None = None,
+        retain_for_generation: bool = False,
     ) -> Observation:
-        source: ObservationSource = (
+        source: ObservationSource = source_override or (
             "civ_unsolicited"
             if frame.to_addr == 0x00 or frame.command in (0x00, 0x01)
             else "command_response"
@@ -2586,8 +2607,12 @@ class CivRuntime:
                 capability_id=str(path),
             ),
             timestamp_monotonic=time.monotonic(),
-            max_age=_OBSERVATION_MAX_AGE_SECONDS.get(
-                (path.scope.value, path.family.value, path.name)
+            max_age=(
+                None
+                if retain_for_generation
+                else _OBSERVATION_MAX_AGE_SECONDS.get(
+                    (path.scope.value, path.family.value, path.name)
+                )
             ),
             quality=quality,
         )

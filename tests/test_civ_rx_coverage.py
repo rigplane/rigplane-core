@@ -40,7 +40,7 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.tone import _encode_tone_freq
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
@@ -238,6 +238,163 @@ async def test_relative_vfo_stale_or_invalid_generation_cannot_repopulate(
     )
 
     assert radio._state_store.snapshot().fields == ()  # noqa: SLF001
+
+
+def _configure_ic7300_ingress(radio: IcomRadio) -> None:
+    radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
+    radio._radio_addr = radio._profile.civ_addr  # noqa: SLF001
+    radio.send_civ = AsyncMock()  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("to_addr", [CONTROLLER_ADDR, 0x00])
+@pytest.mark.parametrize(("selector", "slot"), [(0x00, "A"), (0x01, "B")])
+async def test_physical_ab_selector_promotes_confirmed_unsolicited_observation(
+    radio: IcomRadio,
+    to_addr: int,
+    selector: int,
+    slot: str,
+) -> None:
+    _configure_ic7300_ingress(radio)
+    frame = parse_civ_frame(bytes([0xFE, 0xFE, to_addr, 0x94, 0x07, selector, 0xFD]))
+
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+
+    field = radio._state_store.snapshot().field(  # noqa: SLF001
+        FieldPath.active_slot("0")
+    )
+    assert field.value == slot
+    assert field.source.source == "civ_unsolicited"
+    assert field.source.provider == "icom_civ"
+    assert field.source.transport == "civ"
+    assert field.source.native_id == "civ:07"
+    assert field.quality == ("confirmed",)
+    assert field.max_age is None
+    radio.send_civ.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [b"\xd0", b"\xd1", b"\xa0", b"\xb0", b"\xc2\x01", b"\xd2\x01"],
+)
+async def test_non_selector_command_07_payloads_do_not_bind_ab(
+    radio: IcomRadio,
+    payload: bytes,
+) -> None:
+    _configure_ic7300_ingress(radio)
+    frame = parse_civ_frame(b"\xfe\xfe\xe0\x94\x07" + payload + b"\xfd")
+
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(  # noqa: SLF001
+            FieldPath.active_slot("0")
+        )
+    radio.send_civ.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_physical_ab_selector_is_profile_and_generation_scoped(
+    radio: IcomRadio,
+) -> None:
+    _configure_ic7300_ingress(radio)
+    selector = parse_civ_frame(b"\xfe\xfe\xe0\x94\x07\x01\xfd")
+
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        selector,
+        generation=radio._civ_epoch - 1,  # noqa: SLF001
+    )
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(  # noqa: SLF001
+            FieldPath.active_slot("0")
+        )
+
+    radio._profile = resolve_radio_profile(model="IC-7610")  # noqa: SLF001
+    radio._radio_addr = radio._profile.civ_addr  # noqa: SLF001
+    dual_rx_selector = parse_civ_frame(
+        bytes([0xFE, 0xFE, CONTROLLER_ADDR, radio._radio_addr, 0x07, 0x01, 0xFD])
+    )
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        dual_rx_selector,
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(  # noqa: SLF001
+            FieldPath.active_slot("0")
+        )
+    radio.send_civ.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_physical_ab_selector_rebinds_next_relative_frequency_atomically(
+    radio: IcomRadio,
+) -> None:
+    _configure_ic7300_ingress(radio)
+    radio._state_store.configure_relative_vfo_retention(  # noqa: SLF001
+        generation=radio._civ_epoch,  # noqa: SLF001
+        max_age=31.0,
+        coherence_window=5.0,
+    )
+
+    async def route(command: int, payload: bytes, *, broadcast: bool = False) -> None:
+        frame = _make_frame(
+            cmd=command,
+            data=payload,
+            from_addr=radio._radio_addr,  # noqa: SLF001
+            to_addr=0x00 if broadcast else CONTROLLER_ADDR,
+        )
+        await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+            frame,
+            generation=radio._civ_epoch,  # noqa: SLF001
+        )
+
+    await route(0x07, b"\x00")
+    for frame in (
+        (0x25, b"\x00" + bcd_encode(14_284_000)),
+        (0x26, bytes([0, Mode.USB.value, 0, 1])),
+        (0x25, b"\x01" + bcd_encode(14_075_000)),
+        (0x26, bytes([1, Mode.USB.value, 0, 1])),
+    ):
+        await route(*frame)
+
+    initial = radio._state_store.snapshot()  # noqa: SLF001
+    assert initial.field("receiver.0.slot.A.freq_mode.freq_hz").value == 14_284_000
+    assert initial.field("receiver.0.slot.B.freq_mode.freq_hz").value == 14_075_000
+
+    await route(0x07, b"\x01")
+    before_b = radio._state_store.snapshot()  # noqa: SLF001
+    radio._on_state_change = MagicMock()  # noqa: SLF001
+    await route(0x25, b"\x00" + bcd_encode(14_130_000))
+    after_b = radio._state_store.snapshot()  # noqa: SLF001
+    assert after_b.state_revision == before_b.state_revision + 2
+    assert after_b.field("receiver.0.vfo.active_slot").value == "B"
+    assert after_b.field("receiver.0.active.freq_mode.freq_hz").value == 14_130_000
+    assert after_b.field("receiver.0.slot.B.freq_mode.freq_hz").value == 14_130_000
+    assert after_b.field("receiver.0.slot.A.freq_mode.freq_hz").value == 14_284_000
+    radio._on_state_change.assert_called_once()  # noqa: SLF001
+    assert set(radio._on_state_change.call_args.args[1]["paths"]) == {  # noqa: SLF001
+        "receiver.0.active.freq_mode.freq_hz",
+        "receiver.0.slot.B.freq_mode.freq_hz",
+    }
+
+    await route(0x07, b"\x00")
+    before_a = radio._state_store.snapshot()  # noqa: SLF001
+    radio._on_state_change.reset_mock()  # noqa: SLF001
+    await route(0x00, bcd_encode(14_125_000), broadcast=True)
+    after_a = radio._state_store.snapshot()  # noqa: SLF001
+    assert after_a.state_revision == before_a.state_revision + 2
+    assert after_a.field("receiver.0.vfo.active_slot").value == "A"
+    assert after_a.field("receiver.0.slot.A.freq_mode.freq_hz").value == 14_125_000
+    assert after_a.field("receiver.0.slot.B.freq_mode.freq_hz").value == 14_130_000
+    radio._on_state_change.assert_called_once()  # noqa: SLF001
+    radio.send_civ.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
