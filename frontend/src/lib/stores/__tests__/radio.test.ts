@@ -185,6 +185,15 @@ describe('radio store', () => {
     expect(store.getRadioState()?.ptt).toBe(true);
   });
 
+  it('rejects a matching-epoch legacy HTTP rollback from revision 100 to 1', () => {
+    expect(store.setRadioState(makeState({ revision: 100, ptt: false }))).toBe(true);
+    const accepted = store.getRadioState();
+    expect(store.setRadioState(makeState({ revision: 1, ptt: true }))).toBe(false);
+    expect(store.getRadioState()).toBe(accepted);
+    expect(store.getRadioState()?.revision).toBe(100);
+    expect(store.getRadioState()?.ptt).toBe(false);
+  });
+
   it('drops optimistic patches and revision locks when accepting a new provider epoch', async () => {
     const capabilities = await import('../capabilities.svelte');
     store.setRadioState(makeState({ providerGeneration: 0, main: { ...makeState().main, afLevel: 10 } }));
@@ -452,11 +461,11 @@ describe('radio store', () => {
     expect(store.getSubReceiver()?.freqHz).toBe(7100000);
   });
 
-  it('detects server restart: accepts state when revision resets from high to near zero', () => {
+  it('rejects a revision reset inside the same epoch and session', () => {
     store.setRadioState(makeState({ revision: 100 }));
     store.setRadioState(makeState({ revision: 1, ptt: true }));
-    expect(store.getRadioState()?.revision).toBe(1);
-    expect(store.getRadioState()?.ptt).toBe(true);
+    expect(store.getRadioState()?.revision).toBe(100);
+    expect(store.getRadioState()?.ptt).toBe(false);
   });
 
   it('does not treat small revision drop as server restart (lastRevision <= 10)', () => {

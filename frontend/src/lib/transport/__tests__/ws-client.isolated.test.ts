@@ -54,6 +54,7 @@ vi.mock('../../stores/radio.svelte', () => ({
   resetRadioState: vi.fn(() => {
     radioStoreMock.current = null;
   }),
+  isValidServerState: vi.fn(() => true),
   setRadioState: vi.fn((state: ServerStateWithObservation) => {
     const current = radioStoreMock.current;
     const lastRevision = current ? current.stateRevision ?? current.revision : -1;
@@ -66,7 +67,6 @@ vi.mock('../../stores/radio.svelte', () => ({
     const nextObservationSeq = state.observationSeq ?? 0;
     const lastPublicStateSeq = current?.publicStateSeq ?? -1;
     const nextPublicStateSeq = state.publicStateSeq ?? 0;
-    const isReset = lastRevision > 10 && nextRevision < lastRevision / 2;
     const semanticAdvanced = nextRevision > lastRevision;
     const semanticCurrent = nextRevision === lastRevision;
     const metadataAdvanced = semanticCurrent && (
@@ -75,7 +75,7 @@ vi.mock('../../stores/radio.svelte', () => ({
       || nextObservationSeq > lastObservationSeq
       || nextPublicStateSeq > lastPublicStateSeq
     );
-    if (current === null || semanticAdvanced || metadataAdvanced || isReset) {
+    if (current === null || semanticAdvanced || metadataAdvanced) {
       radioStoreMock.current = state;
     }
   }),

@@ -15,6 +15,8 @@ function makeState(revision: number): ServerState {
     revision,
     stateRevision: revision,
     freshnessRevision: 1,
+    observationSeq: revision,
+    updatedAt: '2026-08-08T00:00:00Z',
     stateContractVersion: 1,
     providerGeneration: 0,
     active: 'MAIN',
@@ -22,6 +24,7 @@ function makeState(revision: number): ServerState {
     ptt: false,
     split: false,
     dualWatch: false,
+    tunerStatus: 0,
     main: {
       freqHz: 14074000,
       mode: 'USB',
@@ -50,6 +53,12 @@ function makeState(revision: number): ServerState {
       rfGain: 100,
       squelch: 0,
     },
+    connection: {
+      rigConnected: true,
+      radioReady: true,
+      controlConnected: true,
+    },
+    txTarget: { status: 'unknown', reason: 'not-observed' },
   } as ServerState;
 }
 

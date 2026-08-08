@@ -366,6 +366,51 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(store.getLastRevision()).toBe(6);
   });
 
+  it('rejects a same-generation 100-to-1 delta without changing radio or capability truth', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 100, ptt: false })));
+    const accepted = store.getRadioState();
+    const acceptedCapabilities = capabilities.getCapabilities();
+
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(makeState({ revision: 1, ptt: true }), { ptt: true }),
+    );
+
+    expect(store.getRadioState()).toBe(accepted);
+    expect(store.getRadioState()?.revision).toBe(100);
+    expect(store.getRadioState()?.ptt).toBe(false);
+    expect(capabilities.getCapabilities()).toBe(acceptedCapabilities);
+  });
+
+  it('rejects incomplete full data and malformed changed records before they alter truth', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], {
+      type: 'full', stateContractVersion: 1, providerGeneration: 0,
+      revision: 1, data: { stateContractVersion: 1, providerGeneration: 0 },
+    });
+    expect(store.getRadioState()).toBeNull();
+
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, ptt: false })));
+    const accepted = store.getRadioState();
+    const acceptedCapabilities = capabilities.getCapabilities();
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(makeState({ revision: 2, ptt: true }), { main: 'corrupt' }),
+    );
+
+    expect(store.getRadioState()).toBe(accepted);
+    expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
+    expect(store.getRadioState()?.ptt).toBe(false);
+    expect(capabilities.getCapabilities()).toBe(acceptedCapabilities);
+  });
+
   it('rejects unversioned frames and a delta before a valid full without changing truth', async () => {
     const { wsClient, store, capabilities } = await loadModules();
     capabilities.setCapabilities(makeCapabilities());

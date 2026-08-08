@@ -1,7 +1,7 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
 import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
-import { getRadioState, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
+import { getRadioState, isValidServerState, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
 
@@ -548,7 +548,6 @@ function isRevisionAcceptable(
 
   const lastRevision = stateRevisionOf(currentState);
   const nextRevision = stateRevisionOf(nextState);
-  const isReset = lastRevision > 10 && nextRevision < lastRevision / 2;
   const semanticAdvanced = nextRevision > lastRevision;
   const semanticCurrent = nextRevision === lastRevision;
   const metadataAdvanced = semanticCurrent && (
@@ -561,7 +560,7 @@ function isRevisionAcceptable(
     )
   );
 
-  return semanticAdvanced || metadataAdvanced || isReset;
+  return semanticAdvanced || metadataAdvanced;
 }
 
 function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, unknown> | null {
@@ -576,6 +575,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     const data = envelope.data;
     if (data.stateContractVersion !== 1 || data.providerGeneration !== generation) return null;
     const nextState = syncEnvelopeRevisions({ ...data }, envelope);
+    if (!isValidServerState(nextState)) return null;
     if (
       _acceptedProviderGeneration === generation
       && _fullState !== null
@@ -610,16 +610,20 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     || (envelope.removed ?? []).includes('stateContractVersion')
     || (envelope.removed ?? []).includes('providerGeneration')
   ) return null;
+  const changed = envelope.changed;
+  const removed = (envelope.removed ?? []) as string[];
+  const currentState = _fullState;
+  const candidate = currentState ? { ...currentState, ...changed } : null;
+  if (candidate) {
+    for (const key of removed) delete candidate[key];
+    syncEnvelopeRevisions(candidate, envelope);
+    if (!isValidServerState(candidate)) return null;
+  }
   if (_acceptedProviderGeneration !== generation || !_hasReceivedFullState || _fullState === null) {
     if (highestSeen === null || generation > highestSeen) resetForProviderGeneration(generation);
     return null;
   }
-  const changed = envelope.changed;
-  const removed = (envelope.removed ?? []) as string[];
-  const currentState = _fullState;
-  const nextState = { ...currentState, ...changed };
-  for (const key of removed) delete nextState[key];
-  syncEnvelopeRevisions(nextState, envelope);
+  const nextState = candidate!;
   if (!isRevisionAcceptable(currentState, nextState, Object.keys(changed))) return null;
   _fullState = nextState;
   return commitCurrentState() ? _fullState : null;

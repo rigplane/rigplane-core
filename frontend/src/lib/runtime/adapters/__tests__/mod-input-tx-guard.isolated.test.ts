@@ -73,8 +73,13 @@ function receiver(dataMode: number) {
 }
 
 function makeState(overrides: Record<string, unknown> = {}): ServerState {
+  const stateRevision = typeof overrides.revision === 'number' ? overrides.revision : 1;
   return {
-    revision: 1,
+    revision: stateRevision,
+    stateRevision,
+    freshnessRevision: 1,
+    observationSeq: stateRevision,
+    updatedAt: '2026-08-08T00:00:00Z',
     active: 'MAIN',
     ptt: false,
     split: false,
@@ -84,6 +89,8 @@ function makeState(overrides: Record<string, unknown> = {}): ServerState {
     providerGeneration: 0,
     main: receiver(0),
     sub: receiver(0),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    txTarget: { status: 'unknown', reason: 'not-observed' },
     ...overrides,
   } as unknown as ServerState;
 }

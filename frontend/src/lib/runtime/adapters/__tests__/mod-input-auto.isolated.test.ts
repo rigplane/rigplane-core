@@ -90,6 +90,10 @@ let revision = 1;
 function makeState(overrides: Record<string, unknown> = {}): ServerState {
   return {
     revision: ++revision,
+    stateRevision: revision,
+    freshnessRevision: revision,
+    observationSeq: revision,
+    updatedAt: '2026-08-08T00:00:00Z',
     active: 'MAIN',
     ptt: false,
     split: false,
@@ -99,6 +103,8 @@ function makeState(overrides: Record<string, unknown> = {}): ServerState {
     providerGeneration: 0,
     main: receiver(0),
     sub: receiver(0),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    txTarget: { status: 'unknown', reason: 'not-observed' },
     ...overrides,
   } as unknown as ServerState;
 }

@@ -215,10 +215,95 @@ function validProviderGeneration(value: unknown): value is number {
     && value >= 0;
 }
 
+function validCounter(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+function validReceiver(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const receiver = value as Record<string, unknown>;
+  return typeof receiver.freqHz === 'number'
+    && Number.isFinite(receiver.freqHz)
+    && typeof receiver.mode === 'string'
+    && (typeof receiver.filter === 'number' || receiver.filter === null)
+    && typeof receiver.dataMode === 'number'
+    && Number.isFinite(receiver.dataMode)
+    && typeof receiver.sMeter === 'number'
+    && Number.isFinite(receiver.sMeter)
+    && typeof receiver.att === 'number'
+    && Number.isFinite(receiver.att)
+    && typeof receiver.preamp === 'number'
+    && Number.isFinite(receiver.preamp)
+    && typeof receiver.nb === 'boolean'
+    && typeof receiver.nr === 'boolean'
+    && typeof receiver.afLevel === 'number'
+    && Number.isFinite(receiver.afLevel)
+    && typeof receiver.rfGain === 'number'
+    && Number.isFinite(receiver.rfGain)
+    && typeof receiver.squelch === 'number'
+    && Number.isFinite(receiver.squelch);
+}
+
+function validConnection(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const connection = value as Record<string, unknown>;
+  return typeof connection.rigConnected === 'boolean'
+    && typeof connection.radioReady === 'boolean'
+    && typeof connection.controlConnected === 'boolean';
+}
+
+function validTxTarget(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const target = value as Record<string, unknown>;
+  if (target.status === 'unknown') return typeof target.reason === 'string';
+  return target.status === 'known'
+    && (target.receiver === 'MAIN' || target.receiver === 'SUB')
+    && (target.slot === 'A' || target.slot === 'B' || target.slot === null)
+    && (typeof target.frequencyHz === 'number' || target.frequencyHz === null);
+}
+
+/** Runtime contract shared by WebSocket and the remaining legacy HTTP writer. */
+export function isValidServerState(value: unknown): value is ServerState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const state = value as Record<string, unknown>;
+  if (
+    state.stateContractVersion !== 1
+    || !validProviderGeneration(state.providerGeneration)
+    || !validCounter(state.revision)
+    || !validCounter(state.stateRevision)
+    || !validCounter(state.freshnessRevision)
+    || !validCounter(state.observationSeq)
+    || typeof state.updatedAt !== 'string'
+    || (state.active !== 'MAIN' && state.active !== 'SUB')
+    || typeof state.ptt !== 'boolean'
+    || typeof state.split !== 'boolean'
+    || typeof state.dualWatch !== 'boolean'
+    || typeof state.tunerStatus !== 'number'
+    || !Number.isFinite(state.tunerStatus)
+    || !validReceiver(state.main)
+    || (state.sub !== null && !validReceiver(state.sub))
+    || !validConnection(state.connection)
+    || !validTxTarget(state.txTarget)
+  ) return false;
+  for (const key of ['healthRevision', 'publicStateSeq', 'transportSeq'] as const) {
+    if (state[key] !== undefined && !validCounter(state[key])) return false;
+  }
+  if (state.wsClients !== undefined) {
+    if (!state.wsClients || typeof state.wsClients !== 'object' || Array.isArray(state.wsClients)) return false;
+    const clients = state.wsClients as Record<string, unknown>;
+    if (!validCounter(clients.scope) || !validCounter(clients.control) || !validCounter(clients.audio)) return false;
+  }
+  for (const key of ['fieldStatus', 'radioHealth'] as const) {
+    if (state[key] !== undefined && (!state[key] || typeof state[key] !== 'object' || Array.isArray(state[key]))) return false;
+  }
+  return true;
+}
+
 function hasCurrentEpoch(state: ServerState): boolean {
   const record = state as unknown as Record<string, unknown>;
-  return record.stateContractVersion === 1
-    && validProviderGeneration(record.providerGeneration)
+  return isValidServerState(state)
     && capabilitiesMatchGeneration(record.providerGeneration);
 }
 
@@ -248,7 +333,6 @@ export function setRadioState(state: ServerState): boolean {
   const nextStateRevision = stateRevision(state);
   const nextFreshnessRevision = freshnessRevision(state);
   const nextObservationSeq = observationSeq(state);
-  const isReset = lastRevision > 10 && nextStateRevision < lastRevision / 2;
   const isInitial = radio.current === null;
   const nextHealthRevision = state.healthRevision ?? 0;
   const healthAdvanced = nextHealthRevision > lastHealthRevision;
@@ -265,16 +349,10 @@ export function setRadioState(state: ServerState): boolean {
     || healthAdvanced
     || liveMetadataAdvanced
   );
-  if (isReset) {
-    console.warn(
-      `Detected server restart: revision reset from ${lastRevision} to ${nextStateRevision}`,
-    );
-  }
   if (
     isInitial
     || semanticAdvanced
     || metadataAdvanced
-    || isReset
   ) {
     lastRevision = nextStateRevision;
     lastFreshnessRevision = nextFreshnessRevision;
