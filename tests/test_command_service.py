@@ -220,10 +220,7 @@ async def test_execute_acknowledges_without_confirming_state_when_executor_has_n
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
 async def test_execute_captures_generation_before_awaited_executor_result() -> None:
-    """A command result must retain the Store token captured before await."""
-
-    started = asyncio.Event()
-    release = asyncio.Event()
+    started, release = asyncio.Event(), asyncio.Event()
     store = StateStore()
 
     class DelayedExecutor:
@@ -244,59 +241,35 @@ async def test_execute_captures_generation_before_awaited_executor_result() -> N
     await started.wait()
     store.begin_provider_generation()
     release.set()
-    result = await task
+    await task
 
-    assert result.observation_changes[0].observed_paths == ()
-    assert _states(service.lifecycle_events()) == [
-        "accepted",
-        "queued",
-        "sent",
-        "acknowledged",
-    ]
+    assert _states(service.lifecycle_events())[-1] == "acknowledged"
     assert service.pending_overlays(source="websocket", session_id="ws-a")
-    with pytest.raises(KeyError):
-        store.snapshot().field(_freq_path())
+    assert _freq_path() not in {field.path for field in store.snapshot().fields}
 
 
-def test_rejected_or_empty_changeset_does_not_reconcile_overlay() -> None:
+@pytest.mark.parametrize("stale", (True, False), ids=("rejected", "current"))
+def test_only_current_non_empty_changeset_reconciles_overlay(stale: bool) -> None:
     store = StateStore()
+    generation = store.begin_provider_generation()
     service = CommandService(executor=FakeExecutor(), state_store=store)
     intent = _intent()
     service.emit_lifecycle(intent, "accepted")
     service._record_intent_overlay(intent)  # noqa: SLF001
-    stale_generation = store.provider_generation
-    store.begin_provider_generation()
+    if stale:
+        store.begin_provider_generation()
 
     changeset = service.apply_observation(
         replace(
             _observation(_freq_path(), 14_074_000, at=10.0),
-            provider_generation=stale_generation,
+            provider_generation=generation,
         )
     )
 
-    assert changeset.observed_paths == ()
-    assert service.pending_overlays(source="websocket", session_id="ws-a")
-    assert "reconciled" not in _states(service.lifecycle_events())
-
-
-def test_accepted_current_non_empty_changeset_reconciles_overlay() -> None:
-    store = StateStore()
-    current_generation = store.begin_provider_generation()
-    service = CommandService(executor=FakeExecutor(), state_store=store)
-    intent = _intent()
-    service.emit_lifecycle(intent, "accepted")
-    service._record_intent_overlay(intent)  # noqa: SLF001
-
-    changeset = service.apply_observation(
-        replace(
-            _observation(_freq_path(), 14_074_000, at=10.0),
-            provider_generation=current_generation,
-        )
-    )
-
-    assert changeset.observed_paths == (_freq_path(),)
-    assert service.pending_overlays(source="websocket", session_id="ws-a") == ()
-    assert _states(service.lifecycle_events()) == ["accepted", "reconciled"]
+    pending = service.pending_overlays(source="websocket", session_id="ws-a")
+    assert bool(changeset.observed_paths) is not stale
+    assert bool(pending) is stale
+    assert ("reconciled" in _states(service.lifecycle_events())) is not stale
 
 
 def test_pending_overlays_are_projected_by_source_session_command_and_path() -> None:

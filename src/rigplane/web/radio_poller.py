@@ -3127,7 +3127,10 @@ class RadioPoller:
                     "selected/unselected provider lacks confirmed VFO selection"
                 )
             await confirmed_select(slot, receiver=receiver)
-            if generation != self._vfo_binding_generation:
+            if (
+                generation != self._vfo_binding_generation
+                or provider_generation != self._provider_generation()
+            ):
                 return
 
             self._discard_vfo_identity(receiver)
@@ -3139,8 +3142,16 @@ class RadioPoller:
             if not isinstance(self._radio, RelativeVfoReadbackCapable):
                 raise CommandError("provider lacks relative VFO readback")
             selected = await self._radio.read_relative_vfo(selected=True)
+            if (
+                generation != self._vfo_binding_generation
+                or provider_generation != self._provider_generation()
+            ):
+                return
             unselected = await self._radio.read_relative_vfo(selected=False)
-            if generation != self._vfo_binding_generation:
+            if (
+                generation != self._vfo_binding_generation
+                or provider_generation != self._provider_generation()
+            ):
                 return
             receiver_id = str(receiver)
             for state, relative_slot in (
@@ -3165,7 +3176,11 @@ class RadioPoller:
                 self._on_state_event("vfo_changed", {"vfo": slot, "receiver": receiver})
         except BaseException:
             # After ACK the target remains known even if passive readback fails.
-            if generation == self._vfo_binding_generation and not selection_confirmed:
+            if (
+                generation == self._vfo_binding_generation
+                and provider_generation == self._provider_generation()
+                and not selection_confirmed
+            ):
                 self._discard_vfo_identity(receiver)
             raise
         finally:

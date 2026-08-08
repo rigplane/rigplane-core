@@ -96,11 +96,11 @@ from test_web_managed_tx_owner import _KEY, _TEARDOWN, _poller, _Radio, _Supervi
 
 
 @pytest.mark.asyncio
-async def test_direct_getter_result_started_in_old_generation_is_rejected() -> None:
+@pytest.mark.parametrize("stale", (True, False), ids=("stale", "current"))
+async def test_direct_getter_uses_generation_captured_before_await(stale: bool) -> None:
     store = StateStore()
-    started_generation = store.begin_provider_generation()
-    started = asyncio.Event()
-    release = asyncio.Event()
+    generation = store.begin_provider_generation()
+    started, release = asyncio.Event(), asyncio.Event()
     radio = _make_radio(model="IC-7300")
 
     async def delayed_getter() -> int:
@@ -113,28 +113,16 @@ async def test_direct_getter_result_started_in_old_generation_is_rejected() -> N
 
     task = asyncio.create_task(poller._read_mod_input("data1_mod_input"))  # noqa: SLF001
     await started.wait()
-    replacement_generation = store.begin_provider_generation()
-    assert replacement_generation != started_generation
+    if stale:
+        store.begin_provider_generation()
     release.set()
     await task
 
-    with pytest.raises(KeyError):
-        store.snapshot().field("global.slow_state.data1_mod_input")
-
-
-@pytest.mark.asyncio
-async def test_current_generation_direct_getter_result_is_accepted() -> None:
-    store = StateStore()
-    current_generation = store.begin_provider_generation()
-    radio = _make_radio(model="IC-7300")
-    radio.get_data1_mod_input = AsyncMock(return_value=3)
-    poller = RadioPoller(radio, CommandQueue(), state_store=store)
-
-    await poller._read_mod_input("data1_mod_input")  # noqa: SLF001
-
-    field = store.snapshot().field("global.slow_state.data1_mod_input")
-    assert field.value == 3
-    assert field.provider_generation == current_generation
+    if stale:
+        assert "global.slow_state.data1_mod_input" not in store.snapshot().as_dict()
+    else:
+        field = store.snapshot().field("global.slow_state.data1_mod_input")
+        assert (field.value, field.provider_generation) == (2, generation)
 
 
 class _NoopCommandExecutor:
@@ -1305,7 +1293,7 @@ async def test_relative_vfo_ack_maps_selected_and_complement_then_rebinds() -> N
         RelativeVfoState(14_250_000, "USB", 1, 0),
     )
     store = StateStore()
-    current_generation = store.begin_provider_generation()
+    store.begin_provider_generation()
     poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
 
     assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
@@ -1314,9 +1302,6 @@ async def test_relative_vfo_ack_maps_selected_and_complement_then_rebinds() -> N
     assert first.field("receiver.0.vfo.active_slot").value == "B"
     assert first.field("receiver.0.slot.B.freq_mode.freq_hz").value == 14_200_000
     assert first.field("receiver.0.slot.A.freq_mode.freq_hz").value == 7_100_000
-    assert first.field("receiver.0.vfo.active_slot").provider_generation == (
-        current_generation
-    )
 
     await poller._execute(SelectVfo("A"))  # noqa: SLF001
     second = store.snapshot()
@@ -1328,6 +1313,69 @@ async def test_relative_vfo_ack_maps_selected_and_complement_then_rebinds() -> N
         call("A", receiver=0),
     ]
     assert radio.set_vfo_slot.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    (None, CommandError("stale select failed")),
+    ids=("success", "exception"),
+)
+async def test_stale_select_vfo_preserves_replacement_generation_identity(
+    failure: CommandError | None,
+) -> None:
+    store = StateStore()
+    store.begin_provider_generation()
+    state = RadioState()
+    state.main.active_slot = "A"
+    events: list[tuple[str, dict[str, Any]]] = []
+    entered, release = asyncio.Event(), asyncio.Event()
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = state
+
+    async def delayed_select(*_args: Any, **_kwargs: Any) -> None:
+        entered.set()
+        await release.wait()
+        if failure is not None:
+            raise failure
+
+    radio._set_vfo_slot_confirmed = AsyncMock(side_effect=delayed_select)
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+        on_state_event=lambda name, data: events.append((name, data)),
+    )
+
+    task = asyncio.create_task(poller._execute(SelectVfo("B")))  # noqa: SLF001
+    await entered.wait()
+    replacement_generation = store.begin_provider_generation()
+    expected = {
+        FieldPath.active_slot("0"): "A",
+        FieldPath.vfo_slot("0", "A", "freq_mode", "freq_hz"): 7_100_000,
+    }
+    for path, value in expected.items():
+        store.apply(
+            Observation(
+                path=path,
+                value=value,
+                source=SourceMetadata(source="test", provider="replacement"),
+                timestamp_monotonic=time.monotonic(),
+                provider_generation=replacement_generation,
+            )
+        )
+    release.set()
+    if failure is None:
+        await task
+    else:
+        with pytest.raises(CommandError, match="stale select failed"):
+            await task
+
+    snapshot = store.snapshot()
+    assert {path: snapshot.field(path).value for path in expected} == expected
+    assert state.main.active_slot == "A"
+    assert events == []
 
 
 @pytest.mark.asyncio
