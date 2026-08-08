@@ -276,12 +276,11 @@ class RigctldServer:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def _profile_state_acquisition(self) -> RadioAcquisitionProfile | None:
-        """Return profile acquisition metadata for the attached radio, if any."""
+    def _resolved_radio_profile(self) -> Any | None:
+        """Return the attached or model-resolved radio profile, if any."""
         raw_profile = getattr(self._radio, "profile", None)
-        acquisition_profile = getattr(raw_profile, "state_acquisition", None)
-        if acquisition_profile is not None:
-            return cast(RadioAcquisitionProfile, acquisition_profile)
+        if raw_profile is not None:
+            return raw_profile
 
         model = getattr(self._radio, "model", None)
         if not isinstance(model, str):
@@ -296,7 +295,15 @@ class RigctldServer:
                 "rigctld state acquisition: failed to resolve profile", exc_info=True
             )
             return None
-        return profile.state_acquisition
+        return profile
+
+    def _profile_state_acquisition(self) -> RadioAcquisitionProfile | None:
+        """Return profile acquisition metadata for the attached radio, if any."""
+        profile = self._resolved_radio_profile()
+        acquisition_profile = getattr(profile, "state_acquisition", None)
+        if acquisition_profile is None:
+            return None
+        return cast(RadioAcquisitionProfile, acquisition_profile)
 
     def _radio_state_store(self) -> StateStore | None:
         if not isinstance(self._radio, StateStoreCapable):
@@ -338,9 +345,12 @@ class RigctldServer:
             return None
         if not isinstance(self._radio, CivCommandCapable):
             return None
+        profile = self._resolved_radio_profile()
+        supports_cmd29 = getattr(profile, "supports_cmd29", None)
         return civ_acquisition_executor_for_provider(
             scheduler.provider,
             self._send_one_state_query,
+            supports_cmd29=supports_cmd29 if callable(supports_cmd29) else None,
         )
 
     def _attach_state_acquisition_services(
