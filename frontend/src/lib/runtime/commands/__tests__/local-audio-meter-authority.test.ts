@@ -78,9 +78,9 @@ describe('MOR-1409 A03c2 local audio and meter authority', () => {
       expect(busSource).toContain(`export function ${deferred}`);
       expect(panelSource).not.toContain(`export function ${deferred}`);
     }
-    expect(busSource).toContain('function _activateReceiver');
-    expect(busSource).toContain("case 'set_active_vfo'");
-    expect(panelPropsSource).toContain('meterSource');
+    expect(busSource).not.toContain('function _activateReceiver');
+    expect(busSource).not.toContain("case 'set_active_vfo'");
+    expect(panelPropsSource).not.toContain('meterSource');
     expect(stateAdapterSource).toContain('meterSource');
   });
 });

@@ -1031,6 +1031,35 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.patchRadioState).not.toHaveBeenCalled();
   });
 
+  it('delegates the complete A03d1b RIT, audio, monitor, and VFO keyboard families through typed intents', () => {
+    const actions = [
+      { action: 'toggle_rit' }, { action: 'toggle_xit' }, { action: 'clear_rit_xit' },
+      { action: 'adjust_af_level', params: { direction: 'up' } },
+      { action: 'adjust_rf_gain', params: { direction: 'down' } },
+      { action: 'toggle_monitor' }, { action: 'toggle_split' }, { action: 'vfo_swap' },
+      { action: 'vfo_equalize' }, { action: 'switch_active_vfo' },
+      { action: 'set_active_vfo', params: { vfo: 'MAIN' } },
+    ];
+
+    for (const action of actions) expect(dispatchKeyboardRadioAction(action)).toBe(true);
+
+    expect(exactCalls()).toEqual([
+      ['set_rit_status', { on: true }],
+      ['set_rit_tx_status', { on: false }],
+      ['set_rit_frequency', { freq: 0 }],
+      ['set_af_level', { level: 50 / 255 + 0.05, receiver: 0 }],
+      ['set_rf_gain', { level: Math.round((128 / 255 - 0.05) * 255), receiver: 0 }],
+      ['set_monitor', { on: true }], ['set_split', { on: true }],
+      ['vfo_swap', {}], ['vfo_equalize', {}],
+      ['set_vfo', { vfo: 'SUB' }], ['set_vfo', { vfo: 'MAIN' }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.setAudioConfig).toHaveBeenNthCalledWith(1, { focus: 'sub' });
+    expect(h.setAudioConfig).toHaveBeenNthCalledWith(2, { focus: 'main' });
+  });
+
   it('fails closed for invalid keyboard input while leaving deferred and local actions to their current owner', () => {
     h.unavailable.add('main.freqHz');
     expect(dispatchKeyboardRadioAction({ action: 'tune', params: { direction: 'up' } })).toBe(true);
@@ -1044,7 +1073,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     (h.state.main as any).preamp = 99;
     expect(dispatchKeyboardRadioAction({ action: 'cycle_preamp' })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'cycle_filter', params: { direction: 'sideways' } })).toBe(true);
-    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(false);
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_hold' })).toBe(false);
     expect(dispatchKeyboardRadioAction({ action: 'open_filter_settings' })).toBe(false);
     expect(dispatchKeyboardRadioAction({ action: 'ptt_on' })).toBe(false);
@@ -1091,7 +1120,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       expect(dispatchKeyboardRadioAction({ action: 'tune', params: params as Record<string, unknown> })).toBe(true);
     }
     expect(getter).not.toHaveBeenCalled();
-    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit', params: prototypeTrap as Record<string, unknown> })).toBe(false);
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit', params: prototypeTrap as Record<string, unknown> })).toBe(true);
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(h.patchActiveReceiver).not.toHaveBeenCalled();
     expect(h.patchRadioState).not.toHaveBeenCalled();
@@ -1214,8 +1243,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(busSource).not.toContain('export function makeVoxHandlers');
     expect(panelSource).toContain('export function makeVfoHandlers');
     expect(panelSource).toContain('export function makeVoxHandlers');
-    expect(busSource).toMatch(/function _activateReceiver\s*\(/);
-    expect(busSource).toContain("case 'set_active_vfo'");
+    expect(busSource).not.toMatch(/function _activateReceiver\s*\(/);
+    expect(busSource).not.toContain('activeReceiverParam');
+    expect(busSource).not.toContain("case 'set_active_vfo'");
     for (const deferred of [
       'makeSystemHandlers', 'makeScopeControlsHandlers', 'makeKeyboardHandlers',
     ]) expect(busSource).toContain(`export function ${deferred}`);
