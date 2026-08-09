@@ -30,7 +30,7 @@
  * exports but nothing in the fixture-mounted tree references yet
  * (`makeAgcHandlers`, `makeAntennaHandlers`, `makeBandHandlers`,
  * `makeCwPanelHandlers`, `makeDspHandlers`, `makeFilterHandlers`,
- * `makeKeyboardHandlers`, `makeMeterHandlers`, `makePresetHandlers`,
+ * `makeKeyboardHandlers`, `makePresetHandlers`,
  * `makeRfFrontEndHandlers`, `makeRitXitHandlers`, `makeScanHandlers`,
  * `makeSystemHandlers`). Full parity is the only guard the test can enforce
  * without also encoding "and here is every place in the tree that imports
@@ -174,10 +174,6 @@ export function makeBandHandlers() {
 
 export function makeAntennaHandlers() {
   return recorders('antenna', ['onSelectAnt1', 'onSelectAnt2', 'onToggleRxAnt'] as const);
-}
-
-export function makeMeterHandlers() {
-  return recorders('meter', ['onMeterSourceChange'] as const);
 }
 
 export function makeSystemHandlers() {

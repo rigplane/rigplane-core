@@ -83,7 +83,6 @@ export const mockState: ServerState = {
   radioDetail: {
     status: 'connected',
   },
-  meterSource: 'S',
   cwPitch: 600,
   micGain: 50,
   compressorOn: false,

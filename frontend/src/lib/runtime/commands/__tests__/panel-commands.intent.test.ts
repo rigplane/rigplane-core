@@ -80,6 +80,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 import {
   makeAgcHandlers,
   makeAntennaHandlers,
+  makeAudioRoutingHandlers,
   makeBandHandlers,
   makeCwPanelHandlers,
   makeDspHandlers,
@@ -238,6 +239,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
   afterEach(() => {
     resetCommandLifecycle();
+    localStorage.clear();
     vi.useRealTimers();
   });
 
@@ -255,6 +257,60 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(compatibilityBus.makeTxHandlers).toBe(makeTxHandlers);
     expect(compatibilityBus.makeAntennaHandlers).toBe(makeAntennaHandlers);
     expect(compatibilityBus.makeScanHandlers).toBe(makeScanHandlers);
+    expect(compatibilityBus.makeAudioRoutingHandlers).toBe(makeAudioRoutingHandlers);
+  });
+
+  it('keeps audio routing local with exact storage, finite-gain, and restore semantics', () => {
+    localStorage.clear();
+    const handlers = makeAudioRoutingHandlers();
+
+    expect(handlers.restoreFromStorage()).toEqual({
+      focus: 'both',
+      split_stereo: false,
+      main_gain_db: 0,
+      sub_gain_db: 0,
+    });
+    expect(h.setAudioConfig).not.toHaveBeenCalled();
+
+    handlers.onFocusChange('sub');
+    handlers.onSplitStereoChange(true);
+    handlers.onChannelGainChange('main', Number.NaN);
+    handlers.onChannelGainChange('sub', -3);
+
+    expect(h.setAudioConfig.mock.calls).toEqual([
+      [{ focus: 'sub' }],
+      [{ split_stereo: true }],
+      [{ main_gain_db: 0 }],
+      [{ sub_gain_db: -3 }],
+    ]);
+    expect(localStorage.getItem('icom.audio.focus')).toBe('sub');
+    expect(localStorage.getItem('icom.audio.split_stereo')).toBe('1');
+    expect(localStorage.getItem('icom.audio.main_gain_db')).toBe('0');
+    expect(localStorage.getItem('icom.audio.sub_gain_db')).toBe('-3');
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+
+    localStorage.setItem('icom.audio.focus', 'invalid');
+    localStorage.setItem('icom.audio.split_stereo', '0');
+    localStorage.setItem('icom.audio.main_gain_db', 'not-finite');
+    localStorage.setItem('icom.audio.sub_gain_db', '2');
+    h.setAudioConfig.mockClear();
+
+    expect(handlers.restoreFromStorage()).toEqual({
+      focus: 'both',
+      split_stereo: false,
+      main_gain_db: 0,
+      sub_gain_db: 2,
+    });
+    expect(h.setAudioConfig).toHaveBeenCalledExactlyOnceWith({
+      split_stereo: false,
+      sub_gain_db: 2,
+    });
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
   });
 
   it('routes mode, DATA mode, and MOD input through exact lifecycle envelopes without Store writes', () => {
@@ -938,7 +994,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       'makeModeHandlers', 'makePresetHandlers', 'makeRfFrontEndHandlers',
       'makeRitXitHandlers', 'makeRxAudioHandlers', 'makeCwPanelHandlers',
       'makeTxHandlers', 'makeAntennaHandlers', 'makeScanHandlers',
-      'makeVfoHandlers', 'makeVoxHandlers',
+      'makeVfoHandlers', 'makeVoxHandlers', 'makeAudioRoutingHandlers',
     ];
 
     for (const [index, name] of assignedNames.entries()) {
@@ -1017,9 +1073,10 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(busSource).toMatch(/function _activateReceiver\s*\(/);
     expect(busSource).toContain("case 'set_active_vfo'");
     for (const deferred of [
-      'makeAudioRoutingHandlers', 'makeMeterHandlers', 'makeSystemHandlers',
-      'makeScopeControlsHandlers', 'makeKeyboardHandlers',
+      'makeSystemHandlers', 'makeScopeControlsHandlers', 'makeKeyboardHandlers',
     ]) expect(busSource).toContain(`export function ${deferred}`);
+    expect(panelSource).not.toContain('export function makeMeterHandlers');
+    expect(busSource).not.toContain('export function makeMeterHandlers');
     expect(panelSource.match(/function toggleVox/g)).toHaveLength(1);
     expect(panelSource.match(/onVoxToggle:\s*toggleVox/g)).toHaveLength(2);
     expect(panelSource).not.toMatch(/dispatchRadioIntent\(\{\s*name:\s*['"]ptt(?:_on|_off)?['"]/);

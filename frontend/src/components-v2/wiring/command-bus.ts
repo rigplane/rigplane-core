@@ -16,6 +16,7 @@ import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 export {
   makeAgcHandlers,
+  makeAudioRoutingHandlers,
   makeBandHandlers,
   makeCwPanelHandlers,
   makeDspHandlers,
@@ -61,94 +62,6 @@ function _activateReceiver(target: 'MAIN' | 'SUB'): void {
   // clicking MAIN/SUB updated state + scope but left the audio focus
   // untouched, so the user heard MAIN while tuning SUB.
   audioManager.setAudioConfig({ focus: target === 'SUB' ? 'sub' : 'main' });
-}
-
-/* ── Dual-RX audio routing (#756) ────────────────────────────────
- * UI surface for the pipeline plumbed in #755 (audio_config WS +
- * CI-V Phones L/R Mix) and #757 (RxPlayer routing graph).  Three
- * widgets: focus selector, stereo split toggle, per-channel gain.
- */
-
-const LS_FOCUS = 'icom.audio.focus';
-const LS_SPLIT = 'icom.audio.split_stereo';
-const LS_MAIN_DB = 'icom.audio.main_gain_db';
-const LS_SUB_DB = 'icom.audio.sub_gain_db';
-
-type AudioFocus = 'main' | 'sub' | 'both';
-
-function _ls<T>(key: string, parse: (raw: string) => T | null): T | null {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return null;
-    return parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-function _lsSet(key: string, value: string): void {
-  try { localStorage.setItem(key, value); } catch { /* quota / private mode — ignore */ }
-}
-
-export function makeAudioRoutingHandlers() {
-  return {
-    onFocusChange: (focus: AudioFocus) => {
-      audioManager.setAudioConfig({ focus });
-      _lsSet(LS_FOCUS, focus);
-    },
-    onSplitStereoChange: (on: boolean) => {
-      audioManager.setAudioConfig({ split_stereo: on });
-      _lsSet(LS_SPLIT, on ? '1' : '0');
-    },
-    onChannelGainChange: (channel: 'main' | 'sub', db: number) => {
-      const safe = Number.isFinite(db) ? db : 0;
-      if (channel === 'main') {
-        audioManager.setAudioConfig({ main_gain_db: safe });
-        _lsSet(LS_MAIN_DB, String(safe));
-      } else {
-        audioManager.setAudioConfig({ sub_gain_db: safe });
-        _lsSet(LS_SUB_DB, String(safe));
-      }
-    },
-    restoreFromStorage: () => {
-      const focus = _ls<AudioFocus>(LS_FOCUS, (r) =>
-        r === 'main' || r === 'sub' || r === 'both' ? r : null
-      );
-      const split = _ls<boolean>(LS_SPLIT, (r) => r === '1');
-      const mainDb = _ls<number>(LS_MAIN_DB, (r) => {
-        const n = Number(r);
-        return Number.isFinite(n) ? n : null;
-      });
-      const subDb = _ls<number>(LS_SUB_DB, (r) => {
-        const n = Number(r);
-        return Number.isFinite(n) ? n : null;
-      });
-      const cfg: Record<string, unknown> = {};
-      if (focus !== null) cfg.focus = focus;
-      if (split !== null) cfg.split_stereo = split;
-      if (mainDb !== null) cfg.main_gain_db = mainDb;
-      if (subDb !== null) cfg.sub_gain_db = subDb;
-      if (Object.keys(cfg).length > 0) {
-        audioManager.setAudioConfig(cfg);
-      }
-      return {
-        focus: focus ?? 'both' as AudioFocus,
-        split_stereo: split ?? false,
-        main_gain_db: mainDb ?? 0,
-        sub_gain_db: subDb ?? 0,
-      };
-    },
-  };
-}
-
-/* ── Meter Handlers ──────────────────────────────────────────── */
-
-export function makeMeterHandlers() {
-  return {
-    onMeterSourceChange: (source: string) => {
-      patchRadioState({ meterSource: source as 'S' | 'SWR' | 'POWER' });
-    },
-  };
 }
 
 /* ── System Handlers ─────────────────────────────────────────── */
