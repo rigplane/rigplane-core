@@ -20,23 +20,46 @@ import {
   patchRadioState,
 } from '$lib/stores/radio.svelte';
 import { getCapabilities, getControlRange } from '$lib/stores/capabilities.svelte';
+import { isFieldAvailable } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
 import { consumePendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
-import type { ServerState } from '$lib/types/state';
+import { dispatchRadioIntent, type RadioIntent } from './radio-intents';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
 type Receiver = 0 | 1;
 
+const A03A_INTENT_NAMES = new Set<RadioIntent['name']>([
+  'set_attenuator', 'set_data_mode', 'set_data_off_mod_input', 'set_data1_mod_input', 'set_data2_mod_input', 'set_data3_mod_input', 'set_digisel', 'set_filter', 'set_filter_shape',
+  'set_filter_width', 'set_if_shift', 'set_ip_plus', 'set_mode', 'set_pbt_inner', 'set_pbt_outer', 'set_preamp', 'set_rf_gain', 'set_squelch',
+]);
+
 function cmd(name: string, params: Record<string, unknown> = {}): void {
+  if (A03A_INTENT_NAMES.has(name as RadioIntent['name'])) {
+    dispatchRadioIntent({ name, params } as RadioIntent);
+    return;
+  }
   sendCommand(name, params);
 }
 
 function activeReceiverParam(): Receiver {
   return getRadioState()?.active === 'SUB' ? 1 : 0;
+}
+
+function knownActiveReceiver(field?: string): Receiver | null {
+  const state = getRadioState();
+  if (
+    !state
+    || (state.active !== 'MAIN' && state.active !== 'SUB')
+    || !isFieldAvailable(state, 'active')
+  ) return null;
+  if (state.active === 'SUB' && !state.sub) return null;
+  const receiver = state.active === 'SUB' ? 1 : 0;
+  const prefix = receiver === 1 ? 'sub' : 'main';
+  return field && !isFieldAvailable(state, `${prefix}.${field}`) ? null : receiver;
 }
 
 /* ── Inlined PBT / IF-shift helpers (from filter-controls.ts) ────── */
@@ -112,12 +135,12 @@ export function makeModeHandlers() {
   return {
     onModeChange: (mode: string) => {
       const pending = consumePendingFocus();
-      const receiver: Receiver = pending ? (pending === 'SUB' ? 1 : 0) : activeReceiverParam();
+      const receiver = pending ? (pending === 'SUB' ? 1 : 0) : knownActiveReceiver('mode');
+      if (receiver === null) return;
       // MOR-495: recall the destination mode's remembered filter so the web
       // mirrors the front panel (mode-only 0x06 would force the radio's
       // mode-default filter, e.g. USB → FIL2).  Unseen mode → mode-only.
       const filter = getModeFilter(mode);
-      patchActiveReceiver({ mode }, true);
       if (filter !== undefined) {
         cmd('set_mode', { mode, filter, receiver });
       } else {
@@ -125,18 +148,25 @@ export function makeModeHandlers() {
       }
     },
     onDataModeChange: (mode: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ dataMode: mode }, true);
+      const receiver = knownActiveReceiver('dataMode');
+      if (receiver === null) return;
       cmd('set_data_mode', { mode, receiver });
     },
     onModInputChange: (source: number) => {
       // MOR-616: route the new source to the active receiver's DATA group
-      // (DATA OFF/1/2/3 MOD, CI-V 0x1A 05 00 0x91-0x94). Optimistic
-      // top-level patch; the backend confirms via write-through readback
-      // (MOR-615), which also reverts the patch if the radio rejects it.
-      const dataMode = getActiveReceiver()?.dataMode ?? 0;
-      patchRadioState({ [modInputStateKey(dataMode)]: source } as Partial<ServerState>);
-      cmd(modInputCommand(dataMode), { source });
+      // (DATA OFF/1/2/3 MOD, CI-V 0x1A 05 00 0x91-0x94). The command
+      // lifecycle stays separate until canonical readback confirms truth.
+      const receiver = knownActiveReceiver('dataMode');
+      const dataMode = receiver === null ? null : getActiveReceiver()?.dataMode;
+      const state = getRadioState();
+      if (
+        !state
+        || !Number.isSafeInteger(dataMode)
+        || (dataMode as number) < 0
+        || (dataMode as number) > 3
+        || !isFieldAvailable(state, modInputStateKey(dataMode as number))
+      ) return;
+      cmd(modInputCommand(dataMode as number), { source });
     },
   };
 }
@@ -176,31 +206,33 @@ export function makeAntennaHandlers() {
 export function makeRfFrontEndHandlers() {
   return {
     onAttChange: (db: number) => {
-      patchActiveReceiver({ att: db });
-      cmd('set_attenuator', { db, receiver: activeReceiverParam() });
+      const receiver = knownActiveReceiver('att');
+      if (receiver === null) return;
+      cmd('set_attenuator', { db, receiver });
     },
     onPreChange: (level: number) => {
-      patchActiveReceiver({ preamp: level });
-      cmd('set_preamp', { level, receiver: activeReceiverParam() });
+      const receiver = knownActiveReceiver('preamp');
+      if (receiver === null) return;
+      cmd('set_preamp', { level, receiver });
     },
     onRfGainChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ rfGain: level }, true);
+      const receiver = knownActiveReceiver('rfGain');
+      if (receiver === null) return;
       cmd('set_rf_gain', { level, receiver });
     },
     onSquelchChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ squelch: level }, true);
+      const receiver = knownActiveReceiver('squelch');
+      if (receiver === null) return;
       cmd('set_squelch', { level, receiver });
     },
     onDigiSelToggle: (on: boolean) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ digisel: on });
+      const receiver = knownActiveReceiver('digisel');
+      if (receiver === null) return;
       cmd('set_digisel', { on, receiver });
     },
     onIpPlusToggle: (on: boolean) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ ipplus: on });
+      const receiver = knownActiveReceiver('ipplus');
+      if (receiver === null) return;
       cmd('set_ip_plus', { on, receiver });
     },
   };
@@ -462,74 +494,53 @@ export function makeTxHandlers() {
 export function makeFilterHandlers() {
   return {
     onFilterChange: (filter: number) => {
-      const rx = getActiveReceiver();
-      const caps = getCapabilities();
-      const mode = rx?.mode?.toUpperCase();
-      const dataMode = rx?.dataMode ?? 0;
-      let estimatedWidth: number | undefined;
-      if (mode && caps?.filterConfig) {
-        const candidates = [];
-        if (dataMode > 0) candidates.push(`${mode}-D`);
-        candidates.push(mode);
-        if (mode === 'USB' || mode === 'LSB') {
-          if (dataMode > 0) candidates.push('SSB-D');
-          candidates.push('SSB');
-        }
-        for (const c of candidates) {
-          const cfg = caps.filterConfig[c];
-          if (cfg?.defaults?.[filter - 1] != null) {
-            estimatedWidth = cfg.defaults[filter - 1];
-            break;
-          }
-        }
-      }
-      const patch: Record<string, unknown> = { filter };
-      if (estimatedWidth != null) {
-        patch.filterWidth = estimatedWidth;
-      }
-      patchActiveReceiver(patch, true);
-      cmd('set_filter', { filter, receiver: activeReceiverParam() });
+      const receiver = knownActiveReceiver('filter');
+      if (receiver === null) return;
+      cmd('set_filter', { filter, receiver });
     },
     onFilterWidthChange: (() => {
       let timer: ReturnType<typeof setTimeout> | null = null;
       return (width: number) => {
-        patchActiveReceiver({ filterWidth: width }, true);
+        if (knownActiveReceiver('filterWidth') === null) return;
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
           timer = null;
-          cmd('set_filter_width', { width, receiver: activeReceiverParam() });
+          const receiver = knownActiveReceiver('filterWidth');
+          if (receiver !== null) cmd('set_filter_width', { width, receiver });
         }, 200);
       };
     })(),
     onFilterShapeChange: (shape: number) => {
-      patchActiveReceiver({ filterShape: shape }, true);
-      cmd('set_filter_shape', { shape, receiver: activeReceiverParam() });
+      const receiver = knownActiveReceiver('filterShape');
+      if (receiver === null) return;
+      cmd('set_filter_shape', { shape, receiver });
     },
     onFilterPresetChange: (() => {
       let timer: ReturnType<typeof setTimeout> | null = null;
       return (filter: number, width: number) => {
-        const activeFilter = getActiveReceiver()?.filter ?? 1;
-        if (filter === activeFilter) {
-          patchActiveReceiver({ filterWidth: width }, true);
-        }
+        const receiver = knownActiveReceiver('filter');
+        const activeFilter = receiver === null ? null : getActiveReceiver()?.filter;
+        if (receiver === null || !Number.isSafeInteger(activeFilter)) return;
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
           timer = null;
-          const receiver = activeReceiverParam();
-          const currentActive = getActiveReceiver()?.filter ?? 1;
+          const currentReceiver = knownActiveReceiver('filter');
+          const currentActive = currentReceiver === null ? null : getActiveReceiver()?.filter;
+          if (currentReceiver === null || !Number.isSafeInteger(currentActive)) return;
           if (filter !== currentActive) {
-            cmd('set_filter', { filter, receiver });
+            cmd('set_filter', { filter, receiver: currentReceiver });
           }
-          cmd('set_filter_width', { width, receiver });
+          cmd('set_filter_width', { width, receiver: currentReceiver });
           if (filter !== currentActive) {
-            cmd('set_filter', { filter: currentActive, receiver });
+            cmd('set_filter', { filter: currentActive as number, receiver: currentReceiver });
           }
         }, 200);
       };
     })(),
     onFilterDefaults: (defaults: number[]) => {
-      const receiver = activeReceiverParam();
-      const activeFilter = getActiveReceiver()?.filter ?? 1;
+      const receiver = knownActiveReceiver('filterWidth');
+      const activeFilter = receiver === null ? null : getActiveReceiver()?.filter;
+      if (receiver === null || !Number.isSafeInteger(activeFilter)) return;
       for (let i = 0; i < defaults.length; i++) {
         const filter = i + 1;
         if (filter !== activeFilter) {
@@ -537,43 +548,53 @@ export function makeFilterHandlers() {
         }
         cmd('set_filter_width', { width: defaults[i], receiver });
       }
-      if (activeFilter <= defaults.length) {
-        cmd('set_filter', { filter: activeFilter, receiver });
-        patchActiveReceiver({ filterWidth: defaults[activeFilter - 1] }, true);
+      if ((activeFilter as number) <= defaults.length) {
+        cmd('set_filter', { filter: activeFilter as number, receiver });
       }
     },
     onIfShiftChange: (value: number) => {
-      const receiver = activeReceiverParam();
       const caps = getCapabilities();
-      if (caps?.capabilities?.includes('if_shift')) {
-        patchActiveReceiver({ ifShift: value }, true);
-        cmd('set_if_shift', { offset: value, receiver });
-      } else {
+      if (!caps) return;
+      if (caps.capabilities.includes('if_shift')) {
+        const receiver = knownActiveReceiver('ifShift');
+        if (receiver !== null) cmd('set_if_shift', { offset: value, receiver });
+      } else if (caps.capabilities.includes('pbt')) {
+        const receiver = knownActiveReceiver('pbtInner');
+        const state = getRadioState();
         const activeRx = getActiveReceiver();
+        const prefix = receiver === 1 ? 'sub' : 'main';
+        if (
+          receiver === null
+          || !state
+          || !isFieldAvailable(state, `${prefix}.pbtOuter`)
+          || typeof activeRx?.pbtInner !== 'number'
+          || typeof activeRx.pbtOuter !== 'number'
+        ) return;
         const { pbtInner, pbtOuter } = mapIfShiftToPbt(
           value,
-          activeRx?.pbtInner ?? 0,
-          activeRx?.pbtOuter ?? 0,
+          activeRx.pbtInner,
+          activeRx.pbtOuter,
         );
-        patchActiveReceiver({ pbtInner: pbtHzToRaw(pbtInner), pbtOuter: pbtHzToRaw(pbtOuter) }, true);
         cmd('set_pbt_inner', { value: pbtHzToRaw(pbtInner), receiver });
         cmd('set_pbt_outer', { value: pbtHzToRaw(pbtOuter), receiver });
       }
     },
     onPbtInnerChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ pbtInner: pbtHzToRaw(value) }, true);
+      const receiver = knownActiveReceiver('pbtInner');
+      if (receiver === null) return;
       cmd('set_pbt_inner', { value: pbtHzToRaw(value), receiver });
     },
     onPbtOuterChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ pbtOuter: pbtHzToRaw(value) }, true);
+      const receiver = knownActiveReceiver('pbtOuter');
+      if (receiver === null) return;
       cmd('set_pbt_outer', { value: pbtHzToRaw(value), receiver });
     },
     onPbtReset: () => {
-      const receiver = activeReceiverParam();
+      const receiver = knownActiveReceiver('pbtInner');
+      const state = getRadioState();
+      const prefix = receiver === 1 ? 'sub' : 'main';
+      if (receiver === null || !state || !isFieldAvailable(state, `${prefix}.pbtOuter`)) return;
       const center = pbtHzToRaw(0);
-      patchActiveReceiver({ pbtInner: center, pbtOuter: center }, true);
       cmd('set_pbt_inner', { value: center, receiver });
       cmd('set_pbt_outer', { value: center, receiver });
     },

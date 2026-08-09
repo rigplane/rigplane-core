@@ -11,18 +11,15 @@
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { getActiveReceiver, getRadioState, patchActiveReceiver, patchRadioState, patchReceiver } from '$lib/stores/radio.svelte';
-import type { ReceiverState, ServerState } from '$lib/types/state';
+import type { ReceiverState } from '$lib/types/state';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
-export { makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
+export { makeFilterHandlers, makeModeHandlers, makeRfFrontEndHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
 import type { KeyboardActionConfig } from '../layout/keyboard-map';
-import { mapIfShiftToPbt, pbtHzToRaw } from '../panels/filter-controls';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
-import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
-import { getModeFilter } from '$lib/radio/mode-filter-memory';
-import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
+import { setPendingFocus } from '$lib/radio/pending-focus';
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -155,207 +152,6 @@ export function makeVfoHandlers() {
     onQuickDw: () => cmd('quick_dualwatch'),
     onQuickSplit: () => cmd('quick_split'),
     onTrackingToggle: (on: boolean) => cmd('set_main_sub_tracking', { on }),
-  };
-}
-
-/* ── Mode Handlers ───────────────────────────────────────────── */
-
-export function makeModeHandlers() {
-  return {
-    onModeChange: (mode: string) => {
-      const pending = consumePendingFocus();
-      const receiver: Receiver = pending
-        ? (pending === 'SUB' ? 1 : 0)
-        : activeReceiverParam();
-      // MOR-495: recall the destination mode's remembered filter so the web
-      // mirrors the front panel (mode-only 0x06 would force the radio's
-      // mode-default filter, e.g. USB → FIL2).  Unseen mode → mode-only.
-      const filter = getModeFilter(mode);
-      patchActiveReceiver({ mode }, true);
-      if (filter !== undefined) {
-        cmd('set_mode', { mode, filter, receiver });
-      } else {
-        cmd('set_mode', { mode, receiver });
-      }
-    },
-    onDataModeChange: (mode: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ dataMode: mode }, true);
-      cmd('set_data_mode', { mode, receiver });
-    },
-    onModInputChange: (source: number) => {
-      // MOR-616: route the new source to the active receiver's DATA group
-      // (DATA OFF/1/2/3 MOD, CI-V 0x1A 05 00 0x91-0x94). Optimistic
-      // top-level patch; the backend confirms via write-through readback
-      // (MOR-615), which also reverts the patch if the radio rejects it.
-      const dataMode = getActiveReceiver()?.dataMode ?? 0;
-      patchRadioState({ [modInputStateKey(dataMode)]: source } as Partial<ServerState>);
-      cmd(modInputCommand(dataMode), { source });
-    },
-  };
-}
-
-/* ── RF Front End Handlers ───────────────────────────────────── */
-
-export function makeRfFrontEndHandlers() {
-  return {
-    onAttChange: (db: number) => {
-      patchActiveReceiver({ att: db });
-      cmd('set_attenuator', { db, receiver: activeReceiverParam() });
-    },
-    onPreChange: (level: number) => {
-      patchActiveReceiver({ preamp: level });
-      cmd('set_preamp', { level, receiver: activeReceiverParam() });
-    },
-    onRfGainChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ rfGain: level }, true);
-      cmd('set_rf_gain', { level, receiver });
-    },
-    onSquelchChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ squelch: level }, true);
-      cmd('set_squelch', { level, receiver });
-    },
-    onDigiSelToggle: (on: boolean) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ digisel: on });
-      cmd('set_digisel', { on, receiver });
-    },
-    onIpPlusToggle: (on: boolean) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ ipplus: on });
-      cmd('set_ip_plus', { on, receiver });
-    },
-  };
-}
-
-/* ── Filter Handlers ─────────────────────────────────────────── */
-
-export function makeFilterHandlers() {
-  return {
-    onFilterChange: (filter: number) => {
-      const rx = getActiveReceiver();
-      const caps = getCapabilities();
-      const mode = rx?.mode?.toUpperCase();
-      const dataMode = rx?.dataMode ?? 0;
-      // Resolve per-mode filter config for optimistic BW update
-      let estimatedWidth: number | undefined;
-      if (mode && caps?.filterConfig) {
-        const candidates = [];
-        if (dataMode > 0) candidates.push(`${mode}-D`);
-        candidates.push(mode);
-        if (mode === 'USB' || mode === 'LSB') {
-          if (dataMode > 0) candidates.push('SSB-D');
-          candidates.push('SSB');
-        }
-        for (const c of candidates) {
-          const cfg = caps.filterConfig[c];
-          if (cfg?.defaults?.[filter - 1] != null) {
-            estimatedWidth = cfg.defaults[filter - 1];
-            break;
-          }
-        }
-      }
-      const patch: Record<string, unknown> = { filter };
-      if (estimatedWidth != null) {
-        patch.filterWidth = estimatedWidth;
-      }
-      patchActiveReceiver(patch, true);
-      cmd('set_filter', { filter, receiver: activeReceiverParam() });
-    },
-    onFilterWidthChange: (() => {
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      return (width: number) => {
-        patchActiveReceiver({ filterWidth: width }, true);
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          timer = null;
-          cmd('set_filter_width', { width, receiver: activeReceiverParam() });
-        }, 200);
-      };
-    })(),
-    onFilterShapeChange: (shape: number) => {
-      patchActiveReceiver({ filterShape: shape }, true);
-      cmd('set_filter_shape', { shape, receiver: activeReceiverParam() });
-    },
-    onFilterPresetChange: (() => {
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      return (filter: number, width: number) => {
-        // Optimistic UI update immediately
-        const activeFilter = getActiveReceiver()?.filter ?? 1;
-        if (filter === activeFilter) {
-          patchActiveReceiver({ filterWidth: width }, true);
-        }
-        // Debounce CI-V commands to avoid flooding the radio
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          timer = null;
-          const receiver = activeReceiverParam();
-          const currentActive = getActiveReceiver()?.filter ?? 1;
-          if (filter !== currentActive) {
-            cmd('set_filter', { filter, receiver });
-          }
-          cmd('set_filter_width', { width, receiver });
-          if (filter !== currentActive) {
-            cmd('set_filter', { filter: currentActive, receiver });
-          }
-        }, 200);
-      };
-    })(),
-    onFilterDefaults: (defaults: number[]) => {
-      const receiver = activeReceiverParam();
-      const activeFilter = getActiveReceiver()?.filter ?? 1;
-      // Send all at once, sequentially — not per-tick
-      for (let i = 0; i < defaults.length; i++) {
-        const filter = i + 1;
-        if (filter !== activeFilter) {
-          cmd('set_filter', { filter, receiver });
-        }
-        cmd('set_filter_width', { width: defaults[i], receiver });
-      }
-      if (activeFilter <= defaults.length) {
-        cmd('set_filter', { filter: activeFilter, receiver });
-        patchActiveReceiver({ filterWidth: defaults[activeFilter - 1] }, true);
-      }
-    },
-    onIfShiftChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      const caps = getCapabilities();
-      if (caps?.capabilities?.includes('if_shift')) {
-        // Native IF shift (Yaesu CAT)
-        patchActiveReceiver({ ifShift: value }, true);
-        cmd('set_if_shift', { offset: value, receiver });
-      } else {
-        // Emulate via PBT (Icom CI-V)
-        const activeRx = getActiveReceiver();
-        const { pbtInner, pbtOuter } = mapIfShiftToPbt(
-          value,
-          activeRx?.pbtInner ?? 0,
-          activeRx?.pbtOuter ?? 0,
-        );
-        patchActiveReceiver({ pbtInner: pbtHzToRaw(pbtInner), pbtOuter: pbtHzToRaw(pbtOuter) }, true);
-        cmd('set_pbt_inner', { value: pbtHzToRaw(pbtInner), receiver });
-        cmd('set_pbt_outer', { value: pbtHzToRaw(pbtOuter), receiver });
-      }
-    },
-    onPbtInnerChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ pbtInner: pbtHzToRaw(value) }, true);
-      cmd('set_pbt_inner', { value: pbtHzToRaw(value), receiver });
-    },
-    onPbtOuterChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ pbtOuter: pbtHzToRaw(value) }, true);
-      cmd('set_pbt_outer', { value: pbtHzToRaw(value), receiver });
-    },
-    onPbtReset: () => {
-      const receiver = activeReceiverParam();
-      const center = pbtHzToRaw(0);
-      patchActiveReceiver({ pbtInner: center, pbtOuter: center }, true);
-      cmd('set_pbt_inner', { value: center, receiver });
-      cmd('set_pbt_outer', { value: center, receiver });
-    },
   };
 }
 

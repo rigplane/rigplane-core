@@ -52,6 +52,10 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     get rxEnabled() { return h.rxEnabled; },

@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
 }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
@@ -68,7 +72,7 @@ describe('focus → mode handoff race (#720)', () => {
     vfo.onMainModeClick();
 
     // Even if `activeReceiverParam()` reports SUB, pending-focus wins.
-    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB' } as any);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB', sub: {} } as any);
 
     mode.onModeChange('USB');
 
@@ -78,7 +82,7 @@ describe('focus → mode handoff race (#720)', () => {
   it('falls back to activeReceiverParam when no prior focus click', () => {
     const mode = makeModeHandlers();
 
-    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB' } as any);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB', sub: {} } as any);
 
     mode.onModeChange('FM');
 

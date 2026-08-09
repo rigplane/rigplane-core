@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
 }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
@@ -347,12 +351,12 @@ describe('makeFilterHandlers', () => {
     vi.mocked(patchActiveReceiver).mockClear();
   });
 
-  it('emits set_filter_shape for the active receiver and patches optimistic state', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB' } as any);
+  it('emits set_filter_shape for the active receiver without optimistic state', () => {
+    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB', sub: {} } as any);
 
     makeFilterHandlers().onFilterShapeChange?.(1);
 
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ filterShape: 1 }, true);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_filter_shape', { shape: 1, receiver: 1 });
   });
 
@@ -363,6 +367,6 @@ describe('makeFilterHandlers', () => {
     makeFilterHandlers().onFilterDefaults?.([3000, 2400, 1800]);
 
     expect(sendCommand).toHaveBeenCalledWith('set_filter', { filter: 2, receiver: 0 });
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ filterWidth: 2400 }, true);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 });
