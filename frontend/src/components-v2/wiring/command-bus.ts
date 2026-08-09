@@ -18,6 +18,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 export {
   makeAgcHandlers,
   makeBandHandlers,
+  makeCwPanelHandlers,
   makeDspHandlers,
   makeFilterHandlers,
   makeModeHandlers,
@@ -25,6 +26,9 @@ export {
   makeRfFrontEndHandlers,
   makeRitXitHandlers,
   makeRxAudioHandlers,
+  makeScanHandlers,
+  makeTxHandlers,
+  makeAntennaHandlers,
 } from '$lib/runtime/commands/panel-commands';
 import type { KeyboardActionConfig } from '../layout/keyboard-map';
 import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
@@ -164,72 +168,6 @@ export function makeVfoHandlers() {
   };
 }
 
-/** CW panel — RightSidebar / CwPanel.svelte */
-export function makeCwPanelHandlers() {
-  return {
-    onCwPitchChange: (value: number) => {
-      patchRadioState({ cwPitch: value });
-      cmd('set_cw_pitch', { value });
-    },
-    onKeySpeedChange: (speed: number) => {
-      patchRadioState({ keySpeed: speed });
-      cmd('set_key_speed', { speed });
-    },
-    onBreakInToggle: () => {
-      const current = getRadioState()?.breakIn ?? 0;
-      const next = current > 0 ? 0 : 1;
-      patchRadioState({ breakIn: next });
-      cmd('set_break_in', { mode: next });
-    },
-    onBreakInModeChange: (mode: number) => {
-      patchRadioState({ breakIn: mode });
-      cmd('set_break_in', { mode });
-    },
-    onApfChange: (mode: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ apfTypeLevel: mode }, true);
-      cmd('set_apf', { mode, receiver });
-    },
-    onTwinPeakToggle: () => {
-      const receiver = activeReceiverParam();
-      const state = getRadioState();
-      const rx = receiver === 0 ? state?.main : state?.sub;
-      const current = rx?.twinPeakFilter ?? false;
-      const next = !current;
-      patchActiveReceiver({ twinPeakFilter: next }, true);
-      cmd('set_twin_peak', { on: next, receiver });
-    },
-    onAutoTune: () => {
-      cmd('cw_auto_tune', {});
-    },
-    onWpmChange: (speed: number) => {
-      patchRadioState({ keySpeed: speed });
-      cmd('set_key_speed', { speed });
-    },
-    onBreakInDelayChange: (level: number) => {
-      patchRadioState({ breakInDelay: level });
-      cmd('set_break_in_delay', { level });
-    },
-    onSidetonePitchChange: (value: number) => {
-      patchRadioState({ cwPitch: value });
-      cmd('set_cw_pitch', { value });
-    },
-    onSidetoneLevelChange: (level: number) => {
-      patchRadioState({ monitorGain: level });
-      cmd('set_monitor_gain', { level });
-    },
-    onReversePaddleToggle: () => {
-      const current = getRadioState()?.dashRatio ?? 0;
-      const next = current < 0 ? 0 : -1;
-      patchRadioState({ dashRatio: next });
-      cmd('set_dash_ratio', { ratio: next });
-    },
-    onKeyerTypeChange: (type: number) => {
-      cmd('set_keyer_type', { type });
-    },
-  };
-}
-
 /* ── VOX Handlers ───────────────────────────────────────────── */
 
 export function makeVoxHandlers() {
@@ -250,56 +188,6 @@ export function makeVoxHandlers() {
     onVoxDelayChange: (level: number) => {
       patchRadioState({ voxDelay: level });
       cmd('set_vox_delay', { level });
-    },
-  };
-}
-
-/* ── TX Handlers ─────────────────────────────────────────────── */
-
-export function makeTxHandlers() {
-  return {
-    onRfPowerChange: (level: number) => {
-      patchRadioState({ powerLevel: level });
-      cmd('set_rf_power', { level });
-    },
-    onMicGainChange: (level: number) => {
-      patchRadioState({ micGain: level });
-      cmd('set_mic_gain', { level });
-    },
-    onAtuToggle: () => {
-      const next = (getRadioState()?.tunerStatus ?? 0) > 0 ? 0 : 1;
-      patchRadioState({ tunerStatus: next });
-      cmd('set_tuner_status', { value: next });
-    },
-    onAtuTune: () => {
-      cmd('set_tuner_status', { value: 2 }); // Start tuning
-    },
-    onVoxToggle: () => {
-      const next = !(getRadioState()?.voxOn ?? false);
-      patchRadioState({ voxOn: next });
-      cmd('set_vox', { on: next });
-    },
-    onCompToggle: () => {
-      const next = !(getRadioState()?.compressorOn ?? false);
-      patchRadioState({ compressorOn: next });
-      cmd('set_compressor', { on: next });
-    },
-    onCompLevelChange: (level: number) => {
-      patchRadioState({ compressorLevel: level });
-      cmd('set_compressor_level', { level });
-    },
-    onMonToggle: () => {
-      const next = !(getRadioState()?.monitorOn ?? false);
-      patchRadioState({ monitorOn: next });
-      cmd('set_monitor', { on: next });
-    },
-    onMonLevelChange: (level: number) => {
-      patchRadioState({ monitorGain: level });
-      cmd('set_monitor_gain', { level });
-    },
-    onDriveGainChange: (level: number) => {
-      patchRadioState({ driveGain: level });
-      cmd('set_drive_gain', { level });
     },
   };
 }
@@ -382,38 +270,6 @@ export function makeAudioRoutingHandlers() {
   };
 }
 
-/* ── Antenna Handlers ────────────────────────────────────────── */
-
-export function makeAntennaHandlers() {
-  return {
-    onSelectAnt1: () => {
-      // Preserve current RX-ANT state when switching TX antenna.
-      const rxOn = getRadioState()?.rxAntenna1 ?? false;
-      patchRadioState({ txAntenna: 1 });
-      cmd('set_antenna_1', { on: rxOn });
-    },
-    onSelectAnt2: () => {
-      const rxOn = getRadioState()?.rxAntenna2 ?? false;
-      patchRadioState({ txAntenna: 2 });
-      cmd('set_antenna_2', { on: rxOn });
-    },
-    onToggleRxAnt: () => {
-      // RX-ANT is encoded as data byte of 0x12 0x00/0x01 and is tied to the current TX ANT.
-      const s = getRadioState();
-      const tx = s?.txAntenna ?? 1;
-      const current = tx === 2 ? (s?.rxAntenna2 ?? false) : (s?.rxAntenna1 ?? false);
-      const next = !current;
-      if (tx === 2) {
-        patchRadioState({ txAntenna: 2, rxAntenna2: next });
-        cmd('set_rx_antenna_ant2', { on: next });
-      } else {
-        patchRadioState({ txAntenna: 1, rxAntenna1: next });
-        cmd('set_rx_antenna_ant1', { on: next });
-      }
-    },
-  };
-}
-
 /* ── Meter Handlers ──────────────────────────────────────────── */
 
 export function makeMeterHandlers() {
@@ -431,28 +287,6 @@ export function makeSystemHandlers() {
     onDialLock: (on: boolean) => cmd('set_dial_lock', { on }),
     onPowerOff: () => cmd('set_powerstat', { on: false }),
     onSpeak: () => cmd('speak', { mode: 0 }),
-  };
-}
-
-/* ── Scan Handlers ──────────────────────────────────────────── */
-
-export function makeScanHandlers() {
-  return {
-    onScanStart: (type: number) => {
-      patchRadioState({ scanning: true, scanType: type });
-      cmd('scan_start', { type });
-    },
-    onScanStop: () => {
-      patchRadioState({ scanning: false, scanType: 0 });
-      cmd('scan_stop');
-    },
-    onDfSpanChange: (span: number) => {
-      cmd('scan_set_df_span', { span });
-    },
-    onResumeChange: (mode: number) => {
-      patchRadioState({ scanResumeMode: mode & 0x0F });
-      cmd('scan_set_resume', { mode });
-    },
   };
 }
 

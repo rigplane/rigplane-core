@@ -74,7 +74,9 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import {
   makeAgcHandlers,
+  makeAntennaHandlers,
   makeBandHandlers,
+  makeCwPanelHandlers,
   makeDspHandlers,
   makeFilterHandlers,
   makeModeHandlers,
@@ -82,6 +84,8 @@ import {
   makeRfFrontEndHandlers,
   makeRitXitHandlers,
   makeRxAudioHandlers,
+  makeScanHandlers,
+  makeTxHandlers,
 } from '../panel-commands';
 import * as compatibilityBus from '$lib/../components-v2/wiring/command-bus';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
@@ -116,6 +120,8 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     autoNotch: false,
     manualNotch: false,
     manualNotchWidth: 1,
+    apfTypeLevel: 1,
+    twinPeakFilter: false,
     sMeter: 0,
   };
   return {
@@ -128,6 +134,26 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     nbDepth: 4,
     nbWidth: 2,
     notchFilter: 64,
+    powerLevel: 0.5,
+    micGain: 128,
+    tunerStatus: 1,
+    voxOn: false,
+    compressorOn: true,
+    compressorLevel: 44,
+    monitorOn: false,
+    monitorGain: 72,
+    driveGain: 80,
+    cwPitch: 600,
+    keySpeed: 24,
+    breakIn: 2,
+    breakInDelay: 64,
+    dashRatio: 0,
+    txAntenna: 1,
+    rxAntenna1: false,
+    rxAntenna2: true,
+    scanning: false,
+    scanType: 0x22,
+    scanResumeMode: 2,
     fieldStatus: {
       active: freshStatus,
       'main.dataMode': freshStatus,
@@ -167,8 +193,13 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.state = state();
     h.unavailable.clear();
     h.caps = {
-      capabilities: ['pbt', 'agc', 'rit', 'xit', 'nr', 'nb', 'notch', 'af_level'],
+      capabilities: [
+        'pbt', 'agc', 'rit', 'xit', 'nr', 'nb', 'notch', 'af_level',
+        'tx', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
+        'cw', 'break_in', 'apf', 'twin_peak', 'rx_antenna',
+      ],
       receivers: 2,
+      antennas: 2,
       vfoScheme: 'main_sub',
       controls: {
         pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
@@ -201,6 +232,10 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(compatibilityBus.makeBandHandlers).toBe(makeBandHandlers);
     expect(compatibilityBus.makePresetHandlers).toBe(makePresetHandlers);
     expect(compatibilityBus.makeRxAudioHandlers).toBe(makeRxAudioHandlers);
+    expect(compatibilityBus.makeCwPanelHandlers).toBe(makeCwPanelHandlers);
+    expect(compatibilityBus.makeTxHandlers).toBe(makeTxHandlers);
+    expect(compatibilityBus.makeAntennaHandlers).toBe(makeAntennaHandlers);
+    expect(compatibilityBus.makeScanHandlers).toBe(makeScanHandlers);
   });
 
   it('routes mode, DATA mode, and MOD input through exact lifecycle envelopes without Store writes', () => {
@@ -384,6 +419,130 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     }
 
     expect(h.setMuted).toHaveBeenCalled();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('routes the complete CW factory through exact non-PTT lifecycle without optimistic truth', () => {
+    const cw = makeCwPanelHandlers();
+    cw.onCwPitchChange(700);
+    cw.onKeySpeedChange(28);
+    cw.onBreakInToggle();
+    cw.onBreakInModeChange(1);
+    cw.onApfChange(2);
+    cw.onTwinPeakToggle();
+    cw.onAutoTune();
+    cw.onWpmChange(32);
+    cw.onBreakInDelayChange(75);
+    cw.onSidetonePitchChange(650);
+    cw.onSidetoneLevelChange(44);
+    cw.onReversePaddleToggle();
+
+    expect(exactCalls()).toEqual([
+      ['set_cw_pitch', { value: 700 }],
+      ['set_key_speed', { speed: 28 }],
+      ['set_break_in', { mode: 0 }],
+      ['set_break_in', { mode: 1 }],
+      ['set_apf', { mode: 2, receiver: 0 }],
+      ['set_twin_peak', { on: true, receiver: 0 }],
+      ['cw_auto_tune', {}],
+      ['set_key_speed', { speed: 32 }],
+      ['set_break_in_delay', { level: 75 }],
+      ['set_cw_pitch', { value: 650 }],
+      ['set_monitor_gain', { level: 44 }],
+      ['set_dash_ratio', { ratio: -1 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('routes complete TX auxiliaries without PTT coupling or optimistic truth', () => {
+    const tx = makeTxHandlers();
+    tx.onRfPowerChange(0.42);
+    tx.onMicGainChange(200);
+    tx.onAtuToggle();
+    tx.onAtuTune();
+    tx.onVoxToggle();
+    tx.onCompToggle();
+    tx.onCompLevelChange(33);
+    tx.onMonToggle();
+    tx.onMonLevelChange(99);
+    tx.onDriveGainChange(100);
+
+    expect(exactCalls()).toEqual([
+      ['set_rf_power', { level: 0.42 }],
+      ['set_mic_gain', { level: 200 }],
+      ['set_tuner_status', { value: 0 }],
+      ['set_tuner_status', { value: 2 }],
+      ['set_vox', { on: true }],
+      ['set_compressor', { on: false }],
+      ['set_compressor_level', { level: 33 }],
+      ['set_monitor', { on: true }],
+      ['set_monitor_gain', { level: 99 }],
+      ['set_drive_gain', { level: 100 }],
+    ]);
+    expectIntentTransport();
+    expect(exactCalls().map(([name]) => name)).not.toContain('ptt');
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('preserves exact antenna and scan command names and params without Store truth', () => {
+    const antenna = makeAntennaHandlers();
+    antenna.onSelectAnt1();
+    antenna.onSelectAnt2();
+    antenna.onToggleRxAnt();
+    const scan = makeScanHandlers();
+    scan.onScanStart(0x22);
+    scan.onScanStop();
+    scan.onDfSpanChange(25_000);
+    scan.onResumeChange(0xd2);
+
+    expect(exactCalls()).toEqual([
+      ['set_antenna_1', { on: false }],
+      ['set_antenna_2', { on: true }],
+      ['set_rx_antenna_ant1', { on: true }],
+      ['scan_start', { type: 0x22 }],
+      ['scan_stop', {}],
+      ['scan_set_df_span', { span: 25_000 }],
+      ['scan_set_resume', { mode: 0xd2 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for stale or malformed CW, TX, and antenna-derived inputs', () => {
+    h.unavailable.add('breakIn');
+    makeCwPanelHandlers().onBreakInToggle();
+    h.unavailable.add('main.twinPeakFilter');
+    makeCwPanelHandlers().onTwinPeakToggle();
+    h.unavailable.add('tunerStatus');
+    makeTxHandlers().onAtuToggle();
+    h.unavailable.add('voxOn');
+    makeTxHandlers().onVoxToggle();
+    h.unavailable.add('txAntenna');
+    makeAntennaHandlers().onToggleRxAnt();
+    makeTxHandlers().onRfPowerChange(Number.NaN);
+    makeScanHandlers().onScanStart(1.5);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('accepts one-RX MAIN CW facts but rejects impossible physical SUB without reading VFO slots', () => {
+    h.state = oneReceiverAbState();
+    h.caps = {
+      capabilities: ['cw', 'apf', 'twin_peak'], receivers: 1, antennas: 1, vfoScheme: 'ab',
+    };
+    makeCwPanelHandlers().onApfChange(2);
+    expect(exactCalls()).toEqual([['set_apf', { mode: 2, receiver: 0 }]]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    h.state = { ...oneReceiverAbState(), active: 'SUB' } as ServerState;
+    makeCwPanelHandlers().onApfChange(2);
+    makeCwPanelHandlers().onAutoTune();
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
   });
@@ -604,7 +763,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     const assignedNames = [
       'makeAgcHandlers', 'makeBandHandlers', 'makeDspHandlers', 'makeFilterHandlers',
       'makeModeHandlers', 'makePresetHandlers', 'makeRfFrontEndHandlers',
-      'makeRitXitHandlers', 'makeRxAudioHandlers',
+      'makeRitXitHandlers', 'makeRxAudioHandlers', 'makeCwPanelHandlers',
+      'makeTxHandlers', 'makeAntennaHandlers', 'makeScanHandlers',
     ];
 
     for (const [index, name] of assignedNames.entries()) {
@@ -646,11 +806,36 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       expect(a03aNames).not.toContain(`'${name}'`);
     }
 
+    for (const name of [
+      'set_antenna_1', 'set_antenna_2', 'set_rx_antenna_ant1', 'set_rx_antenna_ant2',
+      'scan_start', 'scan_stop', 'scan_set_df_span', 'scan_set_resume',
+      'set_cw_pitch', 'set_key_speed', 'set_break_in', 'set_apf', 'set_twin_peak',
+      'cw_auto_tune', 'set_break_in_delay', 'set_monitor_gain', 'set_dash_ratio',
+      'set_rf_power', 'set_mic_gain', 'set_tuner_status', 'set_vox', 'set_compressor',
+      'set_compressor_level', 'set_monitor', 'set_drive_gain',
+    ]) {
+      expect(a03aNames).not.toContain(`'${name}'`);
+    }
+
     for (const factory of ['makeBandHandlers', 'makePresetHandlers']) {
       const start = panelSource.indexOf(`export function ${factory}`);
       const end = panelSource.indexOf('\nexport function ', start + 1);
       expect(panelSource.slice(start, end)).not.toMatch(/\b(?:activeSlot|vfoA|vfoB|unselectedVfo)\b/);
     }
+    for (const factory of ['makeCwPanelHandlers', 'makeTxHandlers', 'makeAntennaHandlers', 'makeScanHandlers']) {
+      const start = panelSource.indexOf(`export function ${factory}`);
+      const end = panelSource.indexOf('\nexport function ', start + 1);
+      const block = panelSource.slice(start, end);
+      expect(block).not.toMatch(/\bcmd\s*\(/);
+      expect(block).not.toMatch(/\b(?:activeSlot|vfoA|vfoB|unselectedVfo)\b/);
+      expect(block).toContain('dispatchRadioIntent');
+    }
+    expect(panelSource).not.toContain('onKeyerTypeChange');
+    expect(panelSource).not.toContain('set_keyer_type');
+    expect(busSource).not.toContain('onKeyerTypeChange');
+    expect(busSource).not.toContain('set_keyer_type');
+    expect(busSource).toContain('export function makeVoxHandlers');
+    expect(panelSource).not.toContain('export function makeVoxHandlers');
     expect(panelSource).not.toMatch(/dispatchRadioIntent\(\{\s*name:\s*['"]ptt(?:_on|_off)?['"]/);
   });
 });
