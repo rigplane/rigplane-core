@@ -1061,6 +1061,37 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setAudioConfig).toHaveBeenNthCalledWith(2, { focus: 'main' });
   });
 
+  it('delegates keyboard dial and scope controls only from known generation-bound scope metadata', () => {
+    h.caps = { ...h.caps!, capabilities: [...(h.caps!.capabilities as string[]), 'dial_lock', 'scope'] };
+    h.state = {
+      ...h.state!,
+      dialLock: false,
+      scopeControls: { span: 7, refDb: -30, hold: false, dual: false, speed: 0 },
+    } as ServerState;
+
+    const actions = [
+      { action: 'toggle_dial_lock' },
+      { action: 'scope_span_step', params: { direction: 'up' } },
+      { action: 'scope_ref_step', params: { direction: 'down' } },
+      { action: 'scope_toggle_hold' },
+      { action: 'scope_toggle_dual' },
+      { action: 'scope_toggle_fst' },
+    ];
+
+    for (const action of actions) expect(dispatchKeyboardRadioAction(action)).toBe(true);
+
+    expect(exactCalls()).toEqual([
+      ['set_dial_lock', { on: true }],
+      ['set_scope_span', { span: 7 }],
+      ['set_scope_ref', { ref: -30 }],
+      ['set_scope_hold', { on: true }],
+      ['set_scope_dual', { dual: true }],
+      ['set_scope_speed', { speed: 1 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
   it('clamps only known normalized keyboard AF/RF readings and keeps active runtime AF local', () => {
     (h.state!.main as { afLevel: number; rfGain: number }).afLevel = 0.98;
     (h.state!.main as { afLevel: number; rfGain: number }).rfGain = 0.02;
