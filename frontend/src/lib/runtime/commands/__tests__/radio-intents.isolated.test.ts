@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
 import type { RadioIntent } from '../radio-intents';
@@ -127,6 +129,27 @@ describe('typed non-PTT radio intents', () => {
     expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('removes dormant keyer type from both the type and runtime vocabulary', () => {
+    if (false) {
+      // @ts-expect-error There is no observed keyer-type fact or executable command.
+      intents.dispatchRadioIntent({ name: 'set_keyer_type', params: { type: 1 } });
+    }
+    expect(() => intents.dispatchRadioIntent({
+      name: 'set_keyer_type', params: { type: 1 },
+    } as never)).toThrow(/non-PTT/i);
+    expect(intents.RADIO_INTENT_NAMES).not.toContain('set_keyer_type');
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('contains lifecycle only and cannot write radio truth from ACK or result', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/radio-intents.ts'), 'utf8');
+    expect(source).not.toMatch(/from ['"]\$lib\/stores\/radio/);
+    expect(source).not.toMatch(/\b(?:patchActiveReceiver|patchRadioState|patchReceiver)\s*\(/);
+    expect(source).not.toContain('set_keyer_type');
+    expect(source).not.toMatch(/['"]ptt(?:_on|_off)?['"]/);
+  });
+
   it('rejects forged malformed known intents before lifecycle or transport', () => {
     const malformed = [
       null,
@@ -181,6 +204,19 @@ describe('typed non-PTT radio intents', () => {
     } as never)).toThrow(TypeError);
   });
 
+  it('accepts the shipped fractional RF-power scale without weakening integer TX fields', () => {
+    intents.dispatchRadioIntent({
+      id: 'rf-fraction', name: 'set_rf_power', params: { level: 0.42 },
+    });
+
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(
+      'set_rf_power', { level: 0.42 }, 'rf-fraction', { optimistic: false },
+    );
+    expect(() => intents.dispatchRadioIntent({
+      name: 'set_mic_gain', params: { level: 0.42 },
+    } as never)).toThrow(TypeError);
+  });
+
   it('accepts representative exact envelopes derived from every descriptor family', () => {
     const representatives: RadioIntent[] = [
       { name: 'vfo_swap', params: {} },
@@ -232,11 +268,12 @@ describe('typed non-PTT radio intents', () => {
       const invalidRit: RadioIntent = { name: 'set_rit_frequency', params: { value: 300 } };
       expect(invalidRit).toBeDefined();
     }
-    expect(intents.RADIO_INTENT_NAMES).toHaveLength(92);
-    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(92);
+    expect(intents.RADIO_INTENT_NAMES).toHaveLength(91);
+    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(91);
     expect(intents.RADIO_INTENT_NAMES).toContain('set_data3_mod_input');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt_on');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt_off');
+    expect(intents.RADIO_INTENT_NAMES).not.toContain('set_keyer_type');
   });
 });

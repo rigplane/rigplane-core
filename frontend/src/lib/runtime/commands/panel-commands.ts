@@ -16,7 +16,6 @@ import { sendCommand } from '$lib/transport/ws-client';
 import {
   getActiveReceiver,
   getRadioState,
-  patchActiveReceiver,
   patchRadioState,
 } from '$lib/stores/radio.svelte';
 import { getCapabilities, getControlRange } from '$lib/stores/capabilities.svelte';
@@ -43,10 +42,6 @@ function cmd(name: string, params: Record<string, unknown> = {}): void {
     return;
   }
   sendCommand(name, params);
-}
-
-function activeReceiverParam(): Receiver {
-  return getRadioState()?.active === 'SUB' ? 1 : 0;
 }
 
 function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver | null {
@@ -200,26 +195,30 @@ export function makeModeHandlers() {
 export function makeAntennaHandlers() {
   return {
     onSelectAnt1: () => {
-      const rxOn = (getRadioState() as any)?.rxAntenna1 ?? false;
-      patchRadioState({ txAntenna: 1 });
-      cmd('set_antenna_1', { on: rxOn });
+      const state = getRadioState();
+      if ((getCapabilities()?.antennas ?? 0) < 2 || !knownTopLevelField('rxAntenna1')
+        || typeof state?.rxAntenna1 !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_antenna_1', params: { on: state.rxAntenna1 } });
     },
     onSelectAnt2: () => {
-      const rxOn = (getRadioState() as any)?.rxAntenna2 ?? false;
-      patchRadioState({ txAntenna: 2 });
-      cmd('set_antenna_2', { on: rxOn });
+      const state = getRadioState();
+      if ((getCapabilities()?.antennas ?? 0) < 2 || !knownTopLevelField('rxAntenna2')
+        || typeof state?.rxAntenna2 !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_antenna_2', params: { on: state.rxAntenna2 } });
     },
     onToggleRxAnt: () => {
-      const s = getRadioState() as any;
-      const tx = (s?.txAntenna ?? 1) as number;
-      const current = tx === 2 ? (s?.rxAntenna2 ?? false) : (s?.rxAntenna1 ?? false);
+      const state = getRadioState();
+      const tx = state?.txAntenna;
+      if ((getCapabilities()?.antennas ?? 0) < 2 || !hasCapability('rx_antenna')
+        || !knownTopLevelField('txAntenna') || (tx !== 1 && tx !== 2)) return;
+      const field = tx === 2 ? 'rxAntenna2' : 'rxAntenna1';
+      const current = tx === 2 ? state?.rxAntenna2 : state?.rxAntenna1;
+      if (!knownTopLevelField(field) || typeof current !== 'boolean') return;
       const next = !current;
       if (tx === 2) {
-        patchRadioState({ txAntenna: 2, rxAntenna2: next });
-        cmd('set_rx_antenna_ant2', { on: next });
+        dispatchRadioIntent({ name: 'set_rx_antenna_ant2', params: { on: next } });
       } else {
-        patchRadioState({ txAntenna: 1, rxAntenna1: next });
-        cmd('set_rx_antenna_ant1', { on: next });
+        dispatchRadioIntent({ name: 'set_rx_antenna_ant1', params: { on: next } });
       }
     },
   };
@@ -302,19 +301,19 @@ export function makeRitXitHandlers() {
 export function makeScanHandlers() {
   return {
     onScanStart: (type: number) => {
-      patchRadioState({ scanning: true, scanType: type });
-      cmd('scan_start', { type });
+      if (!Number.isSafeInteger(type)) return;
+      dispatchRadioIntent({ name: 'scan_start', params: { type } });
     },
     onScanStop: () => {
-      patchRadioState({ scanning: false, scanType: 0 });
-      cmd('scan_stop');
+      dispatchRadioIntent({ name: 'scan_stop', params: {} });
     },
     onDfSpanChange: (span: number) => {
-      cmd('scan_set_df_span', { span });
+      if (!Number.isSafeInteger(span)) return;
+      dispatchRadioIntent({ name: 'scan_set_df_span', params: { span } });
     },
     onResumeChange: (mode: number) => {
-      patchRadioState({ scanResumeMode: mode & 0x0f });
-      cmd('scan_set_resume', { mode });
+      if (!Number.isSafeInteger(mode)) return;
+      dispatchRadioIntent({ name: 'scan_set_resume', params: { mode } });
     },
   };
 }
@@ -334,64 +333,64 @@ export function makeMeterHandlers() {
 export function makeCwPanelHandlers() {
   return {
     onCwPitchChange: (value: number) => {
-      patchRadioState({ cwPitch: value });
-      cmd('set_cw_pitch', { value });
+      if (!hasCapability('cw') || !knownTopLevelField('cwPitch') || !Number.isSafeInteger(value)) return;
+      dispatchRadioIntent({ name: 'set_cw_pitch', params: { value } });
     },
     onKeySpeedChange: (speed: number) => {
-      patchRadioState({ keySpeed: speed });
-      cmd('set_key_speed', { speed });
+      if (!hasCapability('cw') || !knownTopLevelField('keySpeed') || !Number.isSafeInteger(speed)) return;
+      dispatchRadioIntent({ name: 'set_key_speed', params: { speed } });
     },
     onBreakInToggle: () => {
-      const current = getRadioState()?.breakIn ?? 0;
-      const next = current > 0 ? 0 : 1;
-      patchRadioState({ breakIn: next });
-      cmd('set_break_in', { mode: next });
+      const current = getRadioState()?.breakIn;
+      if (!hasCapability('cw') || !hasCapability('break_in') || !knownTopLevelField('breakIn')
+        || !Number.isSafeInteger(current)) return;
+      dispatchRadioIntent({ name: 'set_break_in', params: { mode: (current as number) > 0 ? 0 : 1 } });
     },
     onBreakInModeChange: (mode: number) => {
-      patchRadioState({ breakIn: mode });
-      cmd('set_break_in', { mode });
+      if (!hasCapability('cw') || !hasCapability('break_in') || !knownTopLevelField('breakIn')
+        || !Number.isSafeInteger(mode)) return;
+      dispatchRadioIntent({ name: 'set_break_in', params: { mode } });
     },
     onApfChange: (mode: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ apfTypeLevel: mode }, true);
-      cmd('set_apf', { mode, receiver });
+      const receiver = knownReceiverField('apfTypeLevel');
+      if (!hasCapability('cw') || !hasCapability('apf') || receiver === null
+        || !Number.isSafeInteger(mode)) return;
+      dispatchRadioIntent({ name: 'set_apf', params: { mode, receiver } });
     },
     onTwinPeakToggle: () => {
-      const receiver = activeReceiverParam();
+      const receiver = knownReceiverField('twinPeakFilter');
       const state = getRadioState();
       const rx = receiver === 0 ? state?.main : state?.sub;
-      const current = rx?.twinPeakFilter ?? false;
-      const next = !current;
-      patchActiveReceiver({ twinPeakFilter: next }, true);
-      cmd('set_twin_peak', { on: next, receiver });
+      if (!hasCapability('cw') || !hasCapability('twin_peak') || receiver === null
+        || typeof rx?.twinPeakFilter !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_twin_peak', params: { on: !rx.twinPeakFilter, receiver } });
     },
     onAutoTune: () => {
-      cmd('cw_auto_tune', {});
+      if (!hasCapability('cw') || knownActiveReceiver() === null) return;
+      dispatchRadioIntent({ name: 'cw_auto_tune', params: {} });
     },
     onWpmChange: (speed: number) => {
-      patchRadioState({ keySpeed: speed });
-      cmd('set_key_speed', { speed });
+      if (!hasCapability('cw') || !knownTopLevelField('keySpeed') || !Number.isSafeInteger(speed)) return;
+      dispatchRadioIntent({ name: 'set_key_speed', params: { speed } });
     },
     onBreakInDelayChange: (level: number) => {
-      patchRadioState({ breakInDelay: level });
-      cmd('set_break_in_delay', { level });
+      if (!hasCapability('cw') || !hasCapability('break_in') || !knownTopLevelField('breakInDelay')
+        || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_break_in_delay', params: { level } });
     },
     onSidetonePitchChange: (value: number) => {
-      patchRadioState({ cwPitch: value });
-      cmd('set_cw_pitch', { value });
+      if (!hasCapability('cw') || !knownTopLevelField('cwPitch') || !Number.isSafeInteger(value)) return;
+      dispatchRadioIntent({ name: 'set_cw_pitch', params: { value } });
     },
     onSidetoneLevelChange: (level: number) => {
-      patchRadioState({ monitorGain: level });
-      cmd('set_monitor_gain', { level });
+      if (!hasCapability('cw') || !knownTopLevelField('monitorGain') || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_monitor_gain', params: { level } });
     },
     onReversePaddleToggle: () => {
-      const current = getRadioState()?.dashRatio ?? 0;
-      const next = current < 0 ? 0 : -1;
-      patchRadioState({ dashRatio: next });
-      cmd('set_dash_ratio', { ratio: next });
-    },
-    onKeyerTypeChange: (type: number) => {
-      cmd('set_keyer_type', { type });
+      const current = getRadioState()?.dashRatio;
+      if (!hasCapability('cw') || !knownTopLevelField('dashRatio')
+        || !Number.isSafeInteger(current)) return;
+      dispatchRadioIntent({ name: 'set_dash_ratio', params: { ratio: (current as number) < 0 ? 0 : -1 } });
     },
   };
 }
@@ -473,47 +472,55 @@ export function makeDspHandlers() {
 export function makeTxHandlers() {
   return {
     onRfPowerChange: (level: number) => {
-      patchRadioState({ powerLevel: level });
-      cmd('set_rf_power', { level });
+      if (!hasCapability('tx') || !knownTopLevelField('powerLevel') || !Number.isFinite(level)) return;
+      dispatchRadioIntent({ name: 'set_rf_power', params: { level } });
     },
     onMicGainChange: (level: number) => {
-      patchRadioState({ micGain: level });
-      cmd('set_mic_gain', { level });
+      if (!hasCapability('tx') || !knownTopLevelField('micGain') || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_mic_gain', params: { level } });
     },
     onAtuToggle: () => {
-      const next = (getRadioState()?.tunerStatus ?? 0) > 0 ? 0 : 1;
-      patchRadioState({ tunerStatus: next });
-      cmd('set_tuner_status', { value: next });
+      const current = getRadioState()?.tunerStatus;
+      if (!hasCapability('tx') || !hasCapability('tuner') || !knownTopLevelField('tunerStatus')
+        || !Number.isSafeInteger(current)) return;
+      dispatchRadioIntent({ name: 'set_tuner_status', params: { value: (current as number) > 0 ? 0 : 1 } });
     },
     onAtuTune: () => {
-      cmd('set_tuner_status', { value: 2 }); // Start tuning
+      if (!hasCapability('tx') || !hasCapability('tuner') || !knownTopLevelField('tunerStatus')) return;
+      dispatchRadioIntent({ name: 'set_tuner_status', params: { value: 2 } });
     },
     onVoxToggle: () => {
-      const next = !(getRadioState()?.voxOn ?? false);
-      patchRadioState({ voxOn: next });
-      cmd('set_vox', { on: next });
+      const current = getRadioState()?.voxOn;
+      if (!hasCapability('tx') || !hasCapability('vox') || !knownTopLevelField('voxOn')
+        || typeof current !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_vox', params: { on: !current } });
     },
     onCompToggle: () => {
-      const next = !(getRadioState()?.compressorOn ?? false);
-      patchRadioState({ compressorOn: next });
-      cmd('set_compressor', { on: next });
+      const current = getRadioState()?.compressorOn;
+      if (!hasCapability('tx') || !hasCapability('compressor') || !knownTopLevelField('compressorOn')
+        || typeof current !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_compressor', params: { on: !current } });
     },
     onCompLevelChange: (level: number) => {
-      patchRadioState({ compressorLevel: level });
-      cmd('set_compressor_level', { level });
+      if (!hasCapability('tx') || !hasCapability('compressor') || !knownTopLevelField('compressorLevel')
+        || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_compressor_level', params: { level } });
     },
     onMonToggle: () => {
-      const next = !(getRadioState()?.monitorOn ?? false);
-      patchRadioState({ monitorOn: next });
-      cmd('set_monitor', { on: next });
+      const current = getRadioState()?.monitorOn;
+      if (!hasCapability('tx') || !hasCapability('monitor') || !knownTopLevelField('monitorOn')
+        || typeof current !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_monitor', params: { on: !current } });
     },
     onMonLevelChange: (level: number) => {
-      patchRadioState({ monitorGain: level });
-      cmd('set_monitor_gain', { level });
+      if (!hasCapability('tx') || !hasCapability('monitor') || !knownTopLevelField('monitorGain')
+        || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_monitor_gain', params: { level } });
     },
     onDriveGainChange: (level: number) => {
-      patchRadioState({ driveGain: level });
-      cmd('set_drive_gain', { level });
+      if (!hasCapability('tx') || !hasCapability('drive_gain') || !knownTopLevelField('driveGain')
+        || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_drive_gain', params: { level } });
     },
   };
 }

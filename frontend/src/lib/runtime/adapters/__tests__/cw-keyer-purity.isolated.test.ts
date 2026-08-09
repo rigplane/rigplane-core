@@ -140,7 +140,7 @@ describe('cwKeyer fact construction is not a key path (MOR-1296, safety constrai
   it('the adapter contains none of the CW command verbs the shipped handlers send', () => {
     for (const verb of [
       'set_break_in', 'set_break_in_delay', 'cw_auto_tune', 'set_key_speed',
-      'set_cw_pitch', 'set_apf', 'set_twin_peak', 'set_keyer_type', 'set_dash_ratio', 'set_ptt',
+      'set_cw_pitch', 'set_apf', 'set_twin_peak', 'set_dash_ratio', 'set_ptt',
     ]) {
       expect(adapterSource).not.toContain(verb);
     }
