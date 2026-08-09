@@ -56,6 +56,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchActiveReceiver: vi.fn(), patchRadioState: vi.fn(), patchReceiver: vi.fn(),
 }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
+  capabilitiesMatchGeneration: vi.fn(() => true),
   getCapabilities: vi.fn(() => h.caps),
   getControlRange: vi.fn(() => null),
 }));

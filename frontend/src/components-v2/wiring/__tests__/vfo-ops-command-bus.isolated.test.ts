@@ -27,10 +27,22 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 });
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
-  getRadioState: vi.fn(() => ({ active: 'MAIN' })),
+  getRadioState: vi.fn(() => ({
+    stateContractVersion: 1, providerGeneration: 1, active: 'MAIN',
+    main: { freqHz: 14_074_000 }, sub: { freqHz: 7_074_000 },
+    split: false, dualWatch: false, mainSubTracking: false,
+  })),
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
+}));
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: vi.fn(() => ({
+    receivers: 2, vfoScheme: 'main_sub',
+    capabilities: ['dual_rx', 'dual_watch', 'split', 'main_sub_tracking'],
+  })),
+  capabilitiesMatchGeneration: vi.fn(() => true),
+  getControlRange: vi.fn(() => null),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {

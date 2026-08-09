@@ -17,7 +17,11 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => ({ receivers: 2, vfoScheme: 'main_sub', capabilities: ['rit', 'xit'] })),
+  getCapabilities: vi.fn(() => ({
+    receivers: 2, vfoScheme: 'main_sub',
+    capabilities: ['rit', 'xit', 'split', 'dual_rx', 'dual_watch', 'main_sub_tracking'],
+  })),
+  capabilitiesMatchGeneration: vi.fn(() => true),
   getControlRange: vi.fn(() => null),
 }));
 
@@ -44,9 +48,14 @@ const originalDocumentQuerySelector = document.querySelector.bind(document);
 
 function receiverState(active: 'MAIN' | 'SUB') {
   return {
+    stateContractVersion: 1,
+    providerGeneration: 1,
     active,
-    main: { mode: 'USB', dataMode: 1, filter: 2, filterShape: 0, filterWidth: 2400 },
-    sub: { mode: 'CW', dataMode: 0, filter: 1, filterShape: 0, filterWidth: 500 },
+    main: { freqHz: 14_074_000, mode: 'USB', dataMode: 1, filter: 2, filterShape: 0, filterWidth: 2400 },
+    sub: { freqHz: 7_074_000, mode: 'CW', dataMode: 0, filter: 1, filterShape: 0, filterWidth: 500 },
+    split: false,
+    dualWatch: false,
+    mainSubTracking: false,
   } as any;
 }
 
@@ -92,6 +101,9 @@ describe('makeVfoHandlers', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
     vi.mocked(patchRadioState).mockClear();
+    vi.mocked(patchReceiver).mockClear();
+    vi.mocked(audioManager.setAudioConfig).mockClear();
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
   });
 
   afterEach(() => {
@@ -99,20 +111,20 @@ describe('makeVfoHandlers', () => {
   });
 
   it('sends explicit split=false when toggling from active split state', () => {
-    vi.mocked(getRadioState).mockReturnValue({ split: true } as any);
+    vi.mocked(getRadioState).mockReturnValue({ ...receiverState('MAIN'), split: true } as any);
 
     makeVfoHandlers().onSplitToggle();
 
-    expect(patchRadioState).toHaveBeenCalledWith({ split: false });
+    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_split', { on: false });
   });
 
   it('sends explicit split=true when toggling from inactive split state', () => {
-    vi.mocked(getRadioState).mockReturnValue({ split: false } as any);
+    vi.mocked(getRadioState).mockReturnValue({ ...receiverState('MAIN'), split: false } as any);
 
     makeVfoHandlers().onSplitToggle();
 
-    expect(patchRadioState).toHaveBeenCalledWith({ split: true });
+    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_split', { on: true });
   });
 
@@ -129,7 +141,7 @@ describe('makeVfoHandlers', () => {
 
     makeVfoHandlers().onMainModeClick();
 
-    expect(patchRadioState).toHaveBeenCalledWith({ active: 'MAIN' });
+    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'MAIN' });
     expect(scrollIntoView).toHaveBeenCalled();
   });
@@ -147,7 +159,7 @@ describe('makeVfoHandlers', () => {
 
     makeVfoHandlers().onSubModeClick();
 
-    expect(patchRadioState).toHaveBeenCalledWith({ active: 'SUB' });
+    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
     expect(scrollIntoView).toHaveBeenCalled();
   });
@@ -170,65 +182,56 @@ describe('makeVfoHandlers', () => {
     expect(sendCommand).toHaveBeenCalledWith('set_main_sub_tracking', { on: false });
   });
 
-  // Optimistic updates + audio focus follow for live MAIN/SUB UX.
-  describe('optimistic updates + audio focus', () => {
+  // State remains observation-owned while audio focus follows valid MAIN/SUB actions.
+  describe('observed truth + audio focus', () => {
     beforeEach(() => {
       vi.mocked(patchReceiver).mockClear();
       vi.mocked(audioManager.setAudioConfig).mockClear();
     });
 
-    it('onEqual optimistically copies MAIN freq/mode/filter to SUB before the poll', () => {
+    it('onEqual leaves observed receiver truth untouched', () => {
       vi.mocked(getRadioState).mockReturnValue({
+        stateContractVersion: 1, providerGeneration: 1, active: 'MAIN',
         main: { freqHz: 14_074_000, mode: 'USB', filter: 2 },
         sub: { freqHz: 28_500_000, mode: 'AM', filter: 3 },
       } as any);
 
       makeVfoHandlers().onEqual();
 
-      expect(patchReceiver).toHaveBeenCalledWith(
-        1,
-        { freqHz: 14_074_000, mode: 'USB', filter: 2 },
-      );
+      expect(patchReceiver).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledWith('vfo_equalize', {});
     });
 
-    it('onSwap optimistically exchanges freq/mode/filter between MAIN and SUB', () => {
+    it('onSwap leaves observed receiver truth untouched', () => {
       vi.mocked(getRadioState).mockReturnValue({
+        stateContractVersion: 1, providerGeneration: 1, active: 'MAIN',
         main: { freqHz: 14_074_000, mode: 'USB', filter: 2 },
         sub: { freqHz: 28_500_000, mode: 'AM', filter: 3 },
       } as any);
 
       makeVfoHandlers().onSwap();
 
-      // MAIN gets SUB's former values; SUB gets MAIN's former values.
-      expect(patchReceiver).toHaveBeenCalledWith(
-        0,
-        { freqHz: 28_500_000, mode: 'AM', filter: 3 },
-      );
-      expect(patchReceiver).toHaveBeenCalledWith(
-        1,
-        { freqHz: 14_074_000, mode: 'USB', filter: 2 },
-      );
+      expect(patchReceiver).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledWith('vfo_swap', {});
     });
 
-    it('onEqual without state does nothing optimistic but still fires command', () => {
+    it('onEqual without current state emits no command', () => {
       vi.mocked(getRadioState).mockReturnValue(null);
       makeVfoHandlers().onEqual();
       expect(patchReceiver).not.toHaveBeenCalled();
-      expect(sendCommand).toHaveBeenCalledWith('vfo_equalize', {});
+      expect(sendCommand).not.toHaveBeenCalled();
     });
 
     it('onMainVfoClick couples audio focus to MAIN', () => {
       makeVfoHandlers().onMainVfoClick();
-      expect(patchRadioState).toHaveBeenCalledWith({ active: 'MAIN' });
+      expect(patchRadioState).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'MAIN' });
       expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'main' });
     });
 
     it('onSubVfoClick couples audio focus to SUB', () => {
       makeVfoHandlers().onSubVfoClick();
-      expect(patchRadioState).toHaveBeenCalledWith({ active: 'SUB' });
+      expect(patchRadioState).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
       expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'sub' });
     });
@@ -242,11 +245,11 @@ describe('makeVfoHandlers', () => {
     });
 
     it('activates the receiver and the addressed A/B slot', () => {
-      vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+      vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
 
       makeVfoHandlers().onVfoSelect('SUB', 'B');
 
-      expect(patchRadioState).toHaveBeenCalledWith({ active: 'SUB' });
+      expect(patchRadioState).not.toHaveBeenCalled();
       expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'sub' });
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'B' });
@@ -256,7 +259,7 @@ describe('makeVfoHandlers', () => {
     // topology has no A/B to address and the radio would be re-slotted behind
     // the operator's back.
     it('sends no slot command for an unslotted position', () => {
-      vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+      vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
 
       makeVfoHandlers().onVfoSelect('SUB', null);
 
@@ -266,7 +269,7 @@ describe('makeVfoHandlers', () => {
     });
 
     it('switches slot without re-selecting the receiver already in use', () => {
-      vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+      vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
 
       makeVfoHandlers().onVfoSelect('MAIN', 'B');
 

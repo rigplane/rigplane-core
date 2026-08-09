@@ -18,13 +18,18 @@ import {
   getRadioState,
   patchRadioState,
 } from '$lib/stores/radio.svelte';
-import { getCapabilities, getControlRange } from '$lib/stores/capabilities.svelte';
+import {
+  capabilitiesMatchGeneration,
+  getCapabilities,
+  getControlRange,
+} from '$lib/stores/capabilities.svelte';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
-import { consumePendingFocus } from '$lib/radio/pending-focus';
+import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
+import { audioManager } from '$lib/audio/audio-manager';
 import { dispatchRadioIntent, isNormalizedLevel, type RadioIntent } from './radio-intents';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
@@ -78,6 +83,51 @@ function knownTopLevelField(field: string): boolean {
   const state = getRadioState();
   const value = (state as unknown as Record<string, unknown> | null)?.[field];
   return state !== null && value !== undefined && value !== null && isFieldAvailable(state, field);
+}
+
+function currentA03cContext() {
+  const state = getRadioState();
+  const caps = getCapabilities();
+  if (!state || !caps || !capabilitiesMatchGeneration(state.providerGeneration)) return null;
+  const expectedReceivers = caps.vfoScheme === 'single' || caps.vfoScheme === 'ab' ? 1
+    : caps.vfoScheme === 'ab_shared' || caps.vfoScheme === 'main_sub' ? 2 : 0;
+  if (expectedReceivers === 0 || caps.receivers !== expectedReceivers) return null;
+  return { state, caps };
+}
+
+function knownA03cTopLevelField(
+  context: NonNullable<ReturnType<typeof currentA03cContext>>,
+  field: string,
+): boolean {
+  const value = (context.state as unknown as Record<string, unknown>)[field];
+  return value !== undefined && value !== null && isFieldAvailable(context.state, field);
+}
+
+function knownA03cReceiver(
+  context: NonNullable<ReturnType<typeof currentA03cContext>>,
+  target: 'MAIN' | 'SUB',
+  field?: string,
+): Receiver | null {
+  if (target !== 'MAIN' && target !== 'SUB') return null;
+  if (target === 'SUB'
+    && (context.caps.receivers < 2 || !context.caps.capabilities.includes('dual_rx'))) return null;
+  const receiver: Receiver = target === 'SUB' ? 1 : 0;
+  const state = receiver === 1 ? context.state.sub : context.state.main;
+  if (!state) return null;
+  if (!field) return receiver;
+  const value = (state as unknown as Record<string, unknown>)[field];
+  const path = `${receiver === 1 ? 'sub' : 'main'}.${field}`;
+  return value !== undefined && value !== null && isFieldAvailable(context.state, path)
+    ? receiver : null;
+}
+
+function toggleVox(): void {
+  const context = currentA03cContext();
+  const current = context?.state.voxOn;
+  if (!context || !context.caps.capabilities.includes('tx')
+    || !context.caps.capabilities.includes('vox')
+    || !knownA03cTopLevelField(context, 'voxOn') || typeof current !== 'boolean') return;
+  dispatchRadioIntent({ name: 'set_vox', params: { on: !current } });
 }
 
 /* ── Inlined PBT / IF-shift helpers (from filter-controls.ts) ────── */
@@ -489,12 +539,7 @@ export function makeTxHandlers() {
       if (!hasCapability('tx') || !hasCapability('tuner') || !knownTopLevelField('tunerStatus')) return;
       dispatchRadioIntent({ name: 'set_tuner_status', params: { value: 2 } });
     },
-    onVoxToggle: () => {
-      const current = getRadioState()?.voxOn;
-      if (!hasCapability('tx') || !hasCapability('vox') || !knownTopLevelField('voxOn')
-        || typeof current !== 'boolean') return;
-      dispatchRadioIntent({ name: 'set_vox', params: { on: !current } });
-    },
+    onVoxToggle: toggleVox,
     onCompToggle: () => {
       const current = getRadioState()?.compressorOn;
       if (!hasCapability('tx') || !hasCapability('compressor') || !knownTopLevelField('compressorOn')
@@ -724,6 +769,164 @@ export function makeRxAudioHandlers() {
         if (!hasCapability('af_level') || receiver === null) return;
         dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
       }
+    },
+  };
+}
+
+/* ── VFO Handlers ────────────────────────────────────────────────── */
+
+function activateReceiver(
+  target: 'MAIN' | 'SUB',
+  context = currentA03cContext(),
+): boolean {
+  if (!context || knownA03cReceiver(context, target) === null) return false;
+  dispatchRadioIntent({ name: 'set_vfo', params: { vfo: target } });
+  audioManager.setAudioConfig({ focus: target === 'SUB' ? 'sub' : 'main' });
+  return true;
+}
+
+function focusModePanel(target: 'MAIN' | 'SUB'): void {
+  if (!activateReceiver(target)) return;
+  setPendingFocus(target);
+  const modePanel = document.querySelector<HTMLElement>('[data-mode-panel="true"]');
+  if (!modePanel) return;
+  modePanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  modePanel.dataset.highlight = 'true';
+  window.setTimeout(() => {
+    if (modePanel.dataset.highlight === 'true') delete modePanel.dataset.highlight;
+  }, 1200);
+}
+
+function supportsVfoSlot(
+  context: NonNullable<ReturnType<typeof currentA03cContext>>,
+  slot: 'A' | 'B' | null,
+): boolean {
+  if (slot === null) return true;
+  if (slot !== 'A' && slot !== 'B') return false;
+  return context.caps.vfoScheme === 'ab' || context.caps.vfoScheme === 'main_sub';
+}
+
+export function makeVfoHandlers() {
+  return {
+    onSwap: () => {
+      const context = currentA03cContext();
+      if (!context || context.caps.vfoScheme === 'single') return;
+      dispatchRadioIntent({ name: 'vfo_swap', params: {} });
+    },
+    onEqual: () => {
+      const context = currentA03cContext();
+      if (!context || context.caps.vfoScheme === 'single') return;
+      dispatchRadioIntent({ name: 'vfo_equalize', params: {} });
+    },
+    onSplitToggle: () => {
+      const context = currentA03cContext();
+      const current = context?.state.split;
+      if (!context || !context.caps.capabilities.includes('split')
+        || !knownA03cTopLevelField(context, 'split') || typeof current !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_split', params: { on: !current } });
+    },
+    onMainVfoClick: () => { activateReceiver('MAIN'); },
+    onSubVfoClick: () => { activateReceiver('SUB'); },
+    onVfoSelect: (receiver: 'MAIN' | 'SUB', slot: 'A' | 'B' | null) => {
+      const context = currentA03cContext();
+      if (!context || !knownA03cTopLevelField(context, 'active')
+        || knownA03cReceiver(context, receiver) === null
+        || !supportsVfoSlot(context, slot)) return;
+      if (context.state.active !== receiver && !activateReceiver(receiver, context)) return;
+      if (slot !== null) dispatchRadioIntent({ name: 'set_vfo', params: { vfo: slot } });
+    },
+    onMainModeClick: () => focusModePanel('MAIN'),
+    onSubModeClick: () => focusModePanel('SUB'),
+    onMainFreqChange: (freq: number) => {
+      const context = currentA03cContext();
+      if (!context || knownA03cReceiver(context, 'MAIN', 'freqHz') !== 0
+        || !Number.isSafeInteger(freq)) return;
+      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: 0 } });
+    },
+    onSubFreqChange: (freq: number) => {
+      const context = currentA03cContext();
+      if (!context || knownA03cReceiver(context, 'SUB', 'freqHz') !== 1
+        || !Number.isSafeInteger(freq)) return;
+      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: 1 } });
+    },
+    onFreqChange: (freq: number, receiver?: Receiver) => {
+      const context = currentA03cContext();
+      const target = receiver === 0 ? 'MAIN' : receiver === 1 ? 'SUB' : null;
+      if (!context || target === null || knownA03cReceiver(context, target, 'freqHz') !== receiver
+        || !Number.isSafeInteger(freq)) return;
+      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver } });
+    },
+    onModeChange: (mode: string, receiver?: Receiver) => {
+      const context = currentA03cContext();
+      const target = receiver === 0 ? 'MAIN' : receiver === 1 ? 'SUB' : null;
+      if (!context || target === null || knownA03cReceiver(context, target, 'mode') !== receiver
+        || typeof mode !== 'string' || mode.length === 0) return;
+      dispatchRadioIntent({ name: 'set_mode', params: { mode, receiver } });
+    },
+    onFilterChange: (filter: number, receiver?: Receiver) => {
+      const context = currentA03cContext();
+      const target = receiver === 0 ? 'MAIN' : receiver === 1 ? 'SUB' : null;
+      if (!context || target === null || knownA03cReceiver(context, target, 'filter') !== receiver
+        || !Number.isSafeInteger(filter)) return;
+      dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver } });
+    },
+    onDualWatchToggle: (on: boolean) => {
+      const context = currentA03cContext();
+      if (!context || context.caps.receivers < 2
+        || !context.caps.capabilities.includes('dual_rx')
+        || !context.caps.capabilities.includes('dual_watch')
+        || !knownA03cTopLevelField(context, 'dualWatch') || typeof on !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_dual_watch', params: { on } });
+    },
+    onQuickDw: () => {
+      const context = currentA03cContext();
+      if (!context || context.caps.receivers < 2
+        || !context.caps.capabilities.includes('dual_rx')
+        || !context.caps.capabilities.includes('dual_watch')
+        || !knownA03cTopLevelField(context, 'dualWatch')) return;
+      dispatchRadioIntent({ name: 'quick_dualwatch', params: {} });
+    },
+    onQuickSplit: () => {
+      const context = currentA03cContext();
+      if (!context || context.caps.vfoScheme === 'single'
+        || !context.caps.capabilities.includes('split')
+        || !knownA03cTopLevelField(context, 'split')) return;
+      dispatchRadioIntent({ name: 'quick_split', params: {} });
+    },
+    onTrackingToggle: (on: boolean) => {
+      const context = currentA03cContext();
+      if (!context || context.caps.receivers < 2
+        || !context.caps.capabilities.includes('dual_rx')
+        || !context.caps.capabilities.includes('main_sub_tracking')
+        || !knownA03cTopLevelField(context, 'mainSubTracking') || typeof on !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_main_sub_tracking', params: { on } });
+    },
+  };
+}
+
+/* ── VOX Handlers ────────────────────────────────────────────────── */
+
+function knownVoxLevel(field: 'voxGain' | 'antiVoxGain' | 'voxDelay', level: number): boolean {
+  const context = currentA03cContext();
+  return context !== null && context.caps.capabilities.includes('tx')
+    && context.caps.capabilities.includes('vox')
+    && knownA03cTopLevelField(context, field) && Number.isSafeInteger(level);
+}
+
+export function makeVoxHandlers() {
+  return {
+    onVoxToggle: toggleVox,
+    onVoxGainChange: (level: number) => {
+      if (!knownVoxLevel('voxGain', level)) return;
+      dispatchRadioIntent({ name: 'set_vox_gain', params: { level } });
+    },
+    onAntiVoxGainChange: (level: number) => {
+      if (!knownVoxLevel('antiVoxGain', level)) return;
+      dispatchRadioIntent({ name: 'set_anti_vox_gain', params: { level } });
+    },
+    onVoxDelayChange: (level: number) => {
+      if (!knownVoxLevel('voxDelay', level)) return;
+      dispatchRadioIntent({ name: 'set_vox_delay', params: { level } });
     },
   };
 }
