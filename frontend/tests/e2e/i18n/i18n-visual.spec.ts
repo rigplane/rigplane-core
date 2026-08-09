@@ -416,7 +416,12 @@ type ProductionLanguageCase = {
   readonly workspace: Record<string, unknown>;
   readonly language: 'studioline' | 'fieldline';
   readonly mode: 'dark' | 'light';
-  readonly variable: '--dl-studioline-surface' | '--dl-fieldline-surface';
+  readonly expected: {
+    readonly surface: string;
+    readonly text: string;
+    readonly vfoBorderTop: string;
+    readonly vfoNumeralWeight: string;
+  };
 };
 
 const PRODUCTION_LANGUAGE_CASES: readonly ProductionLanguageCase[] = [
@@ -425,28 +430,28 @@ const PRODUCTION_LANGUAGE_CASES: readonly ProductionLanguageCase[] = [
     workspace: {},
     language: 'studioline',
     mode: 'dark',
-    variable: '--dl-studioline-surface',
+    expected: { surface: '#0e1113', text: '#eef1f2', vfoBorderTop: '0px', vfoNumeralWeight: '200' },
   },
   {
     label: 'persisted StudioLine × light',
     workspace: { version: 1, designLanguage: 'studioline', theme: 'github-light' },
     language: 'studioline',
     mode: 'light',
-    variable: '--dl-studioline-surface',
+    expected: { surface: '#faf7f2', text: '#14181a', vfoBorderTop: '0px', vfoNumeralWeight: '300' },
   },
   {
     label: 'persisted FieldLine × dark',
     workspace: { version: 1, designLanguage: 'fieldline', theme: 'nord' },
     language: 'fieldline',
     mode: 'dark',
-    variable: '--dl-fieldline-surface',
+    expected: { surface: '#0a0a0a', text: '#f2f5f7', vfoBorderTop: '3px', vfoNumeralWeight: '700' },
   },
   {
     label: 'persisted FieldLine × light',
     workspace: { version: 1, designLanguage: 'fieldline', theme: 'github-light' },
     language: 'fieldline',
     mode: 'light',
-    variable: '--dl-fieldline-surface',
+    expected: { surface: '#ffffff', text: '#000000', vfoBorderTop: '3px', vfoNumeralWeight: '700' },
   },
 ];
 
@@ -454,8 +459,19 @@ async function assertProductionLanguageCss(page: Page, item: ProductionLanguageC
   const root = page.locator('html');
   await expect(root).toHaveAttribute('data-design-language', item.language);
   await expect(root).toHaveAttribute('data-language-mode', item.mode);
-  await expect.poll(() => root.evaluate((element, variable) =>
-    getComputedStyle(element).getPropertyValue(variable).trim(), item.variable)).not.toBe('');
+  const applied = await page.evaluate((language) => {
+    const root = document.documentElement;
+    const frequency = document.querySelector<HTMLElement>('.vfo-freq');
+    const tile = document.querySelector<HTMLElement>('.vfo-tile');
+    const style = getComputedStyle(root);
+    return {
+      surface: style.getPropertyValue(`--dl-${language}-surface`).trim(),
+      text: style.getPropertyValue(`--dl-${language}-text`).trim(),
+      vfoBorderTop: tile === null ? null : getComputedStyle(tile).borderTopWidth,
+      vfoNumeralWeight: frequency === null ? null : getComputedStyle(frequency).fontWeight,
+    };
+  }, item.language);
+  expect(applied).toEqual(item.expected);
   await expect.poll(() => page.evaluate(() => {
     const rules = [...document.styleSheets].flatMap((sheet) => {
       try {
@@ -480,8 +496,14 @@ async function assertProductionLanguageAccessibility(
 ): Promise<void> {
   const vfo = page.getByTestId('vfo-surface').first();
   const txKey = page.getByTestId('rx-tx-key').first();
+  const txState = page.getByTestId('rx-tx-state').first();
   await expect(vfo).toHaveAccessibleName(/VFO/i);
   await expect(txKey).toHaveAccessibleName(/key|transmit|ptt/i);
+  await expect(txState).toHaveAttribute('data-rf', 'unknown');
+  await expect(txState).toHaveAttribute('data-session', 'idle');
+  await expect(page.getByTestId('rx-tx-rf-mark').first()).toHaveText('◇');
+  await expect(page.getByTestId('rx-tx-rf-label').first()).toHaveText('RF ?');
+  await expect(txState).toContainText('ready');
 
   // A real keyboard-caused focus target, rather than a programmatic focus,
   // proves the active production family has a visible focus treatment.
@@ -491,18 +513,20 @@ async function assertProductionLanguageAccessibility(
     const element = document.activeElement;
     if (!(element instanceof HTMLElement)) return null;
     const style = getComputedStyle(element);
-    return { tag: element.tagName, outline: style.outlineStyle };
+    return { tag: element.tagName, outline: style.outlineStyle, outlineColor: style.outlineColor };
   });
   expect(focused?.tag).toMatch(/BUTTON|INPUT|SELECT/);
   expect(focused?.outline).not.toBe('none');
 
-  const contrast = await page.locator('html').evaluate((element, language) => {
+  const contrast = await page.locator('html').evaluate((element, args) => {
     const style = getComputedStyle(element);
-    const hex = (name: string) => style.getPropertyValue(name).trim();
     const rgb = (value: string) => {
-      const match = /^#([0-9a-f]{6})$/i.exec(value);
-      if (match === null) return null;
-      return [0, 2, 4].map((offset) => Number.parseInt(match[1].slice(offset, offset + 2), 16) / 255);
+      const hex = /^#([0-9a-f]{6})$/i.exec(value);
+      if (hex !== null) return [0, 2, 4].map((offset) => Number.parseInt(hex[1].slice(offset, offset + 2), 16) / 255);
+      const functional = /^rgba?\(([^)]+)\)$/i.exec(value);
+      if (functional === null) return null;
+      const values = functional[1].match(/[\d.]+/g)?.slice(0, 3).map(Number);
+      return values?.length === 3 ? values.map((channel) => channel / 255) : null;
     };
     const luminance = (channels: number[]) => channels
       .map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
@@ -514,12 +538,23 @@ async function assertProductionLanguageAccessibility(
       return (lighter + 0.05) / (darker + 0.05);
     };
     return {
-      text: ratio(hex(`--dl-${language}-text`), hex(`--dl-${language}-surface`)),
-      focus: ratio(hex(`--dl-${language}-focus`), hex(`--dl-${language}-surface`)),
+      text: ratio(style.getPropertyValue(`--dl-${args.language}-text`).trim(), args.surface),
+      focus: ratio(args.outlineColor, args.surface),
     };
-  }, item.language);
+  }, { language: item.language, surface: item.expected.surface, outlineColor: focused?.outlineColor ?? '' });
   expect(contrast.text).toBeGreaterThanOrEqual(4.5);
   expect(contrast.focus).toBeGreaterThanOrEqual(3);
+
+  const reducedMotion = await page.locator('.vfo-tile, .rx-tx-key, .rx-tx-unkey').evaluateAll((elements) =>
+    elements.map((element) => {
+      const style = getComputedStyle(element);
+      return [style.transitionDuration, style.animationDuration];
+    }));
+  const durationMs = (value: string) => value.split(',').map((duration) => {
+    const numeric = Number.parseFloat(duration);
+    return duration.trim().endsWith('ms') ? numeric : numeric * 1000;
+  });
+  expect(reducedMotion.flat(2).flatMap(durationMs).every((duration) => duration <= 0.01)).toBe(true);
 }
 
 test.describe('MOR-1400 production design-language contract', () => {
