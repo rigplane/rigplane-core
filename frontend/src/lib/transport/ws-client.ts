@@ -17,6 +17,7 @@ export interface CommandDeliveryEvent {
   originalEpoch: number;
   eventEpoch: number;
   error?: string;
+  cancelled?: boolean;
 }
 type MessageHandler = (msg: WsIncoming) => void;
 type BinaryHandler = (data: ArrayBuffer) => void;
@@ -27,6 +28,8 @@ type PendingPttRelease = { command: WsCommand; originalEpoch: number };
 type TrackedPttCommand = PendingPttRelease & {
   seen: Set<CommandDeliveryKind>;
 };
+type PendingNonPttCommand = { command: WsCommand; originalEpoch: number };
+type TrackedNonPttCommand = TrackedPttCommand & { eventEpoch: number };
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
@@ -34,6 +37,7 @@ const HEARTBEAT_TIMEOUT_MS = 30_000;  // server may be idle on control WS
 const KEEPALIVE_INTERVAL_MS = 15_000; // send ping to prevent idle timeout
 const MAX_QUEUE_SIZE = 20;
 const MAX_TRACKED_PTT_COMMANDS = 100;
+const MAX_TRACKED_NON_PTT_COMMANDS = 100;
 
 // Command types where only the latest value matters (last write wins)
 const IDEMPOTENT_TYPES = new Set(['set_freq', 'set_mode', 'set_filter']);
@@ -58,10 +62,11 @@ export class WsChannel {
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private attempt = 0;
   private intentionalClose = false;
-  private sendQueue: WsCommand[] = [];
+  private sendQueue: PendingNonPttCommand[] = [];
   private pendingPttRelease: PendingPttRelease | null = null;
   private transportEpoch = 0;
   private trackedPttCommands = new Map<string, TrackedPttCommand>();
+  private trackedNonPttCommands = new Map<string, TrackedNonPttCommand>();
   private commandDeliveryHandlers = new Set<CommandDeliveryHandler>();
   private messageHandlers = new Set<MessageHandler>();
   private binaryHandlers = new Set<BinaryHandler>();
@@ -136,10 +141,8 @@ export class WsChannel {
       const release = this.pendingPttRelease;
       this.pendingPttRelease = null;
       if (release) this._sendPtt(ws, release, socketEpoch);
-      const queued = this.sendQueue.splice(0).filter(
-        (cmd) => pttIntent(cmd.name, cmd.params) !== 'on',
-      );
-      for (const cmd of queued) ws.send(JSON.stringify(cmd));
+      const queued = this.sendQueue.splice(0);
+      for (const pending of queued) this._sendNonPtt(ws, pending, socketEpoch);
       // Re-send subscribe on every (re)connect so server pushes state immediately
       if (this._subscribeMsg) ws.send(JSON.stringify(this._subscribeMsg));
     };
@@ -183,6 +186,7 @@ export class WsChannel {
 
     ws.onclose = () => {
       this._clearHeartbeat();
+      this.trackedNonPttCommands.clear();
       this.ws = null;
       this.setState('disconnected');
       if (!this.intentionalClose) {
@@ -207,6 +211,7 @@ export class WsChannel {
     this._clearTimers();
     const { ws } = this;
     this.ws = null;
+    this.trackedNonPttCommands.clear();
     if (ws) {
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING) {
         ws.close();
@@ -230,32 +235,35 @@ export class WsChannel {
           this.transportEpoch,
         );
       }
-      try {
-        this.ws.send(JSON.stringify(cmd));
-        return true;
-      } catch {
-        return false;
-      }
+      return this._sendNonPtt(
+        this.ws,
+        { command: cmd, originalEpoch: this.transportEpoch },
+        this.transportEpoch,
+      );
     }
     const intent = pttIntent(cmd.name, cmd.params);
     if (intent === 'on') {
       return false;
     }
     if (intent === 'off') {
-      this.sendQueue = this.sendQueue.filter(
-        (queued) => pttIntent(queued.name, queued.params) !== 'on',
-      );
       this.pendingPttRelease = { command: cmd, originalEpoch: this.transportEpoch };
       return false;
     }
-    // Deduplicate idempotent commands — keep only the latest value
-    if (IDEMPOTENT_TYPES.has(cmd.name)) {
-      this.sendQueue = this.sendQueue.filter((c) => c.name !== cmd.name);
+    if (!IDEMPOTENT_TYPES.has(cmd.name)) {
+      this._rejectNonPtt(cmd.id, this.transportEpoch, 'offline non-idempotent command rejected');
+      return false;
     }
-    this.sendQueue.push(cmd);
+    // Deduplicate idempotent commands — keep only the latest value
+    const superseded = this.sendQueue.find((pending) => pending.command.name === cmd.name);
+    if (superseded) {
+      this._rejectNonPtt(superseded.command.id, superseded.originalEpoch, 'superseded by newer offline command');
+      this.sendQueue = this.sendQueue.filter((pending) => pending.command.name !== cmd.name);
+    }
+    this.sendQueue.push({ command: cmd, originalEpoch: this.transportEpoch });
     // Drop oldest if over limit
     if (this.sendQueue.length > MAX_QUEUE_SIZE) {
-      this.sendQueue.shift();
+      const dropped = this.sendQueue.shift()!;
+      this._rejectNonPtt(dropped.command.id, dropped.originalEpoch, 'offline command queue capacity exceeded');
     }
     return false;
   }
@@ -289,6 +297,21 @@ export class WsChannel {
     return () => this.commandDeliveryHandlers.delete(handler);
   }
 
+  get sessionEpoch(): number {
+    return this.transportEpoch;
+  }
+
+  rejectNonPtt(commandId: string, error: string): void {
+    this._rejectNonPtt(commandId, this.transportEpoch, error);
+  }
+
+  cancelNonPtt(error: string): void {
+    for (const tracked of this.trackedNonPttCommands.values()) {
+      this._rejectNonPtt(tracked.command.id, tracked.originalEpoch, error, this.transportEpoch, true);
+    }
+    this.trackedNonPttCommands.clear();
+  }
+
   private _sendPtt(ws: WebSocket, pending: PendingPttRelease, eventEpoch: number): boolean {
     try {
       ws.send(JSON.stringify(pending.command));
@@ -311,17 +334,63 @@ export class WsChannel {
     return true;
   }
 
+  private _sendNonPtt(ws: WebSocket, pending: PendingNonPttCommand, eventEpoch: number): boolean {
+    if (this.trackedNonPttCommands.size >= MAX_TRACKED_NON_PTT_COMMANDS) {
+      this._rejectNonPtt(
+        pending.command.id, pending.originalEpoch, 'delivery tracking capacity exceeded', eventEpoch,
+      );
+      return false;
+    }
+    try {
+      ws.send(JSON.stringify(pending.command));
+    } catch (error) {
+      this._rejectNonPtt(
+        pending.command.id, pending.originalEpoch,
+        error instanceof Error ? error.message : 'WebSocket send failed', eventEpoch,
+      );
+      return false;
+    }
+    const tracked: TrackedNonPttCommand = { ...pending, eventEpoch, seen: new Set() };
+    this.trackedNonPttCommands.set(pending.command.id, tracked);
+    this._emitTracked(tracked, 'transport-sent', tracked.eventEpoch);
+    return true;
+  }
+
   private _emitCommandResult(raw: Record<string, unknown>, eventEpoch: number): void {
     const id = raw.id;
     if (typeof id !== 'string') return;
     const tracked = this.trackedPttCommands.get(id);
-    if (!tracked) return;
-    if (raw.type === 'ack') this._emitTracked(tracked, 'ack', eventEpoch);
+    if (tracked && raw.type === 'ack') this._emitTracked(tracked, 'ack', eventEpoch);
     else if (raw.type === 'response') {
-      this._emitTracked(tracked, raw.ok === false ? 'response-error' : 'response-ok', eventEpoch);
+      if (tracked) this._emitTracked(tracked, raw.ok === false ? 'response-error' : 'response-ok', eventEpoch);
     } else if (raw.type === 'error' || raw.status === 'error') {
-      this._emitTracked(tracked, 'error', eventEpoch, String(raw.message ?? raw.error ?? 'Command failed'));
+      if (tracked) this._emitTracked(tracked, 'error', eventEpoch, String(raw.message ?? raw.error ?? 'Command failed'));
     }
+    const generic = this.trackedNonPttCommands.get(id);
+    if (!generic || generic.eventEpoch !== eventEpoch) return;
+    if (raw.type === 'ack') this._emitTracked(generic, 'ack', generic.eventEpoch);
+    else if (raw.type === 'response') {
+      this._emitTracked(
+        generic,
+        raw.ok === false ? 'response-error' : 'response-ok',
+        generic.eventEpoch,
+        raw.ok === false ? String(raw.message ?? raw.error ?? 'Command failed') : undefined,
+      );
+      this.trackedNonPttCommands.delete(id);
+    } else if (raw.type === 'error' || raw.status === 'error') {
+      this._emitTracked(generic, 'error', generic.eventEpoch, String(raw.message ?? raw.error ?? 'Command failed'));
+      this.trackedNonPttCommands.delete(id);
+    }
+  }
+
+  private _rejectNonPtt(
+    commandId: string, originalEpoch: number, error: string,
+    eventEpoch = this.transportEpoch, cancelled = false,
+  ): void {
+    this._emitDelivery({
+      commandId, kind: 'error', originalEpoch, eventEpoch, error,
+      ...(cancelled ? { cancelled } : {}),
+    });
   }
 
   private _emitTracked(
@@ -434,6 +503,7 @@ function highestSeenGeneration(): number | null {
 }
 
 function resetForProviderGeneration(generation: number): void {
+  _ctrl.cancelNonPtt('provider session replaced');
   _fullState = null;
   _hasReceivedFullState = false;
   _acceptedProviderGeneration = null;
@@ -690,17 +760,32 @@ export function onControlSessionTransition(handler: ControlSessionTransitionHand
   return _ctrl.onSessionTransition(handler);
 }
 
-export function sendCommand(name: string, params: Record<string, unknown> = {}, id?: string): boolean {
+export function getControlSession(): ControlSessionTransition {
+  return { state: _ctrl.state, epoch: _ctrl.sessionEpoch };
+}
+
+export function sendCommand(
+  name: string,
+  params: Record<string, unknown> = {},
+  id?: string,
+  options: { optimistic?: boolean } = {},
+): boolean {
+  const commandId = id ?? makeCommandId();
   if (!isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
     console.warn('[cmd] blocked while radio health is degraded', name);
+    if (pttIntent(name, params) === null) {
+      _ctrl.rejectNonPtt(commandId, 'radio health is degraded');
+    }
     return false;
   }
   // Auto-optimistic: apply UI patch immediately before sending
-  try { _applyOptimistic(name, params); } catch (e) { console.warn('[optimistic]', e); }
+  if (options.optimistic !== false) {
+    try { _applyOptimistic(name, params); } catch (e) { console.warn('[optimistic]', e); }
+  }
   return _ctrl.send({
     type: 'cmd',
     name,
-    id: id ?? makeCommandId(),
+    id: commandId,
     params,
   });
 }

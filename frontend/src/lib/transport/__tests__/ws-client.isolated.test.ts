@@ -280,6 +280,71 @@ describe('WsChannel', () => {
     ]);
   });
 
+  it('correlates generic non-PTT delivery in the sending session', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    expect(ch.send({ type: 'cmd', name: 'set_freq', id: 'freq', params: { freq: 14_074_000 } })).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'freq' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'freq', ok: true }));
+
+    expect(events).toEqual([
+      { commandId: 'freq', kind: 'transport-sent', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'freq', kind: 'ack', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'freq', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1 },
+    ]);
+  });
+
+  it('rejects the 101st direct generic send before the wire without evicting correlation', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    for (let i = 0; i < 100; i += 1) {
+      expect(ch.send({
+        type: 'cmd', name: 'set_freq', id: `pending-${i}`, params: { freq: i },
+      })).toBe(true);
+    }
+    expect(ch.send({
+      type: 'cmd', name: 'set_freq', id: 'overflow', params: { freq: 101 },
+    })).toBe(false);
+    expect(instances[0].sent).toHaveLength(100);
+    expect(events.at(-1)).toMatchObject({
+      commandId: 'overflow', kind: 'error', error: 'delivery tracking capacity exceeded',
+    });
+
+    for (let i = 0; i < 100; i += 1) {
+      instances[0].simulateMessage(JSON.stringify({ type: 'response', id: `pending-${i}`, ok: true }));
+    }
+    expect(events.filter((event) => event.kind === 'response-ok')).toHaveLength(100);
+    expect(events).not.toContainEqual(expect.objectContaining({ commandId: 'pending-0', kind: 'error' }));
+  });
+
+  it('cancels generic correlation at disconnect and ignores stale socket results', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    ch.send({ type: 'cmd', name: 'set_vfo', id: 'old', params: { vfo: 'B' } });
+    instances[0].simulateClose();
+    vi.advanceTimersByTime(1_300);
+    instances[1].simulateOpen();
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'old', ok: true }));
+
+    expect(events).toEqual([
+      { commandId: 'old', kind: 'transport-sent', originalEpoch: 1, eventEpoch: 1 },
+    ]);
+  });
+
   it('preserves queued OFF identity and distinguishes stale reconnect events', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
@@ -610,6 +675,66 @@ describe('control channel singleton', () => {
     sendCommand('set_data_mode', { mode: 2, receiver: 0 });
 
     expect(patchActiveReceiver).toHaveBeenCalledWith({ dataMode: 2 });
+  });
+
+  it('can bypass legacy optimism so only a contradictory Observation changes radio truth', async () => {
+    const { connect, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, main: makeReceiver({ freqHz: 14_074_000 }) })));
+    vi.mocked(patchActiveReceiver).mockClear();
+
+    expect(sendCommand(
+      'set_freq',
+      { freq: 7_074_000, receiver: 0 },
+      'freq-contradiction',
+      { optimistic: false },
+    )).toBe(true);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
+    expect(radioStoreMock.current?.main.freqHz).toBe(14_074_000);
+
+    const observed = makeState({ revision: 2, main: makeReceiver({ freqHz: 14_076_000 }) });
+    sendStateUpdate(instances[0], deltaEnvelope(observed, { main: observed.main }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'freq-contradiction' }));
+    expect(radioStoreMock.current?.main.freqHz).toBe(14_076_000);
+  });
+
+  it('cancels in-flight generic delivery when provider generation is replaced', async () => {
+    const { connect, onCommandDelivery, sendCommand } = await import('../ws-client');
+    const events: CommandDeliveryEvent[] = [];
+    onCommandDelivery((event) => events.push(event));
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 0 })));
+    sendCommand('set_freq', { freq: 14_074_000 }, 'provider-pending', { optimistic: false });
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+
+    expect(events).toMatchObject([
+      { commandId: 'provider-pending', kind: 'transport-sent', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'provider-pending', kind: 'error', cancelled: true, error: 'provider session replaced' },
+    ]);
+  });
+
+  it('keeps all 100 live correlations and rejects the 101st facade send', async () => {
+    const { connect, disconnect } = await import('../ws-client');
+    const { dispatchRadioIntent } = await import('../../runtime/commands/radio-intents');
+    const lifecycle = await import('../../stores/commands.svelte');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    for (let i = 0; i < 100; i += 1) {
+      dispatchRadioIntent({ id: `pending-${i}`, name: 'set_freq', params: { freq: i } });
+    }
+    expect(() => dispatchRadioIntent({
+      id: 'overflow', name: 'set_freq', params: { freq: 101 },
+    })).toThrow(/capacity/i);
+
+    expect(instances[0].sent).toHaveLength(100);
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(100);
+    expect(lifecycle.getCommandLifecycle('pending-0', 1)?.status).toBe('pending');
+    expect(lifecycle.getCommandLifecycle('overflow', 1)).toBeUndefined();
+    lifecycle.resetCommandLifecycle();
+    disconnect();
   });
 
   it('treats bare VFO B as a slot without switching MAIN to SUB', async () => {
@@ -1066,19 +1191,42 @@ describe('WsChannel send queue', () => {
     expect(JSON.parse(instances[0].sent[0]).params.freq).toBe(14100000);
   });
 
-  it('drops oldest commands when queue exceeds MAX_QUEUE_SIZE (20)', async () => {
+  it('never replays a stale offline non-idempotent command', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+
+    expect(ch.send({ type: 'cmd', name: 'vfo_swap', id: 'swap', params: {} })).toBe(false);
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    expect(instances[0].sent).toEqual([]);
+    expect(events).toEqual([{
+      commandId: 'swap',
+      kind: 'error',
+      originalEpoch: 0,
+      eventEpoch: 0,
+      error: 'offline non-idempotent command rejected',
+    }]);
+  });
+
+  it('rejects offline non-idempotent overflow instead of retaining a stale replay queue', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
 
     for (let i = 0; i < 25; i++) {
-      ch.send({ type: 'cmd', name: 'ptt', id: `cmd-${i}`, params: { i } });
+      ch.send({ type: 'cmd', name: 'set_af_level', id: `cmd-${i}`, params: { level: i } });
     }
 
     ch.connect('ws://test');
     instances[0].simulateOpen();
 
-    expect(instances[0].sent).toHaveLength(20);
-    expect(JSON.parse(instances[0].sent[0]).id).toBe('cmd-5');
+    expect(instances[0].sent).toEqual([]);
+    expect(events).toHaveLength(25);
+    expect(events.every((event) => event.kind === 'error')).toBe(true);
   });
 
   it('never replays offline PTT-on aliases and coalesces release aliases', async () => {
@@ -1125,16 +1273,17 @@ describe('WsChannel send queue', () => {
     for (let i = 0; i < 45; i++) {
       ch.send({ type: 'cmd', name: 'set_af_level', id: `ordinary-${i}`, params: { level: i } });
     }
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'freq', params: { freq: 14_074_000 } });
+    ch.send({ type: 'cmd', name: 'set_mode', id: 'mode', params: { mode: 'USB' } });
+    ch.send({ type: 'cmd', name: 'set_filter', id: 'filter', params: { filter: 2 } });
 
     ch.connect('ws://test');
     instances[0].simulateOpen();
 
     const drained = instances[0].sent.map((frame) => JSON.parse(frame));
-    expect(drained).toHaveLength(21);
+    expect(drained).toHaveLength(4);
     expect(drained[0]).toMatchObject({ name: 'ptt_off', id: 'release' });
-    expect(drained.slice(1).map((cmd) => cmd.id)).toEqual(
-      Array.from({ length: 20 }, (_, i) => `ordinary-${i + 25}`),
-    );
+    expect(drained.slice(1).map((cmd) => cmd.id)).toEqual(['freq', 'mode', 'filter']);
   });
 
   it('allows one new queued release in a later offline episode', async () => {
