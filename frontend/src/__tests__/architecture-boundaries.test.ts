@@ -14,10 +14,24 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ESLint } from 'eslint';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const FRONTEND_ROOT = path.resolve(fileURLToPath(import.meta.url), '../../..');
+
+function productionSources(root: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const absolute = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== '__tests__') files.push(...productionSources(absolute));
+    } else if (/\.(?:svelte|ts)$/.test(entry.name) && !/\.test\./.test(entry.name)) {
+      files.push(absolute);
+    }
+  }
+  return files;
+}
 
 /**
  * Counts import-boundary violations under EITHER rule id. The adapters zone
@@ -52,6 +66,20 @@ async function authorityRuleIds(code: string, filePath: string): Promise<string[
 }
 
 describe('v3 package boundaries (MOR-1061)', () => {
+  it('keeps accepted capability installation owned only by the WS reducer', () => {
+    const runtimeSource = readFileSync(
+      path.join(FRONTEND_ROOT, 'src/lib/runtime/frontend-runtime.ts'),
+      'utf8',
+    );
+    expect(runtimeSource).not.toMatch(/\b(?:fetchCapabilities|setCapabilities)\s*\(/);
+
+    const storePath = path.join(FRONTEND_ROOT, 'src/lib/stores/capabilities.svelte.ts');
+    const callers = productionSources(path.join(FRONTEND_ROOT, 'src'))
+      .filter((file) => file !== storePath)
+      .filter((file) => /\b(?:setCapabilities|clearCapabilities)\s*\(/.test(readFileSync(file, 'utf8')))
+      .map((file) => path.relative(FRONTEND_ROOT, file));
+    expect(callers).toEqual(['src/lib/transport/ws-client.ts']);
+  });
   it('rejects semantic importing skins', async () => {
     const hits = await restrictedImportHits(
       `import LcdSkin from '../skins/amber-lcd/LcdSkin.svelte';`,

@@ -903,7 +903,7 @@ async def test_http_raw_civ_transaction_enters_command_lifecycle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_power_enters_command_service_and_keeps_delivery_mirror() -> None:
+async def test_http_power_is_lifecycle_only_until_provider_observation() -> None:
     radio = SimpleNamespace(
         connected=True,
         control_connected=True,
@@ -911,6 +911,12 @@ async def test_http_power_enters_command_service_and_keeps_delivery_mirror() -> 
         set_powerstat=AsyncMock(),
     )
     srv = WebServer(radio, WebConfig())
+    srv._radio_state.power_on = True  # noqa: SLF001
+    state_change = MagicMock()
+    srv._on_radio_state_change = state_change  # type: ignore[method-assign]
+    before_public = srv.build_public_state()
+    before_ws = srv.build_state_update_envelope(force_full=True)["data"]
+    before_snapshot = srv.command_state_store.snapshot()
     writer = _FakeWriter()
     payload = json.dumps({"state": "off"}).encode()
 
@@ -926,7 +932,13 @@ async def test_http_power_enters_command_service_and_keeps_delivery_mirror() -> 
     assert status == 200
     assert body == {"status": "ok", "power": "off"}
     radio.set_powerstat.assert_awaited_once_with(False)
-    assert srv._radio_state.power_on is False  # noqa: SLF001
+    assert srv._radio_state.power_on is True  # noqa: SLF001
+    state_change.assert_not_called()
+    after_snapshot = srv.command_state_store.snapshot()
+    assert after_snapshot.state_revision == before_snapshot.state_revision
+    assert after_snapshot.observation_seq == before_snapshot.observation_seq
+    assert srv.build_public_state() == before_public
+    assert srv.build_state_update_envelope(force_full=True)["data"] == before_ws
     with pytest.raises(KeyError):
         srv.command_state_store.snapshot().field("global.tx_state.power_on")
 
@@ -1022,12 +1034,7 @@ async def test_http_command_batch_preparation_uses_shared_command_service(
 
 
 @pytest.mark.asyncio
-async def test_set_freq_publishes_command_overlay_for_main_before_readback() -> None:
-    # MOR-485: a set_freq through the shared (WS) command executor must write
-    # the commanded freq into the command_state_store and projected public
-    # state immediately, with no readback observation applied first. The stored
-    # receiver_id is numeric ("0") to match the readback emitters in
-    # runtime/_civ_rx.py; the projection maps "0" -> main.freqHz.
+async def test_set_freq_success_does_not_publish_main_truth_before_readback() -> None:
     radio = SimpleNamespace(connected=True, capabilities=set())
     srv = WebServer(radio, WebConfig())
     srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
@@ -1040,17 +1047,14 @@ async def test_set_freq_publishes_command_overlay_for_main_before_readback() -> 
     )
     await srv.command_service.execute(intent)
 
-    snapshot = srv.command_state_store.snapshot()
-    assert (
-        snapshot.field(FieldPath.active("0", "freq_mode", "freq_hz")).value
-        == 14_074_000
-    )
-    assert srv.build_public_state()["main"]["freqHz"] == 14_074_000
+    with pytest.raises(KeyError):
+        srv.command_state_store.snapshot().field(
+            FieldPath.active("0", "freq_mode", "freq_hz")
+        )
 
 
 @pytest.mark.asyncio
-async def test_set_freq_publishes_command_overlay_for_sub_before_readback() -> None:
-    # MOR-485: receiver 1 must project to the sub slot / sub.freqHz.
+async def test_set_freq_success_does_not_publish_sub_truth_before_readback() -> None:
     radio = SimpleNamespace(
         connected=True,
         capabilities={"dual_rx"},
@@ -1067,11 +1071,10 @@ async def test_set_freq_publishes_command_overlay_for_sub_before_readback() -> N
     )
     await srv.command_service.execute(intent)
 
-    snapshot = srv.command_state_store.snapshot()
-    assert (
-        snapshot.field(FieldPath.active("1", "freq_mode", "freq_hz")).value == 7_074_000
-    )
-    assert srv.build_public_state()["sub"]["freqHz"] == 7_074_000
+    with pytest.raises(KeyError):
+        srv.command_state_store.snapshot().field(
+            FieldPath.active("1", "freq_mode", "freq_hz")
+        )
 
 
 @pytest.mark.asyncio
@@ -1180,11 +1183,7 @@ async def test_set_freq_optimistic_overlay_suppressed_during_external_cat() -> N
 
 
 @pytest.mark.asyncio
-async def test_set_freq_optimistic_overlay_kept_without_external_cat() -> None:
-    # Guard: with NO external-CAT session, the optimistic overlay must still be
-    # planted immediately so a web dial-spin feels instant (the normal poller
-    # readback displaces it later via last-writer-wins). The external-CAT
-    # suppression must not regress normal responsiveness.
+async def test_set_freq_success_never_becomes_truth_without_readback() -> None:
     radio = SimpleNamespace(
         connected=True,
         capabilities=set(),
@@ -1201,9 +1200,10 @@ async def test_set_freq_optimistic_overlay_kept_without_external_cat() -> None:
     )
     await srv.command_service.execute(intent)
 
-    freq_path = FieldPath.active("0", "freq_mode", "freq_hz")
-    assert srv.command_state_store.snapshot().field(freq_path).value == 14_260_000
-    assert srv.build_public_state()["main"]["freqHz"] == 14_260_000
+    with pytest.raises(KeyError):
+        srv.command_state_store.snapshot().field(
+            FieldPath.active("0", "freq_mode", "freq_hz")
+        )
 
 
 @pytest.mark.asyncio
@@ -1234,13 +1234,7 @@ async def test_set_freq_failure_does_not_publish_command_overlay() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_mode_publishes_command_overlay_before_readback() -> None:
-    # MOR-334 regression (mode reverts ~1s after the user sets it): a set_mode
-    # through the shared (WS) command executor must write the commanded mode
-    # into the command_state_store and projected public state immediately,
-    # mirroring the MOR-485 set_freq fix. Without the optimistic observation the
-    # published mode snapped back to the stale store value until the deferred
-    # readback (delayed by external_cat_pause=pause_polling) landed.
+async def test_set_mode_success_does_not_publish_truth_before_readback() -> None:
     radio = SimpleNamespace(connected=True, capabilities=set())
     srv = WebServer(radio, WebConfig())
     srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
@@ -1253,9 +1247,10 @@ async def test_set_mode_publishes_command_overlay_before_readback() -> None:
     )
     await srv.command_service.execute(intent)
 
-    mode_path = FieldPath.active("0", "freq_mode", "mode")
-    assert srv.command_state_store.snapshot().field(mode_path).value == "CW"
-    assert srv.build_public_state()["main"]["mode"] == "CW"
+    with pytest.raises(KeyError):
+        srv.command_state_store.snapshot().field(
+            FieldPath.active("0", "freq_mode", "mode")
+        )
 
 
 @pytest.mark.asyncio
@@ -1316,10 +1311,7 @@ async def test_set_mode_failure_does_not_publish_command_overlay() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_data_mode_publishes_command_overlay_before_readback() -> None:
-    # MOR-334 regression: data_mode (D1/D2/D3) must be published optimistically
-    # just like mode, so the DATA indicator reflects the user's set immediately
-    # instead of reverting until the deferred readback lands.
+async def test_set_data_mode_success_does_not_publish_truth_before_readback() -> None:
     radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
     srv = WebServer(radio, WebConfig())
     srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
@@ -1332,18 +1324,14 @@ async def test_set_data_mode_publishes_command_overlay_before_readback() -> None
     )
     await srv.command_service.execute(intent)
 
-    data_mode_path = FieldPath.active("0", "freq_mode", "data_mode")
-    assert srv.command_state_store.snapshot().field(data_mode_path).value == 1
-    assert srv.build_public_state()["main"]["dataMode"] == 1
+    with pytest.raises(KeyError):
+        srv.command_state_store.snapshot().field(
+            FieldPath.active("0", "freq_mode", "data_mode")
+        )
 
 
 @pytest.mark.asyncio
-async def test_set_mod_input_publishes_command_overlay_before_readback() -> None:
-    # MOR-616 regression: the MOD-input source selector (set_data*_mod_input)
-    # had the same snap-back defect as freq/mode — the executor returned an ack
-    # with no observation, so the published source reverted to "—"/stale until
-    # the deferred readback landed. The overlay must write the commanded source
-    # to the SAME ``global.slow_state.<field>`` path the poller readback uses.
+async def test_set_mod_input_success_does_not_publish_truth_before_readback() -> None:
     radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
     srv = WebServer(radio, WebConfig())
     srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
@@ -1356,9 +1344,10 @@ async def test_set_mod_input_publishes_command_overlay_before_readback() -> None
     )
     await srv.command_service.execute(intent)
 
-    mod_path = FieldPath.global_("slow_state", "data2_mod_input")
-    assert srv.command_state_store.snapshot().field(mod_path).value == 5
-    assert srv.build_public_state()["data2ModInput"] == 5
+    with pytest.raises(KeyError):
+        srv.command_state_store.snapshot().field(
+            FieldPath.global_("slow_state", "data2_mod_input")
+        )
 
 
 @pytest.mark.asyncio

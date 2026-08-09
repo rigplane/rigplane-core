@@ -21,8 +21,8 @@
  *
  * Pinned here:
  *   1. a desktop → LCD → SDR → mobile → desktop sweep opens the control
- *      socket once, fetches capabilities once, subscribes once, and never
- *      restarts RX audio — with the same AudioManager instance throughout;
+ *      socket once, consumes one accepted capability-store subscription, and
+ *      never restarts RX audio — with the same AudioManager throughout;
  *   2. between two presentations that BOTH demand a resource, the channel is
  *      never disconnected and the driver handle is the identical object;
  *   3. switching to a presentation that genuinely has no viewer for a
@@ -40,6 +40,7 @@ import type { SkinId } from '../skins/registry';
 
 type Pending = { id: SkinId; resolve: (component: unknown) => void };
 type FakeChannel = ReturnType<typeof makeChannel>;
+type CapabilityListener = (caps: unknown | null) => void;
 
 const h = vi.hoisted(() => ({
   pending: [] as Pending[],
@@ -49,6 +50,11 @@ const h = vi.hoisted(() => ({
   provide: vi.fn(),
   txHost: undefined as { refreshAuthority: () => void; dispose: () => void } | undefined,
   notifyCaps: () => {},
+  emitAcceptedCapabilities: (_caps: unknown | null) => {},
+  acceptedCapabilities: null as unknown | null,
+  capabilityListeners: new Set<CapabilityListener>(),
+  subscribeCapabilities: vi.fn(),
+  unsubscribeCapabilities: vi.fn(),
 }));
 
 // ── Bottom boundary only: transport, HTTP, audio, scope channels ──
@@ -93,9 +99,30 @@ vi.mock('$lib/stores/capabilities.svelte', async () => {
   let update = () => {};
   const subscribe = createSubscriber((notify) => { update = notify; return () => {}; });
   h.notifyCaps = () => update();
+  h.emitAcceptedCapabilities = (caps: unknown | null) => {
+    h.acceptedCapabilities = caps;
+    update();
+    for (const listener of h.capabilityListeners) listener(caps);
+  };
+  h.subscribeCapabilities.mockImplementation((listener: CapabilityListener) => {
+    h.capabilityListeners.add(listener);
+    listener(h.acceptedCapabilities);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      h.capabilityListeners.delete(listener);
+      h.unsubscribeCapabilities();
+    };
+  });
   return {
-    getCapabilities: vi.fn(() => { subscribe(); return null; }),
-    setCapabilities: vi.fn(),
+    getCapabilities: vi.fn(() => { subscribe(); return h.acceptedCapabilities; }),
+    setCapabilities: vi.fn((caps: unknown) => {
+      h.emitAcceptedCapabilities(caps);
+      return true;
+    }),
+    clearCapabilities: vi.fn(() => { h.emitAcceptedCapabilities(null); }),
+    subscribeCapabilities: h.subscribeCapabilities,
     hasSpectrum: vi.fn(() => false),
     hasAnyScope: vi.fn(() => false),
   };
@@ -207,6 +234,8 @@ const caps = {
   audioFftAvailable: true,
   capabilities: ['audio', 'scope'],
   scopeSource: 'hardware',
+  stateContractVersion: 1,
+  providerGeneration: 0,
 } as never;
 
 /** A scope WS channel whose connect/disconnect are the open/close counters. */
@@ -254,6 +283,7 @@ function resetAppSession(): void {
   const rt = runtime as unknown as Record<string, unknown>;
   rt._bootstrapCleanup = null;
   rt._bootstrapInFlight = null;
+  rt._capabilitiesUnsubscribe = null;
   rt._rxAudioLease = null;
   rt._ended = false;
   (rt._dxSubscribers as Map<unknown, unknown>).clear();
@@ -350,12 +380,13 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     h.pending.length = 0;
+    h.capabilityListeners.clear();
+    h.acceptedCapabilities = caps;
     document.body.innerHTML = '';
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
     channels = { scope: makeChannel('scope'), 'audio-scope': makeChannel('audio-scope') };
     vi.mocked(getChannel).mockImplementation((name: string) => channels[name] as never);
-    vi.mocked(fetchCapabilities).mockResolvedValue(caps);
     vi.mocked(startPolling).mockReturnValue(vi.fn());
     h.loadSkin.mockImplementation(
       (id: SkinId) => new Promise((resolve) => { h.pending.push({ id, resolve }); }),
@@ -391,8 +422,8 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
 
   // MUTATION KILLED: routing a presentation switch through anything that
   // re-runs bootstrap (re-mounting App per skin, tearing the runtime down on
-  // swap). Each hop would re-open the control socket, re-fetch capabilities,
-  // re-send the events subscription and restart RX audio.
+  // swap). Each hop would re-open the control socket, re-subscribe to accepted
+  // capabilities, re-send the events subscription and restart RX audio.
   it('sweeps every presentation family without touching the control socket or RX audio', async () => {
     await mountApp();
     runtime.setRxLive(true);          // the operator is listening
@@ -416,8 +447,9 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     }
     expect(document.querySelector('.spectrum-panel-stub')).toBe(globalHost);
 
-    // Control plane: opened once, described once, subscribed once.
-    expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+    // Control plane: opened once and follows the accepted capability store.
+    expect(fetchCapabilities).not.toHaveBeenCalled();
+    expect(h.subscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(sendRaw).toHaveBeenCalledTimes(1);
     expect(startPolling).toHaveBeenCalledTimes(1);
@@ -524,7 +556,8 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     expect(audioManager.stopRx).not.toHaveBeenCalled();
     // The control plane never noticed the churn either.
     expect(connect).toHaveBeenCalledTimes(1);
-    expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+    expect(fetchCapabilities).not.toHaveBeenCalled();
+    expect(h.subscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(sendRaw).toHaveBeenCalledTimes(1);
   });
 
@@ -546,6 +579,7 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     expect(closes('scope')).toBe(1);
     expect(closes('audio-scope')).toBe(1);
     expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
+    expect(h.unsubscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
       demand: 0, health: 'inactive', activeHandle: undefined,
     });

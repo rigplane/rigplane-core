@@ -113,7 +113,6 @@ describe('LCD audio-FFT demand ownership', () => {
   it('boots canonical authority and shares only the two mounted panel leases', async () => {
     vi.resetModules();
     vi.clearAllMocks();
-    mocks.fetchCapabilities.mockResolvedValue(canonicalCapabilities);
     mocks.startPolling.mockReturnValue(mocks.stopPolling);
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
@@ -125,6 +124,7 @@ describe('LCD audio-FFT demand ownership', () => {
     const { default: AmberScope } = await import('../AmberScope.svelte');
     const { presentationResources, runtime } = await import('$lib/runtime/frontend-runtime');
     const { setRadioState } = await import('$lib/stores/radio.svelte');
+    const { clearCapabilities, setCapabilities } = await import('$lib/stores/capabilities.svelte');
     const configure = vi.spyOn(presentationResources, 'configure');
     const acquire = vi.spyOn(presentationResources, 'acquire');
     const release = vi.spyOn(presentationResources, 'release');
@@ -140,21 +140,37 @@ describe('LCD audio-FFT demand ownership', () => {
       expect(mocks.getChannel).not.toHaveBeenCalled();
 
       cleanup = await runtime.bootstrap();
-      runtime.scope.registerPresentationDriver(
-        presentationResources,
-        { available: true, selected: true },
-      );
+      expect(mocks.fetchCapabilities).not.toHaveBeenCalled();
+      expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+        available: false, selected: false, demand: 0, health: 'inactive',
+      });
+      expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+        available: false, selected: false, demand: 0, health: 'inactive',
+      });
+      expect(presentationResources.snapshot('rx-audio')).toMatchObject({
+        available: false, selected: true, demand: 0, health: 'inactive',
+      });
+      expect(mocks.getChannel).not.toHaveBeenCalled();
+      expect(mocks.sendCommand).not.toHaveBeenCalled();
+
+      expect(setCapabilities(canonicalCapabilities)).toBe(true);
       const audioConfigurations = configure.mock.calls.filter(
         ([resource]) => resource === 'audio-fft',
       );
-      expect(audioConfigurations).toHaveLength(1);
+      expect(audioConfigurations).toHaveLength(2);
       expect(audioConfigurations[0]?.[1]).toMatchObject({
+        available: false, selected: false,
+      });
+      expect(audioConfigurations[1]?.[1]).toMatchObject({
         available: true, selected: true,
       });
       expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
         available: true, selected: true, demand: 0, health: 'inactive',
       });
       expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+        available: true, selected: true, demand: 0, health: 'inactive',
+      });
+      expect(presentationResources.snapshot('rx-audio')).toMatchObject({
         available: true, selected: true, demand: 0, health: 'inactive',
       });
       if (hasDefaultScopeStatus(runtime)) {
@@ -199,7 +215,7 @@ describe('LCD audio-FFT demand ownership', () => {
       await Promise.resolve();
       expect(acquire).toHaveBeenCalledTimes(2);
       expect(release).not.toHaveBeenCalled();
-      expect(configure.mock.calls.filter(([resource]) => resource === 'audio-fft')).toHaveLength(1);
+      expect(configure.mock.calls.filter(([resource]) => resource === 'audio-fft')).toHaveLength(2);
       expect(mocks.getChannel).toHaveBeenCalledTimes(1);
       expect(mocks.channel.connect).toHaveBeenCalledTimes(1);
       expect(mocks.sendCommand).not.toHaveBeenCalled();
@@ -220,12 +236,16 @@ describe('LCD audio-FFT demand ownership', () => {
       expect(release).toHaveBeenCalledTimes(2);
 
       await cleanup();
+      const configureCountAfterCleanup = configure.mock.calls.length;
+      clearCapabilities();
+      expect(configure).toHaveBeenCalledTimes(configureCountAfterCleanup);
       await cleanup();
       expect(mocks.stopPolling).toHaveBeenCalledTimes(1);
     } finally {
       if (cockpit) await unmount(cockpit);
       if (scope) await unmount(scope);
       if (cleanup) await cleanup();
+      clearCapabilities();
       for (const target of targets) target.remove();
       vi.doUnmock('$lib/transport/http-client');
       vi.doUnmock('$lib/transport/ws-client');

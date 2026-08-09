@@ -12,7 +12,7 @@
  */
 
 import { radio, getRadioState, patchActiveReceiver, patchRadioState, setRadioState } from '$lib/stores/radio.svelte';
-import { getCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import {
   getConnectionStatus,
   isConnected,
@@ -26,7 +26,7 @@ import {
 } from '$lib/stores/connection.svelte';
 import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
 import { sendCommand, connect, onMessage, sendRaw } from '$lib/transport/ws-client';
-import { fetchCapabilities, startPolling, setPollingMultiplier } from '$lib/transport/http-client';
+import { startPolling, setPollingMultiplier } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
 import { derivePresentationCapabilities } from './adapters/presentation-capabilities';
@@ -71,6 +71,7 @@ export interface DefaultScopeStatus {
 class FrontendRuntime {
   private _bootstrapCleanup: (() => void) | null = null;
   private _bootstrapInFlight: Promise<() => void> | null = null;
+  private _capabilitiesUnsubscribe: (() => void) | null = null;
   private _rxAudioLease: ResourceLease | null = null;
   private _ended = false;
   private _dxSubscribers = new Map<number, (message: DxMessage) => void>();
@@ -215,10 +216,44 @@ class FrontendRuntime {
     };
   }
 
+  private _configurePresentationResources(caps: Capabilities | null): void {
+    if (caps === null) {
+      this._defaultScopeSource = null;
+      presentationResources.configure('hardware-scope', {
+        available: false,
+        selected: false,
+      });
+      presentationResources.configure('audio-fft', {
+        available: false,
+        selected: false,
+      });
+      presentationResources.configure('rx-audio', {
+        available: false,
+        selected: true,
+      });
+      return;
+    }
+
+    const presentationCaps = derivePresentationCapabilities(caps);
+    this._defaultScopeSource = presentationCaps.scope.defaultSource;
+    presentationResources.configure('hardware-scope', {
+      available: presentationCaps.scope.hardwareScopeAvailable,
+      selected: presentationCaps.scope.hardwareScopeAvailable,
+    });
+    presentationResources.configure('audio-fft', {
+      available: presentationCaps.scope.audioFftAvailable,
+      selected: presentationCaps.scope.audioFftAvailable,
+    });
+    presentationResources.configure('rx-audio', {
+      available: caps.audio === true && caps.capabilities.includes('audio'),
+      selected: true,
+    });
+  }
+
   // ── Bootstrap ──
 
   /**
-   * Initialize the full transport stack: capabilities → polling → WebSocket → subscribe.
+   * Initialize the full transport stack: capability listener → polling → WebSocket → subscribe.
    *
    * Idempotent: if already started, returns the existing cleanup function without
    * re-running any transport calls. Concurrent callers share a single in-flight promise
@@ -263,22 +298,9 @@ class FrontendRuntime {
     // cached state or issuing any radio command.
     clearLegacyPendingModInputRestore();
 
-    // 1. Fetch capabilities and push into the store.
-    const caps = await fetchCapabilities();
-    setCapabilities(caps);
-    const presentationCaps = derivePresentationCapabilities(caps);
-    this._defaultScopeSource = presentationCaps.scope.defaultSource;
-    presentationResources.configure('hardware-scope', {
-      available: presentationCaps.scope.hardwareScopeAvailable,
-      selected: presentationCaps.scope.hardwareScopeAvailable,
-    });
-    presentationResources.configure('audio-fft', {
-      available: presentationCaps.scope.audioFftAvailable,
-      selected: presentationCaps.scope.audioFftAvailable,
-    });
-    presentationResources.configure('rx-audio', {
-      available: caps.audio === true && caps.capabilities.includes('audio'),
-      selected: true,
+    // 1. Follow only capabilities accepted by the B2 WS epoch gate.
+    this._capabilitiesUnsubscribe = subscribeCapabilities((caps) => {
+      this._configurePresentationResources(caps);
     });
 
     // 2. Register polling lifecycle with SystemController so connect/disconnect works.
@@ -310,11 +332,15 @@ class FrontendRuntime {
       this._dxSubscribers.clear();
       const unsubscribeDx = this._dxControlUnsubscribe;
       this._dxControlUnsubscribe = null;
+      const unsubscribeCapabilities = this._capabilitiesUnsubscribe;
+      this._capabilitiesUnsubscribe = null;
       try { unsubscribeDx?.(); } finally {
-        const stopScopeStatus = this._defaultScopeStop;
-        this._defaultScopeStop = null;
-        try { stopScopeStatus?.(); } finally {
-          try { await presentationResources.teardown(); } finally { stopPolling(); }
+        try { unsubscribeCapabilities?.(); } finally {
+          const stopScopeStatus = this._defaultScopeStop;
+          this._defaultScopeStop = null;
+          try { stopScopeStatus?.(); } finally {
+            try { await presentationResources.teardown(); } finally { stopPolling(); }
+          }
         }
       }
     })();
