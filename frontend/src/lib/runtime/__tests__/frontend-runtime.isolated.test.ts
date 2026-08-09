@@ -31,6 +31,10 @@ vi.mock('$lib/transport/ws-client', () => ({
   addMessageHandler: vi.fn(() => () => {}),
   getChannel: vi.fn(),
 }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => null),

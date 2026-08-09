@@ -13,17 +13,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
 }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
-  getRadioState: vi.fn(() => ({ active: 'MAIN' })),
+  getRadioState: vi.fn(() => ({ active: 'MAIN', main: { mode: 'USB' }, sub: { mode: 'CW' } })),
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => null),
+  getCapabilities: vi.fn(() => ({ receivers: 2, vfoScheme: 'main_sub' })),
   getControlRange: vi.fn(() => null),
 }));
 
@@ -65,6 +69,10 @@ import { recordModeFilter, _resetModeFilterMemory } from './mode-filter-memory';
 
 const originalDocumentQuerySelector = document.querySelector.bind(document);
 
+function receiverState(active: 'MAIN' | 'SUB') {
+  return { active, main: { mode: 'USB' }, sub: { mode: 'CW' } } as any;
+}
+
 function stubModePanel(): void {
   const modePanel = document.createElement('div');
   modePanel.scrollIntoView = vi.fn();
@@ -82,7 +90,7 @@ describe('shared pending-focus — cross-module handoff (#1044)', () => {
     _resetModeFilterMemory();
     stubModePanel();
     // Drain any lingering pending-focus from previous tests
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
     makeModeHandlers().onModeChange('__drain__');
     vi.mocked(sendCommand).mockClear();
   });
@@ -100,7 +108,7 @@ describe('shared pending-focus — cross-module handoff (#1044)', () => {
     vfo.onSubModeClick();
 
     // Store lags — still reports MAIN; pending-focus must win
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
     vi.mocked(sendCommand).mockClear();
 
     // Mode change is handled by panel-commands (the runtime layer)
@@ -117,7 +125,7 @@ describe('shared pending-focus — cross-module handoff (#1044)', () => {
     vfo.onMainModeClick();
 
     // Store lags — still reports SUB; pending-focus must win
-    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('SUB'));
     vi.mocked(sendCommand).mockClear();
 
     mode.onModeChange('CW');
@@ -133,7 +141,7 @@ describe('shared pending-focus — cross-module handoff (#1044)', () => {
     vfo.onSubModeClick();
     vi.mocked(sendCommand).mockClear();
 
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
 
     mode.onModeChange('CW');  // consumes SUB focus → receiver=1
     mode.onModeChange('USB'); // no pending focus → falls back to MAIN → receiver=0
@@ -147,7 +155,7 @@ describe('shared pending-focus — cross-module handoff (#1044)', () => {
     // A previously-observed USB(FIL1) must re-send filter 1 (2-byte 0x06)
     // rather than emit a mode-only frame that the radio defaults to FIL2.
     recordModeFilter('USB', 1);
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
     vi.mocked(sendCommand).mockClear();
 
     makeModeHandlers().onModeChange('USB');
@@ -168,7 +176,7 @@ describe('shared pending-focus — cross-module handoff (#1044)', () => {
     // Advance past TTL
     vi.setSystemTime(new Date(1_700_000_000_500));
 
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
 
     mode.onModeChange('FM');
 

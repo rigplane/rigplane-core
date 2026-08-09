@@ -21,6 +21,10 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
   getRadioState: vi.fn(() => ({ active: 'MAIN' })),

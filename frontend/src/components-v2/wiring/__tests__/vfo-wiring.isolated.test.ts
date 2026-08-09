@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
 }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
@@ -10,6 +14,11 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
+}));
+
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: vi.fn(() => ({ receivers: 2, vfoScheme: 'main_sub', capabilities: [] })),
+  getControlRange: vi.fn(() => null),
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
@@ -32,6 +41,14 @@ import { makeBandHandlers, makeFilterHandlers, makeModeHandlers, makeRitXitHandl
 import { recordModeFilter, _resetModeFilterMemory } from '$lib/radio/mode-filter-memory';
 
 const originalDocumentQuerySelector = document.querySelector.bind(document);
+
+function receiverState(active: 'MAIN' | 'SUB') {
+  return {
+    active,
+    main: { mode: 'USB', dataMode: 1, filter: 2, filterShape: 0, filterWidth: 2400 },
+    sub: { mode: 'CW', dataMode: 0, filter: 1, filterShape: 0, filterWidth: 500 },
+  } as any;
+}
 
 describe('toVfoOpsProps', () => {
   // TX follows split, not the active receiver.  IC-7610 manual p. 3-2:
@@ -267,7 +284,7 @@ describe('makeModeHandlers', () => {
   });
 
   it('emits set_mode for the active receiver', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('SUB'));
 
     makeModeHandlers().onModeChange('CW');
 
@@ -277,7 +294,7 @@ describe('makeModeHandlers', () => {
   it('recalls the remembered filter for a previously-observed mode (MOR-495)', () => {
     // The radio kept USB on FIL1; switching back to USB must re-send that
     // filter (2-byte 0x06) instead of letting the radio apply its USB default.
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
     recordModeFilter('USB', 1);
 
     makeModeHandlers().onModeChange('USB');
@@ -286,7 +303,7 @@ describe('makeModeHandlers', () => {
   });
 
   it('emits mode-only set_mode for an unseen mode (MOR-495)', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
 
     makeModeHandlers().onModeChange('AM');
 
@@ -294,7 +311,7 @@ describe('makeModeHandlers', () => {
   });
 
   it('emits numeric set_data_mode values for the active receiver', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
 
     makeModeHandlers().onDataModeChange(3);
 
@@ -347,22 +364,22 @@ describe('makeFilterHandlers', () => {
     vi.mocked(patchActiveReceiver).mockClear();
   });
 
-  it('emits set_filter_shape for the active receiver and patches optimistic state', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB' } as any);
+  it('emits set_filter_shape for the active receiver without optimistic state', () => {
+    vi.mocked(getRadioState).mockReturnValue(receiverState('SUB'));
 
     makeFilterHandlers().onFilterShapeChange?.(1);
 
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ filterShape: 1 }, true);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_filter_shape', { shape: 1, receiver: 1 });
   });
 
   it('restores the active filter width after resetting defaults', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
     vi.mocked(getActiveReceiver).mockReturnValue({ filter: 2 } as any);
 
     makeFilterHandlers().onFilterDefaults?.([3000, 2400, 1800]);
 
     expect(sendCommand).toHaveBeenCalledWith('set_filter', { filter: 2, receiver: 0 });
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ filterWidth: 2400 }, true);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 });

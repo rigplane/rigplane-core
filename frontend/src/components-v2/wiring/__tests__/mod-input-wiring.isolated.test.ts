@@ -14,6 +14,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
 }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
@@ -34,7 +38,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { getActiveReceiver, patchRadioState } from '$lib/stores/radio.svelte';
+import { getActiveReceiver, getRadioState, patchRadioState } from '$lib/stores/radio.svelte';
 import { makeModeHandlers as makeWiringModeHandlers } from '../command-bus';
 import { makeModeHandlers as makeRuntimeModeHandlers } from '$lib/runtime/commands/panel-commands';
 
@@ -48,15 +52,17 @@ describe.each(factories)('%s onModInputChange (MOR-616)', (_name, makeHandlers) 
     vi.mocked(sendCommand).mockClear();
     vi.mocked(patchRadioState).mockClear();
     vi.mocked(getActiveReceiver).mockReturnValue(null);
+    vi.mocked(getRadioState).mockReturnValue(null);
   });
 
   it('emits set_data_off_mod_input when DATA is off', () => {
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN', main: {} } as never);
     vi.mocked(getActiveReceiver).mockReturnValue({ dataMode: 0 } as never);
 
     makeHandlers().onModInputChange(5);
 
     expect(sendCommand).toHaveBeenCalledWith('set_data_off_mod_input', { source: 5 });
-    expect(patchRadioState).toHaveBeenCalledWith({ dataOffModInput: 5 });
+    expect(patchRadioState).not.toHaveBeenCalled();
   });
 
   it('emits the per-group command for D1/D2/D3', () => {
@@ -67,19 +73,20 @@ describe.each(factories)('%s onModInputChange (MOR-616)', (_name, makeHandlers) 
     ] as const;
 
     for (const [dataMode, command, stateKey] of cases) {
+      vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN', main: {} } as never);
       vi.mocked(getActiveReceiver).mockReturnValue({ dataMode } as never);
 
       makeHandlers().onModInputChange(3);
 
       expect(sendCommand).toHaveBeenCalledWith(command, { source: 3 });
-      expect(patchRadioState).toHaveBeenCalledWith({ [stateKey]: 3 });
+      expect(patchRadioState).not.toHaveBeenCalled();
     }
   });
 
-  it('falls back to the DATA OFF group when no receiver state exists', () => {
+  it('fails closed when no receiver state exists', () => {
     makeHandlers().onModInputChange(0);
 
-    expect(sendCommand).toHaveBeenCalledWith('set_data_off_mod_input', { source: 0 });
-    expect(patchRadioState).toHaveBeenCalledWith({ dataOffModInput: 0 });
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(patchRadioState).not.toHaveBeenCalled();
   });
 });

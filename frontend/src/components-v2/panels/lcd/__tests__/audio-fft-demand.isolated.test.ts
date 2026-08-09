@@ -69,6 +69,10 @@ vi.mock('$lib/transport/ws-client', () => ({
   disconnectAll: vi.fn(),
   reconnectAll: vi.fn(),
 }));
+vi.mock('$lib/runtime/commands/radio-intents', async () => {
+  const { sendCommand } = await import('$lib/transport/ws-client');
+  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
 
 const canonicalCapabilities: Capabilities = {
   model: 'test',
