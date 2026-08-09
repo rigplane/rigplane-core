@@ -93,8 +93,8 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 // The real module's names/arities are covered by `stub-export-parity.test.ts`
 // and by TypeScript; this file only proves ROUTING, mirroring
 // `semantic-tx-aux-wiring.component.test.ts`'s own wholesale mock.
-vi.mock('../command-bus', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../command-bus')>();
+vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/commands/panel-commands')>();
   return {
     ...actual,
     makeVfoHandlers: () => ({

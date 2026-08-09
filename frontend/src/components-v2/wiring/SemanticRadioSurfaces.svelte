@@ -26,6 +26,7 @@
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
+  import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
   import {
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
@@ -56,12 +57,6 @@
   import ScopeControlsSurface, {
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
-  import {
-    makeAgcHandlers, makeAntennaHandlers, makeAudioRoutingHandlers, makeBandHandlers,
-    makeCwPanelHandlers, makeDspHandlers, makeFilterHandlers, makeModeHandlers,
-    makeRfFrontEndHandlers, makeRitXitHandlers, makeRxAudioHandlers, makeScanHandlers,
-    makeScopeControlsHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
-  } from './command-bus';
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
   } from './dual-receiver-strips';
@@ -151,18 +146,19 @@
       .filter(({ zoneId }) => zoneShows(zoneId, 'vfo'));
   }
 
-  const vfo = makeVfoHandlers();
+  const semanticHandlers = bindSemanticSurfaceHandlers();
+  const vfo = semanticHandlers.vfo;
   /** MOR-1307: the shipped band vocabulary, composed rather than forked. */
-  const band = makeBandHandlers();
+  const band = semanticHandlers.band;
   /**
    * MOR-1265. The two v2 handler factories already carry every txAux intent
    * (`makeVoxHandlers` owns gain/anti-VOX/delay, `makeTxHandlers` the rest);
    * composing them keeps ONE command vocabulary rather than a v3 fork of it.
    * The two maps below exist so the pure surface can stay field-addressed —
-   * agreement with the shipped command-bus names is pinned in
-   * `__tests__/tx-aux-command-bus.isolated.test.ts` against the REAL module.
+   * agreement with the shipped canonical handler names is pinned against the
+   * real command module.
    */
-  const txAuxIntents = { ...makeVoxHandlers(), ...makeTxHandlers() };
+  const txAuxIntents = { ...semanticHandlers.vox, ...semanticHandlers.tx };
   const TX_AUX_TOGGLE_INTENT: Record<TxAuxToggleField, () => void> = {
     atu: txAuxIntents.onAtuToggle, vox: txAuxIntents.onVoxToggle,
     compressor: txAuxIntents.onCompToggle, monitor: txAuxIntents.onMonToggle,
@@ -175,7 +171,7 @@
   };
   /**
    * MOR-1279. The RX-audio intent vocabulary, composed from the SHIPPED
-   * command bus rather than forked: monitor mode + AF level from
+   * canonical handlers rather than forked: monitor mode + AF level from
    * `makeRxAudioHandlers` (whose `onAfLevelChange` takes 0..1 — the contract's
    * own unit, so nothing rescales on the way out either), routing from
    * `makeAudioRoutingHandlers`, and the MOD-input remedy from
@@ -183,8 +179,8 @@
    * `ModInputTxWarning`'s "Set LAN" fires, so a mismatch has one fix, not two.
    * `ModInputTxWarning` itself is untouched and stays in the rx-tx zone.
    */
-  const rxAudioIntents = makeRxAudioHandlers();
-  const routingIntents = makeAudioRoutingHandlers();
+  const rxAudioIntents = semanticHandlers.rxAudio;
+  const routingIntents = semanticHandlers.audioRouting;
   /**
    * MOR-1309. The antenna intent vocabulary, composed from the SHIPPED command
    * bus rather than forked — `set_antenna_1`/`set_antenna_2`/the two RX-ANT
@@ -193,11 +189,11 @@
    * command-addressed; a port the bus cannot name is unreachable by
    * construction rather than by a silent no-op.
    */
-  const antennaIntents = makeAntennaHandlers();
+  const antennaIntents = semanticHandlers.antenna;
   const ANTENNA_PORT_INTENT: Record<number, () => void> = {
     1: antennaIntents.onSelectAnt1, 2: antennaIntents.onSelectAnt2,
   };
-  const setModInputLan = () => makeModeHandlers().onModInputChange(LAN_MOD_INPUT_SOURCE);
+  const setModInputLan = () => semanticHandlers.mode.onModInputChange(LAN_MOD_INPUT_SOURCE);
   /**
    * MOR-1304. `makeModeHandlers` owns mode/dataMode intents, `makeFilterHandlers`
    * the rest — the SAME v2 command vocabulary `FilterPanel` already dispatches
@@ -205,15 +201,15 @@
    * Unlike `txAuxIntents` above, `FilterSurface`'s props already match these
    * names 1:1, so no per-field `Record` indirection is needed.
    */
-  const filterIntents = { ...makeModeHandlers(), ...makeFilterHandlers() };
+  const filterIntents = { ...semanticHandlers.mode, ...semanticHandlers.filter };
   /**
    * MOR-1305. `makeDspHandlers`/`makeAgcHandlers` already carry every dsp
    * intent; the two maps below keep the pure surface field-addressed, same
    * precedent as `TX_AUX_*_INTENT` above — agreement with the shipped
-   * command-bus names is exercised against the REAL module in the component
+   * canonical handler names is exercised against the real module in the component
    * test, not re-asserted here.
    */
-  const dspIntents = makeDspHandlers();
+  const dspIntents = semanticHandlers.dsp;
   const DSP_TOGGLE_INTENT: Record<DspToggleField, (next: boolean) => void> = {
     nrActive: (next) => dspIntents.onNrModeChange(next ? 1 : 0),
     nbActive: (next) => dspIntents.onNbToggle(next),
@@ -224,7 +220,7 @@
     notchFreq: dspIntents.onNotchFreqChange, manualNotchWidth: dspIntents.onManualNotchWidthChange,
     agcTimeConstant: dspIntents.onAgcTimeChange,
   };
-  const agcIntents = makeAgcHandlers();
+  const agcIntents = semanticHandlers.agc;
   /**
    * `agcLabels`/`nbLevelMax`/`nbLevelPercent` are pure caps-echo display
    * metadata, NOT `dsp` facts (MOR-1290/MOR-1305 carry-forward 1) — read
@@ -243,7 +239,7 @@
    * `onLevelChange` onto the two real level handlers, mirroring
    * `TX_AUX_LEVEL_INTENT`.
    */
-  const rfFrontEndIntents = makeRfFrontEndHandlers();
+  const rfFrontEndIntents = semanticHandlers.rfFrontEnd;
   const RF_FRONT_END_LEVEL_INTENT: Record<RfFrontEndLevelField, (value: number) => void> = {
     rfGain: rfFrontEndIntents.onRfGainChange, squelch: rfFrontEndIntents.onSquelchChange,
   };
@@ -257,8 +253,8 @@
    * handlers write `ritFreq` via the same `set_rit_frequency` command); this
    * wiring adds no re-derivation, only 1:1 plumbing.
    */
-  const ritXitIntents = makeRitXitHandlers();
-  const scanIntents = makeScanHandlers();
+  const ritXitIntents = semanticHandlers.ritXit;
+  const scanIntents = semanticHandlers.scan;
   /**
    * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
    * `makeCwPanelHandlers` rather than forked. `onAutoTune` is deliberately NOT
@@ -266,7 +262,7 @@
    * control for it (MOR-1244 ATU-TUNE precedent). Nothing here keys — exactly
    * one `<RxTxSurface>` stays the key/unkey authority (decomposition R9).
    */
-  const cwIntents = makeCwPanelHandlers();
+  const cwIntents = semanticHandlers.cw;
   const CW_LEVEL_INTENT: Record<CwLevelField, (value: number) => void> = {
     keyerSpeed: cwIntents.onKeySpeedChange, pitchHz: cwIntents.onCwPitchChange,
     breakInDelay: cwIntents.onBreakInDelayChange,
@@ -277,7 +273,7 @@
    * maps keep the pure surface field-addressed, same precedent as
    * `TX_AUX_*_INTENT`/`DSP_*_INTENT` above.
    */
-  const scopeIntents = makeScopeControlsHandlers();
+  const scopeIntents = semanticHandlers.scopeControls;
   const SCOPE_TOGGLE_INTENT: Record<ScopeToggleField, (next: boolean) => void> = {
     hold: scopeIntents.onHoldChange, dual: scopeIntents.onDualChange,
     duringTx: scopeIntents.onDuringTxChange, vbwNarrow: scopeIntents.onVbwChange,
@@ -408,7 +404,7 @@
 
   /**
    * MOR-1322 (S3b) — per-digit tuning, routed to the SAME per-receiver
-   * command-bus handlers the legacy VfoHeader used (`onMainFreqChange` /
+   * canonical VFO handlers the legacy VfoHeader used (`onMainFreqChange` /
    * `onSubFreqChange`), which own the optimistic patch and the `set_freq`
    * command. No new key path and no TX semantics (R9): this moves a frequency,
    * it never keys the transmitter.

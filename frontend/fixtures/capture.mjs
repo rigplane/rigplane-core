@@ -9,6 +9,7 @@
  * differences.
  *
  *   node fixtures/capture.mjs [--out <dir>] [--only <substring>]
+ *   node fixtures/capture.mjs --preflight-only
  *
  * The server is always closed, including on failure.
  */
@@ -17,7 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
-import { createServer } from 'vite';
+import { build, createServer } from 'vite';
 
 const FRONTEND = path.resolve(import.meta.dirname, '..');
 const REPO = path.resolve(FRONTEND, '..');
@@ -34,6 +35,21 @@ const ONLY = arg('--only', null);
 // parallel run pick its own port without touching the single-port default any
 // script or doc already assumes.
 const PORT = Number(arg('--port', '5199'));
+const PREFLIGHT_ONLY = argv.includes('--preflight-only');
+
+// The page console cannot observe Vite's dependency scanner or transform
+// errors. Build this exact additive config first so any server-side failure is
+// terminal rather than allowing a visually valid capture to escape.
+await build({
+  root: FRONTEND,
+  configFile: path.join(FRONTEND, 'vite.fixtures.config.ts'),
+  logLevel: 'error',
+});
+
+if (PREFLIGHT_ONLY) {
+  console.log('PASS fixture build preflight');
+  process.exit(0);
+}
 
 /* ── viewports ─────────────────────────────────────────────────────────── */
 const VIEWPORTS = {
@@ -509,6 +525,7 @@ const manifest = {
       '$lib/runtime',
       '$lib/runtime/tx-controller/app-host',
       '$lib/runtime/adapters/mod-input-tx-guard.svelte',
+      '$lib/runtime/adapters/panel-adapters',
       'components-v2/wiring/command-bus',
     ],
     productionFilesChanged: 0,
@@ -516,7 +533,7 @@ const manifest = {
   intentionalDifferences: [
     'The cockpit is mounted DIRECTLY (fixtures/main.ts) — resolveSkinId() has no '
     + 'cockpit branch on this commit, so no navigation path can produce these views.',
-    'Four live seams are stubbed (see harness.stubbedSeams); every other module in the '
+    'Five live seams are stubbed (see harness.stubbedSeams); every other module in the '
     + 'render path — adapter, capability derivation, semantic surfaces, i18n, CSS — is shipped code.',
     'Screenshots are taken with Playwright `animations: "disabled"` and `caret: "hide"` for '
     + 'determinism. The cockpit declares no animation of its own; the only transition in the '

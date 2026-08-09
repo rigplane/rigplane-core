@@ -21,8 +21,11 @@ import {
   makeRfFrontEndHandlers, makeRitXitHandlers, makeScanHandlers,
   makeCwPanelHandlers, makeDspHandlers,
   makeTxHandlers, makeFilterHandlers, makeBandHandlers,
-  makePresetHandlers,
+  makePresetHandlers, makeAudioRoutingHandlers, makeRxAudioHandlers,
+  makeVfoHandlers, makeScopeControlsHandlers, makeVoxHandlers,
 } from '../commands/panel-commands';
+import { toRadioViewModel } from './radio-view-model-adapter';
+import { getAppTxController, type AppTxController } from '../tx-controller/app-host';
 import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
@@ -118,6 +121,55 @@ const _bandHandlers = makeBandHandlers();
 export function getBandHandlers() { return _bandHandlers; }
 const _presetHandlers = makePresetHandlers();
 export function getPresetHandlers() { return _presetHandlers; }
+
+// ── A04 semantic composition bindings ──
+// This binder deliberately creates fresh family objects for each mounted
+// composition root: filter handlers retain per-instance debounce state.
+export function bindSemanticSurfaceHandlers() {
+  return Object.freeze({
+    agc: makeAgcHandlers(),
+    antenna: makeAntennaHandlers(),
+    audioRouting: makeAudioRoutingHandlers(),
+    band: makeBandHandlers(),
+    cw: makeCwPanelHandlers(),
+    dsp: makeDspHandlers(),
+    filter: makeFilterHandlers(),
+    mode: makeModeHandlers(),
+    rfFrontEnd: makeRfFrontEndHandlers(),
+    ritXit: makeRitXitHandlers(),
+    rxAudio: makeRxAudioHandlers(),
+    scan: makeScanHandlers(),
+    scopeControls: makeScopeControlsHandlers(),
+    tx: makeTxHandlers(),
+    vfo: makeVfoHandlers(),
+    vox: makeVoxHandlers(),
+  });
+}
+
+const _audioRoutingHandlers = makeAudioRoutingHandlers();
+export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
+const _vfoHandlers = makeVfoHandlers();
+export function getVfoHandlers() { return _vfoHandlers; }
+
+export type VfoTunerRead = Readonly<{
+  tx: ReturnType<AppTxController['snapshot']>;
+  view: ReturnType<typeof toRadioViewModel>;
+}>;
+export type VfoTunerContext = Readonly<{ read(): VfoTunerRead }>;
+
+/** Captures the App TX facade once, while read() projects only live read-only facts. */
+export function bindVfoTunerContext(): VfoTunerContext {
+  const tx = getAppTxController();
+  return Object.freeze({
+    read: () => {
+      const snapshot = tx.snapshot();
+      return Object.freeze({
+        tx: snapshot,
+        view: toRadioViewModel(runtime.state, runtime.caps, snapshot),
+      });
+    },
+  });
+}
 
 // ── Audio Spectrum ──
 export function deriveAudioSpectrumProps() {

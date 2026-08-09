@@ -15,21 +15,24 @@
  * catalog, the real `app.css` + `components-v2/theme` token layer.
  *
  * Stubbing by RESOLVED ABSOLUTE PATH (not by alias on the import specifier) is
- * deliberate: `SemanticRadioSurfaces` imports `./command-bus` relatively, and
- * a string alias on `./command-bus` would match any same-named relative import
- * anywhere in the graph.
+ * deliberate: the semantic root reaches its command callbacks through the
+ * existing adapter seam, while legacy layout callers retain the relative bus
+ * seam. A string alias would match unrelated same-named relative imports.
  */
 import path from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 const here = import.meta.dirname;
+const semanticRoot = path.resolve(here, 'src/components-v2/wiring/SemanticRadioSurfaces.svelte');
+const panelAdapters = path.resolve(here, 'src/lib/runtime/adapters/panel-adapters.ts');
 
 /** production module (repo-relative) → fixture stub (repo-relative) */
 const STUBS: Readonly<Record<string, string>> = {
   'src/lib/runtime/index.ts': 'fixtures/stubs/runtime.ts',
   'src/lib/runtime/tx-controller/app-host.ts': 'fixtures/stubs/app-host.ts',
   'src/lib/runtime/adapters/mod-input-tx-guard.svelte.ts': 'fixtures/stubs/mod-input-tx-guard.ts',
+  'src/lib/runtime/adapters/panel-adapters.ts': 'fixtures/stubs/panel-adapters.ts',
   'src/components-v2/wiring/command-bus.ts': 'fixtures/stubs/command-bus.ts',
 };
 
@@ -47,7 +50,12 @@ function fixtureStubs(): Plugin {
       if (stubPaths.has(importer.split('?')[0])) return null;
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
       if (!resolved) return null;
-      return table.get(resolved.id.split('?')[0]) ?? null;
+      const target = resolved.id.split('?')[0];
+      // The adapter has a broad shipped export surface. Only the semantic
+      // composition root uses the fixture-only binder; every other importer
+      // must resolve the real adapter module unchanged.
+      if (target === panelAdapters && importer.split('?')[0] !== semanticRoot) return null;
+      return table.get(target) ?? null;
     },
   };
 }
