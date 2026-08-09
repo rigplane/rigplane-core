@@ -10,9 +10,8 @@
  */
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { getActiveReceiver, getRadioState, patchActiveReceiver, patchRadioState } from '$lib/stores/radio.svelte';
+import { getRadioState, patchRadioState } from '$lib/stores/radio.svelte';
 import { adjustTuningStep } from '$lib/stores/tuning.svelte';
-import { audioManager } from '$lib/audio/audio-manager';
 import { dispatchKeyboardRadioAction } from '$lib/runtime/commands/panel-commands';
 export {
   makeAgcHandlers,
@@ -39,28 +38,6 @@ import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-
 
 function cmd(name: string, params: Record<string, unknown> = {}): void {
   sendCommand(name, params);
-}
-
-type Receiver = 0 | 1;
-
-function activeReceiverParam(): Receiver {
-  return getRadioState()?.active === 'SUB' ? 1 : 0;
-}
-
-/* ── VFO Handlers ────────────────────────────────────────────── */
-
-/** Temporary keyboard-only activation path; A03d delegates and removes it. */
-function _activateReceiver(target: 'MAIN' | 'SUB'): void {
-  // Optimistic UI + WS command to select the receiver.
-  patchRadioState({ active: target });
-  cmd('set_vfo', { vfo: target });
-  // Couple audio focus to the selected receiver so operator hears the
-  // band they're now tuning.  In Dual-Watch mode the radio broadcasts
-  // both receivers' audio, and the web layer decides which channel to
-  // render via the Phones L/R Mix (#752/#755).  Without this coupling,
-  // clicking MAIN/SUB updated state + scope but left the audio focus
-  // untouched, so the user heard MAIN while tuning SUB.
-  audioManager.setAudioConfig({ focus: target === 'SUB' ? 'sub' : 'main' });
 }
 
 /* ── System Handlers ─────────────────────────────────────────── */
@@ -105,87 +82,14 @@ export function makeKeyboardHandlers() {
           adjustTuningStep(action.params?.direction === 'down' ? 'down' : 'up');
           return;
         }
-        case 'toggle_split': {
-          const next = !(getRadioState()?.split ?? false);
-          patchRadioState({ split: next });
-          cmd('set_split', { on: next });
-          return;
-        }
         case 'open_filter_settings': {
           window.dispatchEvent(new CustomEvent('rigplane:open-filter-settings'));
-          return;
-        }
-        case 'toggle_monitor': {
-          const on = !(getRadioState()?.monitorOn ?? false);
-          patchRadioState({ monitorOn: on });
-          cmd('set_monitor', { on });
           return;
         }
         case 'toggle_dial_lock': {
           const on = !(getRadioState()?.dialLock ?? false);
           patchRadioState({ dialLock: on });
           cmd('set_dial_lock', { on });
-          return;
-        }
-        case 'toggle_rit': {
-          const on = !(getRadioState()?.ritOn ?? false);
-          patchRadioState({ ritOn: on });
-          cmd('set_rit_status', { on });
-          return;
-        }
-        case 'toggle_xit': {
-          const on = !(getRadioState()?.ritTx ?? false);
-          patchRadioState({ ritTx: on });
-          cmd('set_rit_tx_status', { on });
-          return;
-        }
-        case 'clear_rit_xit': {
-          patchRadioState({ ritFreq: 0 });
-          cmd('set_rit_frequency', { freq: 0 });
-          return;
-        }
-        case 'adjust_af_level': {
-          const current = getActiveReceiver()?.afLevel ?? 0.5;
-          const delta = (action.params?.direction === 'down' ? -0.05 : 0.05);
-          const level = Math.max(0, Math.min(1, current + delta));
-          patchActiveReceiver({ afLevel: level }, true);
-          cmd('set_af_level', { level, receiver: activeReceiverParam() });
-          return;
-        }
-        case 'adjust_rf_gain': {
-          const current = getActiveReceiver()?.rfGain ?? 1;
-          const delta = (action.params?.direction === 'down' ? -0.05 : 0.05);
-          const level = Math.max(0, Math.min(1, current + delta));
-          patchActiveReceiver({ rfGain: level }, true);
-          cmd('set_rf_gain', { level, receiver: activeReceiverParam() });
-          return;
-        }
-        case 'vfo_swap': {
-          cmd('vfo_swap', {});
-          return;
-        }
-        case 'vfo_equalize': {
-          cmd('vfo_equalize', {});
-          return;
-        }
-        case 'switch_active_vfo': {
-          const state = getRadioState();
-          const next = state?.active === 'SUB' ? 'MAIN' : 'SUB';
-          patchRadioState({ active: next });
-          cmd('set_vfo', { vfo: next });
-          return;
-        }
-        case 'set_active_vfo': {
-          const target = action.params?.vfo;
-          if (target !== 'MAIN' && target !== 'SUB') {
-            return;
-          }
-          // Route through the same helper the VFO-click path uses so the
-          // audio focus follows the active receiver (#827 follow-up): a
-          // `m`/Shift+M/Shift+S keypress must behave identically to
-          // clicking MAIN/SUB, otherwise the operator tunes one side but
-          // keeps hearing the other in Dual-Watch / browser-audio flows.
-          _activateReceiver(target);
           return;
         }
         case 'focus_target': {

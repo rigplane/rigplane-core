@@ -988,6 +988,9 @@ const KEYBOARD_RADIO_ACTIONS = new Set([
   'tune', 'band_select', 'mode_select', 'cycle_data_mode', 'cycle_filter',
   'cycle_preamp', 'cycle_att', 'cycle_agc', 'toggle_nr', 'toggle_nb',
   'toggle_auto_notch', 'toggle_ip_plus',
+  'toggle_rit', 'toggle_xit', 'clear_rit_xit',
+  'adjust_af_level', 'adjust_rf_gain', 'toggle_monitor',
+  'toggle_split', 'vfo_swap', 'vfo_equalize', 'switch_active_vfo', 'set_active_vfo',
 ]);
 
 function currentKeyboardContext(): KeyboardContext | null {
@@ -1120,6 +1123,59 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       return true;
     case 'toggle_ip_plus':
       if (has('ip_plus') && keyboardReceiverField(context, 'ipplus') && typeof rx?.ipplus === 'boolean') makeRfFrontEndHandlers().onIpPlusToggle(!rx.ipplus);
+      return true;
+    case 'toggle_rit':
+      if (has('rit') && knownA03cTopLevelField(context, 'ritOn')
+        && typeof context.state.ritOn === 'boolean') makeRitXitHandlers().onRitToggle();
+      return true;
+    case 'toggle_xit':
+      if (has('xit') && knownA03cTopLevelField(context, 'ritTx')
+        && typeof context.state.ritTx === 'boolean') makeRitXitHandlers().onXitToggle();
+      return true;
+    case 'clear_rit_xit':
+      if ((has('rit') || has('xit')) && knownA03cTopLevelField(context, 'ritFreq')
+        && Number.isSafeInteger(context.state.ritFreq)) makeRitXitHandlers().onClear();
+      return true;
+    case 'adjust_af_level': {
+      const direction = keyboardDirection(safeParams.direction);
+      const current = rx?.afLevel;
+      if (direction && keyboardReceiverField(context, 'afLevel') && isNormalizedLevel(current)) {
+        makeRxAudioHandlers().onAfLevelChange(Math.max(0, Math.min(1, current + (direction === 'down' ? -0.05 : 0.05))));
+      }
+      return true;
+    }
+    case 'adjust_rf_gain': {
+      const direction = keyboardDirection(safeParams.direction);
+      const current = rx?.rfGain;
+      if (direction && keyboardReceiverField(context, 'rfGain') && isNormalizedLevel(current)) {
+        const level = Math.max(0, Math.min(1, current + (direction === 'down' ? -0.05 : 0.05)));
+        makeRfFrontEndHandlers().onRfGainChange(Math.round(level * 255));
+      }
+      return true;
+    }
+    case 'toggle_monitor':
+      if (has('tx') && has('monitor') && knownA03cTopLevelField(context, 'monitorOn')
+        && typeof context.state.monitorOn === 'boolean') makeTxHandlers().onMonToggle();
+      return true;
+    case 'toggle_split':
+      if (has('split') && knownA03cTopLevelField(context, 'split')
+        && typeof context.state.split === 'boolean') makeVfoHandlers().onSplitToggle();
+      return true;
+    case 'vfo_swap':
+      makeVfoHandlers().onSwap();
+      return true;
+    case 'vfo_equalize':
+      makeVfoHandlers().onEqual();
+      return true;
+    case 'switch_active_vfo': {
+      const target = context.state.active === 'MAIN' ? 'SUB' : 'MAIN';
+      if (target === 'MAIN') makeVfoHandlers().onMainVfoClick();
+      else if (context.caps.receivers >= 2 && has('dual_rx') && context.state.sub) makeVfoHandlers().onSubVfoClick();
+      return true;
+    }
+    case 'set_active_vfo':
+      if (safeParams.vfo === 'MAIN') makeVfoHandlers().onMainVfoClick();
+      else if (safeParams.vfo === 'SUB' && context.caps.receivers >= 2 && has('dual_rx') && context.state.sub) makeVfoHandlers().onSubVfoClick();
       return true;
     default:
       return true;

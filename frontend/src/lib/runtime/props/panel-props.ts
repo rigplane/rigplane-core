@@ -683,7 +683,6 @@ export interface MeterProps {
   vd: number;
   id: number;
   txActive: boolean;
-  meterSource: string;
   hasTx: boolean;
 }
 
@@ -702,7 +701,6 @@ export function toMeterProps(
     vd: state?.vdMeter ?? 0,
     id: state?.idMeter ?? 0,
     txActive: state?.ptt ?? false,
-    meterSource: (state as { meterSource?: string } | null)?.meterSource ?? 'S',
     hasTx: caps?.tx ?? false,
   };
 }

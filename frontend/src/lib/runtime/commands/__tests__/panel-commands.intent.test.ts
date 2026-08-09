@@ -1032,6 +1032,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   });
 
   it('delegates the complete A03d1b RIT, audio, monitor, and VFO keyboard families through typed intents', () => {
+    (h.state!.main as { rfGain: number }).rfGain = 128 / 255;
     const actions = [
       { action: 'toggle_rit' }, { action: 'toggle_xit' }, { action: 'clear_rit_xit' },
       { action: 'adjust_af_level', params: { direction: 'up' } },
@@ -1060,6 +1061,67 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setAudioConfig).toHaveBeenNthCalledWith(2, { focus: 'main' });
   });
 
+  it('clamps only known normalized keyboard AF/RF readings and keeps active runtime AF local', () => {
+    (h.state!.main as { afLevel: number; rfGain: number }).afLevel = 0.98;
+    (h.state!.main as { afLevel: number; rfGain: number }).rfGain = 0.02;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'down' } })).toBe(true);
+    expect(exactCalls()).toEqual([
+      ['set_af_level', { level: 1, receiver: 0 }],
+      ['set_rf_gain', { level: 0, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    h.rxEnabled = true;
+    (h.state!.main as { afLevel: number }).afLevel = 0.02;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'down' } })).toBe(true);
+    expect(h.setRxVolume).toHaveBeenCalledWith(0);
+    expect(h.setVolume).toHaveBeenCalledWith(0);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+
+    h.rxEnabled = false;
+    (h.state!.main as { rfGain: number }).rfGain = 128;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'up' } })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'sideways' } })).toBe(true);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects impossible one-receiver SUB selection without changing local audio while retaining MAIN with A/B facts', () => {
+    h.state = oneReceiverAbState();
+    h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
+    expect(dispatchKeyboardRadioAction({ action: 'switch_active_vfo' })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'set_active_vfo', params: { vfo: 'SUB' } })).toBe(true);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.setAudioConfig).not.toHaveBeenCalled();
+
+    expect(dispatchKeyboardRadioAction({ action: 'set_active_vfo', params: { vfo: 'MAIN' } })).toBe(true);
+    expect(exactCalls()).toEqual([['set_vfo', { vfo: 'MAIN' }]]);
+    expectIntentTransport();
+    expect(h.setAudioConfig).toHaveBeenCalledExactlyOnceWith({ focus: 'main' });
+  });
+
+  it('contains hostile params for every newly recognized keyboard action without touching radio or audio state', () => {
+    const actions = [
+      'toggle_rit', 'toggle_xit', 'clear_rit_xit', 'adjust_af_level', 'adjust_rf_gain',
+      'toggle_monitor', 'toggle_split', 'vfo_swap', 'vfo_equalize', 'switch_active_vfo', 'set_active_vfo',
+    ];
+    const getter = vi.fn(() => { throw new Error('getter executed'); });
+    const hostile = Object.defineProperty({}, 'vfo', { enumerable: true, get: getter });
+
+    for (const action of actions) {
+      expect(() => dispatchKeyboardRadioAction({ action, params: hostile })).not.toThrow();
+      expect(dispatchKeyboardRadioAction({ action, params: hostile })).toBe(true);
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.setAudioConfig).not.toHaveBeenCalled();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
   it('fails closed for invalid keyboard input while leaving deferred and local actions to their current owner', () => {
     h.unavailable.add('main.freqHz');
     expect(dispatchKeyboardRadioAction({ action: 'tune', params: { direction: 'up' } })).toBe(true);
@@ -1073,7 +1135,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     (h.state.main as any).preamp = 99;
     expect(dispatchKeyboardRadioAction({ action: 'cycle_preamp' })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'cycle_filter', params: { direction: 'sideways' } })).toBe(true);
+    h.unavailable.add('ritOn');
     expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(true);
+    h.unavailable.clear();
     expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_hold' })).toBe(false);
     expect(dispatchKeyboardRadioAction({ action: 'open_filter_settings' })).toBe(false);
     expect(dispatchKeyboardRadioAction({ action: 'ptt_on' })).toBe(false);

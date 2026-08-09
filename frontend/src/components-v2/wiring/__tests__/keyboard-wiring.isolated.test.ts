@@ -17,7 +17,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => ({
-    capabilities: ['bsr', 'preamp', 'attenuator', 'agc', 'nr', 'nb', 'notch', 'ip_plus'],
+    capabilities: ['bsr', 'preamp', 'attenuator', 'agc', 'nr', 'nb', 'notch', 'ip_plus', 'split', 'dual_rx'],
     stateContractVersion: 1,
     providerGeneration: 31,
     receivers: 2,
@@ -87,6 +87,10 @@ describe('makeKeyboardHandlers', () => {
         freqHz: 14_074_000, preamp: 1, dataMode: 2, mode: 'USB', filter: 2,
         att: 0, agc: 2, nr: false, nb: false, autoNotch: false, ipplus: false,
       },
+      sub: {
+        freqHz: 7_074_000, preamp: 1, dataMode: 2, mode: 'USB', filter: 2,
+        att: 0, agc: 2, nr: false, nb: false, autoNotch: false, ipplus: false,
+      },
     } as any);
   });
 
@@ -103,11 +107,14 @@ describe('makeKeyboardHandlers', () => {
   });
 
   it('toggles split using radio state', () => {
-    vi.mocked(getRadioState).mockReturnValue({ split: false } as any);
+    vi.mocked(getRadioState).mockReturnValue({
+      active: 'MAIN', providerGeneration: 31, split: false,
+      main: { freqHz: 14_074_000 }, sub: { freqHz: 7_074_000 },
+    } as any);
 
     makeKeyboardHandlers().dispatch(makeAction('toggle_split'));
 
-    expect(patchRadioState).toHaveBeenCalledWith({ split: true });
+    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_split', { on: true });
   });
 
@@ -150,7 +157,7 @@ describe('makeKeyboardHandlers', () => {
 
     makeKeyboardHandlers().dispatch(makeAction('set_active_vfo', { vfo: 'SUB' }));
 
-    expect(patchRadioState).toHaveBeenCalledWith({ active: 'SUB' });
+    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
     expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'sub' });
 
