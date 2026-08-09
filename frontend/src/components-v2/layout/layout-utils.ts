@@ -41,7 +41,6 @@ export function extractMeterState(radioState: any) {
     swr: radioState?.swrMeter ?? radioState?.tx?.swr ?? 0,
     alc: radioState?.alcMeter ?? radioState?.tx?.alc ?? 0,
     txActive: radioState?.txActive ?? radioState?.ptt ?? false,
-    meterSource: radioState?.meterSource ?? 'S',
   };
 }
 

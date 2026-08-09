@@ -11,7 +11,6 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
 vi.mock('../panels/lcd/AmberLcdDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../display/FrequencyDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../meters/LinearSMeter.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../controls/CollapsiblePanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../controls/BottomSheet.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../controls/BandSelector.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/FilterPanel.svelte', () => ({ default: function S() { return {}; } }));
@@ -27,7 +26,24 @@ vi.mock('../panels/RitXitPanel.svelte', () => ({ default: function S() { return 
 vi.mock('../panels/AntennaPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/ScanPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/CwPanel.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../panels/DockMeterPanel.svelte', () => ({ default: function S() { return {}; } }));
+const meterBoundary = vi.hoisted(() => ({
+  props: null as null | {
+    meterSource: string;
+    onMeterSourceChange: (source: string) => void;
+  },
+}));
+vi.mock('../../panels/DockMeterPanel.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../panels/DockMeterPanel.svelte')>();
+  return {
+    default: function DockMeterPanelBoundary(
+      anchor: Parameters<typeof actual.default>[0],
+      props: Parameters<typeof actual.default>[1],
+    ) {
+      meterBoundary.props = props;
+      return actual.default(anchor, props);
+    },
+  };
+});
 vi.mock('./KeyboardHandler.svelte', () => ({ default: function S() { return {}; } }));
 // Note: ../panels/EssentialsPanel.svelte and ./mobile-chip-bar.svelte are intentionally
 // NOT mocked — the chip-scroll IA contract (#839) is part of what these tests cover.
@@ -49,6 +65,7 @@ vi.mock('./vfo-layout-tokens', () => ({
 }));
 
 // -- Store mocks --
+const radioSubscriberTracker = vi.hoisted(() => ({ active: 0 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null as { active?: 'MAIN' | 'SUB' } | null },
   getActiveReceiver: vi.fn(),
@@ -56,6 +73,11 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
+  subscribeRadioState: vi.fn((handler: (state: null) => void) => {
+    radioSubscriberTracker.active += 1;
+    handler(null);
+    return () => { radioSubscriberTracker.active -= 1; };
+  }),
 }));
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
@@ -91,16 +113,24 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 
 // -- Wiring mocks --
+const wsFrameSpy = vi.hoisted(() => vi.fn());
+vi.mock('$lib/transport/ws-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/transport/ws-client')>(),
+  sendCommand: wsFrameSpy,
+}));
+
 const {
   onMainVfoClickSpy,
   onSubVfoClickSpy,
+  radioIntentSpy,
 } = vi.hoisted(() => ({
   onMainVfoClickSpy: vi.fn(),
   onSubVfoClickSpy: vi.fn(),
+  radioIntentSpy: vi.fn(),
 }));
 vi.mock('../../wiring/command-bus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../wiring/command-bus')>();
-  const n = vi.fn();
+  const n = radioIntentSpy;
   return {
     ...actual,
     makeVfoHandlers: () => ({
@@ -172,7 +202,10 @@ vi.mock('../wiring/state-adapter', () => {
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import { hasTx, hasDualReceiver } from '$lib/stores/capabilities.svelte';
-import { radio } from '$lib/stores/radio.svelte';
+import {
+  patchActiveReceiver, patchRadioState, patchReceiver, radio, subscribeRadioState,
+} from '$lib/stores/radio.svelte';
+import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { getTxPermit } from '$lib/utils/tx-permit';
 
 // ---------------------------------------------------------------------------
@@ -309,6 +342,11 @@ beforeEach(() => {
   vi.mocked(hasDualReceiver).mockReturnValue(false);
   vi.mocked(getTxPermit).mockReturnValue('allowed');
   (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = null;
+  radioSubscriberTracker.active = 0;
+  meterBoundary.props = null;
+  wsFrameSpy.mockClear();
+  radioIntentSpy.mockClear();
+  resetCommandLifecycle();
   onMainVfoClickSpy.mockClear();
   onSubVfoClickSpy.mockClear();
 });
@@ -357,6 +395,79 @@ describe('MobileRadioLayout structure', () => {
 
   it('renders settings button', () => {
     expect(mountMobile().querySelector('.m-settings-btn')).not.toBeNull();
+  });
+});
+
+describe('MOR-1409 local mobile meter selection', () => {
+  it('changes only component-local presentation state', () => {
+    tx.authority(true);
+    const unsubscribe = subscribeRadioState(() => {});
+    const t = mountMobile();
+    const txChip = Array.from(t.querySelectorAll<HTMLButtonElement>('.m-chip'))
+      .find((button) => button.textContent?.trim() === 'TX');
+    expect(txChip).toBeDefined();
+    txChip!.click();
+    flushSync();
+
+    const buttons = Array.from(t.querySelectorAll<HTMLButtonElement>('.meter-source-btn'));
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(['S', 'SWR', 'Po']);
+    expect(buttons[2].classList.contains('active')).toBe(true);
+
+    const before = {
+      radio: structuredClone(radio.current),
+      activePatches: vi.mocked(patchActiveReceiver).mock.calls.length,
+      radioPatches: vi.mocked(patchRadioState).mock.calls.length,
+      receiverPatches: vi.mocked(patchReceiver).mock.calls.length,
+      subscribers: radioSubscriberTracker.active,
+      wsFrames: wsFrameSpy.mock.calls.length,
+      intents: radioIntentSpy.mock.calls.length,
+      commands: tx.sends.length,
+      lifecycle: JSON.parse(JSON.stringify(getCommandLifecycles())),
+      txLifecycle: tx.controller.snapshot(),
+    };
+
+    for (const [index, source] of ['S', 'SWR', 'POWER'].entries()) {
+      buttons[index].click();
+      flushSync();
+      expect(t.querySelector('.status-tag.source')?.getAttribute('data-source')).toBe(source);
+      expect(buttons[index].classList.contains('active')).toBe(true);
+    }
+
+    buttons[0].click();
+    flushSync();
+    expect(meterBoundary.props?.meterSource).toBe('S');
+
+    for (const forged of ['po', 'UNKNOWN'] as const) {
+      // Deliberately bypass the child control's canonical buttons at the test
+      // boundary: `po` is the legacy type residue and UNKNOWN is out of type.
+      meterBoundary.props?.onMeterSourceChange(forged as never);
+      flushSync();
+      expect(meterBoundary.props?.meterSource).toBe('S');
+      expect(t.querySelector('.status-tag.source')?.getAttribute('data-source')).toBe('S');
+      expect(buttons[0].classList.contains('active')).toBe(true);
+    }
+
+    expect(radio.current).toEqual(before.radio);
+    expect(vi.mocked(patchActiveReceiver).mock.calls.length).toBe(before.activePatches);
+    expect(vi.mocked(patchRadioState).mock.calls.length).toBe(before.radioPatches);
+    expect(vi.mocked(patchReceiver).mock.calls.length).toBe(before.receiverPatches);
+    expect(radioSubscriberTracker.active).toBe(before.subscribers);
+    expect(wsFrameSpy.mock.calls).toHaveLength(before.wsFrames);
+    expect(radioIntentSpy.mock.calls).toHaveLength(before.intents);
+    expect(tx.sends).toHaveLength(before.commands);
+    expect(JSON.parse(JSON.stringify(getCommandLifecycles()))).toEqual(before.lifecycle);
+    expect(tx.controller.snapshot()).toEqual(before.txLifecycle);
+    unsubscribe();
+  });
+
+  it('has no meter factory, Store writer, transport, intent, or lifecycle route', () => {
+    expect(mobileLayoutSource).not.toContain('makeMeterHandlers');
+    expect(mobileLayoutSource).not.toContain('patchRadioState');
+    expect(mobileLayoutSource).not.toContain('sendCommand');
+    expect(mobileLayoutSource).not.toContain('dispatchRadioIntent');
+    expect(mobileLayoutSource).not.toContain('commandLifecycle');
+    expect(mobileLayoutSource).toContain('meterSource={mobileMeterSource}');
+    expect(mobileLayoutSource).toContain('onMeterSourceChange={selectMobileMeterSource}');
   });
 });
 

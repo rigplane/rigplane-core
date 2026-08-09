@@ -202,7 +202,7 @@ describe('extractMeterState', () => {
     expect(result.swr).toBe(0);
     expect(result.alc).toBe(0);
     expect(result.txActive).toBe(false);
-    expect(result.meterSource).toBe('S');
+    expect(result).not.toHaveProperty('meterSource');
   });
 
   it('extracts sValue from radioState.main', () => {
@@ -224,10 +224,10 @@ describe('extractMeterState', () => {
     expect(result.alc).toBe(64);
   });
 
-  it('extracts txActive and meterSource', () => {
+  it('extracts txActive without projecting local presentation state', () => {
     const result = extractMeterState({ txActive: true, meterSource: 'SWR' });
     expect(result.txActive).toBe(true);
-    expect(result.meterSource).toBe('SWR');
+    expect(result).not.toHaveProperty('meterSource');
   });
 
   it('extracts txActive from ptt field', () => {

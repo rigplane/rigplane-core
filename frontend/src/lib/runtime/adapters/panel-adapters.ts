@@ -11,7 +11,7 @@ import { runtime } from '../frontend-runtime';
 import {
   toAgcProps, toModeProps, toAntennaProps,
   toRfFrontEndProps, toRitXitProps, toScanProps,
-  toMeterProps, toCwProps, toDspProps, toTxProps,
+  toCwProps, toDspProps, toTxProps,
   toFilterProps, toBandSelectorProps,
   toAudioSpectrumProps, toMemoryPanelProps,
   toAmberTelemetryProps, toVfoControlProps,
@@ -19,7 +19,7 @@ import {
 import {
   makeAgcHandlers, makeModeHandlers, makeAntennaHandlers,
   makeRfFrontEndHandlers, makeRitXitHandlers, makeScanHandlers,
-  makeMeterHandlers, makeCwPanelHandlers, makeDspHandlers,
+  makeCwPanelHandlers, makeDspHandlers,
   makeTxHandlers, makeFilterHandlers, makeBandHandlers,
   makePresetHandlers,
 } from '../commands/panel-commands';
@@ -34,7 +34,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 export type {
   AgcProps, ModeProps, AntennaProps,
   RfFrontEndProps, RitXitProps, ScanProps,
-  MeterProps, CwProps, DspProps, TxProps,
+  CwProps, DspProps, TxProps,
   FilterProps, BandSelectorProps,
   AudioSpectrumProps, MemoryPanelProps,
   AmberTelemetryProps, VfoControlProps,
@@ -81,13 +81,6 @@ export function deriveScanProps() {
 }
 const _scanHandlers = makeScanHandlers();
 export function getScanHandlers() { return _scanHandlers; }
-
-// ── Meter ──
-export function deriveMeterProps() {
-  return toMeterProps(runtime.state, runtime.caps);
-}
-const _meterHandlers = makeMeterHandlers();
-export function getMeterHandlers() { return _meterHandlers; }
 
 // ── CW ──
 export function deriveCwProps() {
