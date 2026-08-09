@@ -9,6 +9,7 @@
  * differences.
  *
  *   node fixtures/capture.mjs [--out <dir>] [--only <substring>]
+ *   node fixtures/capture.mjs --preflight-only
  *
  * The server is always closed, including on failure.
  */
@@ -34,6 +35,7 @@ const ONLY = arg('--only', null);
 // parallel run pick its own port without touching the single-port default any
 // script or doc already assumes.
 const PORT = Number(arg('--port', '5199'));
+const PREFLIGHT_ONLY = argv.includes('--preflight-only');
 
 // The page console cannot observe Vite's dependency scanner or transform
 // errors. Build this exact additive config first so any server-side failure is
@@ -43,6 +45,11 @@ await build({
   configFile: path.join(FRONTEND, 'vite.fixtures.config.ts'),
   logLevel: 'error',
 });
+
+if (PREFLIGHT_ONLY) {
+  console.log('PASS fixture build preflight');
+  process.exit(0);
+}
 
 /* ── viewports ─────────────────────────────────────────────────────────── */
 const VIEWPORTS = {
