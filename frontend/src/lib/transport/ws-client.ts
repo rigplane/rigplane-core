@@ -335,6 +335,12 @@ export class WsChannel {
   }
 
   private _sendNonPtt(ws: WebSocket, pending: PendingNonPttCommand, eventEpoch: number): boolean {
+    if (this.trackedNonPttCommands.size >= MAX_TRACKED_NON_PTT_COMMANDS) {
+      this._rejectNonPtt(
+        pending.command.id, pending.originalEpoch, 'delivery tracking capacity exceeded', eventEpoch,
+      );
+      return false;
+    }
     try {
       ws.send(JSON.stringify(pending.command));
     } catch (error) {
@@ -345,12 +351,6 @@ export class WsChannel {
       return false;
     }
     const tracked: TrackedNonPttCommand = { ...pending, eventEpoch, seen: new Set() };
-    if (this.trackedNonPttCommands.size >= MAX_TRACKED_NON_PTT_COMMANDS) {
-      const oldestId = this.trackedNonPttCommands.keys().next().value!;
-      const oldest = this.trackedNonPttCommands.get(oldestId)!;
-      this.trackedNonPttCommands.delete(oldestId);
-      this._rejectNonPtt(oldest.command.id, oldest.originalEpoch, 'delivery tracking capacity exceeded', eventEpoch);
-    }
     this.trackedNonPttCommands.set(pending.command.id, tracked);
     this._emitTracked(tracked, 'transport-sent', tracked.eventEpoch);
     return true;

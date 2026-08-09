@@ -129,9 +129,19 @@ describe('typed non-PTT radio intents', () => {
 
   it('rejects forged malformed known intents before lifecycle or transport', () => {
     const malformed = [
+      null,
+      [],
       { name: 'set_freq', params: {} },
+      { name: 'set_freq', params: null },
+      { name: 'set_freq', params: [] },
+      { name: 'set_freq', params: { freq: '14074000' } },
       { name: 'set_freq', params: { freq: Number.NaN } },
+      { name: 'set_freq', params: { freq: Number.MAX_SAFE_INTEGER + 1 } },
+      { name: 'set_freq', params: { freq: 1.5 } },
+      { name: 'set_freq', params: { freq: 1 }, unexpected: true },
+      { name: 'set_compressor', params: { on: 1 } },
       { name: 'set_af_level', params: { level: 10, receiver: 7 } },
+      { name: 'set_af_level', params: { level: 10, receiver: '0' } },
       { name: 'set_vfo', params: { vfo: 'VFOA' } },
       { name: 'set_mode', params: { mode: 'USB', receiver: 0, unexpected: true } },
       { name: 'vfo_swap', params: { unexpected: true } },
@@ -144,6 +154,35 @@ describe('typed non-PTT radio intents', () => {
     }
     expect(harness.sendCommand).not.toHaveBeenCalled();
     expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('accepts representative exact envelopes derived from every descriptor family', () => {
+    const representatives: RadioIntent[] = [
+      { name: 'vfo_swap', params: {} },
+      { name: 'memory_clear', params: { channel: 1 } },
+      { name: 'set_compressor', params: { on: true } },
+      { name: 'set_nb', params: { on: false, receiver: 0 } },
+      { name: 'set_mic_gain', params: { level: 10 } },
+      { name: 'set_af_level', params: { level: 10, receiver: 1 } },
+      { name: 'set_cw_pitch', params: { value: 10 } },
+      { name: 'set_pbt_inner', params: { value: 10, receiver: 0 } },
+      { name: 'set_data_mode', params: { mode: 1, receiver: 1 } },
+      { name: 'set_data3_mod_input', params: { source: 2 } },
+      { name: 'set_scope_mode', params: { mode: 1 } },
+      { name: 'set_scope_span', params: { span: 25_000 } },
+      { name: 'set_scope_speed', params: { speed: 2 } },
+      { name: 'scan_start', params: { type: 1 } },
+      { name: 'set_mode', params: { mode: 'USB', filter: 2, receiver: 0 } },
+      { name: 'set_filter', params: { filter: 2 } },
+      { name: 'set_vfo', params: { vfo: 'A' } },
+      { name: 'set_vfo', params: { vfo: 'B' } },
+      { name: 'set_vfo', params: { vfo: 'MAIN' } },
+      { name: 'set_vfo', params: { vfo: 'SUB' } },
+    ];
+
+    representatives.forEach((intent) => intents.dispatchRadioIntent(intent));
+    expect(harness.sendCommand).toHaveBeenCalledTimes(representatives.length);
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(representatives.length);
   });
 
   it('rejects the 101st pending facade intent before transport', () => {

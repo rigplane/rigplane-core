@@ -299,6 +299,34 @@ describe('WsChannel', () => {
     ]);
   });
 
+  it('rejects the 101st direct generic send before the wire without evicting correlation', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    for (let i = 0; i < 100; i += 1) {
+      expect(ch.send({
+        type: 'cmd', name: 'set_freq', id: `pending-${i}`, params: { freq: i },
+      })).toBe(true);
+    }
+    expect(ch.send({
+      type: 'cmd', name: 'set_freq', id: 'overflow', params: { freq: 101 },
+    })).toBe(false);
+    expect(instances[0].sent).toHaveLength(100);
+    expect(events.at(-1)).toMatchObject({
+      commandId: 'overflow', kind: 'error', error: 'delivery tracking capacity exceeded',
+    });
+
+    for (let i = 0; i < 100; i += 1) {
+      instances[0].simulateMessage(JSON.stringify({ type: 'response', id: `pending-${i}`, ok: true }));
+    }
+    expect(events.filter((event) => event.kind === 'response-ok')).toHaveLength(100);
+    expect(events).not.toContainEqual(expect.objectContaining({ commandId: 'pending-0', kind: 'error' }));
+  });
+
   it('cancels generic correlation at disconnect and ignores stale socket results', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
