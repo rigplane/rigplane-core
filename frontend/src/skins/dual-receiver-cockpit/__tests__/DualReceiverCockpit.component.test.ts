@@ -76,8 +76,8 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => h.modInputGuard,
   getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
 }));
-vi.mock('../../../components-v2/wiring/command-bus', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../components-v2/wiring/command-bus')>();
+vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/commands/panel-commands')>();
   return {
     ...actual,
     makeVfoHandlers: () => ({
