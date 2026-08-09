@@ -54,6 +54,8 @@ vi.mock('../../stores/radio.svelte', () => ({
   resetRadioState: vi.fn(() => {
     radioStoreMock.current = null;
   }),
+  isValidServerState: vi.fn(() => true),
+  matchesCurrentCapabilityTopology: vi.fn(() => true),
   setRadioState: vi.fn((state: ServerStateWithObservation) => {
     const current = radioStoreMock.current;
     const lastRevision = current ? current.stateRevision ?? current.revision : -1;
@@ -66,7 +68,6 @@ vi.mock('../../stores/radio.svelte', () => ({
     const nextObservationSeq = state.observationSeq ?? 0;
     const lastPublicStateSeq = current?.publicStateSeq ?? -1;
     const nextPublicStateSeq = state.publicStateSeq ?? 0;
-    const isReset = lastRevision > 10 && nextRevision < lastRevision / 2;
     const semanticAdvanced = nextRevision > lastRevision;
     const semanticCurrent = nextRevision === lastRevision;
     const metadataAdvanced = semanticCurrent && (
@@ -75,10 +76,20 @@ vi.mock('../../stores/radio.svelte', () => ({
       || nextObservationSeq > lastObservationSeq
       || nextPublicStateSeq > lastPublicStateSeq
     );
-    if (current === null || semanticAdvanced || metadataAdvanced || isReset) {
+    if (current === null || semanticAdvanced || metadataAdvanced) {
       radioStoreMock.current = state;
     }
   }),
+}));
+
+vi.mock('../../stores/capabilities.svelte', () => ({
+  capabilitiesMatchGeneration: vi.fn(() => true),
+  clearCapabilities: vi.fn(),
+  setCapabilities: vi.fn(() => true),
+}));
+
+vi.mock('../http-client', () => ({
+  fetchCapabilities: vi.fn(() => new Promise(() => {})),
 }));
 
 import { isLiveRadioAvailable, setRadioStatus, setWsConnected } from '../../stores/connection.svelte';
@@ -144,6 +155,8 @@ function makeState(
       controlConnected: true,
       ...connection,
     },
+    stateContractVersion: 1,
+    providerGeneration: 0,
     ...topLevel,
     txTarget: txTarget ?? { status: 'unknown', reason: 'not-observed' },
   };
@@ -160,6 +173,8 @@ function fullEnvelope(state: ServerStateWithObservation): Record<string, unknown
     observationSeq: state.observationSeq,
     publicStateSeq: state.publicStateSeq,
     transportSeq: state.transportSeq,
+    stateContractVersion: state.stateContractVersion,
+    providerGeneration: state.providerGeneration,
   };
 }
 
@@ -179,6 +194,8 @@ function deltaEnvelope(
     observationSeq: state.observationSeq,
     publicStateSeq: state.publicStateSeq,
     transportSeq: state.transportSeq,
+    stateContractVersion: state.stateContractVersion,
+    providerGeneration: state.providerGeneration,
   };
 }
 
@@ -997,7 +1014,7 @@ describe('control channel singleton', () => {
     expect(setRadioStatus).not.toHaveBeenCalled();
   });
 
-  it('replaces accumulated state when a full snapshot follows a revision reset', async () => {
+  it('rejects a same-session full snapshot that rolls revision truth backward', async () => {
     const { connect } = await import('../ws-client');
     connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
@@ -1007,10 +1024,10 @@ describe('control channel singleton', () => {
 
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, ptt: false, split: false })));
 
-    expect(setRadioState).toHaveBeenCalledTimes(1);
-    expect(radioStoreMock.current?.revision).toBe(1);
-    expect(radioStoreMock.current?.ptt).toBe(false);
-    expect(radioStoreMock.current?.split).toBe(false);
+    expect(setRadioState).not.toHaveBeenCalled();
+    expect(radioStoreMock.current?.revision).toBe(20);
+    expect(radioStoreMock.current?.ptt).toBe(true);
+    expect(radioStoreMock.current?.split).toBe(true);
   });
 
 });

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ReceiverState, ServerState } from '../../types/state';
+import type { Capabilities } from '../../types/capabilities';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
+
+const fetchCapabilities = vi.hoisted(() => vi.fn());
+vi.mock('../http-client', () => ({ fetchCapabilities }));
 
 // ─── End-to-end fidelity test: REAL ws-client → REAL radio.svelte store ──────
 //
@@ -29,6 +33,20 @@ type ServerStateWithObservation = ServerState & {
   publicStateSeq?: number;
   fieldStatus?: Record<string, unknown>;
 };
+
+function makeCapabilities(
+  providerGeneration = 0,
+  overrides: Partial<Capabilities> = {},
+): Capabilities {
+  return {
+    model: 'TEST', scope: false, audio: false, tx: false, capabilities: [],
+    receivers: 1, vfoScheme: 'single', freqRanges: [], modes: [], filters: [],
+    audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+    webrtc: { available: false, enabled: false }, txBands: null,
+    stateContractVersion: 1, providerGeneration,
+    ...overrides,
+  };
+}
 
 // ─── Envelope/state fixtures (shapes copied from ws-client.isolated.test.ts) ──────────
 
@@ -80,9 +98,18 @@ function makeState(
       controlConnected: true,
       ...connection,
     },
+    stateContractVersion: 1,
+    providerGeneration: 0,
     ...topLevel,
     txTarget: txTarget ?? { status: 'unknown', reason: 'not-observed' },
   };
+}
+
+function singleReceiverWireState(
+  overrides: Partial<ServerStateWithObservation> = {},
+): ServerStateWithObservation {
+  const { sub: _sub, ...wireState } = makeState(overrides);
+  return wireState as ServerStateWithObservation;
 }
 
 function fullEnvelope(state: ServerStateWithObservation): Record<string, unknown> {
@@ -96,6 +123,8 @@ function fullEnvelope(state: ServerStateWithObservation): Record<string, unknown
     observationSeq: state.observationSeq,
     publicStateSeq: state.publicStateSeq,
     transportSeq: state.transportSeq,
+    stateContractVersion: state.stateContractVersion,
+    providerGeneration: state.providerGeneration,
   };
 }
 
@@ -115,6 +144,8 @@ function deltaEnvelope(
     observationSeq: state.observationSeq,
     publicStateSeq: state.publicStateSeq,
     transportSeq: state.transportSeq,
+    stateContractVersion: state.stateContractVersion,
+    providerGeneration: state.providerGeneration,
   };
 }
 
@@ -127,7 +158,8 @@ function sendStateUpdate(socket: MockWebSocket, data: Record<string, unknown>): 
 async function loadModules() {
   const wsClient = await import('../ws-client');
   const store = await import('../../stores/radio.svelte');
-  return { wsClient, store };
+  const capabilities = await import('../../stores/capabilities.svelte');
+  return { wsClient, store, capabilities };
 }
 
 describe('ws-client → real radio store gate (integration)', () => {
@@ -145,6 +177,7 @@ describe('ws-client → real radio store gate (integration)', () => {
     // ``loadModules()`` here would pick up that stale singleton and the
     // revision-gate assertions drift (e.g. ``expected 6 to be 5``).
     vi.resetModules();
+    fetchCapabilities.mockResolvedValue(makeCapabilities());
   });
 
   afterEach(() => {
@@ -153,7 +186,8 @@ describe('ws-client → real radio store gate (integration)', () => {
   });
 
   it('applies a full envelope through the real store', async () => {
-    const { wsClient, store } = await loadModules();
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
 
     wsClient.connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
@@ -170,8 +204,54 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(store.getLastRevision()).toBe(5);
   });
 
+  it('accepts canonical single-receiver full bodies with omitted or null sub', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    sendStateUpdate(instances[0], fullEnvelope(singleReceiverWireState({ revision: 1 })));
+    expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
+
+    const nullSub = { ...singleReceiverWireState({ revision: 2 }), sub: null } as unknown as ServerStateWithObservation;
+    sendStateUpdate(instances[0], fullEnvelope(nullSub));
+    expect(store.getRadioState()?.revision).toBe(2);
+    expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
+  });
+
+  it('rejects a single-receiver active SUB full before it mutates browser truth', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    const connection = await import('../../stores/connection.svelte');
+    const singleReceiverCaps = makeCapabilities(0, { receivers: 1, vfoScheme: 'ab' });
+    fetchCapabilities.mockResolvedValue(singleReceiverCaps);
+    capabilities.setCapabilities(singleReceiverCaps);
+    const markStateUpdated = vi.spyOn(connection, 'markStateUpdated');
+    const activeStatus = {
+      active: { storePath: 'global.slow_state.active', observed: true, freshness: 'fresh', availability: 'available' },
+    } as const;
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(singleReceiverWireState({ revision: 1, active: 'MAIN', fieldStatus: activeStatus })));
+    const accepted = store.getRadioState();
+    const acceptedCapabilities = capabilities.getCapabilities();
+    const acceptedReady = connection.getRadioReady();
+    markStateUpdated.mockClear();
+
+    sendStateUpdate(instances[0], fullEnvelope(singleReceiverWireState({ revision: 2, active: 'SUB', fieldStatus: activeStatus })));
+    expect(store.getRadioState()).toBe(accepted);
+    expect(capabilities.getCapabilities()).toBe(acceptedCapabilities);
+    expect(connection.getRadioReady()).toBe(acceptedReady);
+    expect(markStateUpdated).not.toHaveBeenCalled();
+
+    const dualReceiverCaps = makeCapabilities(0, { receivers: 2, vfoScheme: 'main_sub' });
+    capabilities.setCapabilities(dualReceiverCaps);
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 2, active: 'SUB', fieldStatus: activeStatus })));
+    expect(store.getRadioState()?.active).toBe('SUB');
+  });
+
   it('applies a delta with a higher stateRevision through the real store', async () => {
-    const { wsClient, store } = await loadModules();
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
 
     wsClient.connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
@@ -194,7 +274,8 @@ describe('ws-client → real radio store gate (integration)', () => {
   });
 
   it('accepts a same-revision delta when observationSeq + fieldStatus advance', async () => {
-    const { wsClient, store } = await loadModules();
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
 
     wsClient.connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
@@ -248,7 +329,8 @@ describe('ws-client → real radio store gate (integration)', () => {
   });
 
   it('keeps a retained relative tuple visible and applies a live leaf delta', async () => {
-    const { wsClient, store } = await loadModules();
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
     const status = (at: number) => ({
       storePath: 'receiver.0.active.freq_mode.freq_hz',
       observed: true,
@@ -310,7 +392,8 @@ describe('ws-client → real radio store gate (integration)', () => {
   });
 
   it('rejects a stale delta even when observationSeq advances', async () => {
-    const { wsClient, store } = await loadModules();
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
 
     wsClient.connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
@@ -337,5 +420,156 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(s?.observationSeq).toBe(6);
     expect(s?.ptt).toBe(true);
     expect(store.getLastRevision()).toBe(6);
+  });
+
+  it('rejects a same-generation 100-to-1 delta without changing radio or capability truth', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 100, ptt: false })));
+    const accepted = store.getRadioState();
+    const acceptedCapabilities = capabilities.getCapabilities();
+
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(makeState({ revision: 1, ptt: true }), { ptt: true }),
+    );
+
+    expect(store.getRadioState()).toBe(accepted);
+    expect(store.getRadioState()?.revision).toBe(100);
+    expect(store.getRadioState()?.ptt).toBe(false);
+    expect(capabilities.getCapabilities()).toBe(acceptedCapabilities);
+  });
+
+  it('rejects incomplete full data and malformed changed records before they alter truth', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], {
+      type: 'full', stateContractVersion: 1, providerGeneration: 0,
+      revision: 1, data: { stateContractVersion: 1, providerGeneration: 0 },
+    });
+    expect(store.getRadioState()).toBeNull();
+
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, ptt: false })));
+    const accepted = store.getRadioState();
+    const acceptedCapabilities = capabilities.getCapabilities();
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(makeState({ revision: 2, ptt: true }), { main: 'corrupt' }),
+    );
+
+    expect(store.getRadioState()).toBe(accepted);
+    expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
+    expect(store.getRadioState()?.ptt).toBe(false);
+    expect(capabilities.getCapabilities()).toBe(acceptedCapabilities);
+  });
+
+  it('rejects unversioned frames and a delta before a valid full without changing truth', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    sendStateUpdate(instances[0], makeState({ revision: 9 }) as unknown as Record<string, unknown>);
+    sendStateUpdate(instances[0], deltaEnvelope(makeState({ revision: 9 }), { ptt: true }));
+
+    expect(store.getRadioState()).toBeNull();
+    expect(store.getLastRevision()).toBe(-1);
+  });
+
+  it('rejects wrong contract and unsafe generation before changing browser truth', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    const wrongContract = fullEnvelope(makeState({ revision: 4 }));
+    wrongContract.stateContractVersion = 2;
+    const unsafeGeneration = fullEnvelope(makeState({ revision: 5 }));
+    unsafeGeneration.providerGeneration = Number.MAX_SAFE_INTEGER + 1;
+
+    sendStateUpdate(instances[0], wrongContract);
+    sendStateUpdate(instances[0], unsafeGeneration);
+
+    expect(store.getRadioState()).toBeNull();
+    expect(capabilities.getCapabilities()?.providerGeneration).toBe(0);
+  });
+
+  it('does not let a malformed delta erase or replace its established epoch', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 4 })));
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(makeState({ revision: 5 }), { ptt: true, providerGeneration: 1 }),
+    );
+
+    expect(store.getRadioState()?.providerGeneration).toBe(0);
+    expect(store.getRadioState()?.ptt).toBe(false);
+  });
+
+  it('clears generation N on a higher delta and accepts only a matching later full', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities(0));
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 7, providerGeneration: 0 })));
+    expect(store.getRadioState()?.revision).toBe(7);
+
+    sendStateUpdate(instances[0], deltaEnvelope(makeState({ revision: 8, providerGeneration: 1 }), { ptt: true }));
+    expect(store.getRadioState()).toBeNull();
+    expect(capabilities.getCapabilities()).toBeNull();
+
+    capabilities.setCapabilities(makeCapabilities(1));
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, providerGeneration: 1, ptt: true })));
+    expect(store.getRadioState()?.providerGeneration).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
+  });
+
+  it('does not install a delayed capability response for an older provider generation', async () => {
+    let resolveOld: ((value: ReturnType<typeof makeCapabilities>) => void) | undefined;
+    let resolveNew: ((value: ReturnType<typeof makeCapabilities>) => void) | undefined;
+    fetchCapabilities
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve; }));
+    const { wsClient, store, capabilities } = await loadModules();
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 2, providerGeneration: 2 })));
+
+    resolveOld!(makeCapabilities(1));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(capabilities.getCapabilities()).toBeNull();
+
+    resolveNew!(makeCapabilities(2));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(capabilities.getCapabilities()?.providerGeneration).toBe(2);
+    expect(store.getRadioState()?.providerGeneration).toBe(2);
+  });
+
+  it('rejects an old epoch in-session but accepts a lower epoch after disconnect', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities(2));
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 4, providerGeneration: 2 })));
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 99, providerGeneration: 1, ptt: true })));
+    expect(store.getRadioState()?.providerGeneration).toBe(2);
+    expect(store.getRadioState()?.ptt).toBe(false);
+
+    wsClient.disconnect();
+    capabilities.setCapabilities(makeCapabilities(1));
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[1].simulateOpen();
+    sendStateUpdate(instances[1], fullEnvelope(makeState({ revision: 1, providerGeneration: 1, ptt: true })));
+    expect(store.getRadioState()?.providerGeneration).toBe(1);
+    expect(store.getRadioState()?.ptt).toBe(true);
   });
 });

@@ -48,6 +48,8 @@ const subReceiver: ReceiverState = {
 };
 
 export const mockState: ServerState = {
+  stateContractVersion: 1,
+  providerGeneration: 0,
   revision: 1,
   stateRevision: 1,
   freshnessRevision: 1,
@@ -133,6 +135,8 @@ export const mockPowerOffState: ServerState = {
 };
 
 export const mockCapabilities: Capabilities = {
+  stateContractVersion: 1,
+  providerGeneration: 0,
   model: 'IC-7610',
   scope: true,
   audio: true,

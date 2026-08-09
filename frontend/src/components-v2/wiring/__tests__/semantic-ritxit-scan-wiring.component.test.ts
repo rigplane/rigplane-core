@@ -83,6 +83,7 @@ import { sendCommand } from '$lib/transport/ws-client';
 // agree with `h.state` (below) keeps the toggle direction deterministic and
 // independent of whatever a prior test in this file left behind.
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 
 const IDLE: Snapshot = {
@@ -106,12 +107,18 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
   }
   const receiver = (hz: number) => ({
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1,
+    sMeter: 0, att: 0, preamp: 0, nb: false, nr: false,
+    afLevel: 0, rfGain: 0, squelch: 0,
   });
   return {
+    revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+    updatedAt: '2026-08-08T00:00:00Z', tunerStatus: 0,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
+    stateContractVersion: 1, providerGeneration: 0,
     ritOn: true, ritTx: false, ritFreq: 250, scanning: false, scanType: 0x01, scanResumeMode: 1,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
     ...over,
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   } as unknown as ServerState;
@@ -124,6 +131,7 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  stateContractVersion: 1, providerGeneration: 0,
 } as unknown as Capabilities);
 
 /** `rit`/`xit` capability tags are what makes the ritXit group present;
@@ -153,6 +161,7 @@ function useState(state: ServerState): void {
 
 beforeEach(() => {
   resetRadioState();
+  setCapabilities(liveCaps(RIT_XIT_TAGS));
   useState(liveState());
   h.caps = liveCaps(RIT_XIT_TAGS);
   h.snapshot = { ...IDLE };
@@ -288,7 +297,7 @@ describe('the surface mounts only in the single composition, never in dual', () 
   it('leaves the cockpit composition with no focusable control outside a declared zone', () => {
     render({ strips: 'dual' });
     const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
-      .filter((node) => node.closest('[data-zone-id]') === null);
+      .filter((node) => !node.matches(':disabled') && node.closest('[data-zone-id]') === null);
     expect(outside).toEqual([]);
   });
 });

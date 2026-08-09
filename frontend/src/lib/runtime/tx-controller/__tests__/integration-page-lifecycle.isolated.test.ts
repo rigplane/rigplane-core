@@ -97,6 +97,9 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: () => h.caps,
   hasAnyScope: () => false,
+  capabilitiesMatchGeneration: () => true,
+  clearCapabilities: () => {},
+  setCapabilities: () => true,
 }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({

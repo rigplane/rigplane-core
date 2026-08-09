@@ -16,6 +16,8 @@ function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
     webrtc: { available: true, enabled: false },
     txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
     ...overrides,
   };
 }
@@ -53,6 +55,18 @@ describe('capabilities store', () => {
       store.setCapabilities(makeCaps({ model: 'IC-9700' }));
       expect(store.getCapabilities()?.model).toBe('IC-9700');
     });
+  });
+
+  it('fails closed for missing or invalid contract epochs and clears on request', () => {
+    expect(store.setCapabilities(makeCaps() as Capabilities)).toBe(true);
+    expect(store.capabilitiesMatchGeneration(0)).toBe(true);
+    expect(store.setCapabilities({ ...makeCaps(), stateContractVersion: 2 } as Capabilities)).toBe(false);
+    expect(store.getCapabilities()).toBeNull();
+    expect(store.setCapabilities({ ...makeCaps(), providerGeneration: -1 } as Capabilities)).toBe(false);
+    expect(store.getCapabilities()).toBeNull();
+    store.setCapabilities(makeCaps());
+    store.clearCapabilities();
+    expect(store.getCapabilities()).toBeNull();
   });
 
   describe('hasSpectrum', () => {

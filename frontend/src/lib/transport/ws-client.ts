@@ -1,7 +1,9 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
 import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
-import { getRadioState, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
+import { getRadioState, isValidServerState, matchesCurrentCapabilityTopology, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
+import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
+import { fetchCapabilities } from './http-client';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export interface ControlSessionTransition {
@@ -393,14 +395,80 @@ _ctrl.onStateChange((s) => {
   setWsConnected(s === 'connected');
   setReconnecting(s === 'connecting' || s === 'reconnecting');
   if (s === 'disconnected') {
-    _fullState = {};
+    _fullState = null;
     _hasReceivedFullState = false;
+    _acceptedProviderGeneration = null;
+    _expectedProviderGeneration = null;
+    _capabilityRefreshGeneration = null;
     resetRadioState();
+    clearCapabilities();
   }
 });
 // Delta state tracking for incremental updates
-let _fullState: Record<string, unknown> = {};
+let _fullState: Record<string, unknown> | null = null;
 let _hasReceivedFullState = false;
+let _acceptedProviderGeneration: number | null = null;
+let _expectedProviderGeneration: number | null = null;
+let _capabilityRefreshGeneration: number | null = null;
+
+function isProviderGeneration(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function epochOf(envelope: Record<string, unknown>): number | null {
+  if (envelope.stateContractVersion !== 1 || !isProviderGeneration(envelope.providerGeneration)) {
+    return null;
+  }
+  return envelope.providerGeneration;
+}
+
+function highestSeenGeneration(): number | null {
+  if (_expectedProviderGeneration !== null) return _expectedProviderGeneration;
+  return _acceptedProviderGeneration;
+}
+
+function resetForProviderGeneration(generation: number): void {
+  _fullState = null;
+  _hasReceivedFullState = false;
+  _acceptedProviderGeneration = null;
+  _expectedProviderGeneration = generation;
+  resetRadioState();
+  clearCapabilities();
+}
+
+function commitCurrentState(): boolean {
+  if (
+    !_hasReceivedFullState
+    || _fullState === null
+    || _acceptedProviderGeneration === null
+    || !capabilitiesMatchGeneration(_acceptedProviderGeneration)
+  ) return false;
+  return setRadioState(_fullState as any);
+}
+
+function refreshCapabilities(generation: number): void {
+  if (_capabilityRefreshGeneration === generation) return;
+  _capabilityRefreshGeneration = generation;
+  void fetchCapabilities().then((caps) => {
+    if (
+      _acceptedProviderGeneration !== generation
+      || !_hasReceivedFullState
+      || _fullState === null
+    ) return;
+    const record = caps as unknown as Record<string, unknown>;
+    if (record.stateContractVersion !== 1 || record.providerGeneration !== generation) return;
+    if (setCapabilities(caps)) commitCurrentState();
+  }).catch(() => {
+    // Capability retrieval is metadata only. Remain fail-closed until a later
+    // provider generation or reconnect supplies a new authoritative full.
+  });
+}
 
 function syncEnvelopeRevisions(
   state: Record<string, unknown>,
@@ -480,7 +548,6 @@ function isRevisionAcceptable(
 
   const lastRevision = stateRevisionOf(currentState);
   const nextRevision = stateRevisionOf(nextState);
-  const isReset = lastRevision > 10 && nextRevision < lastRevision / 2;
   const semanticAdvanced = nextRevision > lastRevision;
   const semanticCurrent = nextRevision === lastRevision;
   const metadataAdvanced = semanticCurrent && (
@@ -493,43 +560,75 @@ function isRevisionAcceptable(
     )
   );
 
-  return semanticAdvanced || metadataAdvanced || isReset;
+  return semanticAdvanced || metadataAdvanced;
 }
 
 function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, unknown> | null {
-  const deltaType = envelope.type as string;
+  const deltaType = envelope.type;
+  const generation = epochOf(envelope);
+  if (generation === null || (deltaType !== 'full' && deltaType !== 'delta')) return null;
+  const highestSeen = highestSeenGeneration();
+  if (highestSeen !== null && generation < highestSeen) return null;
 
   if (deltaType === 'full') {
-    // Full state refresh — replace everything
-    _fullState = syncEnvelopeRevisions(
-      { ...(envelope.data as Record<string, unknown>) },
-      envelope,
-    );
-    _hasReceivedFullState = true;
-    return _fullState;
-  }
-
-  if (deltaType === 'delta') {
-    // Reject delta if we haven't received a full state yet
-    if (!_hasReceivedFullState) return null;
-    // Incremental update — apply changed fields, remove deleted keys
-    const changed = (envelope.changed ?? {}) as Record<string, unknown>;
-    const removed = (envelope.removed ?? []) as string[];
-
-    const currentState = _fullState;
-    const nextState = { ...currentState, ...changed };
-    for (const key of removed) {
-      delete nextState[key];
+    if (!isRecord(envelope.data)) return null;
+    const data = envelope.data;
+    if (data.stateContractVersion !== 1 || data.providerGeneration !== generation) return null;
+    const nextState = syncEnvelopeRevisions({ ...data }, envelope);
+    if (!isValidServerState(nextState)) return null;
+    if (capabilitiesMatchGeneration(generation) && !matchesCurrentCapabilityTopology(nextState as any)) return null;
+    if (
+      _acceptedProviderGeneration === generation
+      && _fullState !== null
+      && (
+        stateRevisionOf(nextState) < stateRevisionOf(_fullState)
+        || deliverySeqOf(nextState) < deliverySeqOf(_fullState)
+        || !isRevisionAcceptable(_fullState, nextState, Object.keys(nextState))
+      )
+    ) return null;
+    if (_acceptedProviderGeneration !== generation || !_hasReceivedFullState) {
+      // Bootstrap may already have fetched matching capabilities. Keep that
+      // proven epoch; every provider transition (or an unbased higher delta)
+      // still clears all retired browser truth before accepting this full.
+      if (
+        _expectedProviderGeneration !== generation
+        && (_acceptedProviderGeneration !== null || !capabilitiesMatchGeneration(generation))
+      ) resetForProviderGeneration(generation);
     }
-    syncEnvelopeRevisions(nextState, envelope);
-    if (!isRevisionAcceptable(currentState, nextState, Object.keys(changed))) return null;
-
     _fullState = nextState;
-    return _fullState;
+    _hasReceivedFullState = true;
+    _acceptedProviderGeneration = generation;
+    _expectedProviderGeneration = null;
+    refreshCapabilities(generation);
+    return commitCurrentState() ? _fullState : null;
   }
 
-  // Legacy format (no delta envelope) — plain state object
-  return envelope;
+  if (!isRecord(envelope.changed)) return null;
+  if (envelope.removed !== undefined && (!Array.isArray(envelope.removed) || !envelope.removed.every((key) => typeof key === 'string'))) return null;
+  if (
+    (envelope.changed.stateContractVersion !== undefined && envelope.changed.stateContractVersion !== 1)
+    || (envelope.changed.providerGeneration !== undefined && envelope.changed.providerGeneration !== generation)
+    || (envelope.removed ?? []).includes('stateContractVersion')
+    || (envelope.removed ?? []).includes('providerGeneration')
+  ) return null;
+  const changed = envelope.changed;
+  const removed = (envelope.removed ?? []) as string[];
+  const currentState = _fullState;
+  const candidate = currentState ? { ...currentState, ...changed } : null;
+  if (candidate) {
+    for (const key of removed) delete candidate[key];
+    syncEnvelopeRevisions(candidate, envelope);
+    if (!isValidServerState(candidate)) return null;
+    if (capabilitiesMatchGeneration(generation) && !matchesCurrentCapabilityTopology(candidate as any)) return null;
+  }
+  if (_acceptedProviderGeneration !== generation || !_hasReceivedFullState || _fullState === null) {
+    if (highestSeen === null || generation > highestSeen) resetForProviderGeneration(generation);
+    return null;
+  }
+  const nextState = candidate!;
+  if (!isRevisionAcceptable(currentState, nextState, Object.keys(changed))) return null;
+  _fullState = nextState;
+  return commitCurrentState() ? _fullState : null;
 }
 
 _ctrl.onMessage((msg) => {

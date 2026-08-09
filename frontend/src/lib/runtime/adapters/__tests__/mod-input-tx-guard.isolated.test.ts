@@ -73,21 +73,34 @@ function receiver(dataMode: number) {
 }
 
 function makeState(overrides: Record<string, unknown> = {}): ServerState {
+  const stateRevision = typeof overrides.revision === 'number' ? overrides.revision : 1;
   return {
-    revision: 1,
+    revision: stateRevision,
+    stateRevision,
+    freshnessRevision: 1,
+    observationSeq: stateRevision,
+    updatedAt: '2026-08-08T00:00:00Z',
     active: 'MAIN',
     ptt: false,
     split: false,
     dualWatch: false,
     tunerStatus: 0,
+    stateContractVersion: 1,
+    providerGeneration: 0,
     main: receiver(0),
     sub: receiver(0),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    txTarget: { status: 'unknown', reason: 'not-observed' },
     ...overrides,
   } as unknown as ServerState;
 }
 
 function setState(overrides: Record<string, unknown> = {}): void {
   setRadioState(makeState(overrides));
+}
+
+function useDualReceiverCapabilities(): void {
+  setCapabilities({ capabilities: ['data_mode'], receivers: 2, vfoScheme: 'main_sub', stateContractVersion: 1, providerGeneration: 0 } as never);
 }
 
 function missingStatus() {
@@ -105,7 +118,7 @@ beforeEach(() => {
   vi.mocked(runtime.startTx).mockClear();
   vi.mocked(runtime.stopTx).mockClear();
   resetRadioState();
-  setCapabilities({ capabilities: ['data_mode'] } as never);
+  setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
   dismissModInputTxGuard();
 });
 
@@ -149,7 +162,7 @@ describe('armModInputTxGuard (MOR-617)', () => {
   });
 
   it('does not fire without the data_mode capability', () => {
-    setCapabilities({ capabilities: [] } as never);
+    setCapabilities({ capabilities: [], stateContractVersion: 1, providerGeneration: 0 } as never);
     setState({ main: receiver(1), data1ModInput: 0 });
 
     armModInputTxGuard();
@@ -164,6 +177,7 @@ describe('armModInputTxGuard (MOR-617)', () => {
   });
 
   it('resolves the ACTIVE receiver group (SUB on D2)', () => {
+    useDualReceiverCapabilities();
     setState({
       active: 'SUB',
       main: receiver(0),

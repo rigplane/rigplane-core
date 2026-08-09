@@ -98,6 +98,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 
 /**
@@ -139,12 +140,18 @@ function liveState(over: Partial<ServerState> = {}, mode = 'CW'): ServerState {
   const receiver = (hz: number, apfTypeLevel: number) => ({
     ...slot(hz, mode), vfoA: slot(hz, mode), vfoB: slot(hz + 50000, mode), activeSlot: 'A',
     filter: 1, apfTypeLevel, twinPeakFilter: false,
+    sMeter: 0, att: 0, preamp: 0, nb: false, nr: false,
+    afLevel: 0, rfGain: 0, squelch: 0,
   });
   return {
+    revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+    updatedAt: '2026-08-08T00:00:00Z', tunerStatus: 0,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
+    stateContractVersion: 1, providerGeneration: 0,
     breakIn: 1, breakInDelay: 64, keySpeed: 24, cwPitch: 600, dashRatio: 0,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000, 0), sub: receiver(14300000, 2),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
     ...over,
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   } as unknown as ServerState;
@@ -162,6 +169,7 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  stateContractVersion: 1, providerGeneration: 0,
 } as unknown as Capabilities);
 
 /** A full CW radio: keyer, break-in, APF and the twin-peak filter. */
@@ -200,6 +208,7 @@ function useState(state: ServerState): void {
 }
 
 beforeEach(() => {
+  setCapabilities(liveCaps(CW_TAGS));
   useState(liveState());
   h.caps = liveCaps(CW_TAGS);
   h.snapshot = { ...IDLE };
@@ -409,7 +418,7 @@ describe('the surface mounts only where a declared zone can hold it', () => {
   it('leaves the cockpit with no focusable control outside a declared zone', () => {
     render({ strips: 'dual' });
     const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
-      .filter((node) => node.closest('[data-zone-id]') === null);
+      .filter((node) => !node.matches(':disabled') && node.closest('[data-zone-id]') === null);
     expect(outside).toEqual([]);
   });
 });

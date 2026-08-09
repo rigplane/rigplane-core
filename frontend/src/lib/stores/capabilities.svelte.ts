@@ -3,12 +3,45 @@ import type { Capabilities, ControlRange } from '../types/capabilities';
 // Capabilities fetched once from GET /api/v1/capabilities
 let capabilities = $state<Capabilities | null>(null);
 
+const STATE_CONTRACT_VERSION = 1;
+
+function validProviderGeneration(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+function hasCurrentEpoch(value: unknown): value is Capabilities {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return record.stateContractVersion === STATE_CONTRACT_VERSION
+    && validProviderGeneration(record.providerGeneration);
+}
+
 export function getCapabilities(): Capabilities | null {
   return capabilities;
 }
 
-export function setCapabilities(caps: Capabilities): void {
+export function setCapabilities(caps: Capabilities): boolean {
+  if (!hasCurrentEpoch(caps)) {
+    capabilities = null;
+    return false;
+  }
   capabilities = caps;
+  return true;
+}
+
+/** Clear capability truth whenever the provider epoch is no longer proven. */
+export function clearCapabilities(): void {
+  capabilities = null;
+}
+
+/** True only when capabilities and radio state prove the same provider epoch. */
+export function capabilitiesMatchGeneration(providerGeneration: unknown): boolean {
+  return validProviderGeneration(providerGeneration)
+    && capabilities !== null
+    && (capabilities as Record<string, unknown>).stateContractVersion === STATE_CONTRACT_VERSION
+    && (capabilities as Record<string, unknown>).providerGeneration === providerGeneration;
 }
 
 export function hasSpectrum(): boolean {

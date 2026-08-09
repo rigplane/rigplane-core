@@ -90,19 +90,31 @@ let revision = 1;
 function makeState(overrides: Record<string, unknown> = {}): ServerState {
   return {
     revision: ++revision,
+    stateRevision: revision,
+    freshnessRevision: revision,
+    observationSeq: revision,
+    updatedAt: '2026-08-08T00:00:00Z',
     active: 'MAIN',
     ptt: false,
     split: false,
     dualWatch: false,
     tunerStatus: 0,
+    stateContractVersion: 1,
+    providerGeneration: 0,
     main: receiver(0),
     sub: receiver(0),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    txTarget: { status: 'unknown', reason: 'not-observed' },
     ...overrides,
   } as unknown as ServerState;
 }
 
 function setState(overrides: Record<string, unknown> = {}): void {
   setRadioState(makeState(overrides));
+}
+
+function useDualReceiverCapabilities(): void {
+  setCapabilities({ capabilities: ['data_mode'], receivers: 2, vfoScheme: 'main_sub', stateContractVersion: 1, providerGeneration: 0 } as never);
 }
 
 function missingStatus() {
@@ -168,7 +180,7 @@ beforeEach(() => {
   vi.mocked(runtime.startTx).mockResolvedValue(null);
   vi.mocked(runtime.stopTx).mockClear();
   resetRadioState();
-  setCapabilities({ capabilities: ['data_mode'] } as never);
+  setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
   dismissModInputTxGuard();
 });
 
@@ -193,10 +205,10 @@ describe('toggle (MOR-618)', () => {
     setState({ main: receiver(1), data1ModInput: 0 });
     expect(deriveAutoLanModInputProps().available).toBe(true);
 
-    setCapabilities({ capabilities: [] } as never);
+    setCapabilities({ capabilities: [], stateContractVersion: 1, providerGeneration: 0 } as never);
     expect(deriveAutoLanModInputProps().available).toBe(false);
 
-    setCapabilities({ capabilities: ['data_mode'] } as never);
+    setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
     setState({
       main: receiver(1),
       data1ModInput: 0,
@@ -242,6 +254,7 @@ describe('auto-set at TX start (MOR-618)', () => {
 
   it('routes to the ACTIVE receiver group (SUB on D2)', async () => {
     setAutoLanModInputEnabled(true);
+    useDualReceiverCapabilities();
     setState({
       active: 'SUB',
       main: receiver(0),
@@ -277,7 +290,7 @@ describe('auto-set at TX start (MOR-618)', () => {
 
   it('does nothing without the data_mode capability', async () => {
     setAutoLanModInputEnabled(true);
-    setCapabilities({ capabilities: [] } as never);
+    setCapabilities({ capabilities: [], stateContractVersion: 1, providerGeneration: 0 } as never);
     setState({ main: receiver(1), data1ModInput: 0 });
 
     await getTxAudioControl().startTx();
@@ -306,6 +319,7 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     const control = getTxAudioControl();
     await control.startTx();
 
+    useDualReceiverCapabilities();
     setState({
       active: 'SUB',
       main: receiver(1),
