@@ -15,9 +15,9 @@
  * catalog, the real `app.css` + `components-v2/theme` token layer.
  *
  * Stubbing by RESOLVED ABSOLUTE PATH (not by alias on the import specifier) is
- * deliberate: `SemanticRadioSurfaces` imports `./command-bus` relatively, and
- * a string alias on `./command-bus` would match any same-named relative import
- * anywhere in the graph.
+ * deliberate: the semantic root reaches its command callbacks through the
+ * existing adapter seam, while legacy layout callers retain the relative bus
+ * seam. A string alias would match unrelated same-named relative imports.
  */
 import path from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
@@ -30,6 +30,7 @@ const STUBS: Readonly<Record<string, string>> = {
   'src/lib/runtime/index.ts': 'fixtures/stubs/runtime.ts',
   'src/lib/runtime/tx-controller/app-host.ts': 'fixtures/stubs/app-host.ts',
   'src/lib/runtime/adapters/mod-input-tx-guard.svelte.ts': 'fixtures/stubs/mod-input-tx-guard.ts',
+  'src/lib/runtime/adapters/panel-adapters.ts': 'fixtures/stubs/panel-adapters.ts',
   'src/components-v2/wiring/command-bus.ts': 'fixtures/stubs/command-bus.ts',
 };
 

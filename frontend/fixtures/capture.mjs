@@ -509,6 +509,7 @@ const manifest = {
       '$lib/runtime',
       '$lib/runtime/tx-controller/app-host',
       '$lib/runtime/adapters/mod-input-tx-guard.svelte',
+      '$lib/runtime/adapters/panel-adapters',
       'components-v2/wiring/command-bus',
     ],
     productionFilesChanged: 0,
@@ -516,7 +517,7 @@ const manifest = {
   intentionalDifferences: [
     'The cockpit is mounted DIRECTLY (fixtures/main.ts) — resolveSkinId() has no '
     + 'cockpit branch on this commit, so no navigation path can produce these views.',
-    'Four live seams are stubbed (see harness.stubbedSeams); every other module in the '
+    'Five live seams are stubbed (see harness.stubbedSeams); every other module in the '
     + 'render path — adapter, capability derivation, semantic surfaces, i18n, CSS — is shipped code.',
     'Screenshots are taken with Playwright `animations: "disabled"` and `caret: "hide"` for '
     + 'determinism. The cockpit declares no animation of its own; the only transition in the '
