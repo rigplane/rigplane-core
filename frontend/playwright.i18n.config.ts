@@ -22,6 +22,14 @@ import { defineConfig, devices } from '@playwright/test';
 const PREVIEW_PORT = Number(process.env.RP_I18N_PREVIEW_PORT ?? '4173');
 const BASE_URL = `http://127.0.0.1:${PREVIEW_PORT}`;
 
+// MOR-1400 Slice B uses the same calibrated comparator as the separately
+// maintained fixture lane, but keeps its snapshots under the real-App suite.
+// A production screenshot can never be substituted with a fixtures/ capture.
+export const PRODUCTION_VISUAL_COMPARATOR = {
+  threshold: 0.2,
+  maxDiffPixelRatio: 0.001,
+};
+
 export default defineConfig({
   testDir: './tests/e2e/i18n',
   testMatch: /.*\.spec\.ts$/,
@@ -31,11 +39,20 @@ export default defineConfig({
   timeout: 30_000,
   expect: {
     timeout: 5_000,
+    toHaveScreenshot: PRODUCTION_VISUAL_COMPARATOR,
   },
+  // Do not let Playwright silently fork expected production images per host:
+  // accepted images are generated/re-pinned only by the Linux Core runner.
+  snapshotPathTemplate: 'tests/e2e/i18n/__screenshots__/production-design-language/{arg}{ext}',
   outputDir: './tests/e2e/i18n/.output',
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: BASE_URL,
+    viewport: { width: 1280, height: 800 },
+    deviceScaleFactor: 1,
+    colorScheme: 'dark',
+    locale: 'en-US',
+    timezoneId: 'UTC',
     trace: 'retain-on-failure',
     screenshot: 'off',
     video: 'off',
@@ -44,7 +61,17 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      // Device descriptors are project-level overrides, so repeat every
+      // production pixel input here rather than relying on root `use` merge
+      // behavior. The app's selected theme supplies the light-mode cells.
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1280, height: 800 },
+        deviceScaleFactor: 1,
+        colorScheme: 'dark',
+        locale: 'en-US',
+        timezoneId: 'UTC',
+      },
     },
   ],
   webServer: {

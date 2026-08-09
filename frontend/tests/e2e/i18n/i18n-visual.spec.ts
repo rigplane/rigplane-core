@@ -455,6 +455,10 @@ const PRODUCTION_LANGUAGE_CASES: readonly ProductionLanguageCase[] = [
   },
 ];
 
+function productionScreenshotName(item: ProductionLanguageCase): string {
+  return `${item.language}--${item.mode}--production-root.png`;
+}
+
 async function assertProductionLanguageCss(page: Page, item: ProductionLanguageCase): Promise<void> {
   const root = page.locator('html');
   await expect(root).toHaveAttribute('data-design-language', item.language);
@@ -571,6 +575,13 @@ test.describe('MOR-1400 production design-language contract', () => {
       await waitForAppShell(page);
       await assertProductionLanguageCss(page, item);
       await assertProductionLanguageAccessibility(page, item);
+      // This is deliberately the real built `/' entry, served via the
+      // immutable dist wrapper above. Fixture screenshots live in a separate
+      // Playwright config and are not candidates for this expectation.
+      await expect(page).toHaveScreenshot(productionScreenshotName(item), {
+        animations: 'disabled',
+        caret: 'hide',
+      });
     });
   }
 
