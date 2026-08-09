@@ -210,32 +210,34 @@ export function makeAntennaHandlers() {
 export function makeRfFrontEndHandlers() {
   return {
     onAttChange: (db: number) => {
-      patchActiveReceiver({ att: db });
-      cmd('set_attenuator', { db, receiver: activeReceiverParam() });
+      const receiver = knownActiveReceiver('att');
+      if (receiver === null || !Number.isSafeInteger(db)) return;
+      dispatchRadioIntent({ name: 'set_attenuator', params: { db, receiver } });
     },
     onPreChange: (level: number) => {
-      patchActiveReceiver({ preamp: level });
-      cmd('set_preamp', { level, receiver: activeReceiverParam() });
+      const receiver = knownActiveReceiver('preamp');
+      if (receiver === null || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_preamp', params: { level, receiver } });
     },
     onRfGainChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ rfGain: level }, true);
-      cmd('set_rf_gain', { level, receiver });
+      const receiver = knownActiveReceiver('rfGain');
+      if (receiver === null || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_rf_gain', params: { level, receiver } });
     },
     onSquelchChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ squelch: level }, true);
-      cmd('set_squelch', { level, receiver });
+      const receiver = knownActiveReceiver('squelch');
+      if (receiver === null || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_squelch', params: { level, receiver } });
     },
     onDigiSelToggle: (on: boolean) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ digisel: on });
-      cmd('set_digisel', { on, receiver });
+      const receiver = knownActiveReceiver('digisel');
+      if (receiver === null || typeof on !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_digisel', params: { on, receiver } });
     },
     onIpPlusToggle: (on: boolean) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ ipplus: on });
-      cmd('set_ip_plus', { on, receiver });
+      const receiver = knownActiveReceiver('ipplus');
+      if (receiver === null || typeof on !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_ip_plus', params: { on, receiver } });
     },
   };
 }
