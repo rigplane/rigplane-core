@@ -205,10 +205,15 @@ async function preparePage(
   page: Page,
   locale: SupportedLocale,
   viewport: ViewportSpec,
-  options: { state?: typeof mockState } = {},
+  options: { state?: typeof mockState; workspace?: Record<string, unknown> } = {},
 ): Promise<void> {
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
   await page.addInitScript(locStorageInit(locale));
+  if (options.workspace !== undefined) {
+    await page.addInitScript((workspace) => {
+      localStorage.setItem('rigplane:workspace', JSON.stringify(workspace));
+    }, options.workspace);
+  }
   await page.addInitScript(WS_STUB_INIT);
   await routeMockBackend(page, options.state ?? mockState);
 }
@@ -404,4 +409,165 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
       });
     }
   }
+});
+
+type ProductionLanguageCase = {
+  readonly label: string;
+  readonly workspace: Record<string, unknown>;
+  readonly language: 'studioline' | 'fieldline';
+  readonly mode: 'dark' | 'light';
+  readonly variable: '--dl-studioline-surface' | '--dl-fieldline-surface';
+};
+
+const PRODUCTION_LANGUAGE_CASES: readonly ProductionLanguageCase[] = [
+  {
+    label: 'clean StudioLine × dark',
+    workspace: {},
+    language: 'studioline',
+    mode: 'dark',
+    variable: '--dl-studioline-surface',
+  },
+  {
+    label: 'persisted StudioLine × light',
+    workspace: { version: 1, designLanguage: 'studioline', theme: 'github-light' },
+    language: 'studioline',
+    mode: 'light',
+    variable: '--dl-studioline-surface',
+  },
+  {
+    label: 'persisted FieldLine × dark',
+    workspace: { version: 1, designLanguage: 'fieldline', theme: 'nord' },
+    language: 'fieldline',
+    mode: 'dark',
+    variable: '--dl-fieldline-surface',
+  },
+  {
+    label: 'persisted FieldLine × light',
+    workspace: { version: 1, designLanguage: 'fieldline', theme: 'github-light' },
+    language: 'fieldline',
+    mode: 'light',
+    variable: '--dl-fieldline-surface',
+  },
+];
+
+async function assertProductionLanguageCss(page: Page, item: ProductionLanguageCase): Promise<void> {
+  const root = page.locator('html');
+  await expect(root).toHaveAttribute('data-design-language', item.language);
+  await expect(root).toHaveAttribute('data-language-mode', item.mode);
+  await expect.poll(() => root.evaluate((element, variable) =>
+    getComputedStyle(element).getPropertyValue(variable).trim(), item.variable)).not.toBe('');
+  await expect.poll(() => page.evaluate(() => {
+    const rules = [...document.styleSheets].flatMap((sheet) => {
+      try {
+        return [...sheet.cssRules].map((rule) => rule.cssText);
+      } catch {
+        return [];
+      }
+    });
+    return {
+      studioline: rules.some((rule) => rule.includes('--dl-studioline-surface')),
+      fieldline: rules.some((rule) => rule.includes('--dl-fieldline-surface')),
+      productionCss: [...document.styleSheets]
+        .map((sheet) => sheet.href)
+        .some((href) => /\/assets\/[^/]+-[\w-]+\.css$/.test(href)),
+    };
+  })).toEqual({ studioline: true, fieldline: true, productionCss: true });
+}
+
+async function assertProductionLanguageAccessibility(
+  page: Page,
+  item: ProductionLanguageCase,
+): Promise<void> {
+  const vfo = page.getByTestId('vfo-surface').first();
+  const txKey = page.getByTestId('rx-tx-key').first();
+  await expect(vfo).toHaveAccessibleName(/VFO/i);
+  await expect(txKey).toHaveAccessibleName(/key|transmit|ptt/i);
+
+  // A real keyboard-caused focus target, rather than a programmatic focus,
+  // proves the active production family has a visible focus treatment.
+  await page.locator('body').focus();
+  await page.keyboard.press('Tab');
+  const focused = await page.evaluate(() => {
+    const element = document.activeElement;
+    if (!(element instanceof HTMLElement)) return null;
+    const style = getComputedStyle(element);
+    return { tag: element.tagName, outline: style.outlineStyle };
+  });
+  expect(focused?.tag).toMatch(/BUTTON|INPUT|SELECT/);
+  expect(focused?.outline).not.toBe('none');
+
+  const contrast = await page.locator('html').evaluate((element, language) => {
+    const style = getComputedStyle(element);
+    const hex = (name: string) => style.getPropertyValue(name).trim();
+    const rgb = (value: string) => {
+      const match = /^#([0-9a-f]{6})$/i.exec(value);
+      if (match === null) return null;
+      return [0, 2, 4].map((offset) => Number.parseInt(match[1].slice(offset, offset + 2), 16) / 255);
+    };
+    const luminance = (channels: number[]) => channels
+      .map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+      .reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+    const ratio = (first: string, second: string) => {
+      const a = rgb(first), b = rgb(second);
+      if (a === null || b === null) return 0;
+      const [lighter, darker] = [luminance(a), luminance(b)].sort((left, right) => right - left);
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+    return {
+      text: ratio(hex(`--dl-${language}-text`), hex(`--dl-${language}-surface`)),
+      focus: ratio(hex(`--dl-${language}-focus`), hex(`--dl-${language}-surface`)),
+    };
+  }, item.language);
+  expect(contrast.text).toBeGreaterThanOrEqual(4.5);
+  expect(contrast.focus).toBeGreaterThanOrEqual(3);
+}
+
+test.describe('MOR-1400 production design-language contract', () => {
+  for (const item of PRODUCTION_LANGUAGE_CASES) {
+    test(`${item.label} activates from production dist`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await preparePage(page, 'en-US', VIEWPORTS[0], { workspace: item.workspace });
+      await gotoApp(page, 'en-US');
+      await waitForAppShell(page);
+      await assertProductionLanguageCss(page, item);
+      await assertProductionLanguageAccessibility(page, item);
+    });
+  }
+
+  test('invalid persisted presentation repairs to scoped StudioLine dark', async ({ page }) => {
+    await preparePage(page, 'en-US', VIEWPORTS[0], {
+      workspace: { version: 1, designLanguage: 'unknown', theme: 'unknown' },
+    });
+    await gotoApp(page, 'en-US');
+    await waitForAppShell(page);
+    await assertProductionLanguageCss(page, PRODUCTION_LANGUAGE_CASES[0]);
+  });
+
+  test('legacy LCD remains language-inert', async ({ page }) => {
+    await preparePage(page, 'en-US', VIEWPORTS[0], {
+      workspace: { version: 1, layout: 'lcd-cockpit', designLanguage: 'fieldline', theme: 'github-light' },
+    });
+    await gotoApp(page, 'en-US');
+    await waitForAppShell(page);
+    await expect(page.locator('html')).not.toHaveAttribute('data-design-language');
+    await expect(page.locator('html')).not.toHaveAttribute('data-language-mode');
+    const fieldlineSurface = await page.locator('html').evaluate((element) =>
+      getComputedStyle(element).getPropertyValue('--dl-fieldline-surface').trim());
+    expect(fieldlineSurface).toBe('');
+  });
+
+  test('mobile remains language-inert', async ({ browser }) => {
+    const mobile = await browser.newPage();
+    try {
+      await preparePage(mobile, 'en-US', VIEWPORTS[1], {
+        workspace: { version: 1, designLanguage: 'fieldline', theme: 'github-light' },
+      });
+      await gotoApp(mobile, 'en-US');
+      await waitForAppShell(mobile);
+      await expect(mobile.locator('html')).not.toHaveAttribute('data-design-language');
+      await expect(mobile.locator('html')).not.toHaveAttribute('data-language-mode');
+    } finally {
+      await mobile.close();
+    }
+  });
 });

@@ -11,12 +11,19 @@
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
+  import { getAvailableThemes } from './components-v2/theme/theme-switcher';
   import { getDesignLanguage } from './presentation/languages/contract';
   // Side-effect import: populates the design-language registry the lookup
   // above resolves against, exactly as `semantic/design-language-renderers.ts`
   // does. Imported here too so the activation effect below cannot depend on a
   // lazily-loaded skin having pulled the barrel in first.
   import './presentation/languages/declarations';
+  // Both scoped language stylesheets ship with the production composition
+  // root. They stay inert until the canonical activation attribute below is
+  // present; loading them here prevents the fixture harness from being their
+  // only build path.
+  import './presentation/languages/studioline/studioline.css';
+  import './presentation/languages/fieldline/fieldline.css';
   import { getLayout } from './presentation/layouts/contract';
   // MOR-1082, the layout half of the same idiom: a side-effect import that
   // populates the LAYOUT registry, so `getLayout(skinId)` below can resolve
@@ -84,8 +91,14 @@
   $effect(() => {
     const language = getDesignLanguage(getWorkspace().designLanguage);
     const activated = designLanguageActivation(language, skinId);
-    if (activated === null) delete document.documentElement.dataset.designLanguage;
-    else document.documentElement.dataset.designLanguage = activated;
+    if (activated === null) {
+      delete document.documentElement.dataset.designLanguage;
+      delete document.documentElement.dataset.languageMode;
+    } else {
+      document.documentElement.dataset.designLanguage = activated;
+      const theme = getAvailableThemes().find(({ id }) => id === getWorkspace().theme);
+      document.documentElement.dataset.languageMode = theme?.category === 'light' ? 'light' : 'dark';
+    }
     const density = densityActivation(language, skinId, getWorkspace().density);
     if (density === null) delete document.documentElement.dataset.density;
     else document.documentElement.dataset.density = density;
