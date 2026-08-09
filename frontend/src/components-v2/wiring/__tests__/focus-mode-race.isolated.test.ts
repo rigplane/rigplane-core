@@ -16,8 +16,12 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchReceiver: vi.fn(),
 }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => ({ receivers: 2, vfoScheme: 'main_sub' })),
+  getCapabilities: vi.fn(() => ({ receivers: 2, vfoScheme: 'main_sub', capabilities: ['dual_rx'] })),
+  capabilitiesMatchGeneration: vi.fn(() => true),
   getControlRange: vi.fn(() => null),
+}));
+vi.mock('$lib/audio/audio-manager', () => ({
+  audioManager: { setAudioConfig: vi.fn() },
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';

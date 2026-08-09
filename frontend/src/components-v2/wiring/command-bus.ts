@@ -10,8 +10,7 @@
  */
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { getActiveReceiver, getRadioState, patchActiveReceiver, patchRadioState, patchReceiver } from '$lib/stores/radio.svelte';
-import type { ReceiverState } from '$lib/types/state';
+import { getActiveReceiver, getRadioState, patchActiveReceiver, patchRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -29,10 +28,11 @@ export {
   makeScanHandlers,
   makeTxHandlers,
   makeAntennaHandlers,
+  makeVfoHandlers,
+  makeVoxHandlers,
 } from '$lib/runtime/commands/panel-commands';
 import type { KeyboardActionConfig } from '../layout/keyboard-map';
 import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
-import { setPendingFocus } from '$lib/radio/pending-focus';
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -47,33 +47,9 @@ function activeReceiverParam(): Receiver {
   return getRadioState()?.active === 'SUB' ? 1 : 0;
 }
 
-function focusModePanel(vfo: 'MAIN' | 'SUB'): void {
-  setPendingFocus(vfo);
-  patchRadioState({ active: vfo });
-  cmd('set_vfo', { vfo });
-
-  const modePanel = document.querySelector<HTMLElement>('[data-mode-panel="true"]');
-  if (!modePanel) {
-    return;
-  }
-
-  modePanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  modePanel.dataset.highlight = 'true';
-  window.setTimeout(() => {
-    if (modePanel.dataset.highlight === 'true') {
-      delete modePanel.dataset.highlight;
-    }
-  }, 1200);
-}
-
 /* ── VFO Handlers ────────────────────────────────────────────── */
 
-/** Fields that ``0x07 0xB1`` (equalize) and ``0x07 0xB0`` (exchange)
- *  propagate between MAIN and SUB on the radio.  Frequency + mode are
- *  the two observable ones the user cares about; backend poll refreshes
- *  the rest within one cycle.  Keep the list minimal. */
-const _MAIN_SUB_EQUALIZE_FIELDS = ['freqHz', 'mode', 'filter'] as const;
-
+/** Temporary keyboard-only activation path; A03d delegates and removes it. */
 function _activateReceiver(target: 'MAIN' | 'SUB'): void {
   // Optimistic UI + WS command to select the receiver.
   patchRadioState({ active: target });
@@ -85,111 +61,6 @@ function _activateReceiver(target: 'MAIN' | 'SUB'): void {
   // clicking MAIN/SUB updated state + scope but left the audio focus
   // untouched, so the user heard MAIN while tuning SUB.
   audioManager.setAudioConfig({ focus: target === 'SUB' ? 'sub' : 'main' });
-}
-
-export function makeVfoHandlers() {
-  return {
-    onSwap: () => {
-      // IC-7610 ``0x07 0xB0`` swaps freq+mode+params between MAIN and SUB.
-      // Optimistically swap the two in the store so the UI reflects the
-      // change within one tick rather than waiting for the next poll.
-      const s = getRadioState();
-      if (s?.main && s?.sub) {
-        const mainSnap: Partial<ReceiverState> = {};
-        const subSnap: Partial<ReceiverState> = {};
-        for (const f of _MAIN_SUB_EQUALIZE_FIELDS) {
-          Object.assign(mainSnap, { [f]: s.sub[f] });
-          Object.assign(subSnap, { [f]: s.main[f] });
-        }
-        patchReceiver(0, mainSnap);
-        patchReceiver(1, subSnap);
-      }
-      cmd('vfo_swap');
-    },
-    onEqual: () => {
-      // IC-7610 ``0x07 0xB1`` copies MAIN state to SUB.  Optimistically
-      // mirror that in the store so the SUB readouts snap to MAIN's
-      // values immediately — previously users had to wait for the next
-      // poll cycle (~250ms) to see the change.
-      const s = getRadioState();
-      if (s?.main) {
-        const snap: Partial<ReceiverState> = {};
-        for (const f of _MAIN_SUB_EQUALIZE_FIELDS) {
-          Object.assign(snap, { [f]: s.main[f] });
-        }
-        patchReceiver(1, snap);
-      }
-      cmd('vfo_equalize');
-    },
-    onSplitToggle: () => {
-      const next = !(getRadioState()?.split ?? false);
-      patchRadioState({ split: next });
-      cmd('set_split', { on: next });
-    },
-    onMainVfoClick: () => _activateReceiver('MAIN'),
-    onSubVfoClick: () => _activateReceiver('SUB'),
-    /** Semantic VFO selection (MOR-1065): activate the receiver, then the A/B
-     *  slot when the topology has one. `set_vfo` carries either identity
-     *  (`command_service._active_receiver_value` / `_active_slot_value`).
-     *  `slot === null` means the position has no addressable slot — never a
-     *  guessed 'A'. */
-    onVfoSelect: (receiver: 'MAIN' | 'SUB', slot: 'A' | 'B' | null) => {
-      if (getRadioState()?.active !== receiver) _activateReceiver(receiver);
-      if (slot !== null) cmd('set_vfo', { vfo: slot });
-    },
-    onMainModeClick: () => focusModePanel('MAIN'),
-    onSubModeClick: () => focusModePanel('SUB'),
-    onMainFreqChange: (freq: number) => {
-      patchReceiver(0, { freqHz: freq }, true);
-      cmd('set_freq', { freq, receiver: 0 });
-    },
-    onSubFreqChange: (freq: number) => {
-      patchReceiver(1, { freqHz: freq }, true);
-      cmd('set_freq', { freq, receiver: 1 });
-    },
-    onFreqChange: (freq: number, receiver: Receiver = 0) => {
-      patchActiveReceiver({ freqHz: freq }, true);
-      cmd('set_freq', { freq, receiver });
-    },
-    onModeChange: (mode: string, receiver: Receiver = 0) => {
-      patchActiveReceiver({ mode }, true);
-      cmd('set_mode', { mode, receiver });
-    },
-    onFilterChange: (filter: number, receiver: Receiver = 0) => {
-      cmd('set_filter', { filter, receiver });
-    },
-    onDualWatchToggle: (on: boolean) => cmd('set_dual_watch', { on }),
-    // Epic #774 — composite triggers on the backend.  Double-click on the
-    // DW / SPLIT button fires these; backend emits equalize M→S then the
-    // corresponding toggle-on atomically.
-    onQuickDw: () => cmd('quick_dualwatch'),
-    onQuickSplit: () => cmd('quick_split'),
-    onTrackingToggle: (on: boolean) => cmd('set_main_sub_tracking', { on }),
-  };
-}
-
-/* ── VOX Handlers ───────────────────────────────────────────── */
-
-export function makeVoxHandlers() {
-  return {
-    onVoxToggle: () => {
-      const next = !(getRadioState()?.voxOn ?? false);
-      patchRadioState({ voxOn: next });
-      cmd('set_vox', { on: next });
-    },
-    onVoxGainChange: (level: number) => {
-      patchRadioState({ voxGain: level });
-      cmd('set_vox_gain', { level });
-    },
-    onAntiVoxGainChange: (level: number) => {
-      patchRadioState({ antiVoxGain: level });
-      cmd('set_anti_vox_gain', { level });
-    },
-    onVoxDelayChange: (level: number) => {
-      patchRadioState({ voxDelay: level });
-      cmd('set_vox_delay', { level });
-    },
-  };
 }
 
 /* ── Dual-RX audio routing (#756) ────────────────────────────────

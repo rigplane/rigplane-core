@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
   setRxLive: vi.fn(),
   setRxVolume: vi.fn(),
   setVolume: vi.fn(),
+  setAudioConfig: vi.fn(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
@@ -54,6 +55,10 @@ vi.mock('$lib/state/field-status', () => ({
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => h.caps),
+  capabilitiesMatchGeneration: vi.fn((providerGeneration: unknown) =>
+    Number.isSafeInteger(providerGeneration)
+    && h.caps?.stateContractVersion === 1
+    && h.caps?.providerGeneration === providerGeneration),
   getControlRange: vi.fn((name: string) =>
     (h.caps?.controls as Record<string, unknown> | undefined)?.[name] ?? null),
 }));
@@ -69,7 +74,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
-  audioManager: { setAudioConfig: vi.fn() },
+  audioManager: { setAudioConfig: h.setAudioConfig },
 }));
 
 import {
@@ -86,6 +91,8 @@ import {
   makeRxAudioHandlers,
   makeScanHandlers,
   makeTxHandlers,
+  makeVfoHandlers,
+  makeVoxHandlers,
 } from '../panel-commands';
 import * as compatibilityBus from '$lib/../components-v2/wiring/command-bus';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
@@ -125,6 +132,8 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     sMeter: 0,
   };
   return {
+    stateContractVersion: 1,
+    providerGeneration: 31,
     active,
     main: { ...receiver },
     sub: { ...receiver, freqHz: 7_100_000 },
@@ -135,9 +144,15 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     nbWidth: 2,
     notchFilter: 64,
     powerLevel: 0.5,
+    split: false,
+    dualWatch: false,
+    mainSubTracking: false,
     micGain: 128,
     tunerStatus: 1,
     voxOn: false,
+    voxGain: 50,
+    antiVoxGain: 25,
+    voxDelay: 4,
     compressorOn: true,
     compressorLevel: 44,
     monitorOn: false,
@@ -197,7 +212,10 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
         'pbt', 'agc', 'rit', 'xit', 'nr', 'nb', 'notch', 'af_level',
         'tx', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
         'cw', 'break_in', 'apf', 'twin_peak', 'rx_antenna',
+        'split', 'dual_rx', 'dual_watch', 'main_sub_tracking',
       ],
+      stateContractVersion: 1,
+      providerGeneration: 31,
       receivers: 2,
       antennas: 2,
       vfoScheme: 'main_sub',
@@ -215,6 +233,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.setRxLive.mockClear();
     h.setRxVolume.mockClear();
     h.setVolume.mockClear();
+    h.setAudioConfig.mockClear();
   });
 
   afterEach(() => {
@@ -757,6 +776,160 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
+  it('exports canonical VFO and VOX factories through the compatibility bus', () => {
+    expect(compatibilityBus.makeVfoHandlers).toBe(makeVfoHandlers);
+    expect(compatibilityBus.makeVoxHandlers).toBe(makeVoxHandlers);
+  });
+
+  it('routes the complete VFO family through exact typed lifecycle without Store truth', () => {
+    const vfo = makeVfoHandlers();
+    vfo.onSwap();
+    vfo.onEqual();
+    vfo.onSplitToggle();
+    vfo.onMainVfoClick();
+    vfo.onSubVfoClick();
+    vfo.onVfoSelect('SUB', 'B');
+    vfo.onMainFreqChange(14_100_000);
+    vfo.onSubFreqChange(7_100_000);
+    vfo.onFreqChange(18_100_000, 0);
+    vfo.onModeChange('CW', 1);
+    vfo.onFilterChange(3, 0);
+    vfo.onDualWatchToggle(true);
+    vfo.onQuickDw();
+    vfo.onQuickSplit();
+    vfo.onTrackingToggle(true);
+
+    expect(exactCalls()).toEqual([
+      ['vfo_swap', {}],
+      ['vfo_equalize', {}],
+      ['set_split', { on: true }],
+      ['set_vfo', { vfo: 'MAIN' }],
+      ['set_vfo', { vfo: 'SUB' }],
+      ['set_vfo', { vfo: 'SUB' }],
+      ['set_vfo', { vfo: 'B' }],
+      ['set_freq', { freq: 14_100_000, receiver: 0 }],
+      ['set_freq', { freq: 7_100_000, receiver: 1 }],
+      ['set_freq', { freq: 18_100_000, receiver: 0 }],
+      ['set_mode', { mode: 'CW', receiver: 1 }],
+      ['set_filter', { filter: 3, receiver: 0 }],
+      ['set_dual_watch', { on: true }],
+      ['quick_dualwatch', {}],
+      ['quick_split', {}],
+      ['set_main_sub_tracking', { on: true }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+    expect(h.setAudioConfig).toHaveBeenNthCalledWith(1, { focus: 'main' });
+    expect(h.setAudioConfig).toHaveBeenNthCalledWith(2, { focus: 'sub' });
+    expect(h.setAudioConfig).toHaveBeenNthCalledWith(3, { focus: 'sub' });
+  });
+
+  it('preserves pending mode focus and local audio focus without patching radio truth', () => {
+    const panel = document.createElement('div');
+    panel.scrollIntoView = vi.fn();
+    const query = vi.spyOn(document, 'querySelector').mockReturnValue(panel);
+
+    makeVfoHandlers().onSubModeClick();
+    makeModeHandlers().onModeChange('CW');
+
+    expect(exactCalls()).toEqual([
+      ['set_vfo', { vfo: 'SUB' }],
+      ['set_mode', { mode: 'CW', receiver: 1 }],
+    ]);
+    expectIntentTransport();
+    expect(h.setAudioConfig).toHaveBeenCalledExactlyOnceWith({ focus: 'sub' });
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(panel.scrollIntoView).toHaveBeenCalled();
+    query.mockRestore();
+  });
+
+  it('keeps physical MAIN orthogonal to one-RX A/B Selected/Unselected topology', () => {
+    h.state = oneReceiverAbState();
+    h.caps = {
+      capabilities: ['split', 'tx', 'vox'], receivers: 1, vfoScheme: 'ab',
+      stateContractVersion: 1, providerGeneration: 31,
+    };
+    const vfo = makeVfoHandlers();
+    vfo.onVfoSelect('MAIN', 'B');
+    vfo.onSwap();
+    vfo.onEqual();
+    vfo.onQuickSplit();
+    vfo.onMainFreqChange(14_101_000);
+
+    expect(exactCalls()).toEqual([
+      ['set_vfo', { vfo: 'B' }],
+      ['vfo_swap', {}],
+      ['vfo_equalize', {}],
+      ['quick_split', {}],
+      ['set_freq', { freq: 14_101_000, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    vfo.onSubVfoClick();
+    vfo.onVfoSelect('SUB', 'A');
+    vfo.onSubFreqChange(7_101_000);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.setAudioConfig).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('shares one fail-closed VOX toggle and routes standalone VOX controls through lifecycle', () => {
+    const vox = makeVoxHandlers();
+    vox.onVoxToggle();
+    makeTxHandlers().onVoxToggle();
+    vox.onVoxGainChange(77);
+    vox.onAntiVoxGainChange(12);
+    vox.onVoxDelayChange(5);
+
+    expect(exactCalls()).toEqual([
+      ['set_vox', { on: true }],
+      ['set_vox', { on: true }],
+      ['set_vox_gain', { level: 77 }],
+      ['set_anti_vox_gain', { level: 12 }],
+      ['set_vox_delay', { level: 5 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for mismatched generation, stale toggles, invalid topology and malformed VFO/VOX inputs', () => {
+    const vfo = makeVfoHandlers();
+    const vox = makeVoxHandlers();
+    h.caps = { ...h.caps!, providerGeneration: 99 };
+    vfo.onSplitToggle();
+    vfo.onMainVfoClick();
+    vox.onVoxToggle();
+
+    h.caps = { ...h.caps!, providerGeneration: 31 };
+    h.unavailable.add('split');
+    h.unavailable.add('voxOn');
+    h.unavailable.add('voxGain');
+    h.unavailable.add('antiVoxGain');
+    h.unavailable.add('voxDelay');
+    vfo.onSplitToggle();
+    vox.onVoxToggle();
+    vfo.onVfoSelect('B' as unknown as 'MAIN', 'A');
+    vfo.onVfoSelect('MAIN', 'C' as unknown as 'A');
+    vfo.onFreqChange(14_100_000, undefined as unknown as 0);
+    vfo.onMainFreqChange(Number.NaN);
+    vfo.onModeChange('', 0);
+    vfo.onFilterChange(1.5, 0);
+    vox.onVoxGainChange(1.5);
+    vox.onAntiVoxGainChange(Number.NaN);
+    vox.onVoxDelayChange(Number.POSITIVE_INFINITY);
+    vox.onVoxGainChange(10);
+    vox.onAntiVoxGainChange(10);
+    vox.onVoxDelayChange(10);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.setAudioConfig).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
   it('keeps raw transport out of migrated blocks and Store writers out of their implementation', () => {
     const panelSource = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/panel-commands.ts'), 'utf8');
     const busSource = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/command-bus.ts'), 'utf8');
@@ -765,6 +938,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       'makeModeHandlers', 'makePresetHandlers', 'makeRfFrontEndHandlers',
       'makeRitXitHandlers', 'makeRxAudioHandlers', 'makeCwPanelHandlers',
       'makeTxHandlers', 'makeAntennaHandlers', 'makeScanHandlers',
+      'makeVfoHandlers', 'makeVoxHandlers',
     ];
 
     for (const [index, name] of assignedNames.entries()) {
@@ -813,6 +987,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       'cw_auto_tune', 'set_break_in_delay', 'set_monitor_gain', 'set_dash_ratio',
       'set_rf_power', 'set_mic_gain', 'set_tuner_status', 'set_vox', 'set_compressor',
       'set_compressor_level', 'set_monitor', 'set_drive_gain',
+      'set_vfo', 'vfo_swap', 'vfo_equalize', 'set_split', 'set_dual_watch',
+      'quick_dualwatch', 'quick_split', 'set_main_sub_tracking',
     ]) {
       expect(a03aNames).not.toContain(`'${name}'`);
     }
@@ -834,8 +1010,18 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(panelSource).not.toContain('set_keyer_type');
     expect(busSource).not.toContain('onKeyerTypeChange');
     expect(busSource).not.toContain('set_keyer_type');
-    expect(busSource).toContain('export function makeVoxHandlers');
-    expect(panelSource).not.toContain('export function makeVoxHandlers');
+    expect(busSource).not.toContain('export function makeVfoHandlers');
+    expect(busSource).not.toContain('export function makeVoxHandlers');
+    expect(panelSource).toContain('export function makeVfoHandlers');
+    expect(panelSource).toContain('export function makeVoxHandlers');
+    expect(busSource).toMatch(/function _activateReceiver\s*\(/);
+    expect(busSource).toContain("case 'set_active_vfo'");
+    for (const deferred of [
+      'makeAudioRoutingHandlers', 'makeMeterHandlers', 'makeSystemHandlers',
+      'makeScopeControlsHandlers', 'makeKeyboardHandlers',
+    ]) expect(busSource).toContain(`export function ${deferred}`);
+    expect(panelSource.match(/function toggleVox/g)).toHaveLength(1);
+    expect(panelSource.match(/onVoxToggle:\s*toggleVox/g)).toHaveLength(2);
     expect(panelSource).not.toMatch(/dispatchRadioIntent\(\{\s*name:\s*['"]ptt(?:_on|_off)?['"]/);
   });
 });
