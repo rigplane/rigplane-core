@@ -17,6 +17,11 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => ({
+    capabilities: ['bsr', 'preamp', 'attenuator', 'agc', 'nr', 'nb', 'notch', 'ip_plus'],
+    stateContractVersion: 1,
+    providerGeneration: 31,
+    receivers: 2,
+    vfoScheme: 'main_sub',
     freqRanges: [
       {
         start: 1,
@@ -34,6 +39,12 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
     filters: ['FIL1', 'FIL2', 'FIL3'],
     dataModeCount: 3,
   })),
+  capabilitiesMatchGeneration: vi.fn(() => true),
+  getControlRange: vi.fn(() => null),
+}));
+
+vi.mock('$lib/state/field-status', () => ({
+  isFieldAvailable: vi.fn(() => true),
 }));
 
 vi.mock('$lib/stores/tuning.svelte', () => ({
@@ -70,6 +81,13 @@ describe('makeKeyboardHandlers', () => {
     vi.mocked(sendCommand).mockClear();
     vi.mocked(patchActiveReceiver).mockClear();
     vi.mocked(patchRadioState).mockClear();
+    vi.mocked(getRadioState).mockReturnValue({
+      active: 'MAIN', providerGeneration: 31,
+      main: {
+        freqHz: 14_074_000, preamp: 1, dataMode: 2, mode: 'USB', filter: 2,
+        att: 0, agc: 2, nr: false, nb: false, autoNotch: false, ipplus: false,
+      },
+    } as any);
   });
 
   it('cycles to the next band by index', () => {
@@ -79,9 +97,6 @@ describe('makeKeyboardHandlers', () => {
   });
 
   it('cycles preamp values from capabilities', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
-    vi.mocked(getActiveReceiver).mockReturnValue({ preamp: 1 } as any);
-
     makeKeyboardHandlers().dispatch(makeAction('cycle_preamp'));
 
     expect(sendCommand).toHaveBeenCalledWith('set_preamp', { level: 2, receiver: 0 });
@@ -97,9 +112,6 @@ describe('makeKeyboardHandlers', () => {
   });
 
   it('cycles data mode values based on capability count', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
-    vi.mocked(getActiveReceiver).mockReturnValue({ dataMode: 3 } as any);
-
     makeKeyboardHandlers().dispatch(makeAction('cycle_data_mode'));
 
     expect(sendCommand).toHaveBeenCalledWith('set_data_mode', { mode: 0, receiver: 0 });
@@ -116,13 +128,10 @@ describe('makeKeyboardHandlers', () => {
   });
 
   it('tunes frequency by the current frontend step', () => {
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
-    vi.mocked(getActiveReceiver).mockReturnValue({ freqHz: 14_074_000 } as any);
-
     makeKeyboardHandlers().dispatch({ action: 'tune', params: { direction: 'up' }, id: 'tune-up', section: 'Tuning', sequence: ['ArrowRight'] });
 
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ freqHz: 14_075_000 }, true);
     expect(sendCommand).toHaveBeenCalledWith('set_freq', { freq: 14_075_000, receiver: 0 });
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 
   it('adjusts the frontend tuning step without sending a backend command', () => {

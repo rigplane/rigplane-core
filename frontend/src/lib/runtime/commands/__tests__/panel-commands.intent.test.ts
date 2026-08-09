@@ -77,6 +77,10 @@ vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: { setAudioConfig: h.setAudioConfig },
 }));
 
+vi.mock('$lib/stores/tuning.svelte', () => ({
+  getTuningStep: vi.fn(() => 1_000),
+}));
+
 import {
   makeAgcHandlers,
   makeAntennaHandlers,
@@ -94,6 +98,7 @@ import {
   makeTxHandlers,
   makeVfoHandlers,
   makeVoxHandlers,
+  dispatchKeyboardRadioAction,
 } from '../panel-commands';
 import * as compatibilityBus from '$lib/../components-v2/wiring/command-bus';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
@@ -214,12 +219,19 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
         'tx', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
         'cw', 'break_in', 'apf', 'twin_peak', 'rx_antenna',
         'split', 'dual_rx', 'dual_watch', 'main_sub_tracking',
+        'bsr', 'preamp', 'attenuator', 'ip_plus',
       ],
       stateContractVersion: 1,
       providerGeneration: 31,
       receivers: 2,
       antennas: 2,
       vfoScheme: 'main_sub',
+      modes: ['USB', 'CW'],
+      filters: ['FIL1', 'FIL2', 'FIL3'],
+      dataModeCount: 3,
+      preValues: [0, 1, 2],
+      attValues: [0, 6, 12],
+      agcModes: [1, 2, 3],
       controls: {
         pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
         nb_depth: { raw_min: 0, raw_max: 9, raw_center: 0, display_min: 1, display_max: 10 },
@@ -984,6 +996,82 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(h.setAudioConfig).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('delegates exactly the A03d1a keyboard radio families through typed non-optimistic intent', () => {
+    const actions = [
+      { action: 'tune', params: { direction: 'up' } },
+      { action: 'band_select', params: { index: 3 } },
+      { action: 'mode_select', params: { mode: 'CW' } },
+      { action: 'cycle_data_mode' },
+      { action: 'cycle_filter', params: { direction: 'narrower' } },
+      { action: 'cycle_preamp' }, { action: 'cycle_att' }, { action: 'cycle_agc' },
+      { action: 'toggle_nr' }, { action: 'toggle_nb' },
+      { action: 'toggle_auto_notch' }, { action: 'toggle_ip_plus' },
+    ];
+
+    for (const action of actions) expect(dispatchKeyboardRadioAction(action)).toBe(true);
+
+    expect(exactCalls()).toEqual([
+      ['set_freq', { freq: 14_075_000, receiver: 0 }],
+      ['set_band', { band: 3 }],
+      ['set_mode', { mode: 'CW', receiver: 0 }],
+      ['set_data_mode', { mode: 2, receiver: 0 }],
+      ['set_filter', { filter: 3, receiver: 0 }],
+      ['set_preamp', { level: 1, receiver: 0 }],
+      ['set_attenuator', { db: 6, receiver: 0 }],
+      ['set_agc', { mode: 3, receiver: 0 }],
+      ['set_nr', { on: true, receiver: 0 }],
+      ['set_nb', { on: true, receiver: 0 }],
+      ['set_auto_notch', { on: true, receiver: 0 }],
+      ['set_ip_plus', { on: true, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for invalid keyboard input while leaving deferred and local actions to their current owner', () => {
+    h.unavailable.add('main.freqHz');
+    expect(dispatchKeyboardRadioAction({ action: 'tune', params: { direction: 'up' } })).toBe(true);
+    h.unavailable.clear();
+    h.caps = { ...h.caps!, providerGeneration: 99 };
+    expect(dispatchKeyboardRadioAction({ action: 'cycle_preamp' })).toBe(true);
+    h.caps = { ...h.caps!, providerGeneration: 31, receivers: 1, vfoScheme: 'ab' };
+    h.state = { ...oneReceiverAbState(), active: 'SUB' } as ServerState;
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_nr' })).toBe(true);
+    h.state = oneReceiverAbState();
+    (h.state.main as any).preamp = 99;
+    expect(dispatchKeyboardRadioAction({ action: 'cycle_preamp' })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'cycle_filter', params: { direction: 'sideways' } })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(false);
+    expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_hold' })).toBe(false);
+    expect(dispatchKeyboardRadioAction({ action: 'open_filter_settings' })).toBe(false);
+    expect(dispatchKeyboardRadioAction({ action: 'ptt_on' })).toBe(false);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('keeps a one-receiver MAIN with A/B and Unselected facts valid for keyboard tuning', () => {
+    h.state = oneReceiverAbState();
+    h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
+
+    expect(dispatchKeyboardRadioAction({ action: 'tune', params: { deltaHz: 500 } })).toBe(true);
+
+    expect(exactCalls()).toEqual([['set_freq', { freq: 14_074_500, receiver: 0 }]]);
+    expectIntentTransport();
+  });
+
+  it('turns auto-notch off without changing the independently observed manual-notch state', () => {
+    (h.state!.main as any).autoNotch = true;
+    (h.state!.main as any).manualNotch = true;
+
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_auto_notch' })).toBe(true);
+
+    expect(exactCalls()).toEqual([['set_auto_notch', { on: false, receiver: 0 }]]);
+    expectIntentTransport();
   });
 
   it('keeps raw transport out of migrated blocks and Store writers out of their implementation', () => {

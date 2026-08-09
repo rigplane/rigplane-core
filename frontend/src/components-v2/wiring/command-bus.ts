@@ -11,9 +11,9 @@
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { getActiveReceiver, getRadioState, patchActiveReceiver, patchRadioState } from '$lib/stores/radio.svelte';
-import { getCapabilities } from '$lib/stores/capabilities.svelte';
-import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
+import { adjustTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
+import { dispatchKeyboardRadioAction } from '$lib/runtime/commands/panel-commands';
 export {
   makeAgcHandlers,
   makeAudioRoutingHandlers,
@@ -37,12 +37,11 @@ import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
-/** Get the receiver param (0 = MAIN/active, 1 = SUB). */
-type Receiver = 0 | 1;
-
 function cmd(name: string, params: Record<string, unknown> = {}): void {
   sendCommand(name, params);
 }
+
+type Receiver = 0 | 1;
 
 function activeReceiverParam(): Receiver {
   return getRadioState()?.active === 'SUB' ? 1 : 0;
@@ -97,52 +96,13 @@ export function makeScopeControlsHandlers() {
   };
 }
 
-function cycleValue(values: number[], current: number): number {
-  if (values.length === 0) {
-    return current;
-  }
-  const idx = values.indexOf(current);
-  if (idx < 0 || idx === values.length - 1) {
-    return values[0];
-  }
-  return values[idx + 1];
-}
-
 export function makeKeyboardHandlers() {
   return {
     dispatch(action: KeyboardActionConfig): void {
+      if (dispatchKeyboardRadioAction(action)) return;
       switch (action.action) {
-        case 'tune': {
-          const rx = getActiveReceiver();
-          const baseFreq = rx?.freqHz ?? 0;
-          if (baseFreq <= 0) {
-            return;
-          }
-          const deltaHz = typeof action.params?.deltaHz === 'number'
-            ? action.params.deltaHz
-            : (action.params?.direction === 'down' ? -1 : 1) * getTuningStep();
-          const freq = baseFreq + deltaHz;
-          patchActiveReceiver({ freqHz: freq }, true);
-          cmd('set_freq', { freq, receiver: activeReceiverParam() });
-          return;
-        }
         case 'adjust_tuning_step': {
           adjustTuningStep(action.params?.direction === 'down' ? 'down' : 'up');
-          return;
-        }
-        case 'band_select': {
-          const index = Number(action.params?.index ?? 0);
-          if (index > 0) {
-            cmd('set_band', { band: index });
-          }
-          return;
-        }
-        case 'cycle_preamp': {
-          const values = getCapabilities()?.preValues ?? [0, 1];
-          const current = getActiveReceiver()?.preamp ?? values[0] ?? 0;
-          const level = cycleValue(values, current);
-          patchActiveReceiver({ preamp: level });
-          cmd('set_preamp', { level, receiver: activeReceiverParam() });
           return;
         }
         case 'toggle_split': {
@@ -151,85 +111,14 @@ export function makeKeyboardHandlers() {
           cmd('set_split', { on: next });
           return;
         }
-        case 'cycle_data_mode': {
-          const max = getCapabilities()?.dataModeCount ?? 0;
-          const current = getActiveReceiver()?.dataMode ?? 0;
-          const mode = current >= max ? 0 : current + 1;
-          patchActiveReceiver({ dataMode: mode }, true);
-          cmd('set_data_mode', { mode, receiver: activeReceiverParam() });
-          return;
-        }
         case 'open_filter_settings': {
           window.dispatchEvent(new CustomEvent('rigplane:open-filter-settings'));
-          return;
-        }
-        case 'mode_select': {
-          const mode = action.params?.mode;
-          if (typeof mode === 'string') {
-            patchActiveReceiver({ mode }, true);
-            cmd('set_mode', { mode, receiver: activeReceiverParam() });
-          }
-          return;
-        }
-        case 'cycle_filter': {
-          const current = getActiveReceiver()?.filter ?? 1;
-          const direction = action.params?.direction;
-          let next: number;
-          if (direction === 'wider') {
-            next = current <= 1 ? 3 : current - 1;
-          } else if (direction === 'narrower') {
-            next = current >= 3 ? 1 : current + 1;
-          } else {
-            next = current >= 3 ? 1 : current + 1;
-          }
-          patchActiveReceiver({ filter: next }, true);
-          cmd('set_filter', { filter: next, receiver: activeReceiverParam() });
-          return;
-        }
-        case 'toggle_nr': {
-          const on = !(getActiveReceiver()?.nr ?? false);
-          patchActiveReceiver({ nr: on }, true);
-          cmd('set_nr', { on, receiver: activeReceiverParam() });
-          return;
-        }
-        case 'toggle_nb': {
-          const on = !(getActiveReceiver()?.nb ?? false);
-          patchActiveReceiver({ nb: on }, true);
-          cmd('set_nb', { on, receiver: activeReceiverParam() });
-          return;
-        }
-        case 'cycle_agc': {
-          const modes = getCapabilities()?.agcModes ?? [1, 2, 3];
-          const current = getActiveReceiver()?.agc ?? modes[0] ?? 1;
-          const mode = cycleValue(modes, current);
-          patchActiveReceiver({ agc: mode }, true);
-          cmd('set_agc', { mode, receiver: activeReceiverParam() });
-          return;
-        }
-        case 'cycle_att': {
-          const values = getCapabilities()?.attValues ?? [0];
-          const current = getActiveReceiver()?.att ?? 0;
-          const db = cycleValue(values, current);
-          patchActiveReceiver({ att: db }, true);
-          cmd('set_attenuator', { db, receiver: activeReceiverParam() });
-          return;
-        }
-        case 'toggle_auto_notch': {
-          const on = !(getActiveReceiver()?.autoNotch ?? false);
-          patchActiveReceiver({ autoNotch: on }, true);
-          cmd('set_auto_notch', { on, receiver: activeReceiverParam() });
           return;
         }
         case 'toggle_monitor': {
           const on = !(getRadioState()?.monitorOn ?? false);
           patchRadioState({ monitorOn: on });
           cmd('set_monitor', { on });
-          return;
-        }
-        case 'toggle_ip_plus': {
-          const on = !(getActiveReceiver()?.ipplus ?? false);
-          patchActiveReceiver({ ipplus: on }, true);
-          cmd('set_ip_plus', { on, receiver: activeReceiverParam() });
           return;
         }
         case 'toggle_dial_lock': {
