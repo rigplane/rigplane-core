@@ -24,6 +24,8 @@ import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 const here = import.meta.dirname;
+const semanticRoot = path.resolve(here, 'src/components-v2/wiring/SemanticRadioSurfaces.svelte');
+const panelAdapters = path.resolve(here, 'src/lib/runtime/adapters/panel-adapters.ts');
 
 /** production module (repo-relative) → fixture stub (repo-relative) */
 const STUBS: Readonly<Record<string, string>> = {
@@ -48,7 +50,12 @@ function fixtureStubs(): Plugin {
       if (stubPaths.has(importer.split('?')[0])) return null;
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
       if (!resolved) return null;
-      return table.get(resolved.id.split('?')[0]) ?? null;
+      const target = resolved.id.split('?')[0];
+      // The adapter has a broad shipped export surface. Only the semantic
+      // composition root uses the fixture-only binder; every other importer
+      // must resolve the real adapter module unchanged.
+      if (target === panelAdapters && importer.split('?')[0] !== semanticRoot) return null;
+      return table.get(target) ?? null;
     },
   };
 }

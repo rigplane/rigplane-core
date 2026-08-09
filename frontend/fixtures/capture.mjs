@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
-import { createServer } from 'vite';
+import { build, createServer } from 'vite';
 
 const FRONTEND = path.resolve(import.meta.dirname, '..');
 const REPO = path.resolve(FRONTEND, '..');
@@ -34,6 +34,11 @@ const ONLY = arg('--only', null);
 // parallel run pick its own port without touching the single-port default any
 // script or doc already assumes.
 const PORT = Number(arg('--port', '5199'));
+
+// The page console cannot observe Vite's dependency scanner or transform
+// errors. Build this exact additive config first so any server-side failure is
+// terminal rather than allowing a visually valid capture to escape.
+await build({ configFile: path.join(FRONTEND, 'vite.fixtures.config.ts'), logLevel: 'error' });
 
 /* ── viewports ─────────────────────────────────────────────────────────── */
 const VIEWPORTS = {
