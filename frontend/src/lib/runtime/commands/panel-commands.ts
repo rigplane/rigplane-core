@@ -1017,9 +1017,26 @@ function keyboardDirection(value: unknown): 'up' | 'down' | null {
 }
 
 function keyboardParams(value: unknown): Record<string, unknown> | null {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null ? value as Record<string, unknown> : null;
+  if (value === null || typeof value !== 'object') return null;
+  try {
+    if (Array.isArray(value)) return null;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const params: Record<PropertyKey, unknown> = Object.create(null);
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) return null;
+      Object.defineProperty(params, key, {
+        value: descriptor.value,
+        enumerable: descriptor.enumerable,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return params;
+  } catch {
+    return null;
+  }
 }
 
 /** Handles only the A03d1a radio family; invalid recognized actions fail closed. */

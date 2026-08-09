@@ -1073,6 +1073,43 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('handles hostile keyboard params without reading accessors or reflecting deferred actions', () => {
+    const getter = vi.fn(() => { throw new Error('getter executed'); });
+    const accessor = Object.defineProperty({}, 'direction', { enumerable: true, get: getter });
+    const prototypeTrap = new Proxy({}, { getPrototypeOf: () => { throw new Error('prototype trap executed'); } });
+    const ownKeysTrap = new Proxy({}, { ownKeys: () => { throw new Error('ownKeys trap executed'); } });
+    const descriptorTrap = new Proxy({}, {
+      ownKeys: () => ['direction'],
+      getOwnPropertyDescriptor: () => { throw new Error('descriptor trap executed'); },
+    });
+    const dataGet = vi.fn(() => { throw new Error('data get trap executed'); });
+    const dataProxy = new Proxy({ direction: 'up' }, { get: dataGet });
+    const invalid = [null, [], 1, 'up', accessor, prototypeTrap, ownKeysTrap, descriptorTrap];
+
+    for (const params of invalid) {
+      expect(() => dispatchKeyboardRadioAction({ action: 'tune', params: params as Record<string, unknown> })).not.toThrow();
+      expect(dispatchKeyboardRadioAction({ action: 'tune', params: params as Record<string, unknown> })).toBe(true);
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit', params: prototypeTrap as Record<string, unknown> })).toBe(false);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+
+    const nullPrototype = Object.assign(Object.create(null) as Record<string, unknown>, { direction: 'up' });
+    expect(dispatchKeyboardRadioAction({ action: 'tune', params: { direction: 'up' } })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'tune', params: nullPrototype })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'tune', params: dataProxy })).toBe(true);
+    expect(dataGet).not.toHaveBeenCalled();
+    expect(exactCalls()).toEqual([
+      ['set_freq', { freq: 14_075_000, receiver: 0 }],
+      ['set_freq', { freq: 14_075_000, receiver: 0 }],
+      ['set_freq', { freq: 14_075_000, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+  });
+
   it('keeps a one-receiver MAIN with A/B and Unselected facts valid for keyboard tuning', () => {
     h.state = oneReceiverAbState();
     h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
