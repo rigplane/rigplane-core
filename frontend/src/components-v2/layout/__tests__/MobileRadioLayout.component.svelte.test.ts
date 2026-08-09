@@ -26,6 +26,24 @@ vi.mock('../panels/RitXitPanel.svelte', () => ({ default: function S() { return 
 vi.mock('../panels/AntennaPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/ScanPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/CwPanel.svelte', () => ({ default: function S() { return {}; } }));
+const meterBoundary = vi.hoisted(() => ({
+  props: null as null | {
+    meterSource: string;
+    onMeterSourceChange: (source: string) => void;
+  },
+}));
+vi.mock('../../panels/DockMeterPanel.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../panels/DockMeterPanel.svelte')>();
+  return {
+    default: function DockMeterPanelBoundary(
+      anchor: Parameters<typeof actual.default>[0],
+      props: Parameters<typeof actual.default>[1],
+    ) {
+      meterBoundary.props = props;
+      return actual.default(anchor, props);
+    },
+  };
+});
 vi.mock('./KeyboardHandler.svelte', () => ({ default: function S() { return {}; } }));
 // Note: ../panels/EssentialsPanel.svelte and ./mobile-chip-bar.svelte are intentionally
 // NOT mocked — the chip-scroll IA contract (#839) is part of what these tests cover.
@@ -104,13 +122,15 @@ vi.mock('$lib/transport/ws-client', async (importOriginal) => ({
 const {
   onMainVfoClickSpy,
   onSubVfoClickSpy,
+  radioIntentSpy,
 } = vi.hoisted(() => ({
   onMainVfoClickSpy: vi.fn(),
   onSubVfoClickSpy: vi.fn(),
+  radioIntentSpy: vi.fn(),
 }));
 vi.mock('../../wiring/command-bus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../wiring/command-bus')>();
-  const n = vi.fn();
+  const n = radioIntentSpy;
   return {
     ...actual,
     makeVfoHandlers: () => ({
@@ -323,7 +343,9 @@ beforeEach(() => {
   vi.mocked(getTxPermit).mockReturnValue('allowed');
   (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = null;
   radioSubscriberTracker.active = 0;
+  meterBoundary.props = null;
   wsFrameSpy.mockClear();
+  radioIntentSpy.mockClear();
   resetCommandLifecycle();
   onMainVfoClickSpy.mockClear();
   onSubVfoClickSpy.mockClear();
@@ -398,6 +420,7 @@ describe('MOR-1409 local mobile meter selection', () => {
       receiverPatches: vi.mocked(patchReceiver).mock.calls.length,
       subscribers: radioSubscriberTracker.active,
       wsFrames: wsFrameSpy.mock.calls.length,
+      intents: radioIntentSpy.mock.calls.length,
       commands: tx.sends.length,
       lifecycle: JSON.parse(JSON.stringify(getCommandLifecycles())),
       txLifecycle: tx.controller.snapshot(),
@@ -410,12 +433,27 @@ describe('MOR-1409 local mobile meter selection', () => {
       expect(buttons[index].classList.contains('active')).toBe(true);
     }
 
+    buttons[0].click();
+    flushSync();
+    expect(meterBoundary.props?.meterSource).toBe('S');
+
+    for (const forged of ['po', 'UNKNOWN'] as const) {
+      // Deliberately bypass the child control's canonical buttons at the test
+      // boundary: `po` is the legacy type residue and UNKNOWN is out of type.
+      meterBoundary.props?.onMeterSourceChange(forged as never);
+      flushSync();
+      expect(meterBoundary.props?.meterSource).toBe('S');
+      expect(t.querySelector('.status-tag.source')?.getAttribute('data-source')).toBe('S');
+      expect(buttons[0].classList.contains('active')).toBe(true);
+    }
+
     expect(radio.current).toEqual(before.radio);
     expect(vi.mocked(patchActiveReceiver).mock.calls.length).toBe(before.activePatches);
     expect(vi.mocked(patchRadioState).mock.calls.length).toBe(before.radioPatches);
     expect(vi.mocked(patchReceiver).mock.calls.length).toBe(before.receiverPatches);
     expect(radioSubscriberTracker.active).toBe(before.subscribers);
     expect(wsFrameSpy.mock.calls).toHaveLength(before.wsFrames);
+    expect(radioIntentSpy.mock.calls).toHaveLength(before.intents);
     expect(tx.sends).toHaveLength(before.commands);
     expect(JSON.parse(JSON.stringify(getCommandLifecycles()))).toEqual(before.lifecycle);
     expect(tx.controller.snapshot()).toEqual(before.txLifecycle);
