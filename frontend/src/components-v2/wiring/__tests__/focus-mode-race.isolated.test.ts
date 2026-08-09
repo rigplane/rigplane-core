@@ -15,6 +15,10 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
 }));
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: vi.fn(() => ({ receivers: 2, vfoScheme: 'main_sub' })),
+  getControlRange: vi.fn(() => null),
+}));
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { getRadioState } from '$lib/stores/radio.svelte';
@@ -39,7 +43,7 @@ describe('focus → mode handoff race (#720)', () => {
     stubModePanel();
     // Drain any lingering pending-focus from previous tests.  Because the
     // module-scoped cache auto-clears on first read, one call is enough.
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN', main: {}, sub: {} } as any);
     makeModeHandlers().onModeChange('__drain__');
     vi.mocked(sendCommand).mockClear();
   });
@@ -58,7 +62,7 @@ describe('focus → mode handoff race (#720)', () => {
     vfo.onSubModeClick();
 
     // `activeReceiverParam()` would mis-report MAIN if the store lagged.
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN', main: {}, sub: {} } as any);
 
     mode.onModeChange('CW');
 
@@ -72,7 +76,7 @@ describe('focus → mode handoff race (#720)', () => {
     vfo.onMainModeClick();
 
     // Even if `activeReceiverParam()` reports SUB, pending-focus wins.
-    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB', sub: {} } as any);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB', main: {}, sub: {} } as any);
 
     mode.onModeChange('USB');
 
@@ -82,7 +86,7 @@ describe('focus → mode handoff race (#720)', () => {
   it('falls back to activeReceiverParam when no prior focus click', () => {
     const mode = makeModeHandlers();
 
-    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB', sub: {} } as any);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'SUB', main: {}, sub: {} } as any);
 
     mode.onModeChange('FM');
 
@@ -101,7 +105,7 @@ describe('focus → mode handoff race (#720)', () => {
     // Advance past the TTL window.
     vi.setSystemTime(new Date(1_700_000_000_500));
 
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN', main: {}, sub: {} } as any);
 
     mode.onModeChange('CW');
 
@@ -117,7 +121,7 @@ describe('focus → mode handoff race (#720)', () => {
     // Ignore the set_vfo side-effect — we only assert on set_mode calls.
     vi.mocked(sendCommand).mockClear();
 
-    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN' } as any);
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN', main: {}, sub: {} } as any);
 
     mode.onModeChange('CW');
     mode.onModeChange('USB');

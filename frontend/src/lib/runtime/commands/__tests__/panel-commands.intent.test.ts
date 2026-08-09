@@ -70,10 +70,12 @@ vi.mock('$lib/audio/audio-manager', () => ({
 import {
   makeFilterHandlers,
   makeModeHandlers,
+  makePresetHandlers,
   makeRfFrontEndHandlers,
 } from '../panel-commands';
 import * as compatibilityBus from '$lib/../components-v2/wiring/command-bus';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import { setPendingFocus } from '$lib/radio/pending-focus';
 
 const freshStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 
@@ -116,6 +118,18 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
   } as unknown as ServerState;
 }
 
+function oneReceiverAbState(): ServerState {
+  const current = state();
+  const main = {
+    ...current.main,
+    vfoA: { freqHz: 14_074_000, mode: 'USB', filterNum: 2, dataMode: 1 },
+    vfoB: { freqHz: 7_074_000, mode: 'CW', filterNum: 1, dataMode: 0 },
+    activeSlot: 'A',
+    unselectedVfo: { freqHz: 7_074_000, mode: 'CW', filterNum: 1, dataMode: 0 },
+  };
+  return { ...current, active: 'MAIN', main, sub: main } as ServerState;
+}
+
 function exactCalls(): Array<[string, Record<string, unknown>]> {
   return h.sendCommand.mock.calls.map(([name, params]) => [name, params]);
 }
@@ -135,6 +149,8 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     h.unavailable.clear();
     h.caps = {
       capabilities: ['pbt'],
+      receivers: 2,
+      vfoScheme: 'main_sub',
       controls: {
         pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
       },
@@ -150,10 +166,10 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     vi.useRealTimers();
   });
 
-  it('exports the canonical factories from the compatibility bus instead of duplicating bodies', () => {
+  it('exports only the A03a1 canonical factories from the compatibility bus', () => {
     expect(compatibilityBus.makeModeHandlers).toBe(makeModeHandlers);
-    expect(compatibilityBus.makeRfFrontEndHandlers).toBe(makeRfFrontEndHandlers);
     expect(compatibilityBus.makeFilterHandlers).toBe(makeFilterHandlers);
+    expect(compatibilityBus.makeRfFrontEndHandlers).not.toBe(makeRfFrontEndHandlers);
   });
 
   it('routes mode, DATA mode, and MOD input through exact lifecycle envelopes without Store writes', () => {
@@ -171,8 +187,73 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     expect(h.patchRadioState).not.toHaveBeenCalled();
   });
 
-  it('preserves RF front-end command names and parameters without optimistic truth', () => {
-    const rf = makeRfFrontEndHandlers();
+  it('keeps both deferred preset callbacks wholly on the legacy raw path', () => {
+    const preset = makePresetHandlers();
+    preset.onPresetSelect(14_074_000, 'USB', 2);
+    preset.onFreqPreset(7_074_000, 'CW');
+
+    expect(h.sendCommand.mock.calls).toEqual([
+      ['set_freq', { freq: 14_074_000, receiver: 0 }],
+      ['set_mode', { mode: 'USB', filter: 2, receiver: 0 }],
+      ['set_freq', { freq: 7_074_000, receiver: 0 }],
+      ['set_mode', { mode: 'CW', filter: 1, receiver: 0 }],
+    ]);
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('rejects pending physical SUB on one-RX A/B Selected/Unselected topology', () => {
+    h.caps = { capabilities: ['pbt'], receivers: 1, vfoScheme: 'ab' };
+    h.state = oneReceiverAbState();
+    setPendingFocus('SUB');
+
+    makeModeHandlers().onModeChange('CW');
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('accepts pending MAIN without interpreting one-RX A/B Selected/Unselected as SUB', () => {
+    h.caps = { capabilities: ['pbt'], receivers: 1, vfoScheme: 'ab' };
+    h.state = oneReceiverAbState();
+    setPendingFocus('MAIN');
+
+    makeModeHandlers().onModeChange('CW');
+
+    expect(exactCalls()).toEqual([['set_mode', { mode: 'CW', receiver: 0 }]]);
+    expectIntentTransport();
+  });
+
+  it('accepts pending physical SUB only with dual-RX capabilities and fresh target mode', () => {
+    h.caps = { capabilities: ['pbt'], receivers: 2, vfoScheme: 'main_sub' };
+    h.state = state();
+    setPendingFocus('SUB');
+
+    makeModeHandlers().onModeChange('CW');
+
+    expect(exactCalls()).toEqual([['set_mode', { mode: 'CW', receiver: 1 }]]);
+    expectIntentTransport();
+  });
+
+  it('rejects pending physical SUB when its state or fresh mode field is absent', () => {
+    h.caps = { capabilities: ['pbt'], receivers: 2, vfoScheme: 'main_sub' };
+    h.state = { ...state(), sub: null } as unknown as ServerState;
+    setPendingFocus('SUB');
+    makeModeHandlers().onModeChange('CW');
+
+    h.state = state();
+    h.unavailable.add('sub.mode');
+    setPendingFocus('SUB');
+    makeModeHandlers().onModeChange('CW');
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it.each([
+    ['runtime', makeRfFrontEndHandlers],
+    ['compatibility', compatibilityBus.makeRfFrontEndHandlers],
+  ])('keeps the whole deferred RF front-end %s factory on exact legacy behavior', (_name, factory) => {
+    const rf = factory();
     rf.onAttChange(12);
     rf.onPreChange(2);
     rf.onRfGainChange(111);
@@ -180,7 +261,7 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     rf.onDigiSelToggle(true);
     rf.onIpPlusToggle(false);
 
-    expect(exactCalls()).toEqual([
+    expect(h.sendCommand.mock.calls).toEqual([
       ['set_attenuator', { db: 12, receiver: 0 }],
       ['set_preamp', { level: 2, receiver: 0 }],
       ['set_rf_gain', { level: 111, receiver: 0 }],
@@ -188,8 +269,15 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
       ['set_digisel', { on: true, receiver: 0 }],
       ['set_ip_plus', { on: false, receiver: 0 }],
     ]);
-    expectIntentTransport();
-    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchActiveReceiver.mock.calls).toEqual([
+      [{ att: 12 }],
+      [{ preamp: 2 }],
+      [{ rfGain: 111 }, true],
+      [{ squelch: 23 }, true],
+      [{ digisel: true }],
+      [{ ipplus: false }],
+    ]);
+    expect(getCommandLifecycles()).toHaveLength(0);
   });
 
   it('preserves debounced filter command order without optimistic filter values', () => {
@@ -229,14 +317,12 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
   it('fails closed when receiver identity or required observed values are unavailable', () => {
     h.state = null;
     makeModeHandlers().onModeChange('AM');
-    makeRfFrontEndHandlers().onPreChange(1);
     makeFilterHandlers().onFilterChange(2);
     expect(h.sendCommand).not.toHaveBeenCalled();
 
     h.state = state('SUB');
     h.unavailable.add('active');
     makeModeHandlers().onDataModeChange(1);
-    makeRfFrontEndHandlers().onAttChange(6);
     expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
@@ -250,9 +336,7 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
   it('keeps raw transport out of migrated blocks and Store writers out of their implementation', () => {
     const panelSource = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/panel-commands.ts'), 'utf8');
     const busSource = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/command-bus.ts'), 'utf8');
-    const assignedNames = [
-      'makeFilterHandlers', 'makeModeHandlers', 'makeRfFrontEndHandlers',
-    ];
+    const assignedNames = ['makeFilterHandlers', 'makeModeHandlers'];
 
     for (const [index, name] of assignedNames.entries()) {
       const start = panelSource.indexOf(`export function ${name}`);
@@ -266,6 +350,17 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
       expect(block).not.toMatch(/\b(?:patchActiveReceiver|patchRadioState|patchReceiver|sendCommand)\s*\(/);
       expect(busSource).not.toContain(`export function ${name}`);
     }
+    const a03aNamesStart = panelSource.indexOf('const A03A_INTENT_NAMES');
+    const a03aNamesEnd = panelSource.indexOf(']);', a03aNamesStart);
+    const a03aNames = panelSource.slice(a03aNamesStart, a03aNamesEnd);
+    for (const name of [
+      'set_attenuator', 'set_preamp', 'set_rf_gain',
+      'set_squelch', 'set_digisel', 'set_ip_plus',
+    ]) {
+      expect(a03aNames).not.toContain(`'${name}'`);
+    }
+    expect(panelSource).toContain('export function makeRfFrontEndHandlers');
+    expect(busSource).toContain('export function makeRfFrontEndHandlers');
     expect(panelSource).toContain('dispatchRadioIntent({ name, params } as RadioIntent)');
   });
 });

@@ -15,7 +15,7 @@ import type { ReceiverState } from '$lib/types/state';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
-export { makeFilterHandlers, makeModeHandlers, makeRfFrontEndHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
+export { makeFilterHandlers, makeModeHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
 import type { KeyboardActionConfig } from '../layout/keyboard-map';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
@@ -152,6 +152,41 @@ export function makeVfoHandlers() {
     onQuickDw: () => cmd('quick_dualwatch'),
     onQuickSplit: () => cmd('quick_split'),
     onTrackingToggle: (on: boolean) => cmd('set_main_sub_tracking', { on }),
+  };
+}
+
+/* ── RF Front End Handlers ───────────────────────────────────── */
+
+export function makeRfFrontEndHandlers() {
+  return {
+    onAttChange: (db: number) => {
+      patchActiveReceiver({ att: db });
+      cmd('set_attenuator', { db, receiver: activeReceiverParam() });
+    },
+    onPreChange: (level: number) => {
+      patchActiveReceiver({ preamp: level });
+      cmd('set_preamp', { level, receiver: activeReceiverParam() });
+    },
+    onRfGainChange: (level: number) => {
+      const receiver = activeReceiverParam();
+      patchActiveReceiver({ rfGain: level }, true);
+      cmd('set_rf_gain', { level, receiver });
+    },
+    onSquelchChange: (level: number) => {
+      const receiver = activeReceiverParam();
+      patchActiveReceiver({ squelch: level }, true);
+      cmd('set_squelch', { level, receiver });
+    },
+    onDigiSelToggle: (on: boolean) => {
+      const receiver = activeReceiverParam();
+      patchActiveReceiver({ digisel: on });
+      cmd('set_digisel', { on, receiver });
+    },
+    onIpPlusToggle: (on: boolean) => {
+      const receiver = activeReceiverParam();
+      patchActiveReceiver({ ipplus: on });
+      cmd('set_ip_plus', { on, receiver });
+    },
   };
 }
 

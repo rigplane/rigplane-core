@@ -33,8 +33,8 @@ import { dispatchRadioIntent, type RadioIntent } from './radio-intents';
 type Receiver = 0 | 1;
 
 const A03A_INTENT_NAMES = new Set<RadioIntent['name']>([
-  'set_attenuator', 'set_data_mode', 'set_data_off_mod_input', 'set_data1_mod_input', 'set_data2_mod_input', 'set_data3_mod_input', 'set_digisel', 'set_filter', 'set_filter_shape',
-  'set_filter_width', 'set_if_shift', 'set_ip_plus', 'set_mode', 'set_pbt_inner', 'set_pbt_outer', 'set_preamp', 'set_rf_gain', 'set_squelch',
+  'set_data_mode', 'set_data_off_mod_input', 'set_data1_mod_input', 'set_data2_mod_input', 'set_data3_mod_input', 'set_filter', 'set_filter_shape',
+  'set_filter_width', 'set_if_shift', 'set_pbt_inner', 'set_pbt_outer',
 ]);
 
 function cmd(name: string, params: Record<string, unknown> = {}): void {
@@ -49,15 +49,19 @@ function activeReceiverParam(): Receiver {
   return getRadioState()?.active === 'SUB' ? 1 : 0;
 }
 
-function knownActiveReceiver(field?: string): Receiver | null {
+function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver | null {
   const state = getRadioState();
+  const receiverName = target ?? state?.active;
   if (
     !state
-    || (state.active !== 'MAIN' && state.active !== 'SUB')
-    || !isFieldAvailable(state, 'active')
+    || (receiverName !== 'MAIN' && receiverName !== 'SUB')
+    || (!target && !isFieldAvailable(state, 'active'))
   ) return null;
-  if (state.active === 'SUB' && !state.sub) return null;
-  const receiver = state.active === 'SUB' ? 1 : 0;
+  if (receiverName === 'SUB') {
+    const receivers = getCapabilities()?.receivers;
+    if (!Number.isSafeInteger(receivers) || (receivers as number) < 2 || !state.sub) return null;
+  } else if (!state.main) return null;
+  const receiver = receiverName === 'SUB' ? 1 : 0;
   const prefix = receiver === 1 ? 'sub' : 'main';
   return field && !isFieldAvailable(state, `${prefix}.${field}`) ? null : receiver;
 }
@@ -135,16 +139,16 @@ export function makeModeHandlers() {
   return {
     onModeChange: (mode: string) => {
       const pending = consumePendingFocus();
-      const receiver = pending ? (pending === 'SUB' ? 1 : 0) : knownActiveReceiver('mode');
+      const receiver = knownActiveReceiver('mode', pending ?? undefined);
       if (receiver === null) return;
       // MOR-495: recall the destination mode's remembered filter so the web
       // mirrors the front panel (mode-only 0x06 would force the radio's
       // mode-default filter, e.g. USB → FIL2).  Unseen mode → mode-only.
       const filter = getModeFilter(mode);
       if (filter !== undefined) {
-        cmd('set_mode', { mode, filter, receiver });
+        dispatchRadioIntent({ name: 'set_mode', params: { mode, filter, receiver } });
       } else {
-        cmd('set_mode', { mode, receiver });
+        dispatchRadioIntent({ name: 'set_mode', params: { mode, receiver } });
       }
     },
     onDataModeChange: (mode: number) => {
@@ -206,33 +210,31 @@ export function makeAntennaHandlers() {
 export function makeRfFrontEndHandlers() {
   return {
     onAttChange: (db: number) => {
-      const receiver = knownActiveReceiver('att');
-      if (receiver === null) return;
-      cmd('set_attenuator', { db, receiver });
+      patchActiveReceiver({ att: db });
+      cmd('set_attenuator', { db, receiver: activeReceiverParam() });
     },
     onPreChange: (level: number) => {
-      const receiver = knownActiveReceiver('preamp');
-      if (receiver === null) return;
-      cmd('set_preamp', { level, receiver });
+      patchActiveReceiver({ preamp: level });
+      cmd('set_preamp', { level, receiver: activeReceiverParam() });
     },
     onRfGainChange: (level: number) => {
-      const receiver = knownActiveReceiver('rfGain');
-      if (receiver === null) return;
+      const receiver = activeReceiverParam();
+      patchActiveReceiver({ rfGain: level }, true);
       cmd('set_rf_gain', { level, receiver });
     },
     onSquelchChange: (level: number) => {
-      const receiver = knownActiveReceiver('squelch');
-      if (receiver === null) return;
+      const receiver = activeReceiverParam();
+      patchActiveReceiver({ squelch: level }, true);
       cmd('set_squelch', { level, receiver });
     },
     onDigiSelToggle: (on: boolean) => {
-      const receiver = knownActiveReceiver('digisel');
-      if (receiver === null) return;
+      const receiver = activeReceiverParam();
+      patchActiveReceiver({ digisel: on });
       cmd('set_digisel', { on, receiver });
     },
     onIpPlusToggle: (on: boolean) => {
-      const receiver = knownActiveReceiver('ipplus');
-      if (receiver === null) return;
+      const receiver = activeReceiverParam();
+      patchActiveReceiver({ ipplus: on });
       cmd('set_ip_plus', { on, receiver });
     },
   };
