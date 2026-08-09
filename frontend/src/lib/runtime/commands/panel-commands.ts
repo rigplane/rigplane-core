@@ -30,6 +30,7 @@ import { getModeFilter } from '$lib/radio/mode-filter-memory';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
+import { getTuningStep } from '$lib/stores/tuning.svelte';
 import { dispatchRadioIntent, isNormalizedLevel, type RadioIntent } from './radio-intents';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
@@ -553,6 +554,12 @@ export function makeDspHandlers() {
         dispatchRadioIntent({ name: 'set_manual_notch', params: { on: false, receiver } });
       }
     },
+    onAutoNotchToggle: () => {
+      const receiver = knownReceiverField('autoNotch');
+      const current = receiver === 0 ? getRadioState()?.main?.autoNotch : getRadioState()?.sub?.autoNotch;
+      if (!hasCapability('notch') || receiver === null || typeof current !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_auto_notch', params: { on: !current, receiver } });
+    },
     onNotchFreqChange: (value: number) => {
       const receiver = knownActiveReceiver();
       if (!hasCapability('notch') || receiver === null || !knownTopLevelField('notchFilter')
@@ -970,6 +977,153 @@ export function makeVfoHandlers() {
       dispatchRadioIntent({ name: 'set_main_sub_tracking', params: { on } });
     },
   };
+}
+
+/* ── Keyboard radio delegation (MOR-1409 A03d1a) ─────────────────── */
+
+type KeyboardRadioAction = { action: string; params?: Record<string, unknown> };
+type KeyboardContext = NonNullable<ReturnType<typeof currentA03cContext>> & { receiver: Receiver };
+
+const KEYBOARD_RADIO_ACTIONS = new Set([
+  'tune', 'band_select', 'mode_select', 'cycle_data_mode', 'cycle_filter',
+  'cycle_preamp', 'cycle_att', 'cycle_agc', 'toggle_nr', 'toggle_nb',
+  'toggle_auto_notch', 'toggle_ip_plus',
+]);
+
+function currentKeyboardContext(): KeyboardContext | null {
+  const context = currentA03cContext();
+  const active = context?.state.active;
+  if (!context || !knownA03cTopLevelField(context, 'active') || (active !== 'MAIN' && active !== 'SUB')) return null;
+  const receiver = knownA03cReceiver(context, active);
+  return receiver === null ? null : { ...context, receiver };
+}
+
+function keyboardReceiverField(context: KeyboardContext, field: string): boolean {
+  const receiver = context.receiver === 0 ? context.state.main : context.state.sub;
+  const value = receiver?.[field as never];
+  return value !== undefined && value !== null
+    && isFieldAvailable(context.state, `${context.receiver === 0 ? 'main' : 'sub'}.${field}`);
+}
+
+function keyboardCycle(values: unknown, current: unknown): number | null {
+  if (!Array.isArray(values) || values.length === 0 || !Number.isSafeInteger(current)
+    || !values.every(Number.isSafeInteger)) return null;
+  const index = values.indexOf(current);
+  return index < 0 ? null : values[(index + 1) % values.length] as number;
+}
+
+function keyboardDirection(value: unknown): 'up' | 'down' | null {
+  return value === 'up' || value === 'down' ? value : null;
+}
+
+function keyboardParams(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== 'object') return null;
+  try {
+    if (Array.isArray(value)) return null;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const params: Record<PropertyKey, unknown> = Object.create(null);
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) return null;
+      Object.defineProperty(params, key, {
+        value: descriptor.value,
+        enumerable: descriptor.enumerable,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return params;
+  } catch {
+    return null;
+  }
+}
+
+/** Handles only the A03d1a radio family; invalid recognized actions fail closed. */
+export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAction): boolean {
+  if (!KEYBOARD_RADIO_ACTIONS.has(action)) return false;
+  const safeParams = params === undefined ? {} : keyboardParams(params);
+  if (safeParams === null) return true;
+  const context = currentKeyboardContext();
+  if (!context) return true;
+  const receiver = context.receiver;
+  const rx = receiver === 0 ? context.state.main : context.state.sub;
+  const has = (name: string) => context.caps.capabilities.includes(name);
+
+  switch (action) {
+    case 'tune': {
+      const step = getTuningStep();
+      const direction = keyboardDirection(safeParams.direction);
+      const delta = Number.isSafeInteger(safeParams.deltaHz) ? safeParams.deltaHz
+        : direction && Number.isSafeInteger(step) && step > 0 ? (direction === 'down' ? -step : step) : null;
+      const frequency = rx?.freqHz;
+      const target = typeof delta === 'number' && Number.isSafeInteger(frequency) ? frequency + delta : null;
+      if (keyboardReceiverField(context, 'freqHz') && Number.isSafeInteger(step) && step > 0
+        && typeof frequency === 'number' && Number.isSafeInteger(frequency) && frequency > 0
+        && typeof target === 'number' && Number.isSafeInteger(target) && target > 0) makeVfoHandlers().onFreqChange(target, receiver);
+      return true;
+    }
+    case 'band_select': {
+      const bsr = safeParams.index;
+      const frequency = rx?.freqHz;
+      if (has('bsr') && keyboardReceiverField(context, 'freqHz') && typeof bsr === 'number'
+        && Number.isSafeInteger(bsr) && bsr > 0 && typeof frequency === 'number'
+        && Number.isSafeInteger(frequency) && frequency > 0) makeBandHandlers().onBandSelect('', frequency, bsr);
+      return true;
+    }
+    case 'mode_select':
+      if (keyboardReceiverField(context, 'mode') && typeof safeParams.mode === 'string' && safeParams.mode.length > 0
+        && context.caps.modes.includes(safeParams.mode)) makeModeHandlers().onModeChange(safeParams.mode);
+      return true;
+    case 'cycle_data_mode': {
+      const count = context.caps.dataModeCount;
+      if (keyboardReceiverField(context, 'dataMode') && typeof count === 'number' && Number.isSafeInteger(count) && count > 0
+        && Number.isSafeInteger(rx?.dataMode) && rx.dataMode >= 0 && rx.dataMode < count) {
+        makeModeHandlers().onDataModeChange((rx.dataMode + 1) % count);
+      }
+      return true;
+    }
+    case 'cycle_filter': {
+      const delta = safeParams.step === -1 || safeParams.step === 1 ? safeParams.step
+        : safeParams.direction === 'wider' ? -1 : safeParams.direction === 'narrower' ? 1 : null;
+      const count = context.caps.filters.length;
+      const filter = rx?.filter;
+      if (keyboardReceiverField(context, 'filter') && typeof filter === 'number' && Number.isSafeInteger(filter)
+        && filter >= 1 && filter <= count && count > 0 && delta !== null) {
+        makeFilterHandlers().onFilterChange(((filter - 1 + delta + count) % count) + 1);
+      }
+      return true;
+    }
+    case 'cycle_preamp': {
+      const next = keyboardCycle(context.caps.preValues, rx?.preamp);
+      if (has('preamp') && keyboardReceiverField(context, 'preamp') && next !== null) makeRfFrontEndHandlers().onPreChange(next);
+      return true;
+    }
+    case 'cycle_att': {
+      const next = keyboardCycle(context.caps.attValues, rx?.att);
+      if (has('attenuator') && keyboardReceiverField(context, 'att') && next !== null) makeRfFrontEndHandlers().onAttChange(next);
+      return true;
+    }
+    case 'cycle_agc': {
+      const next = keyboardCycle(context.caps.agcModes, rx?.agc);
+      if (has('agc') && keyboardReceiverField(context, 'agc') && next !== null) makeAgcHandlers().onAgcModeChange(next);
+      return true;
+    }
+    case 'toggle_nr':
+      if (has('nr') && keyboardReceiverField(context, 'nr') && typeof rx?.nr === 'boolean') makeDspHandlers().onNrModeChange(rx.nr ? 0 : 1);
+      return true;
+    case 'toggle_nb':
+      if (has('nb') && keyboardReceiverField(context, 'nb') && typeof rx?.nb === 'boolean') makeDspHandlers().onNbToggle(!rx.nb);
+      return true;
+    case 'toggle_auto_notch':
+      if (has('notch') && keyboardReceiverField(context, 'autoNotch') && typeof rx?.autoNotch === 'boolean') makeDspHandlers().onAutoNotchToggle();
+      return true;
+    case 'toggle_ip_plus':
+      if (has('ip_plus') && keyboardReceiverField(context, 'ipplus') && typeof rx?.ipplus === 'boolean') makeRfFrontEndHandlers().onIpPlusToggle(!rx.ipplus);
+      return true;
+    default:
+      return true;
+  }
 }
 
 /* ── VOX Handlers ────────────────────────────────────────────────── */
