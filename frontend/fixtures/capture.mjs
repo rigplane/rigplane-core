@@ -38,7 +38,11 @@ const PORT = Number(arg('--port', '5199'));
 // The page console cannot observe Vite's dependency scanner or transform
 // errors. Build this exact additive config first so any server-side failure is
 // terminal rather than allowing a visually valid capture to escape.
-await build({ configFile: path.join(FRONTEND, 'vite.fixtures.config.ts'), logLevel: 'error' });
+await build({
+  root: FRONTEND,
+  configFile: path.join(FRONTEND, 'vite.fixtures.config.ts'),
+  logLevel: 'error',
+});
 
 /* ── viewports ─────────────────────────────────────────────────────────── */
 const VIEWPORTS = {
