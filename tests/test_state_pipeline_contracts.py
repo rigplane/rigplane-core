@@ -858,13 +858,12 @@ async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision()
     _assert_delivered_from_snapshot(envelope["data"], snapshot)
 
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=16)
-    server.register_control_event_queue(queue)
+    registration_full = server.register_control_event_queue(queue)
+    assert registration_full["type"] == "full"
+    _assert_delivered_from_snapshot(registration_full["data"], snapshot)
     server._last_state_broadcast = 0.0  # noqa: SLF001
     server._broadcast_state_update()  # noqa: SLF001
-    broadcast = queue.get_nowait()
-    assert broadcast["type"] == "state_update"
-    assert broadcast["data"]["type"] == "full"
-    _assert_delivered_from_snapshot(broadcast["data"]["data"], snapshot)
+    assert queue.empty()
 
     writer = _FakeWriter()
     await server._serve_state(writer)  # noqa: SLF001
@@ -878,12 +877,16 @@ async def test_web_delivery_payloads_use_snapshot_not_legacy_state_or_revision()
     assert after_delivery.as_dict() == snapshot.as_dict()
 
 
-def test_web_state_change_callback_broadcasts_snapshot_without_revision_path() -> None:
+def test_web_state_change_callback_forwards_without_fabricating_store_delivery() -> (
+    None
+):
     server, _ = _server_with_conflicting_legacy_state()
     server._snapshot_for_delivery()  # noqa: SLF001
     snapshot = server.command_state_store.snapshot()
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=16)
-    server.register_control_event_queue(queue)
+    registration_full = server.register_control_event_queue(queue)
+    assert registration_full["type"] == "full"
+    _assert_delivered_from_snapshot(registration_full["data"], snapshot)
 
     server._on_radio_state_change(  # noqa: SLF001
         "legacy_radio_state_changed",
@@ -891,15 +894,12 @@ def test_web_state_change_callback_broadcasts_snapshot_without_revision_path() -
     )
 
     forwarded = queue.get_nowait()
-    broadcast = queue.get_nowait()
     assert forwarded == {
         "type": "event",
         "name": "legacy_radio_state_changed",
         "data": {"revision": _LEGACY_POLLER_REVISION, "freq": 14_250_000},
     }
-    assert broadcast["type"] == "state_update"
-    assert broadcast["data"]["type"] == "full"
-    _assert_delivered_from_snapshot(broadcast["data"]["data"], snapshot)
+    assert queue.empty()
     assert not any(
         item.kind == "revision_producing_event"
         for item in server.state_diagnostics.events()

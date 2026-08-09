@@ -16,6 +16,7 @@ from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.radio_state import RadioState
 from rigplane.runtime._civ_rx import CivRuntime
 from rigplane.types import CivFrame
+from rigplane.web._delta_encoder import apply_delta
 from rigplane.web.server import WebConfig, WebServer
 
 
@@ -97,7 +98,8 @@ def test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger
 ):
     server = WebServer(config=WebConfig(state_diagnostics=True))
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
-    server.register_control_event_queue(queue)
+    registration_full = server.register_control_event_queue(queue)
+    assert registration_full["type"] == "full"
 
     server.command_state_store.apply(
         Observation(
@@ -127,10 +129,14 @@ def test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger
 
     queued = queue.get_nowait()
     assert queued["type"] == "state_update"
-    assert queued["data"]["type"] == "full"
-    assert queued["data"]["stateRevision"] == snapshot.state_revision
-    assert queued["data"]["freshnessRevision"] == snapshot.freshness_revision
-    assert queued["data"]["data"]["main"]["sMeter"] == 42
+    delta = queued["data"]
+    assert delta["type"] == "delta"
+    assert delta["stateRevision"] == snapshot.state_revision
+    assert delta["freshnessRevision"] == snapshot.freshness_revision
+    assert delta["observationSeq"] == snapshot.observation_seq
+    assert delta["changed"]["main"]["sMeter"] == 42
+    assert delta["changed"]["fieldStatus"]["main.sMeter"]["observed"] is True
+    assert apply_delta(registration_full["data"], delta) == payload
     assert queue.empty()
     assert server.state_diagnostics.snapshot()["counts"] == {
         "direct_state_write": 1,

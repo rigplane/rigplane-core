@@ -549,13 +549,8 @@ def test_ws_client_lifecycle_delta_includes_public_state_sequence() -> None:
     srv = WebServer(None)
     observer: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
     peer: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
-    srv.register_control_event_queue(observer)
-
-    srv._broadcast_state_update(force=True)  # noqa: SLF001
-    first = observer.get_nowait()
-    assert first["type"] == "state_update"
-    first_envelope = first["data"]
-    assert isinstance(first_envelope, dict)
+    first_envelope = srv.register_control_event_queue(observer)
+    assert first_envelope["type"] == "full"
     initial = first_envelope["data"]
     assert isinstance(initial, dict)
 
@@ -1883,8 +1878,8 @@ async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revisi
     handler = ControlHandler(ws, None, "0.0.0-test", "IC-TEST", server=srv)
     await handler._send_state_snapshot()  # noqa: SLF001
 
-    assert sent[0]["type"] == "state_update"
-    ws_body = sent[0]["data"]["data"]  # type: ignore[index]
+    assert sent == []
+    ws_body = handler._event_queue.get_nowait()["data"]["data"]  # noqa: SLF001
     assert ws_body == http_body
     assert http_body["fieldStatus"] == ws_body["fieldStatus"]
     assert http_body["fieldStatus"]["main.freqHz"]["observed"] is True
@@ -1946,7 +1941,8 @@ async def test_same_value_observation_metadata_updates_http_and_initial_ws_full_
     handler = ControlHandler(ws, None, "0.0.0-test", "IC-TEST", server=srv)
     await handler._send_state_snapshot()  # noqa: SLF001
 
-    ws_body = sent[0]["data"]["data"]  # type: ignore[index]
+    assert sent == []
+    ws_body = handler._event_queue.get_nowait()["data"]["data"]  # noqa: SLF001
     assert ws_body == http_body
     field_status = http_body["fieldStatus"]["main.freqHz"]
     assert field_status["lastObservedMonotonic"] == 2.0
@@ -2191,12 +2187,20 @@ def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
     assert initial["type"] == "full"
     assert initial["data"]["ptt"] is True
 
+    srv.command_state_store.apply(
+        _store_observation(
+            FieldPath.global_("tx_state", "ptt"),
+            False,
+            at=1.2,
+        )
+    )
+
     srv._last_state_broadcast = 0.0  # noqa: SLF001
     srv._broadcast_state_update()  # noqa: SLF001
     event = q.get_nowait()
 
     assert event["data"]["type"] == "delta"
-    assert event["data"]["changed"]["ptt"] is True
+    assert event["data"]["changed"]["ptt"] is False
     assert (
         event["data"]["stateRevision"]
         == srv.command_state_store.snapshot().state_revision
@@ -2379,7 +2383,8 @@ async def test_continuous_lifecycle_generation_churn_fails_closed_without_state_
     srv = WebServer(None)
     srv.command_state_store = _GenerationAdvanceEveryApplyStore()
     queue: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=2)
-    srv.register_control_event_queue(queue)
+    with pytest.raises(RuntimeError, match="lifecycle ensure"):
+        srv.register_control_event_queue(queue)
 
     with pytest.raises(RuntimeError, match="lifecycle ensure"):
         srv.build_public_state()
@@ -2529,11 +2534,8 @@ def test_broadcast_state_update_refreshes_live_connection_payload_without_revisi
     radio = _LiveConnectionRadio()
     srv = WebServer(radio)
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
-    srv.register_control_event_queue(q)
-
-    srv._broadcast_state_update()  # noqa: SLF001
-    first = q.get_nowait()
-    initial = first["data"]["data"]
+    first = srv.register_control_event_queue(q)
+    initial = first["data"]
 
     radio.control_connected = True
 

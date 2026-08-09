@@ -101,3 +101,47 @@ async def test_task_done_allows_join() -> None:
     assert q.get_nowait() == 2
     q.task_done()
     await asyncio.wait_for(q._queue.join(), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_replace_matching_with_front_keeps_nonmatches_fifo_and_joinable() -> None:
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=5)
+    for item in (
+        {"type": "state_update", "data": 1},
+        {"type": "notification", "data": "first"},
+        {"type": "state_update", "data": 2},
+        {"type": "event", "data": "second"},
+    ):
+        q.put_nowait(item)
+
+    q.replace_matching_with_front(
+        {"type": "state_update", "data": "recovery"},
+        lambda item: item["type"] == "state_update",
+    )
+
+    drained = [q.get_nowait() for _ in range(q.qsize())]
+    assert drained == [
+        {"type": "state_update", "data": "recovery"},
+        {"type": "notification", "data": "first"},
+        {"type": "event", "data": "second"},
+    ]
+    for _ in drained:
+        q.task_done()
+    await asyncio.wait_for(q._queue.join(), timeout=0.1)
+
+
+def test_replace_matching_with_front_evicts_only_oldest_nonmatch_when_full() -> None:
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=3)
+    for label in ("first", "second", "third"):
+        q.put_nowait({"type": "notification", "data": label})
+
+    q.replace_matching_with_front(
+        {"type": "state_update", "data": "recovery"},
+        lambda item: item["type"] == "state_update",
+    )
+
+    assert [q.get_nowait() for _ in range(3)] == [
+        {"type": "state_update", "data": "recovery"},
+        {"type": "notification", "data": "second"},
+        {"type": "notification", "data": "third"},
+    ]
