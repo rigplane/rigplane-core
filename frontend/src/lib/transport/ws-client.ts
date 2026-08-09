@@ -1,7 +1,7 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
 import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
-import { getRadioState, isValidServerState, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
+import { getRadioState, isValidServerState, matchesCurrentCapabilityTopology, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
 
@@ -576,6 +576,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     if (data.stateContractVersion !== 1 || data.providerGeneration !== generation) return null;
     const nextState = syncEnvelopeRevisions({ ...data }, envelope);
     if (!isValidServerState(nextState)) return null;
+    if (capabilitiesMatchGeneration(generation) && !matchesCurrentCapabilityTopology(nextState as any)) return null;
     if (
       _acceptedProviderGeneration === generation
       && _fullState !== null
@@ -618,6 +619,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     for (const key of removed) delete candidate[key];
     syncEnvelopeRevisions(candidate, envelope);
     if (!isValidServerState(candidate)) return null;
+    if (capabilitiesMatchGeneration(generation) && !matchesCurrentCapabilityTopology(candidate as any)) return null;
   }
   if (_acceptedProviderGeneration !== generation || !_hasReceivedFullState || _fullState === null) {
     if (highestSeen === null || generation > highestSeen) resetForProviderGeneration(generation);

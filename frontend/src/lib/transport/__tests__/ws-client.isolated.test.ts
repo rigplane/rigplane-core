@@ -55,6 +55,7 @@ vi.mock('../../stores/radio.svelte', () => ({
     radioStoreMock.current = null;
   }),
   isValidServerState: vi.fn(() => true),
+  matchesCurrentCapabilityTopology: vi.fn(() => true),
   setRadioState: vi.fn((state: ServerStateWithObservation) => {
     const current = radioStoreMock.current;
     const lastRevision = current ? current.stateRevision ?? current.revision : -1;

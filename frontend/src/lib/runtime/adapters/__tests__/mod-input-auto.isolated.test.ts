@@ -113,6 +113,10 @@ function setState(overrides: Record<string, unknown> = {}): void {
   setRadioState(makeState(overrides));
 }
 
+function useDualReceiverCapabilities(): void {
+  setCapabilities({ capabilities: ['data_mode'], receivers: 2, vfoScheme: 'main_sub', stateContractVersion: 1, providerGeneration: 0 } as never);
+}
+
 function missingStatus() {
   return {
     storePath: 'test.path',
@@ -250,6 +254,7 @@ describe('auto-set at TX start (MOR-618)', () => {
 
   it('routes to the ACTIVE receiver group (SUB on D2)', async () => {
     setAutoLanModInputEnabled(true);
+    useDualReceiverCapabilities();
     setState({
       active: 'SUB',
       main: receiver(0),
@@ -314,6 +319,7 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     const control = getTxAudioControl();
     await control.startTx();
 
+    useDualReceiverCapabilities();
     setState({
       active: 'SUB',
       main: receiver(1),

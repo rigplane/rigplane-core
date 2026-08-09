@@ -99,6 +99,10 @@ function setState(overrides: Record<string, unknown> = {}): void {
   setRadioState(makeState(overrides));
 }
 
+function useDualReceiverCapabilities(): void {
+  setCapabilities({ capabilities: ['data_mode'], receivers: 2, vfoScheme: 'main_sub', stateContractVersion: 1, providerGeneration: 0 } as never);
+}
+
 function missingStatus() {
   return {
     storePath: 'test.path',
@@ -173,6 +177,7 @@ describe('armModInputTxGuard (MOR-617)', () => {
   });
 
   it('resolves the ACTIVE receiver group (SUB on D2)', () => {
+    useDualReceiverCapabilities();
     setState({
       active: 'SUB',
       main: receiver(0),

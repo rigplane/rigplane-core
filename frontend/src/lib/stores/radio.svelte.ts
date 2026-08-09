@@ -1,7 +1,7 @@
 import type { ServerState, ReceiverState } from '../types/state';
 import { setRadioPowerOn, setRigConnected, setRadioReady, setControlConnected, setRadioHealth } from './connection.svelte';
 import { getFieldStatus, isFieldAvailable } from '../state/field-status';
-import { capabilitiesMatchGeneration } from './capabilities.svelte';
+import { capabilitiesMatchGeneration, getCapabilities } from './capabilities.svelte';
 
 /**
  * Shared radio state — class-based $state pattern for cross-module reactivity.
@@ -301,6 +301,26 @@ export function isValidServerState(value: unknown): value is ServerState {
   return true;
 }
 
+/** Receiver identity follows matching capabilities: MAIN may expose A/B slots but never a physical SUB. */
+export function matchesCurrentCapabilityTopology(state: ServerState): boolean {
+  const capabilities = getCapabilities();
+  if (!capabilitiesMatchGeneration(state.providerGeneration) || capabilities === null) return false;
+  const hasSubReceiver = Number.isSafeInteger(capabilities.receivers) && capabilities.receivers >= 2;
+  if (state.active === 'SUB' && !hasSubReceiver) return false;
+
+  const record = state as unknown as Record<string, unknown>;
+  if (!record.txTarget || typeof record.txTarget !== 'object' || Array.isArray(record.txTarget)) return false;
+  const txTarget = record.txTarget as Record<string, unknown>;
+  if (txTarget.status === 'known' && txTarget.receiver === 'SUB' && !hasSubReceiver) return false;
+  if (record.scopeControls !== undefined) {
+    if (!record.scopeControls || typeof record.scopeControls !== 'object' || Array.isArray(record.scopeControls)) return false;
+    const receiver = (record.scopeControls as Record<string, unknown>).receiver;
+    const receiverIndex: number = Number.isSafeInteger(receiver) ? receiver as number : -1;
+    if (receiverIndex < 0 || receiverIndex > (hasSubReceiver ? 1 : 0)) return false;
+  }
+  return true;
+}
+
 /**
  * The generated public contract omits ``sub`` for a single-receiver radio,
  * while the established client-side merged-state type keeps a structural
@@ -332,7 +352,7 @@ function clearGenerationBookkeeping(): void {
 }
 
 export function setRadioState(state: ServerState): boolean {
-  if (!hasCurrentEpoch(state)) return false;
+  if (!hasCurrentEpoch(state) || !matchesCurrentCapabilityTopology(state)) return false;
 
   const nextState = normalizeValidatedState(state);
 

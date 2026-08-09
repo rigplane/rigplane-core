@@ -34,13 +34,17 @@ type ServerStateWithObservation = ServerState & {
   fieldStatus?: Record<string, unknown>;
 };
 
-function makeCapabilities(providerGeneration = 0): Capabilities {
+function makeCapabilities(
+  providerGeneration = 0,
+  overrides: Partial<Capabilities> = {},
+): Capabilities {
   return {
     model: 'TEST', scope: false, audio: false, tx: false, capabilities: [],
     receivers: 1, vfoScheme: 'single', freqRanges: [], modes: [], filters: [],
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
     webrtc: { available: false, enabled: false }, txBands: null,
     stateContractVersion: 1, providerGeneration,
+    ...overrides,
   };
 }
 
@@ -213,6 +217,36 @@ describe('ws-client → real radio store gate (integration)', () => {
     sendStateUpdate(instances[0], fullEnvelope(nullSub));
     expect(store.getRadioState()?.revision).toBe(2);
     expect(store.getRadioState()?.main.freqHz).toBe(14_074_000);
+  });
+
+  it('rejects a single-receiver active SUB full before it mutates browser truth', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    const connection = await import('../../stores/connection.svelte');
+    const singleReceiverCaps = makeCapabilities(0, { receivers: 1, vfoScheme: 'ab' });
+    fetchCapabilities.mockResolvedValue(singleReceiverCaps);
+    capabilities.setCapabilities(singleReceiverCaps);
+    const markStateUpdated = vi.spyOn(connection, 'markStateUpdated');
+    const activeStatus = {
+      active: { storePath: 'global.slow_state.active', observed: true, freshness: 'fresh', availability: 'available' },
+    } as const;
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(singleReceiverWireState({ revision: 1, active: 'MAIN', fieldStatus: activeStatus })));
+    const accepted = store.getRadioState();
+    const acceptedCapabilities = capabilities.getCapabilities();
+    const acceptedReady = connection.getRadioReady();
+    markStateUpdated.mockClear();
+
+    sendStateUpdate(instances[0], fullEnvelope(singleReceiverWireState({ revision: 2, active: 'SUB', fieldStatus: activeStatus })));
+    expect(store.getRadioState()).toBe(accepted);
+    expect(capabilities.getCapabilities()).toBe(acceptedCapabilities);
+    expect(connection.getRadioReady()).toBe(acceptedReady);
+    expect(markStateUpdated).not.toHaveBeenCalled();
+
+    const dualReceiverCaps = makeCapabilities(0, { receivers: 2, vfoScheme: 'main_sub' });
+    capabilities.setCapabilities(dualReceiverCaps);
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 2, active: 'SUB', fieldStatus: activeStatus })));
+    expect(store.getRadioState()?.active).toBe('SUB');
   });
 
   it('applies a delta with a higher stateRevision through the real store', async () => {

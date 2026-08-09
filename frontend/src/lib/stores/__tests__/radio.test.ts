@@ -150,6 +150,13 @@ function singleReceiverWireState(
   return wireState as ServerStateWithObservation;
 }
 
+async function useDualReceiverCapabilities(): Promise<void> {
+  const capabilities = await import('../capabilities.svelte');
+  capabilities.setCapabilities({
+    ...capabilities.getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
+  });
+}
+
 describe('radio store', () => {
   let store: typeof import('../radio.svelte');
 
@@ -191,6 +198,51 @@ describe('radio store', () => {
   it('still rejects metadata-only and malformed single-receiver wire bodies', () => {
     expect(store.isValidServerState({ stateContractVersion: 1, providerGeneration: 0 })).toBe(false);
     expect(store.isValidServerState({ ...singleReceiverWireState(), main: 'corrupt' })).toBe(false);
+  });
+
+  it('rejects a single-receiver active SUB before it can turn the structural alias into truth', async () => {
+    const capabilities = await import('../capabilities.svelte');
+    const connection = await import('../connection.svelte');
+    capabilities.setCapabilities({
+      ...capabilities.getCapabilities()!, receivers: 1, vfoScheme: 'ab',
+    });
+    const activeStatus = {
+      active: { storePath: 'global.slow_state.active', observed: true, freshness: 'fresh', availability: 'available' },
+    } as const;
+    expect(store.setRadioState(singleReceiverWireState({ revision: 1, active: 'MAIN', fieldStatus: activeStatus }))).toBe(true);
+    const accepted = store.getRadioState();
+    const acceptedCapabilities = capabilities.getCapabilities();
+    const acceptedReady = connection.getRadioReady();
+
+    expect(store.setRadioState(singleReceiverWireState({ revision: 2, active: 'SUB', fieldStatus: activeStatus }))).toBe(false);
+    expect(store.getRadioState()).toBe(accepted);
+    expect(capabilities.getCapabilities()).toBe(acceptedCapabilities);
+    expect(connection.getRadioReady()).toBe(acceptedReady);
+
+    capabilities.setCapabilities({ ...acceptedCapabilities!, receivers: 2, vfoScheme: 'main_sub' });
+    expect(store.setRadioState(makeState({ revision: 2, active: 'SUB', fieldStatus: activeStatus }))).toBe(true);
+    expect(store.getRadioState()?.active).toBe('SUB');
+  });
+
+  it('keeps single-receiver selected and unselected A/B facts under physical MAIN', async () => {
+    const capabilities = await import('../capabilities.svelte');
+    capabilities.setCapabilities({
+      ...capabilities.getCapabilities()!, receivers: 1, vfoScheme: 'ab',
+    });
+    const main = {
+      ...makeState().main,
+      activeSlot: 'A' as const,
+      vfoA: { freqHz: 14_074_000, mode: 'USB', filterNum: 1, dataMode: 0 },
+      vfoB: { freqHz: 14_076_000, mode: 'USB', filterNum: 1, dataMode: 0 },
+      unselectedVfo: { freqHz: 14_076_000, mode: 'USB', filterNum: 1, dataMode: 0 },
+    };
+    expect(store.setRadioState(singleReceiverWireState({ revision: 1, active: 'MAIN', main }))).toBe(true);
+    expect(store.getRadioState()?.main.vfoA?.freqHz).toBe(14_074_000);
+    expect(store.getRadioState()?.main.unselectedVfo?.freqHz).toBe(14_076_000);
+
+    expect(store.setRadioState(singleReceiverWireState({ revision: 2, active: 'MAIN', main: { ...main, activeSlot: 'B' as const } }))).toBe(true);
+    expect(store.getRadioState()?.active).toBe('MAIN');
+    expect(store.getRadioState()?.main.activeSlot).toBe('B');
   });
 
   it('rejects a state whose epoch does not match capabilities before touching connection truth', async () => {
@@ -459,7 +511,8 @@ describe('radio store', () => {
     expect(store.getFrequency()).toBe(14074000);
   });
 
-  it('getFrequency returns sub receiver frequency when active is SUB', () => {
+  it('getFrequency returns sub receiver frequency when active is SUB', async () => {
+    await useDualReceiverCapabilities();
     store.setRadioState(makeState({ active: 'SUB' }));
     expect(store.getFrequency()).toBe(7100000);
   });
@@ -641,7 +694,8 @@ describe('radio store', () => {
     expect(store.getSubReceiver()?.freqHz).toBe(7100000);
   });
 
-  it('patchActiveReceiver cannot overwrite StateStore-owned SUB VFO truth', () => {
+  it('patchActiveReceiver cannot overwrite StateStore-owned SUB VFO truth', async () => {
+    await useDualReceiverCapabilities();
     store.setRadioState(makeState({ active: 'SUB' }));
     store.patchActiveReceiver({ freqHz: 3500000 });
     expect(store.getSubReceiver()?.freqHz).toBe(7100000);
@@ -655,7 +709,8 @@ describe('radio store', () => {
     expect(store.getRadioState()).toBeNull();
   });
 
-  it('getActiveReceiver returns SUB when active is SUB', () => {
+  it('getActiveReceiver returns SUB when active is SUB', async () => {
+    await useDualReceiverCapabilities();
     store.setRadioState(makeState({ active: 'SUB' }));
     expect(store.getActiveReceiver()?.freqHz).toBe(7100000);
   });
