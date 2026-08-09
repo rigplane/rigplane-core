@@ -1,9 +1,9 @@
 /**
  * Runtime command handler factories for panel controls.
  *
- * This module duplicates the relevant `make*Handlers` factories from
- * `components-v2/wiring/command-bus` so that `lib/runtime/adapters` can
- * import them without creating a `lib/runtime` → `components-v2` dependency.
+ * This module canonically owns the panel command factories. The legacy
+ * `components-v2/wiring/command-bus` is an identity-preserving compatibility
+ * re-export only.
  *
  * Do NOT import from `components-v2/*` here.  Pure filter helpers are
  * inlined below (originate from `components-v2/panels/filter-controls`)
@@ -12,11 +12,9 @@
  * See issue #999, parent #959 (M-4).
  */
 
-import { sendCommand } from '$lib/transport/ws-client';
 import {
   getActiveReceiver,
   getRadioState,
-  patchRadioState,
 } from '$lib/stores/radio.svelte';
 import {
   capabilitiesMatchGeneration,
@@ -30,25 +28,12 @@ import { getModeFilter } from '$lib/radio/mode-filter-memory';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
-import { getTuningStep } from '$lib/stores/tuning.svelte';
-import { dispatchRadioIntent, isNormalizedLevel, type RadioIntent } from './radio-intents';
+import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
+import { dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
 type Receiver = 0 | 1;
-
-const A03A_INTENT_NAMES = new Set<RadioIntent['name']>([
-  'set_data_mode', 'set_data_off_mod_input', 'set_data1_mod_input', 'set_data2_mod_input', 'set_data3_mod_input', 'set_filter', 'set_filter_shape',
-  'set_filter_width', 'set_if_shift', 'set_pbt_inner', 'set_pbt_outer',
-]);
-
-function cmd(name: string, params: Record<string, unknown> = {}): void {
-  if (A03A_INTENT_NAMES.has(name as RadioIntent['name'])) {
-    dispatchRadioIntent({ name, params } as RadioIntent);
-    return;
-  }
-  sendCommand(name, params);
-}
 
 function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver | null {
   const state = getRadioState();
@@ -220,7 +205,7 @@ export function makeModeHandlers() {
     onDataModeChange: (mode: number) => {
       const receiver = knownActiveReceiver('dataMode');
       if (receiver === null) return;
-      cmd('set_data_mode', { mode, receiver });
+      dispatchRadioIntent({ name: 'set_data_mode', params: { mode, receiver } });
     },
     onModInputChange: (source: number) => {
       // MOR-616: route the new source to the active receiver's DATA group
@@ -236,7 +221,7 @@ export function makeModeHandlers() {
         || (dataMode as number) > 3
         || !isFieldAvailable(state, modInputStateKey(dataMode as number))
       ) return;
-      cmd(modInputCommand(dataMode as number), { source });
+      dispatchRadioIntent({ name: modInputCommand(dataMode as number), params: { source } });
     },
   };
 }
@@ -652,7 +637,7 @@ export function makeFilterHandlers() {
     onFilterChange: (filter: number) => {
       const receiver = knownActiveReceiver('filter');
       if (receiver === null) return;
-      cmd('set_filter', { filter, receiver });
+      dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver } });
     },
     onFilterWidthChange: (() => {
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -662,14 +647,14 @@ export function makeFilterHandlers() {
         timer = setTimeout(() => {
           timer = null;
           const receiver = knownActiveReceiver('filterWidth');
-          if (receiver !== null) cmd('set_filter_width', { width, receiver });
+          if (receiver !== null) dispatchRadioIntent({ name: 'set_filter_width', params: { width, receiver } });
         }, 200);
       };
     })(),
     onFilterShapeChange: (shape: number) => {
       const receiver = knownActiveReceiver('filterShape');
       if (receiver === null) return;
-      cmd('set_filter_shape', { shape, receiver });
+      dispatchRadioIntent({ name: 'set_filter_shape', params: { shape, receiver } });
     },
     onFilterPresetChange: (() => {
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -684,11 +669,11 @@ export function makeFilterHandlers() {
           const currentActive = currentReceiver === null ? null : getActiveReceiver()?.filter;
           if (currentReceiver === null || !Number.isSafeInteger(currentActive)) return;
           if (filter !== currentActive) {
-            cmd('set_filter', { filter, receiver: currentReceiver });
+            dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver: currentReceiver } });
           }
-          cmd('set_filter_width', { width, receiver: currentReceiver });
+          dispatchRadioIntent({ name: 'set_filter_width', params: { width, receiver: currentReceiver } });
           if (filter !== currentActive) {
-            cmd('set_filter', { filter: currentActive as number, receiver: currentReceiver });
+            dispatchRadioIntent({ name: 'set_filter', params: { filter: currentActive as number, receiver: currentReceiver } });
           }
         }, 200);
       };
@@ -700,12 +685,12 @@ export function makeFilterHandlers() {
       for (let i = 0; i < defaults.length; i++) {
         const filter = i + 1;
         if (filter !== activeFilter) {
-          cmd('set_filter', { filter, receiver });
+          dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver } });
         }
-        cmd('set_filter_width', { width: defaults[i], receiver });
+        dispatchRadioIntent({ name: 'set_filter_width', params: { width: defaults[i], receiver } });
       }
       if ((activeFilter as number) <= defaults.length) {
-        cmd('set_filter', { filter: activeFilter as number, receiver });
+        dispatchRadioIntent({ name: 'set_filter', params: { filter: activeFilter as number, receiver } });
       }
     },
     onIfShiftChange: (value: number) => {
@@ -713,7 +698,7 @@ export function makeFilterHandlers() {
       if (!caps) return;
       if (caps.capabilities.includes('if_shift')) {
         const receiver = knownActiveReceiver('ifShift');
-        if (receiver !== null) cmd('set_if_shift', { offset: value, receiver });
+        if (receiver !== null) dispatchRadioIntent({ name: 'set_if_shift', params: { offset: value, receiver } });
       } else if (caps.capabilities.includes('pbt')) {
         const receiver = knownActiveReceiver('pbtInner');
         const state = getRadioState();
@@ -731,19 +716,19 @@ export function makeFilterHandlers() {
           activeRx.pbtInner,
           activeRx.pbtOuter,
         );
-        cmd('set_pbt_inner', { value: pbtHzToRaw(pbtInner), receiver });
-        cmd('set_pbt_outer', { value: pbtHzToRaw(pbtOuter), receiver });
+        dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: pbtHzToRaw(pbtInner), receiver } });
+        dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: pbtHzToRaw(pbtOuter), receiver } });
       }
     },
     onPbtInnerChange: (value: number) => {
       const receiver = knownActiveReceiver('pbtInner');
       if (receiver === null) return;
-      cmd('set_pbt_inner', { value: pbtHzToRaw(value), receiver });
+      dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: pbtHzToRaw(value), receiver } });
     },
     onPbtOuterChange: (value: number) => {
       const receiver = knownActiveReceiver('pbtOuter');
       if (receiver === null) return;
-      cmd('set_pbt_outer', { value: pbtHzToRaw(value), receiver });
+      dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: pbtHzToRaw(value), receiver } });
     },
     onPbtReset: () => {
       const receiver = knownActiveReceiver('pbtInner');
@@ -751,8 +736,8 @@ export function makeFilterHandlers() {
       const prefix = receiver === 1 ? 'sub' : 'main';
       if (receiver === null || !state || !isFieldAvailable(state, `${prefix}.pbtOuter`)) return;
       const center = pbtHzToRaw(0);
-      cmd('set_pbt_inner', { value: center, receiver });
-      cmd('set_pbt_outer', { value: center, receiver });
+      dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: center, receiver } });
+      dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: center, receiver } });
     },
   };
 }
@@ -979,6 +964,121 @@ export function makeVfoHandlers() {
   };
 }
 
+/* ── System / scope handlers ─────────────────────────────────────── */
+
+function currentScopeContext() {
+  const context = currentA03cContext();
+  return context && context.caps.scope === true && context.caps.capabilities.includes('scope')
+    ? context : null;
+}
+
+function validScopeValue(value: unknown, kind: 'boolean' | 'integer', min = 0, max = 0): boolean {
+  return kind === 'boolean' ? typeof value === 'boolean'
+    : Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+}
+
+function acceptsScopeValue(
+  context: NonNullable<ReturnType<typeof currentScopeContext>>,
+  field: string,
+  proposed: unknown,
+  kind: 'boolean' | 'integer',
+  min = 0,
+  max = 0,
+): boolean {
+  const current = (context.state.scopeControls as unknown as Record<string, unknown> | undefined)?.[field];
+  return isFieldAvailable(context.state, `scopeControls.${field}`)
+    && validScopeValue(current, kind, min, max) && validScopeValue(proposed, kind, min, max);
+}
+
+function hasPhysicalSub(context: NonNullable<ReturnType<typeof currentScopeContext>>): boolean {
+  return context.caps.receivers === 2 && context.caps.capabilities.includes('dual_rx')
+    && context.state.sub !== null && context.state.sub !== undefined;
+}
+
+export function makeSystemHandlers() {
+  return {
+    onDialLock: (on: boolean) => {
+      const context = currentA03cContext();
+      if (!context || !context.caps.capabilities.includes('dial_lock')
+        || !knownA03cTopLevelField(context, 'dialLock')
+        || typeof context.state.dialLock !== 'boolean' || typeof on !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_dial_lock', params: { on } });
+    },
+    onPowerOff: () => {
+      const context = currentA03cContext();
+      if (!context || !context.caps.capabilities.includes('power_control')) return;
+      dispatchRadioIntent({ name: 'set_powerstat', params: { on: false } });
+    },
+    onSpeak: () => dispatchRadioIntent({ name: 'speak', params: { mode: 0 } }),
+  };
+}
+
+export function makeScopeControlsHandlers() {
+  return {
+    onModeChange: (mode: number) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'mode', mode, 'integer', 0, 3)) return;
+      dispatchRadioIntent({ name: 'set_scope_mode', params: { mode } });
+    },
+    onEdgeChange: (edge: number) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'edge', edge, 'integer', 1, 4)) return;
+      dispatchRadioIntent({ name: 'set_scope_edge', params: { edge } });
+    },
+    onSpanChange: (span: number) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'span', span, 'integer', 0, 7)) return;
+      dispatchRadioIntent({ name: 'set_scope_span', params: { span } });
+    },
+    onSpeedChange: (speed: number) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'speed', speed, 'integer', 0, 2)) return;
+      dispatchRadioIntent({ name: 'set_scope_speed', params: { speed } });
+    },
+    onHoldChange: (on: boolean) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'hold', on, 'boolean')) return;
+      dispatchRadioIntent({ name: 'set_scope_hold', params: { on } });
+    },
+    onRefChange: (ref: number) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'refDb', ref, 'integer', -30, 10)) return;
+      dispatchRadioIntent({ name: 'set_scope_ref', params: { ref } });
+    },
+    onDualChange: (dual: boolean) => {
+      const context = currentScopeContext();
+      if (!context || !hasPhysicalSub(context) || !acceptsScopeValue(context, 'dual', dual, 'boolean')) return;
+      dispatchRadioIntent({ name: 'set_scope_dual', params: { dual } });
+    },
+    onReceiverChange: (receiver: number) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'receiver', receiver, 'integer', 0, 1)
+        || (receiver === 1 && !hasPhysicalSub(context))) return;
+      dispatchRadioIntent({ name: 'switch_scope_receiver', params: { receiver: receiver as Receiver } });
+    },
+    onDuringTxChange: (on: boolean) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'duringTx', on, 'boolean')) return;
+      dispatchRadioIntent({ name: 'set_scope_during_tx', params: { on } });
+    },
+    onCenterTypeChange: (center_type: number) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'centerType', center_type, 'integer', 0, 2)) return;
+      dispatchRadioIntent({ name: 'set_scope_center_type', params: { center_type } });
+    },
+    onVbwChange: (narrow: boolean) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'vbwNarrow', narrow, 'boolean')) return;
+      dispatchRadioIntent({ name: 'set_scope_vbw', params: { narrow } });
+    },
+    onRbwChange: (rbw: number) => {
+      const context = currentScopeContext();
+      if (!context || !acceptsScopeValue(context, 'rbw', rbw, 'integer', 0, 2)) return;
+      dispatchRadioIntent({ name: 'set_scope_rbw', params: { rbw } });
+    },
+  };
+}
+
 /* ── Keyboard radio delegation (MOR-1409 A03d1a) ─────────────────── */
 
 type KeyboardRadioAction = { action: string; params?: Record<string, unknown> };
@@ -1189,7 +1289,7 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
     case 'toggle_dial_lock': {
       const dialLock = context.state.dialLock;
       if (has('dial_lock') && knownA03cTopLevelField(context, 'dialLock') && typeof dialLock === 'boolean') {
-        dispatchRadioIntent({ name: 'set_dial_lock', params: { on: !dialLock } });
+        makeSystemHandlers().onDialLock(!dialLock);
       }
       return true;
     }
@@ -1197,7 +1297,7 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const current = keyboardScopeField(context, 'span');
       const direction = keyboardDirection(safeParams.direction);
       if (context.caps.scope === true && has('scope') && direction && typeof current === 'number' && Number.isSafeInteger(current) && current >= 0 && current <= 7) {
-        dispatchRadioIntent({ name: 'set_scope_span', params: { span: Math.max(0, Math.min(7, current + (direction === 'down' ? -1 : 1))) } });
+        makeScopeControlsHandlers().onSpanChange(Math.max(0, Math.min(7, current + (direction === 'down' ? -1 : 1))));
       }
       return true;
     }
@@ -1205,14 +1305,14 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const current = keyboardScopeField(context, 'refDb');
       const direction = keyboardDirection(safeParams.direction);
       if (context.caps.scope === true && has('scope') && direction && typeof current === 'number' && Number.isSafeInteger(current) && current >= -30 && current <= 10) {
-        dispatchRadioIntent({ name: 'set_scope_ref', params: { ref: Math.max(-30, Math.min(10, current + (direction === 'down' ? -5 : 5))) } });
+        makeScopeControlsHandlers().onRefChange(Math.max(-30, Math.min(10, current + (direction === 'down' ? -5 : 5))));
       }
       return true;
     }
     case 'scope_toggle_hold': {
       const hold = keyboardScopeField(context, 'hold');
       if (context.caps.scope === true && has('scope') && typeof hold === 'boolean') {
-        dispatchRadioIntent({ name: 'set_scope_hold', params: { on: !hold } });
+        makeScopeControlsHandlers().onHoldChange(!hold);
       }
       return true;
     }
@@ -1220,20 +1320,63 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const dual = keyboardScopeField(context, 'dual');
       if (context.caps.scope === true && has('scope') && context.caps.receivers === 2
         && has('dual_rx') && context.state.sub && typeof dual === 'boolean') {
-        dispatchRadioIntent({ name: 'set_scope_dual', params: { dual: !dual } });
+        makeScopeControlsHandlers().onDualChange(!dual);
       }
       return true;
     }
     case 'scope_toggle_fst': {
       const speed = keyboardScopeField(context, 'speed');
       if (context.caps.scope === true && has('scope') && typeof speed === 'number' && Number.isSafeInteger(speed) && speed >= 0 && speed <= 2) {
-        dispatchRadioIntent({ name: 'set_scope_speed', params: { speed: speed === 0 ? 1 : 0 } });
+        makeScopeControlsHandlers().onSpeedChange(speed === 0 ? 1 : 0);
       }
       return true;
     }
     default:
       return true;
   }
+}
+
+export function makeKeyboardHandlers() {
+  return {
+    dispatch<T extends KeyboardRadioAction>(action: T): void {
+      if (dispatchKeyboardRadioAction(action)) return;
+      switch (action.action) {
+        case 'adjust_tuning_step': {
+          adjustTuningStep(action.params?.direction === 'down' ? 'down' : 'up');
+          return;
+        }
+        case 'open_filter_settings': {
+          window.dispatchEvent(new CustomEvent('rigplane:open-filter-settings'));
+          return;
+        }
+        case 'focus_target': {
+          const target = action.params?.target;
+          if (typeof target === 'string') {
+            const selectors: Record<string, string> = {
+              af: '[data-panel="rf-frontend"] [data-control="af-gain"]',
+              rf:
+                '[data-panel="rf-frontend"] [data-control="rf-sql-dual"], [data-panel="rf-frontend"] [data-control="rf-gain"]',
+              filter: '[data-panel="filter"]',
+              squelch:
+                '[data-panel="rf-frontend"] [data-control="rf-sql-dual"], [data-panel="rf-frontend"] [data-control="squelch"]',
+              mode: '[data-panel="mode"]',
+              pbt: '[data-panel="filter"] [data-control="pbt-inner"]',
+              waterfall: '[data-waterfall]',
+              vfo: '[data-vfo="main"] .freq-display',
+            };
+            const el = document.querySelector(selectors[target] ?? `[data-panel="${target}"]`);
+            if (el instanceof HTMLElement) {
+              el.focus();
+              el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+          }
+          return;
+        }
+        default:
+          console.warn('[keyboard] unhandled action', action.action, action.params);
+      }
+    },
+  };
 }
 
 /* ── VOX Handlers ────────────────────────────────────────────────── */

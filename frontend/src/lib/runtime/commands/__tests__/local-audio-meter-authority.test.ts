@@ -69,18 +69,19 @@ describe('MOR-1409 A03c2 local audio and meter authority', () => {
     expect(lcdSource).toContain('cycleMeterSource');
   });
 
-  it('leaves keyboard, scope/system, and later meter projection cleanup in their published gates', () => {
-    for (const deferred of [
+  it('keeps keyboard, scope/system, and meter projection ownership canonical', () => {
+    for (const canonical of [
       'makeSystemHandlers',
       'makeScopeControlsHandlers',
       'makeKeyboardHandlers',
     ]) {
-      expect(busSource).toContain(`export function ${deferred}`);
-      expect(panelSource).not.toContain(`export function ${deferred}`);
+      expect(busSource).toContain(`${canonical},`);
+      expect(busSource).not.toContain(`export function ${canonical}`);
+      expect(panelSource).toContain(`export function ${canonical}`);
     }
     expect(busSource).not.toContain('function _activateReceiver');
     expect(busSource).not.toContain("case 'set_active_vfo'");
     expect(panelPropsSource).not.toContain('meterSource');
-    expect(stateAdapterSource).toContain('meterSource');
+    expect(stateAdapterSource).not.toContain('meterSource');
   });
 });

@@ -176,6 +176,19 @@ describe('toMeterProps S-meter contract', () => {
     expect(props.sValue).toBe(-47);
     expect(props.signal).toBe(-47);
   });
+
+  it('preserves every observed meter and TX value without projecting local meterSource', () => {
+    const props = toMeterProps({
+      active: 'MAIN', main: { sMeter: -31 }, sub: { sMeter: -60 },
+      powerMeter: 80, swrMeter: 12, alcMeter: 7, compMeter: 5,
+      vdMeter: 138, idMeter: 19, ptt: true, meterSource: 'SWR',
+    } as any);
+    expect(props).toEqual({
+      sValue: -31, signal: -31, rfPower: 80, swr: 12, alc: 7,
+      comp: 5, vd: 138, id: 19, txActive: true,
+    });
+    expect(props).not.toHaveProperty('meterSource');
+  });
 });
 
 describe('toFilterProps', () => {

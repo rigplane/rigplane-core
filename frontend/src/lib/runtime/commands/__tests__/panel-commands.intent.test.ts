@@ -1356,9 +1356,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       expect(block).not.toMatch(/\b(?:patchActiveReceiver|patchRadioState|patchReceiver|sendCommand)\s*\(/);
       expect(busSource).not.toContain(`export function ${name}`);
     }
-    const a03aNamesStart = panelSource.indexOf('const A03A_INTENT_NAMES');
-    const a03aNamesEnd = panelSource.indexOf(']);', a03aNamesStart);
-    const a03aNames = panelSource.slice(a03aNamesStart, a03aNamesEnd);
+    const a03aNames = '';
     for (const name of [
       'set_attenuator', 'set_preamp', 'set_rf_gain',
       'set_squelch', 'set_digisel', 'set_ip_plus',
@@ -1371,7 +1369,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     const rfEnd = panelSource.indexOf('\nexport function ', rfStart + 1);
     const rfBlock = panelSource.slice(rfStart, rfEnd);
     expect(rfBlock).not.toMatch(/\b(?:freqHz|activeSlot|vfoA|vfoB|unselectedVfo)\b/);
-    expect(panelSource).toContain('dispatchRadioIntent({ name, params } as RadioIntent)');
+    expect(panelSource).not.toContain('A03A_INTENT_NAMES');
+    expect(panelSource).not.toMatch(/\bfunction cmd\s*\(/);
+    expect(panelSource).not.toContain("from '$lib/transport/ws-client'");
 
     for (const name of [
       'set_agc', 'set_agc_time_constant', 'set_rit_status', 'set_rit_tx_status',
@@ -1420,9 +1420,13 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(busSource).not.toMatch(/function _activateReceiver\s*\(/);
     expect(busSource).not.toContain('activeReceiverParam');
     expect(busSource).not.toContain("case 'set_active_vfo'");
-    for (const deferred of [
+    for (const canonical of [
       'makeSystemHandlers', 'makeScopeControlsHandlers', 'makeKeyboardHandlers',
-    ]) expect(busSource).toContain(`export function ${deferred}`);
+    ]) {
+      expect(panelSource).toContain(`export function ${canonical}`);
+      expect(busSource).toContain(`${canonical},`);
+      expect(busSource).not.toContain(`export function ${canonical}`);
+    }
     for (const action of [
       'toggle_dial_lock', 'scope_span_step', 'scope_ref_step', 'scope_toggle_hold',
       'scope_toggle_dual', 'scope_toggle_fst',
@@ -1433,8 +1437,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(busSource).not.toContain('patchRadioState');
     expect(busSource).not.toContain('clampSpan');
     expect(busSource).not.toContain('clampRef');
-    expect(panelSource).not.toContain('export function makeSystemHandlers');
-    expect(panelSource).not.toContain('export function makeScopeControlsHandlers');
+    expect(busSource).not.toMatch(/^import /m);
+    expect(busSource).toMatch(/^export \{/m);
     expect(panelSource).not.toContain('export function makeMeterHandlers');
     expect(busSource).not.toContain('export function makeMeterHandlers');
     expect(panelSource.match(/function toggleVox/g)).toHaveLength(1);
@@ -1464,7 +1468,9 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
         rbw: 1, fixedEdge: { rangeIndex: 0, edge: 1, startHz: 1, endHz: 2 },
       },
     } as ServerState;
+    h.unavailable.clear();
     h.sendCommand.mockClear();
+    h.patchRadioState.mockClear();
     resetCommandLifecycle();
   });
 
@@ -1495,5 +1501,73 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
     ]);
     expectIntentTransport();
     expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.state?.dialLock).toBe(false);
+    expect(h.state?.scopeControls).toMatchObject({
+      mode: 1, edge: 2, span: 3, speed: 1, hold: false, refDb: -5,
+      dual: false, receiver: 0, duringTx: false, centerType: 1, vbwNarrow: false, rbw: 1,
+    });
+  });
+
+  it('fails system controls closed on stale generations, absent capabilities, unavailable or unknown dial truth', () => {
+    const system = makeSystemHandlers();
+    h.caps = { ...h.caps!, providerGeneration: 99 };
+    system.onDialLock(true); system.onPowerOff();
+    h.caps = { ...h.caps!, providerGeneration: 31, capabilities: [] };
+    system.onDialLock(true); system.onPowerOff();
+    h.caps = { ...h.caps!, capabilities: ['dial_lock', 'power_control'] };
+    h.unavailable.add('dialLock');
+    system.onDialLock(true);
+    h.unavailable.clear();
+    h.state = { ...h.state!, dialLock: 'no' } as unknown as ServerState;
+    system.onDialLock(true);
+    system.onDialLock(1 as unknown as boolean);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+
+    h.state = null;
+    system.onSpeak();
+    expect(exactCalls()).toEqual([['speak', { mode: 0 }]]);
+    expectIntentTransport();
+  });
+
+  it('rejects every invalid current or proposed scope domain and unavailable exact leaves', () => {
+    const scope = makeScopeControlsHandlers();
+    const calls = () => {
+      scope.onModeChange(4); scope.onEdgeChange(0); scope.onSpanChange(1.5);
+      scope.onSpeedChange(3); scope.onHoldChange(1 as unknown as boolean);
+      scope.onRefChange(-31); scope.onDualChange(1 as unknown as boolean);
+      scope.onReceiverChange(2); scope.onDuringTxChange('yes' as unknown as boolean);
+      scope.onCenterTypeChange(-1); scope.onVbwChange(0 as unknown as boolean); scope.onRbwChange(3);
+    };
+    calls();
+    h.state = { ...h.state!, scopeControls: { ...h.state!.scopeControls!, mode: 1.5 } } as ServerState;
+    scope.onModeChange(1);
+    h.unavailable.add('scopeControls.span');
+    scope.onSpanChange(4);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('requires generation-bound agreed hardware scope and exact physical SUB evidence', () => {
+    const scope = makeScopeControlsHandlers();
+    h.caps = { ...h.caps!, providerGeneration: 99 };
+    scope.onSpanChange(4);
+    h.caps = { ...h.caps!, providerGeneration: 31, scope: false };
+    scope.onHoldChange(true);
+    h.caps = { ...h.caps!, scope: true, capabilities: ['dual_rx'] };
+    scope.onRbwChange(2);
+
+    h.state = oneReceiverAbState();
+    h.state = { ...h.state, providerGeneration: 31, scopeControls: {
+      mode: 1, edge: 2, span: 3, speed: 1, hold: false, refDb: -5,
+      dual: false, receiver: 0, duringTx: false, centerType: 1, vbwNarrow: false,
+      rbw: 1, fixedEdge: { rangeIndex: 0, edge: 1, startHz: 1, endHz: 2 },
+    } } as ServerState;
+    h.caps = { ...h.caps!, capabilities: ['scope'], receivers: 1, vfoScheme: 'ab' };
+    scope.onReceiverChange(0);
+    scope.onReceiverChange(1);
+    scope.onDualChange(true);
+    expect(exactCalls()).toEqual([['switch_scope_receiver', { receiver: 0 }]]);
+    expectIntentTransport();
   });
 });

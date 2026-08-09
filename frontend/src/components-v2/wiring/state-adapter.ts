@@ -556,7 +556,6 @@ export interface MeterProps {
   vd: number;
   id: number;
   txActive: boolean;
-  meterSource: string;
 }
 
 export function toMeterProps(state: ServerState | null): MeterProps {
@@ -571,7 +570,6 @@ export function toMeterProps(state: ServerState | null): MeterProps {
     vd: state?.vdMeter ?? 0,
     id: state?.idMeter ?? 0,
     txActive: state?.ptt ?? false,
-    meterSource: (state as { meterSource?: string } | null)?.meterSource ?? 'S',
   };
 }
 

@@ -80,7 +80,8 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { setCapabilities } from '$lib/stores/capabilities.svelte';
+import { getRadioState, resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 // MOR-1370 (S6b-2): the REAL manifests + the REAL resolution seam, mirroring
 // `semantic-scope-display-wiring.component.test.ts`'s "MOR-1365 (S6a)"
@@ -116,11 +117,17 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
   }
   const receiver = (hz: number) => ({
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1,
+    sMeter: 0, att: 0, preamp: 0, nb: false, nr: false,
+    afLevel: 0, rfGain: 0, squelch: 0,
   });
   return {
+    revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+    updatedAt: '2026-08-09T00:00:00Z', tunerStatus: 0,
+    stateContractVersion: 1, providerGeneration: 31,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
     scopeControls: {
       mode: 1, edge: 2, span: 3, speed: 1, hold: false, refDb: -5, dual: false, receiver: 0,
       duringTx: false, centerType: 0, vbwNarrow: false, rbw: 0,
@@ -131,6 +138,7 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
 }
 
 const liveCaps = (tags: readonly string[]): Capabilities => ({
+  stateContractVersion: 1, providerGeneration: 31,
   model: 'fixture', scope: true, audio: false, tx: true,
   capabilities: tags, receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
@@ -166,6 +174,7 @@ function useState(state: ServerState): void {
 }
 
 beforeEach(() => {
+  setCapabilities(liveCaps(SCOPE_TAGS));
   useState(liveState());
   h.caps = liveCaps(SCOPE_TAGS);
   h.snapshot = { ...IDLE };
@@ -186,6 +195,7 @@ afterEach(() => {
 
 describe('the surface intents reach the shipped scope command vocabulary', () => {
   it('a mode click sends set_scope_mode with the absolute wire ordinal', () => {
+    expect(getRadioState()?.scopeControls?.mode).toBe(1);
     render();
     el('scope-mode-2')!.click();
     flushSync();
@@ -302,7 +312,7 @@ describe('the surface mounts only in the single composition, never in dual', () 
   it('leaves the cockpit composition with no focusable control outside a declared zone', () => {
     render({ strips: 'dual' });
     const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
-      .filter((node) => node.closest('[data-zone-id]') === null);
+      .filter((node) => !node.hasAttribute('disabled') && node.closest('[data-zone-id]') === null);
     expect(outside).toEqual([]);
   });
 });
