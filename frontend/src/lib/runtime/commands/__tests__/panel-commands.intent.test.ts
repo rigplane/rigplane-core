@@ -1061,6 +1061,113 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setAudioConfig).toHaveBeenNthCalledWith(2, { focus: 'main' });
   });
 
+  it('delegates keyboard dial and scope controls only from known generation-bound scope metadata', () => {
+    h.caps = { ...h.caps!, scope: true, capabilities: [...(h.caps!.capabilities as string[]), 'dial_lock', 'scope'] };
+    h.state = {
+      ...h.state!,
+      dialLock: false,
+      scopeControls: { span: 7, refDb: -30, hold: false, dual: false, speed: 0 },
+    } as ServerState;
+
+    const actions = [
+      { action: 'toggle_dial_lock' },
+      { action: 'scope_span_step', params: { direction: 'up' } },
+      { action: 'scope_ref_step', params: { direction: 'down' } },
+      { action: 'scope_toggle_hold' },
+      { action: 'scope_toggle_dual' },
+      { action: 'scope_toggle_fst' },
+    ];
+
+    for (const action of actions) expect(dispatchKeyboardRadioAction(action)).toBe(true);
+
+    expect(exactCalls()).toEqual([
+      ['set_dial_lock', { on: true }],
+      ['set_scope_span', { span: 7 }],
+      ['set_scope_ref', { ref: -30 }],
+      ['set_scope_hold', { on: true }],
+      ['set_scope_dual', { dual: true }],
+      ['set_scope_speed', { speed: 1 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for keyboard dial and scope defaults, stale metadata, bad ranges, and impossible dual topology', () => {
+    h.caps = { ...h.caps!, scope: true, capabilities: [...(h.caps!.capabilities as string[]), 'dial_lock', 'scope'] };
+    h.state = {
+      ...h.state!,
+      dialLock: 'false',
+      scopeControls: { span: 8, refDb: 1.5, hold: 'no', dual: false, speed: 3 },
+    } as unknown as ServerState;
+
+    for (const action of [
+      { action: 'toggle_dial_lock' },
+      { action: 'scope_span_step', params: { direction: 'sideways' } },
+      { action: 'scope_ref_step', params: { direction: 'up' } },
+      { action: 'scope_toggle_hold' }, { action: 'scope_toggle_fst' },
+    ]) expect(dispatchKeyboardRadioAction(action)).toBe(true);
+
+    h.state = oneReceiverAbState();
+    h.state = { ...h.state, dialLock: false, scopeControls: { span: 0, refDb: 10, hold: false, dual: false, speed: 2 } } as ServerState;
+    h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
+    expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_dual' })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'down' } })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_fst' })).toBe(true);
+    expect(exactCalls()).toEqual([
+      ['set_scope_span', { span: 0 }],
+      ['set_scope_ref', { ref: 10 }],
+      ['set_scope_speed', { speed: 0 }],
+    ]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    h.unavailable.add('scopeControls.span');
+    expect(dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'up' } })).toBe(true);
+    h.unavailable.clear();
+    h.caps = { ...h.caps!, scope: false };
+    expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_hold' })).toBe(true);
+    h.caps = { ...h.caps!, scope: true, capabilities: (h.caps!.capabilities as string[]).filter((name) => name !== 'dial_lock') };
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_dial_lock' })).toBe(true);
+    h.caps = { ...h.caps!, providerGeneration: 99 };
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_dial_lock' })).toBe(true);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('rejects malformed scope direction and every non-integral or out-of-range observed step value', () => {
+    h.caps = { ...h.caps!, scope: true, capabilities: [...(h.caps!.capabilities as string[]), 'scope'] };
+    h.state = { ...h.state!, scopeControls: { span: 3, refDb: 0, hold: false, dual: false, speed: 1 } } as ServerState;
+    expect(dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'sideways' } })).toBe(true);
+    for (const span of [-1, 8, 1.5]) {
+      h.state = { ...h.state!, scopeControls: { span, refDb: 0, hold: false, dual: false, speed: 1 } } as ServerState;
+      expect(dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'up' } })).toBe(true);
+    }
+    for (const refDb of [-35, 15, 1.5]) {
+      h.state = { ...h.state!, scopeControls: { span: 3, refDb, hold: false, dual: false, speed: 1 } } as ServerState;
+      expect(dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } })).toBe(true);
+    }
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('contains hostile parameters for each recognized dial and scope action before any effect', () => {
+    const getter = vi.fn(() => { throw new Error('getter executed'); });
+    const hostile = Object.defineProperty({}, 'direction', { enumerable: true, get: getter });
+    for (const action of [
+      'toggle_dial_lock', 'scope_span_step', 'scope_ref_step', 'scope_toggle_hold',
+      'scope_toggle_dual', 'scope_toggle_fst',
+    ]) {
+      expect(() => dispatchKeyboardRadioAction({ action, params: hostile })).not.toThrow();
+      expect(dispatchKeyboardRadioAction({ action, params: hostile })).toBe(true);
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
   it('clamps only known normalized keyboard AF/RF readings and keeps active runtime AF local', () => {
     (h.state!.main as { afLevel: number; rfGain: number }).afLevel = 0.98;
     (h.state!.main as { afLevel: number; rfGain: number }).rfGain = 0.02;
@@ -1138,7 +1245,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.unavailable.add('ritOn');
     expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(true);
     h.unavailable.clear();
-    expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_hold' })).toBe(false);
+    expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_hold' })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'open_filter_settings' })).toBe(false);
     expect(dispatchKeyboardRadioAction({ action: 'ptt_on' })).toBe(false);
     expect(h.sendCommand).not.toHaveBeenCalled();
@@ -1313,6 +1420,18 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     for (const deferred of [
       'makeSystemHandlers', 'makeScopeControlsHandlers', 'makeKeyboardHandlers',
     ]) expect(busSource).toContain(`export function ${deferred}`);
+    for (const action of [
+      'toggle_dial_lock', 'scope_span_step', 'scope_ref_step', 'scope_toggle_hold',
+      'scope_toggle_dual', 'scope_toggle_fst',
+    ]) {
+      expect(panelSource).toContain(`'${action}'`);
+      expect(busSource).not.toContain(`case '${action}'`);
+    }
+    expect(busSource).not.toContain('patchRadioState');
+    expect(busSource).not.toContain('clampSpan');
+    expect(busSource).not.toContain('clampRef');
+    expect(panelSource).not.toContain('export function makeSystemHandlers');
+    expect(panelSource).not.toContain('export function makeScopeControlsHandlers');
     expect(panelSource).not.toContain('export function makeMeterHandlers');
     expect(busSource).not.toContain('export function makeMeterHandlers');
     expect(panelSource.match(/function toggleVox/g)).toHaveLength(1);

@@ -10,7 +10,6 @@
  */
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { getRadioState, patchRadioState } from '$lib/stores/radio.svelte';
 import { adjustTuningStep } from '$lib/stores/tuning.svelte';
 import { dispatchKeyboardRadioAction } from '$lib/runtime/commands/panel-commands';
 export {
@@ -32,7 +31,6 @@ export {
   makeVoxHandlers,
 } from '$lib/runtime/commands/panel-commands';
 import type { KeyboardActionConfig } from '../layout/keyboard-map';
-import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -86,12 +84,6 @@ export function makeKeyboardHandlers() {
           window.dispatchEvent(new CustomEvent('rigplane:open-filter-settings'));
           return;
         }
-        case 'toggle_dial_lock': {
-          const on = !(getRadioState()?.dialLock ?? false);
-          patchRadioState({ dialLock: on });
-          cmd('set_dial_lock', { on });
-          return;
-        }
         case 'focus_target': {
           const target = action.params?.target;
           if (typeof target === 'string') {
@@ -113,42 +105,6 @@ export function makeKeyboardHandlers() {
               el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }
           }
-          return;
-        }
-        case 'scope_span_step': {
-          const scope = getRadioState()?.scopeControls;
-          const current = scope?.span ?? 3;
-          const delta = action.params?.direction === 'down' ? -1 : 1;
-          const span = clampSpan(current, delta);
-          cmd('set_scope_span', { span });
-          return;
-        }
-        case 'scope_ref_step': {
-          const scope = getRadioState()?.scopeControls;
-          const current = scope?.refDb ?? 0;
-          const delta = action.params?.direction === 'down' ? -5 : 5;
-          const ref = clampRef(current, delta);
-          cmd('set_scope_ref', { ref });
-          return;
-        }
-        case 'scope_toggle_hold': {
-          const scope = getRadioState()?.scopeControls;
-          const on = !(scope?.hold ?? false);
-          cmd('set_scope_hold', { on });
-          return;
-        }
-        case 'scope_toggle_dual': {
-          const scope = getRadioState()?.scopeControls;
-          const dual = !(scope?.dual ?? false);
-          cmd('set_scope_dual', { dual });
-          return;
-        }
-        case 'scope_toggle_fst': {
-          const scope = getRadioState()?.scopeControls;
-          const currentSpeed = scope?.speed ?? 1;
-          // Toggle FST (speed=0) vs MID (speed=1).
-          const speed = currentSpeed === 0 ? 1 : 0;
-          cmd('set_scope_speed', { speed });
           return;
         }
         default:
