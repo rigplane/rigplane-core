@@ -497,12 +497,17 @@ async function assertProductionLanguageAccessibility(
   const vfo = page.getByTestId('vfo-surface').first();
   const txKey = page.getByTestId('rx-tx-key').first();
   const txState = page.getByTestId('rx-tx-state').first();
+  const txMark = page.getByTestId('rx-tx-rf-mark').first();
+  const txLabel = page.getByTestId('rx-tx-rf-label').first();
   await expect(vfo).toHaveAccessibleName(/VFO/i);
   await expect(txKey).toHaveAccessibleName(/key|transmit|ptt/i);
+  await expect(txState).toBeVisible();
+  await expect(txMark).toBeVisible();
+  await expect(txLabel).toBeVisible();
   await expect(txState).toHaveAttribute('data-rf', 'unknown');
   await expect(txState).toHaveAttribute('data-session', 'idle');
-  await expect(page.getByTestId('rx-tx-rf-mark').first()).toHaveText('◇');
-  await expect(page.getByTestId('rx-tx-rf-label').first()).toHaveText('RF ?');
+  await expect(txMark).toHaveText('◇');
+  await expect(txLabel).toHaveText('RF ?');
   await expect(txState).toContainText('ready');
 
   // A real keyboard-caused focus target, rather than a programmatic focus,
