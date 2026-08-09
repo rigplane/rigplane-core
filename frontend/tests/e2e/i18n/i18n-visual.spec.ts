@@ -205,10 +205,15 @@ async function preparePage(
   page: Page,
   locale: SupportedLocale,
   viewport: ViewportSpec,
-  options: { state?: typeof mockState } = {},
+  options: { state?: typeof mockState; workspace?: Record<string, unknown> } = {},
 ): Promise<void> {
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
   await page.addInitScript(locStorageInit(locale));
+  if (options.workspace !== undefined) {
+    await page.addInitScript((workspace) => {
+      localStorage.setItem('rigplane:workspace', JSON.stringify(workspace));
+    }, options.workspace);
+  }
   await page.addInitScript(WS_STUB_INIT);
   await routeMockBackend(page, options.state ?? mockState);
 }
@@ -404,4 +409,205 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
       });
     }
   }
+});
+
+type ProductionLanguageCase = {
+  readonly label: string;
+  readonly workspace: Record<string, unknown>;
+  readonly language: 'studioline' | 'fieldline';
+  readonly mode: 'dark' | 'light';
+  readonly expected: {
+    readonly surface: string;
+    readonly text: string;
+    readonly vfoBorderTop: string;
+    readonly vfoNumeralWeight: string;
+  };
+};
+
+const PRODUCTION_LANGUAGE_CASES: readonly ProductionLanguageCase[] = [
+  {
+    label: 'clean StudioLine × dark',
+    workspace: {},
+    language: 'studioline',
+    mode: 'dark',
+    expected: { surface: '#0e1113', text: '#eef1f2', vfoBorderTop: '0px', vfoNumeralWeight: '200' },
+  },
+  {
+    label: 'persisted StudioLine × light',
+    workspace: { version: 1, designLanguage: 'studioline', theme: 'github-light' },
+    language: 'studioline',
+    mode: 'light',
+    expected: { surface: '#faf7f2', text: '#14181a', vfoBorderTop: '0px', vfoNumeralWeight: '300' },
+  },
+  {
+    label: 'persisted FieldLine × dark',
+    workspace: { version: 1, designLanguage: 'fieldline', theme: 'nord' },
+    language: 'fieldline',
+    mode: 'dark',
+    expected: { surface: '#0a0a0a', text: '#f2f5f7', vfoBorderTop: '3px', vfoNumeralWeight: '700' },
+  },
+  {
+    label: 'persisted FieldLine × light',
+    workspace: { version: 1, designLanguage: 'fieldline', theme: 'github-light' },
+    language: 'fieldline',
+    mode: 'light',
+    expected: { surface: '#ffffff', text: '#000000', vfoBorderTop: '3px', vfoNumeralWeight: '700' },
+  },
+];
+
+async function assertProductionLanguageCss(page: Page, item: ProductionLanguageCase): Promise<void> {
+  const root = page.locator('html');
+  await expect(root).toHaveAttribute('data-design-language', item.language);
+  await expect(root).toHaveAttribute('data-language-mode', item.mode);
+  const applied = await page.evaluate((language) => {
+    const root = document.documentElement;
+    const frequency = document.querySelector<HTMLElement>('.vfo-freq');
+    const tile = document.querySelector<HTMLElement>('.vfo-tile');
+    const style = getComputedStyle(root);
+    return {
+      surface: style.getPropertyValue(`--dl-${language}-surface`).trim(),
+      text: style.getPropertyValue(`--dl-${language}-text`).trim(),
+      vfoBorderTop: tile === null ? null : getComputedStyle(tile).borderTopWidth,
+      vfoNumeralWeight: frequency === null ? null : getComputedStyle(frequency).fontWeight,
+    };
+  }, item.language);
+  expect(applied).toEqual(item.expected);
+  await expect.poll(() => page.evaluate(() => {
+    const rules = [...document.styleSheets].flatMap((sheet) => {
+      try {
+        return [...sheet.cssRules].map((rule) => rule.cssText);
+      } catch {
+        return [];
+      }
+    });
+    return {
+      studioline: rules.some((rule) => rule.includes('--dl-studioline-surface')),
+      fieldline: rules.some((rule) => rule.includes('--dl-fieldline-surface')),
+      productionCss: [...document.styleSheets]
+        .map((sheet) => sheet.href)
+        .some((href) => /\/assets\/[^/]+-[\w-]+\.css$/.test(href)),
+    };
+  })).toEqual({ studioline: true, fieldline: true, productionCss: true });
+}
+
+async function assertProductionLanguageAccessibility(
+  page: Page,
+  item: ProductionLanguageCase,
+): Promise<void> {
+  const vfo = page.getByTestId('vfo-surface').first();
+  const txKey = page.getByTestId('rx-tx-key').first();
+  const txState = page.getByTestId('rx-tx-state').first();
+  const txMark = page.getByTestId('rx-tx-rf-mark').first();
+  const txLabel = page.getByTestId('rx-tx-rf-label').first();
+  await expect(vfo).toHaveAccessibleName(/VFO/i);
+  await expect(txKey).toHaveAccessibleName(/key|transmit|ptt/i);
+  await expect(txState).toBeVisible();
+  await expect(txMark).toBeVisible();
+  await expect(txLabel).toBeVisible();
+  await expect(txState).toHaveAttribute('data-rf', 'unknown');
+  await expect(txState).toHaveAttribute('data-session', 'idle');
+  await expect(txMark).toHaveText('◇');
+  await expect(txLabel).toHaveText('RF ?');
+  await expect(txState).toContainText('ready');
+
+  // A real keyboard-caused focus target, rather than a programmatic focus,
+  // proves the active production family has a visible focus treatment.
+  await page.locator('body').focus();
+  await page.keyboard.press('Tab');
+  const focused = await page.evaluate(() => {
+    const element = document.activeElement;
+    if (!(element instanceof HTMLElement)) return null;
+    const style = getComputedStyle(element);
+    return { tag: element.tagName, outline: style.outlineStyle, outlineColor: style.outlineColor };
+  });
+  expect(focused?.tag).toMatch(/BUTTON|INPUT|SELECT/);
+  expect(focused?.outline).not.toBe('none');
+
+  const contrast = await page.locator('html').evaluate((element, args) => {
+    const style = getComputedStyle(element);
+    const rgb = (value: string) => {
+      const hex = /^#([0-9a-f]{6})$/i.exec(value);
+      if (hex !== null) return [0, 2, 4].map((offset) => Number.parseInt(hex[1].slice(offset, offset + 2), 16) / 255);
+      const functional = /^rgba?\(([^)]+)\)$/i.exec(value);
+      if (functional === null) return null;
+      const values = functional[1].match(/[\d.]+/g)?.slice(0, 3).map(Number);
+      return values?.length === 3 ? values.map((channel) => channel / 255) : null;
+    };
+    const luminance = (channels: number[]) => channels
+      .map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+      .reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+    const ratio = (first: string, second: string) => {
+      const a = rgb(first), b = rgb(second);
+      if (a === null || b === null) return 0;
+      const [lighter, darker] = [luminance(a), luminance(b)].sort((left, right) => right - left);
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+    return {
+      text: ratio(style.getPropertyValue(`--dl-${args.language}-text`).trim(), args.surface),
+      focus: ratio(args.outlineColor, args.surface),
+    };
+  }, { language: item.language, surface: item.expected.surface, outlineColor: focused?.outlineColor ?? '' });
+  expect(contrast.text).toBeGreaterThanOrEqual(4.5);
+  expect(contrast.focus).toBeGreaterThanOrEqual(3);
+
+  const reducedMotion = await page.locator('.vfo-tile, .rx-tx-key, .rx-tx-unkey').evaluateAll((elements) =>
+    elements.map((element) => {
+      const style = getComputedStyle(element);
+      return [style.transitionDuration, style.animationDuration];
+    }));
+  const durationMs = (value: string) => value.split(',').map((duration) => {
+    const numeric = Number.parseFloat(duration);
+    return duration.trim().endsWith('ms') ? numeric : numeric * 1000;
+  });
+  expect(reducedMotion.flat(2).flatMap(durationMs).every((duration) => duration <= 0.01)).toBe(true);
+}
+
+test.describe('MOR-1400 production design-language contract', () => {
+  for (const item of PRODUCTION_LANGUAGE_CASES) {
+    test(`${item.label} activates from production dist`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await preparePage(page, 'en-US', VIEWPORTS[0], { workspace: item.workspace });
+      await gotoApp(page, 'en-US');
+      await waitForAppShell(page);
+      await assertProductionLanguageCss(page, item);
+      await assertProductionLanguageAccessibility(page, item);
+    });
+  }
+
+  test('invalid persisted presentation repairs to scoped StudioLine dark', async ({ page }) => {
+    await preparePage(page, 'en-US', VIEWPORTS[0], {
+      workspace: { version: 1, designLanguage: 'unknown', theme: 'unknown' },
+    });
+    await gotoApp(page, 'en-US');
+    await waitForAppShell(page);
+    await assertProductionLanguageCss(page, PRODUCTION_LANGUAGE_CASES[0]);
+  });
+
+  test('legacy LCD remains language-inert', async ({ page }) => {
+    await preparePage(page, 'en-US', VIEWPORTS[0], {
+      workspace: { version: 1, layout: 'lcd-cockpit', designLanguage: 'fieldline', theme: 'github-light' },
+    });
+    await gotoApp(page, 'en-US');
+    await waitForAppShell(page);
+    await expect(page.locator('html')).not.toHaveAttribute('data-design-language');
+    await expect(page.locator('html')).not.toHaveAttribute('data-language-mode');
+    const fieldlineSurface = await page.locator('html').evaluate((element) =>
+      getComputedStyle(element).getPropertyValue('--dl-fieldline-surface').trim());
+    expect(fieldlineSurface).toBe('');
+  });
+
+  test('mobile remains language-inert', async ({ browser }) => {
+    const mobile = await browser.newPage();
+    try {
+      await preparePage(mobile, 'en-US', VIEWPORTS[1], {
+        workspace: { version: 1, designLanguage: 'fieldline', theme: 'github-light' },
+      });
+      await gotoApp(mobile, 'en-US');
+      await waitForAppShell(mobile);
+      await expect(mobile.locator('html')).not.toHaveAttribute('data-design-language');
+      await expect(mobile.locator('html')).not.toHaveAttribute('data-language-mode');
+    } finally {
+      await mobile.close();
+    }
+  });
 });
