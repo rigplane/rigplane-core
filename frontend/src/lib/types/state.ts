@@ -311,19 +311,14 @@ export type FieldAvailability = FieldStatusPublic['availability'];
  * The state object the frontend holds.
  *
  * Extends the generated, server-sent `ServerStatePublic` contract with the
- * fields that are NOT part of the wire payload but live on the merged
- * client-side state:
+ * envelope field that is NOT part of the wire payload but lives on the
+ * merged client-side state:
  *
- * - `meterSource`: pure client-only optimistic UI state. The server never
- *   sends it; it is patched locally by the command bus / state adapter
- *   (MOR-881 contract correction — it used to be declared on the server
- *   contract by mistake).
  * - `transportSeq`: a WS envelope-only sequence field that `ws-client.ts`
  *   hoists onto the accumulated state object for ordering. Not server-sent
  *   inside `data`/`changed`.
  */
 export interface ServerState extends ServerStatePublic {
-  meterSource?: 'S' | 'SWR' | 'POWER';
   transportSeq?: number;
   // Client-side invariant: the merged state always carries a `sub` receiver
   // (the single-receiver wire payload omits it, but consumers — e.g.
