@@ -15,11 +15,21 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 });
 
 vi.mock('$lib/stores/radio.svelte', () => ({
-  getActiveReceiver: vi.fn(() => null),
-  getRadioState: vi.fn(() => ({ active: 'MAIN' })),
+  getActiveReceiver: vi.fn(() => ({ nb: false, nbLevel: 0 })),
+  getRadioState: vi.fn(() => ({
+    active: 'MAIN', main: { nb: false, nbLevel: 0 }, sub: { nb: false, nbLevel: 0 },
+    nbDepth: 4, nbWidth: 2,
+  })),
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
+}));
+
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: vi.fn(() => ({
+    capabilities: ['nb'], receivers: 2, vfoScheme: 'main_sub', controls: { nb_depth: {} },
+  })),
+  getControlRange: vi.fn(() => null),
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
@@ -63,9 +73,9 @@ describe.each([
     expect(sendCommand).toHaveBeenCalledWith('set_nb_depth', { level: 9 });
   });
 
-  it('stores the wire value optimistically (matches polled readback units)', () => {
+  it('does not store the wire value optimistically; Observation remains truth', () => {
     makeHandlers().onNbDepthChange(6);
-    expect(patchRadioState).toHaveBeenCalledWith({ nbDepth: 5 });
+    expect(patchRadioState).not.toHaveBeenCalled();
   });
 });
 

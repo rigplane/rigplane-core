@@ -15,9 +15,18 @@ import type { ReceiverState } from '$lib/types/state';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
-export { makeFilterHandlers, makeModeHandlers, makeRfFrontEndHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
+export {
+  makeAgcHandlers,
+  makeBandHandlers,
+  makeDspHandlers,
+  makeFilterHandlers,
+  makeModeHandlers,
+  makePresetHandlers,
+  makeRfFrontEndHandlers,
+  makeRitXitHandlers,
+  makeRxAudioHandlers,
+} from '$lib/runtime/commands/panel-commands';
 import type { KeyboardActionConfig } from '../layout/keyboard-map';
-import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { clampRef, clampSpan } from '../../components/spectrum/spectrum-toolbar-logic';
 import { setPendingFocus } from '$lib/radio/pending-focus';
 
@@ -152,119 +161,6 @@ export function makeVfoHandlers() {
     onQuickDw: () => cmd('quick_dualwatch'),
     onQuickSplit: () => cmd('quick_split'),
     onTrackingToggle: (on: boolean) => cmd('set_main_sub_tracking', { on }),
-  };
-}
-
-/* ── AGC Handlers ────────────────────────────────────────────── */
-
-export function makeAgcHandlers() {
-  return {
-    onAgcModeChange: (mode: number) => {
-      patchActiveReceiver({ agc: mode });
-      cmd('set_agc', { mode, receiver: activeReceiverParam() });
-    },
-  };
-}
-
-/* ── RIT / XIT Handlers ──────────────────────────────────────── */
-
-export function makeRitXitHandlers() {
-  return {
-    onRitToggle: () => {
-      const next = !(getRadioState()?.ritOn ?? false);
-      patchRadioState({ ritOn: next });
-      cmd('set_rit_status', { on: next });
-    },
-    onXitToggle: () => {
-      const next = !(getRadioState()?.ritTx ?? false);
-      patchRadioState({ ritTx: next });
-      cmd('set_rit_tx_status', { on: next });
-    },
-    onRitOffsetChange: (hz: number) => {
-      patchRadioState({ ritFreq: hz });
-      cmd('set_rit_frequency', { freq: hz });
-    },
-    onXitOffsetChange: (hz: number) => {
-      // RIT and ∂TX share the same offset register
-      patchRadioState({ ritFreq: hz });
-      cmd('set_rit_frequency', { freq: hz });
-    },
-    onClear: () => {
-      patchRadioState({ ritFreq: 0 });
-      cmd('set_rit_frequency', { freq: 0 });
-    },
-  };
-}
-
-/* ── DSP Handlers ────────────────────────────────────────────── */
-
-export function makeDspHandlers() {
-  return {
-    onNrModeChange: (mode: number) => {
-      const on = mode > 0;
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ nr: on });
-      cmd('set_nr', { on, receiver });
-    },
-    onNrLevelChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      // MOR-490: slider is 0-15 (front-panel scale); wire is 0-255 BCD.
-      // Store the raw wire value optimistically so it matches the polled
-      // readback (which the adapter scales raw -> display).
-      const raw = nrDisplayToRaw(level);
-      patchActiveReceiver({ nrLevel: raw }, true);
-      cmd('set_nr_level', { level: raw, receiver });
-    },
-    onNbToggle: (on: boolean) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ nb: on });
-      cmd('set_nb', { on, receiver });
-    },
-    onNbLevelChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ nbLevel: level }, true);
-      cmd('set_nb_level', { level, receiver });
-    },
-    onNotchModeChange: (mode: string) => {
-      const receiver = activeReceiverParam();
-      if (mode === 'auto') {
-        patchActiveReceiver({ autoNotch: true, manualNotch: false });
-        cmd('set_auto_notch', { on: true, receiver });
-      } else if (mode === 'manual') {
-        patchActiveReceiver({ autoNotch: false, manualNotch: true });
-        cmd('set_manual_notch', { on: true, receiver });
-      } else {
-        patchActiveReceiver({ autoNotch: false, manualNotch: false });
-        cmd('set_auto_notch', { on: false, receiver });
-        cmd('set_manual_notch', { on: false, receiver });
-      }
-    },
-    onNotchFreqChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      cmd('set_notch_filter', { value, receiver });
-    },
-    onNbDepthChange: (level: number) => {
-      // MOR-498: slider is 1-10 (front-panel scale); wire is 0-9.  Store the
-      // wire value optimistically so it matches the polled/NB-B readback
-      // (which the adapter offsets wire -> display).
-      const wire = nbDepthDisplayToRaw(level);
-      patchRadioState({ nbDepth: wire });
-      cmd('set_nb_depth', { level: wire });
-    },
-    onNbWidthChange: (level: number) => {
-      patchRadioState({ nbWidth: level });
-      cmd('set_nb_width', { level });
-    },
-    onManualNotchWidthChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ manualNotchWidth: value }, true);
-      cmd('set_manual_notch_width', { value, receiver });
-    },
-    onAgcTimeChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ agcTimeConstant: value }, true);
-      cmd('set_agc_time_constant', { value, receiver });
-    },
   };
 }
 
@@ -482,34 +378,6 @@ export function makeAudioRoutingHandlers() {
         main_gain_db: mainDb ?? 0,
         sub_gain_db: subDb ?? 0,
       };
-    },
-  };
-}
-
-/* ── Band Selector Handlers ──────────────────────────────────── */
-
-export function makePresetHandlers() {
-  return {
-    onPresetSelect: (freq: number, mode: string, filter?: number) => {
-      cmd('set_freq', { freq, receiver: 0 });
-      cmd('set_mode', { mode, filter: filter ?? 1, receiver: 0 });
-    },
-    onFreqPreset: (freq: number, mode: string, filter?: number) => {
-      cmd('set_freq', { freq, receiver: 0 });
-      cmd('set_mode', { mode, filter: filter ?? 1, receiver: 0 });
-    },
-  };
-}
-
-export function makeBandHandlers() {
-  return {
-    onBandSelect: (_name: string, freq: number, bsrCode?: number) => {
-      if (bsrCode !== undefined) {
-        cmd('set_band', { band: bsrCode });
-      } else {
-        // Bands without BSR code (e.g. 60m) — fall back to direct freq set
-        cmd('set_freq', { freq, receiver: 0 });
-      }
     },
   };
 }

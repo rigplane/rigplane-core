@@ -21,6 +21,11 @@ const h = vi.hoisted(() => ({
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
+  rxEnabled: false,
+  setMuted: vi.fn(),
+  setRxLive: vi.fn(),
+  setRxVolume: vi.fn(),
+  setVolume: vi.fn(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
@@ -55,11 +60,11 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
-    rxEnabled: false,
-    setMuted: vi.fn(),
-    setRxLive: vi.fn(),
-    setRxVolume: vi.fn(),
-    setVolume: vi.fn(),
+    get rxEnabled() { return h.rxEnabled; },
+    setMuted: h.setMuted,
+    setRxLive: h.setRxLive,
+    setRxVolume: h.setRxVolume,
+    setVolume: h.setVolume,
   },
 }));
 
@@ -68,10 +73,15 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 
 import {
+  makeAgcHandlers,
+  makeBandHandlers,
+  makeDspHandlers,
   makeFilterHandlers,
   makeModeHandlers,
   makePresetHandlers,
   makeRfFrontEndHandlers,
+  makeRitXitHandlers,
+  makeRxAudioHandlers,
 } from '../panel-commands';
 import * as compatibilityBus from '$lib/../components-v2/wiring/command-bus';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
@@ -93,13 +103,19 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     att: 0,
     preamp: 0,
     agc: 2,
+    agcTimeConstant: 4,
     digisel: false,
     ipplus: false,
-    afLevel: 50,
+    afLevel: 50 / 255,
     rfGain: 128,
     squelch: 0,
     nb: false,
+    nbLevel: 3,
     nr: false,
+    nrLevel: 68,
+    autoNotch: false,
+    manualNotch: false,
+    manualNotchWidth: 1,
     sMeter: 0,
   };
   return {
@@ -109,6 +125,9 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     ritOn: false,
     ritTx: true,
     ritFreq: 300,
+    nbDepth: 4,
+    nbWidth: 2,
+    notchFilter: 64,
     fieldStatus: {
       active: freshStatus,
       'main.dataMode': freshStatus,
@@ -142,23 +161,29 @@ function expectIntentTransport(): void {
   expect(getCommandLifecycles()).toHaveLength(h.sendCommand.mock.calls.length);
 }
 
-describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
+describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     h.state = state();
     h.unavailable.clear();
     h.caps = {
-      capabilities: ['pbt'],
+      capabilities: ['pbt', 'agc', 'rit', 'xit', 'nr', 'nb', 'notch', 'af_level'],
       receivers: 2,
       vfoScheme: 'main_sub',
       controls: {
         pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
+        nb_depth: { raw_min: 0, raw_max: 9, raw_center: 0, display_min: 1, display_max: 10 },
       },
     };
     h.sendCommand.mockClear();
     h.patchActiveReceiver.mockClear();
     h.patchRadioState.mockClear();
     h.patchReceiver.mockClear();
+    h.rxEnabled = false;
+    h.setMuted.mockClear();
+    h.setRxLive.mockClear();
+    h.setRxVolume.mockClear();
+    h.setVolume.mockClear();
   });
 
   afterEach(() => {
@@ -166,10 +191,16 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     vi.useRealTimers();
   });
 
-  it('exports the A03a1 and A03a2 canonical factories from the compatibility bus', () => {
+  it('exports every landed A03a and A03b1 canonical factory from the compatibility bus', () => {
     expect(compatibilityBus.makeModeHandlers).toBe(makeModeHandlers);
     expect(compatibilityBus.makeFilterHandlers).toBe(makeFilterHandlers);
     expect(compatibilityBus.makeRfFrontEndHandlers).toBe(makeRfFrontEndHandlers);
+    expect(compatibilityBus.makeAgcHandlers).toBe(makeAgcHandlers);
+    expect(compatibilityBus.makeRitXitHandlers).toBe(makeRitXitHandlers);
+    expect(compatibilityBus.makeDspHandlers).toBe(makeDspHandlers);
+    expect(compatibilityBus.makeBandHandlers).toBe(makeBandHandlers);
+    expect(compatibilityBus.makePresetHandlers).toBe(makePresetHandlers);
+    expect(compatibilityBus.makeRxAudioHandlers).toBe(makeRxAudioHandlers);
   });
 
   it('routes mode, DATA mode, and MOD input through exact lifecycle envelopes without Store writes', () => {
@@ -187,17 +218,194 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     expect(h.patchRadioState).not.toHaveBeenCalled();
   });
 
-  it('keeps both deferred preset callbacks wholly on the legacy raw path', () => {
+  it('routes both preset callbacks through exact frequency-then-mode lifecycle records', () => {
     const preset = makePresetHandlers();
     preset.onPresetSelect(14_074_000, 'USB', 2);
     preset.onFreqPreset(7_074_000, 'CW');
 
-    expect(h.sendCommand.mock.calls).toEqual([
+    expect(exactCalls()).toEqual([
       ['set_freq', { freq: 14_074_000, receiver: 0 }],
       ['set_mode', { mode: 'USB', filter: 2, receiver: 0 }],
       ['set_freq', { freq: 7_074_000, receiver: 0 }],
       ['set_mode', { mode: 'CW', filter: 1, receiver: 0 }],
     ]);
+    expectIntentTransport();
+  });
+
+  it('routes AGC and the complete shared RIT/XIT family through typed lifecycle without Store writes', () => {
+    makeAgcHandlers().onAgcModeChange(3);
+    const rit = makeRitXitHandlers();
+    rit.onRitToggle();
+    rit.onXitToggle();
+    rit.onRitOffsetChange(450);
+    rit.onXitOffsetChange(-325);
+    rit.onClear();
+
+    expect(exactCalls()).toEqual([
+      ['set_agc', { mode: 3, receiver: 0 }],
+      ['set_rit_status', { on: true }],
+      ['set_rit_tx_status', { on: false }],
+      ['set_rit_frequency', { freq: 450 }],
+      ['set_rit_frequency', { freq: -325 }],
+      ['set_rit_frequency', { freq: 0 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('preserves the complete DSP conversions and notch command order on typed lifecycle', () => {
+    const dsp = makeDspHandlers();
+    dsp.onNrModeChange(1);
+    dsp.onNrLevelChange(8);
+    dsp.onNbToggle(true);
+    dsp.onNbLevelChange(7);
+    dsp.onNotchModeChange('off');
+    dsp.onNotchFreqChange(96);
+    dsp.onNbDepthChange(6);
+    dsp.onNbWidthChange(4);
+    dsp.onManualNotchWidthChange(2);
+    dsp.onAgcTimeChange(5);
+
+    expect(exactCalls()).toEqual([
+      ['set_nr', { on: true, receiver: 0 }],
+      ['set_nr_level', { level: 136, receiver: 0 }],
+      ['set_nb', { on: true, receiver: 0 }],
+      ['set_nb_level', { level: 7, receiver: 0 }],
+      ['set_auto_notch', { on: false, receiver: 0 }],
+      ['set_manual_notch', { on: false, receiver: 0 }],
+      ['set_notch_filter', { value: 96, receiver: 0 }],
+      ['set_nb_depth', { level: 5 }],
+      ['set_nb_width', { level: 4 }],
+      ['set_manual_notch_width', { value: 2, receiver: 0 }],
+      ['set_agc_time_constant', { value: 5, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('keeps band/preset on the known physical receiver without inspecting A/B frequency topology', () => {
+    h.state = state('SUB');
+    makeBandHandlers().onBandSelect('60m', 5_357_000);
+    makeBandHandlers().onBandSelect('20m', 14_225_000, 5);
+    makePresetHandlers().onPresetSelect(7_074_000, 'CW', 1);
+
+    expect(exactCalls()).toEqual([
+      ['set_freq', { freq: 5_357_000, receiver: 1 }],
+      ['set_band', { band: 5 }],
+      ['set_freq', { freq: 7_074_000, receiver: 1 }],
+      ['set_mode', { mode: 'CW', filter: 1, receiver: 1 }],
+    ]);
+    expectIntentTransport();
+  });
+
+  it('preserves browser-local RX effects while radio AF commands use observed truth and typed lifecycle', () => {
+    const rxAudio = makeRxAudioHandlers();
+    rxAudio.onMonitorModeChange('mute');
+    rxAudio.onMonitorModeChange('local');
+    rxAudio.onAfLevelChange(0.42);
+
+    expect(exactCalls()).toEqual([
+      ['set_af_level', { level: 0, receiver: 0 }],
+      ['set_af_level', { level: 50 / 255, receiver: 0 }],
+      ['set_af_level', { level: 0.42, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+    expect(h.setMuted).toHaveBeenNthCalledWith(1, true);
+    expect(h.setMuted).toHaveBeenNthCalledWith(2, false);
+    expect(h.setRxLive).toHaveBeenNthCalledWith(1, false);
+    expect(h.setRxLive).toHaveBeenNthCalledWith(2, false);
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    h.rxEnabled = true;
+    rxAudio.onAfLevelChange(0.37);
+    expect(h.setRxVolume).toHaveBeenCalledWith(0.37);
+    expect(h.setVolume).toHaveBeenCalledWith(37);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid normalized AF input before radio lifecycle or transport', () => {
+    const rxAudio = makeRxAudioHandlers();
+    for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+      rxAudio.onAfLevelChange(level);
+    }
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('rejects invalid browser-local AF input before any local or radio effect', () => {
+    h.rxEnabled = true;
+    const rxAudio = makeRxAudioHandlers();
+    for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+      rxAudio.onAfLevelChange(level);
+    }
+
+    expect(h.setRxVolume).not.toHaveBeenCalled();
+    expect(h.setVolume).not.toHaveBeenCalled();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('accepts exact normalized AF endpoints unchanged on radio and browser-local paths', () => {
+    const rxAudio = makeRxAudioHandlers();
+    rxAudio.onAfLevelChange(0);
+    rxAudio.onAfLevelChange(1);
+
+    expect(exactCalls()).toEqual([
+      ['set_af_level', { level: 0, receiver: 0 }],
+      ['set_af_level', { level: 1, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    h.rxEnabled = true;
+    rxAudio.onAfLevelChange(0);
+    rxAudio.onAfLevelChange(1);
+    expect(h.setRxVolume).toHaveBeenNthCalledWith(1, 0);
+    expect(h.setRxVolume).toHaveBeenNthCalledWith(2, 1);
+    expect(h.setVolume).toHaveBeenNthCalledWith(1, 0);
+    expect(h.setVolume).toHaveBeenNthCalledWith(2, 100);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('never turns an invalid observed AF level into a mute or restore command', () => {
+    const rxAudio = makeRxAudioHandlers();
+    for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+      h.state = state();
+      h.state!.main!.afLevel = level;
+      rxAudio.onMonitorModeChange('mute');
+      rxAudio.onMonitorModeChange('local');
+    }
+
+    expect(h.setMuted).toHaveBeenCalled();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('fails closed for stale derived inputs, unsupported DSP, and impossible one-RX physical SUB', () => {
+    h.unavailable.add('ritOn');
+    h.unavailable.add('main.autoNotch');
+    makeRitXitHandlers().onRitToggle();
+    makeDspHandlers().onNotchModeChange('auto');
+
+    h.state = { ...oneReceiverAbState(), active: 'SUB' } as ServerState;
+    h.caps = { capabilities: ['agc', 'rit', 'xit', 'nr', 'nb', 'notch', 'af_level'], receivers: 1, vfoScheme: 'ab' };
+    makeAgcHandlers().onAgcModeChange(2);
+    makeBandHandlers().onBandSelect('60m', 5_357_000);
+    makeRxAudioHandlers().onAfLevelChange(0.5);
+
+    h.state = state();
+    h.unavailable.clear();
+    h.caps = { capabilities: [], receivers: 2, vfoScheme: 'main_sub' };
+    makeDspHandlers().onNrModeChange(1);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
@@ -393,7 +601,11 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
   it('keeps raw transport out of migrated blocks and Store writers out of their implementation', () => {
     const panelSource = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/panel-commands.ts'), 'utf8');
     const busSource = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/command-bus.ts'), 'utf8');
-    const assignedNames = ['makeFilterHandlers', 'makeModeHandlers', 'makeRfFrontEndHandlers'];
+    const assignedNames = [
+      'makeAgcHandlers', 'makeBandHandlers', 'makeDspHandlers', 'makeFilterHandlers',
+      'makeModeHandlers', 'makePresetHandlers', 'makeRfFrontEndHandlers',
+      'makeRitXitHandlers', 'makeRxAudioHandlers',
+    ];
 
     for (const [index, name] of assignedNames.entries()) {
       const start = panelSource.indexOf(`export function ${name}`);
@@ -423,5 +635,22 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     const rfBlock = panelSource.slice(rfStart, rfEnd);
     expect(rfBlock).not.toMatch(/\b(?:freqHz|activeSlot|vfoA|vfoB|unselectedVfo)\b/);
     expect(panelSource).toContain('dispatchRadioIntent({ name, params } as RadioIntent)');
+
+    for (const name of [
+      'set_agc', 'set_agc_time_constant', 'set_rit_status', 'set_rit_tx_status',
+      'set_rit_frequency', 'set_band', 'set_freq', 'set_mode', 'set_nr',
+      'set_nr_level', 'set_nb', 'set_nb_level', 'set_auto_notch',
+      'set_manual_notch', 'set_notch_filter', 'set_nb_depth', 'set_nb_width',
+      'set_manual_notch_width', 'set_af_level',
+    ]) {
+      expect(a03aNames).not.toContain(`'${name}'`);
+    }
+
+    for (const factory of ['makeBandHandlers', 'makePresetHandlers']) {
+      const start = panelSource.indexOf(`export function ${factory}`);
+      const end = panelSource.indexOf('\nexport function ', start + 1);
+      expect(panelSource.slice(start, end)).not.toMatch(/\b(?:activeSlot|vfoA|vfoB|unselectedVfo)\b/);
+    }
+    expect(panelSource).not.toMatch(/dispatchRadioIntent\(\{\s*name:\s*['"]ptt(?:_on|_off)?['"]/);
   });
 });

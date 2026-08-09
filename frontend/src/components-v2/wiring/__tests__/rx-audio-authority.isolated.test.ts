@@ -2,11 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 
 vi.mock('$lib/transport/ws-client', () => ({
+  getControlSession: vi.fn(() => ({ state: 'connected', epoch: 1 })),
+  onCommandDelivery: vi.fn(() => () => undefined),
+  onControlSessionTransition: vi.fn(() => () => undefined),
   sendCommand: vi.fn(),
 }));
-vi.mock('$lib/runtime/commands/radio-intents', async () => {
+vi.mock('$lib/runtime/commands/radio-intents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/commands/radio-intents')>();
   const { sendCommand } = await import('$lib/transport/ws-client');
-  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+  return {
+    ...actual,
+    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params),
+  };
 });
 
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -15,6 +22,11 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
+}));
+
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: vi.fn(() => ({ capabilities: ['af_level'], receivers: 1, vfoScheme: 'ab' })),
+  getControlRange: vi.fn(() => null),
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
@@ -85,7 +97,7 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
 
     expect(sendCommand).toHaveBeenNthCalledWith(1, 'set_af_level', { level: 0, receiver: 0 });
     expect(sendCommand).toHaveBeenNthCalledWith(2, 'set_af_level', { level: 0.42, receiver: 0 });
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ afLevel: 0.42 }, true);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(setMuted).toHaveBeenNthCalledWith(1, true);
     expect(setMuted).toHaveBeenNthCalledWith(2, false);
   });

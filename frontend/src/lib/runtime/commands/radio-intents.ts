@@ -2,7 +2,7 @@ import { acknowledgeCommand, beginCommand, cancelPendingCommands, failCommand, t
 import { makeCommandId } from '$lib/types/protocol';
 import { getControlSession, onCommandDelivery, onControlSessionTransition, sendCommand } from '$lib/transport/ws-client';
 
-type FieldKind = 'boolean' | 'integer' | 'receiver' | 'string' | 'vfo';
+type FieldKind = 'boolean' | 'integer' | 'normalized' | 'receiver' | 'string' | 'vfo';
 type FieldSpec = FieldKind | `${FieldKind}?`;
 type IntentSpec = { names: readonly string[]; params: Readonly<Record<string, FieldSpec>> };
 
@@ -19,7 +19,8 @@ const intentSpecs = [
     'set_anti_vox_gain', 'set_break_in_delay', 'set_compressor_level', 'set_drive_gain', 'set_mic_gain',
     'set_monitor_gain', 'set_nb_depth', 'set_nb_width', 'set_rf_power', 'set_vox_delay', 'set_vox_gain',
   ], params: { level: 'integer' } },
-  { names: ['set_af_level', 'set_nb_level', 'set_nr_level', 'set_preamp', 'set_rf_gain', 'set_squelch'], params: { level: 'integer', receiver: 'receiver' } },
+  { names: ['set_af_level'], params: { level: 'normalized', receiver: 'receiver' } },
+  { names: ['set_nb_level', 'set_nr_level', 'set_preamp', 'set_rf_gain', 'set_squelch'], params: { level: 'integer', receiver: 'receiver' } },
   { names: ['set_cw_pitch', 'set_tuner_status'], params: { value: 'integer' } },
   { names: ['set_agc_time_constant', 'set_manual_notch_width', 'set_notch_filter', 'set_pbt_inner', 'set_pbt_outer'], params: { value: 'integer', receiver: 'receiver' } },
   { names: ['set_agc', 'set_apf', 'set_data_mode'], params: { mode: 'integer', receiver: 'receiver' } },
@@ -68,8 +69,13 @@ const specEntries = intentSpecs.flatMap(({ names, params }) => names.map((name) 
 export const RADIO_INTENT_NAMES = Object.freeze(specEntries.map(([name]) => name)) as readonly RadioIntentName[];
 const specsByName = new Map<string, Readonly<Record<string, FieldSpec>>>(specEntries);
 
+export function isNormalizedLevel(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 function matchesValue(kind: FieldKind, value: unknown): boolean {
   if (kind === 'integer') return typeof value === 'number' && Number.isSafeInteger(value);
+  if (kind === 'normalized') return isNormalizedLevel(value);
   if (kind === 'boolean') return typeof value === 'boolean';
   if (kind === 'receiver') return value === 0 || value === 1;
   if (kind === 'vfo') return value === 'A' || value === 'B' || value === 'MAIN' || value === 'SUB';
