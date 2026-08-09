@@ -1,7 +1,9 @@
 import type { Capabilities, ControlRange } from '../types/capabilities';
 
-// Capabilities fetched once from GET /api/v1/capabilities
+// Capabilities accepted from the generation-gated WebSocket full snapshot.
 let capabilities = $state<Capabilities | null>(null);
+type CapabilitiesSubscriber = (caps: Capabilities | null) => void;
+const subscribers = new Set<CapabilitiesSubscriber>();
 
 const STATE_CONTRACT_VERSION = 1;
 
@@ -18,6 +20,16 @@ function hasCurrentEpoch(value: unknown): value is Capabilities {
     && validProviderGeneration(record.providerGeneration);
 }
 
+function notifySubscribers(): void {
+  for (const subscriber of subscribers) {
+    try {
+      subscriber(capabilities);
+    } catch (error) {
+      console.warn('Capability subscriber failed', error);
+    }
+  }
+}
+
 export function getCapabilities(): Capabilities | null {
   return capabilities;
 }
@@ -25,15 +37,30 @@ export function getCapabilities(): Capabilities | null {
 export function setCapabilities(caps: Capabilities): boolean {
   if (!hasCurrentEpoch(caps)) {
     capabilities = null;
+    notifySubscribers();
     return false;
   }
   capabilities = caps;
+  notifySubscribers();
   return true;
 }
 
 /** Clear capability truth whenever the provider epoch is no longer proven. */
 export function clearCapabilities(): void {
   capabilities = null;
+  notifySubscribers();
+}
+
+/** Observe only capability values accepted by the epoch-validating store. */
+export function subscribeCapabilities(subscriber: CapabilitiesSubscriber): () => void {
+  subscribers.add(subscriber);
+  subscriber(capabilities);
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    subscribers.delete(subscriber);
+  };
 }
 
 /** True only when capabilities and radio state prove the same provider epoch. */

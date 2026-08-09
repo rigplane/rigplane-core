@@ -35,6 +35,7 @@ vi.mock('$lib/transport/ws-client', () => ({
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => null),
   setCapabilities: vi.fn(),
+  subscribeCapabilities: vi.fn(),
   hasSpectrum: vi.fn(() => false),
   hasAnyScope: vi.fn(() => false),
 }));
@@ -110,7 +111,7 @@ vi.mock('./system-controller', async () => {
 
 import { fetchCapabilities, startPolling } from '$lib/transport/http-client';
 import { connect, getChannel, onMessage, sendRaw } from '$lib/transport/ws-client';
-import { setCapabilities } from '$lib/stores/capabilities.svelte';
+import { setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { systemController } from '../system-controller';
@@ -133,14 +134,17 @@ async function freshRuntime() {
     _ended: boolean;
     _dxSubscribers: Map<number, unknown>;
     _dxControlUnsubscribe: (() => void) | null;
+    _capabilitiesUnsubscribe: (() => void) | null;
   };
   rt._dxControlUnsubscribe?.();
+  rt._capabilitiesUnsubscribe?.();
   rt._dxSubscribers?.clear();
   rt._bootstrapCleanup = null;
   rt._bootstrapInFlight = null;
   rt._rxAudioLease = null;
   rt._ended = false;
   rt._dxControlUnsubscribe = null;
+  rt._capabilitiesUnsubscribe = null;
   return mod.runtime;
 }
 
@@ -155,7 +159,16 @@ const fakeCaps = {
   vfoScheme: 'ab',
   scopeSource: 'audio_fft',
   audioFftAvailable: true,
+  stateContractVersion: 1,
+  providerGeneration: 0,
 } as any;
+
+function configureAcceptedCapabilities(caps: any = fakeCaps): void {
+  (subscribeCapabilities as ReturnType<typeof vi.fn>).mockImplementation((listener) => {
+    listener(caps);
+    return vi.fn();
+  });
+}
 const fakeStopPolling = vi.fn();
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -270,8 +283,66 @@ describe('PresentationResourceHost', () => {
 describe('FrontendRuntime.bootstrap()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
+    configureAcceptedCapabilities();
     (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
+  });
+
+  it('waits for accepted capability-store generations before configuring resources', async () => {
+    const teardown = vi.spyOn(presentationResources, 'teardown')
+      .mockImplementation(async () => {});
+    const capabilityUnsubscribe = vi.fn();
+    (subscribeCapabilities as ReturnType<typeof vi.fn>).mockImplementation((listener) => {
+      listener(null);
+      return capabilityUnsubscribe;
+    });
+    const rt = await freshRuntime();
+
+    const cleanup = await rt.bootstrap();
+
+    expect(fetchCapabilities).not.toHaveBeenCalled();
+    expect(setCapabilities).not.toHaveBeenCalled();
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+      available: false, selected: false, demand: 0,
+    });
+    expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+      available: false, selected: false, demand: 0,
+    });
+    expect(presentationResources.snapshot('rx-audio')).toMatchObject({
+      available: false, demand: 0,
+    });
+
+    const listener = (subscribeCapabilities as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(listener).toEqual(expect.any(Function));
+    listener({
+      ...fakeCaps,
+      stateContractVersion: 1,
+      providerGeneration: 7,
+      scope: true,
+      capabilities: ['audio', 'scope'],
+      scopeSource: 'hardware',
+    });
+    expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
+      available: true, selected: true, demand: 0,
+    });
+    expect(presentationResources.snapshot('audio-fft')).toMatchObject({
+      available: true, selected: true, demand: 0,
+    });
+    expect(presentationResources.snapshot('rx-audio')).toMatchObject({
+      available: true, demand: 0,
+    });
+    expect(audioManager.startRx).not.toHaveBeenCalled();
+    expect(getChannel).not.toHaveBeenCalled();
+
+    listener(null);
+    expect(presentationResources.snapshot('hardware-scope').available).toBe(false);
+    expect(presentationResources.snapshot('audio-fft').available).toBe(false);
+    expect(presentationResources.snapshot('rx-audio').available).toBe(false);
+    expect(audioManager.startRx).not.toHaveBeenCalled();
+    expect(getChannel).not.toHaveBeenCalled();
+
+    await cleanup();
+    expect(capabilityUnsubscribe).toHaveBeenCalledTimes(1);
+    teardown.mockRestore();
   });
 
   it('runs the full bootstrap sequence on the first call', async () => {
@@ -279,12 +350,11 @@ describe('FrontendRuntime.bootstrap()', () => {
 
     const cleanup = await rt.bootstrap();
 
-    // 1. fetchCapabilities called
-    expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+    // 1. Accepted capability-store listener registered; no HTTP capability writer.
+    expect(subscribeCapabilities).toHaveBeenCalledTimes(1);
+    expect(fetchCapabilities).not.toHaveBeenCalled();
     expect(clearLegacyPendingModInputRestore).toHaveBeenCalledTimes(1);
-
-    // 2. capabilities pushed into store
-    expect(setCapabilities).toHaveBeenCalledWith(fakeCaps);
+    expect(setCapabilities).not.toHaveBeenCalled();
 
     // 3. polling started once (initial startPolling call; registerPolling registers
     //    a factory that calls startPolling only when systemController.connect() fires)
@@ -308,7 +378,7 @@ describe('FrontendRuntime.bootstrap()', () => {
     const cleanup2 = await rt.bootstrap();
 
     // Transport functions only invoked once total
-    expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+    expect(subscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(sendRaw).toHaveBeenCalledTimes(1);
 
@@ -345,7 +415,7 @@ describe('FrontendRuntime.bootstrap()', () => {
 
     const second = await rt.bootstrap();
 
-    expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    expect(subscribeCapabilities).toHaveBeenCalledTimes(2);
     expect(connect).toHaveBeenCalledTimes(2);
     expect(sendRaw).toHaveBeenCalledTimes(2);
     expect(second).not.toBe(cleanup);
@@ -360,17 +430,19 @@ describe('FrontendRuntime.bootstrap()', () => {
     // a third bootstrap silently re-runs the transport chain on a live
     // runtime.
     await cleanup();
-    expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    expect(subscribeCapabilities).toHaveBeenCalledTimes(2);
     expect(await rt.bootstrap()).toBe(second);
 
     await second();
     teardown.mockRestore();
   });
 
-  it('propagates fetchCapabilities error and allows retry', async () => {
+  it('propagates capability-listener setup error and allows retry', async () => {
     const rt = await freshRuntime();
     const error = new Error('network failure');
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockRejectedValueOnce(error);
+    (subscribeCapabilities as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw error;
+    });
 
     await expect(rt.bootstrap()).rejects.toThrow('network failure');
 
@@ -379,10 +451,10 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(sendRaw).not.toHaveBeenCalled();
 
     // Runtime is not latched — retry should work
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
+    configureAcceptedCapabilities();
     const cleanup = await rt.bootstrap();
     expect(typeof cleanup).toBe('function');
-    expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    expect(subscribeCapabilities).toHaveBeenCalledTimes(2);
   });
 
   it('startPolling callback calls setRadioState with the received state', async () => {
@@ -415,7 +487,7 @@ describe('FrontendRuntime.bootstrap()', () => {
     const [cleanup1, cleanup2] = await Promise.all([rt.bootstrap(), rt.bootstrap()]);
 
     // Each transport function called exactly once, not twice
-    expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+    expect(subscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(startPolling).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(sendRaw).toHaveBeenCalledTimes(1);
@@ -429,7 +501,7 @@ describe('FrontendRuntime.bootstrap()', () => {
 describe('FrontendRuntime hardware scope and DX facades', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
+    configureAcceptedCapabilities();
     (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
   });
 
@@ -466,10 +538,10 @@ describe('FrontendRuntime hardware scope and DX facades', () => {
 describe('FrontendRuntime canonical default scope status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    configureAcceptedCapabilities();
     (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
   });
   it('keeps capability-denied hardware inert', async () => {
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
     const rt = await freshRuntime();
     await rt.bootstrap();
     expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
@@ -481,7 +553,7 @@ describe('FrontendRuntime canonical default scope status', () => {
     (getChannel as ReturnType<typeof vi.fn>).mockImplementation(
       (name) => name === 'scope' ? hardware : audio,
     );
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+    configureAcceptedCapabilities({
       ...fakeCaps, capabilities: ['audio', 'scope'], scopeSource: 'hardware',
     });
     const rt = await freshRuntime();
@@ -532,7 +604,7 @@ describe('FrontendRuntime canonical default scope status', () => {
   });
   it('publishes the audio default and inert facts without fallback', async () => {
     (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(makeScopeChannel());
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+    configureAcceptedCapabilities({
       ...fakeCaps, scope: true, capabilities: ['audio', 'scope'], scopeSource: 'audio_fft',
     });
     const rt = await freshRuntime();
@@ -550,7 +622,7 @@ describe('FrontendRuntime canonical default scope status', () => {
     await settle();
     expect(rt.defaultScopeStatus.lifecycle).toBe('failed');
     presentationResources.release(failedLease);
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+    configureAcceptedCapabilities({
       ...fakeCaps, scope: true, capabilities: ['audio', 'scope'], scopeSource: 'invalid',
       audioFftAvailable: false,
     });
@@ -571,7 +643,7 @@ describe('FrontendRuntime canonical default scope status', () => {
   it('shares, coalesces, and exactly tears down the reactive bridge', async () => {
     const hardware = makeScopeChannel();
     (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(hardware);
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+    configureAcceptedCapabilities({
       ...fakeCaps, capabilities: ['audio', 'scope'], scopeSource: 'hardware',
     });
     const rt = await freshRuntime();
@@ -585,9 +657,14 @@ describe('FrontendRuntime canonical default scope status', () => {
     expect([hostListeners.size, healthListeners.size]).toEqual([0, 0]);
     const stopFirst = observe(), stopShared = observe();
     expect([hostListeners.size, healthListeners.size]).toEqual([1, 1]);
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('offline'));
+    (subscribeCapabilities as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error('offline');
+    });
     await expect(rt.bootstrap()).rejects.toThrow('offline');
     expect([hostListeners.size, healthListeners.size]).toEqual([1, 1]);
+    configureAcceptedCapabilities({
+      ...fakeCaps, capabilities: ['audio', 'scope'], scopeSource: 'hardware',
+    });
     await rt.bootstrap();
     const lease = rt.acquireHardwareScope('viewer');
     await settle();
@@ -613,7 +690,7 @@ describe('FrontendRuntime canonical default scope status', () => {
 describe('FrontendRuntime RX LIVE intent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCaps);
+    configureAcceptedCapabilities();
     (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
     presentationResources.retry('rx-audio');
   });
@@ -659,7 +736,7 @@ describe('FrontendRuntime RX LIVE intent', () => {
 
   it('does not start while unavailable or implicitly retry a rejected start', async () => {
     const unavailable = await freshRuntime();
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    configureAcceptedCapabilities({
       ...fakeCaps,
       audio: false,
       capabilities: [],
@@ -671,6 +748,7 @@ describe('FrontendRuntime RX LIVE intent', () => {
     unavailable.setRxLive(false);
 
     const failed = await freshRuntime();
+    configureAcceptedCapabilities();
     await failed.bootstrap();
     (audioManager.startRx as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
       throw new Error('offline');
@@ -698,7 +776,7 @@ describe('FrontendRuntime RX LIVE intent', () => {
       onStateChange: vi.fn(() => vi.fn()),
     };
     (getChannel as ReturnType<typeof vi.fn>).mockReturnValue(channel);
-    (fetchCapabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+    configureAcceptedCapabilities({
       ...fakeCaps,
       scope: true,
       capabilities: ['audio', 'scope'],

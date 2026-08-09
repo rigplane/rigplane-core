@@ -16,8 +16,9 @@
  *   - `page.route('**\/api/v1/state')`, `capabilities`, `info` return JSON
  *     from `fixtures.ts`.
  *   - The control WebSocket is replaced with a polyfilled class that
- *     auto-opens and exposes a global `__i18nWsDispatch(msg)` hook for
- *     pushing fake `notification` frames (used for the Toast surface).
+ *     auto-opens, emits the canonical registration full, and exposes a global
+ *     `__i18nWsDispatch(msg)` hook for pushing fake `notification` frames
+ *     (used for the Toast surface).
  *
  * Assertion floor (no screenshot diffs are forced — see README):
  *   - Page text MUST NOT contain `[missing:` (lookup-miss marker).
@@ -103,9 +104,27 @@ function locStorageInit(locale: SupportedLocale) {
  * `window.__i18nWsDispatch(msg)` for the test to push `notification`
  * frames into the open control channel.
  */
-const WS_STUB_INIT = `
+function wsStubInit(selectedState: typeof mockState): string {
+  const initialControlFrame = {
+    type: 'state_update',
+    data: {
+      type: 'full',
+      data: selectedState,
+      revision: selectedState.revision,
+      stateRevision: selectedState.stateRevision,
+      freshnessRevision: selectedState.freshnessRevision,
+      healthRevision: selectedState.healthRevision,
+      observationSeq: selectedState.observationSeq,
+      publicStateSeq: selectedState.publicStateSeq,
+      transportSeq: selectedState.transportSeq,
+      stateContractVersion: selectedState.stateContractVersion,
+      providerGeneration: selectedState.providerGeneration,
+    },
+  };
+  return `
   (() => {
     const sockets = [];
+    const initialControlFrame = ${JSON.stringify(initialControlFrame)};
 
     class StubWebSocket extends EventTarget {
       constructor(url) {
@@ -128,6 +147,12 @@ const WS_STUB_INIT = `
           const evt = new Event('open');
           this.dispatchEvent(evt);
           if (typeof this.onopen === 'function') this.onopen(evt);
+          if (new URL(String(this.url), window.location.href).pathname === '/api/v1/ws') {
+            const payload = JSON.stringify(initialControlFrame);
+            const message = new MessageEvent('message', { data: payload });
+            this.dispatchEvent(message);
+            if (typeof this.onmessage === 'function') this.onmessage(message);
+          }
         });
       }
       send(_data) {
@@ -159,6 +184,7 @@ const WS_STUB_INIT = `
     };
   })();
 `;
+}
 
 async function routeMockBackend(page: Page, state = mockState): Promise<void> {
   const json = (route: Route, body: unknown) =>
@@ -207,6 +233,7 @@ async function preparePage(
   viewport: ViewportSpec,
   options: { state?: typeof mockState; workspace?: Record<string, unknown> } = {},
 ): Promise<void> {
+  const selectedState = options.state ?? mockState;
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
   await page.addInitScript(locStorageInit(locale));
   if (options.workspace !== undefined) {
@@ -214,8 +241,8 @@ async function preparePage(
       localStorage.setItem('rigplane:workspace', JSON.stringify(workspace));
     }, options.workspace);
   }
-  await page.addInitScript(WS_STUB_INIT);
-  await routeMockBackend(page, options.state ?? mockState);
+  await page.addInitScript(wsStubInit(selectedState));
+  await routeMockBackend(page, selectedState);
 }
 
 function screenshotPath(

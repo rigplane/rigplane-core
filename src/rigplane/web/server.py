@@ -421,18 +421,6 @@ class _HttpCommandExecutor:
         raise ValueError(f"unsupported HTTP command intent: {intent.name!r}")
 
 
-# MOR-616: SET command name -> ``global.slow_state.<field>`` for the
-# per-DATA-group MOD-input selector. The optimistic overlay and the poller
-# readback (radio_poller._apply_global_control_observation) must agree on these
-# paths for last-writer-wins reconciliation to work.
-_MOD_INPUT_COMMAND_FIELDS: dict[str, str] = {
-    "set_data_off_mod_input": "data_off_mod_input",
-    "set_data1_mod_input": "data1_mod_input",
-    "set_data2_mod_input": "data2_mod_input",
-    "set_data3_mod_input": "data3_mod_input",
-}
-
-
 @dataclass(slots=True)
 class _SharedControlCommandExecutor:
     server: "WebServer"
@@ -449,90 +437,7 @@ class _SharedControlCommandExecutor:
             source=intent.source,
             command_service=self.server.command_service,
         )
-        # MOR-485: publish an optimistic command-response overlay for set_freq
-        # so the projected snapshot reflects the commanded value immediately
-        # instead of snapping back until the deferred readback lands. Emitted
-        # only on enqueue SUCCESS (a raised enqueue never reaches here, so the
-        # optimistic value is never written for a failed set). The ACTIVE slot
-        # matches the readback emitters in runtime/_civ_rx.py and the projection
-        # in web/runtime_helpers.py.
-        #
-        # MOR-334 regression fix: ``set_mode`` and ``set_data_mode`` had the
-        # identical snap-back defect MOR-485 fixed for freq — the executor
-        # returned an ack with no observation, so the published mode reverted to
-        # the stale store value until the readback (deferred ~2-4.3s by
-        # external_cat_pause=pause_polling, longer than the frontend optimistic
-        # TTL) landed. The same active-slot path keeps later readbacks
-        # reconciling via last-writer-wins (front-panel tracking preserved).
-        observations = self._optimistic_observations(intent)
-        return CommandExecutionResult(details=result, observations=observations)
-
-    def _optimistic_observations(
-        self, intent: CommandIntent
-    ) -> tuple[Observation, ...]:
-        # During an external-CAT session (e.g. WSJT-X via the Hamlib/rigctld
-        # bridge) the external master owns the wire: RigPlane's poller pauses
-        # (radio_poller._run gate) and rigctld get_freq serves the cached store
-        # projection without eliciting a fresh radio readback. An optimistic
-        # command-response overlay published here can therefore never be
-        # reconciled by a readback — it pins a fabricated freq/mode the radio is
-        # not on and the operating-UI display sticks at the command echo for the
-        # whole session. Suppress the overlay so the projection keeps tracking
-        # the radio's real last-known/live value (bridge CI-V readbacks still
-        # land via _civ_rx, and post-session reconcile_state refreshes it).
-        # Normal (non-external-CAT) responsiveness is unchanged: the poller
-        # readback continues to displace the overlay via last-writer-wins.
-        if getattr(self.server._radio, "external_cat_session_active", False) is True:
-            return ()
-        receiver = str(int(intent.params.get("receiver", 0)))
-        session_id = (
-            str(intent.params["session_id"])
-            if intent.params.get("session_id")
-            else None
-        )
-
-        def _observation(path: FieldPath, value: Any) -> Observation:
-            return Observation(
-                path=path,
-                value=value,
-                source=SourceMetadata(
-                    source="command_response",
-                    provider="web_command",
-                    command_source=intent.source,
-                    session_id=session_id,
-                ),
-                timestamp_monotonic=time.monotonic(),
-                correlation_id=intent.id,
-            )
-
-        def _active(name: str, value: Any) -> Observation:
-            return _observation(FieldPath.active(receiver, "freq_mode", name), value)
-
-        if intent.name == "set_freq":
-            return (_active("freq_hz", int(intent.params["freq_hz"])),)
-        if intent.name == "set_mode":
-            return (_active("mode", str(intent.params["mode"])),)
-        if intent.name == "set_data_mode":
-            return (_active("data_mode", int(intent.params["mode"])),)
-        # MOR-616 regression fix: the per-DATA-group MOD-input selector
-        # (set_data_off/1/2/3_mod_input, payload ``{source: int}``) had the same
-        # snap-back defect — the executor returned an ack with no observation, so
-        # the published source reverted to the stale store value until the
-        # deferred readback (radio_poller._fetch_mod_inputs, gated behind
-        # external_cat_pause and a data_mode-change refetch) landed, longer than
-        # the frontend optimistic TTL. The readback writes the confirmed value to
-        # ``global.slow_state.<field>`` via _apply_global_control_observation, so
-        # the overlay must target the SAME path to keep last-writer-wins
-        # reconciliation (front-panel tracking preserved).
-        mod_input_field = _MOD_INPUT_COMMAND_FIELDS.get(intent.name)
-        if mod_input_field is not None:
-            return (
-                _observation(
-                    FieldPath.global_("slow_state", mod_input_field),
-                    int(intent.params["source"]),
-                ),
-            )
-        return ()
+        return CommandExecutionResult(details=result)
 
 
 async def _read_capped_body(
@@ -4680,12 +4585,6 @@ class WebServer:
                         command_id=f"http-power-{time.monotonic_ns()}",
                     )
                 )
-                # Compatibility delivery mirror until web state responses read
-                # power directly from StateStore; command lifecycle and
-                # reconciliation are owned by CommandService.
-                if self._radio_state is not None:
-                    self._radio_state.power_on = is_on
-                self._on_radio_state_change("powerstat_changed", {"power_on": is_on})
                 resp = {"status": "ok", "power": power_state}
             elif path == "/api/v1/radio/cw/send":
                 body_bytes = b""

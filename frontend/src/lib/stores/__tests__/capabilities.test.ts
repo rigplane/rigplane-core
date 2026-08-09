@@ -69,6 +69,24 @@ describe('capabilities store', () => {
     expect(store.getCapabilities()).toBeNull();
   });
 
+  it('notifies subscribers synchronously for accepted install and clear only while subscribed', () => {
+    const seen: Array<Capabilities | null> = [];
+    const unsubscribe = store.subscribeCapabilities((caps) => { seen.push(caps); });
+    const generation0 = makeCaps({ providerGeneration: 0 });
+    const generation1 = makeCaps({ providerGeneration: 1, model: 'IC-7300' });
+
+    expect(seen).toEqual([null]);
+    expect(store.setCapabilities(generation0)).toBe(true);
+    store.clearCapabilities();
+    expect(store.setCapabilities(generation1)).toBe(true);
+    expect(seen).toEqual([null, generation0, null, generation1]);
+
+    unsubscribe();
+    unsubscribe();
+    store.clearCapabilities();
+    expect(seen).toEqual([null, generation0, null, generation1]);
+  });
+
   describe('hasSpectrum', () => {
     it('returns true when scope is true', () => {
       store.setCapabilities(makeCaps({ scope: true }));
