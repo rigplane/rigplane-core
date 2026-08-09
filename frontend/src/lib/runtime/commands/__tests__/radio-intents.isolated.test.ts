@@ -140,10 +140,16 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_freq', params: { freq: 1.5 } },
       { name: 'set_freq', params: { freq: 1 }, unexpected: true },
       { name: 'set_compressor', params: { on: 1 } },
+      { name: 'set_af_level', params: { level: -0.01, receiver: 0 } },
+      { name: 'set_af_level', params: { level: 1.01, receiver: 0 } },
+      { name: 'set_af_level', params: { level: 10, receiver: 0 } },
+      { name: 'set_af_level', params: { level: '0.5', receiver: 0 } },
       { name: 'set_af_level', params: { level: 10, receiver: 7 } },
       { name: 'set_af_level', params: { level: 10, receiver: '0' } },
       { name: 'set_af_level', params: { level: Number.NaN, receiver: 0 } },
       { name: 'set_af_level', params: { level: Number.POSITIVE_INFINITY, receiver: 0 } },
+      { name: 'set_af_level', params: { level: 0.5, receiver: 0, unexpected: true } },
+      { name: 'set_af_level', params: { level: 0.5, receiver: 0 }, unexpected: true },
       { name: 'set_vfo', params: { vfo: 'VFOA' } },
       { name: 'set_mode', params: { mode: 'USB', receiver: 0, unexpected: true } },
       { name: 'vfo_swap', params: { unexpected: true } },
@@ -158,17 +164,18 @@ describe('typed non-PTT radio intents', () => {
     expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
   });
 
-  it('accepts the shipped fractional AF-level scale without weakening integer fields', () => {
-    intents.dispatchRadioIntent({
-      id: 'af-fraction', name: 'set_af_level', params: { level: 0.42, receiver: 0 },
-    });
+  it('accepts exact normalized AF boundaries and fractions without weakening integer fields', () => {
+    const levels = [0, 1, 50 / 255] as const;
+    levels.forEach((level, index) => intents.dispatchRadioIntent({
+      id: `af-normalized-${index}`, name: 'set_af_level', params: { level, receiver: 0 },
+    }));
 
-    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(
-      'set_af_level', { level: 0.42, receiver: 0 }, 'af-fraction', { optimistic: false },
-    );
-    expect(lifecycle.getCommandLifecycles()).toEqual([
-      expect.objectContaining({ id: 'af-fraction', name: 'set_af_level', status: 'pending' }),
-    ]);
+    levels.forEach((level, index) => expect(harness.sendCommand).toHaveBeenNthCalledWith(
+      index + 1, 'set_af_level', { level, receiver: 0 }, `af-normalized-${index}`, { optimistic: false },
+    ));
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(levels.length);
+    expect(lifecycle.getCommandLifecycles()).toEqual(expect.arrayContaining(levels.map((_, index) =>
+      expect.objectContaining({ id: `af-normalized-${index}`, name: 'set_af_level', status: 'pending' }))));
     expect(() => intents.dispatchRadioIntent({
       name: 'set_nr_level', params: { level: 0.42, receiver: 0 },
     } as never)).toThrow(TypeError);
@@ -181,7 +188,7 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_compressor', params: { on: true } },
       { name: 'set_nb', params: { on: false, receiver: 0 } },
       { name: 'set_mic_gain', params: { level: 10 } },
-      { name: 'set_af_level', params: { level: 10, receiver: 1 } },
+      { name: 'set_af_level', params: { level: 50 / 255, receiver: 1 } },
       { name: 'set_cw_pitch', params: { value: 10 } },
       { name: 'set_pbt_inner', params: { value: 10, receiver: 0 } },
       { name: 'set_data_mode', params: { mode: 1, receiver: 1 } },

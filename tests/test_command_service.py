@@ -1525,6 +1525,13 @@ def test_normalized_level_command_expectation_matches_radio_scale(
     assert observation.value > 0.9
 
 
+def test_normalized_af_level_fifty_round_trips_to_raw_fifty() -> None:
+    """The public AF fixture stays normalized while the server owns raw conversion."""
+    from rigplane.web.handlers.control import _normalized_or_raw_level
+
+    assert _normalized_or_raw_level(50 / 255) == 50
+
+
 @pytest.mark.asyncio
 async def test_raw_external_rigctld_level_readback_normalizes_before_reconcile() -> (
     None

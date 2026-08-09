@@ -106,7 +106,7 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     agcTimeConstant: 4,
     digisel: false,
     ipplus: false,
-    afLevel: 50,
+    afLevel: 50 / 255,
     rfGain: 128,
     squelch: 0,
     nb: false,
@@ -308,7 +308,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
     expect(exactCalls()).toEqual([
       ['set_af_level', { level: 0, receiver: 0 }],
-      ['set_af_level', { level: 50, receiver: 0 }],
+      ['set_af_level', { level: 50 / 255, receiver: 0 }],
       ['set_af_level', { level: 0.42, receiver: 0 }],
     ]);
     expectIntentTransport();
@@ -325,6 +325,67 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setRxVolume).toHaveBeenCalledWith(0.37);
     expect(h.setVolume).toHaveBeenCalledWith(37);
     expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid normalized AF input before radio lifecycle or transport', () => {
+    const rxAudio = makeRxAudioHandlers();
+    for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+      rxAudio.onAfLevelChange(level);
+    }
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('rejects invalid browser-local AF input before any local or radio effect', () => {
+    h.rxEnabled = true;
+    const rxAudio = makeRxAudioHandlers();
+    for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+      rxAudio.onAfLevelChange(level);
+    }
+
+    expect(h.setRxVolume).not.toHaveBeenCalled();
+    expect(h.setVolume).not.toHaveBeenCalled();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('accepts exact normalized AF endpoints unchanged on radio and browser-local paths', () => {
+    const rxAudio = makeRxAudioHandlers();
+    rxAudio.onAfLevelChange(0);
+    rxAudio.onAfLevelChange(1);
+
+    expect(exactCalls()).toEqual([
+      ['set_af_level', { level: 0, receiver: 0 }],
+      ['set_af_level', { level: 1, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    h.rxEnabled = true;
+    rxAudio.onAfLevelChange(0);
+    rxAudio.onAfLevelChange(1);
+    expect(h.setRxVolume).toHaveBeenNthCalledWith(1, 0);
+    expect(h.setRxVolume).toHaveBeenNthCalledWith(2, 1);
+    expect(h.setVolume).toHaveBeenNthCalledWith(1, 0);
+    expect(h.setVolume).toHaveBeenNthCalledWith(2, 100);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('never turns an invalid observed AF level into a mute or restore command', () => {
+    const rxAudio = makeRxAudioHandlers();
+    for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+      h.state = state();
+      h.state!.main!.afLevel = level;
+      rxAudio.onMonitorModeChange('mute');
+      rxAudio.onMonitorModeChange('local');
+    }
+
+    expect(h.setMuted).toHaveBeenCalled();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
   });
 
   it('fails closed for stale derived inputs, unsupported DSP, and impossible one-RX physical SUB', () => {

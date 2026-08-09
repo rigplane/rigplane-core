@@ -26,7 +26,7 @@ import { consumePendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
-import { dispatchRadioIntent, type RadioIntent } from './radio-intents';
+import { dispatchRadioIntent, isNormalizedLevel, type RadioIntent } from './radio-intents';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -692,8 +692,7 @@ export function makeRxAudioHandlers() {
         const receiver = knownReceiverField('afLevel');
         const state = getRadioState();
         const currentAf = receiver === 1 ? state?.sub?.afLevel : state?.main?.afLevel;
-        if (hasCapability('af_level') && receiver !== null && typeof currentAf === 'number'
-          && Number.isFinite(currentAf)) {
+        if (hasCapability('af_level') && receiver !== null && isNormalizedLevel(currentAf)) {
           if (savedAfLevel === null) savedAfLevel = currentAf;
           dispatchRadioIntent({ name: 'set_af_level', params: { level: 0, receiver } });
         }
@@ -709,14 +708,13 @@ export function makeRxAudioHandlers() {
       }
     },
     onAfLevelChange: (level: number) => {
+      if (!isNormalizedLevel(level)) return;
       if (runtime.rxEnabled) {
-        if (typeof level !== 'number' || !Number.isFinite(level)) return;
         runtime.setRxVolume(level);
         runtime.setVolume(Math.round(level * 100));
       } else {
         const receiver = knownReceiverField('afLevel');
-        if (!hasCapability('af_level') || receiver === null
-          || typeof level !== 'number' || !Number.isFinite(level)) return;
+        if (!hasCapability('af_level') || receiver === null) return;
         dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
       }
     },
