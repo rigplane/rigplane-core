@@ -26,16 +26,28 @@ const numericSpan = ['scan_set_df_span', 'set_scope_span'] as const;
 const numericSpeed = ['set_key_speed', 'set_scope_speed'] as const;
 const numericType = ['scan_start', 'set_keyer_type'] as const;
 const custom = [
-  'set_attenuator', 'set_band', 'set_dash_ratio', 'set_filter', 'set_filter_shape', 'set_filter_width',
-  'set_freq', 'set_if_shift', 'set_mode', 'set_rit_frequency', 'set_scope_center_type', 'set_scope_dual', 'set_scope_edge',
-  'set_scope_rbw', 'set_scope_ref', 'set_scope_vbw', 'switch_scope_receiver',
-  'set_vfo',
+  ['set_attenuator', 'db:n,receiver:r'], ['set_band', 'band:n'], ['set_dash_ratio', 'ratio:n'],
+  ['set_filter', 'filter:n,receiver?:r'], ['set_filter_shape', 'shape:n,receiver:r'],
+  ['set_filter_width', 'width:n,receiver?:r'], ['set_freq', 'freq:n,receiver?:r'],
+  ['set_if_shift', 'offset:n,receiver:r'], ['set_mode', 'mode:s,filter?:n,receiver?:r'],
+  ['set_rit_frequency', 'freq:n'], ['set_scope_center_type', 'center_type:n'],
+  ['set_scope_dual', 'dual:b'], ['set_scope_edge', 'edge:n'], ['set_scope_rbw', 'rbw:n'],
+  ['set_scope_ref', 'ref:n'], ['set_scope_vbw', 'narrow:b'], ['switch_scope_receiver', 'receiver:r'],
+  ['set_vfo', 'vfo:v'],
 ] as const;
+const customNames = custom.map(([name]) => name) as Array<(typeof custom)[number][0]>;
+const standardRules: ReadonlyArray<readonly [readonly string[], string]> = [
+  [empty, ''], [channel, 'channel:n'], [on, 'on:b'], [onReceiver, 'on:b,receiver:r'],
+  [level, 'level:n'], [levelReceiver, 'level:n,receiver:r'], [value, 'value:n'],
+  [valueReceiver, 'value:n,receiver:r'], [modeReceiver, 'mode:n,receiver:r'],
+  [modSource, 'source:n'], [numericMode, 'mode:n'], [numericSpan, 'span:n'],
+  [numericSpeed, 'speed:n'], [numericType, 'type:n'],
+];
 
 type Member<T extends readonly string[]> = T[number];
 export const RADIO_INTENT_NAMES = Object.freeze([
   ...empty, ...channel, ...on, ...onReceiver, ...level, ...levelReceiver, ...value, ...valueReceiver,
-  ...modeReceiver, ...modSource, ...numericMode, ...numericSpan, ...numericSpeed, ...numericType, ...custom,
+  ...modeReceiver, ...modSource, ...numericMode, ...numericSpan, ...numericSpeed, ...numericType, ...customNames,
 ] as const);
 export type RadioIntentName = (typeof RADIO_INTENT_NAMES)[number];
 type RadioIntentParams<Name extends RadioIntentName> =
@@ -69,10 +81,30 @@ type RadioIntentParams<Name extends RadioIntentName> =
   Name extends 'set_scope_rbw' ? { rbw: number } :
   Name extends 'set_scope_ref' ? { ref: number } :
   Name extends 'set_scope_vbw' ? { narrow: boolean } :
-  Name extends 'set_vfo' ? { vfo: string } :
-  Name extends 'switch_scope_receiver' ? { receiver: number } : never;
+  Name extends 'set_vfo' ? { vfo: 'A' | 'B' | 'MAIN' | 'SUB' } :
+  Name extends 'switch_scope_receiver' ? { receiver: Receiver } : never;
 export type RadioIntent = { [Name in RadioIntentName]: { name: Name; params: RadioIntentParams<Name>; id?: string } }[RadioIntentName];
 const radioIntentNames = new Set<string>(RADIO_INTENT_NAMES);
+
+function matchesParams(name: string, params: Record<string, unknown>): boolean {
+  const rule = standardRules.find(([names]) => names.includes(name))?.[1]
+    ?? custom.find(([candidate]) => candidate === name)?.[1];
+  if (rule === undefined) return false;
+  const fields = rule === '' ? [] : rule.split(',');
+  const allowed = fields.map((field) => field.split(':')[0].replace('?', ''));
+  if (Object.keys(params).some((key) => !allowed.includes(key))) return false;
+  return fields.every((field) => {
+    const [rawKey, kind] = field.split(':');
+    const key = rawKey.replace('?', '');
+    if (!Object.prototype.hasOwnProperty.call(params, key)) return rawKey.endsWith('?');
+    const value = params[key];
+    return kind === 'n' ? typeof value === 'number' && Number.isFinite(value)
+      : kind === 'b' ? typeof value === 'boolean'
+        : kind === 'r' ? value === 0 || value === 1
+          : kind === 'v' ? value === 'A' || value === 'B' || value === 'MAIN' || value === 'SUB'
+            : typeof value === 'string' && value.length > 0;
+  });
+}
 
 onCommandDelivery((event) => {
   if (event.kind === 'transport-sent') return;
@@ -92,7 +124,11 @@ export function dispatchRadioIntent(intent: RadioIntent): CommandLifecycle {
   if (typeof candidate.params !== 'object' || candidate.params === null || Array.isArray(candidate.params)) {
     throw new TypeError('Radio intent params must be an object');
   }
-  const id = typeof candidate.id === 'string' ? candidate.id : makeCommandId();
+  if ((candidate.id !== undefined && (typeof candidate.id !== 'string' || candidate.id.length === 0))
+    || !matchesParams(candidate.name, candidate.params as Record<string, unknown>)) {
+    throw new TypeError('Invalid radio intent envelope');
+  }
+  const id = candidate.id ?? makeCommandId();
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name: candidate.name, params: candidate.params as Record<string, unknown>, originalEpoch });
   sendCommand(candidate.name, candidate.params as Record<string, unknown>, id, { optimistic: false });

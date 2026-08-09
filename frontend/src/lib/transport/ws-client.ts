@@ -29,10 +29,7 @@ type TrackedPttCommand = PendingPttRelease & {
   seen: Set<CommandDeliveryKind>;
 };
 type PendingNonPttCommand = { command: WsCommand; originalEpoch: number };
-type TrackedNonPttCommand = PendingNonPttCommand & {
-  eventEpoch: number;
-  seen: Set<CommandDeliveryKind>;
-};
+type TrackedNonPttCommand = TrackedPttCommand & { eventEpoch: number };
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
@@ -253,38 +250,20 @@ export class WsChannel {
       return false;
     }
     if (!IDEMPOTENT_TYPES.has(cmd.name)) {
-      this._emitDelivery({
-        commandId: cmd.id,
-        kind: 'error',
-        originalEpoch: this.transportEpoch,
-        eventEpoch: this.transportEpoch,
-        error: 'offline non-idempotent command rejected',
-      });
+      this._rejectNonPtt(cmd.id, this.transportEpoch, 'offline non-idempotent command rejected');
       return false;
     }
     // Deduplicate idempotent commands — keep only the latest value
     const superseded = this.sendQueue.find((pending) => pending.command.name === cmd.name);
     if (superseded) {
-      this._emitDelivery({
-        commandId: superseded.command.id,
-        kind: 'error',
-        originalEpoch: superseded.originalEpoch,
-        eventEpoch: this.transportEpoch,
-        error: 'superseded by newer offline command',
-      });
+      this._rejectNonPtt(superseded.command.id, superseded.originalEpoch, 'superseded by newer offline command');
       this.sendQueue = this.sendQueue.filter((pending) => pending.command.name !== cmd.name);
     }
     this.sendQueue.push({ command: cmd, originalEpoch: this.transportEpoch });
     // Drop oldest if over limit
     if (this.sendQueue.length > MAX_QUEUE_SIZE) {
       const dropped = this.sendQueue.shift()!;
-      this._emitDelivery({
-        commandId: dropped.command.id,
-        kind: 'error',
-        originalEpoch: dropped.originalEpoch,
-        eventEpoch: this.transportEpoch,
-        error: 'offline command queue capacity exceeded',
-      });
+      this._rejectNonPtt(dropped.command.id, dropped.originalEpoch, 'offline command queue capacity exceeded');
     }
     return false;
   }
@@ -323,21 +302,12 @@ export class WsChannel {
   }
 
   rejectNonPtt(commandId: string, error: string): void {
-    this._emitDelivery({
-      commandId,
-      kind: 'error',
-      originalEpoch: this.transportEpoch,
-      eventEpoch: this.transportEpoch,
-      error,
-    });
+    this._rejectNonPtt(commandId, this.transportEpoch, error);
   }
 
   cancelNonPtt(error: string): void {
     for (const tracked of this.trackedNonPttCommands.values()) {
-      this._emitDelivery({
-        commandId: tracked.command.id, kind: 'error', originalEpoch: tracked.originalEpoch,
-        eventEpoch: this.transportEpoch, error, cancelled: true,
-      });
+      this._rejectNonPtt(tracked.command.id, tracked.originalEpoch, error, this.transportEpoch, true);
     }
     this.trackedNonPttCommands.clear();
   }
@@ -368,13 +338,10 @@ export class WsChannel {
     try {
       ws.send(JSON.stringify(pending.command));
     } catch (error) {
-      this._emitDelivery({
-        commandId: pending.command.id,
-        kind: 'error',
-        originalEpoch: pending.originalEpoch,
-        eventEpoch,
-        error: error instanceof Error ? error.message : 'WebSocket send failed',
-      });
+      this._rejectNonPtt(
+        pending.command.id, pending.originalEpoch,
+        error instanceof Error ? error.message : 'WebSocket send failed', eventEpoch,
+      );
       return false;
     }
     const tracked: TrackedNonPttCommand = { ...pending, eventEpoch, seen: new Set() };
@@ -382,16 +349,10 @@ export class WsChannel {
       const oldestId = this.trackedNonPttCommands.keys().next().value!;
       const oldest = this.trackedNonPttCommands.get(oldestId)!;
       this.trackedNonPttCommands.delete(oldestId);
-      this._emitDelivery({
-        commandId: oldest.command.id,
-        kind: 'error',
-        originalEpoch: oldest.originalEpoch,
-        eventEpoch,
-        error: 'delivery tracking capacity exceeded',
-      });
+      this._rejectNonPtt(oldest.command.id, oldest.originalEpoch, 'delivery tracking capacity exceeded', eventEpoch);
     }
     this.trackedNonPttCommands.set(pending.command.id, tracked);
-    this._emitNonPttTracked(tracked, 'transport-sent');
+    this._emitTracked(tracked, 'transport-sent', tracked.eventEpoch);
     return true;
   }
 
@@ -407,33 +368,28 @@ export class WsChannel {
     }
     const generic = this.trackedNonPttCommands.get(id);
     if (!generic || generic.eventEpoch !== eventEpoch) return;
-    if (raw.type === 'ack') this._emitNonPttTracked(generic, 'ack');
+    if (raw.type === 'ack') this._emitTracked(generic, 'ack', generic.eventEpoch);
     else if (raw.type === 'response') {
-      this._emitNonPttTracked(
+      this._emitTracked(
         generic,
         raw.ok === false ? 'response-error' : 'response-ok',
+        generic.eventEpoch,
         raw.ok === false ? String(raw.message ?? raw.error ?? 'Command failed') : undefined,
       );
       this.trackedNonPttCommands.delete(id);
     } else if (raw.type === 'error' || raw.status === 'error') {
-      this._emitNonPttTracked(generic, 'error', String(raw.message ?? raw.error ?? 'Command failed'));
+      this._emitTracked(generic, 'error', generic.eventEpoch, String(raw.message ?? raw.error ?? 'Command failed'));
       this.trackedNonPttCommands.delete(id);
     }
   }
 
-  private _emitNonPttTracked(
-    tracked: TrackedNonPttCommand,
-    kind: CommandDeliveryKind,
-    error?: string,
+  private _rejectNonPtt(
+    commandId: string, originalEpoch: number, error: string,
+    eventEpoch = this.transportEpoch, cancelled = false,
   ): void {
-    if (tracked.seen.has(kind)) return;
-    tracked.seen.add(kind);
     this._emitDelivery({
-      commandId: tracked.command.id,
-      kind,
-      originalEpoch: tracked.originalEpoch,
-      eventEpoch: tracked.eventEpoch,
-      ...(error ? { error } : {}),
+      commandId, kind: 'error', originalEpoch, eventEpoch, error,
+      ...(cancelled ? { cancelled } : {}),
     });
   }
 

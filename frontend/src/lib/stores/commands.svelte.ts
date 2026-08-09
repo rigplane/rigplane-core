@@ -21,12 +21,11 @@ function clearRecordTimer(command: CommandLifecycle): void {
   if (timer !== undefined) clearTimeout(timer);
   timers.delete(recordKey);
 }
-function boundRecords(): void {
-  while (commands.length > MAX_RETAINED_COMMANDS) {
-    const terminal = commands.findIndex((command) => command.status !== 'pending');
-    const index = terminal >= 0 ? terminal : 0;
-    clearRecordTimer(commands[index]); commands.splice(index, 1);
-  }
+function reserveRecordSlot(): void {
+  if (commands.length < MAX_RETAINED_COMMANDS) return;
+  const terminal = commands.findIndex((command) => command.status !== 'pending');
+  if (terminal < 0) throw new Error('Command lifecycle capacity exhausted');
+  clearRecordTimer(commands[terminal]); commands.splice(terminal, 1);
 }
 function transition(
   id: string, originalEpoch: number,
@@ -42,6 +41,7 @@ function transition(
 
 export function beginCommand(input: BeginCommandInput): CommandLifecycle {
   if (getCommandLifecycle(input.id, input.originalEpoch)) throw new Error('duplicate command id in control session');
+  reserveRecordSlot();
   const now = Date.now();
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const command: CommandLifecycle = { ...input, timeoutMs, createdAt: now, updatedAt: now, status: 'pending' };
@@ -52,7 +52,6 @@ export function beginCommand(input: BeginCommandInput): CommandLifecycle {
     current.status = 'timed-out'; current.updatedAt = Date.now();
     timers.delete(key(current.id, current.originalEpoch));
   }, timeoutMs));
-  boundRecords();
   return command;
 }
 export const getCommandLifecycles = (): readonly CommandLifecycle[] => commands;

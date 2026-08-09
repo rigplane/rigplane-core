@@ -127,6 +127,39 @@ describe('typed non-PTT radio intents', () => {
     expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('rejects forged malformed known intents before lifecycle or transport', () => {
+    const malformed = [
+      { name: 'set_freq', params: {} },
+      { name: 'set_freq', params: { freq: Number.NaN } },
+      { name: 'set_af_level', params: { level: 10, receiver: 7 } },
+      { name: 'set_vfo', params: { vfo: 'VFOA' } },
+      { name: 'set_mode', params: { mode: 'USB', receiver: 0, unexpected: true } },
+      { name: 'vfo_swap', params: { unexpected: true } },
+      { name: 'set_filter', params: { filter: 2 }, id: '' },
+      { name: 'set_filter', params: { filter: 2 }, id: 7 },
+    ];
+
+    for (const intent of malformed) {
+      expect(() => intents.dispatchRadioIntent(intent as never)).toThrow(/invalid radio intent/i);
+    }
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('rejects the 101st pending facade intent before transport', () => {
+    for (let i = 0; i < 100; i += 1) {
+      intents.dispatchRadioIntent({ id: `pending-${i}`, name: 'set_freq', params: { freq: i } });
+    }
+    expect(() => intents.dispatchRadioIntent({
+      id: 'overflow', name: 'set_freq', params: { freq: 101 },
+    })).toThrow(/capacity/i);
+
+    expect(harness.sendCommand).toHaveBeenCalledTimes(100);
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(100);
+    expect(lifecycle.getCommandLifecycle('pending-0', 7)?.status).toBe('pending');
+    expect(lifecycle.getCommandLifecycle('overflow', 7)).toBeUndefined();
+  });
+
   it('publishes the complete current non-PTT command-name set without a second authority', () => {
     const rit: RadioIntent = { name: 'set_rit_frequency', params: { freq: 300 } };
     expect(rit.params).toEqual({ freq: 300 });

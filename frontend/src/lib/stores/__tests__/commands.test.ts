@@ -98,4 +98,17 @@ describe('command lifecycle store', () => {
     expect(records.some((record) => record.id === 'cmd-0')).toBe(false);
     expect(records.some((record) => record.id === 'cmd-109')).toBe(true);
   });
+
+  it('rejects the 101st pending record without evicting live correlation', () => {
+    for (let i = 0; i < 100; i += 1) {
+      store.beginCommand({ id: `pending-${i}`, name: 'set_freq', params: { freq: i }, originalEpoch: 9 });
+    }
+    expect(() => store.beginCommand({
+      id: 'overflow', name: 'set_freq', params: { freq: 101 }, originalEpoch: 9,
+    })).toThrow(/capacity/i);
+
+    expect(store.getCommandLifecycles()).toHaveLength(100);
+    expect(store.getCommandLifecycle('pending-0', 9)?.status).toBe('pending');
+    expect(store.getCommandLifecycle('overflow', 9)).toBeUndefined();
+  });
 });

@@ -687,6 +687,28 @@ describe('control channel singleton', () => {
     ]);
   });
 
+  it('keeps all 100 live correlations and rejects the 101st facade send', async () => {
+    const { connect, disconnect } = await import('../ws-client');
+    const { dispatchRadioIntent } = await import('../../runtime/commands/radio-intents');
+    const lifecycle = await import('../../stores/commands.svelte');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    for (let i = 0; i < 100; i += 1) {
+      dispatchRadioIntent({ id: `pending-${i}`, name: 'set_freq', params: { freq: i } });
+    }
+    expect(() => dispatchRadioIntent({
+      id: 'overflow', name: 'set_freq', params: { freq: 101 },
+    })).toThrow(/capacity/i);
+
+    expect(instances[0].sent).toHaveLength(100);
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(100);
+    expect(lifecycle.getCommandLifecycle('pending-0', 1)?.status).toBe('pending');
+    expect(lifecycle.getCommandLifecycle('overflow', 1)).toBeUndefined();
+    lifecycle.resetCommandLifecycle();
+    disconnect();
+  });
+
   it('treats bare VFO B as a slot without switching MAIN to SUB', async () => {
     radioStoreMock.current = makeState({
       active: 'MAIN',
