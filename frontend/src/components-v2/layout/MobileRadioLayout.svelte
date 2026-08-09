@@ -21,6 +21,7 @@
   import ScanPanel from '../panels/ScanPanel.svelte';
   import CwPanel from '../panels/CwPanel.svelte';
   import DockMeterPanel from '../panels/DockMeterPanel.svelte';
+  import type { MeterSource } from '../panels/meter-utils';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
   import MobileChipBar from './mobile-chip-bar.svelte';
@@ -44,7 +45,7 @@
     toBandSelectorProps, toRxAudioProps, toDspProps, toTxProps, toCwProps, toAntennaProps, toScanProps,
   } from '../wiring/state-adapter';
   import {
-    makeVfoHandlers, makeMeterHandlers, makeKeyboardHandlers,
+    makeVfoHandlers, makeKeyboardHandlers,
     makeRfFrontEndHandlers, makeModeHandlers, makeFilterHandlers,
     makeAgcHandlers, makeRitXitHandlers, makeBandHandlers, makePresetHandlers,
     makeRxAudioHandlers, makeDspHandlers, makeTxHandlers, makeCwPanelHandlers,
@@ -82,7 +83,6 @@
 
   // ── Handlers ──
   const vfoHandlers = makeVfoHandlers();
-  const meterHandlers = makeMeterHandlers();
   const keyboardHandlers = makeKeyboardHandlers();
   const modeHandlers = makeModeHandlers();
   const filterHandlers = makeFilterHandlers();
@@ -130,6 +130,13 @@
   let filterModalOpen = $state(false);
   let txSettingsOpen = $state(false);
   let powerModalOpen = $state(false);
+  let mobileMeterSource = $state<MeterSource>('POWER');
+
+  function selectMobileMeterSource(source: string) {
+    if (source === 'S' || source === 'SWR' || source === 'POWER') {
+      mobileMeterSource = source;
+    }
+  }
 
   // ── Chip-scroll IA (#839) ──
   let activeChipId = $state('essentials');
@@ -717,8 +724,8 @@
                 swr={meter.swr}
                 alc={meter.alc ?? 0}
                 txActive={true}
-                meterSource="po"
-                onMeterSourceChange={() => {}}
+                meterSource={mobileMeterSource}
+                onMeterSourceChange={selectMobileMeterSource}
               />
             </div>
           {/if}
