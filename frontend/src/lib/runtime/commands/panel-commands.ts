@@ -991,6 +991,8 @@ const KEYBOARD_RADIO_ACTIONS = new Set([
   'toggle_rit', 'toggle_xit', 'clear_rit_xit',
   'adjust_af_level', 'adjust_rf_gain', 'toggle_monitor',
   'toggle_split', 'vfo_swap', 'vfo_equalize', 'switch_active_vfo', 'set_active_vfo',
+  'toggle_dial_lock', 'scope_span_step', 'scope_ref_step', 'scope_toggle_hold',
+  'scope_toggle_dual', 'scope_toggle_fst',
 ]);
 
 function currentKeyboardContext(): KeyboardContext | null {
@@ -1017,6 +1019,13 @@ function keyboardCycle(values: unknown, current: unknown): number | null {
 
 function keyboardDirection(value: unknown): 'up' | 'down' | null {
   return value === 'up' || value === 'down' ? value : null;
+}
+
+function keyboardScopeField(context: KeyboardContext, field: string): unknown | null {
+  const scope = context.state.scopeControls;
+  const value = (scope as unknown as Record<string, unknown> | undefined)?.[field];
+  return value !== undefined && value !== null && isFieldAvailable(context.state, `scopeControls.${field}`)
+    ? value : null;
 }
 
 function keyboardParams(value: unknown): Record<string, unknown> | null {
@@ -1177,6 +1186,51 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       if (safeParams.vfo === 'MAIN') makeVfoHandlers().onMainVfoClick();
       else if (safeParams.vfo === 'SUB' && context.caps.receivers >= 2 && has('dual_rx') && context.state.sub) makeVfoHandlers().onSubVfoClick();
       return true;
+    case 'toggle_dial_lock': {
+      const dialLock = context.state.dialLock;
+      if (has('dial_lock') && knownA03cTopLevelField(context, 'dialLock') && typeof dialLock === 'boolean') {
+        dispatchRadioIntent({ name: 'set_dial_lock', params: { on: !dialLock } });
+      }
+      return true;
+    }
+    case 'scope_span_step': {
+      const current = keyboardScopeField(context, 'span');
+      const direction = keyboardDirection(safeParams.direction);
+      if (context.caps.scope === true && has('scope') && direction && typeof current === 'number' && Number.isSafeInteger(current) && current >= 0 && current <= 7) {
+        dispatchRadioIntent({ name: 'set_scope_span', params: { span: Math.max(0, Math.min(7, current + (direction === 'down' ? -1 : 1))) } });
+      }
+      return true;
+    }
+    case 'scope_ref_step': {
+      const current = keyboardScopeField(context, 'refDb');
+      const direction = keyboardDirection(safeParams.direction);
+      if (context.caps.scope === true && has('scope') && direction && typeof current === 'number' && Number.isSafeInteger(current) && current >= -30 && current <= 10) {
+        dispatchRadioIntent({ name: 'set_scope_ref', params: { ref: Math.max(-30, Math.min(10, current + (direction === 'down' ? -5 : 5))) } });
+      }
+      return true;
+    }
+    case 'scope_toggle_hold': {
+      const hold = keyboardScopeField(context, 'hold');
+      if (context.caps.scope === true && has('scope') && typeof hold === 'boolean') {
+        dispatchRadioIntent({ name: 'set_scope_hold', params: { on: !hold } });
+      }
+      return true;
+    }
+    case 'scope_toggle_dual': {
+      const dual = keyboardScopeField(context, 'dual');
+      if (context.caps.scope === true && has('scope') && context.caps.receivers === 2
+        && has('dual_rx') && context.state.sub && typeof dual === 'boolean') {
+        dispatchRadioIntent({ name: 'set_scope_dual', params: { dual: !dual } });
+      }
+      return true;
+    }
+    case 'scope_toggle_fst': {
+      const speed = keyboardScopeField(context, 'speed');
+      if (context.caps.scope === true && has('scope') && typeof speed === 'number' && Number.isSafeInteger(speed) && speed >= 0 && speed <= 2) {
+        dispatchRadioIntent({ name: 'set_scope_speed', params: { speed: speed === 0 ? 1 : 0 } });
+      }
+      return true;
+    }
     default:
       return true;
   }
