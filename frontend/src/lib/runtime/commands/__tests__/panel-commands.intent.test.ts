@@ -166,10 +166,10 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     vi.useRealTimers();
   });
 
-  it('exports only the A03a1 canonical factories from the compatibility bus', () => {
+  it('exports the A03a1 and A03a2 canonical factories from the compatibility bus', () => {
     expect(compatibilityBus.makeModeHandlers).toBe(makeModeHandlers);
     expect(compatibilityBus.makeFilterHandlers).toBe(makeFilterHandlers);
-    expect(compatibilityBus.makeRfFrontEndHandlers).not.toBe(makeRfFrontEndHandlers);
+    expect(compatibilityBus.makeRfFrontEndHandlers).toBe(makeRfFrontEndHandlers);
   });
 
   it('routes mode, DATA mode, and MOD input through exact lifecycle envelopes without Store writes', () => {
@@ -249,11 +249,8 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
-  it.each([
-    ['runtime', makeRfFrontEndHandlers],
-    ['compatibility', compatibilityBus.makeRfFrontEndHandlers],
-  ])('keeps the whole deferred RF front-end %s factory on exact legacy behavior', (_name, factory) => {
-    const rf = factory();
+  it('routes every RF front-end family through exact lifecycle envelopes without Store writes', () => {
+    const rf = makeRfFrontEndHandlers();
     rf.onAttChange(12);
     rf.onPreChange(2);
     rf.onRfGainChange(111);
@@ -261,7 +258,7 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
     rf.onDigiSelToggle(true);
     rf.onIpPlusToggle(false);
 
-    expect(h.sendCommand.mock.calls).toEqual([
+    expect(exactCalls()).toEqual([
       ['set_attenuator', { db: 12, receiver: 0 }],
       ['set_preamp', { level: 2, receiver: 0 }],
       ['set_rf_gain', { level: 111, receiver: 0 }],
@@ -269,14 +266,74 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
       ['set_digisel', { on: true, receiver: 0 }],
       ['set_ip_plus', { on: false, receiver: 0 }],
     ]);
-    expect(h.patchActiveReceiver.mock.calls).toEqual([
-      [{ att: 12 }],
-      [{ preamp: 2 }],
-      [{ rfGain: 111 }, true],
-      [{ squelch: 23 }, true],
-      [{ digisel: true }],
-      [{ ipplus: false }],
-    ]);
+    expectIntentTransport();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('accepts one-RX MAIN with A/B Selected/Unselected without inferring physical SUB', () => {
+    h.caps = { capabilities: ['pbt'], receivers: 1, vfoScheme: 'ab' };
+    h.state = oneReceiverAbState();
+
+    makeRfFrontEndHandlers().onPreChange(1);
+
+    expect(exactCalls()).toEqual([['set_preamp', { level: 1, receiver: 0 }]]);
+    expectIntentTransport();
+  });
+
+  it('rejects impossible one-RX physical SUB even when a normalized sub alias exists', () => {
+    h.caps = { capabilities: ['pbt'], receivers: 1, vfoScheme: 'ab' };
+    h.state = { ...oneReceiverAbState(), active: 'SUB' } as ServerState;
+
+    makeRfFrontEndHandlers().onPreChange(1);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('accepts fresh physical SUB only on a dual-receiver topology', () => {
+    h.caps = { capabilities: ['pbt'], receivers: 2, vfoScheme: 'main_sub' };
+    h.state = state('SUB');
+
+    makeRfFrontEndHandlers().onIpPlusToggle(true);
+
+    expect(exactCalls()).toEqual([['set_ip_plus', { on: true, receiver: 1 }]]);
+    expectIntentTransport();
+  });
+
+  it('fails closed for invalid receiver identity and every stale RF target field', () => {
+    const rf = makeRfFrontEndHandlers();
+    h.state = { ...state(), active: 'B' } as unknown as ServerState;
+    rf.onAttChange(6);
+
+    h.state = state();
+    h.unavailable.add('main.att');
+    rf.onAttChange(6);
+    h.unavailable.add('main.preamp');
+    rf.onPreChange(1);
+    h.unavailable.add('main.rfGain');
+    rf.onRfGainChange(100);
+    h.unavailable.add('main.squelch');
+    rf.onSquelchChange(20);
+    h.unavailable.add('main.digisel');
+    rf.onDigiSelToggle(true);
+    h.unavailable.add('main.ipplus');
+    rf.onIpPlusToggle(true);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('fails closed instead of constructing malformed RF intent envelopes', () => {
+    const rf = makeRfFrontEndHandlers();
+    rf.onAttChange(1.5);
+    rf.onPreChange(Number.NaN);
+    rf.onRfGainChange(Number.POSITIVE_INFINITY);
+    rf.onSquelchChange(2.25);
+    rf.onDigiSelToggle('true' as unknown as boolean);
+    rf.onIpPlusToggle(1 as unknown as boolean);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
@@ -336,7 +393,7 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
   it('keeps raw transport out of migrated blocks and Store writers out of their implementation', () => {
     const panelSource = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/panel-commands.ts'), 'utf8');
     const busSource = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/command-bus.ts'), 'utf8');
-    const assignedNames = ['makeFilterHandlers', 'makeModeHandlers'];
+    const assignedNames = ['makeFilterHandlers', 'makeModeHandlers', 'makeRfFrontEndHandlers'];
 
     for (const [index, name] of assignedNames.entries()) {
       const start = panelSource.indexOf(`export function ${name}`);
@@ -360,7 +417,11 @@ describe('MOR-1409 A03a canonical RX/filter/core intent handlers', () => {
       expect(a03aNames).not.toContain(`'${name}'`);
     }
     expect(panelSource).toContain('export function makeRfFrontEndHandlers');
-    expect(busSource).toContain('export function makeRfFrontEndHandlers');
+    expect(busSource).not.toContain('export function makeRfFrontEndHandlers');
+    const rfStart = panelSource.indexOf('export function makeRfFrontEndHandlers');
+    const rfEnd = panelSource.indexOf('\nexport function ', rfStart + 1);
+    const rfBlock = panelSource.slice(rfStart, rfEnd);
+    expect(rfBlock).not.toMatch(/\b(?:freqHz|activeSlot|vfoA|vfoB|unselectedVfo)\b/);
     expect(panelSource).toContain('dispatchRadioIntent({ name, params } as RadioIntent)');
   });
 });
