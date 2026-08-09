@@ -15,11 +15,18 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 });
 
 vi.mock('$lib/stores/radio.svelte', () => ({
-  getActiveReceiver: vi.fn(() => null),
-  getRadioState: vi.fn(() => ({ active: 'MAIN' })),
+  getActiveReceiver: vi.fn(() => ({ nr: false, nrLevel: 0 })),
+  getRadioState: vi.fn(() => ({
+    active: 'MAIN', main: { nr: false, nrLevel: 0 }, sub: { nr: false, nrLevel: 0 },
+  })),
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
+}));
+
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: vi.fn(() => ({ capabilities: ['nr'], receivers: 2, vfoScheme: 'main_sub' })),
+  getControlRange: vi.fn(() => null),
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
@@ -62,8 +69,8 @@ describe.each([
     expect(sendCommand).toHaveBeenCalledWith('set_nr_level', { level: 0, receiver: 0 });
   });
 
-  it('stores the raw wire value optimistically (matches polled readback units)', () => {
+  it('does not store the raw wire value optimistically; Observation remains truth', () => {
     makeHandlers().onNrLevelChange(15);
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ nrLevel: 255 }, true);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 });

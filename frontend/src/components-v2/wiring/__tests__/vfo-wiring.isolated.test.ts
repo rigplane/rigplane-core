@@ -17,7 +17,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => ({ receivers: 2, vfoScheme: 'main_sub', capabilities: [] })),
+  getCapabilities: vi.fn(() => ({ receivers: 2, vfoScheme: 'main_sub', capabilities: ['rit', 'xit'] })),
   getControlRange: vi.fn(() => null),
 }));
 
@@ -322,6 +322,9 @@ describe('makeModeHandlers', () => {
 describe('makeBandHandlers', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
+    vi.mocked(getRadioState).mockReturnValue({
+      active: 'MAIN', main: { freqHz: 14_074_000 }, sub: { freqHz: 7_074_000 },
+    } as any);
   });
 
   it('emits set_band when bsrCode is provided', () => {
@@ -341,19 +344,22 @@ describe('makeRitXitHandlers', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
     vi.mocked(patchRadioState).mockClear();
+    vi.mocked(getRadioState).mockReturnValue({
+      active: 'MAIN', main: { freqHz: 14_074_000 }, sub: { freqHz: 7_074_000 }, ritFreq: 250,
+    } as any);
   });
 
   it('emits set_rit_frequency for RIT offset changes', () => {
     makeRitXitHandlers().onRitOffsetChange(350);
 
-    expect(patchRadioState).toHaveBeenCalledWith({ ritFreq: 350 });
+    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_rit_frequency', { freq: 350 });
   });
 
   it('emits set_rit_frequency for XIT offset changes', () => {
     makeRitXitHandlers().onXitOffsetChange(-450);
 
-    expect(patchRadioState).toHaveBeenCalledWith({ ritFreq: -450 });
+    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_rit_frequency', { freq: -450 });
   });
 });

@@ -142,6 +142,8 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_compressor', params: { on: 1 } },
       { name: 'set_af_level', params: { level: 10, receiver: 7 } },
       { name: 'set_af_level', params: { level: 10, receiver: '0' } },
+      { name: 'set_af_level', params: { level: Number.NaN, receiver: 0 } },
+      { name: 'set_af_level', params: { level: Number.POSITIVE_INFINITY, receiver: 0 } },
       { name: 'set_vfo', params: { vfo: 'VFOA' } },
       { name: 'set_mode', params: { mode: 'USB', receiver: 0, unexpected: true } },
       { name: 'vfo_swap', params: { unexpected: true } },
@@ -154,6 +156,22 @@ describe('typed non-PTT radio intents', () => {
     }
     expect(harness.sendCommand).not.toHaveBeenCalled();
     expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('accepts the shipped fractional AF-level scale without weakening integer fields', () => {
+    intents.dispatchRadioIntent({
+      id: 'af-fraction', name: 'set_af_level', params: { level: 0.42, receiver: 0 },
+    });
+
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(
+      'set_af_level', { level: 0.42, receiver: 0 }, 'af-fraction', { optimistic: false },
+    );
+    expect(lifecycle.getCommandLifecycles()).toEqual([
+      expect.objectContaining({ id: 'af-fraction', name: 'set_af_level', status: 'pending' }),
+    ]);
+    expect(() => intents.dispatchRadioIntent({
+      name: 'set_nr_level', params: { level: 0.42, receiver: 0 },
+    } as never)).toThrow(TypeError);
   });
 
   it('accepts representative exact envelopes derived from every descriptor family', () => {

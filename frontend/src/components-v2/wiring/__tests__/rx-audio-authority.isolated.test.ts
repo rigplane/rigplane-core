@@ -17,6 +17,11 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchReceiver: vi.fn(),
 }));
 
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: vi.fn(() => ({ capabilities: ['af_level'], receivers: 1, vfoScheme: 'ab' })),
+  getControlRange: vi.fn(() => null),
+}));
+
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     rxEnabled: false,
@@ -85,7 +90,7 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
 
     expect(sendCommand).toHaveBeenNthCalledWith(1, 'set_af_level', { level: 0, receiver: 0 });
     expect(sendCommand).toHaveBeenNthCalledWith(2, 'set_af_level', { level: 0.42, receiver: 0 });
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ afLevel: 0.42 }, true);
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(setMuted).toHaveBeenNthCalledWith(1, true);
     expect(setMuted).toHaveBeenNthCalledWith(2, false);
   });

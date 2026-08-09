@@ -47,6 +47,18 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
   return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
 });
+vi.mock('$lib/stores/radio.svelte', () => ({
+  getRadioState: vi.fn(() => h.state),
+  getActiveReceiver: vi.fn(() => {
+    const state = h.state as ServerState | null;
+    return state?.active === 'SUB' ? state.sub ?? null : state?.main ?? null;
+  }),
+  patchActiveReceiver: vi.fn(), patchRadioState: vi.fn(), patchReceiver: vi.fn(),
+}));
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: vi.fn(() => h.caps),
+  getControlRange: vi.fn(() => null),
+}));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     get rxEnabled() { return h.rxEnabled; },

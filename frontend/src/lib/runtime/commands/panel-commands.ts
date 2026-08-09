@@ -66,6 +66,25 @@ function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver 
   return field && !isFieldAvailable(state, `${prefix}.${field}`) ? null : receiver;
 }
 
+function hasCapability(name: string): boolean {
+  return getCapabilities()?.capabilities.includes(name) ?? false;
+}
+
+function knownReceiverField(field: string): Receiver | null {
+  const receiver = knownActiveReceiver(field);
+  if (receiver === null) return null;
+  const state = getRadioState();
+  const target = receiver === 1 ? state?.sub : state?.main;
+  const value = (target as unknown as Record<string, unknown> | null | undefined)?.[field];
+  return value === undefined || value === null ? null : receiver;
+}
+
+function knownTopLevelField(field: string): boolean {
+  const state = getRadioState();
+  const value = (state as unknown as Record<string, unknown> | null)?.[field];
+  return state !== null && value !== undefined && value !== null && isFieldAvailable(state, field);
+}
+
 /* ── Inlined PBT / IF-shift helpers (from filter-controls.ts) ────── */
 // TODO: replace with `$lib/radio/filter-controls` once #996 lands.
 
@@ -127,8 +146,9 @@ function mapIfShiftToPbt(
 export function makeAgcHandlers() {
   return {
     onAgcModeChange: (mode: number) => {
-      patchActiveReceiver({ agc: mode });
-      cmd('set_agc', { mode, receiver: activeReceiverParam() });
+      const receiver = knownReceiverField('agc');
+      if (!hasCapability('agc') || receiver === null || !Number.isSafeInteger(mode)) return;
+      dispatchRadioIntent({ name: 'set_agc', params: { mode, receiver } });
     },
   };
 }
@@ -247,27 +267,32 @@ export function makeRfFrontEndHandlers() {
 export function makeRitXitHandlers() {
   return {
     onRitToggle: () => {
-      const next = !(getRadioState()?.ritOn ?? false);
-      patchRadioState({ ritOn: next });
-      cmd('set_rit_status', { on: next });
+      const state = getRadioState();
+      if (!hasCapability('rit') || knownActiveReceiver() === null
+        || !knownTopLevelField('ritOn') || typeof state?.ritOn !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_rit_status', params: { on: !state.ritOn } });
     },
     onXitToggle: () => {
-      const next = !(getRadioState()?.ritTx ?? false);
-      patchRadioState({ ritTx: next });
-      cmd('set_rit_tx_status', { on: next });
+      const state = getRadioState();
+      if (!hasCapability('xit') || knownActiveReceiver() === null
+        || !knownTopLevelField('ritTx') || typeof state?.ritTx !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_rit_tx_status', params: { on: !state.ritTx } });
     },
     onRitOffsetChange: (hz: number) => {
-      patchRadioState({ ritFreq: hz });
-      cmd('set_rit_frequency', { freq: hz });
+      if (!hasCapability('rit') || knownActiveReceiver() === null
+        || !knownTopLevelField('ritFreq') || !Number.isSafeInteger(hz)) return;
+      dispatchRadioIntent({ name: 'set_rit_frequency', params: { freq: hz } });
     },
     onXitOffsetChange: (hz: number) => {
       // RIT and XIT share the same offset register
-      patchRadioState({ ritFreq: hz });
-      cmd('set_rit_frequency', { freq: hz });
+      if (!hasCapability('xit') || knownActiveReceiver() === null
+        || !knownTopLevelField('ritFreq') || !Number.isSafeInteger(hz)) return;
+      dispatchRadioIntent({ name: 'set_rit_frequency', params: { freq: hz } });
     },
     onClear: () => {
-      patchRadioState({ ritFreq: 0 });
-      cmd('set_rit_frequency', { freq: 0 });
+      if ((!hasCapability('rit') && !hasCapability('xit')) || knownActiveReceiver() === null
+        || !knownTopLevelField('ritFreq')) return;
+      dispatchRadioIntent({ name: 'set_rit_frequency', params: { freq: 0 } });
     },
   };
 }
@@ -376,69 +401,69 @@ export function makeCwPanelHandlers() {
 export function makeDspHandlers() {
   return {
     onNrModeChange: (mode: number) => {
-      const on = mode > 0;
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ nr: on });
-      cmd('set_nr', { on, receiver });
+      const receiver = knownReceiverField('nr');
+      if (!hasCapability('nr') || receiver === null || !Number.isSafeInteger(mode)) return;
+      dispatchRadioIntent({ name: 'set_nr', params: { on: mode > 0, receiver } });
     },
     onNrLevelChange: (level: number) => {
-      const receiver = activeReceiverParam();
+      const receiver = knownReceiverField('nrLevel');
+      if (!hasCapability('nr') || receiver === null || !Number.isFinite(level)) return;
       // MOR-490: slider is 0-15 (front-panel scale); wire is 0-255 BCD.
-      // Store the raw wire value optimistically so it matches the polled
-      // readback (which the adapter scales raw -> display).
       const raw = nrDisplayToRaw(level);
-      patchActiveReceiver({ nrLevel: raw }, true);
-      cmd('set_nr_level', { level: raw, receiver });
+      dispatchRadioIntent({ name: 'set_nr_level', params: { level: raw, receiver } });
     },
     onNbToggle: (on: boolean) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ nb: on });
-      cmd('set_nb', { on, receiver });
+      const receiver = knownReceiverField('nb');
+      if (!hasCapability('nb') || receiver === null || typeof on !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_nb', params: { on, receiver } });
     },
     onNbLevelChange: (level: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ nbLevel: level }, true);
-      cmd('set_nb_level', { level, receiver });
+      const receiver = knownReceiverField('nbLevel');
+      if (!hasCapability('nb') || receiver === null || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_nb_level', params: { level, receiver } });
     },
     onNotchModeChange: (mode: string) => {
-      const receiver = activeReceiverParam();
+      const receiver = knownReceiverField('autoNotch');
+      if (!hasCapability('notch') || receiver === null
+        || knownReceiverField('manualNotch') !== receiver
+        || (mode !== 'auto' && mode !== 'manual' && mode !== 'off')) return;
       if (mode === 'auto') {
-        patchActiveReceiver({ autoNotch: true, manualNotch: false });
-        cmd('set_auto_notch', { on: true, receiver });
+        dispatchRadioIntent({ name: 'set_auto_notch', params: { on: true, receiver } });
       } else if (mode === 'manual') {
-        patchActiveReceiver({ autoNotch: false, manualNotch: true });
-        cmd('set_manual_notch', { on: true, receiver });
+        dispatchRadioIntent({ name: 'set_manual_notch', params: { on: true, receiver } });
       } else {
-        patchActiveReceiver({ autoNotch: false, manualNotch: false });
-        cmd('set_auto_notch', { on: false, receiver });
-        cmd('set_manual_notch', { on: false, receiver });
+        dispatchRadioIntent({ name: 'set_auto_notch', params: { on: false, receiver } });
+        dispatchRadioIntent({ name: 'set_manual_notch', params: { on: false, receiver } });
       }
     },
     onNotchFreqChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      cmd('set_notch_filter', { value, receiver });
+      const receiver = knownActiveReceiver();
+      if (!hasCapability('notch') || receiver === null || !knownTopLevelField('notchFilter')
+        || !Number.isSafeInteger(value)) return;
+      dispatchRadioIntent({ name: 'set_notch_filter', params: { value, receiver } });
     },
     onNbDepthChange: (level: number) => {
       // MOR-498: slider is 1-10 (front-panel scale); wire is 0-9.  Store the
-      // wire value optimistically so it matches the polled/NB-B readback
-      // (which the adapter offsets wire -> display).
+      // wire value the backend expects (the adapter offsets wire -> display).
+      if (!getCapabilities()?.controls?.nb_depth || knownActiveReceiver() === null
+        || !knownTopLevelField('nbDepth') || !Number.isFinite(level)) return;
       const wire = nbDepthDisplayToRaw(level);
-      patchRadioState({ nbDepth: wire });
-      cmd('set_nb_depth', { level: wire });
+      dispatchRadioIntent({ name: 'set_nb_depth', params: { level: wire } });
     },
     onNbWidthChange: (level: number) => {
-      patchRadioState({ nbWidth: level });
-      cmd('set_nb_width', { level });
+      if (!getCapabilities()?.controls?.nb_depth || knownActiveReceiver() === null
+        || !knownTopLevelField('nbWidth') || !Number.isSafeInteger(level)) return;
+      dispatchRadioIntent({ name: 'set_nb_width', params: { level } });
     },
     onManualNotchWidthChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ manualNotchWidth: value }, true);
-      cmd('set_manual_notch_width', { value, receiver });
+      const receiver = knownReceiverField('manualNotchWidth');
+      if (!hasCapability('notch') || receiver === null || !Number.isSafeInteger(value)) return;
+      dispatchRadioIntent({ name: 'set_manual_notch_width', params: { value, receiver } });
     },
     onAgcTimeChange: (value: number) => {
-      const receiver = activeReceiverParam();
-      patchActiveReceiver({ agcTimeConstant: value }, true);
-      cmd('set_agc_time_constant', { value, receiver });
+      const receiver = knownReceiverField('agcTimeConstant');
+      if (!hasCapability('agc') || receiver === null || !Number.isSafeInteger(value)) return;
+      dispatchRadioIntent({ name: 'set_agc_time_constant', params: { value, receiver } });
     },
   };
 }
@@ -610,10 +635,13 @@ export function makeFilterHandlers() {
 export function makeBandHandlers() {
   return {
     onBandSelect: (_name: string, freq: number, bsrCode?: number) => {
+      const receiver = knownReceiverField('freqHz');
+      if (receiver === null || !Number.isSafeInteger(freq)
+        || (bsrCode !== undefined && !Number.isSafeInteger(bsrCode))) return;
       if (bsrCode !== undefined) {
-        cmd('set_band', { band: bsrCode });
+        dispatchRadioIntent({ name: 'set_band', params: { band: bsrCode } });
       } else {
-        cmd('set_freq', { freq, receiver: 0 });
+        dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver } });
       }
     },
   };
@@ -622,15 +650,17 @@ export function makeBandHandlers() {
 /* ── Preset Handlers ─────────────────────────────────────────────── */
 
 export function makePresetHandlers() {
+  const select = (freq: number, mode: string, filter = 1): void => {
+    const receiver = knownReceiverField('freqHz');
+    if (receiver === null || knownReceiverField('mode') !== receiver
+      || !Number.isSafeInteger(freq) || typeof mode !== 'string' || mode.length === 0
+      || !Number.isSafeInteger(filter)) return;
+    dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver } });
+    dispatchRadioIntent({ name: 'set_mode', params: { mode, filter, receiver } });
+  };
   return {
-    onPresetSelect: (freq: number, mode: string, filter?: number) => {
-      cmd('set_freq', { freq, receiver: 0 });
-      cmd('set_mode', { mode, filter: filter ?? 1, receiver: 0 });
-    },
-    onFreqPreset: (freq: number, mode: string, filter?: number) => {
-      cmd('set_freq', { freq, receiver: 0 });
-      cmd('set_mode', { mode, filter: filter ?? 1, receiver: 0 });
-    },
+    onPresetSelect: select,
+    onFreqPreset: select,
   };
 }
 
@@ -641,10 +671,14 @@ let savedAfLevel: number | null = null;
 export function makeRxAudioHandlers() {
   return {
     onMonitorModeChange: (mode: string) => {
+      if (mode !== 'live' && mode !== 'mute' && mode !== 'local' && mode !== 'radio') return;
       if (mode === 'live') {
         runtime.setMuted(false);
         if (savedAfLevel !== null) {
-          cmd('set_af_level', { level: savedAfLevel, receiver: activeReceiverParam() });
+          const receiver = knownReceiverField('afLevel');
+          if (hasCapability('af_level') && receiver !== null) {
+            dispatchRadioIntent({ name: 'set_af_level', params: { level: savedAfLevel, receiver } });
+          }
           savedAfLevel = null;
         }
         runtime.setRxLive(true);
@@ -655,28 +689,35 @@ export function makeRxAudioHandlers() {
 
       if (mode === 'mute') {
         runtime.setMuted(true);
-        const rx = getRadioState();
-        const key = rx?.active === 'SUB' ? 'sub' : 'main';
-        const currentAf = rx?.[key]?.afLevel ?? 0.5;
-        if (savedAfLevel === null) savedAfLevel = currentAf;
-        cmd('set_af_level', { level: 0, receiver: activeReceiverParam() });
+        const receiver = knownReceiverField('afLevel');
+        const state = getRadioState();
+        const currentAf = receiver === 1 ? state?.sub?.afLevel : state?.main?.afLevel;
+        if (hasCapability('af_level') && receiver !== null && typeof currentAf === 'number'
+          && Number.isFinite(currentAf)) {
+          if (savedAfLevel === null) savedAfLevel = currentAf;
+          dispatchRadioIntent({ name: 'set_af_level', params: { level: 0, receiver } });
+        }
       } else {
         runtime.setMuted(false);
         if (savedAfLevel !== null) {
-          cmd('set_af_level', { level: savedAfLevel, receiver: activeReceiverParam() });
-          patchActiveReceiver({ afLevel: savedAfLevel }, true);
+          const receiver = knownReceiverField('afLevel');
+          if (hasCapability('af_level') && receiver !== null) {
+            dispatchRadioIntent({ name: 'set_af_level', params: { level: savedAfLevel, receiver } });
+          }
           savedAfLevel = null;
         }
       }
     },
     onAfLevelChange: (level: number) => {
       if (runtime.rxEnabled) {
+        if (typeof level !== 'number' || !Number.isFinite(level)) return;
         runtime.setRxVolume(level);
         runtime.setVolume(Math.round(level * 100));
       } else {
-        const receiver = activeReceiverParam();
-        patchActiveReceiver({ afLevel: level }, true);
-        cmd('set_af_level', { level, receiver });
+        const receiver = knownReceiverField('afLevel');
+        if (!hasCapability('af_level') || receiver === null
+          || typeof level !== 'number' || !Number.isFinite(level)) return;
+        dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
       }
     },
   };
