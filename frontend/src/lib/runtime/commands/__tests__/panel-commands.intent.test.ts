@@ -95,9 +95,12 @@ import {
   makeRitXitHandlers,
   makeRxAudioHandlers,
   makeScanHandlers,
+  makeScopeControlsHandlers,
+  makeSystemHandlers,
   makeTxHandlers,
   makeVfoHandlers,
   makeVoxHandlers,
+  makeKeyboardHandlers,
   dispatchKeyboardRadioAction,
 } from '../panel-commands';
 import * as compatibilityBus from '$lib/../components-v2/wiring/command-bus';
@@ -1437,5 +1440,60 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(panelSource.match(/function toggleVox/g)).toHaveLength(1);
     expect(panelSource.match(/onVoxToggle:\s*toggleVox/g)).toHaveLength(2);
     expect(panelSource).not.toMatch(/dispatchRadioIntent\(\{\s*name:\s*['"]ptt(?:_on|_off)?['"]/);
+  });
+});
+
+describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', () => {
+  beforeEach(() => {
+    h.state = state();
+    h.caps = {
+      capabilities: ['scope', 'dual_rx', 'dial_lock', 'power_control'],
+      scope: true,
+      stateContractVersion: 1,
+      providerGeneration: 31,
+      receivers: 2,
+      vfoScheme: 'main_sub',
+      modes: [], filters: [], dataModeCount: 0, preValues: [], attValues: [], agcModes: [],
+    };
+    h.state = {
+      ...h.state,
+      dialLock: false,
+      scopeControls: {
+        mode: 1, edge: 2, span: 3, speed: 1, hold: false, refDb: -5,
+        dual: false, receiver: 0, duringTx: false, centerType: 1, vbwNarrow: false,
+        rbw: 1, fixedEdge: { rangeIndex: 0, edge: 1, startHz: 1, endHz: 2 },
+      },
+    } as ServerState;
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+  });
+
+  afterEach(() => resetCommandLifecycle());
+
+  it('owns all A03e factories canonically and identity-re-exports them from the compatibility bus', () => {
+    expect(compatibilityBus.makeSystemHandlers).toBe(makeSystemHandlers);
+    expect(compatibilityBus.makeScopeControlsHandlers).toBe(makeScopeControlsHandlers);
+    expect(compatibilityBus.makeKeyboardHandlers).toBe(makeKeyboardHandlers);
+  });
+
+  it('emits the exact system and full scope vocabulary through one non-optimistic typed lifecycle each', () => {
+    const system = makeSystemHandlers();
+    const scope = makeScopeControlsHandlers();
+    system.onDialLock(true);
+    system.onPowerOff();
+    system.onSpeak();
+    scope.onModeChange(0); scope.onEdgeChange(1); scope.onSpanChange(7); scope.onSpeedChange(2);
+    scope.onHoldChange(true); scope.onRefChange(10); scope.onDualChange(true); scope.onReceiverChange(1);
+    scope.onDuringTxChange(true); scope.onCenterTypeChange(2); scope.onVbwChange(true); scope.onRbwChange(2);
+    expect(exactCalls()).toEqual([
+      ['set_dial_lock', { on: true }], ['set_powerstat', { on: false }], ['speak', { mode: 0 }],
+      ['set_scope_mode', { mode: 0 }], ['set_scope_edge', { edge: 1 }], ['set_scope_span', { span: 7 }],
+      ['set_scope_speed', { speed: 2 }], ['set_scope_hold', { on: true }], ['set_scope_ref', { ref: 10 }],
+      ['set_scope_dual', { dual: true }], ['switch_scope_receiver', { receiver: 1 }],
+      ['set_scope_during_tx', { on: true }], ['set_scope_center_type', { center_type: 2 }],
+      ['set_scope_vbw', { narrow: true }], ['set_scope_rbw', { rbw: 2 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
   });
 });
