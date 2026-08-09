@@ -112,7 +112,10 @@ async def test_success_is_lifecycle_only_until_provider_observation(
     assert after_provider.observation_seq == before_snapshot.observation_seq + 1
     assert after_provider.field(path).value == requested
     assert public_value(server.build_public_state()) == requested
-    assert public_value(server.build_state_update_envelope(force_full=True)["data"]) == requested
+    assert (
+        public_value(server.build_state_update_envelope(force_full=True)["data"])
+        == requested
+    )
 
 
 @pytest.mark.asyncio
