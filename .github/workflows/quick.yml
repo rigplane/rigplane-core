@@ -145,9 +145,30 @@ jobs:
         run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
 
       - name: Frontend i18n visual smoke (RP-ML-006)
+        id: i18n-visual
         if: steps.filter.outputs.frontend == 'true'
         run: npm run test:e2e:i18n
         working-directory: frontend
+
+      # MOR-1400 Slice B: expected images are accepted only after an explicit
+      # Linux re-pin. Keep actual/expected/diff output from an intentional
+      # missing-baseline RED run (or a later regression) so review has the
+      # authentic production evidence; CI never writes baseline files.
+      - name: Upload production design-language visual diagnostics (PR)
+        if: always() && steps.filter.outputs.frontend == 'true' && steps.i18n-visual.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mor-1400-production-visual-diagnostics
+          path: |
+            frontend/tests/e2e/i18n/.output/
+            frontend/tests/e2e/i18n/__screenshots__/production-design-language/
+            frontend/playwright-report/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Annotate production design-language visual result
+        if: always() && steps.filter.outputs.frontend == 'true' && steps.i18n-visual.outcome == 'failure'
+        run: echo "::error::Production design-language pixel gate failed. See the mor-1400-production-visual-diagnostics artifact."
 
       # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
       # capture (`frontend/fixtures/capture.mjs`) into the PR leg. Gated by
