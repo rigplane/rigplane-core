@@ -16,6 +16,7 @@ differ across callsites and forcing a single policy would erase that.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
@@ -64,6 +65,34 @@ class BoundedQueue(Generic[T]):
             except asyncio.QueueEmpty:
                 pass
         self._queue.put_nowait(item)
+
+    def replace_matching_with_front(
+        self, item: T, predicate: Callable[[T], bool]
+    ) -> None:
+        """Replace queued matches with ``item`` at the front.
+
+        Non-matching entries retain FIFO order.  When a full queue contains no
+        match, only its oldest entry is sacrificed to make room, matching the
+        existing state-update priority.  Drained entries are accounted for
+        before retained entries are re-queued, so ``join()`` still reflects
+        exactly the items that can subsequently be consumed.
+        """
+        retained: list[T] = []
+        while True:
+            try:
+                queued = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._queue.task_done()
+            if not predicate(queued):
+                retained.append(queued)
+
+        if self._queue.maxsize > 0 and len(retained) >= self._queue.maxsize:
+            retained.pop(0)
+
+        self._queue.put_nowait(item)
+        for queued in retained:
+            self._queue.put_nowait(queued)
 
     def full(self) -> bool:
         """Return ``True`` if the queue has reached ``maxsize``."""

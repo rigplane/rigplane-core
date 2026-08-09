@@ -1347,12 +1347,19 @@ class WebServer:
         """Behavior-neutral state-pipeline diagnostics recorder."""
         return self._state_diagnostics
 
-    def register_control_event_queue(self, q: BoundedQueue[dict[str, Any]]) -> None:
-        """Register a ControlHandler event queue for broadcast."""
+    def register_control_event_queue(
+        self, q: BoundedQueue[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Register a client and return its shared-encoder full baseline."""
         existing_queues = set(self._control_event_queues)
         self._control_event_queues.add(q)
-        if q not in existing_queues:
-            self._broadcast_ws_client_state_update(queues=existing_queues)
+        try:
+            return self._publish_control_state_baseline(q, peers=existing_queues)
+        except BaseException:
+            # Registration is transactional: an unbased queue must never
+            # survive a failed/cancelled baseline encode.
+            self._control_event_queues.discard(q)
+            raise
 
     def unregister_control_event_queue(self, q: BoundedQueue[dict[str, Any]]) -> None:
         """Unregister a ControlHandler event queue."""
@@ -1429,11 +1436,7 @@ class WebServer:
         # subscribed (a connecting client gets initial state on connect via force=True).
         if not force and not self._control_event_queues:
             return
-        try:
-            snapshot, body = self._build_public_state_for_delivery()
-        except RuntimeError:
-            logger.warning("state broadcast skipped: provider generation churned")
-            return
+        body = self._build_public_state_from_snapshot(snapshot)
         if self.command_state_store.provider_generation != snapshot.provider_generation:
             logger.warning("state broadcast skipped: provider generation changed")
             return
@@ -1441,7 +1444,7 @@ class WebServer:
             snapshot,
             health_revision=int(body.get("healthRevision", 0)),
         )
-        if state_key == self._last_broadcast_state_key:
+        if not force and state_key == self._last_broadcast_state_key:
             return
 
         delta = self._encode_state_update(snapshot, body)
@@ -1460,10 +1463,69 @@ class WebServer:
         )
 
         target_queues = self._control_event_queues if queues is None else queues
-        for q in list(target_queues):
-            # A state_update supersedes older queued state; coalesce-to-latest on a
-            # stalled/slow consumer instead of dropping the freshest + log-flooding.
-            q.put_drop_oldest(event)
+        self._fanout_state_update(target_queues, event, body)
+
+    def enqueue_control_state_baseline(self, q: BoundedQueue[dict[str, Any]]) -> None:
+        """Queue a full baseline for one already-running control client."""
+        self._publish_control_state_baseline(
+            q, peers=self._control_event_queues - {q}, queue_baseline=True
+        )
+
+    def _publish_control_state_baseline(
+        self,
+        q: BoundedQueue[dict[str, Any]],
+        *,
+        peers: Collection[BoundedQueue[dict[str, Any]]],
+        queue_baseline: bool = False,
+    ) -> dict[str, Any]:
+        """Encode once, fan out normally, and derive one client's full base."""
+        snapshot, body = self._build_public_state_for_delivery()
+        if self.command_state_store.provider_generation != snapshot.provider_generation:
+            raise RuntimeError("provider generation changed before state encoding")
+        encoded = self._encode_state_update(snapshot, body)
+        self._last_broadcast_state_key = self._public_state_delivery_key(
+            snapshot, health_revision=int(body.get("healthRevision", 0))
+        )
+        event = {"type": "state_update", "data": encoded}
+        self._fanout_state_update(peers, event, body)
+        baseline = self._derive_full_state_update(encoded, body)
+        if queue_baseline:
+            q.replace_matching_with_front(
+                {"type": "state_update", "data": baseline},
+                lambda queued: queued.get("type") == "state_update",
+            )
+        return baseline
+
+    def _fanout_state_update(
+        self,
+        queues: Collection[BoundedQueue[dict[str, Any]]],
+        event: dict[str, Any],
+        body: dict[str, Any],
+    ) -> None:
+        """Deliver one shared state encode, recovering only overflowed queues."""
+        for q in list(queues):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                q.replace_matching_with_front(
+                    {
+                        "type": "state_update",
+                        "data": self._derive_full_state_update(event["data"], body),
+                    },
+                    lambda queued: queued.get("type") == "state_update",
+                )
+
+    @staticmethod
+    def _derive_full_state_update(
+        encoded: dict[str, Any], body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Convert one shared encode into a same-sequence full envelope."""
+        full = copy.deepcopy(encoded)
+        full["type"] = "full"
+        full.pop("changed", None)
+        full.pop("removed", None)
+        full["data"] = body
+        return full
 
     async def _delayed_state_broadcast(self, delay: float) -> None:
         try:
@@ -1599,22 +1661,17 @@ class WebServer:
         force_full: bool = False,
     ) -> dict[str, Any]:
         """Encode one Store snapshot with its non-optional wire epoch."""
-        encoder = (
-            DeltaEncoder(full_state_interval=100) if force_full else self._delta_encoder
-        )
         generation_changed = (
-            not force_full
-            and self._last_delta_encoder_generation != snapshot.provider_generation
+            self._last_delta_encoder_generation != snapshot.provider_generation
         )
-        result: dict[str, Any] = encoder.encode(
+        result: dict[str, Any] = self._delta_encoder.encode(
             body,
             force_full=force_full or generation_changed,
             state_revision=snapshot.state_revision,
             freshness_revision=snapshot.freshness_revision,
             observation_seq=snapshot.observation_seq,
         )
-        if not force_full:
-            self._last_delta_encoder_generation = snapshot.provider_generation
+        self._last_delta_encoder_generation = snapshot.provider_generation
         result["stateContractVersion"] = 1
         result["providerGeneration"] = snapshot.provider_generation
         return result

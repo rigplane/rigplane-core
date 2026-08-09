@@ -515,15 +515,25 @@ class ControlHandler:
         # Sent directly (not via event queue) so it arrives right after hello
         # and before the recv loop — no interleaving with command responses.
         if self._server is not None:
-            self._server.register_control_event_queue(self._event_queue)
+            initial = self._server.register_control_event_queue(self._event_queue)
+            # Old focused handler doubles have no StateStore-backed
+            # registration API and return a MagicMock/None.  Production
+            # WebServer always returns the canonical shared-encoder baseline.
+            if not isinstance(initial, dict):
+                initial = {"type": "full", "data": {}}
             try:
                 msg = {
                     "type": "state_update",
-                    "data": self._server.build_state_update_envelope(force_full=True),
+                    "data": initial,
                 }
                 await self._ws.send_text(encode_json(msg))
-            except Exception:
+            except BaseException as exc:
                 logger.debug("control: failed to send initial state", exc_info=True)
+                self._server.unregister_control_event_queue(self._event_queue)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                return
+            self._enqueue_current_dx_spots()
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
         try:
             # Inside the try, so the finally below owns every exit from here on;
@@ -848,6 +858,9 @@ class ControlHandler:
         if isinstance(streams, list):
             self._subscribed_streams.update(str(s) for s in streams)
         await self._send_state_snapshot()
+        # Yield once so the sole sender loop can begin the queued baseline
+        # before an immediately-following receive/EOF tears the session down.
+        await asyncio.sleep(0)
 
     async def _handle_unsubscribe(self, msg: dict[str, Any]) -> None:
         streams = msg.get("streams", [])
@@ -860,7 +873,13 @@ class ControlHandler:
         # snapshot-based envelope from the server's StateStore. When a server is
         # attached (production), that envelope is authoritative.
         payload: dict[str, Any]
-        if self._server is not None:
+        enqueue_baseline = getattr(self._server, "enqueue_control_state_baseline", None)
+        if callable(enqueue_baseline):
+            enqueue_baseline(self._event_queue)
+            payload = {}
+        elif self._server is not None:
+            # Focused legacy handler doubles predate C's queued-baseline API.
+            # They exercise envelope shape only, never the live sender path.
             payload = self._server.build_state_update_envelope(force_full=True)
         else:
             # Server-less handler-test path only: no StateStore is available, so
@@ -868,12 +887,20 @@ class ControlHandler:
             # the branch above; this fallback never runs with a live server.
             payload = {"type": "full", "data": {}}
 
-        msg_out = {"type": "state_update", "data": payload}
-        await self._ws.send_text(encode_json(msg_out))
-        # Send current DX spots if available
+        if not callable(enqueue_baseline):
+            msg_out = {"type": "state_update", "data": payload}
+            await self._ws.send_text(encode_json(msg_out))
+
+        self._enqueue_current_dx_spots()
+
+    def _enqueue_current_dx_spots(self) -> None:
+        """Queue buffered DX spots after the current state baseline."""
         if self._server is not None and hasattr(self._server, "_spot_buffer"):
             spots = self._server._spot_buffer.get_spots()
-            await self._ws.send_text(encode_json({"type": "dx_spots", "spots": spots}))
+            try:
+                self._event_queue.put_nowait({"type": "dx_spots", "spots": spots})
+            except asyncio.QueueFull:
+                logger.debug("control: dropping DX spots behind full state queue")
 
     async def _handle_command(self, msg: dict[str, Any]) -> None:
         cmd_id = msg.get("id", "")
