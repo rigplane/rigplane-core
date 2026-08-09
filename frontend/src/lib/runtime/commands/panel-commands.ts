@@ -1016,9 +1016,17 @@ function keyboardDirection(value: unknown): 'up' | 'down' | null {
   return value === 'up' || value === 'down' ? value : null;
 }
 
+function keyboardParams(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null ? value as Record<string, unknown> : null;
+}
+
 /** Handles only the A03d1a radio family; invalid recognized actions fail closed. */
-export function dispatchKeyboardRadioAction({ action, params = {} }: KeyboardRadioAction): boolean {
+export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAction): boolean {
   if (!KEYBOARD_RADIO_ACTIONS.has(action)) return false;
+  const safeParams = params === undefined ? {} : keyboardParams(params);
+  if (safeParams === null) return true;
   const context = currentKeyboardContext();
   if (!context) return true;
   const receiver = context.receiver;
@@ -1028,25 +1036,27 @@ export function dispatchKeyboardRadioAction({ action, params = {} }: KeyboardRad
   switch (action) {
     case 'tune': {
       const step = getTuningStep();
-      const direction = keyboardDirection(params.direction);
-      const delta = Number.isSafeInteger(params.deltaHz) ? params.deltaHz
+      const direction = keyboardDirection(safeParams.direction);
+      const delta = Number.isSafeInteger(safeParams.deltaHz) ? safeParams.deltaHz
         : direction && Number.isSafeInteger(step) && step > 0 ? (direction === 'down' ? -step : step) : null;
       const frequency = rx?.freqHz;
       const target = typeof delta === 'number' && Number.isSafeInteger(frequency) ? frequency + delta : null;
       if (keyboardReceiverField(context, 'freqHz') && Number.isSafeInteger(step) && step > 0
+        && typeof frequency === 'number' && Number.isSafeInteger(frequency) && frequency > 0
         && typeof target === 'number' && Number.isSafeInteger(target) && target > 0) makeVfoHandlers().onFreqChange(target, receiver);
       return true;
     }
     case 'band_select': {
-      const bsr = params.index;
+      const bsr = safeParams.index;
       const frequency = rx?.freqHz;
       if (has('bsr') && keyboardReceiverField(context, 'freqHz') && typeof bsr === 'number'
-        && Number.isSafeInteger(bsr) && bsr > 0 && Number.isSafeInteger(frequency)) makeBandHandlers().onBandSelect('', frequency, bsr);
+        && Number.isSafeInteger(bsr) && bsr > 0 && typeof frequency === 'number'
+        && Number.isSafeInteger(frequency) && frequency > 0) makeBandHandlers().onBandSelect('', frequency, bsr);
       return true;
     }
     case 'mode_select':
-      if (keyboardReceiverField(context, 'mode') && typeof params.mode === 'string' && params.mode.length > 0
-        && context.caps.modes.includes(params.mode)) makeModeHandlers().onModeChange(params.mode);
+      if (keyboardReceiverField(context, 'mode') && typeof safeParams.mode === 'string' && safeParams.mode.length > 0
+        && context.caps.modes.includes(safeParams.mode)) makeModeHandlers().onModeChange(safeParams.mode);
       return true;
     case 'cycle_data_mode': {
       const count = context.caps.dataModeCount;
@@ -1057,8 +1067,8 @@ export function dispatchKeyboardRadioAction({ action, params = {} }: KeyboardRad
       return true;
     }
     case 'cycle_filter': {
-      const delta = params.step === -1 || params.step === 1 ? params.step
-        : params.direction === 'wider' ? -1 : params.direction === 'narrower' ? 1 : null;
+      const delta = safeParams.step === -1 || safeParams.step === 1 ? safeParams.step
+        : safeParams.direction === 'wider' ? -1 : safeParams.direction === 'narrower' ? 1 : null;
       const count = context.caps.filters.length;
       const filter = rx?.filter;
       if (keyboardReceiverField(context, 'filter') && typeof filter === 'number' && Number.isSafeInteger(filter)

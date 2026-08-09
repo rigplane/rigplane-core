@@ -1054,6 +1054,25 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('handles null params and non-positive observed tuning frequencies without emitting', () => {
+    expect(() => dispatchKeyboardRadioAction({ action: 'tune', params: null as unknown as Record<string, unknown> })).not.toThrow();
+    expect(dispatchKeyboardRadioAction({ action: 'tune', params: null as unknown as Record<string, unknown> })).toBe(true);
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_nr', params: null as unknown as Record<string, unknown> })).toBe(true);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+
+    for (const frequency of [0, -500]) {
+      (h.state!.main as any).freqHz = frequency;
+      expect(dispatchKeyboardRadioAction({ action: 'tune', params: { deltaHz: 1_000 } })).toBe(true);
+      expect(dispatchKeyboardRadioAction({ action: 'band_select', params: { index: 3 } })).toBe(true);
+    }
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
   it('keeps a one-receiver MAIN with A/B and Unselected facts valid for keyboard tuning', () => {
     h.state = oneReceiverAbState();
     h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
