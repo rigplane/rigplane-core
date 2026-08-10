@@ -23,6 +23,7 @@ import {
   makeTxHandlers, makeFilterHandlers, makeBandHandlers,
   makePresetHandlers, makeAudioRoutingHandlers, makeRxAudioHandlers,
   makeVfoHandlers, makeScopeControlsHandlers, makeVoxHandlers, makeMemoryHandlers,
+  makeKeyboardHandlers, makeSystemHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
 import { getAppTxController, type AppTxController } from '../tx-controller/app-host';
@@ -145,6 +146,17 @@ export function bindSemanticSurfaceHandlers() {
     vox: makeVoxHandlers(),
   });
 }
+
+// ── Keyboard / System (MOR-1409 A13a) ──
+// These two families had no sanctioned adapter-layer path: they are absent
+// from this module AND from `bindSemanticSurfaceHandlers()`'s frozen object,
+// so the three layouts could only reach them through the `wiring/command-bus`
+// shim A15 deletes. Singletons, like every other non-binder accessor here —
+// neither family holds per-instance state.
+const _keyboardHandlers = makeKeyboardHandlers();
+export function getKeyboardHandlers() { return _keyboardHandlers; }
+const _systemHandlers = makeSystemHandlers();
+export function getSystemHandlers() { return _systemHandlers; }
 
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }

@@ -47,6 +47,18 @@
     onNrModeChange,
     onNotchModeChange,
   }: Props = $props();
+
+  // MOR-1409 A13a display-honesty guard (grant 5246842617 §3, in the
+  // 5246487510 shape — guards only, no other change to this file).
+  // `MobileRadioLayout` now feeds this panel the canonical RX-audio
+  // projection, which reports `Number.NaN` for an AF level the radio has
+  // never sent. `normalizedPercentDisplay` has no non-finite branch —
+  // `Math.round(Math.max(0, Math.min(1, NaN)) * 100)` is `NaN` — so the
+  // readout would render the literal "NaN%" on the default-active mobile
+  // chip. Same shape as `RxAudioPanel.svelte`'s guard for this exact field.
+  function formatAfLevelDisplay(v: number): string {
+    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '--- %';
+  }
 </script>
 
 <div class="m-essentials">
@@ -124,7 +136,7 @@
     max={1}
     step={0.01}
     renderer="hbar"
-    displayFn={normalizedPercentDisplay}
+    displayFn={formatAfLevelDisplay}
     accentColor="var(--v2-accent-cyan-alt)"
     onChange={onAfLevelChange}
     variant="hardware-illuminated"

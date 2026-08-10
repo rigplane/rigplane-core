@@ -39,18 +39,21 @@
   } from './vfo-layout-tokens';
   import { getTxPermit } from '$lib/utils/tx-permit';
   import { getStepsForMode, formatStep, formatSValue, formatDbm, formatPower } from './mobile-layout-logic';
+  // MOR-1409 A13a: reads come from the A11/A12-hardened canonical projections
+  // and commands from the sanctioned adapter layer. The retired state-adapter
+  // twin under components-v2 is the stale side of a 15-of-15 divergence (it
+  // still fabricates 14.074 MHz / USB / FIL1 / a zero-meter reading for an
+  // unobserved rig), and the command-bus shim beside it is the
+  // identity-preserving re-export A15 deletes once its production importer
+  // count reaches zero.
   import {
     toVfoProps, toVfoOpsProps, toMeterProps,
     toRfFrontEndProps, toModeProps, toFilterProps, toAgcProps, toRitXitProps,
     toBandSelectorProps, toRxAudioProps, toDspProps, toTxProps, toCwProps, toAntennaProps, toScanProps,
-  } from '../wiring/state-adapter';
+  } from '$lib/runtime/props/panel-props';
   import {
-    makeVfoHandlers, makeKeyboardHandlers,
-    makeRfFrontEndHandlers, makeModeHandlers, makeFilterHandlers,
-    makeAgcHandlers, makeRitXitHandlers, makeBandHandlers, makePresetHandlers,
-    makeRxAudioHandlers, makeDspHandlers, makeTxHandlers, makeCwPanelHandlers,
-    makeAntennaHandlers, makeScanHandlers,
-  } from '../wiring/command-bus';
+    bindSemanticSurfaceHandlers, getPresetHandlers, getKeyboardHandlers,
+  } from '$lib/runtime/adapters/panel-adapters';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
   import { createMobilePttSurface, type MobilePttBinding } from '../wiring/mobile-ptt-surface';
@@ -67,11 +70,15 @@
   let mainVfo = $derived(toVfoProps(radioState, 'main'));
   let subVfo = $derived(toVfoProps(radioState, 'sub'));
   let vfoOps = $derived(toVfoOpsProps(radioState, caps));
-  let meter = $derived(toMeterProps(radioState));
+  let meter = $derived(toMeterProps(radioState, caps));
   let mode = $derived(toModeProps(radioState, caps));
   let filter = $derived(toFilterProps(radioState, caps));
   let band = $derived(toBandSelectorProps(radioState));
-  let rxAudio = $derived(toRxAudioProps(radioState, caps, audioState));
+  // The canonical projection takes a fourth argument the stale twin does not:
+  // audio-WS link health. Sourced from the same live getter the sanctioned
+  // `lib/runtime/adapters/audio-adapter.ts` uses — never a literal, which
+  // would re-introduce exactly the fabricated truth this gate removes.
+  let rxAudio = $derived(toRxAudioProps(radioState, caps, audioState, runtime.connectionAudio));
   let tx = $derived(toTxProps(radioState, caps));
   let rfFrontEnd = $derived(toRfFrontEndProps(radioState, caps));
   let agc = $derived(toAgcProps(radioState, caps));
@@ -82,21 +89,27 @@
   let scan = $derived(toScanProps(radioState));
 
   // ── Handlers ──
-  const vfoHandlers = makeVfoHandlers();
-  const keyboardHandlers = makeKeyboardHandlers();
-  const modeHandlers = makeModeHandlers();
-  const filterHandlers = makeFilterHandlers();
-  const bandHandlers = makeBandHandlers();
-  const presetHandlers = makePresetHandlers();
-  const rxAudioHandlers = makeRxAudioHandlers();
-  const txHandlers = makeTxHandlers();
-  const rfHandlers = makeRfFrontEndHandlers();
-  const agcHandlers = makeAgcHandlers();
-  const ritXitHandlers = makeRitXitHandlers();
-  const dspHandlers = makeDspHandlers();
-  const cwHandlers = makeCwPanelHandlers();
-  const antennaHandlers = makeAntennaHandlers();
-  const scanHandlers = makeScanHandlers();
+  // One binder call per mounted composition root (the A07 convention): it
+  // mints fresh family objects, matching the init-time `make*Handlers()`
+  // semantics this replaces, and filter handlers retain per-instance debounce
+  // state that a shared singleton would leak between mounts. `preset` and
+  // `keyboard` are not binder members, so they come from their accessors.
+  const surfaceHandlers = bindSemanticSurfaceHandlers();
+  const vfoHandlers = surfaceHandlers.vfo;
+  const keyboardHandlers = getKeyboardHandlers();
+  const modeHandlers = surfaceHandlers.mode;
+  const filterHandlers = surfaceHandlers.filter;
+  const bandHandlers = surfaceHandlers.band;
+  const presetHandlers = getPresetHandlers();
+  const rxAudioHandlers = surfaceHandlers.rxAudio;
+  const txHandlers = surfaceHandlers.tx;
+  const rfHandlers = surfaceHandlers.rfFrontEnd;
+  const agcHandlers = surfaceHandlers.agc;
+  const ritXitHandlers = surfaceHandlers.ritXit;
+  const dspHandlers = surfaceHandlers.dsp;
+  const cwHandlers = surfaceHandlers.cw;
+  const antennaHandlers = surfaceHandlers.antenna;
+  const scanHandlers = surfaceHandlers.scan;
 
   // ── VFO layout ──
   let receiverDeckElement = $state<HTMLElement | null>(null);
@@ -450,6 +463,37 @@
 
   // ── ATU status ──
   let atuStatus = $derived(tx.atuActive ? (tx.atuTuning ? 'tuning' : 'on') : 'off');
+
+  // ── Display-honesty guards (MOR-1409 A13a) ──
+  // The canonical meter projection reports `NaN` for a receiver that has
+  // never been read, where the retired twin fabricated a zero reading — a
+  // full-scale "S9" / "-73 dBm" for an operator no one has observed.
+  // `formatSValue`/`formatDbm` have no non-finite branch (`Math.min/max`
+  // propagate `NaN` straight into the template literal), so they render
+  // "S NaN" / "NaN dBm" — the same defect class that BLOCKED PR #2363.
+  // These are their ONLY production consumers, so per the single-consumer
+  // test the guards live here and `mobile-layout-logic.ts` stays untouched.
+  // Placeholders follow the established '---' segment convention.
+  function formatSValueDisplay(actual: number): string {
+    return Number.isFinite(actual) ? formatSValue(actual) : '---';
+  }
+  function formatDbmDisplay(actual: number): string {
+    return Number.isFinite(actual) ? formatDbm(actual) : '--- dBm';
+  }
+  // RIT/XIT share one offset field; an active RIT whose offset has never been
+  // reported must not render "+NaN".
+  function formatOffsetDisplay(hz: number): string {
+    return Number.isFinite(hz) ? `${hz >= 0 ? '+' : ''}${hz}` : '---';
+  }
+  // The TX dock meter takes raw numbers and formats all four rows itself
+  // (`formatPowerWatts`/`formatSwr`/`formatAlc` each render "NaN"-class
+  // strings). It is not an owner of this gate, and there is no honest finite
+  // value to substitute — a fabricated "SWR 1.0" on a live TX surface is
+  // worse than no reading at all — so the row is withheld until the meters
+  // are actually observed, which is one poll away.
+  let txMetersObserved = $derived(
+    Number.isFinite(meter.rfPower) && Number.isFinite(meter.swr) && Number.isFinite(meter.alc)
+  );
 </script>
 
 {#if isLandscape}
@@ -480,8 +524,8 @@
       {/each}
     </div>
     <div class="m-ls-meter">
-      <span class="m-ls-smeter">{formatSValue(meter.signal)}</span>
-      <span class="m-ls-dbm">{formatDbm(meter.signal)}</span>
+      <span class="m-ls-smeter">{formatSValueDisplay(meter.signal)}</span>
+      <span class="m-ls-dbm">{formatDbmDisplay(meter.signal)}</span>
     </div>
     <div class="m-ls-controls">
       <button class="m-ls-step-btn" onclick={() => (stepPickerOpen = !stepPickerOpen)}>
@@ -580,11 +624,11 @@
       {/if}
       {#if ritXit.ritActive}
         <span class="m-vfo-rit" title="RIT offset">
-          RIT {ritXit.ritOffset >= 0 ? '+' : ''}{ritXit.ritOffset}
+          RIT {formatOffsetDisplay(ritXit.ritOffset)}
         </span>
       {:else if ritXit.xitActive}
         <span class="m-vfo-rit" title="XIT offset">
-          XIT {ritXit.xitOffset >= 0 ? '+' : ''}{ritXit.xitOffset}
+          XIT {formatOffsetDisplay(ritXit.xitOffset)}
         </span>
       {/if}
     </div>
@@ -716,13 +760,13 @@
             <!-- Inline PTT button removed (#840) — PttFab at bottom-right
                  is the persistent, guarded TX affordance. -->
           </div>
-          {#if tx.txActive || txKeyed}
+          {#if (tx.txActive || txKeyed) && txMetersObserved}
             <div class="m-tx-meter">
               <DockMeterPanel
                 sValue={mainVfo.sValue}
-                rfPower={meter.rfPower ?? 0}
+                rfPower={meter.rfPower}
                 swr={meter.swr}
-                alc={meter.alc ?? 0}
+                alc={meter.alc}
                 txActive={true}
                 meterSource={mobileMeterSource}
                 onMeterSourceChange={selectMobileMeterSource}

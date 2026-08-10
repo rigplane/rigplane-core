@@ -125,8 +125,12 @@ const {
   onSubVfoClickSpy: vi.fn(),
   radioIntentSpy: vi.fn(),
 }));
-vi.mock('../../wiring/command-bus', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../wiring/command-bus')>();
+// MOR-1409 A13a: the layout now binds its handler families through
+// `lib/runtime/adapters/panel-adapters`, so this fixture re-points one level
+// down at the command module both the adapter and the retired shim re-export.
+// Reference re-point only — every fake below is unchanged.
+vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/commands/panel-commands')>();
   const n = radioIntentSpy;
   return {
     ...actual,
@@ -178,9 +182,16 @@ vi.mock('$lib/runtime/tx-controller/app-host', () => ({
   getAppTxController: () => txHost.current,
 }));
 
-vi.mock('../wiring/state-adapter', () => {
+// MOR-1409 A13a: the layout reads the canonical projections now. This fixture
+// keeps its own fabricated values on purpose — the honesty behaviour of the
+// real projections is pinned by `MobileRadioLayout.honesty.isolated.test.ts`;
+// what this suite covers (chip IA, PTT, receiver pills, meter selection) needs
+// a populated rig, not an unobserved one. Reference re-point only.
+vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/props/panel-props')>();
   const vfo = { freq: 14074000, mode: 'USB', filter: 'FIL1', sValue: 0, badges: {}, receiver: 'main', isActive: true };
   return {
+    ...actual,
     toVfoProps: vi.fn(() => vfo), toVfoOpsProps: vi.fn(() => ({ split: false, dualWatch: false })),
     toMeterProps: vi.fn(() => ({ signal: 0, rfPower: 0, swr: 0, alc: 0, txActive: false, meterSource: 'S' })),
     toModeProps: vi.fn(() => ({ currentMode: 'USB', modes: ['USB', 'LSB', 'CW', 'AM', 'FM'], dataMode: 0 })),
