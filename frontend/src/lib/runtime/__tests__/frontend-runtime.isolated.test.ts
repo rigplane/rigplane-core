@@ -31,10 +31,11 @@ vi.mock('$lib/transport/ws-client', () => ({
   addMessageHandler: vi.fn(() => () => {}),
   getChannel: vi.fn(),
 }));
-vi.mock('$lib/runtime/commands/radio-intents', async () => {
-  const { sendCommand } = await import('$lib/transport/ws-client');
-  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
-});
+vi.mock('$lib/runtime/commands/radio-intents', () => ({
+  dispatchRadioIntent: vi.fn(() => ({ id: 'test-lifecycle', status: 'pending' })),
+  isNormalizedLevel: (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1,
+}));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => null),
@@ -114,9 +115,10 @@ vi.mock('./system-controller', async () => {
 // ── Import modules under test after mocks are hoisted ──
 
 import { fetchCapabilities, startPolling } from '$lib/transport/http-client';
-import { connect, getChannel, onMessage, sendRaw } from '$lib/transport/ws-client';
+import { connect, getChannel, onMessage, sendCommand, sendRaw } from '$lib/transport/ws-client';
+import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 import { setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
-import { setRadioState } from '$lib/stores/radio.svelte';
+import { patchActiveReceiver, patchRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { systemController } from '../system-controller';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
@@ -499,6 +501,72 @@ describe('FrontendRuntime.bootstrap()', () => {
     // Both callers get the same cleanup function
     expect(cleanup1).toBe(cleanup2);
     expect(cleanup1).not.toBe(fakeStopPolling);
+  });
+});
+
+describe('FrontendRuntime command dispatch and state-hatch removal (MOR-1409 A08)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    configureAcceptedCapabilities();
+    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
+  });
+
+  it('delegates send() to the typed facade exactly once with no raw transport', async () => {
+    const rt = await freshRuntime();
+
+    rt.send('set_scope_dual', { dual: true });
+
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_scope_dual',
+      params: { dual: true },
+    });
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
+    expect(patchRadioState).not.toHaveBeenCalled();
+
+    rt.send('switch_scope_receiver', { receiver: 1 });
+    expect(dispatchRadioIntent).toHaveBeenCalledTimes(2);
+    expect(dispatchRadioIntent).toHaveBeenLastCalledWith({
+      name: 'switch_scope_receiver',
+      params: { receiver: 1 },
+    });
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('defaults missing params to an empty object', async () => {
+    const rt = await freshRuntime();
+
+    rt.send('vfo_swap');
+
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'vfo_swap',
+      params: {},
+    });
+  });
+
+  it('swallows facade validation errors without throwing or double-dispatching', async () => {
+    const rt = await freshRuntime();
+    vi.mocked(dispatchRadioIntent).mockImplementationOnce(() => {
+      throw new TypeError('Only a known non-PTT radio intent may be dispatched');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(() => rt.send('definitely_not_a_command')).not.toThrow();
+
+    expect(dispatchRadioIntent).toHaveBeenCalledTimes(1);
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('no longer exposes the patchActiveReceiver/patchState escape hatches', async () => {
+    const rt = await freshRuntime();
+    const surface = rt as unknown as Record<string, unknown>;
+
+    expect(surface.patchActiveReceiver).toBeUndefined();
+    expect(surface.patchState).toBeUndefined();
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
+    expect(patchRadioState).not.toHaveBeenCalled();
   });
 });
 

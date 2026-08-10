@@ -74,6 +74,12 @@ vi.mock('$lib/transport/ws-client', () => ({
   onMessage: vi.fn(() => () => {}),
   addMessageHandler: vi.fn(() => () => {}),
   getChannel: vi.fn(),
+  // Stub parity for the frontend-runtime -> radio-intents edge (MOR-1409
+  // A08): the real intent facade registers delivery/session listeners at
+  // module scope.
+  onCommandDelivery: vi.fn(() => () => {}),
+  onControlSessionTransition: vi.fn(() => () => {}),
+  getControlSession: vi.fn(() => ({ epoch: 0 })),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {

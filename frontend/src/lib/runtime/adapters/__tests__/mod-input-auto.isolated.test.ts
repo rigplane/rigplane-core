@@ -1,14 +1,17 @@
 /**
- * Opt-in auto LAN MOD-input for network voice TX (MOR-618, T4 of epic MOR-614).
+ * Opt-in auto LAN MOD-input for network voice TX (MOR-618, T4 of epic MOR-614;
+ * de-optimism + facade dispatch: MOR-1409 A08).
  *
  * The feature is OFF by default — default UX stays the MOR-617 warn +
  * one-click guard. When the user opts in:
  *   - at web TX start, if the active DATA group's MOD-input source is known
- *     and != LAN(5): remember the previous source, set LAN via the existing
- *     per-group SET command, and suppress the MOR-617 warning (the
- *     optimistic LAN patch preempts the guard);
+ *     and != LAN(5): remember the previous source and dispatch the per-group
+ *     SET through the typed intent facade. The Store is never written
+ *     optimistically — the MOR-617 warning stays armed truthfully until
+ *     provider readback confirms LAN;
  *   - after authoritative PTT-off confirmation, restore the remembered source
- *     only if auto changed it and the group is still on LAN;
+ *     only if auto changed it and the group is still on LAN, again through
+ *     the facade with zero Store writes;
  *   - pending restore state is memory-only and cannot replay on reconnect.
  *
  * When OFF, behavior is exactly MOR-617 (warn-only, no silent changes).
@@ -16,12 +19,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('$lib/transport/ws-client', () => ({
+  // Raw-transport alarm: the adapter must never reach ws-client directly.
   sendCommand: vi.fn(() => true),
 }));
-vi.mock('$lib/runtime/commands/radio-intents', async () => {
-  const { sendCommand } = await import('$lib/transport/ws-client');
-  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
-});
+vi.mock('$lib/runtime/commands/radio-intents', () => ({
+  dispatchRadioIntent: vi.fn(() => ({ id: 'test-lifecycle', status: 'pending' })),
+  isNormalizedLevel: (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1,
+}));
 
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
@@ -43,6 +48,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
+import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 import { runtime } from '$lib/runtime/frontend-runtime';
 import { getRadioState, resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
@@ -180,6 +186,7 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(sendCommand).mockClear();
   vi.mocked(sendCommand).mockReturnValue(true);
+  vi.mocked(dispatchRadioIntent).mockClear();
   vi.mocked(runtime.startTx).mockClear();
   vi.mocked(runtime.startTx).mockResolvedValue(null);
   vi.mocked(runtime.stopTx).mockClear();
@@ -229,31 +236,38 @@ describe('OFF behavior is exactly MOR-617 (MOR-618)', () => {
 
     await getTxAudioControl().startTx();
 
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(deriveModInputTxGuardProps().visible).toBe(true);
     expect(pendingInStorage()).toBeNull();
 
     getTxAudioControl().stopLocalAudio();
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(runtime.stopTx).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('auto-set at TX start (MOR-618)', () => {
-  it('sets LAN on the active group, remembers the previous source and suppresses the warning', async () => {
+describe('auto-set at TX start (MOR-618, MOR-1409 A08)', () => {
+  it('dispatches LAN for the active group through the facade with zero Store writes', async () => {
     setAutoLanModInputEnabled(true);
     setState({ main: receiver(1), data1ModInput: 0 });
 
     await getTxAudioControl().startTx();
 
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 5 });
+    // Exactly one facade dispatch, exact envelope, no raw transport.
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_data1_mod_input',
+      params: { source: 5 },
+    });
+    expect(sendCommand).not.toHaveBeenCalled();
     expect(runtime.startTx).toHaveBeenCalledTimes(1);
-    // Optimistic patch preempts the MOR-617 guard — no warning.
-    expect(getRadioState()?.data1ModInput).toBe(5);
-    expect(deriveModInputTxGuardProps().visible).toBe(false);
+    // Truth-first: no optimistic Store write — the confirmed source stays MIC
+    // and the MOR-617 warning arms until provider readback confirms LAN.
+    expect(getRadioState()?.data1ModInput).toBe(0);
+    expect(deriveModInputTxGuardProps().visible).toBe(true);
     // The restore transaction is memory-only and cannot replay after reload.
     expect(pendingInStorage()).toBeNull();
-    expect(sendCommand).not.toHaveBeenCalledWith('arm_mod_input_restore', expect.anything());
   });
 
   it('routes to the ACTIVE receiver group (SUB on D2)', async () => {
@@ -269,8 +283,12 @@ describe('auto-set at TX start (MOR-618)', () => {
 
     await getTxAudioControl().startTx();
 
-    expect(sendCommand).toHaveBeenCalledWith('set_data2_mod_input', { source: 5 });
-    expect(sendCommand).not.toHaveBeenCalledWith('arm_mod_input_restore', expect.anything());
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_data2_mod_input',
+      params: { source: 5 },
+    });
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(getRadioState()?.data2ModInput).toBe(3);
   });
 
   it('does nothing when the source is already LAN', async () => {
@@ -279,6 +297,7 @@ describe('auto-set at TX start (MOR-618)', () => {
 
     await getTxAudioControl().startTx();
 
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(pendingInStorage()).toBeNull();
   });
@@ -289,6 +308,7 @@ describe('auto-set at TX start (MOR-618)', () => {
 
     await getTxAudioControl().startTx();
 
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
@@ -299,6 +319,7 @@ describe('auto-set at TX start (MOR-618)', () => {
 
     await getTxAudioControl().startTx();
 
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
@@ -312,11 +333,12 @@ describe('auto-set at TX start (MOR-618)', () => {
 
     await getTxAudioControl().startTx();
 
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
   });
 });
 
-describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () => {
+describe('confirmed restore after local TX audio stop (MOR-618, MOR-990, MOR-1409 A08)', () => {
   it('treats startTx while already running as a side-effect-free success', async () => {
     setAutoLanModInputEnabled(true);
     setState({ main: receiver(1), data1ModInput: 0 });
@@ -332,12 +354,14 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
       data2ModInput: 3,
     });
     dismissModInputTxGuard();
+    vi.mocked(dispatchRadioIntent).mockClear();
     vi.mocked(sendCommand).mockClear();
     vi.mocked(runtime.startTx).mockClear();
 
     await expect(control.startTx()).resolves.toBeNull();
 
     expect(runtime.startTx).not.toHaveBeenCalled();
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(getRadioState()?.data2ModInput).toBe(3);
     expect(deriveModInputTxGuardProps().visible).toBe(false);
@@ -357,10 +381,12 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
 
     setState({ main: receiver(1), data1ModInput: 0 });
     dismissModInputTxGuard();
+    vi.mocked(dispatchRadioIntent).mockClear();
     vi.mocked(sendCommand).mockClear();
 
     await expect(control.startTx()).resolves.toBe('TX audio start already in progress');
     expect(runtime.startTx).toHaveBeenCalledTimes(1);
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(deriveModInputTxGuardProps().visible).toBe(false);
 
@@ -381,15 +407,27 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     control.stopLocalAudio();
 
     expect(runtime.stopTx).toHaveBeenCalledTimes(1);
-    expect(sendCommand).not.toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).not.toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
     expect(pendingInStorage()).toBeNull();
 
     pendingStart.resolve(null);
     await expect(start).resolves.toBeNull();
     expect(runtime.stopTx).toHaveBeenCalledTimes(2);
-    expect(sendCommand).not.toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).not.toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
+    // Readback confirms LAN landed, then confirmed OFF authorizes restore.
+    setState({ main: receiver(1), data1ModInput: 5 });
     confirmOff();
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
+    expect(sendCommand).not.toHaveBeenCalled();
   });
 
   it('retains cancellation and cleanup when a late start returns an error', async () => {
@@ -407,10 +445,17 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     pendingStart.resolve('TX MIC: capture failed');
     await expect(start).resolves.toBe('TX MIC: capture failed');
     expect(runtime.stopTx).toHaveBeenCalledTimes(2);
-    expect(sendCommand).not.toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).not.toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
     expect(pendingInStorage()).toBeNull();
+    setState({ main: receiver(1), data1ModInput: 5 });
     confirmOff();
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
   });
 
   it('retains cancellation and cleanup when a late start rejects', async () => {
@@ -429,36 +474,50 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     pendingStart.reject(startError);
     await expect(start).rejects.toBe(startError);
     expect(runtime.stopTx).toHaveBeenCalledTimes(2);
-    expect(sendCommand).not.toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).not.toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
     expect(pendingInStorage()).toBeNull();
+    setState({ main: receiver(1), data1ModInput: 5 });
     confirmOff();
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
   });
 
   it('stops local audio without restoring, then restores after confirmed OFF', async () => {
     setAutoLanModInputEnabled(true);
     setState({ main: receiver(1), data1ModInput: 0 });
     await getTxAudioControl().startTx();
-    vi.mocked(sendCommand).mockClear();
+    // Provider readback confirms LAN during TX.
+    setState({ main: receiver(1), data1ModInput: 5 });
+    vi.mocked(dispatchRadioIntent).mockClear();
 
     getTxAudioControl().stopLocalAudio();
 
     expect(runtime.stopTx).toHaveBeenCalledTimes(1);
-    expect(sendCommand).not.toHaveBeenCalled();
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(pendingInStorage()).toBeNull();
 
     confirmOff();
 
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
-    expect(sendCommand).not.toHaveBeenCalledWith('disarm_mod_input_restore', expect.anything());
-    expect(getRadioState()?.data1ModInput).toBe(0);
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
+    expect(sendCommand).not.toHaveBeenCalled();
+    // No optimistic restore write: the Store keeps the last observed value
+    // (LAN) until the radio reads back the restored source.
+    expect(getRadioState()?.data1ModInput).toBe(5);
     expect(pendingInStorage()).toBeNull();
 
     // Restore is one-shot — a second stop sends nothing.
-    vi.mocked(sendCommand).mockClear();
+    vi.mocked(dispatchRadioIntent).mockClear();
     getTxAudioControl().stopLocalAudio();
     confirmOff();
-    expect(sendCommand).not.toHaveBeenCalled();
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(runtime.stopTx).toHaveBeenCalledTimes(1);
   });
 
@@ -466,19 +525,20 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     setAutoLanModInputEnabled(true);
     setState({ main: receiver(1), data1ModInput: 0 });
     await getTxAudioControl().startTx();
-    // Write-through readback confirms LAN (drops the optimistic overlay)…
+    // Write-through readback confirms LAN…
     setState({ main: receiver(1), data1ModInput: 5 });
     // …then the user changed the group to USB(3) during TX.
     setState({ main: receiver(1), data1ModInput: 3 });
-    vi.mocked(sendCommand).mockClear();
+    vi.mocked(dispatchRadioIntent).mockClear();
 
     getTxAudioControl().stopLocalAudio();
-    expect(sendCommand).not.toHaveBeenCalled();
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     confirmOff();
 
     // The manual choice wins: no frontend or backend restore mutation.
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
-    expect(sendCommand).not.toHaveBeenCalledWith('set_data1_mod_input', expect.anything());
+    expect(getRadioState()?.data1ModInput).toBe(3);
     expect(pendingInStorage()).toBeNull();
   });
 
@@ -486,13 +546,40 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     setAutoLanModInputEnabled(true);
     setState({ main: receiver(1), data1ModInput: 0 });
     await getTxAudioControl().startTx();
+    setState({ main: receiver(1), data1ModInput: 5 });
     setAutoLanModInputEnabled(false);
-    vi.mocked(sendCommand).mockClear();
+    vi.mocked(dispatchRadioIntent).mockClear();
 
     getTxAudioControl().stopLocalAudio();
     confirmOff();
 
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
+  });
+
+  it('skips the restore when LAN was never observed, consuming the pending one-shot', async () => {
+    setAutoLanModInputEnabled(true);
+    setState({ main: receiver(1), data1ModInput: 0 });
+    await getTxAudioControl().startTx();
+    vi.mocked(dispatchRadioIntent).mockClear();
+
+    getTxAudioControl().stopLocalAudio();
+    confirmOff();
+
+    // Confirmed truth governs the restore: the Store never observed LAN, so
+    // sending the remembered source back would fight the observed state.
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(getRadioState()?.data1ModInput).toBe(0);
+
+    // The pending one-shot is consumed: a late LAN readback cannot trigger a
+    // stale restore afterwards.
+    setState({ main: receiver(1), data1ModInput: 5 });
+    getTxAudioControl().stopLocalAudio();
+    confirmOff();
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
   });
 
   it('retains the pending restore when TX audio fails until OFF is confirmed', async () => {
@@ -503,12 +590,19 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     const err = await getTxAudioControl().startTx();
 
     expect(err).toBe('TX MIC: capture failed');
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 5 });
-    expect(sendCommand).not.toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_data1_mod_input',
+      params: { source: 5 },
+    });
     expect(pendingInStorage()).toBeNull();
 
+    setState({ main: receiver(1), data1ModInput: 5 });
     confirmOff();
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
+    expect(sendCommand).not.toHaveBeenCalled();
     expect(pendingInStorage()).toBeNull();
   });
 
@@ -516,8 +610,9 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     setAutoLanModInputEnabled(true);
     setState({ main: receiver(1), data1ModInput: 0 });
     await getTxAudioControl().startTx();
+    setState({ main: receiver(1), data1ModInput: 5 });
     getTxAudioControl().stopLocalAudio();
-    vi.mocked(sendCommand).mockClear();
+    vi.mocked(dispatchRadioIntent).mockClear();
 
     const rejected: AuthoritativePttObservation[] = [
       offObservation({ pttObservationSeq: 41 }),
@@ -534,19 +629,23 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
     for (const observation of rejected) {
       getTxAudioControl().restoreModAfterConfirmedOff({ barrier: OFF_BARRIER, observation });
     }
-    expect(sendCommand).not.toHaveBeenCalled();
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(pendingInStorage()).toBeNull();
 
     confirmOff();
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
   });
 
   it('uses the field-specific monotonic marker when no PTT sequence exists', async () => {
     setAutoLanModInputEnabled(true);
     setState({ main: receiver(1), data1ModInput: 0 });
     await getTxAudioControl().startTx();
+    setState({ main: receiver(1), data1ModInput: 5 });
     getTxAudioControl().stopLocalAudio();
-    vi.mocked(sendCommand).mockClear();
+    vi.mocked(dispatchRadioIntent).mockClear();
 
     getTxAudioControl().restoreModAfterConfirmedOff({
       barrier: {
@@ -560,7 +659,10 @@ describe('confirmed restore after local TX audio stop (MOR-618, MOR-990)', () =>
       }),
     });
 
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_data1_mod_input',
+      params: { source: 0 },
+    });
     expect(pendingInStorage()).toBeNull();
   });
 });
@@ -575,6 +677,7 @@ describe('legacy persisted restore migration (MOR-990)', () => {
 
     clearLegacyPendingModInputRestore();
 
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(getRadioState()?.data1ModInput).toBe(5);
     expect(pendingInStorage()).toBeNull();
@@ -590,6 +693,7 @@ describe('legacy persisted restore migration (MOR-990)', () => {
     setState({ main: receiver(1), data1ModInput: 5 });
     setState({ main: receiver(1), data1ModInput: 5 });
 
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(getRadioState()?.data1ModInput).toBe(5);
     expect(pendingInStorage()).toBeNull();
@@ -601,6 +705,7 @@ describe('legacy persisted restore migration (MOR-990)', () => {
 
     clearLegacyPendingModInputRestore();
 
+    expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(getRadioState()?.data1ModInput).toBe(5);
     expect(pendingInStorage()).toBeNull();
@@ -619,13 +724,21 @@ it('keeps a hung cancelled start stopped and pending for reconciliation', async 
   control.stopLocalAudio();
 
   expect(runtime.stopTx).toHaveBeenCalledTimes(1);
-  expect(sendCommand).not.toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+  expect(dispatchRadioIntent).not.toHaveBeenCalledWith({
+    name: 'set_data1_mod_input',
+    params: { source: 0 },
+  });
   expect(pendingInStorage()).toBeNull();
 
   // Settle only to keep this module-level adapter isolated from later files.
   pendingStart.resolve('test cleanup');
   await expect(start).resolves.toBe('test cleanup');
   expect(runtime.stopTx).toHaveBeenCalledTimes(2);
+  setState({ main: receiver(1), data1ModInput: 5 });
   confirmOff();
-  expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 0 });
+  expect(dispatchRadioIntent).toHaveBeenCalledWith({
+    name: 'set_data1_mod_input',
+    params: { source: 0 },
+  });
+  expect(sendCommand).not.toHaveBeenCalled();
 });

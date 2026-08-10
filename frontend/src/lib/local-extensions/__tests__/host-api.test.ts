@@ -3,6 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import {
+  getCommandLifecycles,
+  resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
+import {
+  createDefaultLocalExtensionHostApi,
   createLocalExtensionHostApi,
   installLocalExtensionHostApi,
   LOCAL_EXTENSION_HOST_API_VERSION,
@@ -194,5 +199,59 @@ describe('installLocalExtensionHostApi', () => {
     // The first uninstall must not blow away the live api2.
     expect(fakeWindow.rigplaneExtensionHost).toBe(api2);
     expect(fakeWindow.icomLanExtensionHost).toBe(api2);
+  });
+});
+
+// MOR-1409 A08: the default extension dispatch is catalog-validated facade
+// delegation. This block runs against the real intent facade and command
+// lifecycle store (no module mocks — this file lives in the `fast` project):
+// a facade dispatch is observable as a lifecycle record, while a raw
+// transport bypass would leave no record.
+describe('createDefaultLocalExtensionHostApi (MOR-1409 A08)', () => {
+  afterEach(() => {
+    resetCommandLifecycle();
+  });
+
+  it('routes known catalog commands through the typed facade with a lifecycle record', () => {
+    const api = createDefaultLocalExtensionHostApi();
+    const before = getCommandLifecycles().length;
+
+    expect(api.dispatchCommand('vfo_swap')).toBe(true);
+
+    const records = getCommandLifecycles();
+    expect(records).toHaveLength(before + 1);
+    expect(records.at(-1)).toMatchObject({ name: 'vfo_swap', params: {} });
+  });
+
+  it('clones params so later caller mutation cannot alter the dispatched intent', () => {
+    const api = createDefaultLocalExtensionHostApi();
+    const params: Record<string, unknown> = { band: 20 };
+
+    expect(api.sendCommand('set_band', params)).toBe(true);
+    params.band = 40;
+
+    expect(getCommandLifecycles().at(-1)).toMatchObject({
+      name: 'set_band',
+      params: { band: 20 },
+    });
+  });
+
+  it('fails closed with false for unknown, PTT, and malformed commands', () => {
+    const api = createDefaultLocalExtensionHostApi();
+    const before = getCommandLifecycles().length;
+
+    // Unknown command names are rejected by the catalog.
+    expect(api.dispatchCommand('definitely_not_a_command')).toBe(false);
+    // PTT is not in the intent catalog — extensions cannot key the radio.
+    expect(api.dispatchCommand('ptt')).toBe(false);
+    expect(api.dispatchCommand('ptt_on')).toBe(false);
+    expect(api.dispatchCommand('ptt_off')).toBe(false);
+    // Malformed params fail validation before any transport is reached.
+    expect(api.sendCommand('set_band', { band: 'not-a-number' })).toBe(false);
+    expect(api.sendCommand('set_band', { band: 20, extra: true })).toBe(false);
+    expect(api.sendCommand('set_band')).toBe(false);
+
+    // Fail-closed dispatches never create a lifecycle record.
+    expect(getCommandLifecycles()).toHaveLength(before);
   });
 });
