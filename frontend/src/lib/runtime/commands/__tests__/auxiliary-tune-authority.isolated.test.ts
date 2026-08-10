@@ -8,7 +8,6 @@ const h = vi.hoisted(() => ({
     _name: string,
     _params: Record<string, unknown>,
     _id: string,
-    _options: { optimistic: boolean },
   ) => true),
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
@@ -112,7 +111,7 @@ function expectTypedLifecycle(): void {
   const ids = h.sendCommand.mock.calls.map((call) => call[2]);
   expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
   expect(new Set(ids).size).toBe(ids.length);
-  for (const call of h.sendCommand.mock.calls) expect(call[3]).toEqual({ optimistic: false });
+  for (const call of h.sendCommand.mock.calls) expect(call).toHaveLength(3);
   expect(getCommandLifecycles()).toHaveLength(h.sendCommand.mock.calls.length);
   expect(h.patchActiveReceiver).not.toHaveBeenCalled();
   expect(h.patchRadioState).not.toHaveBeenCalled();

@@ -17,7 +17,6 @@ const h = vi.hoisted(() => ({
     _name: string,
     _params: Record<string, unknown>,
     _id?: string,
-    _options?: { optimistic: boolean },
   ) => true),
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
@@ -211,7 +210,7 @@ function exactCalls(): Array<[string, Record<string, unknown>]> {
 function expectIntentTransport(): void {
   for (const call of h.sendCommand.mock.calls) {
     expect(call[2]).toEqual(expect.any(String));
-    expect(call[3]).toEqual({ optimistic: false });
+    expect(call).toHaveLength(3);
   }
   expect(getCommandLifecycles()).toHaveLength(h.sendCommand.mock.calls.length);
 }

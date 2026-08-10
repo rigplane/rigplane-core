@@ -203,6 +203,76 @@ function sendStateUpdate(socket: MockWebSocket, data: Record<string, unknown>): 
   socket.simulateMessage(JSON.stringify({ type: 'state_update', data }));
 }
 
+function makeScopeControls(): NonNullable<ServerStateWithObservation['scopeControls']> {
+  return {
+    receiver: 0,
+    dual: false,
+    mode: 0,
+    span: 10_000,
+    edge: 1,
+    hold: false,
+    refDb: 0,
+    speed: 2,
+    duringTx: false,
+    centerType: 0,
+    vbwNarrow: false,
+    rbw: 0,
+    fixedEdge: { rangeIndex: 0, edge: 1, startHz: 14_000_000, endHz: 14_250_000 },
+  };
+}
+
+// Every command name (including aliases) that the retired legacy
+// auto-optimistic switch used to map to a Store patch. sendCommand must treat
+// each as pure transport: exactly one WS envelope, zero Store writes.
+const LEGACY_OPTIMISTIC_FAMILY: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+  ['set_freq', { freq: 7_074_000 }],
+  ['set_mode', { mode: 'CW' }],
+  ['set_data_mode', { mode: 1 }],
+  ['set_filter', { filter: 'FIL2' }],
+  ['set_nb', { on: true }],
+  ['set_nr', { on: true }],
+  ['set_nb_level', { level: 5 }],
+  ['set_nr_level', { level: 5 }],
+  ['set_af_level', { level: 42 }],
+  ['set_rf_gain', { level: 42 }],
+  ['set_squelch', { level: 3 }],
+  ['set_att', { level: 12 }],
+  ['set_attenuator', { db: 12 }],
+  ['set_preamp', { level: 1 }],
+  ['set_filter_width', { width: 2_400 }],
+  ['set_digisel', { on: true }],
+  ['set_ip_plus', { on: true }],
+  ['set_ipplus', { on: true }],
+  ['set_dual_watch', { on: true }],
+  ['set_split', { on: true }],
+  ['set_rit_status', { on: true }],
+  ['set_rit_tx_status', { on: true }],
+  ['set_rit_frequency', { freq: 120 }],
+  ['set_tuner_status', { value: 1 }],
+  ['set_mic_gain', { level: 30 }],
+  ['set_cw_pitch', { value: 600 }],
+  ['set_key_speed', { speed: 22 }],
+  ['set_break_in', { mode: 1 }],
+  ['set_vox', { on: true }],
+  ['set_compressor', { on: true }],
+  ['set_comp', { on: true }],
+  ['set_compressor_level', { level: 4 }],
+  ['set_monitor', { on: true }],
+  ['set_monitor_gain', { level: 15 }],
+  ['set_vfo', { vfo: 'B' }],
+  ['set_vfo', { vfo: 'SUB' }],
+  ['set_vfo', { vfo: 'VFOB' }],
+  ['select_vfo', { vfo: 'A' }],
+  ['set_scope_mode', { mode: 1 }],
+  ['set_scope_span', { span: 25_000 }],
+  ['set_scope_hold', { on: true }],
+  ['set_scope_ref', { ref: -10 }],
+  ['set_antenna_1', { on: true }],
+  ['set_antenna_2', { on: true }],
+  ['set_rx_antenna_ant1', { on: true }],
+  ['set_rx_antenna_ant2', { on: true }],
+];
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('WsChannel', () => {
@@ -669,27 +739,138 @@ describe('control channel singleton', () => {
     ]);
   });
 
-  it('applies optimistic data mode updates before sending', async () => {
-    const { sendCommand } = await import('../ws-client');
+  it('keeps the seeded snapshot byte-identical for representative three-argument dispatches', async () => {
+    const { connect, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({
+      revision: 1,
+      main: makeReceiver({ freqHz: 14_074_000 }),
+      scopeControls: makeScopeControls(),
+    })));
+    const before = JSON.stringify(radioStoreMock.current);
+    vi.mocked(patchActiveReceiver).mockClear();
+    vi.mocked(patchRadioState).mockClear();
+    const sentBefore = instances[0].sent.length;
 
-    sendCommand('set_data_mode', { mode: 2, receiver: 0 });
+    const representatives: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['set_freq', { freq: 7_074_000 }],
+      ['set_split', { on: true }],
+      ['set_af_level', { level: 42 }],
+      ['set_vfo', { vfo: 'SUB' }],
+      ['set_scope_span', { span: 25_000 }],
+    ];
+    representatives.forEach(([name, params], index) => {
+      expect(sendCommand(name, params, `representative-${index}`)).toBe(true);
+    });
 
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ dataMode: 2 });
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
+    expect(patchRadioState).not.toHaveBeenCalled();
+    expect(JSON.stringify(radioStoreMock.current)).toBe(before);
+    expect(instances[0].sent.slice(sentBefore).map((frame) => JSON.parse(frame))).toEqual(
+      representatives.map(([name, params], index) => ({
+        type: 'cmd', name, id: `representative-${index}`, params,
+      })),
+    );
   });
 
-  it('can bypass legacy optimism so only a contradictory Observation changes radio truth', async () => {
+  it('never writes the Store for any command in the legacy optimistic family', async () => {
+    const { connect, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({
+      revision: 1,
+      main: makeReceiver({ freqHz: 14_074_000, activeSlot: 'A' }),
+      scopeControls: makeScopeControls(),
+    })));
+    const before = JSON.stringify(radioStoreMock.current);
+    vi.mocked(patchActiveReceiver).mockClear();
+    vi.mocked(patchRadioState).mockClear();
+    const sentBefore = instances[0].sent.length;
+
+    LEGACY_OPTIMISTIC_FAMILY.forEach(([name, params], index) => {
+      expect(sendCommand(name, params, `family-${index}`)).toBe(true);
+    });
+
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
+    expect(patchRadioState).not.toHaveBeenCalled();
+    expect(JSON.stringify(radioStoreMock.current)).toBe(before);
+    expect(instances[0].sent.slice(sentBefore).map((frame) => JSON.parse(frame))).toEqual(
+      LEGACY_OPTIMISTIC_FAMILY.map(([name, params], index) => ({
+        type: 'cmd', name, id: `family-${index}`, params,
+      })),
+    );
+  });
+
+  it('ignores a legacy fourth optimistic argument in either direction', async () => {
+    const { connect, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({
+      revision: 1,
+      main: makeReceiver({ freqHz: 14_074_000 }),
+    })));
+    const before = JSON.stringify(radioStoreMock.current);
+    vi.mocked(patchActiveReceiver).mockClear();
+    vi.mocked(patchRadioState).mockClear();
+
+    const legacySend = sendCommand as unknown as (
+      name: string,
+      params: Record<string, unknown>,
+      id?: string,
+      options?: { optimistic?: boolean },
+    ) => boolean;
+    expect(legacySend('set_freq', { freq: 7_074_000 }, 'legacy-opt-in', { optimistic: true })).toBe(true);
+    expect(legacySend('set_split', { on: true }, 'legacy-opt-out', { optimistic: false })).toBe(true);
+
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
+    expect(patchRadioState).not.toHaveBeenCalled();
+    expect(JSON.stringify(radioStoreMock.current)).toBe(before);
+  });
+
+  it('rejects degraded-health non-PTT dispatch with a truthful delivery error', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    const { onCommandDelivery, sendCommand } = await import('../ws-client');
+    const events: CommandDeliveryEvent[] = [];
+    const unsubscribe = onCommandDelivery((event) => events.push(event));
+
+    expect(sendCommand('set_freq', { freq: 14_074_000 }, 'degraded-freq')).toBe(false);
+
+    expect(events).toEqual([{
+      commandId: 'degraded-freq',
+      kind: 'error',
+      originalEpoch: 0,
+      eventEpoch: 0,
+      error: 'radio health is degraded',
+    }]);
+    unsubscribe();
+  });
+
+  it('propagates the transport queue verdict for offline non-idempotent dispatch', async () => {
+    const { onCommandDelivery, sendCommand } = await import('../ws-client');
+    const events: CommandDeliveryEvent[] = [];
+    const unsubscribe = onCommandDelivery((event) => events.push(event));
+
+    expect(sendCommand('vfo_swap', {}, 'offline-swap')).toBe(false);
+
+    expect(events).toEqual([{
+      commandId: 'offline-swap',
+      kind: 'error',
+      originalEpoch: 0,
+      eventEpoch: 0,
+      error: 'offline non-idempotent command rejected',
+    }]);
+    unsubscribe();
+  });
+
+  it('never mutates radio truth on dispatch; only a contradictory Observation changes it', async () => {
     const { connect, sendCommand } = await import('../ws-client');
     connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, main: makeReceiver({ freqHz: 14_074_000 }) })));
     vi.mocked(patchActiveReceiver).mockClear();
 
-    expect(sendCommand(
-      'set_freq',
-      { freq: 7_074_000, receiver: 0 },
-      'freq-contradiction',
-      { optimistic: false },
-    )).toBe(true);
+    expect(sendCommand('set_freq', { freq: 7_074_000, receiver: 0 }, 'freq-contradiction')).toBe(true);
     expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(radioStoreMock.current?.main.freqHz).toBe(14_074_000);
 
@@ -706,7 +887,7 @@ describe('control channel singleton', () => {
     connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
     sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 0 })));
-    sendCommand('set_freq', { freq: 14_074_000 }, 'provider-pending', { optimistic: false });
+    sendCommand('set_freq', { freq: 14_074_000 }, 'provider-pending');
     sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
 
     expect(events).toMatchObject([
@@ -737,34 +918,30 @@ describe('control channel singleton', () => {
     disconnect();
   });
 
-  it('treats bare VFO B as a slot without switching MAIN to SUB', async () => {
-    radioStoreMock.current = makeState({
+  it('treats set_vfo as pure transport without fabricating receiver or slot truth', async () => {
+    const { connect, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({
+      revision: 1,
       active: 'MAIN',
       main: makeReceiver({ activeSlot: 'A' }),
-    });
-    const { sendCommand } = await import('../ws-client');
+    })));
+    vi.mocked(patchActiveReceiver).mockClear();
+    vi.mocked(patchRadioState).mockClear();
+    const sentBefore = instances[0].sent.length;
 
-    sendCommand('set_vfo', { vfo: 'B' });
+    expect(sendCommand('set_vfo', { vfo: 'B' }, 'vfo-slot')).toBe(true);
+    expect(sendCommand('set_vfo', { vfo: 'SUB' }, 'vfo-receiver')).toBe(true);
 
-    expect(patchActiveReceiver).toHaveBeenCalledWith({ activeSlot: 'B' });
+    expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(patchRadioState).not.toHaveBeenCalled();
     expect(radioStoreMock.current?.active).toBe('MAIN');
-    expect(radioStoreMock.current?.main.activeSlot).toBe('B');
-  });
-
-  it('treats explicit SUB as a receiver selection', async () => {
-    radioStoreMock.current = makeState({
-      active: 'MAIN',
-      main: makeReceiver({ activeSlot: 'A' }),
-    });
-    const { sendCommand } = await import('../ws-client');
-
-    sendCommand('set_vfo', { vfo: 'SUB' });
-
-    expect(patchRadioState).toHaveBeenCalledWith({ active: 'SUB' });
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
-    expect(radioStoreMock.current?.active).toBe('SUB');
     expect(radioStoreMock.current?.main.activeSlot).toBe('A');
+    expect(instances[0].sent.slice(sentBefore).map((frame) => JSON.parse(frame))).toEqual([
+      { type: 'cmd', name: 'set_vfo', id: 'vfo-slot', params: { vfo: 'B' } },
+      { type: 'cmd', name: 'set_vfo', id: 'vfo-receiver', params: { vfo: 'SUB' } },
+    ]);
   });
 
   it('sendCommand returns false and queues when not connected', async () => {
