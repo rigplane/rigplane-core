@@ -141,8 +141,27 @@ const runtimeHarness = vi.hoisted(() => {
 
 const mockRuntime = runtimeHarness.runtime;
 
+const appTxHostHarness = vi.hoisted(() => {
+  const controller = Object.freeze({
+    snapshot: vi.fn(() => Object.freeze({
+      phase: 'idle', intent: null, sourceId: null, leaseId: null, guard: null,
+      fault: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false,
+    })),
+    subscribe: vi.fn(() => () => {}),
+    start: vi.fn(),
+    setIntent: vi.fn(),
+    release: vi.fn(),
+    resetFault: vi.fn(),
+  });
+  return { controller, getAppTxController: vi.fn(() => controller) };
+});
+
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: runtimeHarness.runtime,
+}));
+
+vi.mock('$lib/runtime/tx-controller/app-host', () => ({
+  getAppTxController: appTxHostHarness.getAppTxController,
 }));
 
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -236,6 +255,15 @@ describe('SpectrumPanel component', () => {
   it('mounts without errors', () => {
     const target = mountPanel();
     expect(target.querySelector('.spectrum-panel')).not.toBeNull();
+    expect(appTxHostHarness.getAppTxController).toHaveBeenCalledOnce();
+    for (const surface of [
+      appTxHostHarness.controller.snapshot,
+      appTxHostHarness.controller.subscribe,
+      appTxHostHarness.controller.start,
+      appTxHostHarness.controller.setIntent,
+      appTxHostHarness.controller.release,
+      appTxHostHarness.controller.resetFault,
+    ]) expect(surface).not.toHaveBeenCalled();
   });
 
   it('renders the toolbar section', () => {

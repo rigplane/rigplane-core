@@ -13,6 +13,23 @@ type DefaultScopeStatusProbe = {
   transport: MockConnectionState;
   frameSeen: boolean;
 };
+type ScopeFrameProbe = Readonly<{
+  receiver: number;
+  mode: number;
+  startFreq: number;
+  endFreq: number;
+  pixels: Uint8Array;
+}>;
+type AmberAfScopePropsProbe = {
+  data: Uint8Array | null;
+  bandwidth?: number;
+  onRegisterPush?: (push: (pixels: Uint8Array) => void) => void;
+};
+
+const scopeChildProbe = vi.hoisted(() => ({
+  props: null as AmberAfScopePropsProbe | null,
+  pushed: vi.fn<(pixels: Uint8Array) => void>(),
+}));
 
 const mocks = vi.hoisted(() => {
   const binaryHandlers = new Set<(data: ArrayBuffer) => void>();
@@ -50,6 +67,17 @@ const mocks = vi.hoisted(() => {
     sendRaw: vi.fn(),
     sendCommand: vi.fn(() => true),
     onMessage: vi.fn(() => () => {}),
+    txController: Object.freeze({
+      snapshot: vi.fn(() => Object.freeze({
+        phase: 'idle', intent: null, sourceId: null, leaseId: null, guard: null,
+        fault: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false,
+      })),
+      subscribe: vi.fn(() => () => {}),
+      start: vi.fn(),
+      setIntent: vi.fn(),
+      release: vi.fn(),
+      resetFault: vi.fn(),
+    }),
   };
 });
 
@@ -72,6 +100,29 @@ vi.mock('$lib/transport/ws-client', () => ({
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
   return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+});
+vi.mock('$lib/runtime/tx-controller/app-host', () => ({
+  getAppTxController: () => mocks.txController,
+}));
+vi.mock('../AmberAfScope.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../AmberAfScope.svelte')>();
+  const RealAmberAfScope = actual.default as unknown as (
+    anchor: Node,
+    props: AmberAfScopePropsProbe,
+  ) => unknown;
+  return {
+    default: (anchor: Node, props: AmberAfScopePropsProbe) => {
+      const registerWithParent = props.onRegisterPush;
+      props.onRegisterPush = (push) => {
+        registerWithParent?.((pixels) => {
+          scopeChildProbe.pushed(pixels);
+          push(pixels);
+        });
+      };
+      scopeChildProbe.props = props;
+      return RealAmberAfScope(anchor, props);
+    },
+  };
 });
 
 const canonicalCapabilities: Capabilities = {
@@ -132,6 +183,18 @@ describe('LCD audio-FFT demand ownership', () => {
     const configure = vi.spyOn(presentationResources, 'configure');
     const acquire = vi.spyOn(presentationResources, 'acquire');
     const release = vi.spyOn(presentationResources, 'release');
+    const realScopeSubscribe = runtime.scope.subscribe.bind(runtime.scope);
+    let cockpitFrameHandler: ((frame: ScopeFrameProbe) => void) | undefined;
+    let cockpitUnsubscribe: ReturnType<typeof vi.fn<() => void>> | undefined;
+    const scopeSubscribe = vi.spyOn(runtime.scope, 'subscribe').mockImplementation((handler) => {
+      const realUnsubscribe = realScopeSubscribe(handler);
+      const exactUnsubscribe = vi.fn(() => realUnsubscribe());
+      if (!cockpitFrameHandler) {
+        cockpitFrameHandler = handler;
+        cockpitUnsubscribe = exactUnsubscribe;
+      }
+      return exactUnsubscribe;
+    });
     const targets = [document.createElement('div'), document.createElement('div')];
     let cockpit: ReturnType<typeof mount> | undefined;
     let scope: ReturnType<typeof mount> | undefined;
@@ -195,6 +258,23 @@ describe('LCD audio-FFT demand ownership', () => {
       cockpit = mount(AmberCockpit, { target: targets[0] });
       flushSync();
       expect(presentationResources.snapshot('audio-fft').demand).toBe(1);
+      expect(scopeSubscribe).toHaveBeenCalledOnce();
+      expect(cockpitFrameHandler).toBeTypeOf('function');
+      expect(cockpitUnsubscribe).not.toHaveBeenCalled();
+
+      const distinctivePixels = new Uint8Array([3, 17, 91, 205, 254]);
+      cockpitFrameHandler?.({
+        receiver: 0,
+        mode: 1,
+        startFreq: 14_012_345,
+        endFreq: 14_098_765,
+        pixels: distinctivePixels,
+      });
+      flushSync();
+      expect(scopeChildProbe.pushed).toHaveBeenCalledExactlyOnceWith(distinctivePixels);
+      expect(scopeChildProbe.props?.data).toBe(distinctivePixels);
+      expect(scopeChildProbe.props?.bandwidth).toBe(86_420);
+
       scope = mount(AmberScope, { target: targets[1] });
       flushSync();
       await vi.waitFor(() => expect(mocks.channel.connect).toHaveBeenCalledTimes(1));
@@ -205,6 +285,7 @@ describe('LCD audio-FFT demand ownership', () => {
       expect(mocks.channel.onStateChange).toHaveBeenCalledTimes(1);
       expect(mocks.channel.binaryHandlerCount()).toBe(1);
       expect(mocks.channel.stateHandlerCount()).toBe(1);
+      expect(scopeSubscribe).toHaveBeenCalledTimes(2);
       expect(acquire.mock.calls.map(([resource, consumer]) => [resource, consumer])).toEqual([
         ['audio-fft', 'AmberCockpit'],
         ['audio-fft', 'AmberScope'],
@@ -226,6 +307,7 @@ describe('LCD audio-FFT demand ownership', () => {
 
       await unmount(cockpit);
       cockpit = undefined;
+      expect(cockpitUnsubscribe).toHaveBeenCalledOnce();
       expect(presentationResources.snapshot('audio-fft').demand).toBe(1);
       expect(mocks.channel.disconnect).not.toHaveBeenCalled();
       expect(mocks.channel.binaryHandlerCount()).toBe(1);
@@ -245,6 +327,14 @@ describe('LCD audio-FFT demand ownership', () => {
       expect(configure).toHaveBeenCalledTimes(configureCountAfterCleanup);
       await cleanup();
       expect(mocks.stopPolling).toHaveBeenCalledTimes(1);
+      for (const surface of [
+        mocks.txController.snapshot,
+        mocks.txController.subscribe,
+        mocks.txController.start,
+        mocks.txController.setIntent,
+        mocks.txController.release,
+        mocks.txController.resetFault,
+      ]) expect(surface).not.toHaveBeenCalled();
     } finally {
       if (cockpit) await unmount(cockpit);
       if (scope) await unmount(scope);

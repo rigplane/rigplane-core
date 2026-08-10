@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { sendCommand } from '../../lib/transport/ws-client';
+  import {
+    bindVfoTunerContext, getVfoHandlers,
+  } from '$lib/runtime/adapters/panel-adapters';
+
+  const vfoHandlers = getVfoHandlers();
+  const vfoContext = bindVfoTunerContext();
 
   let { visible = $bindable(false) } = $props();
 
@@ -140,9 +145,36 @@
 
   // ── Actions ──
 
-  function tuneToStation(s: any) {
-    const hz = Math.round(s.freq_khz * 1000);
-    sendCommand('set_freq', { freq: hz });
+  function activeTuneReceiver(
+    view: ReturnType<typeof vfoContext.read>['view'],
+  ): 0 | 1 | null {
+    if (!view || view.activeReceiver.status !== 'known') return null;
+    const activeReceiver = view.activeReceiver.receiver;
+    if (view.disabledReasons.some(
+      ({ field, code }) => field === `receiver.${activeReceiver}`
+        && code === 'capability-unavailable',
+    )) return null;
+    const activeVfos = view.vfos.filter(
+      (vfo) => vfo.receiver === activeReceiver && vfo.isActive,
+    );
+    if (activeVfos.length !== 1) return null;
+    const activeVfo = activeVfos[0];
+    if (!activeVfo || activeVfo.frequencyHz === null) return null;
+    const { slot } = activeVfo;
+    if (!(slot.kind === 'slotted' || slot.kind === 'unslotted'
+      || (slot.kind === 'relative' && slot.role === 'selected'))) return null;
+    return activeReceiver === 'MAIN' ? 0 : 1;
+  }
+
+  function tuneToStation(s: any): void {
+    const view = vfoContext.read().view;
+    const receiver = activeTuneReceiver(view);
+    const freqKHz = s?.freq_khz;
+    if (receiver === null || typeof freqKHz !== 'number'
+      || !Number.isFinite(freqKHz) || freqKHz <= 0) return;
+    const hz = Math.round(freqKHz * 1000);
+    if (!Number.isSafeInteger(hz) || hz <= 0) return;
+    vfoHandlers.onFreqChange(hz, receiver);
   }
 
   function handleRowClick(idx: number) {
