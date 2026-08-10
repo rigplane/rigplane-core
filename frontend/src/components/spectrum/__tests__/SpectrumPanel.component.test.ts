@@ -5,6 +5,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Global mocks (must be before component import)
@@ -77,6 +79,8 @@ globalThis.requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
   return setTimeout(() => cb(performance.now()), 0) as unknown as number;
 });
 globalThis.cancelAnimationFrame = vi.fn((id: number) => clearTimeout(id));
+HTMLElement.prototype.setPointerCapture = vi.fn();
+HTMLElement.prototype.releasePointerCapture = vi.fn();
 
 // localStorage stub (jsdom may not expose it as a proper Storage)
 const storageMap = new Map<string, string>();
@@ -111,12 +115,14 @@ const runtimeHarness = vi.hoisted(() => {
     capturedHardwareFrame: null as ((frame: TestScopeFrame) => void) | null,
     capturedDxMessage: null as ((message: unknown) => void) | null,
     mockScopeConnected: true,
-    mockTuneBy: 0,
+    tuningStep: 1_000,
     nextLeaseId: 0,
     hardwareUnsubscribe: vi.fn(),
     dxUnsubscribe: vi.fn(),
   };
   const runtime = {
+    state: Object.freeze({ source: 'test-state' }),
+    caps: Object.freeze({ source: 'test-capabilities' }),
     scope: {
       get hardwareScopeConnected() { return state.mockScopeConnected; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
@@ -141,6 +147,49 @@ const runtimeHarness = vi.hoisted(() => {
 
 const mockRuntime = runtimeHarness.runtime;
 
+const authorityHarness = vi.hoisted(() => {
+  const state = { current: null as any };
+  return {
+    state,
+    toSpectrumAuthority: vi.fn(() => state.current),
+    snapSpectrumFilterWidth: vi.fn((raw: number, rule: any) => {
+      if (!rule) return null;
+      if (rule.kind === 'table') {
+        return rule.values.reduce((best: number, value: number) =>
+          Math.abs(raw - value) < Math.abs(raw - best) ? value : best);
+      }
+      const bounded = Math.max(rule.minHz, Math.min(rule.maxHz, raw));
+      const step = rule.kind === 'step' ? rule.stepHz : rule.segments[0].stepHz;
+      return rule.minHz + Math.round((bounded - rule.minHz) / step) * step;
+    }),
+  };
+});
+
+const handlerHarness = vi.hoisted(() => {
+  const vfo = Object.freeze({ onFreqChange: vi.fn() });
+  const filter = Object.freeze({ onFilterWidthCommit: vi.fn() });
+  return {
+    vfo,
+    filter,
+    getVfoHandlers: vi.fn(() => vfo),
+    getFilterHandlers: vi.fn(() => filter),
+  };
+});
+
+const passbandHarness = vi.hoisted(() => ({
+  rawWidth: 2_700 as number | null,
+  getFilterWidthFromRightEdgePx: vi.fn(() => 2_700 as number | null),
+}));
+
+const spectrumRendererHarness = vi.hoisted(() => ({
+  lastOptions: null as any,
+  render: vi.fn((_ctx: unknown, _data: Uint8Array, _width: number, _height: number, options: any) => {
+    spectrumRendererHarness.lastOptions = options;
+  }),
+  setAvgEnabled: vi.fn(),
+  setPeakHoldEnabled: vi.fn(),
+}));
+
 const appTxHostHarness = vi.hoisted(() => {
   const controller = Object.freeze({
     snapshot: vi.fn(() => Object.freeze({
@@ -160,6 +209,34 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: runtimeHarness.runtime,
 }));
 
+vi.mock('$lib/runtime/adapters/scope-adapter', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/adapters/scope-adapter')>();
+  return {
+    ...actual,
+    toSpectrumAuthority: authorityHarness.toSpectrumAuthority,
+    snapSpectrumFilterWidth: authorityHarness.snapSpectrumFilterWidth,
+  };
+});
+
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
+  return {
+    ...actual,
+    getVfoHandlers: handlerHarness.getVfoHandlers,
+    getFilterHandlers: handlerHarness.getFilterHandlers,
+  };
+});
+
+vi.mock('$lib/renderers/spectrum-renderer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/renderers/spectrum-renderer')>();
+  class SpectrumRenderer {
+    setAvgEnabled = spectrumRendererHarness.setAvgEnabled;
+    setPeakHoldEnabled = spectrumRendererHarness.setPeakHoldEnabled;
+    render = spectrumRendererHarness.render;
+  }
+  return { ...actual, SpectrumRenderer };
+});
+
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({
   getAppTxController: appTxHostHarness.getAppTxController,
 }));
@@ -172,8 +249,8 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 
 vi.mock('$lib/stores/tuning.svelte', () => ({
   snapToStep: vi.fn((hz: number) => hz),
-  tuneBy: vi.fn(() => runtimeHarness.state.mockTuneBy),
-  getTuningStep: vi.fn(() => 100),
+  tuneBy: vi.fn(() => 0),
+  getTuningStep: vi.fn(() => runtimeHarness.state.tuningStep),
   adjustTuningStep: vi.fn(),
   isAutoStep: vi.fn(() => true),
   formatStep: vi.fn(() => '100 Hz'),
@@ -189,10 +266,21 @@ vi.mock('$lib/utils/filter-width', () => ({
   getFilterWidthHz: vi.fn(() => 2400),
 }));
 
-vi.mock('../../passband-geometry', () => ({
-  canResizeFromRightEdge: vi.fn(() => false),
-  getFilterWidthFromRightEdgePx: vi.fn(() => null),
-  getPassbandGeometry: vi.fn(() => null),
+vi.mock('../passband-geometry', () => ({
+  canResizeFromRightEdge: vi.fn((mode: string) => mode.toUpperCase() !== 'LSB'),
+  getFilterWidthFromRightEdgePx: passbandHarness.getFilterWidthFromRightEdgePx,
+  getPassbandGeometry: vi.fn((
+    _mode: string,
+    passbandHz: number,
+    _shiftHz: number,
+    spanHz: number,
+    widthPx: number,
+    tunePx?: number,
+  ) => passbandHz > 0 && spanHz > 0 && widthPx > 0 ? {
+    leftPx: (tunePx ?? widthPx / 2) - 10,
+    rightPx: (tunePx ?? widthPx / 2) + 10,
+    widthPx: 20,
+  } : null),
 }));
 
 vi.mock('../../../../components-v2/panels/filter-controls', () => ({
@@ -209,6 +297,14 @@ vi.mock('../../../../components-v2/wiring/state-adapter', () => ({
 
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
+const authorityPluginSource = readFileSync(
+  resolve(process.cwd(), 'scripts/radio-authority-eslint-plugin.mjs'),
+  'utf8',
+);
+const authorityContractSource = readFileSync(
+  resolve(process.cwd(), '../docs/internals/ui-radio-control-contract.toml'),
+  'utf8',
+);
 import {
   deriveScopeIndicatorState,
   indicatorTone,
@@ -220,6 +316,110 @@ import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw'
 // ---------------------------------------------------------------------------
 
 let components: ReturnType<typeof mount>[] = [];
+
+type TestRule = Readonly<{
+  kind: 'step';
+  minHz: number;
+  maxHz: number;
+  stepHz: number;
+}>;
+
+type TestAuthority = Readonly<{
+  providerGeneration: number;
+  receiver: 0 | 1;
+  frequencyHz: number | null;
+  mode: string | null;
+  filter: string | null;
+  filterWidthHz: number | null;
+  filterShape: number | null;
+  ifShiftHz: number | null;
+  pbtInnerHz: number | null;
+  pbtOuterHz: number | null;
+  dataMode: number | null;
+  rule: TestRule | null;
+  scopeControls: Readonly<{ mode: number }>;
+  digest: string;
+}>;
+
+const defaultRule: TestRule = Object.freeze({
+  kind: 'step', minHz: 100, maxHz: 5_000, stepHz: 100,
+});
+
+function authority(overrides: Partial<Omit<TestAuthority, 'digest'>> = {}): TestAuthority {
+  const core = {
+    providerGeneration: 17,
+    receiver: 0 as const,
+    frequencyHz: 14_050_250,
+    mode: 'USB',
+    filter: 'FIL1',
+    filterWidthHz: 2_400,
+    filterShape: 1,
+    ifShiftHz: 0,
+    pbtInnerHz: 0,
+    pbtOuterHz: 0,
+    dataMode: 0,
+    rule: defaultRule,
+    scopeControls: Object.freeze({ mode: 2 }),
+    ...overrides,
+  };
+  return Object.freeze({ ...core, digest: JSON.stringify(core) });
+}
+
+function emitFrame(overrides: Partial<TestScopeFrame> = {}): TestScopeFrame {
+  const frame = Object.freeze({
+    receiver: 0,
+    mode: 0,
+    startFreq: 14_000_000,
+    endFreq: 14_100_000,
+    pixels: new Uint8Array(475).fill(64),
+    ...overrides,
+  });
+  runtimeHarness.state.capturedHardwareFrame?.(frame);
+  flushSync();
+  return frame;
+}
+
+function rect(element: Element, left = 0, width = 200): void {
+  Object.defineProperty(element, 'getBoundingClientRect', {
+    configurable: true,
+    value: vi.fn(() => ({
+      x: left, y: 0, left, top: 0, right: left + width, bottom: 100,
+      width, height: 100, toJSON: () => ({}),
+    })),
+  });
+}
+
+function pointer(
+  element: EventTarget,
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  pointerId: number,
+  clientX: number,
+  init: Partial<PointerEventInit> = {},
+): void {
+  element.dispatchEvent(new PointerEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    pointerId,
+    clientX,
+    clientY: 20,
+    ...init,
+  }));
+  flushSync();
+}
+
+function prepareGeometry(target: HTMLElement, width = 200): {
+  spectrum: HTMLElement;
+  waterfall: HTMLElement;
+} {
+  const spectrum = target.querySelector<HTMLElement>('.spectrum-area')!;
+  const waterfall = target.querySelector<HTMLElement>('.waterfall-content')!;
+  rect(spectrum, 0, width);
+  rect(waterfall, 0, width);
+  const canvas = waterfall.querySelector('canvas');
+  if (canvas) rect(canvas, 0, width);
+  return { spectrum, waterfall };
+}
 
 function mountPanel(props: Record<string, unknown> = {}) {
   const target = document.createElement('div');
@@ -235,10 +435,14 @@ beforeEach(() => {
   runtimeHarness.state.capturedHardwareFrame = null;
   runtimeHarness.state.capturedDxMessage = null;
   runtimeHarness.state.mockScopeConnected = true;
-  runtimeHarness.state.mockTuneBy = 0;
+  runtimeHarness.state.tuningStep = 1_000;
   runtimeHarness.state.nextLeaseId = 0;
   runtimeHarness.state.hardwareUnsubscribe = vi.fn();
   runtimeHarness.state.dxUnsubscribe = vi.fn();
+  authorityHarness.state.current = authority();
+  passbandHarness.rawWidth = 2_700;
+  passbandHarness.getFilterWidthFromRightEdgePx.mockImplementation(() => passbandHarness.rawWidth);
+  spectrumRendererHarness.lastOptions = null;
   vi.clearAllMocks();
 });
 
@@ -403,8 +607,8 @@ describe('SpectrumPanel component', () => {
     target.remove();
   });
 
-  it('wheel event routes tuning command through runtime.send', () => {
-    runtimeHarness.state.mockTuneBy = 14_074_000;
+  it('wheel snaps an off-grid Observation and emits one typed VFO intent', () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_074_250 });
     const target = mountPanel();
     const panel = target.querySelector('.spectrum-panel')!;
     const wheelEvent = new WheelEvent('wheel', {
@@ -413,10 +617,9 @@ describe('SpectrumPanel component', () => {
       cancelable: true,
     });
     panel.dispatchEvent(wheelEvent);
-    expect(mockRuntime.send).toHaveBeenCalledWith('set_freq', {
-      freq: 14_074_000,
-      receiver: 0,
-    });
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_075_000, 0);
+    expect(mockRuntime.send).not.toHaveBeenCalled();
   });
 
   it('renders runtime hardware frames and DX spots', () => {
@@ -459,7 +662,333 @@ describe('SpectrumPanel component', () => {
     expect(spectrumPanelSource).toContain('runtime.acquireHardwareScope');
     expect(spectrumPanelSource).toContain('runtime.scope.subscribeHardware');
     expect(spectrumPanelSource).toContain('runtime.subscribeDx');
-    expect(spectrumPanelSource).toContain('runtime.send');
+    expect(spectrumPanelSource).not.toContain('runtime.send');
+    expect(spectrumPanelSource).not.toContain('patchActiveReceiver');
+    expect(spectrumPanelSource).not.toContain('patchReceiver');
+    expect(spectrumPanelSource).not.toContain("stores/radio.svelte");
+    expect(spectrumPanelSource).not.toContain('getCapabilities');
+    expect(spectrumPanelSource).not.toContain('resolveFilterModeConfig');
+    expect(spectrumPanelSource).not.toContain('tuneBy');
+    expect(spectrumPanelSource).not.toContain('getDragInterval');
+  });
+});
+
+describe('SpectrumPanel Observation authority and final-gesture intents', () => {
+  it('binds the existing handler singletons once and uses the merged selector with state and caps', () => {
+    mountPanel();
+    // EiBiBrowser binds the same shared singleton independently; the Panel's
+    // own source call is asserted exactly below.
+    expect(handlerHarness.getVfoHandlers).toHaveBeenCalledTimes(2);
+    expect(handlerHarness.getFilterHandlers).toHaveBeenCalledOnce();
+    expect(authorityHarness.toSpectrumAuthority).toHaveBeenCalledWith(
+      mockRuntime.state,
+      mockRuntime.caps,
+    );
+    expect(spectrumPanelSource.match(/getVfoHandlers\(\)/g)).toHaveLength(1);
+    expect(spectrumPanelSource.match(/getFilterHandlers\(\)/g)).toHaveLength(1);
+    expect(spectrumPanelSource).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
+    expect(spectrumPanelSource).toContain('let scopeMode = $derived(frameScopeMode)');
+    expect(spectrumPanelSource).toContain('spanHz: tuneVisible ? spanHz : 0');
+    expect(spectrumPanelSource).not.toContain('function toSpectrumAuthority');
+    expect(spectrumPanelSource).not.toContain('function snapSpectrumFilterWidth');
+  });
+
+  it('routes an actual WaterfallCanvas tap exactly once without a parent duplicate', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 4, 150);
+    pointer(canvas, 'pointerup', 4, 150);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+  });
+
+  it('routes a DX tune exactly once through the typed VFO singleton', () => {
+    const target = mountPanel();
+    emitFrame();
+    runtimeHarness.state.capturedDxMessage?.({
+      type: 'dx_spot',
+      spot: {
+        spotter: 'N0CALL', freq: 14_075_410, call: 'K1ABC', comment: 'test',
+        time_utc: '1200', timestamp: 1,
+      },
+    });
+    flushSync();
+    target.querySelector<HTMLButtonElement>('.dx-badge')!.click();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_075_000, 0);
+  });
+
+  it('rejects tap and wheel when current Observation frequency is missing', () => {
+    authorityHarness.state.current = authority({ frequencyHz: null });
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 5, 150);
+    pointer(canvas, 'pointerup', 5, 150);
+    target.querySelector('.spectrum-panel')!.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: -100, bubbles: true, cancelable: true,
+    }));
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps drag moves local and emits one final snapped VFO intent on stable pointer-up', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 7, 100);
+    pointer(spectrum, 'pointermove', 7, 120);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    pointer(spectrum, 'pointerup', 7, 120);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
+  });
+
+  it('emits zero for below-threshold and no-change drags', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 8, 100);
+    pointer(spectrum, 'pointermove', 8, 104);
+    pointer(spectrum, 'pointerup', 8, 104);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    rect(spectrum, 0, 100_000);
+    pointer(spectrum, 'pointerdown', 9, 100);
+    pointer(spectrum, 'pointermove', 9, 106);
+    pointer(spectrum, 'pointerup', 9, 106);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('matching drag cancel emits zero and never finalizes', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 10, 100);
+    pointer(spectrum, 'pointermove', 10, 120);
+    pointer(spectrum, 'pointercancel', 10, 120);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('wrong-pointer up emits zero and preserves the real drag completion', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 11, 100);
+    pointer(spectrum, 'pointermove', 11, 120);
+    pointer(spectrum, 'pointerup', 12, 120);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    pointer(spectrum, 'pointerup', 11, 120);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+  });
+
+  it('keeps resize moves local and commits one snapped width with captured identity', () => {
+    const captured = authority();
+    authorityHarness.state.current = captured;
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    expect(zone).not.toBeNull();
+    pointer(zone, 'pointerdown', 21, 100);
+    pointer(waterfall, 'pointermove', 21, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    pointer(waterfall, 'pointerup', 21, 130);
+    expect(authorityHarness.snapSpectrumFilterWidth).toHaveBeenCalledWith(2_700, captured.rule);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledOnce();
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_700, 0, 17);
+  });
+
+  it('normalizes fixed-frame resize X around the captured carrier rather than sample center', () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_025_000 });
+    const target = mountPanel();
+    emitFrame({ mode: 1 });
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 22, 100);
+    pointer(waterfall, 'pointermove', 22, 100);
+    pointer(waterfall, 'pointerup', 22, 100);
+    expect(passbandHarness.getFilterWidthFromRightEdgePx).toHaveBeenCalledWith(
+      'USB', 0, 100_000, 200, 150, 5_000,
+    );
+  });
+
+  it('matching resize cancel emits zero and a wrong pointer preserves the real completion', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 23, 100);
+    pointer(waterfall, 'pointermove', 23, 130);
+    pointer(waterfall, 'pointercancel', 23, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+
+    pointer(zone, 'pointerdown', 24, 100);
+    pointer(waterfall, 'pointermove', 24, 130);
+    pointer(waterfall, 'pointerup', 25, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    pointer(waterfall, 'pointerup', 24, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledOnce();
+  });
+
+  it('rejects resize completion after authority or frame-geometry drift', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 26, 100);
+    pointer(waterfall, 'pointermove', 26, 130);
+    authorityHarness.state.current = authority({ filterShape: 2 });
+    pointer(waterfall, 'pointerup', 26, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+
+    authorityHarness.state.current = authority();
+    pointer(zone, 'pointerdown', 27, 100);
+    pointer(waterfall, 'pointermove', 27, 130);
+    emitFrame({ endFreq: 14_101_000 });
+    pointer(waterfall, 'pointerup', 27, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a resize candidate equal to the captured observed width', () => {
+    passbandHarness.rawWidth = 2_400;
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 28, 100);
+    pointer(waterfall, 'pointermove', 28, 130);
+    pointer(waterfall, 'pointerup', 28, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['provider generation', { providerGeneration: 18 }],
+    ['physical receiver', { receiver: 1 as const }],
+    ['frequency', { frequencyHz: 14_050_300 }],
+    ['mode', { mode: 'LSB' }],
+    ['filter', { filter: 'FIL2' }],
+    ['width', { filterWidthHz: 2_500 }],
+    ['IF shift', { ifShiftHz: 50 }],
+    ['PBT inner', { pbtInnerHz: 50 }],
+    ['PBT outer', { pbtOuterHz: 50 }],
+    ['filter shape', { filterShape: 2 }],
+    ['DATA', { dataMode: 1 }],
+    ['rule', { rule: Object.freeze({ kind: 'step' as const, minHz: 200, maxHz: 5_000, stepHz: 100 }) }],
+    ['scope controls in full digest', { scopeControls: Object.freeze({ mode: 3 }) }],
+  ])('rejects final drag after %s drift', (_label, overrides) => {
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 30, 100);
+    pointer(spectrum, 'pointermove', 30, 120);
+    authorityHarness.state.current = authority(overrides);
+    pointer(spectrum, 'pointerup', 30, 120);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['frame mode', { mode: 1 }],
+    ['start edge', { startFreq: 13_999_000 }],
+    ['end edge', { endFreq: 14_101_000 }],
+  ])('rejects final drag after %s drift', (_label, frameOverride) => {
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 31, 100);
+    pointer(spectrum, 'pointermove', 31, 120);
+    emitFrame(frameOverride);
+    pointer(spectrum, 'pointerup', 31, 120);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('rejects final drag after measured element-width drift', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 32, 100);
+    pointer(spectrum, 'pointermove', 32, 120);
+    rect(spectrum, 0, 240);
+    pointer(spectrum, 'pointerup', 32, 120);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('hides confirmed carrier/passband for missing Observation while retaining sample plane pixels', async () => {
+    authorityHarness.state.current = null;
+    const target = mountPanel();
+    emitFrame();
+    expect(target.querySelector('.freq-axis')).not.toBeNull();
+    expect(target.querySelector('.tune-line')).toBeNull();
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(0);
+    expect(spectrumRendererHarness.render.mock.calls.at(-1)?.[1]).toHaveLength(475);
+  });
+
+  it('hides confirmed carrier/passband when Observation is outside fixed sample edges', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_200_000 });
+    const target = mountPanel();
+    emitFrame({ mode: 1 });
+    expect(target.querySelector('.tune-line')).toBeNull();
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(0);
+  });
+
+  it('keeps frame mode and pixel geometry authoritative over canonical scope-control metadata', async () => {
+    authorityHarness.state.current = authority({
+      frequencyHz: 14_025_000,
+      scopeControls: Object.freeze({ mode: 3 }),
+    });
+    const target = mountPanel();
+    emitFrame({ mode: 0 });
+    expect(target.querySelector<HTMLElement>('.tune-line')?.style.left).toBe('50%');
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(0);
+    expect(spectrumRendererHarness.render.mock.calls.at(-1)?.[1]).toHaveLength(475);
+  });
+
+  it.each([
+    ['mode', { mode: null }],
+    ['width', { filterWidthHz: null }],
+    ['IF shift', { ifShiftHz: null }],
+  ])('never defaults missing %s into a confirmed passband', (_label, overrides) => {
+    authorityHarness.state.current = authority(overrides);
+    const target = mountPanel();
+    emitFrame();
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+  });
+
+  it('allows a confirmed overlay but no resize permission when the rule is missing', () => {
+    authorityHarness.state.current = authority({ rule: null });
+    const target = mountPanel();
+    emitFrame();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+  });
+
+  it('rejects fixed resize capture when confirmed frequency is outside the sample plane', () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_200_000 });
+    const target = mountPanel();
+    emitFrame({ mode: 1 });
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it('removes exactly the two Panel legacy exceptions while retaining sample ownership', () => {
+    expect(authorityPluginSource.match(/src\/components\/spectrum\/SpectrumPanel\.svelte/g))
+      .toHaveLength(1);
+    expect(authorityContractSource.match(/src\/components\/spectrum\/SpectrumPanel\.svelte/g))
+      .toHaveLength(2);
+    expect(authorityPluginSource).toContain('const SCOPE_METADATA_OWNERS');
+    expect(authorityContractSource).toContain('id = "spectrum_payload"');
+    expect(authorityContractSource).toContain('id = "scope_metadata_owner"');
   });
 });
 

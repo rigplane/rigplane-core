@@ -14,16 +14,17 @@
   } from '../../lib/renderers/waterfall-renderer';
   import { runtime } from '../../lib/runtime/frontend-runtime';
   import { type DxSpot } from '../../lib/types/protocol';
-  import { patchActiveReceiver, patchReceiver, radio } from '../../lib/stores/radio.svelte';
-  import { getFilterWidthHz } from '../../lib/utils/filter-width';
-  import { snapToStep, tuneBy } from '../../lib/stores/tuning.svelte';
+  import { getTuningStep } from '../../lib/stores/tuning.svelte';
+  import { getFilterHandlers, getVfoHandlers } from '../../lib/runtime/adapters/panel-adapters';
+  import {
+    snapSpectrumFilterWidth,
+    toSpectrumAuthority,
+    type SpectrumAuthority,
+  } from '../../lib/runtime/adapters/scope-adapter';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
   import BandPlanOverlay from './BandPlanOverlay.svelte';
   import EiBiBrowser from './EiBiBrowser.svelte';
   import { t } from '$lib/i18n';
-  import { deriveIfShift } from '../../components-v2/panels/filter-controls';
-  import { getCapabilities } from '../../lib/stores/capabilities.svelte';
-  import { resolveFilterModeConfig } from '../../components-v2/wiring/state-adapter';
   import {
     canResizeFromRightEdge,
     getFilterWidthFromRightEdgePx,
@@ -32,7 +33,6 @@
   import {
     formatFreqOffset,
     deriveFreqTicks,
-    getDragInterval,
     isFixedScope as isFixedScopeFn,
   } from './spectrum-logic';
 
@@ -50,6 +50,8 @@
   // `false` today and this prop is a pure pass-through, no logic of its own.
   let { hideSourceControls = false, hideScopeControls = false } = $props();
 
+  const vfoHandlers = getVfoHandlers();
+  const filterHandlers = getFilterHandlers();
   // --- Component state ---
   let scopeConnected = $derived(runtime.scope.hardwareScopeConnected);
   let scopeDemandOn = $state(true);
@@ -81,34 +83,65 @@
   let dxSpots = $state<DxSpot[]>([]);
   let spectrumArea: HTMLDivElement | null = null;
   let waterfallContent: HTMLDivElement | null = null;
-  let resizingPassband = $state(false);
-  let resizingPointerId = $state<number | null>(null);
+  type SampleGeometry = Readonly<{
+    frameMode: number;
+    startFreq: number;
+    endFreq: number;
+    elementWidth: number;
+  }>;
+  type GestureCapture = Readonly<{
+    pointerId: number;
+    startX: number;
+    elementLeft: number;
+    authority: SpectrumAuthority;
+    geometry: SampleGeometry;
+  }>;
+
+  let resizeCapture = $state<GestureCapture | null>(null);
+  let resizeCandidate: number | null = null;
+  let dragCapture = $state<GestureCapture | null>(null);
+  let dragSurface: HTMLElement | null = null;
+  let dragCandidate: number | null = null;
+  let dragging = $state(false);
 
   let centerHz = $derived(
     startFreq > 0 && endFreq > startFreq ? (startFreq + endFreq) / 2 : 0,
   );
   let spanHz = $derived(endFreq > startFreq ? endFreq - startFreq : 0);
-
-  // Active receiver data for passband overlay
-  let rx = $derived(radio.current?.active === 'SUB' ? radio.current?.sub : radio.current?.main);
-  let tuneHz = $derived(rx?.freqHz ?? 0);
-  let rxMode = $derived(rx?.mode ?? '');
-  let passbandHz = $derived(rx?.filterWidth ?? getFilterWidthHz(rxMode, rx?.filter ?? 1));
-  let passbandShiftHz = $derived(deriveIfShift(rx?.pbtInner ?? 0, rx?.pbtOuter ?? 0));
-  let canResizePassband = $derived(canResizeFromRightEdge(rxMode));
-  // Scope mode from binary frame header — always in sync with pixel data.
-  // Falls back to control state if no frame received yet.
-  let scopeMode = $derived(frameScopeMode ?? (radio.current?.scopeControls?.mode ?? 0));
+  let spectrumAuthority = $derived(toSpectrumAuthority(runtime.state, runtime.caps));
+  let scopeMode = $derived(frameScopeMode);
   // Tuning indicator: center for CTR/SCROLL-C, proportional for FIX/SCROLL-F
   let isFixedScope = $derived(isFixedScopeFn(scopeMode));
+  let tuneVisible = $derived(
+    spectrumAuthority?.frequencyHz !== null
+      && spectrumAuthority?.frequencyHz !== undefined
+      && (!isFixedScope || (
+        spectrumAuthority.frequencyHz >= startFreq
+        && spectrumAuthority.frequencyHz <= endFreq
+      )),
+  );
+  let tuneHz = $derived(tuneVisible ? spectrumAuthority!.frequencyHz! : 0);
+  let confirmedPassband = $derived(
+    tuneVisible
+      && spectrumAuthority?.mode !== null
+      && spectrumAuthority?.mode !== undefined
+      && spectrumAuthority.filterWidthHz !== null
+      && spectrumAuthority.ifShiftHz !== null,
+  );
+  let rxMode = $derived(confirmedPassband ? spectrumAuthority!.mode! : '');
+  let passbandHz = $derived(confirmedPassband ? spectrumAuthority!.filterWidthHz! : 0);
+  let passbandShiftHz = $derived(confirmedPassband ? spectrumAuthority!.ifShiftHz! : 0);
+  let canResizePassband = $derived(
+    confirmedPassband
+      && spectrumAuthority !== null
+      && spectrumAuthority.rule !== null
+      && canResizeFromRightEdge(spectrumAuthority.mode!),
+  );
   let tuneLinePct = $derived(
-    isFixedScope && spanHz > 0 && tuneHz > 0 && tuneHz >= startFreq && tuneHz <= endFreq
+    isFixedScope && spanHz > 0 && tuneVisible
       ? ((tuneHz - startFreq) / spanHz) * 100
       : 50
   );
-  let filterConfig = $derived(resolveFilterModeConfig(getCapabilities(), rxMode, rx?.dataMode));
-  let filterMaxHz = $derived(filterConfig?.maxHz ?? 10000);
-  let filterStepHz = $derived(filterConfig?.stepHz ?? filterConfig?.segments?.[0]?.stepHz ?? 100);
 
   // Local brightness only — the radio REF command (0x27/0x19) shifts the
   // scope data that the IC-7610 sends over LAN, so applying refDb here
@@ -117,7 +150,7 @@
 
   let spectrumOptions = $derived<SpectrumOptions>({
     ...defaultSpectrumOptions,
-    spanHz,
+    spanHz: tuneVisible ? spanHz : 0,
     centerHz,
     tuneHz,
     passbandHz,
@@ -154,56 +187,106 @@
   let pbLeftPct = $derived(passbandOverlay?.leftPx ?? 0);
   let pbRightPct = $derived(passbandOverlay?.rightPx ?? 0);
 
-  function applyFilterWidth(width: number): void {
-    if (width === passbandHz) {
-      return;
-    }
+  function readAuthority(): SpectrumAuthority | null {
+    return toSpectrumAuthority(runtime.state, runtime.caps);
+  }
 
-    patchActiveReceiver({ filterWidth: width }, true);
-    runtime.send('set_filter_width', { width });
+  function completeGestureAuthority(requireRule: boolean): SpectrumAuthority | null {
+    const current = readAuthority();
+    if (!current || current.frequencyHz === null || current.mode === null
+      || current.filterWidthHz === null || current.ifShiftHz === null
+      || (requireRule && current.rule === null)) return null;
+    return current;
+  }
+
+  function readSampleGeometry(element: HTMLElement): SampleGeometry | null {
+    const { width } = element.getBoundingClientRect();
+    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(startFreq)
+      || !Number.isFinite(endFreq) || endFreq <= startFreq
+      || !Number.isSafeInteger(frameScopeMode)) return null;
+    return Object.freeze({
+      frameMode: frameScopeMode,
+      startFreq,
+      endFreq,
+      elementWidth: width,
+    });
+  }
+
+  function captureStillCurrent(capture: GestureCapture, element: HTMLElement): boolean {
+    const current = readAuthority();
+    const geometry = readSampleGeometry(element);
+    return current?.digest === capture.authority.digest
+      && geometry?.frameMode === capture.geometry.frameMode
+      && geometry.startFreq === capture.geometry.startFreq
+      && geometry.endFreq === capture.geometry.endFreq
+      && geometry.elementWidth === capture.geometry.elementWidth;
   }
 
   function handlePassbandResizeStart(event: PointerEvent): void {
-    if (!canResizePassband || !waterfallContent) {
-      return;
-    }
-
+    if (!waterfallContent) return;
+    const accepted = completeGestureAuthority(true);
+    const geometry = readSampleGeometry(waterfallContent);
+    if (!accepted || !accepted.rule || !geometry || !canResizeFromRightEdge(accepted.mode!)) return;
+    if (isFixedScopeFn(geometry.frameMode)
+      && (accepted.frequencyHz! < geometry.startFreq || accepted.frequencyHz! > geometry.endFreq)) return;
+    const rect = waterfallContent.getBoundingClientRect();
     event.preventDefault();
     event.stopPropagation();
-    resizingPassband = true;
-    resizingPointerId = event.pointerId;
+    resizeCandidate = null;
+    resizeCapture = Object.freeze({
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      elementLeft: rect.left,
+      authority: accepted,
+      geometry,
+    });
     (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
   }
 
-  function handleWindowPointerMove(event: PointerEvent): void {
-    if (!resizingPassband || resizingPointerId !== event.pointerId || !waterfallContent) {
-      return;
-    }
-
-    const rect = waterfallContent.getBoundingClientRect();
-    const relativeX = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
-    const nextWidth = getFilterWidthFromRightEdgePx(
-      rxMode,
-      passbandShiftHz,
-      spanHz,
-      rect.width,
-      relativeX,
-      filterMaxHz,
-      filterStepHz,
+  function handleResizeMove(event: PointerEvent): void {
+    const capture = resizeCapture;
+    if (!capture || capture.pointerId !== event.pointerId) return;
+    const { authority, geometry } = capture;
+    const span = geometry.endFreq - geometry.startFreq;
+    const sampleX = Math.max(0, Math.min(
+      geometry.elementWidth,
+      event.clientX - capture.elementLeft,
+    ));
+    const carrierX = isFixedScopeFn(geometry.frameMode)
+      ? ((authority.frequencyHz! - geometry.startFreq) / span) * geometry.elementWidth
+      : geometry.elementWidth / 2;
+    const normalizedX = sampleX - carrierX + geometry.elementWidth / 2;
+    const raw = getFilterWidthFromRightEdgePx(
+      authority.mode!,
+      authority.ifShiftHz!,
+      span,
+      geometry.elementWidth,
+      normalizedX,
+      authority.rule!.maxHz,
     );
-
-    if (nextWidth !== null) {
-      applyFilterWidth(nextWidth);
-    }
+    const snapped = raw === null ? null : snapSpectrumFilterWidth(raw, authority.rule);
+    resizeCandidate = snapped !== null && snapped !== authority.filterWidthHz ? snapped : null;
   }
 
-  function stopPassbandResize(event?: PointerEvent): void {
-    if (event && resizingPointerId !== null && event.pointerId !== resizingPointerId) {
-      return;
-    }
+  function handleResizeEnd(event: PointerEvent): void {
+    const capture = resizeCapture;
+    if (!capture || capture.pointerId !== event.pointerId || !waterfallContent) return;
+    const candidate = resizeCandidate;
+    const stable = captureStillCurrent(capture, waterfallContent);
+    resizeCapture = null;
+    resizeCandidate = null;
+    if (!stable || candidate === null || candidate === capture.authority.filterWidthHz) return;
+    filterHandlers.onFilterWidthCommit(
+      candidate,
+      capture.authority.receiver,
+      capture.authority.providerGeneration,
+    );
+  }
 
-    resizingPassband = false;
-    resizingPointerId = null;
+  function handleResizeCancel(event: PointerEvent): void {
+    if (!resizeCapture || resizeCapture.pointerId !== event.pointerId) return;
+    resizeCapture = null;
+    resizeCandidate = null;
   }
 
   function acquireScopeDemand(): void {
@@ -225,122 +308,89 @@
   }
 
   // --- Click-to-tune ---
+  function snapFrequency(raw: number): number | null {
+    const step = getTuningStep();
+    if (!Number.isFinite(raw) || !Number.isSafeInteger(step) || step <= 0) return null;
+    const candidate = Math.round(raw / step) * step;
+    return Number.isSafeInteger(candidate) && candidate > 0 ? candidate : null;
+  }
+
   function handleTune(hz: number): void {
-    const freq = snapToStep(Math.round(hz));
-    if (freq <= 0) return;
-    const receiver = radio.current?.active === 'SUB' ? 1 : 0;
-    patchReceiver(receiver, { freqHz: freq }, true);
-    runtime.send('set_freq', { freq, receiver });
+    const current = readAuthority();
+    const frequency = snapFrequency(Math.round(hz));
+    if (current?.frequencyHz === null || current?.frequencyHz === undefined || frequency === null) return;
+    vfoHandlers.onFreqChange(frequency, current.receiver);
   }
 
   // --- Scroll-to-tune (mouse wheel on spectrum/waterfall) ---
   function handleWheel(event: WheelEvent): void {
     event.preventDefault();
-    const freq = tuneBy(event.deltaY > 0 ? -1 : 1);
-    if (freq > 0) handleTune(freq);
+    const current = readAuthority();
+    const step = getTuningStep();
+    if (current?.frequencyHz === null || current?.frequencyHz === undefined
+      || !Number.isSafeInteger(step) || step <= 0) return;
+    const frequency = snapFrequency(current.frequencyHz + (event.deltaY > 0 ? -step : step));
+    if (frequency !== null) vfoHandlers.onFreqChange(frequency, current.receiver);
   }
 
   // --- Drag-to-pan (grab and slide the spectrum window) ---
-  //
-  // All visual feedback comes from the radio: set_freq → radio retunes →
-  // scope sends new data → spectrum/waterfall redraws naturally.
-  //
-  // Adaptive rate limit based on drag speed:
-  //   - Slow (<200 px/s): every 200ms — precise tuning feel
-  //   - Medium (200–600 px/s): every 400ms — smooth panning
-  //   - Fast (>600 px/s): every 700ms — coarse jumps, no flooding
-  // Final freq always sent on release.
-  //
-  let dragging = $state(false);
-  // dragEndTime removed — tap-to-tune handled by WaterfallCanvas gesture only
-  let dragStartX = $state(0);
-  let dragStartFreq = $state(0);
-  let dragPointerId = $state<number | null>(null);
-  let dragFreq = 0;
-  let lastDragSendTime = 0;
-  let lastDragSendFreq = 0;
-  let lastMoveTime = 0;
-  let lastMoveX = 0;
-  let dragSpeed = 0; // px/sec, smoothed
-
   function handleDragStart(event: PointerEvent): void {
-    if (event.button !== 0 || resizingPassband) return;
-    if ((event.target as HTMLElement).closest('button, select, input')) return;
-
-    dragStartX = event.clientX;
-    dragStartFreq = tuneHz;
-    dragPointerId = event.pointerId;
-    lastDragSendTime = 0;
-    lastDragSendFreq = 0;
-    lastMoveTime = performance.now();
-    lastMoveX = event.clientX;
-    dragSpeed = 0;
+    if (event.button !== 0 || resizeCapture) return;
+    if (event.target instanceof Element && event.target.closest('button, select, input')) return;
+    const surface = event.currentTarget as HTMLElement | null;
+    const accepted = completeGestureAuthority(false);
+    const geometry = surface ? readSampleGeometry(surface) : null;
+    if (!surface || !accepted || !geometry) return;
+    const rect = surface.getBoundingClientRect();
+    dragSurface = surface;
+    dragCandidate = null;
+    dragging = false;
+    dragCapture = Object.freeze({
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      elementLeft: rect.left,
+      authority: accepted,
+      geometry,
+    });
   }
 
   const DRAG_THRESHOLD_PX = 5;
 
   function handleDragMove(event: PointerEvent): void {
-    if (dragPointerId === null || dragPointerId !== event.pointerId) return;
-    if (spanHz <= 0 || !spectrumArea) return;
-
-    const dx = event.clientX - dragStartX;
-
+    const capture = dragCapture;
+    if (!capture || capture.pointerId !== event.pointerId) return;
+    const dx = event.clientX - capture.startX;
     if (!dragging) {
       if (Math.abs(dx) < DRAG_THRESHOLD_PX) return;
       dragging = true;
-      (event.target as HTMLElement)?.closest('.spectrum-area, .waterfall-content')
-        ?.setPointerCapture?.(event.pointerId);
+      dragSurface?.setPointerCapture?.(event.pointerId);
     }
-
-    // Track drag speed (exponential smoothing)
-    const now = performance.now();
-    const dt = now - lastMoveTime;
-    if (dt > 0) {
-      const instantSpeed = (Math.abs(event.clientX - lastMoveX) / dt) * 1000;
-      dragSpeed = dragSpeed * 0.7 + instantSpeed * 0.3;
-    }
-    lastMoveTime = now;
-    lastMoveX = event.clientX;
-
-    const rect = spectrumArea.getBoundingClientRect();
-    const hzPerPx = spanHz / rect.width;
+    const hzPerPx = (capture.geometry.endFreq - capture.geometry.startFreq)
+      / capture.geometry.elementWidth;
     const deltaHz = -dx * hzPerPx;
-    const newFreq = snapToStep(Math.round(dragStartFreq + deltaHz));
-
-    if (newFreq <= 0) return;
-    dragFreq = newFreq;
-
-    // Adaptive interval: slow = responsive, fast = coarse
-    const intervalMs = getDragInterval(dragSpeed);
-
-    if (now - lastDragSendTime < intervalMs) return;
-    if (newFreq === lastDragSendFreq) return;
-
-    lastDragSendTime = now;
-    lastDragSendFreq = newFreq;
-    const receiver = radio.current?.active === 'SUB' ? 1 : 0;
-    patchReceiver(receiver, { freqHz: newFreq }, true);
-    runtime.send('set_freq', { freq: newFreq, receiver });
+    const candidate = snapFrequency(Math.round(capture.authority.frequencyHz! + deltaHz));
+    dragCandidate = candidate !== capture.authority.frequencyHz ? candidate : null;
   }
 
   function handleDragEnd(event: PointerEvent): void {
-    if (dragPointerId !== null && event.pointerId !== dragPointerId) return;
-
-    if (dragging) {
-      // Drag-to-pan: send final frequency on release
-      if (dragFreq > 0 && dragFreq !== lastDragSendFreq) {
-        const receiver = radio.current?.active === 'SUB' ? 1 : 0;
-        patchReceiver(receiver, { freqHz: dragFreq }, true);
-        runtime.send('set_freq', { freq: dragFreq, receiver });
-      }
-    }
-    // Tap-to-tune is handled exclusively by WaterfallCanvas gesture onTap
-    // (uses renderer.pixelToFreq with DPR awareness). No duplicate here.
-
+    const capture = dragCapture;
+    if (!capture || capture.pointerId !== event.pointerId || !dragSurface) return;
+    const candidate = dragCandidate;
+    const stable = captureStillCurrent(capture, dragSurface);
     dragging = false;
-    dragPointerId = null;
-    dragFreq = 0;
-    dragSpeed = 0;
+    dragCapture = null;
+    dragSurface = null;
+    dragCandidate = null;
+    if (!stable || candidate === null || candidate === capture.authority.frequencyHz) return;
+    vfoHandlers.onFreqChange(candidate, capture.authority.receiver);
+  }
+
+  function handleDragCancel(event: PointerEvent): void {
+    if (!dragCapture || dragCapture.pointerId !== event.pointerId) return;
+    dragging = false;
+    dragCapture = null;
+    dragSurface = null;
+    dragCandidate = null;
   }
 
   // --- Lifecycle: demand scope runtime + subscribe to frames and DX spots ---
@@ -379,9 +429,9 @@
 </script>
 
 <svelte:window
-  onpointermove={(e) => { handleWindowPointerMove(e); handleDragMove(e); }}
-  onpointerup={(e) => { stopPassbandResize(e); handleDragEnd(e); }}
-  onpointercancel={(e) => { stopPassbandResize(e); handleDragEnd(e); }}
+  onpointermove={(e) => { handleResizeMove(e); handleDragMove(e); }}
+  onpointerup={(e) => { handleResizeEnd(e); handleDragEnd(e); }}
+  onpointercancel={(e) => { handleResizeCancel(e); handleDragCancel(e); }}
 />
 
 <div class="spectrum-panel" class:fullscreen onwheel={handleWheel}>
@@ -400,11 +450,11 @@
       {/if}
       <BandPlanOverlay {startFreq} {endFreq} visible={showBandPlan} {hiddenLayers} />
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} onRegisterPush={(fn) => spectrumPush = fn} />
-      {#if spanHz > 0 && pbWidthPct > 0 && canResizePassband}
+      {#if tuneVisible && spanHz > 0 && pbWidthPct > 0 && canResizePassband}
         <button
           type="button"
           class="passband-resize-zone"
-          class:active={resizingPassband}
+          class:active={resizeCapture !== null}
           style="left:{pbRightPct}%"
           onpointerdown={handlePassbandResizeStart}
           aria-label="Resize filter width"
@@ -426,14 +476,14 @@
       <WaterfallCanvas options={waterfallOptions} onFreqClick={handleTune} onRegisterPush={(fn) => waterfallPush = fn} />
       <DxOverlay spots={dxSpots} {startFreq} {endFreq} onTune={handleTune} />
       <!-- Tuning + passband indicator overlays the waterfall -->
-      {#if spanHz > 0}
+      {#if tuneVisible && spanHz > 0}
         {#if pbWidthPct > 0}
           <div class="passband-overlay" style="left:{pbLeftPct}%;width:{pbWidthPct}%"></div>
           {#if canResizePassband}
             <button
               type="button"
               class="passband-resize-zone"
-              class:active={resizingPassband}
+              class:active={resizeCapture !== null}
               style="left:{pbRightPct}%"
               onpointerdown={handlePassbandResizeStart}
               aria-label="Resize filter width"
