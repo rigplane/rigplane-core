@@ -101,6 +101,31 @@ describe('MOR-1409 A05a memory command authority', () => {
     expect(h.calls).toHaveLength(0);
   });
 
+  it('rejects each supplied store value that no longer equals the observed snapshot', () => {
+    const handlers = makeMemoryHandlers();
+    expect(handlers.onStore(1, 7_100_000, 'USB')).toBe(false);
+    expect(handlers.onStore(1, 14_074_000, 'LSB')).toBe(false);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('requires a non-empty, observed, fresh, and available mode leaf before store dispatch', () => {
+    const handlers = makeMemoryHandlers();
+    (h.state!.main.vfoA as { mode: string }).mode = '';
+    expect(handlers.onStore(1, 14_074_000, '')).toBe(false);
+
+    for (const modeStatus of [
+      undefined,
+      { ...fresh, observed: false },
+      { ...fresh, freshness: 'stale' },
+      { ...fresh, availability: 'unavailable' },
+    ]) {
+      h.state = state();
+      (h.state!.fieldStatus as Record<string, unknown>)['main.vfoA.mode'] = modeStatus;
+      expect(handlers.onStore(1, 14_074_000, 'USB')).toBe(false);
+    }
+    expect(h.calls).toHaveLength(0);
+  });
+
   it('rejects absent active identity, generation drift, and impossible physical topology before dispatch', () => {
     const handlers = makeMemoryHandlers();
     h.state = { ...h.state!, active: undefined } as unknown as ServerState;
