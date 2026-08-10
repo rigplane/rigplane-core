@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 
 const h = vi.hoisted(() => ({
@@ -49,6 +50,10 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 }));
 
 vi.mock('$lib/state/field-status', () => ({
+  getFieldStatus: vi.fn((_state: ServerState | null, path: string) =>
+    h.unavailable.has(path)
+      ? { storePath: path, observed: true, freshness: 'stale', availability: 'stale' }
+      : h.state?.fieldStatus?.[path]),
   isFieldAvailable: vi.fn((_state: ServerState | null, path: string) =>
     h.state !== null && !h.unavailable.has(path)),
 }));
@@ -1569,5 +1574,224 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
     scope.onDualChange(true);
     expect(exactCalls()).toEqual([['switch_scope_receiver', { receiver: 0 }]]);
     expectIntentTransport();
+  });
+});
+
+const A06_SEGMENTS: FilterModeConfig = {
+  defaults: [3000, 2400, 1800], fixed: false, minHz: 50, maxHz: 3600,
+  segments: [
+    { hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 0 },
+    { hzMin: 600, hzMax: 3600, stepHz: 100, indexMin: 10 },
+  ],
+};
+const A06_TABLE: FilterModeConfig = {
+  defaults: [2400, 1800, 300], fixed: false,
+  table: [300, 600, 1200, 1800, 2400, 3000],
+};
+const A06_STEP: FilterModeConfig = {
+  defaults: [3050, 1750, 550], fixed: false, minHz: 250, maxHz: 3550, stepHz: 100,
+};
+
+function a06State(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
+  const current = state(active);
+  const paths = [
+    'active', 'main.mode', 'main.filterWidth', 'main.dataMode',
+    'sub.mode', 'sub.filterWidth', 'sub.dataMode',
+  ];
+  return {
+    ...current,
+    fieldStatus: Object.fromEntries(paths.map((path) => [path, { ...freshStatus, storePath: path }])),
+  } as ServerState;
+}
+
+function a06Caps(rule: FilterModeConfig = A06_SEGMENTS): Capabilities {
+  return {
+    model: 'fixture', scope: true, audio: true, tx: true,
+    capabilities: ['filter_width', 'data_mode', 'dual_rx'],
+    stateContractVersion: 1, providerGeneration: 31,
+    receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: ['USB'], filters: ['FIL1'],
+    filterConfig: { USB: rule },
+    audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm16'] },
+    webrtc: { available: false, enabled: false }, txBands: [],
+  };
+}
+
+describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    h.state = a06State();
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    h.unavailable.clear();
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+  });
+
+  afterEach(() => {
+    resetCommandLifecycle();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ['segmented', A06_SEGMENTS, 2400],
+    ['table', A06_TABLE, 1800],
+    ['simple-step', A06_STEP, 1750],
+  ] as const)('commits one exact synchronous %s intent with no timer', (_name, rule, width) => {
+    h.caps = a06Caps(rule) as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthCommit(width, 0, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width, receiver: 0 }]]);
+    expectIntentTransport();
+    // The one timer belongs to the existing command-lifecycle timeout. The
+    // new handler itself stays synchronous and owns no debounce/timer.
+    expect(vi.getTimerCount()).toBe(1);
+    const source = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/panel-commands.ts'), 'utf8');
+    const commitBlock = source.slice(source.indexOf('onFilterWidthCommit:'), source.indexOf('onFilterShapeChange:'));
+    expect(commitBlock).not.toContain('setTimeout');
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+  });
+
+  it('accepts the valid observed dual-SUB physical receiver exactly once', () => {
+    h.state = a06State('SUB');
+    makeFilterHandlers().onFilterWidthCommit(2400, 1, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 2400, receiver: 1 }]]);
+    expectIntentTransport();
+  });
+
+  it('retains the legacy delayed handler independently of the synchronous member', () => {
+    const handlers = makeFilterHandlers();
+    handlers.onFilterWidthChange(1800);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(199);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 1800, receiver: 0 }]]);
+  });
+
+  it('rejects unsafe generations, mismatched epochs, stale identity, and target disagreement', () => {
+    const commit = (generation: number, receiver: 0 | 1 = 0) =>
+      makeFilterHandlers().onFilterWidthCommit(2400, receiver, generation);
+    commit(-1); commit(Number.MAX_SAFE_INTEGER + 1); commit(30);
+    h.caps = { ...a06Caps(), providerGeneration: 32 } as unknown as Record<string, unknown>;
+    commit(31);
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    h.unavailable.add('active'); commit(31);
+    h.unavailable.clear(); commit(31, 1);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('rejects every impossible SUB topology and absent physical SUB state', () => {
+    h.state = a06State('SUB');
+    const attempt = () => makeFilterHandlers().onFilterWidthCommit(2400, 1, 31);
+    for (const caps of [
+      { ...a06Caps(), capabilities: ['filter_width', 'data_mode'] },
+      { ...a06Caps(), receivers: 1, vfoScheme: 'ab' },
+      { ...a06Caps(), receivers: 1 },
+      { ...a06Caps(), vfoScheme: 'single' },
+    ]) {
+      h.caps = caps as unknown as Record<string, unknown>; attempt();
+    }
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    h.state = { ...a06State('SUB'), sub: null } as unknown as ServerState;
+    attempt();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('requires fresh positive current mode, width and supported DATA facts', () => {
+    const attempt = () => makeFilterHandlers().onFilterWidthCommit(2400, 0, 31);
+    for (const path of ['main.mode', 'main.filterWidth', 'main.dataMode']) {
+      h.unavailable.add(path); attempt(); h.unavailable.clear();
+    }
+    for (const [field, value] of [
+      ['mode', ''], ['filterWidth', 0], ['filterWidth', Number.NaN], ['dataMode', -1],
+    ] as const) {
+      h.state = { ...a06State(), main: { ...a06State().main, [field]: value } } as ServerState;
+      attempt();
+    }
+    h.state = a06State();
+    h.caps = { ...a06Caps(), capabilities: ['filter_width'] } as unknown as Record<string, unknown>;
+    h.unavailable.add('main.dataMode');
+    attempt();
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 2400, receiver: 0 }]]);
+  });
+
+  it('rejects missing capability, unresolved/fixed/default-only rules and unsafe candidates', () => {
+    const attempt = (width: number = 2400) => makeFilterHandlers().onFilterWidthCommit(width, 0, 31);
+    h.caps = { ...a06Caps(), capabilities: ['data_mode'] } as unknown as Record<string, unknown>; attempt();
+    h.caps = { ...a06Caps(), filterConfig: {} } as unknown as Record<string, unknown>; attempt();
+    h.caps = a06Caps({ defaults: [2400], fixed: true, table: [2400] }) as unknown as Record<string, unknown>; attempt();
+    h.caps = a06Caps({ defaults: [2400], fixed: false, minHz: 50, maxHz: 3600 }) as unknown as Record<string, unknown>; attempt();
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    attempt(0); attempt(Number.NaN); attempt(Number.MAX_SAFE_INTEGER + 1);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { defaults: [], fixed: false, table: [] },
+    { defaults: [], fixed: false, table: [300, 300, 600] },
+    { defaults: [], fixed: false, table: [600, 300] },
+    { defaults: [], fixed: false, minHz: 400, maxHz: 2400, table: [300, 600, 2400] },
+    { defaults: [], fixed: false, table: [300, 600], segments: A06_SEGMENTS.segments },
+  ] as FilterModeConfig[])('rejects malformed table metadata %#', (rule) => {
+    h.caps = a06Caps(rule) as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthCommit(600, 0, 31);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects table nonmembers even inside its numeric bounds', () => {
+    h.caps = a06Caps(A06_TABLE) as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthCommit(2000, 0, 31);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { ...A06_SEGMENTS, segments: [] },
+    { ...A06_SEGMENTS, segments: [{ hzMin: 0, hzMax: 500, stepHz: 50, indexMin: 0 }] },
+    { ...A06_SEGMENTS, segments: [{ hzMin: 500, hzMax: 50, stepHz: 50, indexMin: 0 }] },
+    { ...A06_SEGMENTS, segments: [{ hzMin: 50, hzMax: 525, stepHz: 50, indexMin: 0 }] },
+    { ...A06_SEGMENTS, segments: [
+      { hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 0 },
+      { hzMin: 500, hzMax: 3600, stepHz: 100, indexMin: 10 },
+    ] },
+    { ...A06_SEGMENTS, segments: [
+      { hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 5 },
+      { hzMin: 600, hzMax: 3600, stepHz: 100, indexMin: 4 },
+    ] },
+    { ...A06_SEGMENTS, minHz: 100 },
+    { ...A06_SEGMENTS, maxHz: 3500 },
+  ] as FilterModeConfig[])('rejects malformed segment metadata %#', (rule) => {
+    h.caps = a06Caps(rule) as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthCommit(300, 0, 31);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects segment gaps and hzMin-relative misalignment', () => {
+    makeFilterHandlers().onFilterWidthCommit(550, 0, 31);
+    makeFilterHandlers().onFilterWidthCommit(625, 0, 31);
+    h.caps = a06Caps({
+      defaults: [275], fixed: false, minHz: 75, maxHz: 275,
+      segments: [{ hzMin: 75, hzMax: 275, stepHz: 50, indexMin: 0 }],
+    }) as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthCommit(100, 0, 31);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { ...A06_STEP, minHz: 0 }, { ...A06_STEP, maxHz: 100 },
+    { ...A06_STEP, stepHz: 0 }, { ...A06_STEP, stepHz: 1.5 },
+  ] as FilterModeConfig[])('rejects malformed simple-step metadata %#', (rule) => {
+    h.caps = a06Caps(rule) as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthCommit(200, 0, 31);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('anchors simple-step alignment at the resolved minimum', () => {
+    h.caps = a06Caps(A06_STEP) as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthCommit(300, 0, 31);
+    expect(h.sendCommand).not.toHaveBeenCalled();
   });
 });
