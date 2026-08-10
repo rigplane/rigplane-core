@@ -6,11 +6,21 @@
  * This file asserts two things a per-function unit test cannot:
  *
  *  1. none of the SPECIFIC fabricated-default literal source patterns the
- *     A11 re-anchor plan's live audit named (14.074 MHz / USB / FIL1 / 2400
- *     Hz / AGC MID / one antenna) remain anywhere in `panel-props.ts`'s
- *     source text — a belt-and-suspenders sweep on top of the behavioral
- *     tests, so a mutant that restores the literal in a place no existing
- *     behavioral test happens to probe is still caught;
+ *     A11 re-anchor plan's live audit named (14.074 MHz / USB / FIL1 / AGC
+ *     MID / one antenna) remain anywhere in `panel-props.ts`'s source
+ *     text — a belt-and-suspenders sweep on top of the behavioral tests, so
+ *     a mutant that restores the literal in a place no existing behavioral
+ *     test happens to probe is still caught. `toFilterProps.filterWidth`'s
+ *     `?? 2400` is NOT in this forbidden set — per coordinator adjudication
+ *     5245697359 (Core #2317), narrowing A11 after the independent verifier
+ *     BLOCKED on a real consumer-boundary defect (a `NaN` sentinel there
+ *     renders as the literal "NaNkHz" in `FilterPanel.svelte`'s BW readout
+ *     and settings modal — a formatted-display consumer, not a comparison
+ *     consumer like `findActiveBand`, reachable ungated on the shipped
+ *     mobile skin). It moves to the batch-B/A12 guard rows below, alongside
+ *     its `toAudioSpectrumProps` twin, so A12 inherits the pin along with
+ *     the FilterPanel.svelte consumer-boundary fix that adjudication scopes
+ *     to it;
  *  2. two frozen facts this gate must NOT disturb: `panel-adapters.ts` still
  *     makes zero `runtime.send()` calls (§3.4 of the plan — it only reads
  *     `runtime.state`/`runtime.caps`), and `RadioLayout.svelte` still has
@@ -38,10 +48,12 @@ function readSource(path: string): string {
  * the scan to one function at a time is deliberate: several batch-B/A12
  * functions this gate must NOT touch (`toCwProps`, `toAudioSpectrumProps`)
  * share IDENTICAL fallback source text with batch-A functions this gate DOES
- * fix (e.g. `filterWidth: rx?.filterWidth ?? 2400,` appears verbatim in both
- * `toFilterProps`, an A11 owner, and `toAudioSpectrumProps`, an A12 owner) —
- * a whole-file substring scan cannot tell those apart without producing a
- * false positive against code this gate must leave alone.
+ * fix (e.g. `currentMode: rx?.mode ?? 'USB',`-shaped text recurs across
+ * several functions) — a whole-file substring scan cannot tell those apart
+ * without producing a false positive against code this gate must leave
+ * alone. `toFilterProps.filterWidth`'s own `?? 2400` is a second example:
+ * it now shares its exact fallback text with `toAudioSpectrumProps`' twin,
+ * both deliberately out of A11's scope (adjudication 5245697359).
  */
 function functionBody(source: string, name: string): string {
   const start = source.indexOf(`export function ${name}(`);
@@ -67,7 +79,6 @@ describe('panel-props.ts batch-A functions carry no fabricated-default literal (
     ['toVfoProps', "?? 'USB'"],
     ['toBandSelectorProps', '?? 14074000'],
     ['toFilterProps', "?? 'USB'"],
-    ['toFilterProps', '?? 2400'],
     ['toFilterProps', "?? ['FIL1', 'FIL2', 'FIL3']"],
     ['toAgcProps', 'agcMode: rx?.agc ?? 2,'],
     ['toAgcProps', 'agcModes: caps?.agcModes ?? [1, 2, 3]'],
@@ -82,9 +93,13 @@ describe('panel-props.ts batch-A functions carry no fabricated-default literal (
   // Companion positive checks: the batch-B/A12 siblings that share the same
   // fallback TEXT as a batch-A function above are explicitly confirmed
   // UNCHANGED — proving the scan above is scoped correctly and this gate did
-  // not silently widen into A12's own owner functions.
+  // not silently widen into A12's own owner functions. `toFilterProps`'s own
+  // `filterWidth ?? 2400` joins this list per adjudication 5245697359 (Core
+  // #2317): narrowed OUT of A11 (consumer-boundary defect — see file-header
+  // comment), deferred to A12 alongside its `toAudioSpectrumProps` twin.
   const stillPresentOutOfScope: ReadonlyArray<readonly [fn: string, literal: string]> = [
     ['toCwProps', "?? 'USB'"],
+    ['toFilterProps', '?? 2400'],
     ['toAudioSpectrumProps', '?? 2400'],
   ];
 

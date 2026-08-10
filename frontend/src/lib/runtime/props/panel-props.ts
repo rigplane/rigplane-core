@@ -353,15 +353,29 @@ export function toFilterProps(
   const pbtOuter = pbtRawToHz(rx?.pbtOuter ?? 128);
   const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
   return {
-    // MOR-1409 A11: no fabricated USB / three-filter FIL1-FIL3 catalog /
-    // 2400 Hz width stand-ins. `filterLabels` is a capability-derived choice
-    // set (like `toAgcProps`'s `agcModes`) — unknown capabilities means an
-    // empty, not invented, catalog.
+    // MOR-1409 A11: no fabricated USB / three-filter FIL1-FIL3 catalog
+    // stand-in. `filterLabels` is a capability-derived choice set (like
+    // `toAgcProps`'s `agcModes`) — unknown capabilities means an empty, not
+    // invented, catalog.
+    //
+    // `filterWidth` deliberately KEEPS its `?? 2400` fallback here (narrowed
+    // by coordinator adjudication 5245697359, Core #2317): a NaN sentinel
+    // renders as the literal "NaNkHz" in FilterPanel.svelte's BW readout
+    // (:207) and settings modal (:299/:317) — a formatted-display consumer,
+    // not a comparison consumer like `findActiveBand` — reachable ungated on
+    // the shipped mobile skin, and permanent for a connected rig that never
+    // reports width (not merely a disconnected-only case). The plan's
+    // same-type-sentinel guidance was validated only against a comparison
+    // consumer; it does not transplant to a formatted-display one without a
+    // FilterPanel.svelte consumer-boundary fix, which is a fourth production
+    // file A11 is not granted. Deferred to A12, which the same adjudication
+    // scopes to include this family plus its `toAudioSpectrumProps` twin
+    // (`?? 2400` below) and the FilterPanel.svelte consumer boundary itself.
     currentMode: rx?.mode ?? '---',
     currentFilter: rx?.filter ?? 1,
     filterShape: rx?.filterShape ?? 0,
     filterLabels: caps?.filters ?? [],
-    filterWidth: rx?.filterWidth ?? Number.NaN,
+    filterWidth: rx?.filterWidth ?? 2400,
     filterWidthMin:
       filterConfig?.minHz ??
       filterConfig?.table?.[0] ??

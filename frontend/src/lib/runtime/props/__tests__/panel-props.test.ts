@@ -648,11 +648,22 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
   });
 
   describe('toFilterProps', () => {
-    it('does not invent USB / a three-filter FIL1-FIL3 catalog / 2400 Hz width without state or capabilities', () => {
+    it('does not invent USB / a three-filter FIL1-FIL3 catalog without state or capabilities', () => {
       const props = toFilterProps(null, null);
       expect(props.currentMode).toBe('---');
       expect(props.filterLabels).toEqual([]);
-      expect(props.filterWidth).toBeNaN();
+    });
+
+    it('still fabricates the 2400 Hz width fallback — deliberately deferred to A12 (adjudication 5245697359, Core #2317)', () => {
+      // A NaN sentinel here renders as the literal "NaNkHz" in
+      // FilterPanel.svelte's BW readout and settings modal — a
+      // formatted-display consumer, unlike `findActiveBand`'s comparison
+      // consumer that the same-type-sentinel approach was validated
+      // against. Fixing it needs a FilterPanel.svelte consumer-boundary
+      // change, a fourth production file A11 is not granted; A12 owns this
+      // family (plus its `toAudioSpectrumProps` twin) per the adjudication.
+      const props = toFilterProps(null, null);
+      expect(props.filterWidth).toBe(2400);
     });
 
     it('still reports the real values for a populated receiver and capabilities', () => {
@@ -683,6 +694,25 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
     it('still reports the real AGC choice set from capabilities', () => {
       const props = toAgcProps(makeState(), { capabilities: ['agc'], agcModes: [1, 3] } as any);
       expect(props.agcModes).toEqual([1, 3]);
+    });
+
+    it('reports the real observed agcMode value when the field IS available (symmetric positive pin)', () => {
+      // Companion to 'does not present missing AGC as the default MID mode':
+      // that test proves the missing-field side (agcAvailable === false =>
+      // NaN); this one proves the populated-field side. Together they kill
+      // the mutant class that forces `agcAvailable` to a constant in either
+      // direction — a `false`-forced mutant would wrongly turn this real,
+      // available AGC=1 reading into NaN; a `true`-forced mutant is already
+      // caught by the missing-field test. `agc: 1` (not the base fixture's
+      // default 2, and not the old fabricated MID default) makes the pin
+      // unambiguous — it cannot pass by coincidentally matching a stale
+      // literal.
+      const props = toAgcProps(
+        makeState({ main: { ...makeState().main, agc: 1 } }),
+        { capabilities: ['agc'] } as any,
+      );
+      expect(props.agcMode).toBe(1);
+      expect(props.hasAgc).toBe(true);
     });
   });
 
