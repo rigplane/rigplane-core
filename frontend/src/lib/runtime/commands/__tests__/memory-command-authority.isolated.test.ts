@@ -6,7 +6,7 @@ import type { ServerState } from '$lib/types/state';
 const h = vi.hoisted(() => ({
   state: null as ServerState | null,
   caps: null as Capabilities | null,
-  calls: [] as Array<{ name: string; params: Record<string, unknown>; id: string; options: { optimistic: boolean } }>,
+  calls: [] as Array<{ name: string; params: Record<string, unknown>; id: string; extraArgs: unknown[] }>,
   throwOnCall: 0,
 }));
 
@@ -27,9 +27,9 @@ vi.mock('$lib/transport/ws-client', () => ({
   getControlSession: () => ({ state: 'connected', epoch: 7 }),
   onCommandDelivery: () => () => undefined,
   onControlSessionTransition: () => () => undefined,
-  sendCommand: (name: string, params: Record<string, unknown>, id: string, options: { optimistic: boolean }) => {
+  sendCommand: (name: string, params: Record<string, unknown>, id: string, ...extraArgs: unknown[]) => {
     if (h.throwOnCall === h.calls.length + 1) throw new Error('injected dispatcher failure');
-    h.calls.push({ name, params, id, options });
+    h.calls.push({ name, params, id, extraArgs });
     return true;
   },
 }));
@@ -73,7 +73,7 @@ describe('MOR-1409 A05a memory command authority', () => {
       { name: 'memory_clear', params: { channel: 99 } },
     ]);
     expect(new Set(h.calls.map((call) => call.id)).size).toBe(h.calls.length);
-    expect(h.calls.every((call) => call.options.optimistic === false)).toBe(true);
+    expect(h.calls.every((call) => call.extraArgs.length === 0)).toBe(true);
   });
 
   it('accepts real relative and unslotted topology identities without inventing A or B', () => {

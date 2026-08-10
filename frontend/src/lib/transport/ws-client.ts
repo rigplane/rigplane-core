@@ -1,7 +1,7 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
 import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
-import { getRadioState, isValidServerState, matchesCurrentCapabilityTopology, patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../stores/radio.svelte';
+import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
 
@@ -768,7 +768,6 @@ export function sendCommand(
   name: string,
   params: Record<string, unknown> = {},
   id?: string,
-  options: { optimistic?: boolean } = {},
 ): boolean {
   const commandId = id ?? makeCommandId();
   if (!isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
@@ -778,193 +777,12 @@ export function sendCommand(
     }
     return false;
   }
-  // Auto-optimistic: apply UI patch immediately before sending
-  if (options.optimistic !== false) {
-    try { _applyOptimistic(name, params); } catch (e) { console.warn('[optimistic]', e); }
-  }
   return _ctrl.send({
     type: 'cmd',
     name,
     id: commandId,
     params,
   });
-}
-
-/** Auto-optimistic update mapping: command → state patch */
-function _applyOptimistic(name: string, params: Record<string, unknown>): void {
-  switch (name) {
-    case 'set_freq':
-      if (typeof params.freq === 'number') patchActiveReceiver({ freqHz: params.freq });
-      break;
-    case 'set_mode':
-      if (typeof params.mode === 'string') patchActiveReceiver({ mode: params.mode });
-      break;
-    case 'set_data_mode':
-      if (typeof params.mode === 'number') patchActiveReceiver({ dataMode: params.mode });
-      break;
-    case 'set_filter':
-      if (typeof params.filter === 'string') {
-        const n = parseInt((params.filter as string).replace('FIL', ''), 10);
-        if (n >= 1 && n <= 3) patchActiveReceiver({ filter: n });
-      }
-      break;
-    case 'set_nb':
-      if (typeof params.on === 'boolean') {
-        const patch: Record<string, unknown> = { nb: params.on };
-        if (!params.on) patch.nbLevel = 0;
-        patchActiveReceiver(patch);
-      }
-      break;
-    case 'set_nr':
-      if (typeof params.on === 'boolean') {
-        const patch: Record<string, unknown> = { nr: params.on };
-        if (!params.on) patch.nrLevel = 0;
-        patchActiveReceiver(patch);
-      }
-      break;
-    case 'set_nb_level':
-      if (typeof params.level === 'number') {
-        patchActiveReceiver({ nbLevel: params.level, nb: params.level > 0 });
-      }
-      break;
-    case 'set_nr_level':
-      if (typeof params.level === 'number') {
-        patchActiveReceiver({ nrLevel: params.level, nr: params.level > 0 });
-      }
-      break;
-    case 'set_af_level':
-      if (typeof params.level === 'number') patchActiveReceiver({ afLevel: params.level });
-      break;
-    case 'set_rf_gain':
-      if (typeof params.level === 'number') patchActiveReceiver({ rfGain: params.level });
-      break;
-    case 'set_squelch':
-      if (typeof params.level === 'number') patchActiveReceiver({ squelch: params.level });
-      break;
-    case 'set_att':
-      if (typeof params.level === 'number') patchActiveReceiver({ att: params.level });
-      break;
-    case 'set_attenuator':
-      if (typeof params.db === 'number') patchActiveReceiver({ att: params.db });
-      else if (typeof params.level === 'number') patchActiveReceiver({ att: params.level });
-      break;
-    case 'set_preamp':
-      if (typeof params.level === 'number') patchActiveReceiver({ preamp: params.level });
-      break;
-    case 'set_filter_width':
-      if (typeof params.width === 'number') patchActiveReceiver({ filterWidth: params.width });
-      break;
-    case 'set_digisel':
-      if (typeof params.on === 'boolean') patchActiveReceiver({ digisel: params.on });
-      break;
-    case 'set_ip_plus':
-    case 'set_ipplus':  // backward-compat alias
-      if (typeof params.on === 'boolean') patchActiveReceiver({ ipplus: params.on });
-      break;
-    case 'set_dual_watch':
-      if (typeof params.on === 'boolean') patchRadioState({ dualWatch: params.on });
-      break;
-    case 'set_split':
-      if (typeof params.on === 'boolean') patchRadioState({ split: params.on });
-      break;
-    case 'set_rit_status':
-      if (typeof params.on === 'boolean') patchRadioState({ ritOn: params.on });
-      break;
-    case 'set_rit_tx_status':
-      if (typeof params.on === 'boolean') patchRadioState({ ritTx: params.on });
-      break;
-    case 'set_rit_frequency':
-      if (typeof params.freq === 'number') patchRadioState({ ritFreq: params.freq });
-      break;
-    case 'set_tuner_status':
-      if (typeof params.value === 'number') patchRadioState({ tunerStatus: params.value });
-      break;
-    case 'set_mic_gain':
-      if (typeof params.level === 'number') patchRadioState({ micGain: params.level });
-      break;
-    case 'set_cw_pitch':
-      if (typeof params.value === 'number') patchRadioState({ cwPitch: params.value });
-      break;
-    case 'set_key_speed':
-      if (typeof params.speed === 'number') patchRadioState({ keySpeed: params.speed });
-      break;
-    case 'set_break_in':
-      if (typeof params.mode === 'number') patchRadioState({ breakIn: params.mode });
-      break;
-    case 'set_vox':
-      if (typeof params.on === 'boolean') patchRadioState({ voxOn: params.on });
-      break;
-    case 'set_compressor':
-    case 'set_comp':
-      if (typeof params.on === 'boolean') patchRadioState({ compressorOn: params.on });
-      break;
-    case 'set_compressor_level':
-      if (typeof params.level === 'number') patchRadioState({ compressorLevel: params.level });
-      break;
-    case 'set_monitor':
-      if (typeof params.on === 'boolean') patchRadioState({ monitorOn: params.on });
-      break;
-    case 'set_monitor_gain':
-      if (typeof params.level === 'number') patchRadioState({ monitorGain: params.level });
-      break;
-    case 'set_vfo':
-    case 'select_vfo':  // backward-compat alias
-      if (typeof params.vfo === 'string') {
-        const vfo = params.vfo.toUpperCase();
-        if (vfo === 'A' || vfo === 'B') {
-          patchActiveReceiver({ activeSlot: vfo });
-        } else if (vfo === 'MAIN' || vfo === 'SUB') {
-          patchRadioState({ active: vfo });
-        } else if (vfo === 'VFOA' || vfo === 'VFOB') {
-          // Legacy dual-receiver aliases retain their historical meaning.
-          patchRadioState({ active: vfo === 'VFOB' ? 'SUB' : 'MAIN' });
-        }
-      }
-      break;
-
-    case 'set_scope_mode': {
-      const sm = getRadioState();
-      if (sm?.scopeControls && typeof params.mode === 'number') {
-        patchRadioState({ scopeControls: { ...sm.scopeControls, mode: params.mode } });
-      }
-      break;
-    }
-    case 'set_scope_span': {
-      const ss = getRadioState();
-      if (ss?.scopeControls && typeof params.span === 'number') {
-        patchRadioState({ scopeControls: { ...ss.scopeControls, span: params.span } });
-      }
-      break;
-    }
-    case 'set_scope_hold': {
-      const sh = getRadioState();
-      if (sh?.scopeControls && typeof params.on === 'boolean') {
-        patchRadioState({ scopeControls: { ...sh.scopeControls, hold: params.on } });
-      }
-      break;
-    }
-    case 'set_scope_ref': {
-      const sr = getRadioState();
-      if (sr?.scopeControls && typeof params.ref === 'number') {
-        patchRadioState({ scopeControls: { ...sr.scopeControls, refDb: params.ref } });
-      }
-      break;
-    }
-
-    case 'set_antenna_1':
-      // IC-7610: 0x12 0x00 selects ANT1 and the data byte encodes RX-ANT.
-      patchRadioState({ txAntenna: 1, rxAntenna1: !!params.on });
-      break;
-    case 'set_antenna_2':
-      patchRadioState({ txAntenna: 2, rxAntenna2: !!params.on });
-      break;
-    case 'set_rx_antenna_ant1':
-      if (typeof params.on === 'boolean') patchRadioState({ txAntenna: 1, rxAntenna1: params.on });
-      break;
-    case 'set_rx_antenna_ant2':
-      if (typeof params.on === 'boolean') patchRadioState({ txAntenna: 2, rxAntenna2: params.on });
-      break;
-  }
 }
 
 export function onMessage(handler: MessageHandler): () => void {

@@ -8,7 +8,7 @@ const harness = vi.hoisted(() => ({
   delivery: undefined as ((event: CommandDeliveryEvent) => void) | undefined,
   transition: undefined as ((event: ControlSessionTransition) => void) | undefined,
   session: { state: 'connected' as const, epoch: 7 },
-  sendCommand: vi.fn(() => true),
+  sendCommand: vi.fn((..._args: unknown[]) => true),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
@@ -48,7 +48,7 @@ describe('typed non-PTT radio intents', () => {
     vi.useRealTimers();
   });
 
-  it('sends one exact envelope and explicitly bypasses legacy optimistic mutation', () => {
+  it('sends one exact three-argument envelope with no optimistic side channel', () => {
     const record = intents.dispatchRadioIntent({
       id: 'freq-1',
       name: 'set_freq',
@@ -60,8 +60,8 @@ describe('typed non-PTT radio intents', () => {
       'set_freq',
       { freq: 14_074_000, receiver: 0 },
       'freq-1',
-      { optimistic: false },
     );
+    expect(harness.sendCommand.mock.calls[0]).toHaveLength(3);
     expect(record).toMatchObject({ id: 'freq-1', originalEpoch: 7, status: 'pending' });
     expect(lifecycle.getCommandLifecycle('freq-1', 7)?.status).toBe('pending');
   });
@@ -194,7 +194,7 @@ describe('typed non-PTT radio intents', () => {
     }));
 
     levels.forEach((level, index) => expect(harness.sendCommand).toHaveBeenNthCalledWith(
-      index + 1, 'set_af_level', { level, receiver: 0 }, `af-normalized-${index}`, { optimistic: false },
+      index + 1, 'set_af_level', { level, receiver: 0 }, `af-normalized-${index}`,
     ));
     expect(lifecycle.getCommandLifecycles()).toHaveLength(levels.length);
     expect(lifecycle.getCommandLifecycles()).toEqual(expect.arrayContaining(levels.map((_, index) =>
@@ -210,7 +210,7 @@ describe('typed non-PTT radio intents', () => {
     });
 
     expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(
-      'set_rf_power', { level: 0.42 }, 'rf-fraction', { optimistic: false },
+      'set_rf_power', { level: 0.42 }, 'rf-fraction',
     );
     expect(() => intents.dispatchRadioIntent({
       name: 'set_mic_gain', params: { level: 0.42 },
@@ -243,6 +243,7 @@ describe('typed non-PTT radio intents', () => {
 
     representatives.forEach((intent) => intents.dispatchRadioIntent(intent));
     expect(harness.sendCommand).toHaveBeenCalledTimes(representatives.length);
+    expect(harness.sendCommand.mock.calls.every((call) => call.length === 3)).toBe(true);
     expect(lifecycle.getCommandLifecycles()).toHaveLength(representatives.length);
   });
 

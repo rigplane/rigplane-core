@@ -120,6 +120,6 @@ export function dispatchRadioIntent(intent: RadioIntent): CommandLifecycle {
   const id = (candidate.id as string | undefined) ?? makeCommandId();
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name, params: params as Record<string, unknown>, originalEpoch });
-  sendCommand(name, params as Record<string, unknown>, id, { optimistic: false });
+  sendCommand(name, params as Record<string, unknown>, id);
   return lifecycle;
 }
