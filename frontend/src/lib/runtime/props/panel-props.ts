@@ -358,24 +358,20 @@ export function toFilterProps(
     // `toAgcProps`'s `agcModes`) — unknown capabilities means an empty, not
     // invented, catalog.
     //
-    // `filterWidth` deliberately KEEPS its `?? 2400` fallback here (narrowed
-    // by coordinator adjudication 5245697359, Core #2317): a NaN sentinel
-    // renders as the literal "NaNkHz" in FilterPanel.svelte's BW readout
-    // (:207) and settings modal (:299/:317) — a formatted-display consumer,
-    // not a comparison consumer like `findActiveBand` — reachable ungated on
-    // the shipped mobile skin, and permanent for a connected rig that never
-    // reports width (not merely a disconnected-only case). The plan's
-    // same-type-sentinel guidance was validated only against a comparison
-    // consumer; it does not transplant to a formatted-display one without a
-    // FilterPanel.svelte consumer-boundary fix, which is a fourth production
-    // file A11 is not granted. Deferred to A12, which the same adjudication
-    // scopes to include this family plus its `toAudioSpectrumProps` twin
-    // (`?? 2400` below) and the FilterPanel.svelte consumer boundary itself.
+    // MOR-1409 A12 (adjudication 5245697359, Core #2317): `filterWidth` no
+    // longer fabricates a 2400 Hz stand-in. A11 deferred this fix — a NaN
+    // sentinel renders as the literal "NaNkHz" in FilterPanel.svelte's BW
+    // readout (:207) and settings modal (:299) — a formatted-display
+    // consumer, not a comparison consumer like `findActiveBand`. A12 is
+    // granted FilterPanel.svelte as a fourth production file specifically
+    // to add the consumer-boundary guard (`formatWidthDisplay`'s
+    // `Number.isFinite` check), so the fabricated default can now be
+    // removed here. See its `toAudioSpectrumProps` twin below.
     currentMode: rx?.mode ?? '---',
     currentFilter: rx?.filter ?? 1,
     filterShape: rx?.filterShape ?? 0,
     filterLabels: caps?.filters ?? [],
-    filterWidth: rx?.filterWidth ?? 2400,
+    filterWidth: rx?.filterWidth ?? Number.NaN,
     filterWidthMin:
       filterConfig?.minHz ??
       filterConfig?.table?.[0] ??
@@ -428,6 +424,20 @@ export function toAgcProps(
 /* ── RIT / XIT ───────────────────────────────────────────────── */
 
 export interface RitXitProps {
+  // MOR-1409 A12: no fabricated "off" reading for an unobserved RIT/XIT
+  // state — `ritOn`/`ritTx` are real device state (like `mode`/`freqHz`),
+  // not capability-availability flags. `ritActive`/`xitActive` keep their
+  // `boolean` (not `boolean | null`) contract: `RitXitPanel.svelte`'s
+  // `HardwareButton active={…}` prop is typed `boolean | undefined`, so
+  // widening to `boolean | null` here breaks that (non-A12-owned)
+  // consumer's compile — a fifth production file A12 is not granted. Both
+  // fields stay gated on `hasRit`/`hasXit` (`RitXitPanel.svelte` never
+  // renders a body for a cold/unsupported receiver regardless of this
+  // field's raw value — plan §5), and `false` is the conservative/off
+  // reading, the same non-fabrication class as `toCwProps`' internal
+  // `mode ?? 'USB'` gate literal (plan §7 LOW item) — never a
+  // plausible-looking *on* reading no one confirmed. `ritOffset`/
+  // `xitOffset` still fix to the standard `NaN` sentinel.
   ritActive: boolean;
   ritOffset: number;
   xitActive: boolean;
@@ -442,9 +452,9 @@ export function toRitXitProps(
 ): RitXitProps {
   return {
     ritActive: state?.ritOn ?? false,
-    ritOffset: state?.ritFreq ?? 0,
+    ritOffset: state?.ritFreq ?? Number.NaN,
     xitActive: state?.ritTx ?? false,
-    xitOffset: state?.ritFreq ?? 0,
+    xitOffset: state?.ritFreq ?? Number.NaN,
     hasRit: hasCap(caps, 'rit'),
     hasXit: hasCap(caps, 'xit'),
   };
@@ -479,9 +489,12 @@ export function toModeProps(
   return {
     // MOR-1409 A11: no fabricated USB stand-in for an unobserved mode.
     currentMode: rx?.mode ?? '---',
-    modes: caps?.modes ?? [
-      'USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R',
-    ],
+    // MOR-1409 A12 (expanded mandate, adjudication 5245697359, Core #2317):
+    // no fabricated 10-mode invented catalog. `modes` is a
+    // capability-derived choice set — same convention as `toAgcProps`'
+    // `agcModes`/`toFilterProps`' `filterLabels` — unknown capabilities
+    // means an empty, not invented, catalog.
+    modes: caps?.modes ?? [],
     dataMode: rx?.dataMode ?? 0,
     hasDataMode: hasCap(caps, 'data_mode'),
     dataModeCount: caps?.dataModeCount ?? 0,
@@ -648,6 +661,11 @@ export interface CwProps {
   keySpeed: number;
   breakIn: number;
   apfMode: number;
+  // `twinPeak` keeps its `boolean` (not `boolean | null`) contract — see
+  // `toRitXitProps`' header comment: `CwPanel.svelte`'s `HardwareButton
+  // active={…}` prop is typed `boolean | undefined`, so widening breaks a
+  // non-A12-owned consumer's compile. `false` is the conservative "off"
+  // reading; `CwPanel.svelte` is gated on `hasCw` regardless.
   twinPeak: boolean;
   currentMode: string;
   apfDisabled: boolean;
@@ -658,7 +676,10 @@ export interface CwProps {
   sidetonePitch: number;
   sidetoneLevel: number;
   reversePaddle: boolean;
-  keyerType: number;
+  // MOR-1409 A12: `keyerType` removed entirely (was `keyerType: 0`,
+  // hardcoded, not even `??`-guarded). No `ServerState` field backs it and
+  // no production `.svelte` consumer reads `CwProps.keyerType` — dead
+  // output, deleted rather than sentineled (plan §3.3/§5).
   hasCw: boolean;
   hasBreakIn: boolean;
   hasApf: boolean;
@@ -679,21 +700,22 @@ export function toCwProps(
   const apfDisabled = !(mode === 'CW' || mode === 'CW-R');
   const tpfDisabled = !(mode === 'RTTY' || mode === 'RTTY-R');
   return {
-    cwPitch: state?.cwPitch ?? 600,
-    keySpeed: state?.keySpeed ?? 12,
+    // MOR-1409 A12: no fabricated 600 Hz pitch / 12 wpm keying speed / 128
+    // sidetone-level stand-ins for an unobserved CW receiver.
+    cwPitch: state?.cwPitch ?? Number.NaN,
+    keySpeed: state?.keySpeed ?? Number.NaN,
     breakIn: breakInVal,
     apfMode: rx?.apfTypeLevel ?? 0,
     twinPeak: rx?.twinPeakFilter ?? false,
     currentMode: mode,
     apfDisabled,
     tpfDisabled,
-    wpm: state?.keySpeed ?? 12,
+    wpm: state?.keySpeed ?? Number.NaN,
     breakInActive: breakInVal > 0,
     breakInDelay: state?.breakInDelay ?? 0,
-    sidetonePitch: state?.cwPitch ?? 600,
-    sidetoneLevel: state?.monitorGain ?? 128,
+    sidetonePitch: state?.cwPitch ?? Number.NaN,
+    sidetoneLevel: state?.monitorGain ?? Number.NaN,
     reversePaddle: (state?.dashRatio ?? 0) < 0,
-    keyerType: 0,
     hasCw: hasCap(caps, 'cw'),
     hasBreakIn: hasCap(caps, 'break_in'),
     hasApf: hasCap(caps, 'apf'),
@@ -721,15 +743,22 @@ export function toMeterProps(
   caps: Capabilities | null,
 ): MeterProps {
   const rx = state ? activeRx(state) : null;
+  // MOR-1409 A12: no fabricated zero-meter reading for an unobserved
+  // receiver — a real S0/zero-power/zero-SWR reading is indistinguishable
+  // from "never read" without this fix. No production `.svelte` file was
+  // found to call `toMeterProps` repo-wide (`MetersDockPanel.svelte`, the
+  // live desktop meter component, reads raw `radioState` fields directly,
+  // bypassing this function entirely — plan §5) — zero golden/display risk
+  // either way; this is a direct honesty fix at the projection layer.
   return {
-    sValue: rx?.sMeter ?? 0,
-    signal: rx?.sMeter ?? 0,
-    rfPower: state?.powerMeter ?? 0,
-    swr: state?.swrMeter ?? 0,
-    alc: state?.alcMeter ?? 0,
-    comp: state?.compMeter ?? 0,
-    vd: state?.vdMeter ?? 0,
-    id: state?.idMeter ?? 0,
+    sValue: rx?.sMeter ?? Number.NaN,
+    signal: rx?.sMeter ?? Number.NaN,
+    rfPower: state?.powerMeter ?? Number.NaN,
+    swr: state?.swrMeter ?? Number.NaN,
+    alc: state?.alcMeter ?? Number.NaN,
+    comp: state?.compMeter ?? Number.NaN,
+    vd: state?.vdMeter ?? Number.NaN,
+    id: state?.idMeter ?? Number.NaN,
     txActive: state?.ptt ?? false,
     hasTx: caps?.tx ?? false,
   };
@@ -769,10 +798,13 @@ export function toRxAudioProps(
     : audioState.rxEnabled && hasLiveAudio
       ? 'live'
       : 'local';
+  // MOR-1409 A12: no fabricated 0.5 normalized AF-level stand-in for an
+  // unobserved receiver in local mode. `RxAudioPanel.svelte` (this field's
+  // only production consumer) is gated on `hasAfLevel || hasLiveAudio`.
   const afLevel =
     monitorMode === 'live'
       ? audioState.volume / 100
-      : (rx?.afLevel ?? 0.5);
+      : (rx?.afLevel ?? Number.NaN);
   const hasDualReceiver = caps?.capabilities?.includes('dual_rx') ?? false;
   return {
     monitorMode,
@@ -842,6 +874,13 @@ export function toAntennaProps(
 /* ── Scan Panel ──────────────────────────────────────────────── */
 
 export interface ScanProps {
+  // `scanning` keeps its `boolean` (not `boolean | null`) contract — see
+  // `toRitXitProps`' header comment: `ScanPanel.svelte`'s `HardwareButton
+  // active={…}` prop is typed `boolean | undefined`, so widening breaks a
+  // non-A12-owned consumer's compile. `false` is the conservative "not
+  // scanning" reading. `scanType`/`scanResumeMode` still fix to `NaN` —
+  // pure comparison consumers (button `active` matching against a fixed
+  // value list), golden-safe (plan §5).
   scanning: boolean;
   scanType: number;
   scanResumeMode: number;
@@ -850,8 +889,11 @@ export interface ScanProps {
 export function toScanProps(state: ServerState | null): ScanProps {
   return {
     scanning: state?.scanning ?? false,
-    scanType: state?.scanType ?? 0,
-    scanResumeMode: (state?.scanResumeMode ?? 0) & 0x0f,
+    scanType: state?.scanType ?? Number.NaN,
+    scanResumeMode:
+      state?.scanResumeMode === undefined || state?.scanResumeMode === null
+        ? Number.NaN
+        : state.scanResumeMode & 0x0f,
   };
 }
 
@@ -879,7 +921,12 @@ export function toAudioSpectrumProps(
     : (filterConfig?.maxHz ?? caps?.filterWidthMax ?? 4000);
 
   return {
-    filterWidth: rx?.filterWidth ?? 2400,
+    // MOR-1409 A12: twin of `toFilterProps.filterWidth` above — same fix,
+    // same rationale, guarded at the same FilterPanel.svelte consumer
+    // boundary. The `AudioSpectrumPanel`/`AudioSpectrumCanvas` consumer
+    // path is a numeric/animation consumer (comparison-safe), not
+    // string-formatted.
+    filterWidth: rx?.filterWidth ?? Number.NaN,
     filterWidthMax,
     pbtInner: rx?.pbtInner ?? 128,
     pbtOuter: rx?.pbtOuter ?? 128,
@@ -908,9 +955,14 @@ export function toMemoryPanelProps(
 ): MemoryPanelProps {
   const rx = state ? activeRx(state) : null;
   const receiverKey = state?.active === 'SUB' ? 'sub' : 'main';
+  // MOR-1409 A12: no fabricated 0 Hz / empty-string stand-ins for an
+  // unobserved active receiver. Same `NaN`/`'---'` non-fabricating-sentinel
+  // convention `toVfoProps`/`toFilterProps` already use for the same
+  // field shapes — `MemoryPanel.svelte`'s "store VFO → channel" action only
+  // reads these on an explicit user click, never during initial render.
   return {
-    activeFreqHz: rx?.freqHz ?? 0,
-    activeMode: rx?.mode ?? '',
+    activeFreqHz: rx?.freqHz ?? Number.NaN,
+    activeMode: rx?.mode ?? '---',
     vfoIdentityKnown: !relativeVfoIdentityUnknown(state, caps, receiverKey),
   };
 }

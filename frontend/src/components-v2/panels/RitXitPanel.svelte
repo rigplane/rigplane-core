@@ -27,6 +27,18 @@
   const xitShortcut = getShortcutHint('toggle_xit');
   const clearShortcut = getShortcutHint('clear_rit_xit');
 
+  // MOR-1409 A12 (coordinator adjudication, Core #2317, comment 5246487510):
+  // `hasRit`/`hasXit` gate on capability presence only — a connected
+  // receiver that has never reported `ritFreq` (optional field) still
+  // passes the gate with a `NaN` offset (panel-props.ts no longer
+  // fabricates `?? 0`). `formatOffsetKHz` (rit-utils.ts, not an A12 owner)
+  // has no NaN guard: `hz > 0` is false for NaN, so it falls to the
+  // negative branch and renders the literal "−NaN kHz". Guard locally,
+  // same shape as FilterPanel.svelte's `formatWidthDisplay`.
+  function formatOffsetDisplay(hz: number): string {
+    return Number.isFinite(hz) ? formatOffsetKHz(hz) : '--- kHz';
+  }
+
   function handleOffsetChange(value: number) {
     if (xitActive && !ritActive) {
       onXitOffsetChange(value);
@@ -41,13 +53,13 @@
       {#if hasRit}
         <div class="row">
           <HardwareButton indicator="dot" active={ritActive} color="cyan" onclick={onRitToggle} shortcutHint={ritShortcut} title={ritShortcut}>RIT</HardwareButton>
-          <span class="offset" class:active={ritActive}>{formatOffsetKHz(ritOffset)}</span>
+          <span class="offset" class:active={ritActive}>{formatOffsetDisplay(ritOffset)}</span>
         </div>
       {/if}
       {#if hasXit}
         <div class="row">
           <HardwareButton indicator="dot" active={xitActive} color="orange" onclick={onXitToggle} shortcutHint={xitShortcut} title={xitShortcut}>XIT</HardwareButton>
-          <span class="offset" class:active={xitActive}>{formatOffsetKHz(xitOffset)}</span>
+          <span class="offset" class:active={xitActive}>{formatOffsetDisplay(xitOffset)}</span>
         </div>
       {/if}
       <ValueControl
@@ -57,7 +69,7 @@
         max={9999}
         step={50}
         unit="kHz"
-        displayFn={formatOffsetKHz}
+        displayFn={formatOffsetDisplay}
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
         onChange={handleOffsetChange}

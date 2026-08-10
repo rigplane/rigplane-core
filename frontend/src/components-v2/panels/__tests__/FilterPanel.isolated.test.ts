@@ -326,3 +326,82 @@ describe('IF Shift semantics', () => {
     expect(deriveIfShift(-150, 50)).toBe(-50);
   });
 });
+
+/**
+ * A12 (MOR-1409, Core #2317) — FilterPanel.svelte consumer-boundary fix.
+ *
+ * `panel-props.ts`'s `toFilterProps`/`toAudioSpectrumProps` now return a
+ * `NaN` sentinel for an unobserved `filterWidth` (no more fabricated 2400 Hz
+ * stand-in, deferred from A11 by adjudication 5245697359). Left unguarded,
+ * `formatWidthDisplay`'s call to `formatFilterWidth(NaN)` renders the
+ * literal substring "NaNkHz" in the BW readout (`:207-208`) and the
+ * fixed-config modal row (`:299`) — exactly the defect the adjudication
+ * named. The fix is a `Number.isFinite` guard inside FilterPanel's own
+ * local `formatWidthDisplay`, matching the `'--'`/`'---'` placeholder
+ * convention `frequency-format.ts` established at A11 (corr. 5245817033/
+ * 5245876185) — never the literal "NaN" substring.
+ *
+ * Separately, `:38`'s `normalizedLabels` re-fabrication
+ * (`filterLabels.length > 0 ? filterLabels : ['FIL1','FIL2','FIL3']`)
+ * substitutes the three-label default back in whenever `filterLabels` is
+ * the honest empty array (unknown capability) — this must pass the empty
+ * array through unchanged so the modal renders zero rows, not three
+ * fabricated ones.
+ */
+describe('FilterPanel — no fabricated defaults at the consumer boundary (MOR-1409 A12)', () => {
+  it('does not render a "NaN" substring in the BW readout for a non-finite filterWidth', () => {
+    const t = mountPanel({ filterWidth: Number.NaN });
+    const bwValue = t.querySelector('.bw-value')?.textContent ?? '';
+    expect(bwValue).not.toMatch(/NaN/);
+  });
+
+  it('renders the established "---"-family placeholder in the BW readout for a non-finite filterWidth', () => {
+    const t = mountPanel({ filterWidth: Number.NaN });
+    const bwValue = t.querySelector('.bw-value')?.textContent ?? '';
+    expect(bwValue).toBe('--- Hz');
+  });
+
+  it('still renders the real formatted width for a finite filterWidth', () => {
+    const t = mountPanel({ filterWidth: 2400 });
+    expect(t.querySelector('.bw-value')?.textContent).toBe('2.4kHz');
+  });
+
+  it('does not render a "NaN" substring in the fixed-config modal row for a non-finite filterWidth', () => {
+    const t = mountPanel({
+      filterWidth: Number.NaN,
+      filterConfig: { defaults: [], fixed: true, minHz: 50, maxHz: 3600, stepHz: 50 },
+    });
+    const gear = t.querySelector('.settings-button') as HTMLButtonElement;
+    gear.click();
+    flushSync();
+    const fixedValues = Array.from(document.querySelectorAll('.modal-fixed-value')).map(
+      (el) => el.textContent,
+    );
+    expect(fixedValues.some((text) => /NaN/.test(text ?? ''))).toBe(false);
+  });
+
+  it('renders zero filter-selector buttons for an empty (unknown) filterLabels catalog, not a fabricated FIL1/FIL2/FIL3', () => {
+    const t = mountPanel({ filterLabels: [] });
+    const buttons = Array.from(t.querySelectorAll('button')).map((button) => button.textContent?.trim());
+    expect(buttons).not.toContain('FIL1');
+    expect(buttons).not.toContain('FIL2');
+    expect(buttons).not.toContain('FIL3');
+  });
+
+  it('renders zero modal filter rows for an empty (unknown) filterLabels catalog', () => {
+    const t = mountPanel({ filterLabels: [] });
+    const gear = t.querySelector('.settings-button') as HTMLButtonElement;
+    gear.click();
+    flushSync();
+    const rows = document.querySelectorAll('.modal-filter-row');
+    expect(rows.length).toBe(0);
+  });
+
+  it('still renders the real filter-selector buttons for a populated filterLabels catalog', () => {
+    const t = mountPanel({ filterLabels: ['FIL1', 'FIL2'] });
+    const buttons = Array.from(t.querySelectorAll('button')).map((button) => button.textContent?.trim());
+    expect(buttons).toContain('FIL1');
+    expect(buttons).toContain('FIL2');
+    expect(buttons).not.toContain('FIL3');
+  });
+});

@@ -225,3 +225,39 @@ describe('callbacks', () => {
     expect(mockHandlers.onMonitorModeChange).toHaveBeenCalledWith('mute');
   });
 });
+
+function vcValueFor(t: HTMLElement, label: string): string {
+  const headers = Array.from(t.querySelectorAll('.vc-header'));
+  const header = headers.find(
+    (h) => h.querySelector('.vc-label')?.textContent === label,
+  );
+  if (!header) throw new Error(`ValueControl labeled "${label}" not found`);
+  return header.querySelector('.vc-value')?.textContent ?? '';
+}
+
+/**
+ * A12 (MOR-1409, Core #2317, coordinator adjudication comment 5246487510)
+ * — a connected receiver that has never reported `afLevel` (optional
+ * field, local-monitor path) passes the `hasAfLevel`/`hasLiveAudio`
+ * capability gate with `props.afLevel === NaN` (panel-props.ts no longer
+ * fabricates `?? 0.5`). Unguarded, `normalizedPercentDisplay(NaN)` renders
+ * the literal "NaN%" (verifier-executed probe on the unguarded candidate).
+ * The local `formatAfLevelDisplay` guard must render the established
+ * '---'-family placeholder instead.
+ */
+describe('RxAudioPanel — no "NaN" leak for an unobserved AF level (MOR-1409 A12)', () => {
+  it('does not render a "NaN" substring for AF Level when afLevel is non-finite', () => {
+    const t = mountPanel({ afLevel: Number.NaN, hasAfLevel: true, hasLiveAudio: false });
+    expect(vcValueFor(t, 'AF Level')).not.toMatch(/NaN/);
+  });
+
+  it('renders the established "---"-family placeholder for a non-finite AF Level', () => {
+    const t = mountPanel({ afLevel: Number.NaN, hasAfLevel: true, hasLiveAudio: false });
+    expect(vcValueFor(t, 'AF Level')).toBe('--- %');
+  });
+
+  it('still renders the real formatted percentage for a finite AF level', () => {
+    const t = mountPanel({ afLevel: 0.42, hasAfLevel: true, hasLiveAudio: false });
+    expect(vcValueFor(t, 'AF Level')).toBe('42%');
+  });
+});
