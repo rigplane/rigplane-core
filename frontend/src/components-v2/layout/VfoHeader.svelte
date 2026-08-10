@@ -12,8 +12,10 @@
   import VfoPanel from '../vfo/VfoPanel.svelte';
   import VfoOps from '../vfo/VfoOps.svelte';
   import DualVfoDisplay from '../panels/vfo/DualVfoDisplay.svelte';
-  import { hasDualReceiver } from '$lib/stores/capabilities.svelte';
-  import { patchRadioState } from '$lib/stores/radio.svelte';
+  import { hasCapability, hasDualReceiver } from '$lib/stores/capabilities.svelte';
+  import { runtime } from '$lib/runtime/frontend-runtime';
+  import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
+  import { bindSemanticSurfaceHandlers, getVfoHandlers } from '$lib/runtime/adapters/panel-adapters';
   import { formatFrequency } from '../display/frequency-format';
   import type { VfoLayoutProfile } from './vfo-layout-tokens';
   import type { VfoStateProps } from './layout-utils';
@@ -61,25 +63,47 @@
     splitActive,
     dualWatchActive,
     txVfo,
-    scopeStatus = null,
     onSwap = () => {},
     onEqual = () => {},
     onSplitToggle = () => {},
     onQuickSplit = () => {},
     onDualWatchToggle = (_on: boolean) => {},
     onQuickDw = () => {},
-    onMainVfoClick,
-    onSubVfoClick,
     onMainModeClick,
     onSubModeClick,
     onMainFreqChange,
     onSubFreqChange,
     onSpeak,
-    onScopeDualToggle,
-    onScopeReceiverChange,
   }: Props = $props();
 
   let dualReceiver = $derived(hasDualReceiver());
+  let scopeCapable = $derived(hasCapability('scope'));
+  const vfoHandlers = getVfoHandlers();
+  const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
+  let scopeControls = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
+
+  type NumberScopeField = 'span' | 'speed' | 'receiver';
+  type BooleanScopeField = 'dual';
+
+  function acceptedNumber(field: NumberScopeField, min: number, max: number): number | null {
+    const fact = scopeControls?.[field];
+    if (!fact?.availability?.structural || !fact.availability.operational
+      || fact.reading?.status !== 'known' || !Number.isSafeInteger(fact.reading.value)
+      || fact.reading.value < min || fact.reading.value > max) return null;
+    return fact.reading.value;
+  }
+
+  function acceptedBoolean(field: BooleanScopeField): boolean | null {
+    const fact = scopeControls?.[field];
+    if (!fact?.availability?.structural || !fact.availability.operational
+      || fact.reading?.status !== 'known' || typeof fact.reading.value !== 'boolean') return null;
+    return fact.reading.value;
+  }
+
+  let scopeSpan = $derived(acceptedNumber('span', 0, 7));
+  let scopeSpeed = $derived(acceptedNumber('speed', 0, 2));
+  let scopeReceiver = $derived(acceptedNumber('receiver', 0, 1));
+  let scopeDual = $derived(acceptedBoolean('dual'));
 
   function formatBridgeFrequency(freq: number): string {
     const { mhz, khz } = formatFrequency(freq);
@@ -93,14 +117,10 @@
   let activeReceiver = $derived<'MAIN' | 'SUB'>(mainVfo.isActive ? 'MAIN' : 'SUB');
 
   function handleActiveReceiverChange(next: 'MAIN' | 'SUB'): void {
-    // Optimistic local patch so the toggle reflects the change
-    // immediately; the click handlers below also fire the backend
-    // command via the command-bus wiring.
-    patchRadioState({ active: next });
     if (next === 'MAIN') {
-      onMainVfoClick?.();
+      vfoHandlers.onMainVfoClick();
     } else {
-      onSubVfoClick?.();
+      vfoHandlers.onSubVfoClick();
     }
   }
 
@@ -127,11 +147,10 @@
       active={mainVfo.isActive ? 'MAIN' : 'SUB'}
       {layoutProfile}
       onActivate={(receiver) => {
-        patchRadioState({ active: receiver });
         if (receiver === 'MAIN') {
-          onMainVfoClick?.();
+          vfoHandlers.onMainVfoClick();
         } else {
-          onSubVfoClick?.();
+          vfoHandlers.onSubVfoClick();
         }
       }}
       onMainModeClick={onMainModeClick}
@@ -144,7 +163,7 @@
       <VfoPanel
         {...mainVfo}
         {layoutProfile}
-        onVfoClick={onMainVfoClick}
+        onVfoClick={vfoHandlers.onMainVfoClick}
         onModeClick={onMainModeClick}
         onFreqChange={onMainFreqChange}
       />
@@ -167,7 +186,7 @@
         {onQuickDw}
       />
 
-      {#if scopeStatus}
+      {#if scopeCapable}
         <div class="scope-status" data-testid="scope-status">
           <span class="scope-status-title">SCOPE</span>
           {#if dualReceiver}
@@ -175,28 +194,31 @@
               <button
                 type="button"
                 class="scope-pill"
-                class:active={scopeStatus.receiver !== 1}
-                onclick={() => onScopeReceiverChange?.(0)}
-                title={`Set scope source to MAIN (current: ${scopeStatus.receiver === 1 ? 'SUB' : 'MAIN'})`}
+                class:active={scopeReceiver === 0}
+                disabled={scopeReceiver === null}
+                onclick={() => { if (scopeReceiver !== null) scopeHandlers.onReceiverChange(0); }}
+                title="Set scope source to MAIN"
               >MAIN</button>
               <button
                 type="button"
                 class="scope-pill"
-                class:active={scopeStatus.receiver === 1}
-                onclick={() => onScopeReceiverChange?.(1)}
-                title={`Set scope source to SUB (current: ${scopeStatus.receiver === 1 ? 'SUB' : 'MAIN'})`}
+                class:active={scopeReceiver === 1}
+                disabled={scopeReceiver === null}
+                onclick={() => { if (scopeReceiver !== null) scopeHandlers.onReceiverChange(1); }}
+                title="Set scope source to SUB"
               >SUB</button>
             </div>
             <button
               type="button"
               class="scope-dual"
-              class:active={scopeStatus.dual}
-              onclick={() => onScopeDualToggle?.()}
-              title={`Toggle dual scope (currently ${scopeStatus.dual ? 'ON' : 'OFF'})`}
+              class:active={scopeDual === true}
+              disabled={scopeDual === null}
+              onclick={() => { if (scopeDual !== null) scopeHandlers.onDualChange(!scopeDual); }}
+              title="Toggle dual scope"
             >DUAL</button>
           {/if}
           <span class="scope-status-row scope-digest">
-            {SPAN_LABELS[scopeStatus.span] ?? '\u00b125k'} {SPEED_LABELS[scopeStatus.speed] ?? 'MID'}
+            {scopeSpan === null ? '\u2014' : SPAN_LABELS[scopeSpan]} {scopeSpeed === null ? '\u2014' : SPEED_LABELS[scopeSpeed]}
           </span>
         </div>
       {/if}

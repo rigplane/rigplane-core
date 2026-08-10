@@ -1,10 +1,55 @@
 <script lang="ts">
-  import { radio } from '../../lib/stores/radio.svelte';
-  import { sendCommand } from '../../lib/transport/ws-client';
+  import { runtime } from '$lib/runtime/frontend-runtime';
+  import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
+  import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
 
   let { onClose }: { onClose: () => void } = $props();
 
-  let scopeControls = $derived(radio.current?.scopeControls);
+  const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
+  let scopeControls = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
+
+  type NumberScopeField = 'centerType' | 'rbw';
+  type BooleanScopeField = 'vbwNarrow' | 'duringTx';
+
+  function acceptedNumber(field: NumberScopeField, min: number, max: number): number | null {
+    const fact = scopeControls?.[field];
+    if (!fact?.availability?.structural || !fact.availability.operational
+      || fact.reading?.status !== 'known' || !Number.isSafeInteger(fact.reading.value)
+      || fact.reading.value < min || fact.reading.value > max) return null;
+    return fact.reading.value;
+  }
+
+  function acceptedBoolean(field: BooleanScopeField): boolean | null {
+    const fact = scopeControls?.[field];
+    if (!fact?.availability?.structural || !fact.availability.operational
+      || fact.reading?.status !== 'known' || typeof fact.reading.value !== 'boolean') return null;
+    return fact.reading.value;
+  }
+
+  let centerType = $derived(acceptedNumber('centerType', 0, 2));
+  let vbwNarrow = $derived(acceptedBoolean('vbwNarrow'));
+  let rbw = $derived(acceptedNumber('rbw', 0, 2));
+  let duringTx = $derived(acceptedBoolean('duringTx'));
+
+  function selectCenterType(value: number): void {
+    if (centerType === null || !Number.isSafeInteger(value) || value < 0 || value > 2) return;
+    scopeHandlers.onCenterTypeChange(value);
+  }
+
+  function selectVbw(value: boolean): void {
+    if (vbwNarrow === null) return;
+    scopeHandlers.onVbwChange(value);
+  }
+
+  function selectRbw(value: number): void {
+    if (rbw === null || !Number.isSafeInteger(value) || value < 0 || value > 2) return;
+    scopeHandlers.onRbwChange(value);
+  }
+
+  function selectDuringTx(value: boolean): void {
+    if (duringTx === null) return;
+    scopeHandlers.onDuringTxChange(value);
+  }
 
   const CENTER_TYPE_LABELS: [number, string][] = [[0, 'Filter'], [1, 'Carrier'], [2, 'Abs.Freq']];
   const RBW_LABELS: [number, string][] = [[0, 'Wide'], [1, 'Mid'], [2, 'Narrow']];
@@ -30,8 +75,9 @@
       {#each CENTER_TYPE_LABELS as [val, label]}
         <button
           class="setting-btn"
-          class:active={scopeControls?.centerType === val}
-          onclick={() => sendCommand('set_scope_center_type', { center_type: val })}
+          class:active={centerType === val}
+          disabled={centerType === null}
+          onclick={() => selectCenterType(val)}
         >{label}</button>
       {/each}
     </div>
@@ -42,13 +88,15 @@
     <div class="setting-buttons">
       <button
         class="setting-btn"
-        class:active={!(scopeControls?.vbwNarrow ?? false)}
-        onclick={() => sendCommand('set_scope_vbw', { narrow: false })}
+        class:active={vbwNarrow === false}
+        disabled={vbwNarrow === null}
+        onclick={() => selectVbw(false)}
       >Wide</button>
       <button
         class="setting-btn"
-        class:active={scopeControls?.vbwNarrow ?? false}
-        onclick={() => sendCommand('set_scope_vbw', { narrow: true })}
+        class:active={vbwNarrow === true}
+        disabled={vbwNarrow === null}
+        onclick={() => selectVbw(true)}
       >Narrow</button>
     </div>
   </div>
@@ -59,8 +107,9 @@
       {#each RBW_LABELS as [val, label]}
         <button
           class="setting-btn"
-          class:active={scopeControls?.rbw === val}
-          onclick={() => sendCommand('set_scope_rbw', { rbw: val })}
+          class:active={rbw === val}
+          disabled={rbw === null}
+          onclick={() => selectRbw(val)}
         >{label}</button>
       {/each}
     </div>
@@ -71,13 +120,15 @@
     <div class="setting-buttons">
       <button
         class="setting-btn"
-        class:active={!(scopeControls?.duringTx ?? false)}
-        onclick={() => sendCommand('set_scope_during_tx', { on: false })}
+        class:active={duringTx === false}
+        disabled={duringTx === null}
+        onclick={() => selectDuringTx(false)}
       >Off</button>
       <button
         class="setting-btn"
-        class:active={scopeControls?.duringTx ?? false}
-        onclick={() => sendCommand('set_scope_during_tx', { on: true })}
+        class:active={duringTx === true}
+        disabled={duringTx === null}
+        onclick={() => selectDuringTx(true)}
       >On</button>
     </div>
   </div>
