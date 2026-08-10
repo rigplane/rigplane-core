@@ -106,9 +106,15 @@ export function toVfoProps(
   if (!state) {
     return {
       receiver,
-      freq: 14074000,
-      mode: 'USB',
-      filter: 'FIL1',
+      // MOR-1409 A11: no fabricated 14.074 MHz / USB / FIL1 stand-ins — an
+      // unobserved VFO stays unknown. `freq`/`mode`/`filter` keep their
+      // `number`/`string` contract, so the sentinel is a value that can
+      // never be mistaken for a real reading (`NaN` never equals a real
+      // frequency; `'---'` never equals a real mode/filter label — see
+      // `toVfoControlProps`'s pre-existing use of the same convention).
+      freq: Number.NaN,
+      mode: '---',
+      filter: '---',
       sValue: 0,
       isActive: receiver === 'main',
       badges: {},
@@ -119,9 +125,9 @@ export function toVfoProps(
   if (!rx) {
     return {
       receiver,
-      freq: 14074000,
-      mode: 'USB',
-      filter: 'FIL1',
+      freq: Number.NaN,
+      mode: '---',
+      filter: '---',
       sValue: 0,
       isActive: receiver === 'main',
       badges: {},
@@ -155,8 +161,8 @@ export function toVfoProps(
 
   return {
     receiver,
-    freq: rx.freqHz ?? 14074000,
-    mode: rx.mode ?? 'USB',
+    freq: rx.freqHz ?? Number.NaN,
+    mode: rx.mode ?? '---',
     filter: filterLabel,
     sValue: rx.sMeter ?? 0,
     isActive,
@@ -347,10 +353,28 @@ export function toFilterProps(
   const pbtOuter = pbtRawToHz(rx?.pbtOuter ?? 128);
   const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
   return {
-    currentMode: rx?.mode ?? 'USB',
+    // MOR-1409 A11: no fabricated USB / three-filter FIL1-FIL3 catalog
+    // stand-in. `filterLabels` is a capability-derived choice set (like
+    // `toAgcProps`'s `agcModes`) — unknown capabilities means an empty, not
+    // invented, catalog.
+    //
+    // `filterWidth` deliberately KEEPS its `?? 2400` fallback here (narrowed
+    // by coordinator adjudication 5245697359, Core #2317): a NaN sentinel
+    // renders as the literal "NaNkHz" in FilterPanel.svelte's BW readout
+    // (:207) and settings modal (:299/:317) — a formatted-display consumer,
+    // not a comparison consumer like `findActiveBand` — reachable ungated on
+    // the shipped mobile skin, and permanent for a connected rig that never
+    // reports width (not merely a disconnected-only case). The plan's
+    // same-type-sentinel guidance was validated only against a comparison
+    // consumer; it does not transplant to a formatted-display one without a
+    // FilterPanel.svelte consumer-boundary fix, which is a fourth production
+    // file A11 is not granted. Deferred to A12, which the same adjudication
+    // scopes to include this family plus its `toAudioSpectrumProps` twin
+    // (`?? 2400` below) and the FilterPanel.svelte consumer boundary itself.
+    currentMode: rx?.mode ?? '---',
     currentFilter: rx?.filter ?? 1,
     filterShape: rx?.filterShape ?? 0,
-    filterLabels: caps?.filters ?? ['FIL1', 'FIL2', 'FIL3'],
+    filterLabels: caps?.filters ?? [],
     filterWidth: rx?.filterWidth ?? 2400,
     filterWidthMin:
       filterConfig?.minHz ??
@@ -388,11 +412,16 @@ export function toAgcProps(
   caps: Capabilities | null,
 ): AgcProps {
   const rx = state ? activeRx(state) : null;
+  // MOR-1409 A11: an unobserved AGC field must not read back the MID (2)
+  // default as if it had been confirmed — `agcMode` is gated on the same
+  // field-availability check `hasAgc` already used to gate visibility, so
+  // the two can no longer disagree about whether this value is real.
+  const agcAvailable = activeFieldAvailable(state, 'agc');
   return {
-    agcMode: rx?.agc ?? 2,
-    agcModes: caps?.agcModes ?? [1, 2, 3],
+    agcMode: agcAvailable ? (rx?.agc ?? Number.NaN) : Number.NaN,
+    agcModes: caps?.agcModes ?? [],
     agcLabels: caps?.agcLabels ?? { '1': 'FAST', '2': 'MID', '3': 'SLOW' },
-    hasAgc: hasCap(caps, 'agc') && activeFieldAvailable(state, 'agc'),
+    hasAgc: hasCap(caps, 'agc') && agcAvailable,
   };
 }
 
@@ -448,7 +477,8 @@ export function toModeProps(
   // IC-7300) never render a dead dropdown.
   const modInputKey = modInputStateKey(rx?.dataMode ?? 0);
   return {
-    currentMode: rx?.mode ?? 'USB',
+    // MOR-1409 A11: no fabricated USB stand-in for an unobserved mode.
+    currentMode: rx?.mode ?? '---',
     modes: caps?.modes ?? [
       'USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R',
     ],
@@ -763,8 +793,16 @@ export interface BandSelectorProps {
 export function toBandSelectorProps(
   state: ServerState | null,
 ): BandSelectorProps {
+  // MOR-1409 A11: `BandSelector.svelte` (unowned by any gate in the
+  // program — see the A11 re-anchor plan §4) feeds this straight into
+  // `findActiveBand(currentFreq, freqRanges)` to highlight a HAM band tab.
+  // Never a fixed 20-meter-band frequency stand-in, where the old default
+  // would resolve to a real "20m" tab for an operator no one has
+  // identified — `currentFreq` keeps its `number` contract (no fourth
+  // production file touched to widen it), but `NaN` cannot satisfy
+  // `freq >= band.start && freq <= band.end` for any real band.
   return {
-    currentFreq: state ? activeRx(state).freqHz ?? 14074000 : 14074000,
+    currentFreq: state ? activeRx(state).freqHz ?? Number.NaN : Number.NaN,
   };
 }
 
@@ -790,7 +828,13 @@ export function toAntennaProps(
   return {
     txAntenna,
     rxAnt,
-    antennaCount: caps?.antennas ?? 1,
+    // MOR-1409 A11: no fabricated single-antenna default — `antennaCount`
+    // drives a button-generation loop in the (unowned-by-A11) antenna
+    // panel, so `0` (never render an antenna button) is the honest "we
+    // don't know how many antenna ports this radio has" value, exactly as
+    // an empty capability-derived choice set is for `toAgcProps`/
+    // `toFilterProps`.
+    antennaCount: caps?.antennas ?? 0,
     hasRxAntenna: hasCap(caps, 'rx_antenna'),
   };
 }

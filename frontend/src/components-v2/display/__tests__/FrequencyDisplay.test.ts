@@ -109,3 +109,47 @@ describe('formatFrequencyString', () => {
     expect(formatFrequencyString(1)).toBe('0.000.001');
   });
 });
+
+// ── A11 non-finite guard (MOR-1409, Core #2317) ────────────────────────────
+//
+// Coordinator adjudication 5245817033 granted this file as A11's fourth
+// production owner: `toVfoProps`/`toBandSelectorProps`
+// (lib/runtime/props/panel-props.ts) deliberately return `NaN` for an
+// unobserved frequency, and `FrequencyDisplay.svelte` — this module's sole
+// consumer — renders `formatFrequency`'s output unguarded on the shipped
+// mobile skin (`MobileRadioLayout.svelte`, both cited call sites) at cold
+// start. Without a guard, that renders the literal string "NaN.NaN.NaN".
+// These are the consumer-boundary proof the adjudication requires: no "NaN"
+// substring anywhere in the output for non-finite input, and the populated
+// (finite) path is provably byte-for-byte unaffected.
+describe('formatFrequency non-finite guard (MOR-1409 A11, adjudication 5245817033)', () => {
+  it('returns placeholder segments — never a "NaN" substring — for NaN input', () => {
+    const parts = formatFrequency(Number.NaN);
+    expect(parts).toEqual({ mhz: '--', khz: '---', hz: '---' });
+    expect(parts.mhz).not.toContain('NaN');
+    expect(parts.khz).not.toContain('NaN');
+    expect(parts.hz).not.toContain('NaN');
+  });
+
+  it('formatFrequencyString(NaN) joins to "--.---.---" — never "NaN.NaN.NaN"', () => {
+    const s = formatFrequencyString(Number.NaN);
+    expect(s).toBe('--.---.---');
+    expect(s).not.toContain('NaN');
+  });
+
+  it('also guards +/-Infinity (any non-finite input, not just NaN)', () => {
+    expect(formatFrequency(Number.POSITIVE_INFINITY)).toEqual({
+      mhz: '--', khz: '---', hz: '---',
+    });
+    expect(formatFrequency(Number.NEGATIVE_INFINITY)).toEqual({
+      mhz: '--', khz: '---', hz: '---',
+    });
+  });
+
+  it('the populated 14.074 MHz path is unchanged by the guard (regression pin)', () => {
+    // Dedicated A11 pin, alongside the pre-existing "20m FT8" test above —
+    // proves the finite branch this gate must not touch stays exactly
+    // "14"/"074"/"000".
+    expect(formatFrequency(14_074_000)).toEqual({ mhz: '14', khz: '074', hz: '000' });
+  });
+});

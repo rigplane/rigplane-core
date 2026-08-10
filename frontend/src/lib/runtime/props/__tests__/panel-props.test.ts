@@ -3,13 +3,19 @@ import { describe, expect, it } from 'vitest';
 import {
   toAgcProps,
   toAmberTelemetryProps,
+  toAntennaProps,
+  toBandSelectorProps,
   toCwProps,
   toDspProps,
+  toFilterProps,
   toModeProps,
   toRfFrontEndProps,
   toRxAudioProps,
   toTxProps,
+  toVfoProps,
 } from '../panel-props';
+import { findActiveBand } from '$lib/radio/band-plan';
+import type { FreqRange } from '$lib/types/capabilities';
 
 function fieldStatus(
   availability: 'available' | 'missing' | 'stale',
@@ -290,6 +296,12 @@ describe('panel prop field availability', () => {
   });
 
   it('does not present missing AGC as the default MID mode', () => {
+    // A11 (MOR-1409): this assertion previously pinned the exact bug its own
+    // title disclaims — `agcMode` read back the fabricated MID (2) default
+    // even though the field was never observed. `hasAgc` gated the control's
+    // visibility, but the raw value underneath was still a lie. Now the
+    // value itself is unknown (NaN) whenever the field is not `available`,
+    // matching every other batch-A family.
     const props = toAgcProps(
       makeState({
         fieldStatus: {
@@ -299,7 +311,7 @@ describe('panel prop field availability', () => {
       { capabilities: ['agc'] } as any,
     );
 
-    expect(props.agcMode).toBe(2);
+    expect(props.agcMode).toBeNaN();
     expect(props.hasAgc).toBe(false);
   });
 
@@ -563,5 +575,156 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
     const props = toModeProps(null, caps);
     expect(props.hasModInput).toBe(false);
     expect(props.modInputSource).toBeNull();
+  });
+});
+
+/**
+ * A11 (MOR-1409, Core #2317) — batch-A projections stop fabricating a
+ * plausible-looking default (14.074 MHz / USB / FIL1 / 2400 Hz / AGC MID /
+ * one antenna) for missing/unsupported input. Every case below documents a
+ * value that panel-props.ts used to invent out of thin air on exact base;
+ * after the fix each one renders a value that cannot be mistaken for a real
+ * reading (`NaN` for numbers whose type stays `number`, `'---'` for strings
+ * whose type stays `string` — the same non-fabricating-sentinel convention
+ * `toVfoControlProps` already used for `mode` before this gate touched
+ * anything), never `null`/`undefined` (the prop type contracts are frozen —
+ * no fourth production file may be touched to accommodate a wider type).
+ */
+describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () => {
+  describe('toVfoProps', () => {
+    it('does not invent 14.074 MHz / USB / FIL1 when state is entirely absent', () => {
+      const props = toVfoProps(null, 'main');
+      expect(props.freq).toBeNaN();
+      expect(props.mode).toBe('---');
+      expect(props.filter).toBe('---');
+    });
+
+    it('does not invent 14.074 MHz / USB / FIL1 when the addressed receiver is absent from a present state', () => {
+      const props = toVfoProps(makeState({ sub: undefined }), 'sub');
+      expect(props.freq).toBeNaN();
+      expect(props.mode).toBe('---');
+      expect(props.filter).toBe('---');
+    });
+
+    it('still reports the real value for a populated receiver', () => {
+      const props = toVfoProps(makeState(), 'main');
+      expect(props.freq).toBe(14_074_000);
+      expect(props.mode).toBe('USB');
+    });
+  });
+
+  describe('toBandSelectorProps', () => {
+    const HF_RANGES: FreqRange[] = [
+      {
+        start: 1_800_000,
+        end: 30_000_000,
+        label: 'HF',
+        bands: [
+          { name: '20m', start: 14_000_000, end: 14_350_000, default: 14_225_000 },
+        ],
+      },
+    ];
+
+    it('does not invent 14.074 MHz when state is absent', () => {
+      const props = toBandSelectorProps(null);
+      expect(props.currentFreq).toBeNaN();
+    });
+
+    it('the fabricated default used to resolve to a real "20m" band tab — the fix must not, at the consumer boundary', () => {
+      // Proven at findActiveBand (BandSelector.svelte's own consumer call),
+      // not merely as a raw-literal unit assertion: on exact base,
+      // toBandSelectorProps(null).currentFreq (14074000) sits inside 20m's
+      // 14.0-14.35 MHz range, so a real, populated band plan would highlight
+      // a "20m" tab from an operator no one has identified.
+      const props = toBandSelectorProps(null);
+      expect(findActiveBand(props.currentFreq, HF_RANGES)).toBeNull();
+    });
+
+    it('still reports the real value for a populated receiver', () => {
+      const props = toBandSelectorProps(makeState());
+      expect(props.currentFreq).toBe(14_074_000);
+      expect(findActiveBand(props.currentFreq, HF_RANGES)).toBe('20m');
+    });
+  });
+
+  describe('toFilterProps', () => {
+    it('does not invent USB / a three-filter FIL1-FIL3 catalog without state or capabilities', () => {
+      const props = toFilterProps(null, null);
+      expect(props.currentMode).toBe('---');
+      expect(props.filterLabels).toEqual([]);
+    });
+
+    it('still fabricates the 2400 Hz width fallback — deliberately deferred to A12 (adjudication 5245697359, Core #2317)', () => {
+      // A NaN sentinel here renders as the literal "NaNkHz" in
+      // FilterPanel.svelte's BW readout and settings modal — a
+      // formatted-display consumer, unlike `findActiveBand`'s comparison
+      // consumer that the same-type-sentinel approach was validated
+      // against. Fixing it needs a FilterPanel.svelte consumer-boundary
+      // change, a fourth production file A11 is not granted; A12 owns this
+      // family (plus its `toAudioSpectrumProps` twin) per the adjudication.
+      const props = toFilterProps(null, null);
+      expect(props.filterWidth).toBe(2400);
+    });
+
+    it('still reports the real values for a populated receiver and capabilities', () => {
+      const props = toFilterProps(makeState(), { filters: ['FIL1', 'FIL2'] } as any);
+      expect(props.currentMode).toBe('USB');
+      expect(props.filterLabels).toEqual(['FIL1', 'FIL2']);
+    });
+  });
+
+  describe('toModeProps', () => {
+    it('does not invent USB when state is absent', () => {
+      const props = toModeProps(null, null);
+      expect(props.currentMode).toBe('---');
+    });
+
+    it('still reports the real mode for a populated receiver', () => {
+      const props = toModeProps(makeState(), null);
+      expect(props.currentMode).toBe('USB');
+    });
+  });
+
+  describe('toAgcProps', () => {
+    it('does not invent a 3-mode [1,2,3] AGC catalog without capabilities', () => {
+      const props = toAgcProps(makeState(), null);
+      expect(props.agcModes).toEqual([]);
+    });
+
+    it('still reports the real AGC choice set from capabilities', () => {
+      const props = toAgcProps(makeState(), { capabilities: ['agc'], agcModes: [1, 3] } as any);
+      expect(props.agcModes).toEqual([1, 3]);
+    });
+
+    it('reports the real observed agcMode value when the field IS available (symmetric positive pin)', () => {
+      // Companion to 'does not present missing AGC as the default MID mode':
+      // that test proves the missing-field side (agcAvailable === false =>
+      // NaN); this one proves the populated-field side. Together they kill
+      // the mutant class that forces `agcAvailable` to a constant in either
+      // direction — a `false`-forced mutant would wrongly turn this real,
+      // available AGC=1 reading into NaN; a `true`-forced mutant is already
+      // caught by the missing-field test. `agc: 1` (not the base fixture's
+      // default 2, and not the old fabricated MID default) makes the pin
+      // unambiguous — it cannot pass by coincidentally matching a stale
+      // literal.
+      const props = toAgcProps(
+        makeState({ main: { ...makeState().main, agc: 1 } }),
+        { capabilities: ['agc'] } as any,
+      );
+      expect(props.agcMode).toBe(1);
+      expect(props.hasAgc).toBe(true);
+    });
+  });
+
+  describe('toAntennaProps', () => {
+    it('does not invent a single declared antenna port without capabilities', () => {
+      const props = toAntennaProps(makeState(), null);
+      expect(props.antennaCount).toBe(0);
+    });
+
+    it('still reports the real declared antenna count', () => {
+      const props = toAntennaProps(makeState(), { antennas: 2 } as any);
+      expect(props.antennaCount).toBe(2);
+    });
   });
 });

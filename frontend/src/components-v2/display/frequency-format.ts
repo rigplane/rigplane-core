@@ -13,6 +13,21 @@ export interface FrequencyParts {
  * @param freq - Frequency in Hz. Negative values are clamped to 0. Floats are floored.
  */
 export function formatFrequency(freq: number): FrequencyParts {
+  // MOR-1409 A11 (coordinator adjudication 5245817033, Core #2317):
+  // `toVfoProps`/`toBandSelectorProps` (lib/runtime/props/panel-props.ts)
+  // deliberately return `NaN` for an unobserved frequency (no fabricated
+  // 14.074 MHz stand-in). `FrequencyDisplay.svelte` — this function's sole
+  // consumer, rendered unguarded on the shipped mobile skin at cold start
+  // (`MobileRadioLayout.svelte`) — would otherwise show the literal string
+  // "NaN.NaN.NaN". Guard here, the single choke point, rather than in each
+  // consumer. Placeholder segment widths match the sibling LCD-skin
+  // formatter's already-shipped convention for the same unknown-frequency
+  // case (`panels/lcd/AmberFrequency.svelte`'s `hz <= 0` branch): '--' for
+  // the (normally 1-2 digit) MHz group, '---' for the always-3-digit
+  // zero-padded kHz/Hz groups — never the literal "NaN" substring.
+  if (!Number.isFinite(freq)) {
+    return { mhz: '--', khz: '---', hz: '---' };
+  }
   const absHz = Math.max(0, Math.floor(freq));
   const mhzPart = Math.floor(absHz / 1_000_000);
   const khzPart = Math.floor((absHz % 1_000_000) / 1_000);
