@@ -33,6 +33,25 @@
   let breakInActive = $derived(isBreakInActive(breakIn));
   let apfActive = $derived(isApfActive(apfMode));
   let breakInLabel = $derived(formatBreakIn(breakIn));
+
+  // MOR-1409 A12 (coordinator adjudication, Core #2317, comment 5246487510):
+  // `cwPitch`/`keySpeed` are `?? 600`/`?? 12` guarded above, but `??` does
+  // not catch `NaN` (only `null`/`undefined`) — a connected receiver that
+  // has never reported these optional fields still passes through as
+  // `NaN`, and neither `ValueControl` call below has a `displayFn`, so the
+  // default `${value}${unit}` renders the literal "NaN Hz"/"NaN WPM".
+  // Guard locally, same shape as FilterPanel.svelte's `formatWidthDisplay`.
+  // Preserves the exact prior finite-value format (the renderers' own
+  // unguarded default is `${localValue}${unit ? ' ' + unit : ''}`,
+  // a non-breaking space before the unit) — the guard only changes
+  // behavior for the non-finite case, per the grant's "no behavior/logic
+  // changes beyond the guards" restriction.
+  function formatCwPitchDisplay(hz: number): string {
+    return Number.isFinite(hz) ? `${hz} Hz` : '--- Hz';
+  }
+  function formatKeySpeedDisplay(wpm: number): string {
+    return Number.isFinite(wpm) ? `${wpm} WPM` : '--- WPM';
+  }
 </script>
 
 {#if showCw}
@@ -53,6 +72,7 @@
       accentColor="var(--v2-accent-cyan)"
       onChange={onCwPitchChange}
       variant="hardware-illuminated"
+      displayFn={formatCwPitchDisplay}
     />
 
     <ValueControl
@@ -67,6 +87,7 @@
       accentColor="var(--v2-accent-orange)"
       onChange={onKeySpeedChange}
       variant="hardware-illuminated"
+      displayFn={formatKeySpeedDisplay}
     />
 
     <div class="toggle-row">

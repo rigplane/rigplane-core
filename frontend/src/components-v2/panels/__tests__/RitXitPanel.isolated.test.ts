@@ -235,3 +235,41 @@ describe('RitXitPanel component', () => {
     expect(mockHandlers.onXitOffsetChange).toHaveBeenCalled();
   });
 });
+
+/**
+ * A12 (MOR-1409, Core #2317, coordinator adjudication comment 5246487510)
+ * — a connected receiver that has never reported `ritFreq`/`xitFreq`
+ * (optional fields) passes the `hasRit`/`hasXit` capability gate with a
+ * `NaN` offset (panel-props.ts no longer fabricates `?? 0`). Unguarded,
+ * `formatOffsetKHz(NaN)` renders the literal "−NaN kHz" (verifier-executed
+ * probe on the unguarded candidate). The local `formatOffsetDisplay` guard
+ * must render the established '---'-family placeholder instead.
+ */
+describe('RitXitPanel — no "NaN" leak for an unobserved offset (MOR-1409 A12)', () => {
+  it('does not render a "NaN" substring for the RIT offset readout when ritOffset is non-finite', () => {
+    const target = mountPanel({ ritActive: true, ritOffset: Number.NaN });
+    const offsetText = target.querySelector('.offset')?.textContent ?? '';
+    expect(offsetText).not.toMatch(/NaN/);
+  });
+
+  it('renders the established "---"-family placeholder for a non-finite RIT offset', () => {
+    const target = mountPanel({ ritActive: true, ritOffset: Number.NaN });
+    const offsetText = target.querySelector('.offset')?.textContent ?? '';
+    expect(offsetText).toBe('--- kHz');
+  });
+
+  it('does not render a "NaN" substring for the XIT offset readout when xitOffset is non-finite', () => {
+    const target = mountPanel({ xitActive: true, ritActive: false, xitOffset: Number.NaN });
+    const offsetSpans = target.querySelectorAll('.offset');
+    // XIT's span is the second `.offset` element when both hasRit/hasXit.
+    const xitOffsetText = offsetSpans[offsetSpans.length - 1]?.textContent ?? '';
+    expect(xitOffsetText).not.toMatch(/NaN/);
+    expect(xitOffsetText).toBe('--- kHz');
+  });
+
+  it('still renders the real formatted offset for a finite value', () => {
+    const target = mountPanel({ ritActive: true, ritOffset: 5000 });
+    const offsetText = target.querySelector('.offset')?.textContent ?? '';
+    expect(offsetText).toBe('+5.00 kHz');
+  });
+});

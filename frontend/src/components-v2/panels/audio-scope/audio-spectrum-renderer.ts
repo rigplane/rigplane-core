@@ -146,10 +146,22 @@ export function renderAudioSpectrum(
   const br = cx + topHalfW + slopeExtra;
 
   // ── Filter label (top) ──
+  // MOR-1409 A12 (coordinator adjudication, Core #2317, comment
+  // 5246487510): a connected receiver that has never reported
+  // `filterWidth` (optional field) still reaches this draw call as `NaN`
+  // (panel-props.ts's `toAudioSpectrumProps` no longer fabricates `?? 2400`)
+  // — `rs.animFilterWidth` latches to `NaN` and stays there (the animation
+  // step's own `Math.abs(fwDiff) > 200` check is itself `false` for a NaN
+  // diff, so it never recovers), and `Math.round(NaN)` renders the literal
+  // "Filter: NaN Hz" on the canvas. Suppress with a placeholder, matching
+  // the established dash convention (FilterPanel.svelte's `'--- Hz'`).
   ctx.font = '11px system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.fillStyle = FILTER_LABEL_COLOR;
-  ctx.fillText(`Filter: ${Math.round(rs.animFilterWidth)} Hz`, width / 2, TOP_LABEL_H - 5);
+  const filterLabel = Number.isFinite(rs.animFilterWidth)
+    ? `Filter: ${Math.round(rs.animFilterWidth)} Hz`
+    : 'Filter: ---';
+  ctx.fillText(filterLabel, width / 2, TOP_LABEL_H - 5);
 
   // ── Frequency grid labels (bottom) ──
   const halfBw = bandwidth / 2;

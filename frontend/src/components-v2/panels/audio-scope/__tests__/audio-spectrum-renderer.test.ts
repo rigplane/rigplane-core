@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   pbtRawToHz,
   resetSmoothing,
   renderAudioSpectrum,
+  AudioSpectrumRendererState,
   type SpectrumState,
 } from '../audio-spectrum-renderer';
 
@@ -145,5 +146,77 @@ describe('renderAudioSpectrum', () => {
     resetSmoothing();
     const state = { ...baseState, bandwidth: 48000 };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
+  });
+
+  /**
+   * A12 (MOR-1409, Core #2317, coordinator adjudication comment
+   * 5246487510) — a connected receiver that has never reported
+   * `filterWidth` (optional field) reaches this renderer as `NaN`
+   * (panel-props.ts's `toAudioSpectrumProps` no longer fabricates
+   * `?? 2400`). Unguarded, the Filter label draw call renders the literal
+   * "Filter: NaN Hz" on the desktop AUDIO SCOPE canvas (verifier-executed
+   * probe on the unguarded candidate, `audio-spectrum-renderer.ts:152`).
+   * The guard must suppress/placeholder the label instead.
+   */
+  describe('Filter label — no "NaN" leak for a non-finite filterWidth (MOR-1409 A12)', () => {
+    function mockCtxWithFillTextSpy() {
+      const ctx = mockCtx();
+      const fillText = vi.fn();
+      Object.defineProperty(ctx, 'fillText', { value: fillText, writable: true });
+      return { ctx, fillText };
+    }
+
+    // `pixels: null` here is deliberate, not incidental: with populated
+    // `pixels` (this file's `baseState`), a non-finite `filterWidth`
+    // propagates into the trapezoid geometry (`bl`/`br` become NaN) and
+    // crashes the spectrum-line block below with `RangeError: Invalid
+    // array length` (`new Array(numPoints)`, numPoints itself NaN) —
+    // independently discovered while adding this test, BEFORE reaching
+    // the label draw call's own guard. That crash is a real, separate
+    // defect in the trapezoid/spectrum-line geometry math, out of this
+    // gate's restricted grant (label-guard only, no further
+    // behavior/logic changes) — flagged for the coordinator, not fixed
+    // here. `pixels: null` (a real, common state — before the first FFT
+    // frame arrives) isolates the label guard this gate DOES own from
+    // that separate crash.
+    it('does not draw a "NaN" substring in the Filter label for a non-finite filterWidth', () => {
+      const rs = new AudioSpectrumRendererState();
+      const { ctx, fillText } = mockCtxWithFillTextSpy();
+      const state = { ...baseState, filterWidth: Number.NaN, pixels: null };
+      renderAudioSpectrum(ctx, 400, 160, state, rs);
+      const filterLabelCall = fillText.mock.calls.find((call) =>
+        String(call[0]).startsWith('Filter:'),
+      );
+      expect(filterLabelCall?.[0]).not.toMatch(/NaN/);
+    });
+
+    it('draws the established "---"-family placeholder for a non-finite filterWidth', () => {
+      const rs = new AudioSpectrumRendererState();
+      const { ctx, fillText } = mockCtxWithFillTextSpy();
+      const state = { ...baseState, filterWidth: Number.NaN, pixels: null };
+      renderAudioSpectrum(ctx, 400, 160, state, rs);
+      const filterLabelCall = fillText.mock.calls.find((call) =>
+        String(call[0]).startsWith('Filter:'),
+      );
+      expect(filterLabelCall?.[0]).toBe('Filter: ---');
+    });
+
+    it('documents the separate, out-of-grant crash: a non-finite filterWidth WITH populated pixels throws (not this gate\'s fix)', () => {
+      const rs = new AudioSpectrumRendererState();
+      const { ctx } = mockCtxWithFillTextSpy();
+      const state = { ...baseState, filterWidth: Number.NaN };
+      expect(() => renderAudioSpectrum(ctx, 400, 160, state, rs)).toThrow(/Invalid array length/);
+    });
+
+    it('still draws the real formatted width for a finite filterWidth', () => {
+      const rs = new AudioSpectrumRendererState();
+      const { ctx, fillText } = mockCtxWithFillTextSpy();
+      const state = { ...baseState, filterWidth: 2400 };
+      renderAudioSpectrum(ctx, 400, 160, state, rs);
+      const filterLabelCall = fillText.mock.calls.find((call) =>
+        String(call[0]).startsWith('Filter:'),
+      );
+      expect(filterLabelCall?.[0]).toBe('Filter: 2400 Hz');
+    });
   });
 });

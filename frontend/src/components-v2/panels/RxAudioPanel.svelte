@@ -18,6 +18,19 @@
   let showDisconnected = $derived(
     props.hasLiveAudio && props.monitorMode === 'live' && !props.isAudioConnected,
   );
+
+  // MOR-1409 A12 (coordinator adjudication, Core #2317, comment 5246487510):
+  // `hasAfLevel`/`hasLiveAudio` gate on capability presence only — a
+  // connected receiver that has never reported `afLevel` (optional field,
+  // local-monitor path) still passes the gate with `props.afLevel === NaN`
+  // (panel-props.ts no longer fabricates `?? 0.5`). `normalizedPercentDisplay`
+  // (value-control-core.ts, not an A12 owner) has no NaN guard —
+  // `Math.round(Math.max(0, Math.min(1, NaN)) * 100)` is `NaN`, rendering
+  // the literal "NaN%". Guard locally, same shape as FilterPanel.svelte's
+  // `formatWidthDisplay`.
+  function formatAfLevelDisplay(v: number): string {
+    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '--- %';
+  }
 </script>
 
 {#if props.hasAfLevel || props.hasLiveAudio}
@@ -42,7 +55,7 @@
         max={1}
         step={0.01}
         renderer="hbar"
-        displayFn={normalizedPercentDisplay}
+        displayFn={formatAfLevelDisplay}
         accentColor="var(--v2-accent-cyan-alt)"
         shortcutHint={afShortcut}
         title={afShortcut}
