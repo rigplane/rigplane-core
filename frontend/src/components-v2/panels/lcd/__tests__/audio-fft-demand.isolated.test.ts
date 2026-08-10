@@ -50,6 +50,17 @@ const mocks = vi.hoisted(() => {
     sendRaw: vi.fn(),
     sendCommand: vi.fn(() => true),
     onMessage: vi.fn(() => () => {}),
+    txController: Object.freeze({
+      snapshot: vi.fn(() => Object.freeze({
+        phase: 'idle', intent: null, sourceId: null, leaseId: null, guard: null,
+        fault: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false,
+      })),
+      subscribe: vi.fn(() => () => {}),
+      start: vi.fn(),
+      setIntent: vi.fn(),
+      release: vi.fn(),
+      resetFault: vi.fn(),
+    }),
   };
 });
 
@@ -73,6 +84,9 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
   return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
 });
+vi.mock('$lib/runtime/tx-controller/app-host', () => ({
+  getAppTxController: () => mocks.txController,
+}));
 
 const canonicalCapabilities: Capabilities = {
   model: 'test',

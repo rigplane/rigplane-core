@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
-    deriveAmberCockpitProps, getAmberCockpitHandlers,
+    bindVfoTunerContext, deriveAmberCockpitProps,
+    getAmberCockpitHandlers, getVfoHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import {
     toTxProps, toRitXitProps, toVfoOpsProps, toMeterProps,
@@ -19,6 +20,8 @@
   import { formatOffsetKHz } from '../rit-utils';
 
   const handlers = getAmberCockpitHandlers();
+  const vfoHandlers = getVfoHandlers();
+  const vfoContext = bindVfoTunerContext();
 
   // MOR-429: gate per-receiver indicators on fieldStatus availability so an
   // unobserved/stale/default value is never presented as a confirmed reading.
@@ -244,10 +247,38 @@
     handlers.onTuningChange(freq, mode);
   });
 
+  function activeTuneReceiver(
+    view: ReturnType<typeof vfoContext.read>['view'],
+  ): 0 | 1 | null {
+    if (!view || view.activeReceiver.status !== 'known') return null;
+    const activeReceiver = view.activeReceiver.receiver;
+    if (view.disabledReasons.some(
+      ({ field, code }) => field === `receiver.${activeReceiver}`
+        && code === 'capability-unavailable',
+    )) return null;
+    const activeVfos = view.vfos.filter(
+      (vfo) => vfo.receiver === activeReceiver && vfo.isActive,
+    );
+    if (activeVfos.length !== 1) return null;
+    const activeVfo = activeVfos[0];
+    if (!activeVfo || activeVfo.frequencyHz === null) return null;
+    const { slot } = activeVfo;
+    if (!(slot.kind === 'slotted' || slot.kind === 'unslotted'
+      || (slot.kind === 'relative' && slot.role === 'selected'))) return null;
+    return activeReceiver === 'MAIN' ? 0 : 1;
+  }
+
   function handleQsyRecall(freqHz: number, mode: string): void {
-    // Route through runtime — same CI-V path as other frequency changes.
-    runtime.send('set_freq', { freq: freqHz });
-    if (mode) runtime.send('set_mode', { mode });
+    const view = vfoContext.read().view;
+    const receiver = activeTuneReceiver(view);
+    if (receiver === null || !Number.isSafeInteger(freqHz) || freqHz <= 0) return;
+    if (mode !== '') {
+      const modeFilter = view?.modeFilter;
+      if (!modeFilter || !modeFilter.currentMode.availability.operational
+        || !modeFilter.modeChoices.includes(mode)) return;
+    }
+    vfoHandlers.onFreqChange(freqHz, receiver);
+    if (mode !== '') vfoHandlers.onModeChange(mode, receiver);
   }
 
   // ── Peer cockpit derivations ──
