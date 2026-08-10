@@ -255,12 +255,23 @@ describe('cwKeyer honesty gate — absent raw values never fabricate (MOR-1296)'
     },
   );
 
-  it("v2's own toCwProps DOES fabricate those defaults — the divergence is real, not vacuous", () => {
+  it("v2's own toCwProps still fabricates breakIn/reversePaddle — the divergence there is real, not vacuous", () => {
+    // MOR-1409 A12 (Core #2317): `toCwProps`' `keySpeed`/`cwPitch` fabricated
+    // defaults were removed (now `NaN`, matching the honest
+    // `radio-view-model`'s `unknown` reading below — see the next test) —
+    // that half of the divergence this test used to document is closed.
+    // `breakIn`/`reversePaddle` were outside A12's batch-B family (not
+    // named in the re-anchor plan's §3.3 literal table) and still fabricate
+    // their pre-A12 defaults; the divergence remains real for those two.
     const real = toCwProps(bareState(), fullCaps);
     expect(real.breakIn).toBe(0);
-    expect(real.keySpeed).toBe(12);
-    expect(real.cwPitch).toBe(600);
     expect(real.reversePaddle).toBe(false);
+  });
+
+  it("v2's own toCwProps no longer fabricates keySpeed/cwPitch (MOR-1409 A12) — divergence with the honest model closed", () => {
+    const real = toCwProps(bareState(), fullCaps);
+    expect(real.keySpeed).toBeNaN();
+    expect(real.cwPitch).toBeNaN();
   });
 
   it('an unrecognised break-in int reads unknown, where the real formatBreakIn falls back to OFF', () => {

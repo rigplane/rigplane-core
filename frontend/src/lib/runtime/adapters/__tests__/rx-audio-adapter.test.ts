@@ -226,7 +226,7 @@ describe('rxAudio degrades honestly rather than to the shipped panel defaults', 
     expect(rxAudio.afLevel.reading).toEqual({ status: 'known', value: 0.31 });
   });
 
-  it('reports AF unknown when the radio field is unobserved — where the panel substitutes 0.5', () => {
+  it('reports AF unknown when the radio field is unobserved — matching the panel contract (MOR-1409 A12: no longer 0.5)', () => {
     const local: RxAudioSnapshot = { ...SNAP, rxEnabled: false };
     const state = audioState({
       main: { ...audioState().main, afLevel: undefined } as unknown as ServerState['main'],
@@ -235,10 +235,12 @@ describe('rxAudio degrades honestly rather than to the shipped panel defaults', 
     const rxAudio = model(state, caps(), local).rxAudio!;
     expect(rxAudio.afLevel.reading).toEqual({ status: 'unknown' });
     expect(rxAudio.afLevel.availability).toEqual({ structural: true, operational: false });
-    // The discriminating half: the shipped panel prop fabricates a mid-scale
-    // default from exactly this state. The contract must NOT.
+    // MOR-1409 A12 (Core #2317): the shipped panel prop used to fabricate a
+    // mid-scale 0.5 default from exactly this state — the divergence this
+    // test used to document. `toRxAudioProps.afLevel` now matches the
+    // honest model's `unknown` reading with its own `NaN` sentinel.
     expect(toRxAudioProps(state, caps(), { muted: false, rxEnabled: false, volume: 42 }, true).afLevel)
-      .toBe(0.5);
+      .toBeNaN();
   });
 
   it.each([

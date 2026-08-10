@@ -35,7 +35,12 @@
   let modalOpen = $state(false);
   let draftWidths = $state<number[]>([]);
 
-  let normalizedLabels = $derived(filterLabels.length > 0 ? filterLabels : ['FIL1', 'FIL2', 'FIL3']);
+  // MOR-1409 A12 (adjudication 5245697359, Core #2317): no re-fabricated
+  // FIL1/FIL2/FIL3 stand-in when `filterLabels` is the honest empty array
+  // (unknown filter catalog). Pass it through unchanged — the modal's
+  // `{#each normalizedLabels as label, index}` then renders zero rows,
+  // which is the correct "unavailable, not fabricated" behavior.
+  let normalizedLabels = $derived(filterLabels);
   let factoryDefaults = $derived.by(() => {
     const fallback = Array.from({ length: normalizedLabels.length }, () => filterWidth);
     const defaults = filterConfig?.defaults?.slice(0, normalizedLabels.length) ?? fallback;
@@ -100,6 +105,14 @@
   });
 
   function formatWidthDisplay(hz: number): string {
+    // MOR-1409 A12 (adjudication 5245697359, Core #2317): `panel-props.ts`'s
+    // `toFilterProps`/`toAudioSpectrumProps` now return NaN for an
+    // unobserved filterWidth instead of fabricating 2400 Hz. Guard at this
+    // choke point — the same `'---'`-family placeholder convention
+    // `frequency-format.ts` established at A11 (corr. 5245817033/5245876185)
+    // — rather than let `formatFilterWidth(NaN)` leak the literal "NaNkHz"
+    // into the BW readout and settings modal.
+    if (!Number.isFinite(hz)) return '--- Hz';
     const formatted = formatFilterWidth(hz);
     return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
   }
@@ -323,6 +336,7 @@
               accentColor={currentFilter === index + 1 ? 'var(--v2-accent-cyan)' : 'var(--v2-accent-green-bright)'}
               onChange={(value) => handlePresetChange(index, value)}
               variant="hardware-illuminated"
+              displayFn={formatWidthDisplay}
             />
           {/if}
         </div>

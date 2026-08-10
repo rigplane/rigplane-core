@@ -4,13 +4,18 @@ import {
   toAgcProps,
   toAmberTelemetryProps,
   toAntennaProps,
+  toAudioSpectrumProps,
   toBandSelectorProps,
   toCwProps,
   toDspProps,
   toFilterProps,
+  toMemoryPanelProps,
+  toMeterProps,
   toModeProps,
   toRfFrontEndProps,
+  toRitXitProps,
   toRxAudioProps,
+  toScanProps,
   toTxProps,
   toVfoProps,
 } from '../panel-props';
@@ -654,16 +659,16 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
       expect(props.filterLabels).toEqual([]);
     });
 
-    it('still fabricates the 2400 Hz width fallback — deliberately deferred to A12 (adjudication 5245697359, Core #2317)', () => {
-      // A NaN sentinel here renders as the literal "NaNkHz" in
-      // FilterPanel.svelte's BW readout and settings modal — a
-      // formatted-display consumer, unlike `findActiveBand`'s comparison
-      // consumer that the same-type-sentinel approach was validated
-      // against. Fixing it needs a FilterPanel.svelte consumer-boundary
-      // change, a fourth production file A11 is not granted; A12 owns this
-      // family (plus its `toAudioSpectrumProps` twin) per the adjudication.
+    it('does not invent the 2400 Hz width fallback (MOR-1409 A12, adjudication 5245697359, Core #2317)', () => {
+      // A11 deliberately kept `?? 2400` here: a NaN sentinel renders as the
+      // literal "NaNkHz" in FilterPanel.svelte's BW readout and settings
+      // modal — a formatted-display consumer, unlike `findActiveBand`'s
+      // comparison consumer. A12 is granted FilterPanel.svelte as a fourth
+      // production file specifically to add the consumer-boundary guard
+      // (see FilterPanel.isolated.test.ts), so the fabricated default can
+      // now be removed at the source without leaking "NaN" into the UI.
       const props = toFilterProps(null, null);
-      expect(props.filterWidth).toBe(2400);
+      expect(props.filterWidth).toBeNaN();
     });
 
     it('still reports the real values for a populated receiver and capabilities', () => {
@@ -725,6 +730,256 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
     it('still reports the real declared antenna count', () => {
       const props = toAntennaProps(makeState(), { antennas: 2 } as any);
       expect(props.antennaCount).toBe(2);
+    });
+  });
+});
+
+/**
+ * A12 (MOR-1409, Core #2317) — batch-B projections stop fabricating a
+ * plausible-looking default for RIT/XIT, the mode catalog, CW pitch/speed/
+ * sidetone/keyer, meters, RX audio level, scan status, filter width (its
+ * `toFilterProps` twin), and the memory-panel "store VFO → channel" fields.
+ * Same non-fabricating-sentinel convention as A11: `NaN` for numbers whose
+ * type stays `number`, `'---'` for strings whose type stays `string`,
+ * `null` for the two RIT/XIT booleans whose type widens to `boolean | null`
+ * per the A12 re-anchor plan's §5 consumer-boundary matrix (both feed only
+ * a `hasCap`-gated panel — see the matrix's golden-safety column — so the
+ * type widening carries no rendering risk). `toCwProps.keyerType` is
+ * removed entirely (dead output field, no consumer, per the matrix). Every
+ * case below documents a value `panel-props.ts` used to invent on exact
+ * base; A11's own §3.3 confirms each literal was still present at the A12
+ * anchor.
+ */
+describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () => {
+  describe('toRitXitProps', () => {
+    it('does not invent a zero offset when state is entirely absent (offset only — active stays boolean, see below)', () => {
+      const props = toRitXitProps(null, null);
+      expect(props.ritOffset).toBeNaN();
+      expect(props.xitOffset).toBeNaN();
+    });
+
+    it('ritActive/xitActive keep a plain boolean contract (false when absent) — RitXitPanel.svelte is not an A12 owner, see panel-props.ts header comment', () => {
+      // `RitXitPanel.svelte`'s `HardwareButton active={…}` prop is typed
+      // `boolean | undefined`; widening `ritActive`/`xitActive` to
+      // `boolean | null` breaks that (non-A12-owned) consumer's compile — a
+      // fifth production file A12 is not granted. `false` is the
+      // conservative "off" reading and the panel is gated on `hasRit`/
+      // `hasXit` regardless.
+      const props = toRitXitProps(null, null);
+      expect(props.ritActive).toBe(false);
+      expect(props.xitActive).toBe(false);
+    });
+
+    it('still reports the real observed RIT/XIT state', () => {
+      const props = toRitXitProps(
+        makeState({ ritOn: true, ritFreq: 150, ritTx: true }),
+        { capabilities: ['rit', 'xit'] } as any,
+      );
+      expect(props.ritActive).toBe(true);
+      expect(props.ritOffset).toBe(150);
+      expect(props.xitActive).toBe(true);
+      expect(props.xitOffset).toBe(150);
+    });
+  });
+
+  describe('toModeProps modes catalog', () => {
+    it('does not invent a 10-mode catalog without capabilities', () => {
+      const props = toModeProps(makeState(), null);
+      expect(props.modes).toEqual([]);
+    });
+
+    it('still reports the real capability-derived mode list', () => {
+      const props = toModeProps(makeState(), { modes: ['USB', 'LSB', 'CW'] } as any);
+      expect(props.modes).toEqual(['USB', 'LSB', 'CW']);
+    });
+  });
+
+  describe('toCwProps', () => {
+    it('does not invent pitch/speed/sidetone values when state is absent', () => {
+      const props = toCwProps(null, null);
+      expect(props.cwPitch).toBeNaN();
+      expect(props.keySpeed).toBeNaN();
+      expect(props.wpm).toBeNaN();
+      expect(props.sidetonePitch).toBeNaN();
+      expect(props.sidetoneLevel).toBeNaN();
+    });
+
+    it('twinPeak keeps a plain boolean contract (false when absent) — CwPanel.svelte is not an A12 owner, see panel-props.ts header comment', () => {
+      // `CwPanel.svelte`'s `HardwareButton active={…}` prop is typed
+      // `boolean | undefined`; widening `twinPeak` to `boolean | null`
+      // breaks that (non-A12-owned) consumer's compile — a fifth
+      // production file A12 is not granted. `false` is the conservative
+      // "off" reading and the panel is gated on `hasCw` regardless.
+      const props = toCwProps(null, null);
+      expect(props.twinPeak).toBe(false);
+    });
+
+    it('removes the dead keyerType output field entirely (no production consumer)', () => {
+      const props = toCwProps(makeState(), null);
+      expect('keyerType' in props).toBe(false);
+    });
+
+    it('still reports the real observed CW values', () => {
+      const props = toCwProps(
+        makeState({
+          cwPitch: 700,
+          keySpeed: 25,
+          main: { ...makeState().main, twinPeakFilter: true },
+        }),
+        null,
+      );
+      expect(props.cwPitch).toBe(700);
+      expect(props.keySpeed).toBe(25);
+      expect(props.wpm).toBe(25);
+      expect(props.sidetonePitch).toBe(700);
+      expect(props.twinPeak).toBe(true);
+    });
+  });
+
+  describe('toMeterProps', () => {
+    // No live `.svelte` consumer of `panel-props.ts`'s `toMeterProps` was
+    // found repo-wide (the desktop `MetersDockPanel.svelte` reads raw
+    // `radioState` fields directly; the LCD/mobile skins' `toMeterProps`
+    // is an independent, frozen `state-adapter.ts` copy). Zero golden risk
+    // either way — this is a direct unit-level pin, per the A12 re-anchor
+    // plan §5's row (a) resolution.
+    it('does not invent zero meter readings when state is absent', () => {
+      const props = toMeterProps(null, null);
+      expect(props.sValue).toBeNaN();
+      expect(props.signal).toBeNaN();
+      expect(props.rfPower).toBeNaN();
+      expect(props.swr).toBeNaN();
+      expect(props.alc).toBeNaN();
+      expect(props.comp).toBeNaN();
+      expect(props.vd).toBeNaN();
+      expect(props.id).toBeNaN();
+    });
+
+    it('still reports the real observed meter readings', () => {
+      const props = toMeterProps(
+        makeState({
+          powerMeter: 10,
+          swrMeter: 1.5,
+          alcMeter: 3,
+          compMeter: 4,
+          vdMeter: 137,
+          idMeter: 55,
+        }),
+        null,
+      );
+      expect(props.sValue).toBe(50);
+      expect(props.rfPower).toBe(10);
+      expect(props.swr).toBe(1.5);
+      expect(props.vd).toBe(137);
+      expect(props.id).toBe(55);
+    });
+  });
+
+  describe('toRxAudioProps afLevel', () => {
+    it('does not invent the 0.5 normalized AF level when state is absent (local mode)', () => {
+      const props = toRxAudioProps(null, null, { muted: false, rxEnabled: false, volume: 50 }, false);
+      expect(props.afLevel).toBeNaN();
+    });
+
+    it('still reports the real observed local AF level', () => {
+      const props = toRxAudioProps(
+        makeState({ main: { ...makeState().main, afLevel: 0.3 } }),
+        null,
+        { muted: false, rxEnabled: false, volume: 50 },
+        false,
+      );
+      expect(props.afLevel).toBe(0.3);
+    });
+  });
+
+  describe('toScanProps', () => {
+    it('does not invent scanType=0/scanResumeMode=0 when state is absent', () => {
+      const props = toScanProps(null);
+      expect(props.scanType).toBeNaN();
+      expect(props.scanResumeMode).toBeNaN();
+    });
+
+    it('scanning keeps a plain boolean contract (false when absent) — ScanPanel.svelte is not an A12 owner, see panel-props.ts header comment', () => {
+      // `ScanPanel.svelte`'s `HardwareButton active={…}` prop is typed
+      // `boolean | undefined`; widening `scanning` to `boolean | null`
+      // breaks that (non-A12-owned) consumer's compile — a fifth
+      // production file A12 is not granted. `false` is the conservative
+      // "not scanning" reading.
+      const props = toScanProps(null);
+      expect(props.scanning).toBe(false);
+    });
+
+    it('still reports the real observed scan state', () => {
+      const props = toScanProps(makeState({ scanning: true, scanType: 0x01, scanResumeMode: 0xd2 }));
+      expect(props.scanning).toBe(true);
+      expect(props.scanType).toBe(0x01);
+      expect(props.scanResumeMode).toBe(0x02);
+    });
+  });
+
+  describe('toAudioSpectrumProps filterWidth (toFilterProps twin)', () => {
+    it('does not invent the 2400 Hz width fallback when state is absent', () => {
+      const props = toAudioSpectrumProps(null, null);
+      expect(props.filterWidth).toBeNaN();
+    });
+
+    it('still reports the real observed filter width', () => {
+      const props = toAudioSpectrumProps(makeState({ main: { ...makeState().main, filterWidth: 1800 } }), null);
+      expect(props.filterWidth).toBe(1800);
+    });
+
+    it('still fabricates a centre contourFreq — explicit non-fix, distinct class (MOR-1409 A12)', () => {
+      // Per the A12 re-anchor plan §5: `contourFreq` is not yet exposed in
+      // `ServerState` at all — it is a placeholder for a feature not wired
+      // end-to-end, not a per-field "unobserved" case like every other
+      // literal in this file. Converting it to NaN was explicitly flagged
+      // as a distinct decision point, not folded into this mechanical sweep.
+      const props = toAudioSpectrumProps(null, null);
+      expect(props.contourFreq).toBe(128);
+    });
+  });
+
+  describe('toMemoryPanelProps', () => {
+    it('does not invent activeFreqHz=0/activeMode="" when state is absent', () => {
+      const props = toMemoryPanelProps(null, null);
+      expect(props.activeFreqHz).toBeNaN();
+      expect(props.activeMode).toBe('---');
+    });
+
+    it('still reports the real observed active-receiver frequency/mode', () => {
+      const props = toMemoryPanelProps(makeState(), null);
+      expect(props.activeFreqHz).toBe(14_074_000);
+      expect(props.activeMode).toBe('USB');
+    });
+  });
+
+  describe('toTxProps — explicit non-fix (MOR-1409 A12)', () => {
+    // TxPanel.svelte (panel-props.ts's `toTxProps`' only production
+    // consumer) is entirely hidden on the desktop-v2 skin
+    // (`hideTxPanel={semanticRxTx}`, true for desktop-v2 — zero golden
+    // risk there) but IS reachable on the mobile skin. Its settings-modal
+    // `ValueControl` calls for rfPower/micGain/monLevel/driveGain pass
+    // `displayFn={normalizedPercentDisplay}`/`rawToPercentDisplay`, neither
+    // of which guards a non-finite input — a `NaN` sentinel here would
+    // render the literal "NaN%" in a real, live, mobile-reachable surface
+    // (not covered by any committed golden — the only enforced
+    // `toHaveScreenshot` gate is the desktop-root capture, which always
+    // fixtures the receiver as populated). Fixing this cleanly needs a
+    // consumer-boundary guard in TxPanel.svelte, mirroring FilterPanel's
+    // fix in this same gate — but TxPanel.svelte is not one of A12's four
+    // granted production files. A12 defers the entire `toTxProps` batch-B
+    // family (rather than a partial boolean-only fix) rather than trade a
+    // plausible-looking-but-wrong value for a raw "NaN%" glitch in a file
+    // it cannot guard. This mirrors A11's own `toFilterProps.filterWidth`
+    // deferral to A12 exactly.
+    it('still fabricates the RF power / mic gain / mon level / drive gain / vox / comp defaults', () => {
+      const props = toTxProps(null, null);
+      expect(props.rfPower).toBe(0.5);
+      expect(props.micGain).toBe(128);
+      expect(props.monLevel).toBe(128);
+      expect(props.driveGain).toBe(128);
+      expect(props.voxActive).toBe(false);
+      expect(props.compActive).toBe(false);
     });
   });
 });
