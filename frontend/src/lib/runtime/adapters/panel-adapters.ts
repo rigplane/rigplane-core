@@ -22,7 +22,7 @@ import {
   makeCwPanelHandlers, makeDspHandlers,
   makeTxHandlers, makeFilterHandlers, makeBandHandlers,
   makePresetHandlers, makeAudioRoutingHandlers, makeRxAudioHandlers,
-  makeVfoHandlers, makeScopeControlsHandlers, makeVoxHandlers,
+  makeVfoHandlers, makeScopeControlsHandlers, makeVoxHandlers, makeMemoryHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
 import { getAppTxController, type AppTxController } from '../tx-controller/app-host';
@@ -180,6 +180,8 @@ export function deriveAudioSpectrumProps() {
 export function deriveMemoryPanelProps() {
   return toMemoryPanelProps(runtime.state, runtime.caps);
 }
+const _memoryHandlers = makeMemoryHandlers();
+export function getMemoryHandlers() { return _memoryHandlers; }
 
 // ── Amber Telemetry ──
 export function deriveAmberTelemetryProps() {
