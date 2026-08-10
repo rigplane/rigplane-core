@@ -6,11 +6,11 @@
    * so this panel tracks channel data locally (localStorage) and provides
    * controls for recall, store, clear, and channel selection.
    */
-  import { runtime } from '$lib/runtime';
-  import { deriveMemoryPanelProps } from '$lib/runtime/adapters/panel-adapters';
+  import { deriveMemoryPanelProps, getMemoryHandlers } from '$lib/runtime/adapters/panel-adapters';
   import { formatFrequencyString } from '../display/frequency-format';
 
   let p = $derived(deriveMemoryPanelProps());
+  const memory = getMemoryHandlers();
 
   const STORAGE_KEY = 'rigplane:memory-channels';
   const MAX_CHANNELS = 99;
@@ -56,19 +56,14 @@
   }
 
   function recallChannel(ch: number) {
-    if (!p.vfoIdentityKnown) return;
-    runtime.send('set_memory_mode', { channel: ch });
-    runtime.send('memory_to_vfo', { channel: ch });
+    if (!memory.onRecall(ch)) return;
     selectedChannel = ch;
   }
 
   function storeVfoToChannel(ch: number) {
-    if (!p.vfoIdentityKnown) return;
     const freq = p.activeFreqHz;
     const mode = p.activeMode;
-
-    runtime.send('set_memory_mode', { channel: ch });
-    runtime.send('memory_write', {});
+    if (!memory.onStore(ch, freq, mode)) return;
 
     // Track locally
     const updated = new Map(channels);
@@ -79,7 +74,7 @@
   }
 
   function clearChannel(ch: number) {
-    runtime.send('memory_clear', { channel: ch });
+    if (!memory.onClear(ch)) return;
 
     // Remove from local tracking
     const updated = new Map(channels);

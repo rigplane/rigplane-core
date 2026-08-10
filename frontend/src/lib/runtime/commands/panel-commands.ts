@@ -21,10 +21,11 @@ import {
   getCapabilities,
   getControlRange,
 } from '$lib/stores/capabilities.svelte';
-import { isFieldAvailable } from '$lib/state/field-status';
+import { getFieldStatus, isFieldAvailable } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
 import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
+import { relativeVfoIdentityUnknown } from '../props/panel-props';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -169,6 +170,87 @@ function mapIfShiftToPbt(
   return {
     pbtInner: clampToBipolarRange(currentPbtInner + delta),
     pbtOuter: clampToBipolarRange(currentPbtOuter + delta),
+  };
+}
+
+/* ── Memory Handlers ─────────────────────────────────────────────── */
+
+type MemorySnapshot = { frequencyHz: number | null; mode: string | null };
+
+function observedAvailableField(
+  state: NonNullable<ReturnType<typeof getRadioState>>,
+  path: string,
+): boolean {
+  const status = getFieldStatus(state, path);
+  return status?.observed === true && status.freshness === 'fresh'
+    && status.availability === 'available';
+}
+
+function currentMemorySnapshot(): MemorySnapshot | null {
+  const context = currentA03cContext();
+  const active = context?.state.active;
+  if (!context || !observedAvailableField(context.state, 'active')
+    || (active !== 'MAIN' && active !== 'SUB')
+    || knownA03cReceiver(context, active) === null) return null;
+
+  const receiverKey = active === 'SUB' ? 'sub' : 'main';
+  const receiver = context.state[receiverKey];
+  if (!receiver) return null;
+
+  let source: { freqHz?: number; mode?: string } = receiver;
+  let base = `${receiverKey}.`;
+  const relative = context.caps.vfoScheme === 'ab'
+    && relativeVfoIdentityUnknown(context.state, context.caps, receiverKey);
+  const unslotted = context.caps.vfoScheme === 'single'
+    || context.caps.vfoScheme === 'ab_shared';
+  if (!relative && !unslotted) {
+    const slot = receiver.activeSlot;
+    if (!observedAvailableField(context.state, `${receiverKey}.activeSlot`)
+      || (slot !== 'A' && slot !== 'B')) return null;
+    const slotKey = slot === 'A' ? 'vfoA' : 'vfoB';
+    const slotted = receiver[slotKey];
+    if (!slotted) return null;
+    source = slotted;
+    base = `${receiverKey}.${slotKey}.`;
+  }
+
+  const frequencyHz = source.freqHz;
+  const mode = source.mode;
+  return {
+    frequencyHz: observedAvailableField(context.state, `${base}freqHz`)
+      && Number.isSafeInteger(frequencyHz) && (frequencyHz as number) > 0
+      ? frequencyHz as number : null,
+    mode: observedAvailableField(context.state, `${base}mode`)
+      && typeof mode === 'string' && mode.length > 0 ? mode : null,
+  };
+}
+
+function validMemoryChannel(channel: number): boolean {
+  return Number.isSafeInteger(channel) && channel >= 1 && channel <= 99;
+}
+
+export function makeMemoryHandlers() {
+  return {
+    onRecall: (channel: number): boolean => {
+      if (!validMemoryChannel(channel) || currentMemorySnapshot() === null) return false;
+      dispatchRadioIntent({ name: 'set_memory_mode', params: { channel } });
+      dispatchRadioIntent({ name: 'memory_to_vfo', params: { channel } });
+      return true;
+    },
+    onStore: (channel: number, frequencyHz: number, mode: string): boolean => {
+      const snapshot = currentMemorySnapshot();
+      if (!validMemoryChannel(channel) || !snapshot || snapshot.frequencyHz === null
+        || snapshot.mode === null || frequencyHz !== snapshot.frequencyHz
+        || mode !== snapshot.mode) return false;
+      dispatchRadioIntent({ name: 'set_memory_mode', params: { channel } });
+      dispatchRadioIntent({ name: 'memory_write', params: {} });
+      return true;
+    },
+    onClear: (channel: number): boolean => {
+      if (!validMemoryChannel(channel) || currentMemorySnapshot() === null) return false;
+      dispatchRadioIntent({ name: 'memory_clear', params: { channel } });
+      return true;
+    },
   };
 }
 
