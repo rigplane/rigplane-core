@@ -70,9 +70,6 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null as { active?: 'MAIN' | 'SUB' } | null },
   getActiveReceiver: vi.fn(),
   getRadioState: vi.fn(),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  patchReceiver: vi.fn(),
   subscribeRadioState: vi.fn((handler: (state: null) => void) => {
     radioSubscriberTracker.active += 1;
     handler(null);
@@ -203,7 +200,7 @@ import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import { hasTx, hasDualReceiver } from '$lib/stores/capabilities.svelte';
 import {
-  patchActiveReceiver, patchRadioState, patchReceiver, radio, subscribeRadioState,
+  radio, subscribeRadioState,
 } from '$lib/stores/radio.svelte';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { getTxPermit } from '$lib/utils/tx-permit';
@@ -415,9 +412,6 @@ describe('MOR-1409 local mobile meter selection', () => {
 
     const before = {
       radio: structuredClone(radio.current),
-      activePatches: vi.mocked(patchActiveReceiver).mock.calls.length,
-      radioPatches: vi.mocked(patchRadioState).mock.calls.length,
-      receiverPatches: vi.mocked(patchReceiver).mock.calls.length,
       subscribers: radioSubscriberTracker.active,
       wsFrames: wsFrameSpy.mock.calls.length,
       intents: radioIntentSpy.mock.calls.length,
@@ -448,9 +442,6 @@ describe('MOR-1409 local mobile meter selection', () => {
     }
 
     expect(radio.current).toEqual(before.radio);
-    expect(vi.mocked(patchActiveReceiver).mock.calls.length).toBe(before.activePatches);
-    expect(vi.mocked(patchRadioState).mock.calls.length).toBe(before.radioPatches);
-    expect(vi.mocked(patchReceiver).mock.calls.length).toBe(before.receiverPatches);
     expect(radioSubscriberTracker.active).toBe(before.subscribers);
     expect(wsFrameSpy.mock.calls).toHaveLength(before.wsFrames);
     expect(radioIntentSpy.mock.calls).toHaveLength(before.intents);

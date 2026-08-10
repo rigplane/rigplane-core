@@ -11,8 +11,6 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
   getRadioState: vi.fn(() => null),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -63,7 +61,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { getRadioState, getActiveReceiver, patchActiveReceiver, patchRadioState } from '$lib/stores/radio.svelte';
+import { getRadioState, getActiveReceiver } from '$lib/stores/radio.svelte';
 import { adjustTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { makeKeyboardHandlers } from '../command-bus';
@@ -79,8 +77,6 @@ const makeAction = (action: string, params?: Record<string, unknown>) => ({
 describe('makeKeyboardHandlers', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
-    vi.mocked(patchActiveReceiver).mockClear();
-    vi.mocked(patchRadioState).mockClear();
     vi.mocked(getRadioState).mockReturnValue({
       active: 'MAIN', providerGeneration: 31,
       main: {
@@ -114,7 +110,6 @@ describe('makeKeyboardHandlers', () => {
 
     makeKeyboardHandlers().dispatch(makeAction('toggle_split'));
 
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_split', { on: true });
   });
 
@@ -138,7 +133,6 @@ describe('makeKeyboardHandlers', () => {
     makeKeyboardHandlers().dispatch({ action: 'tune', params: { direction: 'up' }, id: 'tune-up', section: 'Tuning', sequence: ['ArrowRight'] });
 
     expect(sendCommand).toHaveBeenCalledWith('set_freq', { freq: 14_075_000, receiver: 0 });
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 
   it('adjusts the frontend tuning step without sending a backend command', () => {
@@ -157,7 +151,6 @@ describe('makeKeyboardHandlers', () => {
 
     makeKeyboardHandlers().dispatch(makeAction('set_active_vfo', { vfo: 'SUB' }));
 
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
     expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'sub' });
 

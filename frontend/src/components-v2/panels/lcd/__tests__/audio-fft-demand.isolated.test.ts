@@ -326,7 +326,9 @@ describe('LCD audio-FFT demand ownership', () => {
       clearCapabilities();
       expect(configure).toHaveBeenCalledTimes(configureCountAfterCleanup);
       await cleanup();
-      expect(mocks.stopPolling).toHaveBeenCalledTimes(1);
+      // MOR-1409 A09b: the HTTP polling writer is gone; WS is the sole state
+      // writer, so cleanup never has polling to stop.
+      expect(mocks.stopPolling).not.toHaveBeenCalled();
       for (const surface of [
         mocks.txController.snapshot,
         mocks.txController.subscribe,

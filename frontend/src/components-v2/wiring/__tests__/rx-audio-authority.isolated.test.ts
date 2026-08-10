@@ -19,9 +19,6 @@ vi.mock('$lib/runtime/commands/radio-intents', async (importOriginal) => {
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
   getRadioState: vi.fn(() => ({ active: 'MAIN', main: { afLevel: 0.42 } })),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  patchReceiver: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -63,7 +60,6 @@ vi.mock('$lib/runtime/frontend-runtime', async () => {
 
 import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
-import { patchActiveReceiver } from '$lib/stores/radio.svelte';
 import { sendCommand } from '$lib/transport/ws-client';
 import { makeRxAudioHandlers as makeRuntimeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
 import { makeRxAudioHandlers as makeWiringRxAudioHandlers } from '../command-bus';
@@ -73,7 +69,6 @@ const commandBusSource = readFileSync('src/components-v2/wiring/command-bus.ts',
 describe('RX-audio presentation command authority (MOR-1124)', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
-    vi.mocked(patchActiveReceiver).mockClear();
     vi.mocked(setMuted).mockClear();
     vi.mocked(setVolume).mockClear();
     vi.mocked(audioManager.startRx).mockClear();
@@ -97,7 +92,6 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
 
     expect(sendCommand).toHaveBeenNthCalledWith(1, 'set_af_level', { level: 0, receiver: 0 });
     expect(sendCommand).toHaveBeenNthCalledWith(2, 'set_af_level', { level: 0.42, receiver: 0 });
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(setMuted).toHaveBeenNthCalledWith(1, true);
     expect(setMuted).toHaveBeenNthCalledWith(2, false);
   });

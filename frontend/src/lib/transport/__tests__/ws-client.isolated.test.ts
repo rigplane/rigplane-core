@@ -31,26 +31,6 @@ vi.mock('../../stores/connection.svelte', () => ({
 
 vi.mock('../../stores/radio.svelte', () => ({
   getRadioState: vi.fn(() => radioStoreMock.current),
-  patchActiveReceiver: vi.fn((patch: Partial<import('../../types/state').ReceiverState>) => {
-    const current = radioStoreMock.current;
-    if (!current) return;
-    const receiver = current.active === 'SUB' ? 'sub' : 'main';
-    radioStoreMock.current = {
-      ...current,
-      [receiver]: {
-        ...current[receiver],
-        ...patch,
-      },
-    };
-  }),
-  patchRadioState: vi.fn((patch: Partial<import('../../types/state').ServerState>) => {
-    const current = radioStoreMock.current;
-    if (!current) return;
-    radioStoreMock.current = {
-      ...current,
-      ...patch,
-    };
-  }),
   resetRadioState: vi.fn(() => {
     radioStoreMock.current = null;
   }),
@@ -93,13 +73,11 @@ vi.mock('../http-client', () => ({
 }));
 
 import { isLiveRadioAvailable, setRadioStatus, setWsConnected } from '../../stores/connection.svelte';
-import { patchActiveReceiver, patchRadioState, resetRadioState, setRadioState } from '../../stores/radio.svelte';
+import { resetRadioState, setRadioState } from '../../stores/radio.svelte';
 
 beforeEach(() => {
   radioStoreMock.current = null;
   vi.mocked(isLiveRadioAvailable).mockReturnValue(true);
-  vi.mocked(patchActiveReceiver).mockClear();
-  vi.mocked(patchRadioState).mockClear();
   vi.mocked(resetRadioState).mockClear();
   vi.mocked(setRadioState).mockClear();
 });
@@ -749,8 +727,6 @@ describe('control channel singleton', () => {
       scopeControls: makeScopeControls(),
     })));
     const before = JSON.stringify(radioStoreMock.current);
-    vi.mocked(patchActiveReceiver).mockClear();
-    vi.mocked(patchRadioState).mockClear();
     const sentBefore = instances[0].sent.length;
 
     const representatives: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
@@ -764,8 +740,6 @@ describe('control channel singleton', () => {
       expect(sendCommand(name, params, `representative-${index}`)).toBe(true);
     });
 
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(JSON.stringify(radioStoreMock.current)).toBe(before);
     expect(instances[0].sent.slice(sentBefore).map((frame) => JSON.parse(frame))).toEqual(
       representatives.map(([name, params], index) => ({
@@ -784,16 +758,12 @@ describe('control channel singleton', () => {
       scopeControls: makeScopeControls(),
     })));
     const before = JSON.stringify(radioStoreMock.current);
-    vi.mocked(patchActiveReceiver).mockClear();
-    vi.mocked(patchRadioState).mockClear();
     const sentBefore = instances[0].sent.length;
 
     LEGACY_OPTIMISTIC_FAMILY.forEach(([name, params], index) => {
       expect(sendCommand(name, params, `family-${index}`)).toBe(true);
     });
 
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(JSON.stringify(radioStoreMock.current)).toBe(before);
     expect(instances[0].sent.slice(sentBefore).map((frame) => JSON.parse(frame))).toEqual(
       LEGACY_OPTIMISTIC_FAMILY.map(([name, params], index) => ({
@@ -811,8 +781,6 @@ describe('control channel singleton', () => {
       main: makeReceiver({ freqHz: 14_074_000 }),
     })));
     const before = JSON.stringify(radioStoreMock.current);
-    vi.mocked(patchActiveReceiver).mockClear();
-    vi.mocked(patchRadioState).mockClear();
 
     const legacySend = sendCommand as unknown as (
       name: string,
@@ -823,8 +791,6 @@ describe('control channel singleton', () => {
     expect(legacySend('set_freq', { freq: 7_074_000 }, 'legacy-opt-in', { optimistic: true })).toBe(true);
     expect(legacySend('set_split', { on: true }, 'legacy-opt-out', { optimistic: false })).toBe(true);
 
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(JSON.stringify(radioStoreMock.current)).toBe(before);
   });
 
@@ -868,10 +834,8 @@ describe('control channel singleton', () => {
     connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, main: makeReceiver({ freqHz: 14_074_000 }) })));
-    vi.mocked(patchActiveReceiver).mockClear();
 
     expect(sendCommand('set_freq', { freq: 7_074_000, receiver: 0 }, 'freq-contradiction')).toBe(true);
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(radioStoreMock.current?.main.freqHz).toBe(14_074_000);
 
     const observed = makeState({ revision: 2, main: makeReceiver({ freqHz: 14_076_000 }) });
@@ -927,15 +891,11 @@ describe('control channel singleton', () => {
       active: 'MAIN',
       main: makeReceiver({ activeSlot: 'A' }),
     })));
-    vi.mocked(patchActiveReceiver).mockClear();
-    vi.mocked(patchRadioState).mockClear();
     const sentBefore = instances[0].sent.length;
 
     expect(sendCommand('set_vfo', { vfo: 'B' }, 'vfo-slot')).toBe(true);
     expect(sendCommand('set_vfo', { vfo: 'SUB' }, 'vfo-receiver')).toBe(true);
 
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(radioStoreMock.current?.active).toBe('MAIN');
     expect(radioStoreMock.current?.main.activeSlot).toBe('A');
     expect(instances[0].sent.slice(sentBefore).map((frame) => JSON.parse(frame))).toEqual([
@@ -953,13 +913,11 @@ describe('control channel singleton', () => {
 
   it('sendCommand blocks live-radio commands while radio health is degraded', async () => {
     vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
-    vi.mocked(patchActiveReceiver).mockClear();
     const { sendCommand } = await import('../ws-client');
 
     const result = sendCommand('set_freq', { freq: 14074000, receiver: 0 });
 
     expect(result).toBe(false);
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 
   it('allows open-socket PTT release aliases while radio health is degraded', async () => {
@@ -1074,12 +1032,10 @@ describe('control channel singleton', () => {
     instances[0].simulateOpen();
 
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 5, ptt: false, split: false })));
-    vi.mocked(patchRadioState).mockClear();
     sendCommand('ptt_on');
     sendCommand('ptt', { state: true });
     sendCommand('ptt_off');
     sendCommand('ptt', { state: false });
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(radioStoreMock.current?.ptt).toBe(false);
     vi.mocked(setRadioState).mockClear();
 

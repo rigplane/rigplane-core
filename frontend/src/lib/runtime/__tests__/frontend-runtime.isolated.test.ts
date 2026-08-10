@@ -17,6 +17,7 @@ import { effect_root, render_effect } from 'svelte/internal/client';
 vi.mock('$lib/transport/http-client', () => ({
   fetchCapabilities: vi.fn(),
   startPolling: vi.fn(),
+  setPollingMultiplier: vi.fn(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
@@ -47,11 +48,9 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null },
+  // `panel-commands.ts` (a frozen A09b seam) reads these directly.
   getRadioState: vi.fn(() => null),
-  setRadioState: vi.fn(),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  resetRadioState: vi.fn(),
+  getActiveReceiver: vi.fn(() => null),
 }));
 
 vi.mock('$lib/stores/connection.svelte', () => ({
@@ -114,11 +113,14 @@ vi.mock('./system-controller', async () => {
 
 // ── Import modules under test after mocks are hoisted ──
 
-import { fetchCapabilities, startPolling } from '$lib/transport/http-client';
+import {
+  fetchCapabilities,
+  startPolling,
+  setPollingMultiplier as httpSetPollingMultiplier,
+} from '$lib/transport/http-client';
 import { connect, getChannel, onMessage, sendCommand, sendRaw } from '$lib/transport/ws-client';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 import { setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
-import { patchActiveReceiver, patchRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { systemController } from '../system-controller';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
@@ -362,10 +364,8 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(clearLegacyPendingModInputRestore).toHaveBeenCalledTimes(1);
     expect(setCapabilities).not.toHaveBeenCalled();
 
-    // 3. polling started once (initial startPolling call; registerPolling registers
-    //    a factory that calls startPolling only when systemController.connect() fires)
-    expect(startPolling).toHaveBeenCalledTimes(1);
-    expect(startPolling).toHaveBeenCalledWith(expect.any(Function), 1000);
+    // 3. No HTTP polling writer (MOR-1409 A09b) — WS is the sole state writer.
+    expect(startPolling).not.toHaveBeenCalled();
 
     // 4. WebSocket connected
     expect(connect).toHaveBeenCalledWith('/api/v1/ws');
@@ -392,18 +392,17 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(cleanup1).toBe(cleanup2);
   });
 
-  it('cleanup function stops polling', async () => {
+  it('cleanup function tears down presentation resources (no polling to stop, MOR-1409 A09b)', async () => {
     const order: string[] = [];
     const teardown = vi.spyOn(presentationResources, 'teardown')
       .mockImplementation(async () => { order.push('resources'); });
-    fakeStopPolling.mockImplementation(() => { order.push('control'); });
     const rt = await freshRuntime();
     const cleanup = await rt.bootstrap();
     await cleanup();
     await cleanup();
-    expect(fakeStopPolling).toHaveBeenCalledTimes(1);
     expect(teardown).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(['resources', 'control']);
+    expect(order).toEqual(['resources']);
+    expect(fakeStopPolling).not.toHaveBeenCalled();
     teardown.mockRestore();
   });
 
@@ -463,27 +462,21 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(subscribeCapabilities).toHaveBeenCalledTimes(2);
   });
 
-  it('startPolling callback calls setRadioState with the received state', async () => {
-    const rt = await freshRuntime();
-    await rt.bootstrap();
-
-    // Capture the callback passed to the (single) startPolling call
-    const calls = (startPolling as ReturnType<typeof vi.fn>).mock.calls;
-    const pollCallback = calls[0][0] as (s: unknown) => void;
-
-    const fakeState = { revision: 1 } as any;
-    pollCallback(fakeState);
-
-    expect(setRadioState).toHaveBeenCalledWith(fakeState);
-  });
-
-  it('registers polling factory with systemController', async () => {
+  it('registers no polling and issues no recurring /state reads (MOR-1409 A09b)', async () => {
     const registerSpy = vi.spyOn(systemController, 'registerPolling');
     const rt = await freshRuntime();
     await rt.bootstrap();
 
-    expect(registerSpy).toHaveBeenCalledTimes(1);
-    expect(registerSpy).toHaveBeenCalledWith(expect.any(Function));
+    expect(registerSpy).not.toHaveBeenCalled();
+    expect(startPolling).not.toHaveBeenCalled();
+  });
+
+  it('setPollingMultiplier is an inert no-op — no http-client cadence state altered (MOR-1409 A09b)', async () => {
+    const rt = await freshRuntime();
+
+    expect(() => rt.setPollingMultiplier(5)).not.toThrow();
+
+    expect(httpSetPollingMultiplier).not.toHaveBeenCalled();
   });
 
   it('serializes concurrent callers — both share single in-flight bootstrap', async () => {
@@ -494,9 +487,9 @@ describe('FrontendRuntime.bootstrap()', () => {
 
     // Each transport function called exactly once, not twice
     expect(subscribeCapabilities).toHaveBeenCalledTimes(1);
-    expect(startPolling).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(sendRaw).toHaveBeenCalledTimes(1);
+    expect(startPolling).not.toHaveBeenCalled();
 
     // Both callers get the same cleanup function
     expect(cleanup1).toBe(cleanup2);
@@ -521,8 +514,6 @@ describe('FrontendRuntime command dispatch and state-hatch removal (MOR-1409 A08
       params: { dual: true },
     });
     expect(sendCommand).not.toHaveBeenCalled();
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
-    expect(patchRadioState).not.toHaveBeenCalled();
 
     rt.send('switch_scope_receiver', { receiver: 1 });
     expect(dispatchRadioIntent).toHaveBeenCalledTimes(2);
@@ -565,8 +556,6 @@ describe('FrontendRuntime command dispatch and state-hatch removal (MOR-1409 A08
 
     expect(surface.patchActiveReceiver).toBeUndefined();
     expect(surface.patchState).toBeUndefined();
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
-    expect(patchRadioState).not.toHaveBeenCalled();
   });
 });
 
