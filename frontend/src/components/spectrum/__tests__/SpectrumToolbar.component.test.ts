@@ -555,18 +555,30 @@ describe('source and enforcement boundary', () => {
     expect(source).not.toMatch(/\.agc\b|\.antenna\b|\.audioRouting\b|\.band\b|\.cw\b|\.dsp\b|\.filter\b|\.mode\b|\.rfFrontEnd\b|\.ritXit\b|\.rxAudio\b|\.scan\b|\.tx\b|\.vfo\b|\.vox\b/);
   });
 
-  it('removes only Toolbar presentation exceptions and preserves the A07 owner', () => {
+  it('removes only Toolbar and A07 presentation/writer exceptions', () => {
     const plugin = readFileSync(pluginPath, 'utf8');
     const contract = readFileSync(contractPath, 'utf8');
     expect(plugin).not.toContain("  'src/components/spectrum/SpectrumToolbar.svelte',");
     expect(contract).not.toContain('  { path = "src/components/spectrum/SpectrumToolbar.svelte", count = 1, owner = "MOR-1409" },');
-    expect(plugin).toContain("  'src/components/spectrum/ScopeSettingsPopover.svelte',");
-    expect(contract).toContain('  { path = "src/components/spectrum/ScopeSettingsPopover.svelte", count = 1, owner = "MOR-1409" },');
+    for (const path of [
+      'src/components-v2/layout/VfoHeader.svelte',
+      'src/components/spectrum/ScopeSettingsPopover.svelte',
+      'src/lib/media/media-session.ts',
+    ]) {
+      expect(plugin).not.toContain(`  '${path}',`);
+      expect(contract).not.toContain(`  { path = "${path}", count = 1, owner = "MOR-1409" },`);
+    }
+    expect(plugin).toContain("  'src/components-v2/layout/StatusBar.svelte',");
+    expect(plugin).toContain("  'src/components/spectrum/EiBiBrowser.svelte',");
+    expect(contract).toContain('  { path = "src/components-v2/layout/StatusBar.svelte", count = 1, owner = "MOR-1409" },');
+    expect(contract).toContain('  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },');
   });
 
-  it('keeps ScopeSettingsPopover and all Toolbar CSS byte-frozen', () => {
-    const popoverHash = createHash('sha256').update(readFileSync(popoverPath)).digest('hex');
-    expect(popoverHash).toBe('95315314a00536667b30ff47d99249852884f8a1cbdb3966127b62c7987cb5bc');
+  it('releases the old popover hash pin while keeping all Toolbar CSS byte-frozen', () => {
+    const popover = readFileSync(popoverPath, 'utf8');
+    expect(popover).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
+    expect(popover).toContain('bindSemanticSurfaceHandlers().scopeControls');
+    expect(popover).not.toMatch(/stores\/radio\.svelte|sendCommand|\?\? false/);
     const source = readFileSync(sourcePath, 'utf8');
     const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
     expect(cssHash).toBe('eb9e75ed2988082d6966d6727f73d3d77651086df38b1458aed3e9c274725fb7');

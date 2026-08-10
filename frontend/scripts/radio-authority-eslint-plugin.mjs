@@ -19,15 +19,11 @@ const SCOPE_METADATA = new Set([
 
 const LEGACY_PRESENTATION_AUTHORITY = new Set([
   'src/components-v2/layout/StatusBar.svelte',
-  'src/components-v2/layout/VfoHeader.svelte',
   'src/components/spectrum/EiBiBrowser.svelte',
-  'src/components/spectrum/ScopeSettingsPopover.svelte',
 ]);
 const LEGACY_WRITER_OWNERS = new Set([
-  'src/components-v2/layout/VfoHeader.svelte',
   'src/components-v2/wiring/command-bus.ts',
   'src/components-v2/wiring/state-adapter.ts',
-  'src/lib/media/media-session.ts',
   'src/lib/runtime/adapters/mod-input-auto.svelte.ts',
   'src/lib/runtime/commands/panel-commands.ts',
   'src/lib/runtime/frontend-runtime.ts',

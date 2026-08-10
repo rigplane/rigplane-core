@@ -561,9 +561,7 @@ owner = "MOR-1409"
 reason = "Presentation consumes read-only view models and typed intent facades; exact legacy edges may only shrink"
 exceptions = [
   { path = "src/components-v2/layout/StatusBar.svelte", count = 1, owner = "MOR-1409" },
-  { path = "src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
   { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },
-  { path = "src/components/spectrum/ScopeSettingsPopover.svelte", count = 1, owner = "MOR-1409" },
 ]
 
 [[guards]]
@@ -572,10 +570,8 @@ kind = "legacyWriterOwners"
 owner = "MOR-1409"
 reason = "Only the WS reducer is the final owner; exact migration debt cannot expand"
 exceptions = [
-  { path = "src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
   { path = "src/components-v2/wiring/command-bus.ts", count = 1, owner = "MOR-1409" },
   { path = "src/components-v2/wiring/state-adapter.ts", count = 1, owner = "MOR-1409" },
-  { path = "src/lib/media/media-session.ts", count = 1, owner = "MOR-1409" },
   { path = "src/lib/runtime/adapters/mod-input-auto.svelte.ts", count = 1, owner = "MOR-1409" },
   { path = "src/lib/runtime/commands/panel-commands.ts", count = 1, owner = "MOR-1409" },
   { path = "src/lib/runtime/frontend-runtime.ts", count = 1, owner = "MOR-1409" },

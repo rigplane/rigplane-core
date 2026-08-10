@@ -6,9 +6,10 @@
  * A silent audio loop keeps the MediaSession active on mobile browsers.
  */
 
-import { tuneBy } from '../stores/tuning.svelte';
-import { patchActiveReceiver } from '../stores/radio.svelte';
-import { sendCommand } from '../transport/ws-client';
+import { runtime } from '../runtime/frontend-runtime';
+import { toRadioViewModel } from '../runtime/adapters/radio-view-model-adapter';
+import { getVfoHandlers } from '../runtime/adapters/panel-adapters';
+import { getTuningStep, snapToStep } from '../stores/tuning.svelte';
 
 const TAG = '[media-session]';
 
@@ -16,13 +17,26 @@ let audioCtx: AudioContext | null = null;
 let oscillator: OscillatorNode | null = null;
 let gainNode: GainNode | null = null;
 let isInitialized = false;
+let vfoHandlers: ReturnType<typeof getVfoHandlers> | null = null;
 
 /** Tune the active receiver by `steps` increments and send to radio. */
 function tuneStep(steps: number): void {
-  const newFreq = tuneBy(steps);
-  if (newFreq <= 0) return;
-  patchActiveReceiver({ freqHz: newFreq }, true);
-  sendCommand('set_freq', { freq: newFreq, receiver: 0 });
+  if (!vfoHandlers) return;
+  const view = toRadioViewModel(runtime.state, runtime.caps);
+  if (!view || view.activeReceiver.status !== 'known') return;
+  const receiver = view.activeReceiver.receiver;
+  const active = view.vfos.filter((vfo) =>
+    vfo.isActive && vfo.receiver === receiver);
+  if (active.length !== 1) return;
+  const current = active[0].frequencyHz;
+  const step = getTuningStep();
+  if (!Number.isSafeInteger(current) || current === null || current <= 0
+    || !Number.isSafeInteger(step) || step <= 0) return;
+  const candidate = current + steps * step;
+  if (!Number.isSafeInteger(candidate)) return;
+  const newFreq = snapToStep(candidate);
+  if (!Number.isSafeInteger(newFreq) || newFreq <= 0 || newFreq === current) return;
+  vfoHandlers.onFreqChange(newFreq, receiver === 'SUB' ? 1 : 0);
 }
 
 /** Start a silent audio loop so the browser keeps MediaSession alive. */
@@ -69,6 +83,7 @@ export function initMediaSession(): void {
     return;
   }
 
+  vfoHandlers ??= getVfoHandlers();
   isInitialized = true;
   startSilentAudio();
 

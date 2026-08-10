@@ -1,223 +1,343 @@
-/**
- * Tests for the SCOPE status block in VfoHeader bridge (issue #832).
- *
- * The block renders only when `scopeStatus` prop is non-null, shows the
- * MAIN/SUB source pills + DUAL toggle only when dual receiver is available,
- * and always shows the SPAN/SPEED read-only digest.
- */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushSync, mount, unmount } from 'svelte';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import type { VfoStateProps } from '../layout-utils';
 
-// ── Mocks ──────────────────────────────────────────────────────────────────
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  hasDualReceiver: vi.fn(() => true),
-  hasTx: vi.fn(() => true),
-  hasSpectrum: vi.fn(() => false),
-  hasAnyScope: vi.fn(() => false),
-  hasAudioFft: vi.fn(() => false),
-  hasCapability: vi.fn(() => false),
-  getScopeSource: vi.fn(() => null),
-  vfoLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'MAIN' : 'SUB')),
-  receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
-  vfoSlotLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B')),
-  getCapabilities: vi.fn(() => ({ freqRanges: [], modes: [], filters: [] })),
-  getVfoScheme: vi.fn(() => 'main_sub'),
-  getAgcModes: vi.fn(() => [0, 1, 2, 3]),
-  getAgcLabels: vi.fn(() => ({ 0: 'OFF', 1: 'FAST', 2: 'MID', 3: 'SLOW' })),
-  getSupportedModes: vi.fn(() => ['USB', 'LSB', 'CW', 'AM', 'FM']),
-  getSupportedFilters: vi.fn(() => ['FIL1', 'FIL2', 'FIL3']),
-  getAttValues: vi.fn(() => [0, 10, 20]),
-  getAttLabels: vi.fn(() => ({ 0: '0dB', 10: '10dB', 20: '20dB' })),
-  getPreValues: vi.fn(() => [0, 1, 2]),
-  getPreLabels: vi.fn(() => ({ 0: 'OFF', 1: 'PRE1', 2: 'PRE2' })),
-  getAntennaCount: vi.fn(() => 1),
-  getSmeterCalibration: vi.fn(() => null),
-  getSmeterRedline: vi.fn(() => null),
-  getMeterCalibration: vi.fn(() => null),
-  getMeterRedline: vi.fn(() => null),
-  getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
+const childHarness = vi.hoisted(() => ({
+  vfoOpsProps: null as Record<string, any> | null,
+  dualVfoProps: null as Record<string, any> | null,
+  vfoPanelProps: null as Record<string, any> | null,
 }));
 
+vi.mock('../../vfo/VfoOps.svelte', () => ({
+  default: function VfoOpsStub(_anchor: unknown, props: Record<string, any>) {
+    childHarness.vfoOpsProps = props;
+    return {};
+  },
+}));
+vi.mock('../../panels/vfo/DualVfoDisplay.svelte', () => ({
+  default: function DualVfoDisplayStub(_anchor: unknown, props: Record<string, any>) {
+    childHarness.dualVfoProps = props;
+    return {};
+  },
+}));
+vi.mock('../../vfo/VfoPanel.svelte', () => ({
+  default: function VfoPanelStub(_anchor: unknown, props: Record<string, any>) {
+    childHarness.vfoPanelProps = props;
+    return {};
+  },
+}));
+
+const capabilityHarness = vi.hoisted(() => ({ dual: true, scope: true }));
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  hasDualReceiver: vi.fn(() => capabilityHarness.dual),
+  hasCapability: vi.fn((name: string) => name === 'scope' && capabilityHarness.scope),
+  getVfoScheme: vi.fn(() => 'main_sub'),
+}));
+
+const runtimeHarness = vi.hoisted(() => ({
+  runtime: {
+    state: Object.freeze({ identity: 'header-state' }),
+    caps: Object.freeze({ identity: 'header-capabilities' }),
+  },
+}));
+
+const authorityHarness = vi.hoisted(() => {
+  const harness = {
+    current: null as any,
+    toSpectrumAuthority: vi.fn(() => harness.current),
+  };
+  return harness;
+});
+
+const binderHarness = vi.hoisted(() => {
+  const scopeControls = Object.freeze({
+    onModeChange: vi.fn(), onEdgeChange: vi.fn(), onSpanChange: vi.fn(),
+    onSpeedChange: vi.fn(), onHoldChange: vi.fn(), onRefChange: vi.fn(),
+    onDualChange: vi.fn(), onReceiverChange: vi.fn(), onDuringTxChange: vi.fn(),
+    onCenterTypeChange: vi.fn(), onVbwChange: vi.fn(), onRbwChange: vi.fn(),
+  });
+  const bound = Object.freeze({ scopeControls });
+  const vfo = Object.freeze({
+    onMainVfoClick: vi.fn(),
+    onSubVfoClick: vi.fn(),
+    onFreqChange: vi.fn(),
+  });
+  return {
+    scopeControls,
+    vfo,
+    bindSemanticSurfaceHandlers: vi.fn(() => bound),
+    getVfoHandlers: vi.fn(() => vfo),
+  };
+});
+
+const storeAlarm = vi.hoisted(() => ({ patchRadioState: vi.fn() }));
+
+vi.mock('$lib/runtime/frontend-runtime', () => ({ runtime: runtimeHarness.runtime }));
+vi.mock('$lib/runtime/adapters/scope-adapter', () => ({
+  toSpectrumAuthority: authorityHarness.toSpectrumAuthority,
+}));
+vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+  bindSemanticSurfaceHandlers: binderHarness.bindSemanticSurfaceHandlers,
+  getVfoHandlers: binderHarness.getVfoHandlers,
+}));
 vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null },
   getActiveReceiver: vi.fn(),
   getRadioState: vi.fn(),
   patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
+  patchRadioState: storeAlarm.patchRadioState,
   patchReceiver: vi.fn(),
 }));
 
-import VfoHeader, { type ScopeStatusProps } from '../VfoHeader.svelte';
-import { hasDualReceiver } from '$lib/stores/capabilities.svelte';
-import type { VfoStateProps } from '../layout-utils';
+import VfoHeader from '../VfoHeader.svelte';
+
+type Field<T> = {
+  reading: { status: 'known'; value: T } | { status: 'unknown' };
+  availability: { structural: boolean; operational: boolean };
+};
+
+function field<T>(value: T, options: {
+  known?: boolean;
+  structural?: boolean;
+  operational?: boolean;
+} = {}): Field<T> {
+  const { known = true, structural = true, operational = true } = options;
+  return Object.freeze({
+    reading: known
+      ? Object.freeze({ status: 'known' as const, value })
+      : Object.freeze({ status: 'unknown' as const }),
+    availability: Object.freeze({ structural, operational }),
+  });
+}
+
+function scopeFacts(overrides: Record<string, unknown> = {}) {
+  return Object.freeze({
+    mode: field(0), edge: field(1), span: field(3), speed: field(1),
+    hold: field(false), refDb: field(0), dual: field(false), receiver: field(0),
+    duringTx: field(false), centerType: field(0), vbwNarrow: field(false), rbw: field(0),
+    ...overrides,
+  });
+}
+
+function authority(overrides: Record<string, unknown> = {}) {
+  return Object.freeze({ scopeControls: scopeFacts(), ...overrides });
+}
 
 const mainVfo: VfoStateProps = {
-  receiver: 'main',
-  freq: 14074000,
-  mode: 'USB',
-  filter: 'FIL1',
-  sValue: 0,
-  isActive: true,
-  badges: {},
+  receiver: 'main', freq: 14_074_000, mode: 'USB', filter: 'FIL1',
+  sValue: 0, isActive: true, badges: {},
 };
-
 const subVfo: VfoStateProps = {
-  receiver: 'sub',
-  freq: 7074000,
-  mode: 'LSB',
-  filter: 'FIL1',
-  sValue: 0,
-  isActive: false,
-  badges: {},
+  receiver: 'sub', freq: 7_074_000, mode: 'LSB', filter: 'FIL1',
+  sValue: 0, isActive: false, badges: {},
 };
 
-let components: ReturnType<typeof mount>[] = [];
-const mountedTargets: HTMLElement[] = [];
+const components: ReturnType<typeof mount>[] = [];
+const targets: HTMLElement[] = [];
 
-function mountHeader(props: Record<string, unknown> = {}) {
+function mountHeader(overrides: Record<string, unknown> = {}) {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  mountedTargets.push(target);
-  const component = mount(VfoHeader, {
-    target,
-    props: {
-      mainVfo,
-      subVfo,
-      splitActive: false,
-      dualWatchActive: false,
-      txVfo: 'main',
-      ...props,
-    },
-  });
-  flushSync();
+  targets.push(target);
+  const props = {
+    mainVfo: { ...mainVfo },
+    subVfo: { ...subVfo },
+    splitActive: false,
+    dualWatchActive: false,
+    txVfo: 'main' as const,
+    scopeStatus: { dual: true, receiver: 1, span: 7, speed: 2 },
+    ...overrides,
+  };
+  const component = mount(VfoHeader, { target, props });
   components.push(component);
-  return target;
+  flushSync();
+  return { target, props };
+}
+
+function button(root: HTMLElement, label: string): HTMLButtonElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
+    .find((item) => item.textContent?.trim() === label);
 }
 
 beforeEach(() => {
-  components = [];
-  mountedTargets.length = 0;
   vi.clearAllMocks();
-  vi.mocked(hasDualReceiver).mockReturnValue(true);
+  childHarness.vfoOpsProps = null;
+  childHarness.dualVfoProps = null;
+  childHarness.vfoPanelProps = null;
+  capabilityHarness.dual = true;
+  capabilityHarness.scope = true;
+  authorityHarness.current = authority();
 });
 
 afterEach(() => {
-  components.forEach((c) => unmount(c));
-  for (const t of mountedTargets) {
-    t.remove();
-  }
-  mountedTargets.length = 0;
+  while (components.length > 0) unmount(components.pop()!);
+  while (targets.length > 0) targets.pop()!.remove();
 });
 
-describe('VfoHeader SCOPE status block', () => {
-  it('hides the block when scopeStatus is null', () => {
-    const target = mountHeader({ scopeStatus: null });
+describe('VfoHeader confirmed receiver authority', () => {
+  it('binds one canonical VFO and scope object per mount', () => {
+    mountHeader();
+    expect(binderHarness.getVfoHandlers).toHaveBeenCalledTimes(1);
+    expect(binderHarness.bindSemanticSurfaceHandlers).toHaveBeenCalledTimes(1);
+    expect(authorityHarness.toSpectrumAuthority).toHaveBeenCalledWith(
+      runtimeHarness.runtime.state,
+      runtimeHarness.runtime.caps,
+    );
+  });
+
+  it('VfoOps receiver selection calls only the canonical handler and leaves highlight observed', () => {
+    const passedSub = vi.fn();
+    mountHeader({ onSubVfoClick: passedSub });
+    expect(childHarness.vfoOpsProps?.activeVfo).toBe('MAIN');
+    childHarness.vfoOpsProps?.onActiveVfoChange('SUB');
+    flushSync();
+    expect(binderHarness.vfo.onSubVfoClick).toHaveBeenCalledTimes(1);
+    expect(binderHarness.vfo.onMainVfoClick).not.toHaveBeenCalled();
+    expect(passedSub).not.toHaveBeenCalled();
+    expect(storeAlarm.patchRadioState).not.toHaveBeenCalled();
+    expect(childHarness.vfoOpsProps?.activeVfo).toBe('MAIN');
+  });
+
+  it('the retained DualVfoDisplay compatibility callback uses the same canonical handlers', () => {
+    const passedMain = vi.fn();
+    const passedSub = vi.fn();
+    mountHeader({ onMainVfoClick: passedMain, onSubVfoClick: passedSub });
+    childHarness.dualVfoProps?.onActivate('SUB');
+    childHarness.dualVfoProps?.onActivate('MAIN');
+    expect(binderHarness.vfo.onSubVfoClick).toHaveBeenCalledTimes(1);
+    expect(binderHarness.vfo.onMainVfoClick).toHaveBeenCalledTimes(1);
+    expect(passedMain).not.toHaveBeenCalled();
+    expect(passedSub).not.toHaveBeenCalled();
+    expect(storeAlarm.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('a contradictory observation rerender wins immediately and no click creates truth', () => {
+    mountHeader();
+    childHarness.vfoOpsProps?.onActiveVfoChange('SUB');
+    expect(childHarness.vfoOpsProps?.activeVfo).toBe('MAIN');
+    unmount(components.pop()!);
+    targets.pop()!.remove();
+    mountHeader({
+      mainVfo: { ...mainVfo, isActive: false },
+      subVfo: { ...subVfo, isActive: true },
+    });
+    expect(childHarness.vfoOpsProps?.activeVfo).toBe('SUB');
+    expect(storeAlarm.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('single-MAIN path also uses the canonical VFO handler', () => {
+    capabilityHarness.dual = false;
+    const passedMain = vi.fn();
+    mountHeader({ onMainVfoClick: passedMain });
+    childHarness.vfoPanelProps?.onVfoClick();
+    expect(binderHarness.vfo.onMainVfoClick).toHaveBeenCalledTimes(1);
+    expect(passedMain).not.toHaveBeenCalled();
+  });
+});
+
+describe('VfoHeader scope bridge authority', () => {
+  it('ignores contradictory legacy props and renders the selector digest', () => {
+    const { target } = mountHeader({
+      scopeStatus: { dual: true, receiver: 1, span: 7, speed: 2 },
+    });
+    const digest = target.querySelector('.scope-digest')?.textContent?.replace(/\s+/g, ' ').trim();
+    expect(digest).toBe('±25k MID');
+    expect(button(target, 'MAIN')?.classList.contains('active')).toBe(true);
+    expect(button(target, 'SUB')?.classList.contains('active')).toBe(false);
+    expect(button(target, 'DUAL')?.classList.contains('active')).toBe(false);
+  });
+
+  it('valid source and dual gestures call exactly one bound typed action', () => {
+    const passedReceiver = vi.fn();
+    const passedDual = vi.fn();
+    const { target } = mountHeader({
+      onScopeReceiverChange: passedReceiver,
+      onScopeDualToggle: passedDual,
+    });
+    button(target, 'SUB')?.click();
+    expect(binderHarness.scopeControls.onReceiverChange).toHaveBeenCalledWith(1);
+    expect(binderHarness.scopeControls.onReceiverChange).toHaveBeenCalledTimes(1);
+    expect(passedReceiver).not.toHaveBeenCalled();
+    vi.clearAllMocks();
+    button(target, 'DUAL')?.click();
+    expect(binderHarness.scopeControls.onDualChange).toHaveBeenCalledWith(true);
+    expect(binderHarness.scopeControls.onDualChange).toHaveBeenCalledTimes(1);
+    expect(passedDual).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['unknown', { known: false }],
+    ['structural false', { structural: false }],
+    ['operational false', { operational: false }],
+  ] as const)('%s scope facts render neutral and disable source/dual actions', (_label, options) => {
+    authorityHarness.current = authority({
+      scopeControls: scopeFacts({
+        dual: field(false, options),
+        receiver: field(0, options),
+        span: field(3, options),
+        speed: field(1, options),
+      }),
+    });
+    const { target } = mountHeader();
+    expect(target.querySelector('.scope-digest')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('— —');
+    for (const label of ['MAIN', 'SUB', 'DUAL']) {
+      expect(button(target, label)?.disabled).toBe(true);
+      expect(button(target, label)?.classList.contains('active')).toBe(false);
+      button(target, label)?.click();
+    }
+    expect(binderHarness.scopeControls.onReceiverChange).not.toHaveBeenCalled();
+    expect(binderHarness.scopeControls.onDualChange).not.toHaveBeenCalled();
+  });
+
+  it('malformed and selector-null facts never restore MAIN/±25k/MID defaults', () => {
+    authorityHarness.current = authority({
+      scopeControls: scopeFacts({
+        receiver: field(2), dual: field('off'), span: field(99), speed: field(99),
+      }),
+    });
+    const malformed = mountHeader().target;
+    expect(malformed.querySelector('.scope-digest')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('— —');
+    expect(button(malformed, 'MAIN')?.classList.contains('active')).toBe(false);
+    expect(button(malformed, 'SUB')?.classList.contains('active')).toBe(false);
+
+    unmount(components.pop()!);
+    targets.pop()!.remove();
+    authorityHarness.current = null;
+    const absent = mountHeader().target;
+    expect(absent.querySelector('.scope-digest')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('— —');
+  });
+
+  it('one physical receiver hides source and dual controls but keeps neutral/read-only digest', () => {
+    capabilityHarness.dual = false;
+    authorityHarness.current = authority({
+      scopeControls: scopeFacts({
+        dual: field(false, { structural: false }),
+        receiver: field(0, { structural: false }),
+      }),
+    });
+    const { target } = mountHeader();
+    expect(button(target, 'MAIN')).toBeUndefined();
+    expect(button(target, 'SUB')).toBeUndefined();
+    expect(button(target, 'DUAL')).toBeUndefined();
+    expect(target.querySelector('.scope-digest')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('±25k MID');
+  });
+
+  it('hides the entire bridge only when structural scope capability is absent', () => {
+    capabilityHarness.scope = false;
+    const { target } = mountHeader();
     expect(target.querySelector('[data-testid="scope-status"]')).toBeNull();
   });
+});
 
-  it('renders SCOPE title when scopeStatus is provided', () => {
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus });
-    const block = target.querySelector('[data-testid="scope-status"]');
-    expect(block).not.toBeNull();
-    expect(block!.textContent).toContain('SCOPE');
-  });
-
-  it('renders MAIN and SUB pills when dual receiver', () => {
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus });
-    const pills = Array.from(target.querySelectorAll<HTMLButtonElement>('.scope-pill'));
-    const labels = pills.map((p) => p.textContent?.trim());
-    expect(labels).toEqual(['MAIN', 'SUB']);
-  });
-
-  it('marks the active scope source pill as active (receiver=0 → MAIN)', () => {
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus });
-    const pills = Array.from(target.querySelectorAll<HTMLButtonElement>('.scope-pill'));
-    expect(pills[0].classList.contains('active')).toBe(true);
-    expect(pills[1].classList.contains('active')).toBe(false);
-  });
-
-  it('marks SUB pill active when receiver=1', () => {
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 1, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus });
-    const pills = Array.from(target.querySelectorAll<HTMLButtonElement>('.scope-pill'));
-    expect(pills[0].classList.contains('active')).toBe(false);
-    expect(pills[1].classList.contains('active')).toBe(true);
-  });
-
-  it('renders DUAL toggle with active state when scopeStatus.dual is true', () => {
-    const scopeStatus: ScopeStatusProps = { dual: true, receiver: 0, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus });
-    const dualBtn = target.querySelector<HTMLButtonElement>('.scope-dual');
-    expect(dualBtn).not.toBeNull();
-    expect(dualBtn!.textContent?.trim()).toBe('DUAL');
-    expect(dualBtn!.classList.contains('active')).toBe(true);
-  });
-
-  it('hides MAIN/SUB pills and DUAL toggle when dual receiver is not available', () => {
-    vi.mocked(hasDualReceiver).mockReturnValue(false);
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus });
-    expect(target.querySelector('.scope-pill')).toBeNull();
-    expect(target.querySelector('.scope-dual')).toBeNull();
-    // Digest still present
-    expect(target.querySelector('.scope-digest')).not.toBeNull();
-  });
-
-  it('renders SPAN/SPEED digest from scopeStatus', () => {
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus });
-    const digest = target.querySelector('.scope-digest');
-    expect(digest).not.toBeNull();
-    const text = digest!.textContent!.replace(/\s+/g, ' ').trim();
-    expect(text).toBe('\u00b125k MID');
-  });
-
-  it('renders correct digest values for different span/speed indices', () => {
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 5, speed: 0 };
-    const target = mountHeader({ scopeStatus });
-    const digest = target.querySelector('.scope-digest');
-    const text = digest!.textContent!.replace(/\s+/g, ' ').trim();
-    expect(text).toBe('\u00b1100k FST');
-  });
-
-  it('falls back to default digest labels for out-of-range indices', () => {
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 99, speed: 99 };
-    const target = mountHeader({ scopeStatus });
-    const digest = target.querySelector('.scope-digest');
-    const text = digest!.textContent!.replace(/\s+/g, ' ').trim();
-    expect(text).toBe('\u00b125k MID');
-  });
-
-  it('invokes onScopeReceiverChange with 1 when SUB pill is clicked', () => {
-    const onScopeReceiverChange = vi.fn();
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus, onScopeReceiverChange });
-    const pills = Array.from(target.querySelectorAll<HTMLButtonElement>('.scope-pill'));
-    pills[1].click();
-    flushSync();
-    expect(onScopeReceiverChange).toHaveBeenCalledWith(1);
-  });
-
-  it('invokes onScopeReceiverChange with 0 when MAIN pill is clicked', () => {
-    const onScopeReceiverChange = vi.fn();
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 1, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus, onScopeReceiverChange });
-    const pills = Array.from(target.querySelectorAll<HTMLButtonElement>('.scope-pill'));
-    pills[0].click();
-    flushSync();
-    expect(onScopeReceiverChange).toHaveBeenCalledWith(0);
-  });
-
-  it('invokes onScopeDualToggle when DUAL is clicked', () => {
-    const onScopeDualToggle = vi.fn();
-    const scopeStatus: ScopeStatusProps = { dual: false, receiver: 0, span: 3, speed: 1 };
-    const target = mountHeader({ scopeStatus, onScopeDualToggle });
-    const dualBtn = target.querySelector<HTMLButtonElement>('.scope-dual');
-    dualBtn!.click();
-    flushSync();
-    expect(onScopeDualToggle).toHaveBeenCalledTimes(1);
+describe('VfoHeader source boundary', () => {
+  it('has one selector/binder path and no optimistic or legacy action authority', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/components-v2/layout/VfoHeader.svelte'), 'utf8');
+    expect(source).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
+    expect(source.match(/bindSemanticSurfaceHandlers\(\)/g)).toHaveLength(1);
+    expect(source.match(/getVfoHandlers\(\)/g)).toHaveLength(1);
+    expect(source).not.toMatch(/patchRadioState|stores\/radio\.svelte/);
+    expect(source).not.toMatch(/onScopeReceiverChange\?\.|onScopeDualToggle\?\./);
   });
 });
