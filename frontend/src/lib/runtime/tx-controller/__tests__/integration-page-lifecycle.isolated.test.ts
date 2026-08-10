@@ -149,7 +149,6 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
         return h.runtimeCaps;
       },
       bootstrap: h.bootstrap,
-      setPollingMultiplier: vi.fn(),
     },
     presentationResources: {
       snapshot: () => ({ demand: 0 }),

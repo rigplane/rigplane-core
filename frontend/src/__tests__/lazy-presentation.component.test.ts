@@ -52,7 +52,6 @@ vi.mock('../lib/runtime/frontend-runtime', () => ({
     get state() { return { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: false }; },
     get caps() { return { tx: true, capabilities: ['tx'] }; },
     bootstrap: h.bootstrap,
-    setPollingMultiplier: vi.fn(),
   },
   presentationResources: {
     snapshot: (resource: string) => ({ demand: h.demand.get(resource) ?? 0 }),

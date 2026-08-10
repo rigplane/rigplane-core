@@ -112,8 +112,7 @@ vi.mock('./system-controller', async () => {
 // ── Import modules under test after mocks are hoisted ──
 
 import { fetchCapabilities } from '$lib/transport/http-client';
-import { connect, getChannel, onMessage, sendCommand, sendRaw } from '$lib/transport/ws-client';
-import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
+import { connect, getChannel, onMessage, sendRaw } from '$lib/transport/ws-client';
 import { setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
@@ -449,10 +448,15 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(subscribeCapabilities).toHaveBeenCalledTimes(2);
   });
 
-  it('setPollingMultiplier is an inert no-op (MOR-1409 A09b; the HTTP-client cadence state it used to feed is gone as of A10)', async () => {
+  // MOR-1409 A13b (correction 5246842617 §5): the inert no-op stub is
+  // deleted in the same head that removes `send()`'s last two production
+  // callers (RadioLayout.svelte's scope-dual/scope-receiver toggles) — no
+  // separate post-A13 micro-slice is needed for either deletion.
+  it('no longer exposes setPollingMultiplier (MOR-1409 A13b — the inert A09b stub is deleted)', async () => {
     const rt = await freshRuntime();
+    const surface = rt as unknown as Record<string, unknown>;
 
-    expect(() => rt.setPollingMultiplier(5)).not.toThrow();
+    expect(surface.setPollingMultiplier).toBeUndefined();
   });
 
   it('serializes concurrent callers — both share single in-flight bootstrap', async () => {
@@ -477,50 +481,16 @@ describe('FrontendRuntime command dispatch and state-hatch removal (MOR-1409 A08
     configureAcceptedCapabilities();
   });
 
-  it('delegates send() to the typed facade exactly once with no raw transport', async () => {
+  // MOR-1409 A13b (correction 5246842617 §5): `send()` is deleted in the
+  // same head that migrates its last two production callers
+  // (RadioLayout.svelte's scope-dual/scope-receiver toggles) to
+  // `bindSemanticSurfaceHandlers().scopeControls`. Same surface-absence
+  // idiom as the `patchActiveReceiver`/`patchState` pin below (A08).
+  it('no longer exposes send() (MOR-1409 A13b — the typed-facade delegator is deleted)', async () => {
     const rt = await freshRuntime();
+    const surface = rt as unknown as Record<string, unknown>;
 
-    rt.send('set_scope_dual', { dual: true });
-
-    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
-      name: 'set_scope_dual',
-      params: { dual: true },
-    });
-    expect(sendCommand).not.toHaveBeenCalled();
-
-    rt.send('switch_scope_receiver', { receiver: 1 });
-    expect(dispatchRadioIntent).toHaveBeenCalledTimes(2);
-    expect(dispatchRadioIntent).toHaveBeenLastCalledWith({
-      name: 'switch_scope_receiver',
-      params: { receiver: 1 },
-    });
-    expect(sendCommand).not.toHaveBeenCalled();
-  });
-
-  it('defaults missing params to an empty object', async () => {
-    const rt = await freshRuntime();
-
-    rt.send('vfo_swap');
-
-    expect(dispatchRadioIntent).toHaveBeenCalledExactlyOnceWith({
-      name: 'vfo_swap',
-      params: {},
-    });
-  });
-
-  it('swallows facade validation errors without throwing or double-dispatching', async () => {
-    const rt = await freshRuntime();
-    vi.mocked(dispatchRadioIntent).mockImplementationOnce(() => {
-      throw new TypeError('Only a known non-PTT radio intent may be dispatched');
-    });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(() => rt.send('definitely_not_a_command')).not.toThrow();
-
-    expect(dispatchRadioIntent).toHaveBeenCalledTimes(1);
-    expect(sendCommand).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
+    expect(surface.send).toBeUndefined();
   });
 
   it('no longer exposes the patchActiveReceiver/patchState escape hatches', async () => {

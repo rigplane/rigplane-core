@@ -14,7 +14,7 @@
   
   import { runtime } from '$lib/runtime';
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
-  import { getKeyboardConfig, hasCapability, hasSpectrum } from '$lib/stores/capabilities.svelte';
+  import { getKeyboardConfig, hasSpectrum } from '$lib/stores/capabilities.svelte';
   import type { SkinId } from '../../skins/registry';
   import { declaredSurfaces, getLayout } from '../../presentation/layouts/contract';
   // Side-effect import: populates the LAYOUT registry `getLayout` resolves
@@ -40,17 +40,10 @@
     vfoLayoutStyleVars,
     type VfoLayoutScaleOverrides,
   } from './vfo-layout-tokens';
+  import { toVfoProps, toVfoOpsProps } from '$lib/runtime/props/panel-props';
   import {
-    toVfoProps, toVfoOpsProps,
-    toRfFrontEndProps, toAgcProps, toRitXitProps,
-    toBandSelectorProps, toDspProps, toCwProps,
-  } from '../wiring/state-adapter';
-  import {
-    makeKeyboardHandlers, makeVfoHandlers,
-    makeRfFrontEndHandlers, makeAgcHandlers, makeRitXitHandlers,
-    makeBandHandlers, makePresetHandlers, makeDspHandlers, makeCwPanelHandlers,
-    makeSystemHandlers,
-  } from '../wiring/command-bus';
+    getVfoHandlers, getKeyboardHandlers, getSystemHandlers,
+  } from '$lib/runtime/adapters/panel-adapters';
   import MobileRadioLayout from './MobileRadioLayout.svelte';
   import LcdLayout from './LcdLayout.svelte';
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
@@ -167,28 +160,19 @@
     txState.radioTx === 'on' || txState.txRisk === 'confirmed-on' || txState.txRisk === 'uncertain',
   );
 
-  // Scope digest for VfoHeader bridge (issue #832).  Gate on `scope` capability;
-  // VfoHeader treats null as "hide the block".
-  let scopeStatus = $derived.by(() => {
-    if (!hasCapability('scope')) return null;
-    const sc = (radioState as { scopeControls?: { dual?: boolean; receiver?: number; span?: number; speed?: number } } | null)?.scopeControls;
-    if (!sc) return null;
-    return {
-      dual: sc.dual ?? false,
-      receiver: sc.receiver ?? 0,
-      span: sc.span ?? 3,
-      speed: sc.speed ?? 1,
-    };
-  });
-
-  function handleScopeDualToggle(): void {
-    const current = (radioState as { scopeControls?: { dual?: boolean } } | null)?.scopeControls?.dual ?? false;
-    runtime.send('set_scope_dual', { dual: !current });
-  }
-
-  function handleScopeReceiverChange(receiver: 0 | 1): void {
-    runtime.send('switch_scope_receiver', { receiver });
-  }
+  // MOR-1409 A13b (correction 5246842617): the scope-status bridge to
+  // VfoHeader (issue #832) — a `$derived.by` digest plus two handler
+  // functions that each called the runtime's typed-facade dispatcher for
+  // 'set_scope_dual'/'switch_scope_receiver' — is deleted rather than
+  // migrated. `VfoHeader` already self-wires scope handling through its own
+  // `bindSemanticSurfaceHandlers().scopeControls` (the A07 idiom) and has
+  // ignored these exact legacy props since; see
+  // `vfo-header.isolated.test.ts`'s `VfoHeader source boundary` pin, which
+  // asserts VfoHeader's source never dereferences either optional prop.
+  // RadioLayout was the last production caller of that dispatcher; deleting
+  // this dead bridge (rather than re-pointing it at the binder for a prop
+  // VfoHeader still ignores) is what lets the dispatcher method itself
+  // delete from `frontend-runtime.ts` below.
   let keyboardConfig = $derived(getKeyboardConfig());
   let activeMode = $derived(radioState?.active === 'SUB' ? radioState?.sub?.mode : radioState?.main?.mode);
 
@@ -214,25 +198,19 @@
     overrides: manualVfoScaleOverrides,
   }));
 
-  // Derived props for settings modal
-  let rfFrontEnd = $derived(toRfFrontEndProps(radioState, caps));
-  let agc = $derived(toAgcProps(radioState, caps));
-  let ritXit = $derived(toRitXitProps(radioState, caps));
-  let band = $derived(toBandSelectorProps(radioState));
-  let dsp = $derived(toDspProps(radioState, caps));
-  let cw = $derived(toCwProps(radioState, caps));
+  // MOR-1409 A13b: `rfFrontEnd`/`agc`/`ritXit`/`band`/`dsp`/`cw` (and their
+  // matching `make*Handlers()` constructions) are removed here rather than
+  // re-pointed at the canonical modules — live inspection found none of
+  // them referenced anywhere in this file's template. `RfFrontEnd`,
+  // `AgcPanel`, `DspPanel`, `RitXitPanel`, `CwPanel`, and `BandSelector`
+  // (below) now self-source their state through the semantic surfaces;
+  // these were dead prop/handler constructions left over from before that
+  // migration.
 
-  // Command handlers via command-bus
-  const vfoHandlers = makeVfoHandlers();
-  const keyboardHandlers = makeKeyboardHandlers();
-  const rfHandlers = makeRfFrontEndHandlers();
-  const agcHandlers = makeAgcHandlers();
-  const ritXitHandlers = makeRitXitHandlers();
-  const bandHandlers = makeBandHandlers();
-  const presetHandlers = makePresetHandlers();
-  const systemHandlers = makeSystemHandlers();
-  const dspHandlers = makeDspHandlers();
-  const cwHandlers = makeCwPanelHandlers();
+  // Command handlers via the sanctioned adapter layer
+  const vfoHandlers = getVfoHandlers();
+  const keyboardHandlers = getKeyboardHandlers();
+  const systemHandlers = getSystemHandlers();
 
   // Settings modal state
   let settingsOpen = $state(false);
@@ -335,9 +313,6 @@
         onSubFreqChange={vfoHandlers.onSubFreqChange}
         onSubModeClick={vfoHandlers.onSubModeClick}
         onSpeak={systemHandlers.onSpeak}
-        {scopeStatus}
-        onScopeDualToggle={handleScopeDualToggle}
-        onScopeReceiverChange={handleScopeReceiverChange}
       />
     {/if}
   </section>

@@ -52,8 +52,6 @@ vi.mock('../../../lib/runtime/frontend-runtime', () => ({
     },
     scope: { hardwareScopeConnected: false },
     bootstrap: vi.fn(async () => vi.fn()),
-    setPollingMultiplier: vi.fn(),
-    send: vi.fn(),
   },
 }));
 
@@ -81,7 +79,6 @@ vi.mock('$lib/runtime', () => ({
       lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
     },
     scope: { hardwareScopeConnected: false },
-    send: vi.fn(),
   },
 }));
 
