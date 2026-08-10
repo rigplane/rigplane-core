@@ -25,7 +25,8 @@ import { getFieldStatus, isFieldAvailable } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
 import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
-import { relativeVfoIdentityUnknown } from '../props/panel-props';
+import { relativeVfoIdentityUnknown, resolveFilterModeConfig } from '../props/panel-props';
+import type { FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -714,6 +715,54 @@ export function makeTxHandlers() {
 
 /* ── Filter Handlers ─────────────────────────────────────────────── */
 
+const positiveSafeInteger = (value: unknown): value is number =>
+  Number.isSafeInteger(value) && (value as number) > 0;
+
+function validFilterSegments(segments: readonly FilterSegmentConfig[], minHz: number, maxHz: number): boolean {
+  if (segments.length === 0 || segments[0].hzMin !== minHz
+    || segments[segments.length - 1].hzMax !== maxHz) return false;
+  let previousHzMax = 0;
+  let previousIndexMax = -1;
+  for (const segment of segments) {
+    if (!positiveSafeInteger(segment.hzMin) || !positiveSafeInteger(segment.hzMax)
+      || !positiveSafeInteger(segment.stepHz) || !Number.isSafeInteger(segment.indexMin)
+      || segment.indexMin < 0 || segment.hzMin > segment.hzMax
+      || (segment.hzMax - segment.hzMin) % segment.stepHz !== 0
+      || segment.hzMin <= previousHzMax || segment.indexMin <= previousIndexMax) return false;
+    previousHzMax = segment.hzMax;
+    previousIndexMax = segment.indexMin + ((segment.hzMax - segment.hzMin) / segment.stepHz);
+    if (!Number.isSafeInteger(previousIndexMax)) return false;
+  }
+  return true;
+}
+
+function validResolvedFilterWidth(width: number, rule: FilterModeConfig | null): boolean {
+  if (!positiveSafeInteger(width) || !rule || rule.fixed) return false;
+  const hasTable = rule.table !== undefined;
+  const hasSegments = rule.segments !== undefined;
+  if (hasTable && hasSegments) return false;
+  if (hasTable) {
+    const table = rule.table!;
+    if (table.length === 0 || table.some((value, index) =>
+      !positiveSafeInteger(value) || (index > 0 && value <= table[index - 1]))) return false;
+    if ((rule.minHz !== undefined && rule.minHz !== table[0])
+      || (rule.maxHz !== undefined && rule.maxHz !== table[table.length - 1])) return false;
+    return table.includes(width);
+  }
+  if (hasSegments) {
+    if (!positiveSafeInteger(rule.minHz) || !positiveSafeInteger(rule.maxHz)
+      || rule.minHz > rule.maxHz
+      || !validFilterSegments(rule.segments!, rule.minHz, rule.maxHz)) return false;
+    const segment = rule.segments!.find(({ hzMin, hzMax }) => width >= hzMin && width <= hzMax);
+    return segment !== undefined && (width - segment.hzMin) % segment.stepHz === 0;
+  }
+  return positiveSafeInteger(rule.minHz) && positiveSafeInteger(rule.maxHz)
+    && positiveSafeInteger(rule.stepHz) && rule.minHz <= rule.maxHz
+    && (rule.maxHz - rule.minHz) % rule.stepHz === 0
+    && width >= rule.minHz && width <= rule.maxHz
+    && (width - rule.minHz) % rule.stepHz === 0;
+}
+
 export function makeFilterHandlers() {
   return {
     onFilterChange: (filter: number) => {
@@ -733,6 +782,38 @@ export function makeFilterHandlers() {
         }, 200);
       };
     })(),
+    onFilterWidthCommit: (
+      width: number,
+      receiver: Receiver,
+      expectedProviderGeneration: number,
+    ): void => {
+      const context = currentA03cContext();
+      const stateGeneration = context?.state.providerGeneration;
+      const active = context?.state.active;
+      if (!context || !Number.isSafeInteger(expectedProviderGeneration)
+        || expectedProviderGeneration < 0 || !Number.isSafeInteger(stateGeneration)
+        || expectedProviderGeneration !== stateGeneration
+        || !observedAvailableField(context.state, 'active')
+        || (active !== 'MAIN' && active !== 'SUB')
+        || (active === 'MAIN' ? 0 : 1) !== receiver
+        || knownA03cReceiver(context, active, 'mode') !== receiver
+        || knownA03cReceiver(context, active, 'filterWidth') !== receiver
+        || !context.caps.capabilities.includes('filter_width')) return;
+      const key = receiver === 1 ? 'sub' : 'main';
+      const observed = context.state[key];
+      const mode = observed?.mode;
+      const currentWidth = observed?.filterWidth;
+      if (!observed || !observedAvailableField(context.state, `${key}.mode`)
+        || !observedAvailableField(context.state, `${key}.filterWidth`)
+        || typeof mode !== 'string' || mode.length === 0 || !positiveSafeInteger(currentWidth)) return;
+      const supportsData = context.caps.capabilities.includes('data_mode');
+      const dataMode = supportsData ? observed.dataMode : 0;
+      if (supportsData && (!observedAvailableField(context.state, `${key}.dataMode`)
+        || !Number.isSafeInteger(dataMode) || (dataMode as number) < 0)) return;
+      const rule = resolveFilterModeConfig(context.caps, mode, dataMode as number);
+      if (!validResolvedFilterWidth(width, rule)) return;
+      dispatchRadioIntent({ name: 'set_filter_width', params: { width, receiver } });
+    },
     onFilterShapeChange: (shape: number) => {
       const receiver = knownActiveReceiver('filterShape');
       if (receiver === null) return;
