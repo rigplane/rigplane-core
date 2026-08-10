@@ -22,9 +22,6 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
   getRadioState: vi.fn(() => null),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  patchReceiver: vi.fn(),
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
@@ -38,7 +35,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { getActiveReceiver, getRadioState, patchRadioState } from '$lib/stores/radio.svelte';
+import { getActiveReceiver, getRadioState } from '$lib/stores/radio.svelte';
 import { makeModeHandlers as makeWiringModeHandlers } from '../command-bus';
 import { makeModeHandlers as makeRuntimeModeHandlers } from '$lib/runtime/commands/panel-commands';
 
@@ -50,7 +47,6 @@ const factories: ReadonlyArray<readonly [string, () => { onModInputChange: (sour
 describe.each(factories)('%s onModInputChange (MOR-616)', (_name, makeHandlers) => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
-    vi.mocked(patchRadioState).mockClear();
     vi.mocked(getActiveReceiver).mockReturnValue(null);
     vi.mocked(getRadioState).mockReturnValue(null);
   });
@@ -62,7 +58,6 @@ describe.each(factories)('%s onModInputChange (MOR-616)', (_name, makeHandlers) 
     makeHandlers().onModInputChange(5);
 
     expect(sendCommand).toHaveBeenCalledWith('set_data_off_mod_input', { source: 5 });
-    expect(patchRadioState).not.toHaveBeenCalled();
   });
 
   it('emits the per-group command for D1/D2/D3', () => {
@@ -79,7 +74,6 @@ describe.each(factories)('%s onModInputChange (MOR-616)', (_name, makeHandlers) 
       makeHandlers().onModInputChange(3);
 
       expect(sendCommand).toHaveBeenCalledWith(command, { source: 3 });
-      expect(patchRadioState).not.toHaveBeenCalled();
     }
   });
 
@@ -87,6 +81,5 @@ describe.each(factories)('%s onModInputChange (MOR-616)', (_name, makeHandlers) 
     makeHandlers().onModInputChange(0);
 
     expect(sendCommand).not.toHaveBeenCalled();
-    expect(patchRadioState).not.toHaveBeenCalled();
   });
 });

@@ -6,10 +6,11 @@ import FrequencyDisplayInteractive from '../../../primitives/frequency/Frequency
 import { toVfoProps } from '../../wiring/state-adapter';
 
 // This test exercises the REAL radio store + REAL state-adapter so the freq
-// fix (MOR-475) is verified end-to-end: an in-flight causally-newer STALE poll
-// must NOT drop the unlocked optimistic overlay, so click-to-tune steps from the
-// COMMANDED freq, not the stale server value (no flash). We import the real store
-// dynamically per test to reset its module-level optimistic/lock maps between cases.
+// fix (MOR-475/MOR-1403) is verified end-to-end: VFO frequency is StateStore-
+// owned truth exclusively — click-to-tune steps from the last CONFIRMED
+// server frequency, never a local intent (MOR-1409 A09b removed the last
+// optimistic machinery; there is no overlay left to drop). We import the real
+// store dynamically per test to reset its module state between cases.
 
 let store: typeof import('$lib/stores/radio.svelte');
 
@@ -93,11 +94,8 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
       main: { ...makeMinimalState().main, freqHz: 14074000 },
     }));
 
-    // Unlocked optimistic patch (click-to-tune) to 14100000.
-    store.patchActiveReceiver({ freqHz: 14100000 });
-
-    // An in-flight poll captured before the click lands: causally newer
-    // (observationSeq + freshnessRevision advance) but still the OLD freq.
+    // A causally-newer StateStore observation confirming the same frequency
+    // (analogous to an in-flight poll captured before any local click lands).
     store.setRadioState(makeMinimalState({
       revision: 1,
       stateRevision: 1,
@@ -106,8 +104,7 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
       main: { ...makeMinimalState().main, freqHz: 14074000 },
     }));
 
-    // Old MOR-475 expectation stepped from the command intent. MOR-1403 makes
-    // the StateStore observation the sole VFO truth seen by the adapter.
+    // The StateStore observation is the sole VFO truth seen by the adapter.
     const vfo = toVfoProps(store.getRadioState(), 'main');
     expect(vfo.freq).toBe(14074000);
 
@@ -123,9 +120,8 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
     oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     flushSync();
 
-    // Relative tune steps from confirmed 14074000, not requested 14100000.
+    // Relative tune steps from confirmed 14074000.
     expect(onFreqChange).toHaveBeenCalledTimes(1);
     expect(onFreqChange).toHaveBeenCalledWith(14075000);
-    expect(onFreqChange).not.toHaveBeenCalledWith(14101000);
   });
 });

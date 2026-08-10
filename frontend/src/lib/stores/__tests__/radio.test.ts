@@ -270,22 +270,25 @@ describe('radio store', () => {
     expect(store.getRadioState()?.ptt).toBe(false);
   });
 
-  it('drops optimistic patches and revision locks when accepting a new provider epoch', async () => {
+  it('resets generation bookkeeping cleanly when accepting a new provider epoch', async () => {
     const capabilities = await import('../capabilities.svelte');
     store.setRadioState(makeState({ providerGeneration: 0, main: { ...makeState().main, afLevel: 10 } }));
-    store.patchActiveReceiver({ afLevel: 42 }, true);
-    expect(store.getRadioState()?.main.afLevel).toBe(42);
+    // Legacy overlay/lock path (pre-A09b) — optional-chained so this pin
+    // survives both regimes: a no-op once the store exposes no patch API.
+    (store as any).patchActiveReceiver?.({ afLevel: 42 }, true);
 
     capabilities.setCapabilities({
       ...(capabilities.getCapabilities()!), providerGeneration: 1,
     });
-    store.setRadioState(makeState({
+    const next = makeState({
       revision: 1,
       providerGeneration: 1,
       main: { ...makeState().main, afLevel: 12 },
-    }));
+    });
+    store.setRadioState(next);
     expect(store.getRadioState()?.providerGeneration).toBe(1);
     expect(store.getRadioState()?.main.afLevel).toBe(12);
+    expect(store.getRadioState()).toStrictEqual(next);
   });
 
   it('accepts initial revision 0 state when store is empty', () => {
@@ -538,6 +541,25 @@ describe('radio store', () => {
     expect(store.getSubReceiver()?.freqHz).toBe(7100000);
   });
 
+  it('notifies subscribeRadioState listeners exactly once per accepted state', () => {
+    const seen: Array<ReturnType<typeof store.getRadioState>> = [];
+    const unsubscribe = store.subscribeRadioState((state) => seen.push(state));
+    // subscribeRadioState delivers the current value immediately on subscribe.
+    expect(seen).toEqual([null]);
+
+    const accepted = makeState({ revision: 1 });
+    store.setRadioState(accepted);
+    expect(seen).toEqual([null, accepted]);
+
+    // A stale/rejected update must not notify.
+    store.setRadioState(makeState({ revision: 0 }));
+    expect(seen).toEqual([null, accepted]);
+
+    unsubscribe();
+    store.setRadioState(makeState({ revision: 2 }));
+    expect(seen).toEqual([null, accepted]);
+  });
+
   it('rejects a revision reset inside the same epoch and session', () => {
     store.setRadioState(makeState({ revision: 100 }));
     store.setRadioState(makeState({ revision: 1, ptt: true }));
@@ -553,160 +575,81 @@ describe('radio store', () => {
     expect(store.getRadioState()?.ptt).toBe(false);
   });
 
-  // --- patchRadioState tests (regression for #554 state corruption) ---
+  // --- resetRadioState (migrated from radio.isolated.test.ts, MOR-1409 A09b:
+  // that file's remaining coverage tested the deleted optimism machinery and
+  // was retired; these reset-semantics pins are still meaningful) ---
 
-  it('patchRadioState updates top-level field without losing others', () => {
-    store.setRadioState(makeState({ ptt: false, split: true }));
-    store.patchRadioState({ ptt: true });
-    const s = store.getRadioState();
-    expect(s?.ptt).toBe(true);
-    expect(s?.split).toBe(true);  // must NOT be lost
-  });
-
-  it('patchRadioState with nested scopeControls preserves all fields', () => {
-    const initial = makeState();
-    // Ensure scopeControls has multiple fields set
-    (initial as any).scopeControls = {
-      mode: 0, span: 3, hold: false, refDb: -10, speed: 1,
-      edge: 0, duringTx: false, centerType: 0, vbwNarrow: false, rbw: 0,
-      receiver: 0, dual: false,
-      fixedEdge: { rangeIndex: 0, edge: 0, startHz: 0, endHz: 0 },
-    };
-    store.setRadioState(initial);
-
-    // Optimistic patch for scope mode — must spread existing fields
-    const current = store.getRadioState()!;
-    store.patchRadioState({
-      scopeControls: { ...(current as any).scopeControls, mode: 1 },
-    } as any);
-
-    const result = store.getRadioState() as any;
-    expect(result.scopeControls.mode).toBe(1);
-    expect(result.scopeControls.span).toBe(3);      // preserved
-    expect(result.scopeControls.refDb).toBe(-10);    // preserved
-    expect(result.scopeControls.speed).toBe(1);      // preserved
-    expect(result.scopeControls.hold).toBe(false);   // preserved
-  });
-
-  it('patchRadioState is no-op when state is null', () => {
-    // Store starts null
-    expect(store.getRadioState()).toBeNull();
-    store.patchRadioState({ ptt: true });
-    expect(store.getRadioState()).toBeNull();
-  });
-
-  // --- optimistic protection for top-level fields (#696) ---
-
-  it('patchRadioState: optimistic value is preserved when server sends stale state', () => {
-    store.setRadioState(makeState({ revision: 1, ptt: false }));
-    store.patchRadioState({ ptt: true });
-
-    // Server sends higher revision but with the old value (race: command not yet applied)
-    store.setRadioState(makeState({ revision: 2, ptt: false }));
-    expect(store.getRadioState()?.ptt).toBe(true); // optimistic must hold
-  });
-
-  it('patchRadioState: optimistic value is cleared once server confirms new value', () => {
-    store.setRadioState(makeState({ revision: 1, ptt: false }));
-    store.patchRadioState({ ptt: true });
-
-    // Server eventually confirms the new value
-    store.setRadioState(makeState({ revision: 2, ptt: true }));
-    expect(store.getRadioState()?.ptt).toBe(true); // confirmed — stays true
-  });
-
-  it('patchRadioState: optimistic value expires after TTL and server value is accepted', () => {
-    vi.useFakeTimers();
-    store.setRadioState(makeState({ revision: 1, ptt: false }));
-    store.patchRadioState({ ptt: true });
-
-    // Advance time past TTL (5000ms)
-    vi.advanceTimersByTime(6000);
-
-    // Server still says false — optimistic has expired, server wins
-    store.setRadioState(makeState({ revision: 2, ptt: false }));
-    expect(store.getRadioState()?.ptt).toBe(false);
-
-    vi.useRealTimers();
-  });
-
-  it('exposes missing field status after optimistic top-level TTL expires', () => {
-    vi.useFakeTimers();
-    store.setRadioState(makeState({
-      revision: 1,
-      powerLevel: 128,
-      fieldStatus: {
-        powerLevel: {
-          storePath: 'global.operator_controls.power_level',
-          observed: true,
-          freshness: 'fresh',
-          availability: 'available',
-        },
-      },
-    }));
-    store.patchRadioState({ powerLevel: 220 });
-
-    vi.advanceTimersByTime(6000);
-    store.setRadioState(makeState({
-      revision: 2,
-      powerLevel: 128,
-      fieldStatus: {
-        powerLevel: {
-          storePath: 'global.operator_controls.power_level',
-          observed: false,
-          freshness: 'unknown',
-          availability: 'missing',
-        },
-      },
-    }));
-
-    expect(store.getRadioState()?.powerLevel).toBe(128);
-    expect(store.isRadioFieldAvailable('powerLevel')).toBe(false);
-
-    vi.useRealTimers();
-  });
-
-  it('patchRadioState: optimistic for one field does not affect other top-level fields', () => {
-    store.setRadioState(makeState({ revision: 1, ptt: false, split: false }));
-    store.patchRadioState({ ptt: true });
-
-    // Server sends update with split changed but ptt still old
-    store.setRadioState(makeState({ revision: 2, ptt: false, split: true }));
-    expect(store.getRadioState()?.ptt).toBe(true);   // optimistic holds
-    expect(store.getRadioState()?.split).toBe(true); // server value applied
-  });
-
-  it('patchRadioState: resetRadioState clears optimistic top-level entries', () => {
-    store.setRadioState(makeState({ revision: 1, ptt: false }));
-    store.patchRadioState({ ptt: true });
+  it('resetRadioState clears radio.current to null', () => {
+    store.setRadioState(makeState({ revision: 1 }));
+    expect(store.getRadioState()).not.toBeNull();
 
     store.resetRadioState();
-    store.setRadioState(makeState({ revision: 1, ptt: false }));
-    // After reset, no optimistic entries — server value wins
-    expect(store.getRadioState()?.ptt).toBe(false);
-  });
-
-  it('patchActiveReceiver cannot overwrite StateStore-owned MAIN VFO truth', () => {
-    store.setRadioState(makeState({ active: 'MAIN' }));
-    store.patchActiveReceiver({ freqHz: 21074000 });
-    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
-    // SUB should remain unchanged
-    expect(store.getSubReceiver()?.freqHz).toBe(7100000);
-  });
-
-  it('patchActiveReceiver cannot overwrite StateStore-owned SUB VFO truth', async () => {
-    await useDualReceiverCapabilities();
-    store.setRadioState(makeState({ active: 'SUB' }));
-    store.patchActiveReceiver({ freqHz: 3500000 });
-    expect(store.getSubReceiver()?.freqHz).toBe(7100000);
-    // MAIN should remain unchanged
-    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
-  });
-
-  it('patchActiveReceiver is no-op when state is null', () => {
     expect(store.getRadioState()).toBeNull();
-    store.patchActiveReceiver({ freqHz: 7000000 });
+  });
+
+  it('resetRadioState resets lastRevision to -1', () => {
+    store.setRadioState(makeState({ revision: 42 }));
+    expect(store.getLastRevision()).toBe(42);
+
+    store.resetRadioState();
+    expect(store.getLastRevision()).toBe(-1);
+  });
+
+  it('allows new state to be set after resetRadioState', () => {
+    store.setRadioState(makeState({ revision: 10 }));
+    store.resetRadioState();
+
+    // After reset, a state with revision=1 should be accepted.
+    store.setRadioState(makeState({ revision: 1 }));
+    expect(store.getRadioState()).not.toBeNull();
+    expect(store.getLastRevision()).toBe(1);
+  });
+
+  it('getRadioState returns null after resetRadioState', () => {
+    store.setRadioState(makeState({ revision: 5 }));
+    store.resetRadioState();
     expect(store.getRadioState()).toBeNull();
+  });
+
+  // --- store surface and byte-exact acceptance (MOR-1409 A09b) ---
+  //
+  // A09b deletes the optimistic maps/TTLs/locks, `applyOptimistic()`, and the
+  // three patch functions (`patchActiveReceiver`, `patchReceiver`,
+  // `patchRadioState`). `setRadioState` becomes the store's sole mutator and
+  // stores each accepted snapshot byte-exact — no overlay can survive it.
+  // The legacy calls below are optional-chained through `(store as any)` so
+  // these tests demonstrate the base-line fabrication/overlay bugs as causal
+  // RED before the deletion, then degrade to harmless no-ops and prove the
+  // new invariant (GREEN) once the exports are gone.
+
+  it('exposes no patch/optimistic API — only setRadioState mutates the store', () => {
+    expect((store as any).patchRadioState).toBeUndefined();
+    expect((store as any).patchActiveReceiver).toBeUndefined();
+    expect((store as any).patchReceiver).toBeUndefined();
+    expect((store as any).applyOptimistic).toBeUndefined();
+  });
+
+  it('accepted snapshot is stored byte-exact — no fabricated top-level field survives it', () => {
+    store.setRadioState(makeState({ revision: 1, split: false }));
+    // Legacy fabrication path (pre-A09b): patched split optimistically without
+    // any server observation ever confirming it.
+    (store as any).patchRadioState?.({ split: true });
+
+    const accepted = makeState({ revision: 2, split: false });
+    store.setRadioState(accepted);
+    expect(store.getRadioState()).toStrictEqual(accepted);
+  });
+
+  it('accepted snapshot wins immediately — no receiver-field overlay survives it', () => {
+    store.setRadioState(makeState({ revision: 1, main: { ...makeState().main, afLevel: 100 } }));
+    // Legacy overlay path (pre-A09b): an unconfirmed local patch that used to
+    // hold the display value until TTL/confirm.
+    (store as any).patchActiveReceiver?.({ afLevel: 99 });
+
+    const accepted = makeState({ revision: 2, main: { ...makeState().main, afLevel: 10 } });
+    store.setRadioState(accepted);
+    expect(store.getRadioState()?.main.afLevel).toBe(10);
+    expect(store.getRadioState()).toStrictEqual(accepted);
   });
 
   it('getActiveReceiver returns SUB when active is SUB', async () => {
@@ -719,9 +662,11 @@ describe('radio store', () => {
     expect(store.getActiveReceiver()).toBeNull();
   });
 
-  // --- StateStore-owned VFO truth vs legacy optimistic intent (MOR-1403) ---
+  // --- StateStore-owned VFO truth (MOR-1403; the optimistic carve-out this
+  // protected is gone entirely in A09b — no patch API exists to fabricate a
+  // VFO field, so the invariant now reduces to "setRadioState is causal") ---
 
-  it('shows a causally-newer differing StateStore frequency instead of unlocked intent', () => {
+  it('VFO truth changes only when each causally-advancing StateStore observation arrives', () => {
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -729,37 +674,6 @@ describe('radio store', () => {
       freshnessRevision: 1,
       main: { ...makeState().main, freqHz: 14074000 },
     }));
-
-    // Old MOR-475 expectation: the requested frequency immediately became
-    // displayed truth. MOR-1403 assigns that fact exclusively to StateStore.
-    store.patchActiveReceiver({ freqHz: 14100000 });
-    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
-
-    // A confirmed radio-side value owns the display even when it contradicts
-    // the requested intent.
-    store.setRadioState(makeState({
-      revision: 1,
-      stateRevision: 1,
-      observationSeq: 2,
-      freshnessRevision: 2,
-      main: { ...makeState().main, freqHz: 14200000 },
-    }));
-
-    expect(store.getMainReceiver()?.freqHz).toBe(14200000);
-    expect(store.getFrequency()).toBe(14200000);
-  });
-
-  it('changes VFO truth only when each confirmed StateStore observation arrives', () => {
-    store.setRadioState(makeState({
-      revision: 1,
-      stateRevision: 1,
-      observationSeq: 1,
-      freshnessRevision: 1,
-      main: { ...makeState().main, freqHz: 14074000 },
-    }));
-
-    // Intent alone is not radio truth.
-    store.patchActiveReceiver({ freqHz: 14100000 });
     expect(store.getMainReceiver()?.freqHz).toBe(14074000);
 
     // A newer observation carrying the same value remains the displayed fact.
@@ -772,7 +686,8 @@ describe('radio store', () => {
     }));
     expect(store.getMainReceiver()?.freqHz).toBe(14074000);
 
-    // The confirmed readback then advances the display.
+    // A confirmed differing readback advances the display immediately —
+    // there is no local intent, lock, or TTL that could delay or override it.
     store.setRadioState(makeState({
       revision: 1,
       stateRevision: 1,
@@ -781,80 +696,6 @@ describe('radio store', () => {
       main: { ...makeState().main, freqHz: 14100000 },
     }));
     expect(store.getMainReceiver()?.freqHz).toBe(14100000);
-  });
-
-  it('does not let a locked VFO intent hide a newer StateStore observation', () => {
-    store.setRadioState(makeState({
-      revision: 1,
-      stateRevision: 1,
-      observationSeq: 1,
-      freshnessRevision: 1,
-      main: { ...makeState().main, freqHz: 14074000 },
-    }));
-
-    // Legacy lock metadata cannot own a displayed radio fact.
-    store.patchActiveReceiver({ freqHz: 14100000 }, true);
-    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
-
-    // Causally-newer differing snapshot arrives within the lock window.
-    store.setRadioState(makeState({
-      revision: 1,
-      stateRevision: 1,
-      observationSeq: 2,
-      freshnessRevision: 2,
-      main: { ...makeState().main, freqHz: 14150000 },
-    }));
-
-    expect(store.getMainReceiver()?.freqHz).toBe(14150000);
-  });
-
-  it('does not give VFO intent a TTL ownership window over StateStore', () => {
-    vi.useFakeTimers();
-    store.setRadioState(makeState({
-      revision: 1,
-      stateRevision: 1,
-      observationSeq: 1,
-      freshnessRevision: 1,
-      main: { ...makeState().main, freqHz: 14074000 },
-    }));
-
-    // VFO intent never becomes observed radio truth, before or after any TTL.
-    store.patchActiveReceiver({ freqHz: 14100000 });
-    expect(store.getMainReceiver()?.freqHz).toBe(14074000);
-
-    // Advance past the lowered freq TTL (1500ms) but under the old 5000ms TTL.
-    vi.advanceTimersByTime(2000);
-
-    // Same observationSeq (no causal advance), differing server freq.
-    store.setRadioState(makeState({
-      revision: 2,
-      stateRevision: 2,
-      observationSeq: 1,
-      freshnessRevision: 1,
-      main: { ...makeState().main, freqHz: 14080000 },
-    }));
-
-    // The next accepted StateStore revision is visible immediately.
-    expect(store.getMainReceiver()?.freqHz).toBe(14080000);
-
-    vi.useRealTimers();
-  });
-
-  it('non-freq optimistic overlays still use the 5s TTL (no regression)', () => {
-    vi.useFakeTimers();
-    store.setRadioState(makeState({ revision: 1, ptt: false }));
-    store.patchRadioState({ ptt: true });
-
-    // Past the freq TTL (1500ms) but well under the 5s TTL — ptt optimistic holds.
-    vi.advanceTimersByTime(2000);
-    store.setRadioState(makeState({ revision: 2, ptt: false }));
-    expect(store.getRadioState()?.ptt).toBe(true);
-
-    // Past the 5s TTL — ptt optimistic clears, server wins.
-    vi.advanceTimersByTime(4000);
-    store.setRadioState(makeState({ revision: 3, ptt: false }));
-    expect(store.getRadioState()?.ptt).toBe(false);
-
-    vi.useRealTimers();
+    expect(store.getFrequency()).toBe(14100000);
   });
 });

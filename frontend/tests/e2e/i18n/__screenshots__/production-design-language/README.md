@@ -6,7 +6,7 @@ the immutable built-dist i18n suite. They are not fixture-harness captures.
 `scripts/i18n-preview-server.mjs`, while the test stubs only the backend at the
 page boundary and opens `/`.
 
-## Linux re-pin provenance
+## Linux re-pin provenance (superseded — 2026-06 initial pin)
 
 | Field | Value |
 | --- | --- |
@@ -26,14 +26,36 @@ images downloaded from its `mor-1400-production-visual-diagnostics` artifact.
 The final head that commits these files must rerun this same suite green; CI
 never automatically accepts or commits a baseline.
 
+## Linux re-pin provenance (current — 2026-08-10 A09b honest cold-start StatusBar)
+
+| Field | Value |
+| --- | --- |
+| Date | 2026-08-10 |
+| Reason | A09b removes the store's optimistic-patch machinery and the HTTP polling writer (issue #2317); the idle StatusBar now honestly renders the cold-start state (`OFFLINE` badge, `CONNECT`, fault-colored transport icons) instead of the pre-A09b fabricated-connectivity presentation (green icons, `DISCONNECT`) baked into the superseded pin above. Adjudicated as a truthful-behavior change, not a regression — [issue comment 5243439946](https://github.com/rigplane/rigplane-core/issues/2317#issuecomment-5243439946). |
+| Candidate commit | `f87dcda4` |
+| Container image | `rigplane-ci-build-core-arm64-runner:85ab46b30c39` (linux-arm64) |
+| Runner host | self-hosted Linux ARM64 (`mm-build-core-1`) |
+| Node | `v20.20.2` |
+| Playwright | `1.58.2` |
+| Chromium | Chrome for Testing `145.0.7632.6`, Playwright revision `1208` |
+| Context | Chromium; 1280×800; DPR 1; `en-US`; UTC; browser media dark |
+| Comparator | `threshold: 0.2`, `maxDiffPixelRatio: 0.001` |
+| Spec run | `playwright test -c ./playwright.i18n.config.ts --update-snapshots` — 43/43 passed |
+
+Only the four named production-root images below were regenerated; all other
+i18n baselines were left untouched by this re-pin. The delta against the
+superseded images is confined to the StatusBar idle-state elements (OFFLINE
+badge, CONNECT vs DISCONNECT, transport icon colors) — verified per-image
+before acceptance.
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `38da39964b62b96dddbbd016044aca980d52bf480f672b0c77c4161c044e1f92` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `1e776e94b4cf0ee8561a9653452ba1f5b6797daa14e3be48205c0ff821e1fe58` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `7e12ecf5b39254fac309e37694656ccd78fb949ffbfcb5306a7de2b084f52d10` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `c7268db502631f93b77f58fc72c5ce47436590b6fb11fd5179ac81dbd9ed4260` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `98f6aa6f4a9c541f6c601fc6ba88aa80373df82055923322e79bc3398827bdd6` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `0a947f7d763d6cbd015ce4396af4b4ba0b684d93c863983b3085270dd25074fb` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `91d853f54bf625809cc4db9bdb9b70f995281f6031a7cfed43636fd5b1ad2da6` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `552d2b2446f855bdcfd7184aa804a84fccfc6fedff7f881b9ac39310d29746dc` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output

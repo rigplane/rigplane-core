@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // MOR-498: the NB-depth slider is 1-10 (front-panel scale) but the CI-V wire
-// value is 0-9.  The DSP handler must convert display -> wire before sending,
-// and the optimistic store patch must hold the *wire* value so it matches the
-// polled/NB-B readback (which the prop adapter scales wire -> display).
-// Storing display optimistically would double-convert and flicker.
+// value is 0-9.  The DSP handler must convert display -> wire before sending.
+// MOR-1409 A09b removed the store's optimistic patch path entirely — the WS
+// B2/C reducer is the sole writer, so there is no local overlay to flicker.
 
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
@@ -20,9 +19,6 @@ vi.mock('$lib/stores/radio.svelte', () => ({
     active: 'MAIN', main: { nb: false, nbLevel: 0 }, sub: { nb: false, nbLevel: 0 },
     nbDepth: 4, nbWidth: 2,
   })),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  patchReceiver: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -43,7 +39,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { patchRadioState } from '$lib/stores/radio.svelte';
+import * as radioStore from '$lib/stores/radio.svelte';
 import { makeDspHandlers as makeBusDspHandlers } from '../command-bus';
 import { makeDspHandlers as makeRuntimeDspHandlers } from '$lib/runtime/commands/panel-commands';
 import { toDspProps as toBusDspProps } from '../state-adapter';
@@ -51,7 +47,6 @@ import { toDspProps as toRuntimeDspProps } from '$lib/runtime/props/panel-props'
 
 beforeEach(() => {
   vi.mocked(sendCommand).mockClear();
-  vi.mocked(patchRadioState).mockClear();
 });
 
 describe.each([
@@ -73,9 +68,9 @@ describe.each([
     expect(sendCommand).toHaveBeenCalledWith('set_nb_depth', { level: 9 });
   });
 
-  it('does not store the wire value optimistically; Observation remains truth', () => {
+  it('has no optimistic store path left to write through (MOR-1409 A09b)', () => {
     makeHandlers().onNbDepthChange(6);
-    expect(patchRadioState).not.toHaveBeenCalled();
+    expect(Object.keys(radioStore)).not.toContain('patchRadioState');
   });
 });
 

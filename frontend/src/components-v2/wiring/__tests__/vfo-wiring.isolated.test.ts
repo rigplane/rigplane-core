@@ -11,9 +11,6 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
   getRadioState: vi.fn(() => null),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  patchReceiver: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -37,7 +34,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import {
-  getActiveReceiver, getRadioState, patchActiveReceiver, patchRadioState, patchReceiver,
+  getActiveReceiver, getRadioState,
 } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { toVfoOpsProps } from '../state-adapter';
@@ -100,8 +97,6 @@ describe('toVfoOpsProps', () => {
 describe('makeVfoHandlers', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
-    vi.mocked(patchRadioState).mockClear();
-    vi.mocked(patchReceiver).mockClear();
     vi.mocked(audioManager.setAudioConfig).mockClear();
     vi.mocked(getRadioState).mockReturnValue(receiverState('MAIN'));
   });
@@ -115,7 +110,6 @@ describe('makeVfoHandlers', () => {
 
     makeVfoHandlers().onSplitToggle();
 
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_split', { on: false });
   });
 
@@ -124,7 +118,6 @@ describe('makeVfoHandlers', () => {
 
     makeVfoHandlers().onSplitToggle();
 
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_split', { on: true });
   });
 
@@ -141,7 +134,6 @@ describe('makeVfoHandlers', () => {
 
     makeVfoHandlers().onMainModeClick();
 
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'MAIN' });
     expect(scrollIntoView).toHaveBeenCalled();
   });
@@ -159,7 +151,6 @@ describe('makeVfoHandlers', () => {
 
     makeVfoHandlers().onSubModeClick();
 
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
     expect(scrollIntoView).toHaveBeenCalled();
   });
@@ -185,7 +176,6 @@ describe('makeVfoHandlers', () => {
   // State remains observation-owned while audio focus follows valid MAIN/SUB actions.
   describe('observed truth + audio focus', () => {
     beforeEach(() => {
-      vi.mocked(patchReceiver).mockClear();
       vi.mocked(audioManager.setAudioConfig).mockClear();
     });
 
@@ -198,7 +188,6 @@ describe('makeVfoHandlers', () => {
 
       makeVfoHandlers().onEqual();
 
-      expect(patchReceiver).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledWith('vfo_equalize', {});
     });
 
@@ -211,27 +200,23 @@ describe('makeVfoHandlers', () => {
 
       makeVfoHandlers().onSwap();
 
-      expect(patchReceiver).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledWith('vfo_swap', {});
     });
 
     it('onEqual without current state emits no command', () => {
       vi.mocked(getRadioState).mockReturnValue(null);
       makeVfoHandlers().onEqual();
-      expect(patchReceiver).not.toHaveBeenCalled();
       expect(sendCommand).not.toHaveBeenCalled();
     });
 
     it('onMainVfoClick couples audio focus to MAIN', () => {
       makeVfoHandlers().onMainVfoClick();
-      expect(patchRadioState).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'MAIN' });
       expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'main' });
     });
 
     it('onSubVfoClick couples audio focus to SUB', () => {
       makeVfoHandlers().onSubVfoClick();
-      expect(patchRadioState).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
       expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'sub' });
     });
@@ -241,7 +226,6 @@ describe('makeVfoHandlers', () => {
   describe('onVfoSelect', () => {
     beforeEach(() => {
       vi.mocked(audioManager.setAudioConfig).mockClear();
-      vi.mocked(patchRadioState).mockClear();
     });
 
     it('activates the receiver and the addressed A/B slot', () => {
@@ -249,7 +233,6 @@ describe('makeVfoHandlers', () => {
 
       makeVfoHandlers().onVfoSelect('SUB', 'B');
 
-      expect(patchRadioState).not.toHaveBeenCalled();
       expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ focus: 'sub' });
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'SUB' });
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'B' });
@@ -273,7 +256,6 @@ describe('makeVfoHandlers', () => {
 
       makeVfoHandlers().onVfoSelect('MAIN', 'B');
 
-      expect(patchRadioState).not.toHaveBeenCalled();
       expect(sendCommand).toHaveBeenCalledTimes(1);
       expect(sendCommand).toHaveBeenCalledWith('set_vfo', { vfo: 'B' });
     });
@@ -346,7 +328,6 @@ describe('makeBandHandlers', () => {
 describe('makeRitXitHandlers', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
-    vi.mocked(patchRadioState).mockClear();
     vi.mocked(getRadioState).mockReturnValue({
       active: 'MAIN', main: { freqHz: 14_074_000 }, sub: { freqHz: 7_074_000 }, ritFreq: 250,
     } as any);
@@ -355,14 +336,12 @@ describe('makeRitXitHandlers', () => {
   it('emits set_rit_frequency for RIT offset changes', () => {
     makeRitXitHandlers().onRitOffsetChange(350);
 
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_rit_frequency', { freq: 350 });
   });
 
   it('emits set_rit_frequency for XIT offset changes', () => {
     makeRitXitHandlers().onXitOffsetChange(-450);
 
-    expect(patchRadioState).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_rit_frequency', { freq: -450 });
   });
 });
@@ -370,7 +349,6 @@ describe('makeRitXitHandlers', () => {
 describe('makeFilterHandlers', () => {
   beforeEach(() => {
     vi.mocked(sendCommand).mockClear();
-    vi.mocked(patchActiveReceiver).mockClear();
   });
 
   it('emits set_filter_shape for the active receiver without optimistic state', () => {
@@ -378,7 +356,6 @@ describe('makeFilterHandlers', () => {
 
     makeFilterHandlers().onFilterShapeChange?.(1);
 
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
     expect(sendCommand).toHaveBeenCalledWith('set_filter_shape', { shape: 1, receiver: 1 });
   });
 
@@ -389,6 +366,5 @@ describe('makeFilterHandlers', () => {
     makeFilterHandlers().onFilterDefaults?.([3000, 2400, 1800]);
 
     expect(sendCommand).toHaveBeenCalledWith('set_filter', { filter: 2, receiver: 0 });
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
   });
 });

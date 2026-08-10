@@ -11,7 +11,7 @@
  * @see docs/plans/2026-04-12-target-frontend-architecture.md
  */
 
-import { radio, getRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { radio } from '$lib/stores/radio.svelte';
 import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import {
   getConnectionStatus,
@@ -26,7 +26,6 @@ import {
 } from '$lib/stores/connection.svelte';
 import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
 import { connect, onMessage, sendRaw } from '$lib/transport/ws-client';
-import { startPolling, setPollingMultiplier } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { dispatchRadioIntent, type RadioIntent } from './commands/radio-intents';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
@@ -254,14 +253,14 @@ class FrontendRuntime {
   // ── Bootstrap ──
 
   /**
-   * Initialize the full transport stack: capability listener → polling → WebSocket → subscribe.
+   * Initialize the full transport stack: capability listener → WebSocket → subscribe.
    *
    * Idempotent: if already started, returns the existing cleanup function without
    * re-running any transport calls. Concurrent callers share a single in-flight promise
    * to prevent duplicate initialization. If the previous attempt threw, the sentinel
    * is cleared and bootstrap can be retried.
    *
-   * @returns A cleanup function that stops polling when called.
+   * @returns A cleanup function that tears down presentation resources when called.
    */
   async bootstrap(): Promise<() => void> {
     // If already completed, return cached cleanup.
@@ -304,19 +303,10 @@ class FrontendRuntime {
       this._configurePresentationResources(caps);
     });
 
-    // 2. Register polling lifecycle with SystemController so connect/disconnect works.
-    systemController.registerPolling(() =>
-      startPolling((state) => { setRadioState(state); }, 1000),
-    );
-
-    // 3. Start polling and hand the stop handle to SystemController.
-    const stopPolling = startPolling((state) => { setRadioState(state); }, 1000);
-    systemController.setStopPolling(stopPolling);
-
-    // 4. Open the control WebSocket channel.
+    // 2. Open the control WebSocket channel — the sole state writer.
     connect('/api/v1/ws');
 
-    // 5. Subscribe to the events stream (re-sent automatically on reconnect by WsChannel).
+    // 3. Subscribe to the events stream (re-sent automatically on reconnect by WsChannel).
     sendRaw({ type: 'subscribe', streams: ['events'] });
 
     // Only latch as started after the entire chain succeeds.
@@ -340,7 +330,7 @@ class FrontendRuntime {
           const stopScopeStatus = this._defaultScopeStop;
           this._defaultScopeStop = null;
           try { stopScopeStatus?.(); } finally {
-            try { await presentationResources.teardown(); } finally { stopPolling(); }
+            await presentationResources.teardown();
           }
         }
       }
@@ -444,9 +434,16 @@ class FrontendRuntime {
     toggleMute();
   }
 
-  /** Adjust HTTP polling cadence (e.g. from battery monitor). */
-  setPollingMultiplier(m: number): void {
-    setPollingMultiplier(m);
+  /**
+   * Inert no-op (MOR-1409 A09b — the HTTP polling writer is gone; WS is the
+   * sole state writer, and there is no cadence left to adjust). Kept only so
+   * its sole caller, `App.svelte:258` (an A10 owner, battery monitor), keeps
+   * compiling until A10 removes that call; this stub is deleted by the
+   * published post-A13 micro-slice that also removes `send()`
+   * (correction 5241395868).
+   */
+  setPollingMultiplier(_m: number): void {
+    // Intentionally empty.
   }
 }
 

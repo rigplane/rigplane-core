@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // MOR-490: the NR slider is 0-15 (front-panel scale) but the CI-V wire value
-// is 0-255 BCD.  The DSP handler must convert display -> raw before sending,
-// and the optimistic store patch must hold the *raw* value so it matches the
-// polled readback (which the prop adapter scales raw -> display).  Storing
-// display optimistically would double-convert and flicker.
+// is 0-255 BCD.  The DSP handler must convert display -> raw before sending.
+// MOR-1409 A09b removed the store's optimistic patch path entirely — the WS
+// B2/C reducer is the sole writer, so there is no local overlay to flicker.
 
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
@@ -19,9 +18,6 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: vi.fn(() => ({
     active: 'MAIN', main: { nr: false, nrLevel: 0 }, sub: { nr: false, nrLevel: 0 },
   })),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  patchReceiver: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -40,13 +36,12 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { patchActiveReceiver } from '$lib/stores/radio.svelte';
+import * as radioStore from '$lib/stores/radio.svelte';
 import { makeDspHandlers as makeBusDspHandlers } from '../command-bus';
 import { makeDspHandlers as makeRuntimeDspHandlers } from '$lib/runtime/commands/panel-commands';
 
 beforeEach(() => {
   vi.mocked(sendCommand).mockClear();
-  vi.mocked(patchActiveReceiver).mockClear();
 });
 
 describe.each([
@@ -69,8 +64,8 @@ describe.each([
     expect(sendCommand).toHaveBeenCalledWith('set_nr_level', { level: 0, receiver: 0 });
   });
 
-  it('does not store the raw wire value optimistically; Observation remains truth', () => {
+  it('has no optimistic store path left to write through (MOR-1409 A09b)', () => {
     makeHandlers().onNrLevelChange(15);
-    expect(patchActiveReceiver).not.toHaveBeenCalled();
+    expect(Object.keys(radioStore)).not.toContain('patchActiveReceiver');
   });
 });

@@ -458,7 +458,9 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     expect(h.subscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(sendRaw).toHaveBeenCalledTimes(1);
-    expect(startPolling).toHaveBeenCalledTimes(1);
+    // MOR-1409 A09b: the HTTP polling writer is gone; WS is the sole state
+    // writer, so bootstrap never starts polling.
+    expect(startPolling).not.toHaveBeenCalled();
     // RX audio: never restarted, never stopped, same AudioManager session.
     expect(audioManager.startRx).toHaveBeenCalledTimes(1);
     expect(audioManager.stopRx).not.toHaveBeenCalled();
