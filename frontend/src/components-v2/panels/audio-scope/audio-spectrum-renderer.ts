@@ -126,6 +126,26 @@ export function renderAudioSpectrum(
   rs.animFilterWidth += fwDiff * (Math.abs(fwDiff) > 200 ? 0.5 : 0.15);
   if (Math.abs(fwDiff) <= 1) rs.animFilterWidth = filterWidth;
 
+  // MOR-1409 A12 (coordinator adjudication addendum, Core #2317, comment
+  // 5246612628, extending 5246487510): a connected receiver that has
+  // never reported `filterWidth` reaches here as `NaN` (panel-props.ts's
+  // `toAudioSpectrumProps` no longer fabricates `?? 2400`) — and once
+  // `rs.animFilterWidth` latches to `NaN` it never recovers (the
+  // animation step's own `Math.abs(fwDiff) > 200` check is itself always
+  // `false` for a NaN diff). Every downstream trapezoid-geometry value
+  // (`topHalfW`/`tl`/`tr`/`bl`/`br`) inherits the NaN, and with populated
+  // `pixels` the spectrum-line block below would compute
+  // `numPoints = botRight - botLeft` as NaN and crash on
+  // `new Array(numPoints)` (`RangeError: Invalid array length`) — a defect
+  // the pre-A12 `?? 2400` fabrication masked. The entire filter-overlay
+  // geometry (label, trapezoid outline/fill, the trapezoid-clipped
+  // spectrum line, contour, manual notch — everything below that reads
+  // `rs.animFilterWidth`, `topHalfW`, `tl`/`tr`/`bl`/`br`) is skipped when
+  // non-finite; the background clear/fill and the bottom frequency grid
+  // (computed from `bandwidth`, independent of the filter passband) still
+  // render normally either way.
+  const showFilterOverlay = Number.isFinite(rs.animFilterWidth);
+
   // ── Trapezoid geometry ──
   const totalHalfW = width * 0.45;
   const whiskerLeft = width / 2 - totalHalfW;
@@ -146,22 +166,13 @@ export function renderAudioSpectrum(
   const br = cx + topHalfW + slopeExtra;
 
   // ── Filter label (top) ──
-  // MOR-1409 A12 (coordinator adjudication, Core #2317, comment
-  // 5246487510): a connected receiver that has never reported
-  // `filterWidth` (optional field) still reaches this draw call as `NaN`
-  // (panel-props.ts's `toAudioSpectrumProps` no longer fabricates `?? 2400`)
-  // — `rs.animFilterWidth` latches to `NaN` and stays there (the animation
-  // step's own `Math.abs(fwDiff) > 200` check is itself `false` for a NaN
-  // diff, so it never recovers), and `Math.round(NaN)` renders the literal
-  // "Filter: NaN Hz" on the canvas. Suppress with a placeholder, matching
-  // the established dash convention (FilterPanel.svelte's `'--- Hz'`).
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillStyle = FILTER_LABEL_COLOR;
-  const filterLabel = Number.isFinite(rs.animFilterWidth)
-    ? `Filter: ${Math.round(rs.animFilterWidth)} Hz`
-    : 'Filter: ---';
-  ctx.fillText(filterLabel, width / 2, TOP_LABEL_H - 5);
+  // Skipped entirely when non-finite — see `showFilterOverlay` above.
+  if (showFilterOverlay) {
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = FILTER_LABEL_COLOR;
+    ctx.fillText(`Filter: ${Math.round(rs.animFilterWidth)} Hz`, width / 2, TOP_LABEL_H - 5);
+  }
 
   // ── Frequency grid labels (bottom) ──
   const halfBw = bandwidth / 2;
@@ -197,76 +208,84 @@ export function renderAudioSpectrum(
   }
 
   // ── Draw trapezoid outline + whiskers ──
+  // Skipped entirely when non-finite — see `showFilterOverlay` above.
   const pbtActive = pbtInner !== 128 || pbtOuter !== 128;
 
-  if (pbtActive) {
-    // Twin PBT: draw two separate trapezoids with distinct colors
-    const innerHz = pbtRawToHz(pbtInner);
-    const outerHz = pbtRawToHz(pbtOuter);
+  if (showFilterOverlay) {
+    if (pbtActive) {
+      // Twin PBT: draw two separate trapezoids with distinct colors
+      const innerHz = pbtRawToHz(pbtInner);
+      const outerHz = pbtRawToHz(pbtOuter);
 
-    // Inner PBT trapezoid (cyan/blue)
-    const innerCx = width / 2 + (innerHz / shiftRef) * totalHalfW * 0.6;
-    const iTl = innerCx - topHalfW;
-    const iTr = innerCx + topHalfW;
-    const iBl = innerCx - topHalfW - slopeExtra;
-    const iBr = innerCx + topHalfW + slopeExtra;
+      // Inner PBT trapezoid (cyan/blue)
+      const innerCx = width / 2 + (innerHz / shiftRef) * totalHalfW * 0.6;
+      const iTl = innerCx - topHalfW;
+      const iTr = innerCx + topHalfW;
+      const iBl = innerCx - topHalfW - slopeExtra;
+      const iBr = innerCx + topHalfW + slopeExtra;
 
-    ctx.strokeStyle = 'rgba(80, 180, 255, 0.7)';
-    ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(80, 180, 255, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(whiskerLeft, trapBottom);
+      ctx.lineTo(iBl, trapBottom);
+      ctx.lineTo(iTl, trapTop);
+      ctx.lineTo(iTr, trapTop);
+      ctx.lineTo(iBr, trapBottom);
+      ctx.lineTo(whiskerRight, trapBottom);
+      ctx.stroke();
+
+      // Outer PBT trapezoid (orange)
+      const outerCx = width / 2 + (outerHz / shiftRef) * totalHalfW * 0.6;
+      const oTl = outerCx - topHalfW;
+      const oTr = outerCx + topHalfW;
+      const oBl = outerCx - topHalfW - slopeExtra;
+      const oBr = outerCx + topHalfW + slopeExtra;
+
+      ctx.strokeStyle = 'rgba(255, 160, 60, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(oBl, trapBottom);
+      ctx.lineTo(oTl, trapTop);
+      ctx.lineTo(oTr, trapTop);
+      ctx.lineTo(oBr, trapBottom);
+      ctx.stroke();
+    } else {
+      // No PBT: single white trapezoid
+      ctx.strokeStyle = TRAPEZOID_STROKE;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(whiskerLeft, trapBottom);
+      ctx.lineTo(bl, trapBottom);
+      ctx.lineTo(tl, trapTop);
+      ctx.lineTo(tr, trapTop);
+      ctx.lineTo(br, trapBottom);
+      ctx.lineTo(whiskerRight, trapBottom);
+      ctx.stroke();
+    }
+
+    // Light fill inside trapezoid
+    ctx.fillStyle = TRAPEZOID_FILL;
     ctx.beginPath();
-    ctx.moveTo(whiskerLeft, trapBottom);
-    ctx.lineTo(iBl, trapBottom);
-    ctx.lineTo(iTl, trapTop);
-    ctx.lineTo(iTr, trapTop);
-    ctx.lineTo(iBr, trapBottom);
-    ctx.lineTo(whiskerRight, trapBottom);
-    ctx.stroke();
-
-    // Outer PBT trapezoid (orange)
-    const outerCx = width / 2 + (outerHz / shiftRef) * totalHalfW * 0.6;
-    const oTl = outerCx - topHalfW;
-    const oTr = outerCx + topHalfW;
-    const oBl = outerCx - topHalfW - slopeExtra;
-    const oBr = outerCx + topHalfW + slopeExtra;
-
-    ctx.strokeStyle = 'rgba(255, 160, 60, 0.7)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(oBl, trapBottom);
-    ctx.lineTo(oTl, trapTop);
-    ctx.lineTo(oTr, trapTop);
-    ctx.lineTo(oBr, trapBottom);
-    ctx.stroke();
-  } else {
-    // No PBT: single white trapezoid
-    ctx.strokeStyle = TRAPEZOID_STROKE;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(whiskerLeft, trapBottom);
-    ctx.lineTo(bl, trapBottom);
+    ctx.moveTo(bl, trapBottom);
     ctx.lineTo(tl, trapTop);
     ctx.lineTo(tr, trapTop);
     ctx.lineTo(br, trapBottom);
-    ctx.lineTo(whiskerRight, trapBottom);
-    ctx.stroke();
+    ctx.closePath();
+    ctx.fill();
   }
 
-  // Light fill inside trapezoid
-  ctx.fillStyle = TRAPEZOID_FILL;
-  ctx.beginPath();
-  ctx.moveTo(bl, trapBottom);
-  ctx.lineTo(tl, trapTop);
-  ctx.lineTo(tr, trapTop);
-  ctx.lineTo(br, trapBottom);
-  ctx.closePath();
-  ctx.fill();
-
   // ── Passband fraction (used for bin mapping below) ──
+  // Skipped entirely when non-finite — see `showFilterOverlay` above
+  // (this whole block, and everything it feeds, is what threw
+  // `RangeError: Invalid array length` pre-fix: `filterHz` is `NaN`,
+  // cascading into `botLeft`/`botRight`/`numPoints` all `NaN`, and
+  // `new Array(NaN)` throws).
   const filterHz = Math.round(rs.animFilterWidth);
   const passbandFrac = Math.min(1, filterHz / halfBw);
 
   // ── Spectrum: gradient fill + line, clipped to trapezoid ──
-  if (pixels && pixels.length > 0) {
+  if (showFilterOverlay && pixels && pixels.length > 0) {
     const botLeft = Math.max(0, Math.floor(bl));
     const botRight = Math.min(width, Math.ceil(br));
     const numPoints = botRight - botLeft;
@@ -352,7 +371,9 @@ export function renderAudioSpectrum(
   }
 
   // ── Contour (inside trapezoid) ──
-  if (contour > 0) {
+  // Skipped entirely when non-finite (positioned relative to the
+  // trapezoid's tl/tr, both NaN-tainted) — see `showFilterOverlay` above.
+  if (showFilterOverlay && contour > 0) {
     const contourX = tl + (contourFreq / 255) * (tr - tl);
     const depth = (contour / 255) * trapH * 0.4;
     const cWidth = (tr - tl) * 0.25;
@@ -366,7 +387,9 @@ export function renderAudioSpectrum(
   }
 
   // ── Manual notch (inside trapezoid) ──
-  if (manualNotch) {
+  // Skipped entirely when non-finite (positioned relative to the
+  // trapezoid's tl/tr, both NaN-tainted) — see `showFilterOverlay` above.
+  if (showFilterOverlay && manualNotch) {
     const notchX = tl + (notchFreq / 255) * (tr - tl);
     const depth = trapH * 0.55;
     const nHalfW = (tr - tl) * 0.06;

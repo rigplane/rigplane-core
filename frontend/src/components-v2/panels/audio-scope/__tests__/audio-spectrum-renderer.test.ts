@@ -166,20 +166,20 @@ describe('renderAudioSpectrum', () => {
       return { ctx, fillText };
     }
 
-    // `pixels: null` here is deliberate, not incidental: with populated
-    // `pixels` (this file's `baseState`), a non-finite `filterWidth`
-    // propagates into the trapezoid geometry (`bl`/`br` become NaN) and
-    // crashes the spectrum-line block below with `RangeError: Invalid
-    // array length` (`new Array(numPoints)`, numPoints itself NaN) —
-    // independently discovered while adding this test, BEFORE reaching
-    // the label draw call's own guard. That crash is a real, separate
-    // defect in the trapezoid/spectrum-line geometry math, out of this
-    // gate's restricted grant (label-guard only, no further
-    // behavior/logic changes) — flagged for the coordinator, not fixed
-    // here. `pixels: null` (a real, common state — before the first FFT
-    // frame arrives) isolates the label guard this gate DOES own from
-    // that separate crash.
-    it('does not draw a "NaN" substring in the Filter label for a non-finite filterWidth', () => {
+    // `pixels: null` here is deliberate, not incidental — it isolates
+    // this describe block's original (label-only) finding from the
+    // separate, more severe crash the second describe block below
+    // documents and fixes.
+    //
+    // MOR-1409 A12 follow-up (coordinator adjudication addendum, comment
+    // 5246612628): the guard scope EXPANDED from "placeholder the label"
+    // to "skip the entire filter-overlay geometry" — so a non-finite
+    // filterWidth now draws NO Filter-prefixed label at all (not even a
+    // placeholder), superseding this describe block's original two
+    // "does not draw a NaN substring" / "draws the placeholder" tests
+    // (the former is now vacuous — there is no label call to inspect —
+    // and is replaced by this single "no label at all" pin).
+    it('draws no Filter-prefixed label at all for a non-finite filterWidth (guard scope expanded, comment 5246612628)', () => {
       const rs = new AudioSpectrumRendererState();
       const { ctx, fillText } = mockCtxWithFillTextSpy();
       const state = { ...baseState, filterWidth: Number.NaN, pixels: null };
@@ -187,25 +187,58 @@ describe('renderAudioSpectrum', () => {
       const filterLabelCall = fillText.mock.calls.find((call) =>
         String(call[0]).startsWith('Filter:'),
       );
-      expect(filterLabelCall?.[0]).not.toMatch(/NaN/);
+      expect(filterLabelCall).toBeUndefined();
     });
 
-    it('draws the established "---"-family placeholder for a non-finite filterWidth', () => {
-      const rs = new AudioSpectrumRendererState();
-      const { ctx, fillText } = mockCtxWithFillTextSpy();
-      const state = { ...baseState, filterWidth: Number.NaN, pixels: null };
-      renderAudioSpectrum(ctx, 400, 160, state, rs);
-      const filterLabelCall = fillText.mock.calls.find((call) =>
-        String(call[0]).startsWith('Filter:'),
-      );
-      expect(filterLabelCall?.[0]).toBe('Filter: ---');
-    });
-
-    it('documents the separate, out-of-grant crash: a non-finite filterWidth WITH populated pixels throws (not this gate\'s fix)', () => {
+    /**
+     * A12 follow-up (MOR-1409, Core #2317, coordinator adjudication
+     * addendum comment 5246612628, extending 5246487510). The prior
+     * pin here documented that populated `pixels` + a non-finite
+     * `filterWidth` threw `RangeError: Invalid array length` — that was
+     * a real, more severe defect (not just a label glitch) newly
+     * reachable through A12's honest sentinel, out of the original
+     * label-only grant. The grant was expanded: the guard now skips the
+     * ENTIRE filter-overlay geometry (label, trapezoid, contour, notch,
+     * and the trapezoid-clipped spectrum line) when `filterWidth`/
+     * `animFilterWidth` is non-finite, so this same populated-pixels
+     * case must render without throwing and without any overlay.
+     */
+    it('renders without throwing for populated pixels + a non-finite filterWidth (was: RangeError)', () => {
       const rs = new AudioSpectrumRendererState();
       const { ctx } = mockCtxWithFillTextSpy();
       const state = { ...baseState, filterWidth: Number.NaN };
-      expect(() => renderAudioSpectrum(ctx, 400, 160, state, rs)).toThrow(/Invalid array length/);
+      expect(() => renderAudioSpectrum(ctx, 400, 160, state, rs)).not.toThrow();
+    });
+
+    it('draws no Filter-overlay label for populated pixels + a non-finite filterWidth', () => {
+      const rs = new AudioSpectrumRendererState();
+      const { ctx, fillText } = mockCtxWithFillTextSpy();
+      const state = { ...baseState, filterWidth: Number.NaN };
+      renderAudioSpectrum(ctx, 400, 160, state, rs);
+      const filterLabelCall = fillText.mock.calls.find((call) =>
+        String(call[0]).startsWith('Filter:'),
+      );
+      expect(filterLabelCall).toBeUndefined();
+    });
+
+    it('still draws the frequency-grid "0" center label for populated pixels + a non-finite filterWidth (the rest of the spectrum renders normally)', () => {
+      const rs = new AudioSpectrumRendererState();
+      const { ctx, fillText } = mockCtxWithFillTextSpy();
+      const state = { ...baseState, filterWidth: Number.NaN };
+      renderAudioSpectrum(ctx, 400, 160, state, rs);
+      const zeroLabelCall = fillText.mock.calls.find((call) => call[0] === '0');
+      expect(zeroLabelCall).not.toBeUndefined();
+    });
+
+    it('finite-value regression pin: the overlay is still drawn (Filter label present) for a finite filterWidth', () => {
+      const rs = new AudioSpectrumRendererState();
+      const { ctx, fillText } = mockCtxWithFillTextSpy();
+      const state = { ...baseState, filterWidth: 2400 };
+      renderAudioSpectrum(ctx, 400, 160, state, rs);
+      const filterLabelCall = fillText.mock.calls.find((call) =>
+        String(call[0]).startsWith('Filter:'),
+      );
+      expect(filterLabelCall?.[0]).toBe('Filter: 2400 Hz');
     });
 
     it('still draws the real formatted width for a finite filterWidth', () => {
