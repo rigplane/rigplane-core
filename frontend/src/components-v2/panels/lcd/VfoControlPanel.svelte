@@ -7,19 +7,19 @@
    * (A↔B, A=B, DW, SPLIT, XIT, CLR, TUNE, BK-OFF) were previously
    * rendered inside `AmberLcdDisplay` (`.lcd-vfo-ctrl-row`) and are
    * relocated here unchanged. Commands dispatched via the same
-   * wiring/command-bus handlers as before.
+   * adapter-bound handlers as before.
    */
   import {
     deriveVfoControlProps,
     deriveRitXitProps,
+    getVfoHandlers,
+    getRitXitHandlers,
+    getCwHandlers,
+    getTxHandlers,
+    bindVfoTunerContext,
   } from '$lib/runtime/adapters/panel-adapters';
   import { deriveVfoOps } from '$lib/runtime/adapters/vfo-adapter';
-  import {
-    makeVfoHandlers,
-    makeRitXitHandlers,
-    makeCwPanelHandlers,
-  } from '../../wiring/command-bus';
-  import { runtime } from '$lib/runtime';
+  import { keyBlockedReasons } from '../../../semantic/rx-tx-surface';
 
   /**
    * MOR-1092: in the migrated LCD entrypoints the semantic VFO surface owns
@@ -30,9 +30,17 @@
    */
   let { hideVfoFacts = false }: { hideVfoFacts?: boolean } = $props();
 
-  const vfoHandlers = makeVfoHandlers();
-  const ritXitHandlers = makeRitXitHandlers();
-  const cwHandlers = makeCwPanelHandlers();
+  const vfoHandlers = getVfoHandlers();
+  const ritXitHandlers = getRitXitHandlers();
+  const cwHandlers = getCwHandlers();
+  const txHandlers = getTxHandlers();
+  const tunerContext = bindVfoTunerContext();
+
+  function requestAtuTune(): void {
+    const { view, tx } = tunerContext.read();
+    if (!view || keyBlockedReasons(view, tx).length > 0) return;
+    txHandlers.onAtuTune();
+  }
 
   let p = $derived(deriveVfoControlProps());
   let ritXit = $derived(deriveRitXitProps());
@@ -53,7 +61,7 @@
     <button class="lcd-btn" onclick={ritXitHandlers.onClear}>CLR</button>
   {/if}
   {#if p.hasTuner}
-    <button class="lcd-btn" onclick={() => runtime.send('set_tuner_status', { value: 2 })}>TUNE</button>
+    <button class="lcd-btn" onclick={requestAtuTune}>TUNE</button>
   {/if}
   {#if p.isCwMode && p.hasCw && p.hasBreakIn}
     <button class="lcd-btn" class:active={p.breakInMode > 0} onclick={() => cwHandlers.onBreakInModeChange(p.breakInMode === 0 ? 1 : p.breakInMode === 1 ? 2 : 0)}>{p.breakInMode === 0 ? 'BK-OFF' : p.breakInMode === 1 ? 'SEMI' : 'FULL'}</button>
