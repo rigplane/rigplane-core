@@ -1,10 +1,10 @@
 <script lang="ts">
   import { getTuningStep, adjustTuningStep, isAutoStep, formatStep } from '../../lib/stores/tuning.svelte';
   import { type ColorSchemeName } from '../../lib/renderers/waterfall-renderer';
-  import { radio } from '../../lib/stores/radio.svelte';
-  import { sendCommand } from '../../lib/transport/ws-client';
   import { hasCapability, hasDualReceiver } from '../../lib/stores/capabilities.svelte';
-  import { isFieldAvailable } from '$lib/state/field-status';
+  import { runtime } from '$lib/runtime/frontend-runtime';
+  import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
+  import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
   import ScopeSettingsPopover from './ScopeSettingsPopover.svelte';
   import {
     SPAN_LABELS, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
@@ -67,6 +67,8 @@
      */
     hideScopeControls = false,
   } = $props();
+
+  const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
 
   let showSettings = $state(false);
   let showDisplayGear = $state(false);
@@ -140,38 +142,76 @@
     adjustTuningStep('down');
   }
 
-  let scopeControls = $derived(radio.current?.scopeControls);
-  let scopeModeAvailable = $derived(isFieldAvailable(radio.current, 'scopeControls.mode'));
-  let scopeEdgeAvailable = $derived(isFieldAvailable(radio.current, 'scopeControls.edge'));
-  let scopeSpanAvailable = $derived(isFieldAvailable(radio.current, 'scopeControls.span'));
-  let scopeSpeedAvailable = $derived(isFieldAvailable(radio.current, 'scopeControls.speed'));
-  let scopeHoldAvailable = $derived(isFieldAvailable(radio.current, 'scopeControls.hold'));
-  let scopeRefAvailable = $derived(isFieldAvailable(radio.current, 'scopeControls.refDb'));
-  let scopeDualAvailable = $derived(isFieldAvailable(radio.current, 'scopeControls.dual'));
-  let scopeReceiverAvailable = $derived(isFieldAvailable(radio.current, 'scopeControls.receiver'));
+  let scopeFacts = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
 
-  let spanApplicable = $derived(isSpanApplicable(scopeControls?.mode));
-  let edgeApplicable = $derived(isEdgeApplicable(scopeControls?.mode));
+  type NumberScopeField = 'mode' | 'edge' | 'span' | 'speed' | 'refDb' | 'receiver';
+  type BooleanScopeField = 'hold' | 'dual';
+
+  function acceptedNumber(field: NumberScopeField, min: number, max: number): number | null {
+    const fact = scopeFacts?.[field];
+    if (!fact?.availability?.structural || !fact.availability.operational
+      || fact.reading?.status !== 'known' || !Number.isSafeInteger(fact.reading.value)
+      || fact.reading.value < min || fact.reading.value > max) return null;
+    return fact.reading.value;
+  }
+
+  function acceptedBoolean(field: BooleanScopeField): boolean | null {
+    const fact = scopeFacts?.[field];
+    if (!fact?.availability?.structural || !fact.availability.operational
+      || fact.reading?.status !== 'known' || typeof fact.reading.value !== 'boolean') return null;
+    return fact.reading.value;
+  }
+
+  let scopeMode = $derived(acceptedNumber('mode', 0, 3));
+  let scopeEdge = $derived(acceptedNumber('edge', 1, 4));
+  let scopeSpan = $derived(acceptedNumber('span', 0, 7));
+  let scopeSpeed = $derived(acceptedNumber('speed', 0, 2));
+  let scopeHold = $derived(acceptedBoolean('hold'));
+  let scopeRef = $derived(acceptedNumber('refDb', -30, 10));
+  let scopeDual = $derived(acceptedBoolean('dual'));
+  let scopeReceiver = $derived(acceptedNumber('receiver', 0, 1));
+
+  let spanApplicable = $derived(scopeMode !== null && isSpanApplicable(scopeMode));
+  let edgeApplicable = $derived(scopeMode !== null && isEdgeApplicable(scopeMode));
+
+  function selectMode(mode: number) {
+    if (scopeMode === null || !Number.isSafeInteger(mode) || mode < 0 || mode > 3) return;
+    scopeHandlers.onModeChange(mode);
+  }
+
+  function selectEdge(edge: number) {
+    if (scopeEdge === null || !Number.isSafeInteger(edge) || edge < 1 || edge > 4) return;
+    scopeHandlers.onEdgeChange(edge);
+  }
 
   function cycleSpan(delta: -1 | 1) {
-    sendCommand('set_scope_span', { span: clampSpan(scopeControls?.span ?? 3, delta) });
+    if (scopeSpan === null) return;
+    scopeHandlers.onSpanChange(clampSpan(scopeSpan, delta));
   }
 
   function cycleSpeed(delta: -1 | 1) {
-    sendCommand('set_scope_speed', { speed: clampSpeed(scopeControls?.speed ?? 1, delta) });
+    if (scopeSpeed === null) return;
+    scopeHandlers.onSpeedChange(clampSpeed(scopeSpeed, delta));
   }
 
   function toggleHold() {
-    sendCommand('set_scope_hold', { on: !(scopeControls?.hold ?? false) });
+    if (scopeHold === null) return;
+    scopeHandlers.onHoldChange(!scopeHold);
+  }
+
+  function changeRef(delta: -5 | 0 | 5) {
+    if (scopeRef === null) return;
+    scopeHandlers.onRefChange(delta === 0 ? 0 : clampRef(scopeRef, delta));
   }
 
   function toggleDual() {
-    sendCommand('set_scope_dual', { dual: !(scopeControls?.dual ?? false) });
+    if (scopeDual === null) return;
+    scopeHandlers.onDualChange(!scopeDual);
   }
 
   function switchReceiver() {
-    const next = (scopeControls?.receiver ?? 0) === 1 ? 0 : 1;
-    sendCommand('switch_scope_receiver', { receiver: next });
+    if (scopeReceiver === null) return;
+    scopeHandlers.onReceiverChange(scopeReceiver === 1 ? 0 : 1);
   }
 </script>
 
@@ -216,9 +256,9 @@
           {#each MODE_BUTTONS as [m, label]}
             <button
               class="toolbar-btn small"
-              class:active={scopeModeAvailable && scopeControls?.mode === m}
-              disabled={!scopeModeAvailable}
-              onclick={() => sendCommand('set_scope_mode', { mode: m })}
+              class:active={scopeMode !== null && scopeMode === m}
+              disabled={scopeMode === null}
+              onclick={() => selectMode(m)}
               title="Scope mode: {label}"
             >{label}</button>
           {/each}
@@ -230,9 +270,9 @@
             {#each [1, 2, 3, 4] as e}
               <button
                 class="toolbar-btn small"
-                class:active={scopeEdgeAvailable && scopeControls?.edge === e}
-                disabled={!scopeEdgeAvailable}
-                onclick={() => sendCommand('set_scope_edge', { edge: e })}
+                class:active={scopeEdge !== null && scopeEdge === e}
+                disabled={scopeEdge === null}
+                onclick={() => selectEdge(e)}
               >{e}</button>
             {/each}
           </div>
@@ -245,40 +285,40 @@
       <div class="toolbar-group-c">
       {#if spanApplicable}
         <div class="toolbar-group step-group">
-          <button class="toolbar-btn small step-arrow" disabled={!scopeSpanAvailable} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
-          <button class="toolbar-btn step-control" disabled={!scopeSpanAvailable} onclick={() => cycleSpan(1)} title="Scope span">
+          <button class="toolbar-btn small step-arrow" disabled={scopeSpan === null} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
+          <button class="toolbar-btn step-control" disabled={scopeSpan === null} onclick={() => cycleSpan(1)} title="Scope span">
             <span class="toolbar-label">SPAN</span>
-            <span class="toolbar-value">{scopeSpanAvailable ? (SPAN_LABELS[scopeControls?.span ?? 3] ?? '±25k') : '—'}</span>
+            <span class="toolbar-value">{scopeSpan === null ? '—' : (SPAN_LABELS[scopeSpan] ?? '—')}</span>
           </button>
-          <button class="toolbar-btn small step-arrow" disabled={!scopeSpanAvailable} onclick={() => cycleSpan(1)} title="Increase span">▶</button>
+          <button class="toolbar-btn small step-arrow" disabled={scopeSpan === null} onclick={() => cycleSpan(1)} title="Increase span">▶</button>
         </div>
         <div class="toolbar-sub-separator"></div>
       {/if}
       <div class="toolbar-group step-group">
-        <button class="toolbar-btn small step-arrow" disabled={!scopeSpeedAvailable} onclick={() => cycleSpeed(-1)} title="Decrease speed">◀</button>
-        <button class="toolbar-btn step-control" disabled={!scopeSpeedAvailable} onclick={() => cycleSpeed(1)} title="Scope sweep speed">
+        <button class="toolbar-btn small step-arrow" disabled={scopeSpeed === null} onclick={() => cycleSpeed(-1)} title="Decrease speed">◀</button>
+        <button class="toolbar-btn step-control" disabled={scopeSpeed === null} onclick={() => cycleSpeed(1)} title="Scope sweep speed">
           <span class="toolbar-label">{SPEED_STATIC_LABEL}</span>
-          <span class="toolbar-value">{scopeSpeedAvailable ? (SPEED_LABELS[scopeControls?.speed ?? 1] ?? 'MID') : '—'}</span>
+          <span class="toolbar-value">{scopeSpeed === null ? '—' : (SPEED_LABELS[scopeSpeed] ?? '—')}</span>
         </button>
-        <button class="toolbar-btn small step-arrow" disabled={!scopeSpeedAvailable} onclick={() => cycleSpeed(1)} title="Increase speed">▶</button>
+        <button class="toolbar-btn small step-arrow" disabled={scopeSpeed === null} onclick={() => cycleSpeed(1)} title="Increase speed">▶</button>
       </div>
       <div class="toolbar-sub-separator"></div>
       <div class="toolbar-group">
-        <button class="toolbar-btn" class:active={scopeHoldAvailable && (scopeControls?.hold ?? false)} disabled={!scopeHoldAvailable} onclick={toggleHold} title="Scope hold">HOLD</button>
+        <button class="toolbar-btn" class:active={scopeHold === true} disabled={scopeHold === null} onclick={toggleHold} title="Scope hold">HOLD</button>
       </div>
       <div class="toolbar-sub-separator hide-mobile"></div>
       <div class="toolbar-group hide-mobile">
         <span class="toolbar-label">REF</span>
-        <button class="toolbar-btn small" disabled={!scopeRefAvailable} onclick={() => sendCommand('set_scope_ref', { ref: clampRef(scopeControls?.refDb ?? 0, -5) })}>−</button>
-        <span class="toolbar-value ref-value">{scopeRefAvailable ? `${(scopeControls?.refDb ?? 0) > 0 ? '+' : ''}${scopeControls?.refDb ?? 0}` : '—'}</span>
-        <button class="toolbar-btn small" disabled={!scopeRefAvailable} onclick={() => sendCommand('set_scope_ref', { ref: clampRef(scopeControls?.refDb ?? 0, 5) })}>+</button>
+        <button class="toolbar-btn small" disabled={scopeRef === null} onclick={() => changeRef(-5)}>−</button>
+        <span class="toolbar-value ref-value">{scopeRef === null ? '—' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
+        <button class="toolbar-btn small" disabled={scopeRef === null} onclick={() => changeRef(5)}>+</button>
       </div>
       {#if !hideSourceControls && hasDualReceiver()}
         <div class="toolbar-sub-separator"></div>
         <div class="toolbar-group">
-          <button class="toolbar-btn" class:active={scopeDualAvailable && (scopeControls?.dual ?? false)} disabled={!scopeDualAvailable} onclick={toggleDual} title="Dual scope">DUAL</button>
-          <button class="toolbar-btn" disabled={!scopeReceiverAvailable} onclick={switchReceiver} title="Switch scope receiver">
-            {scopeReceiverAvailable ? (scopeControls?.receiver === 1 ? 'SUB' : 'MAIN') : '—'}
+          <button class="toolbar-btn" class:active={scopeDual === true} disabled={scopeDual === null} onclick={toggleDual} title="Dual scope">DUAL</button>
+          <button class="toolbar-btn" disabled={scopeReceiver === null} onclick={switchReceiver} title="Switch scope receiver">
+            {scopeReceiver === null ? '—' : (scopeReceiver === 1 ? 'SUB' : 'MAIN')}
           </button>
         </div>
       {/if}
@@ -323,10 +363,10 @@
           {#if hasCapability('scope') && !hideScopeControls}
             <div class="gear-row">
               <span class="gear-label">REF</span>
-              <button class="gear-btn" disabled={!scopeRefAvailable} onclick={() => sendCommand('set_scope_ref', { ref: clampRef(scopeControls?.refDb ?? 0, -5) })} aria-label="Decrease reference">−</button>
-              <span class="gear-value">{scopeRefAvailable ? `${(scopeControls?.refDb ?? 0) > 0 ? '+' : ''}${scopeControls?.refDb ?? 0}` : '—'}</span>
-              <button class="gear-btn" disabled={!scopeRefAvailable} onclick={() => sendCommand('set_scope_ref', { ref: clampRef(scopeControls?.refDb ?? 0, 5) })} aria-label="Increase reference">+</button>
-              <button class="gear-btn gear-btn-zero" disabled={!scopeRefAvailable} onclick={() => sendCommand('set_scope_ref', { ref: 0 })} aria-label="Reset reference">0</button>
+              <button class="gear-btn" disabled={scopeRef === null} onclick={() => changeRef(-5)} aria-label="Decrease reference">−</button>
+              <span class="gear-value">{scopeRef === null ? '—' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
+              <button class="gear-btn" disabled={scopeRef === null} onclick={() => changeRef(5)} aria-label="Increase reference">+</button>
+              <button class="gear-btn gear-btn-zero" disabled={scopeRef === null} onclick={() => changeRef(0)} aria-label="Reset reference">0</button>
             </div>
           {/if}
         </div>

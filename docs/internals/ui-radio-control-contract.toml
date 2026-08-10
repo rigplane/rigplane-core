@@ -564,7 +564,6 @@ exceptions = [
   { path = "src/components-v2/layout/VfoHeader.svelte", count = 1, owner = "MOR-1409" },
   { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },
   { path = "src/components/spectrum/ScopeSettingsPopover.svelte", count = 1, owner = "MOR-1409" },
-  { path = "src/components/spectrum/SpectrumToolbar.svelte", count = 1, owner = "MOR-1409" },
 ]
 
 [[guards]]
