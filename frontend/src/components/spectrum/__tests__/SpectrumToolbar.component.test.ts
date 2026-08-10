@@ -1,54 +1,184 @@
 /**
- * Component-level test for SpectrumToolbar.svelte.
- * Mounts the real component and verifies DOM output + interactions.
+ * Component-level authority tests for SpectrumToolbar.svelte.
+ * Mounts the real component and proves that confirmed radio truth comes only
+ * from the merged spectrum selector while actions use the bound scope family.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
 
-// ── Mocks (must be before imports) ──────────────────────────────────────────
+// ── Hoisted authority/intent harnesses ─────────────────────────────────────
 
-const radioStoreMock = vi.hoisted(() => ({
+const runtimeHarness = vi.hoisted(() => ({
+  runtime: {
+    state: Object.freeze({ identity: 'toolbar-state' }),
+    caps: Object.freeze({ identity: 'toolbar-capabilities' }),
+  },
+}));
+
+const authorityHarness = vi.hoisted(() => {
+  const harness = {
+    current: null as any,
+    toSpectrumAuthority: vi.fn(() => harness.current),
+  };
+  return harness;
+});
+
+const binderHarness = vi.hoisted(() => {
+  const scopeControls = Object.freeze({
+    onModeChange: vi.fn(),
+    onEdgeChange: vi.fn(),
+    onSpanChange: vi.fn(),
+    onSpeedChange: vi.fn(),
+    onHoldChange: vi.fn(),
+    onRefChange: vi.fn(),
+    onDualChange: vi.fn(),
+    onReceiverChange: vi.fn(),
+    onDuringTxChange: vi.fn(),
+    onCenterTypeChange: vi.fn(),
+    onVbwChange: vi.fn(),
+    onRbwChange: vi.fn(),
+  });
+  const unrelated = Object.freeze({
+    agc: Object.freeze({ call: vi.fn() }),
+    antenna: Object.freeze({ call: vi.fn() }),
+    audioRouting: Object.freeze({ call: vi.fn() }),
+    band: Object.freeze({ call: vi.fn() }),
+    cw: Object.freeze({ call: vi.fn() }),
+    dsp: Object.freeze({ call: vi.fn() }),
+    filter: Object.freeze({ call: vi.fn() }),
+    mode: Object.freeze({ call: vi.fn() }),
+    rfFrontEnd: Object.freeze({ call: vi.fn() }),
+    ritXit: Object.freeze({ call: vi.fn() }),
+    rxAudio: Object.freeze({ call: vi.fn() }),
+    scan: Object.freeze({ call: vi.fn() }),
+    tx: Object.freeze({ call: vi.fn() }),
+    vfo: Object.freeze({ call: vi.fn() }),
+    vox: Object.freeze({ call: vi.fn() }),
+  });
+  const bound = Object.freeze({ ...unrelated, scopeControls });
+  return {
+    scopeControls,
+    unrelated,
+    bound,
+    bindSemanticSurfaceHandlers: vi.fn(() => bound),
+  };
+});
+
+const capabilityHarness = vi.hoisted(() => ({ scope: true, dual: true }));
+
+// These legacy seams remain mocked as alarms. The exact-base component uses
+// them, producing causal RED; the final component must never import/call them.
+const radioStoreAlarm = vi.hoisted(() => ({
   current: {
-    scopeControls: { mode: 0, span: 3, speed: 1, hold: false, dual: false, receiver: 0, refDb: 0, edge: 1 },
+    scopeControls: {
+      mode: 0, edge: 1, span: 3, speed: 1, hold: false,
+      refDb: 0, dual: false, receiver: 0,
+    },
   } as any,
+}));
+const sendCommandAlarm = vi.hoisted(() => vi.fn());
+
+vi.mock('$lib/runtime/frontend-runtime', () => ({ runtime: runtimeHarness.runtime }));
+
+vi.mock('$lib/runtime/adapters/scope-adapter', () => ({
+  toSpectrumAuthority: authorityHarness.toSpectrumAuthority,
+}));
+
+vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+  bindSemanticSurfaceHandlers: binderHarness.bindSemanticSurfaceHandlers,
 }));
 
 vi.mock('$lib/stores/radio.svelte', () => ({
-  radio: radioStoreMock,
+  radio: radioStoreAlarm,
   getRadioState: vi.fn(() => null),
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
 }));
 
-vi.mock('$lib/transport/ws-client', () => ({
-  sendCommand: vi.fn(),
-}));
+vi.mock('$lib/transport/ws-client', () => ({ sendCommand: sendCommandAlarm }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  hasCapability: vi.fn(() => true),
-  hasDualReceiver: vi.fn(() => true),
+  hasCapability: vi.fn((name: string) => name === 'scope' && capabilityHarness.scope),
+  hasDualReceiver: vi.fn(() => capabilityHarness.dual),
+}));
+
+const tuningHarness = vi.hoisted(() => ({
+  adjustTuningStep: vi.fn(),
 }));
 
 vi.mock('$lib/stores/tuning.svelte', () => ({
   getTuningStep: vi.fn(() => 1000),
-  adjustTuningStep: vi.fn(),
+  adjustTuningStep: tuningHarness.adjustTuningStep,
   isAutoStep: vi.fn(() => false),
   formatStep: vi.fn(() => '1.0k'),
 }));
 
-vi.mock('../ScopeSettingsPopover.svelte', () => ({
-  default: vi.fn(),
-}));
+vi.mock('../ScopeSettingsPopover.svelte', () => ({ default: vi.fn() }));
 
-// Stub fetch for band-plan API calls
 globalThis.fetch = vi.fn(() =>
   Promise.resolve({ ok: false, json: () => Promise.resolve({}) } as Response),
 );
 
 import SpectrumToolbar from '../SpectrumToolbar.svelte';
-import { sendCommand } from '$lib/transport/ws-client';
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Fact and mount helpers ─────────────────────────────────────────────────
+
+type Field<T> = {
+  reading: { status: 'known'; value: T } | { status: 'unknown' };
+  availability: { structural: boolean; operational: boolean };
+};
+
+function field<T>(value: T, options: {
+  known?: boolean; structural?: boolean; operational?: boolean;
+} = {}): Field<T> {
+  const { known = true, structural = true, operational = true } = options;
+  return Object.freeze({
+    reading: known ? Object.freeze({ status: 'known' as const, value })
+      : Object.freeze({ status: 'unknown' as const }),
+    availability: Object.freeze({ structural, operational }),
+  });
+}
+
+function scopeFacts(overrides: Record<string, unknown> = {}) {
+  return Object.freeze({
+    mode: field(0),
+    edge: field(1),
+    span: field(3),
+    speed: field(1),
+    hold: field(false),
+    refDb: field(0),
+    dual: field(false),
+    receiver: field(0),
+    duringTx: field(false),
+    centerType: field(0),
+    vbwNarrow: field(false),
+    rbw: field(0),
+    ...overrides,
+  });
+}
+
+function authority(overrides: Record<string, unknown> = {}) {
+  return Object.freeze({
+    providerGeneration: 17,
+    receiver: 0,
+    frequencyHz: 14_200_000,
+    mode: 'USB',
+    filter: 'FIL1',
+    filterWidthHz: 2700,
+    filterShape: 1,
+    ifShiftHz: 0,
+    pbtInnerHz: 0,
+    pbtOuterHz: 0,
+    dataMode: 0,
+    rule: null,
+    scopeControls: scopeFacts(),
+    digest: 'toolbar-authority',
+    ...overrides,
+  });
+}
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -74,333 +204,371 @@ function mountToolbar(props: Record<string, unknown> = {}) {
   return target;
 }
 
+function buttons(root: HTMLElement) {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>('button'));
+}
+
+function button(root: HTMLElement, text: string) {
+  return buttons(root).find((item) => item.textContent?.trim() === text);
+}
+
+function scopeSpies() {
+  return Object.entries(binderHarness.scopeControls)
+    .filter(([, value]) => typeof value === 'function') as [string, ReturnType<typeof vi.fn>][];
+}
+
+function expectOnlyScopeCall(name: string, ...args: unknown[]) {
+  for (const [candidate, spy] of scopeSpies()) {
+    if (candidate === name) expect(spy).toHaveBeenCalledTimes(1);
+    else expect(spy).not.toHaveBeenCalled();
+  }
+  expect((binderHarness.scopeControls as any)[name]).toHaveBeenCalledWith(...args);
+  for (const family of Object.values(binderHarness.unrelated)) expect(family.call).not.toHaveBeenCalled();
+  expect(sendCommandAlarm).not.toHaveBeenCalled();
+}
+
+function clearIntentSpies() {
+  for (const [, spy] of scopeSpies()) spy.mockClear();
+  for (const family of Object.values(binderHarness.unrelated)) family.call.mockClear();
+  sendCommandAlarm.mockClear();
+}
+
 beforeEach(() => {
   components = [];
-  radioStoreMock.current = {
-    scopeControls: { mode: 0, span: 3, speed: 1, hold: false, dual: false, receiver: 0, refDb: 0, edge: 1 },
-  };
   vi.clearAllMocks();
+  capabilityHarness.scope = true;
+  capabilityHarness.dual = true;
+  authorityHarness.current = authority();
+  radioStoreAlarm.current = {
+    scopeControls: {
+      mode: 0, edge: 1, span: 3, speed: 1, hold: false,
+      refDb: 0, dual: false, receiver: 0,
+    },
+  };
 });
 
 afterEach(() => {
-  components.forEach((c) => unmount(c));
+  components.forEach((component) => unmount(component));
   document.body.innerHTML = '';
 });
 
-// ── Tests ───────────────────────────────────────────────────────────────────
+// ── Canonical selector and one-time binder ─────────────────────────────────
 
-describe('SpectrumToolbar component', () => {
-  it('mounts without errors', () => {
+describe('canonical spectrum authority and binding', () => {
+  it('projects exactly runtime state/caps and binds the broad facade once per mount', () => {
     const target = mountToolbar();
     expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
+    expect(authorityHarness.toSpectrumAuthority).toHaveBeenCalledWith(
+      runtimeHarness.runtime.state,
+      runtimeHarness.runtime.caps,
+    );
+    expect(binderHarness.bindSemanticSurfaceHandlers).toHaveBeenCalledTimes(1);
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
 
-  it('renders scope mode buttons (CTR, FIX, S-C, S-F)', () => {
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const labels = buttons.map((b) => b.textContent?.trim());
-    expect(labels).toContain('CTR');
-    expect(labels).toContain('FIX');
-    expect(labels).toContain('S-C');
-    expect(labels).toContain('S-F');
-  });
-
-  it('renders SPAN selector in center mode', () => {
-    const target = mountToolbar();
-    const labels = Array.from(target.querySelectorAll('.toolbar-label'));
-    const spanLabel = labels.find((el) => el.textContent?.trim() === 'SPAN');
-    expect(spanLabel).toBeDefined();
-  });
-
-  it('renders speed selector with SPEED label', () => {
-    const target = mountToolbar();
-    const labels = Array.from(target.querySelectorAll('.toolbar-label'));
-    const speedLabel = labels.find((el) => el.textContent?.trim() === 'SPEED');
-    expect(speedLabel).toBeDefined();
-  });
-
-  it('renders wash-background group containers (B, C, D)', () => {
-    const target = mountToolbar();
-    expect(target.querySelector('.toolbar-group-b')).not.toBeNull();
-    expect(target.querySelector('.toolbar-group-c')).not.toBeNull();
-    expect(target.querySelector('.toolbar-group-d')).not.toBeNull();
-  });
-
-  it('renders 1px sub-separator inside group containers', () => {
-    const target = mountToolbar();
-    expect(target.querySelector('.toolbar-sub-separator')).not.toBeNull();
-  });
-
-  it('renders STEP control', () => {
-    const target = mountToolbar();
-    const labels = Array.from(target.querySelectorAll('.toolbar-label'));
-    const stepLabel = labels.find((el) => el.textContent?.trim() === 'STEP');
-    expect(stepLabel).toBeDefined();
-  });
-
-  it('renders AVG and PEAK toggles', () => {
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const labels = buttons.map((b) => b.textContent?.trim());
-    expect(labels).toContain('AVG');
-    expect(labels).toContain('PEAK');
-  });
-
-  it('renders brightness controls', () => {
-    const target = mountToolbar();
-    const labels = Array.from(target.querySelectorAll('.toolbar-label'));
-    const brtLabel = labels.find((el) => el.textContent?.trim() === 'BRT');
-    expect(brtLabel).toBeDefined();
-  });
-
-  it('renders HOLD button', () => {
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const holdBtn = buttons.find((b) => b.textContent?.trim() === 'HOLD');
-    expect(holdBtn).toBeDefined();
-  });
-
-  it('renders DUAL + MAIN/SUB scope-source buttons by default (mobile/v1 fallback for #832)', () => {
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const labels = buttons.map((b) => b.textContent?.trim());
-    expect(labels).toContain('DUAL');
-    // receiver starts at 0 → button label is 'MAIN'
-    expect(labels).toContain('MAIN');
-  });
-
-  it('hides DUAL + MAIN/SUB when hideSourceControls is true (v2 desktop; VfoHeader bridge owns them, #832)', () => {
-    const target = mountToolbar({ hideSourceControls: true });
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const labels = buttons.map((b) => b.textContent?.trim());
-    expect(labels).not.toContain('DUAL');
-    expect(labels).not.toContain('MAIN');
-    expect(labels).not.toContain('SUB');
-  });
-
-  it('DUAL button click dispatches set_scope_dual', () => {
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const dualBtn = buttons.find((b) => b.textContent?.trim() === 'DUAL');
-    expect(dualBtn).toBeDefined();
-    dualBtn!.click();
+  it('keeps VIEW reachable and every fact control neutral when the selector rejects the epoch/topology', () => {
+    authorityHarness.current = null;
+    const onScopeDemandChange = vi.fn();
+    const target = mountToolbar({ onScopeDemandChange });
+    const view = buttons(target).find((item) => item.textContent?.trim().startsWith('VIEW'))!;
+    expect(view).toBeDefined();
+    view.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledWith('set_scope_dual', { dual: true });
+    expect(onScopeDemandChange).toHaveBeenCalledWith(false);
+    for (const label of ['CTR', 'FIX', 'S-C', 'S-F', 'HOLD', 'DUAL']) {
+      expect(button(target, label)?.disabled).toBe(true);
+      expect(button(target, label)?.classList.contains('active')).toBe(false);
+    }
+    expect(button(target, '—')?.disabled).toBe(true);
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
   });
+});
 
-  it('receiver-switch button click dispatches switch_scope_receiver', () => {
+// ── Exactly one matching intent ────────────────────────────────────────────
+
+describe('scope-control intents', () => {
+  it.each([
+    ['CTR', 0], ['FIX', 1], ['S-C', 2], ['S-F', 3],
+  ] as const)('routes mode %s through one mode intent', (label, value) => {
     const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    // With receiver=0, the label is 'MAIN'; clicking flips to receiver=1.
-    const rxBtn = buttons.find((b) => b.textContent?.trim() === 'MAIN');
-    expect(rxBtn).toBeDefined();
-    rxBtn!.click();
+    button(target, label)!.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledWith('switch_scope_receiver', { receiver: 1 });
+    expectOnlyScopeCall('onModeChange', value);
   });
 
-  it('renders color scheme selector', () => {
+  it.each([1, 2, 3, 4])('routes edge %i through one edge intent', (value) => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ mode: field(1), edge: field(value) }) });
     const target = mountToolbar();
-    const select = target.querySelector<HTMLSelectElement>('.toolbar-select');
-    expect(select).not.toBeNull();
-    const options = Array.from(select!.querySelectorAll('option')).map((o) => o.value);
-    expect(options).toEqual(['classic', 'thermal', 'grayscale']);
-  });
-
-  it('renders BANDS button', () => {
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const bandsBtn = buttons.find((b) => b.textContent?.trim() === 'BANDS');
-    expect(bandsBtn).toBeDefined();
-  });
-
-  it('renders fullscreen toggle button', () => {
-    const target = mountToolbar();
-    const iconBtn = target.querySelector<HTMLButtonElement>('.icon-btn');
-    expect(iconBtn).not.toBeNull();
-  });
-
-  it('mode button click dispatches sendCommand', () => {
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const fixBtn = buttons.find((b) => b.textContent?.trim() === 'FIX');
-    expect(fixBtn).toBeDefined();
-    fixBtn!.click();
+    button(target, String(value))!.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledWith('set_scope_mode', { mode: 1 });
+    expectOnlyScopeCall('onEdgeChange', value);
   });
 
-  it('disables missing scope controls instead of presenting defaults as confirmed', () => {
-    radioStoreMock.current = {
-      scopeControls: { mode: 0, span: 3, speed: 1, hold: false, dual: false, receiver: 0, refDb: 0, edge: 1 },
-      fieldStatus: {
-        'scopeControls.mode': {
-          storePath: 'scope_controls.global.display.mode',
-          observed: false,
-          freshness: 'unknown',
-          availability: 'missing',
-        },
-        'scopeControls.span': {
-          storePath: 'scope_controls.global.display.span',
-          observed: true,
-          freshness: 'stale',
-          availability: 'stale',
-        },
-      },
-    };
-
+  it('routes span down/up through exactly one clamped intent', () => {
     const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const ctrBtn = buttons.find((b) => b.textContent?.trim() === 'CTR');
-    const spanDown = buttons.find((b) => b.title === 'Decrease span');
-    const spanValue = Array.from(target.querySelectorAll('.toolbar-value'))
-      .find((el) => el.textContent?.includes('±25k') || el.textContent?.includes('—'));
-
-    expect(ctrBtn?.disabled).toBe(true);
-    expect(ctrBtn?.classList.contains('active')).toBe(false);
-    expect(spanDown?.disabled).toBe(true);
-    expect(spanValue?.textContent?.trim()).toBe('—');
-  });
-
-  it('disables scope controls when the scopeControls parent is unobserved (no child entries)', () => {
-    // Mirrors the real backend payload for an unobserved scope group: the
-    // parent `scopeControls` carries a `missing` status, the individual
-    // children (mode/span/speed/…) have NO own entries. Parent/child
-    // resolution must treat each leaf as unavailable so defaults
-    // (CTR/MID/±25k/…) are not presented as confirmed (MOR-429).
-    radioStoreMock.current = {
-      scopeControls: { mode: 0, span: 3, speed: 1, hold: false, dual: false, receiver: 0, refDb: 0, edge: 1 },
-      fieldStatus: {
-        scopeControls: {
-          storePath: 'global.slow_state.scope_controls',
-          observed: false,
-          freshness: 'unknown',
-          availability: 'missing',
-        },
-      },
-    };
-
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const ctrBtn = buttons.find((b) => b.textContent?.trim() === 'CTR');
-    const holdBtn = buttons.find((b) => b.textContent?.trim() === 'HOLD');
-    const dualBtn = buttons.find((b) => b.textContent?.trim() === 'DUAL');
-    const spanDown = buttons.find((b) => b.title === 'Decrease span');
-    const speedDown = buttons.find((b) => b.title === 'Decrease speed');
-    const spanValue = Array.from(target.querySelectorAll('.toolbar-value'))
-      .find((el) => el.textContent?.includes('±25k') || el.textContent?.includes('—'));
-
-    expect(ctrBtn?.disabled).toBe(true);
-    expect(ctrBtn?.classList.contains('active')).toBe(false);
-    expect(holdBtn?.disabled).toBe(true);
-    expect(dualBtn?.disabled).toBe(true);
-    expect(spanDown?.disabled).toBe(true);
-    expect(speedDown?.disabled).toBe(true);
-    expect(spanValue?.textContent?.trim()).toBe('—');
-  });
-
-  it('HOLD button click dispatches sendCommand', () => {
-    const target = mountToolbar();
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const holdBtn = buttons.find((b) => b.textContent?.trim() === 'HOLD');
-    expect(holdBtn).toBeDefined();
-    holdBtn!.click();
+    buttons(target).find((item) => item.title === 'Decrease span')!.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledWith('set_scope_hold', { on: true });
+    expectOnlyScopeCall('onSpanChange', 2);
+    clearIntentSpies();
+    buttons(target).find((item) => item.title === 'Increase span')!.click();
+    flushSync();
+    expectOnlyScopeCall('onSpanChange', 4);
+  });
+
+  it('routes speed down/up through exactly one clamped intent', () => {
+    const target = mountToolbar();
+    buttons(target).find((item) => item.title === 'Decrease speed')!.click();
+    flushSync();
+    expectOnlyScopeCall('onSpeedChange', 2);
+    clearIntentSpies();
+    buttons(target).find((item) => item.title === 'Increase speed')!.click();
+    flushSync();
+    expectOnlyScopeCall('onSpeedChange', 0);
+  });
+
+  it('routes hold, dual and receiver toggles through their matching family members', () => {
+    const target = mountToolbar();
+    button(target, 'HOLD')!.click();
+    flushSync();
+    expectOnlyScopeCall('onHoldChange', true);
+    clearIntentSpies();
+    button(target, 'DUAL')!.click();
+    flushSync();
+    expectOnlyScopeCall('onDualChange', true);
+    clearIntentSpies();
+    button(target, 'MAIN')!.click();
+    flushSync();
+    expectOnlyScopeCall('onReceiverChange', 1);
+  });
+
+  it('routes desktop and mobile REF minus/plus/reset with no default', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(5) }) });
+    const target = mountToolbar();
+    const desktop = Array.from(target.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+      .find((group) => group.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')!;
+    const desktopButtons = Array.from(desktop.querySelectorAll<HTMLButtonElement>('button'));
+    desktopButtons[0].click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', 0);
+    clearIntentSpies();
+    desktopButtons[1].click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', 10);
+    clearIntentSpies();
+
+    target.querySelector<HTMLButtonElement>('[aria-label="Display settings"]')!.click();
+    flushSync();
+    target.querySelector<HTMLButtonElement>('[aria-label="Decrease reference"]')!.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', 0);
+    clearIntentSpies();
+    target.querySelector<HTMLButtonElement>('[aria-label="Increase reference"]')!.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', 10);
+    clearIntentSpies();
+    target.querySelector<HTMLButtonElement>('[aria-label="Reset reference"]')!.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', 0);
+  });
+});
+
+// ── Exact known domains and fail-closed fields ─────────────────────────────
+
+describe('known-value rendering', () => {
+  it.each([
+    [0, 'CTR'], [1, 'FIX'], [2, 'S-C'], [3, 'S-F'],
+  ] as const)('renders exact mode %i as %s', (value, label) => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ mode: field(value) }) });
+    const target = mountToolbar();
+    expect(button(target, label)?.classList.contains('active')).toBe(true);
+  });
+
+  it.each([
+    [0, '±2.5k'], [1, '±5k'], [2, '±10k'], [3, '±25k'],
+    [4, '±50k'], [5, '±100k'], [6, '±250k'], [7, '±500k'],
+  ] as const)('renders exact span %i label %s', (value, label) => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ mode: field(0), span: field(value) }) });
+    const target = mountToolbar();
+    expect(target.textContent).toContain(label);
+  });
+
+  it.each([[0, 'FST'], [1, 'MID'], [2, 'SLO']] as const)(
+    'renders exact speed %i label %s', (value, label) => {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ speed: field(value) }) });
+      const target = mountToolbar();
+      expect(target.textContent).toContain(label);
+    },
+  );
+
+  it.each([-30, -1, 0, 1, 10])('renders exact reference %i', (value) => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(value) }) });
+    const target = mountToolbar();
+    expect(target.textContent).toContain(value > 0 ? `+${value}` : String(value));
+  });
+
+  it('renders exact edge, hold, dual and physical MAIN/SUB values', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({
+      mode: field(1), edge: field(4), hold: field(true), dual: field(true), receiver: field(1),
+    }) });
+    const target = mountToolbar();
+    expect(button(target, '4')?.classList.contains('active')).toBe(true);
+    expect(button(target, 'HOLD')?.classList.contains('active')).toBe(true);
+    expect(button(target, 'DUAL')?.classList.contains('active')).toBe(true);
+    expect(button(target, 'SUB')).toBeDefined();
+  });
+});
+
+type FieldCase = Readonly<{
+  name: string;
+  valid: unknown;
+  invalid: unknown;
+  base?: Record<string, unknown>;
+  find: (root: HTMLElement) => HTMLButtonElement | undefined;
+}>;
+
+const failClosedCases: readonly FieldCase[] = [
+  { name: 'mode', valid: 0, invalid: 4, find: (root) => button(root, 'CTR') },
+  { name: 'edge', valid: 1, invalid: 0, base: { mode: field(1) }, find: (root) => button(root, '1') },
+  { name: 'span', valid: 3, invalid: 8, base: { mode: field(0) },
+    find: (root) => buttons(root).find((item) => item.title === 'Decrease span') },
+  { name: 'speed', valid: 1, invalid: 3,
+    find: (root) => buttons(root).find((item) => item.title === 'Decrease speed') },
+  { name: 'hold', valid: false, invalid: 0, find: (root) => button(root, 'HOLD') },
+  { name: 'refDb', valid: 0, invalid: 11,
+    find: (root) => Array.from(root.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+      .find((group) => group.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')
+      ?.querySelector<HTMLButtonElement>('button') ?? undefined },
+  { name: 'dual', valid: false, invalid: 0, find: (root) => button(root, 'DUAL') },
+  { name: 'receiver', valid: 0, invalid: 2, find: (root) => button(root, '—') },
+];
+
+describe('fail-closed field handling', () => {
+  for (const testCase of failClosedCases) {
+    it.each([
+      ['unknown', { known: false }],
+      ['structural false', { structural: false }],
+      ['operational false', { operational: false }],
+      ['invalid value', {}],
+    ] as const)(`${testCase.name}: %s is neutral, disabled and zero-shot`, (_label, flags) => {
+      const value = _label === 'invalid value' ? testCase.invalid : testCase.valid;
+      authorityHarness.current = authority({ scopeControls: scopeFacts({
+        ...testCase.base,
+        [testCase.name]: field(value, flags),
+      }) });
+      const target = mountToolbar();
+      const control = testCase.find(target);
+      expect(control).toBeDefined();
+      expect(control?.disabled).toBe(true);
+      expect(control?.classList.contains('active')).toBe(false);
+      control?.click();
+      flushSync();
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+      expect(sendCommandAlarm).not.toHaveBeenCalled();
+    });
+  }
+
+  it('unknown mode exposes neither span nor edge and never fabricates CTR', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ mode: field(0, { known: false }) }) });
+    const target = mountToolbar();
+    expect(button(target, 'CTR')?.classList.contains('active')).toBe(false);
+    expect(target.textContent).not.toContain('SPAN');
+    expect(target.textContent).not.toContain('EDGE');
+  });
+});
+
+// ── Structural/local preservation ──────────────────────────────────────────
+
+describe('structural and browser-local behavior', () => {
+  it('hides physical SUB controls for a normal one-receiver topology', () => {
+    capabilityHarness.dual = false;
+    authorityHarness.current = authority({ scopeControls: scopeFacts({
+      dual: field(false, { structural: false }),
+      receiver: field(0, { structural: false }),
+    }) });
+    const target = mountToolbar();
+    expect(button(target, 'DUAL')).toBeUndefined();
+    expect(button(target, 'MAIN')).toBeUndefined();
+    expect(button(target, 'SUB')).toBeUndefined();
+    expect(binderHarness.scopeControls.onReceiverChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps hideSourceControls and hideScopeControls contracts exact', () => {
+    const sourceHidden = mountToolbar({ hideSourceControls: true });
+    expect(button(sourceHidden, 'DUAL')).toBeUndefined();
+    expect(button(sourceHidden, 'MAIN')).toBeUndefined();
+    unmount(components.pop()!);
+    sourceHidden.remove();
+
+    const factsHidden = mountToolbar({ hideScopeControls: true });
+    for (const label of ['CTR', 'FIX', 'S-C', 'S-F', 'HOLD', 'DUAL', 'MAIN']) {
+      expect(button(factsHidden, label)).toBeUndefined();
+    }
+    expect(factsHidden.querySelector('.toolbar-group-c')).toBeNull();
+    expect(factsHidden.querySelector('.settings-group')).toBeNull();
+    for (const label of ['AVG', 'PEAK', 'BANDS']) expect(button(factsHidden, label)).toBeDefined();
+    expect(buttons(factsHidden).some((item) => item.textContent?.trim().startsWith('VIEW'))).toBe(true);
+    expect(factsHidden.querySelector('.toolbar-select')).not.toBeNull();
+    expect(factsHidden.querySelector('.icon-btn')).not.toBeNull();
+  });
+
+  it('keeps tuning, AVG, PEAK, BRT, color and fullscreen browser-local', () => {
+    const target = mountToolbar();
+    buttons(target).find((item) => item.title === 'Increase tuning step')!.click();
+    button(target, 'AVG')!.click();
+    button(target, 'PEAK')!.click();
+    button(target, 'BANDS')!.click();
+    const brtGroup = Array.from(target.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+      .find((group) => group.querySelector('.toolbar-label')?.textContent?.trim() === 'BRT')!;
+    brtGroup.querySelector<HTMLButtonElement>('button')!.click();
+    target.querySelector<HTMLSelectElement>('.toolbar-select')!.value = 'thermal';
+    target.querySelector<HTMLButtonElement>('.icon-btn')!.click();
+    flushSync();
+    expect(tuningHarness.adjustTuningStep).toHaveBeenCalledWith('up');
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
 
   it('unmounts cleanly', () => {
     const target = mountToolbar();
-    expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
-    const comp = components.pop()!;
-    unmount(comp);
+    const component = components.pop()!;
+    unmount(component);
     expect(target.querySelector('.spectrum-toolbar')).toBeNull();
   });
 });
 
-// ── MOR-1369 (v3-rework S6b-1): scopeControls suppression channel ──────────
-//
-// The S10 boundary doc (docs/plans/2026-08-06-settings-modal-boundary.md)
-// rules the `scopeControls` vocabulary FACTS-only: the twelve
-// `scopeControls.*` leaves (mode/edge/span/speed/hold/refDb/dual/receiver +
-// the four ScopeSettingsPopover leaves — centerType/rbw/duringTx/vbwNarrow)
-// retire behind `hideScopeControls` once a manifest declares the zone
-// (S6b-2). The client-side VIEW OPTIONS (AVG/PEAK/BRT/color scheme/
-// fullscreen/BANDS/layers/EiBi) have no wire field and are NEVER gated on
-// this prop, in either direction — category (b), the same category as
-// LANGUAGE/WORKSPACE in the settings modal. `VIEW ON/OFF` (scope-streaming
-// demand) is client-side too and stays unconditional alongside them.
-describe('hideScopeControls channel (MOR-1369, S6b-1)', () => {
-  /** Tag + trimmed text + disabled-state signature of every focusable
-   *  element, in DOM order — the light-weight, single-component form of the
-   *  S6-pre/MOR-1364 element-stream capture method (full-app captures belong
-   *  to RadioLayout-level tests; this one only needs to prove ONE
-   *  component's stream is unchanged). */
-  function signature(root: HTMLElement): string {
-    return Array.from(root.querySelectorAll('button, select, input, [tabindex]'))
-      .map((el) => {
-        const disabled = (el as HTMLButtonElement).disabled ? '1' : '0';
-        return `${el.tagName}:${el.textContent?.trim() ?? ''}:${disabled}`;
-      })
-      .join('|');
-  }
+// ── Static boundary and freeze proof ───────────────────────────────────────
 
-  it('renders an IDENTICAL control stream whether hideScopeControls is omitted or explicitly false (inertness proof)', () => {
-    const omitted = mountToolbar();
-    const omittedSig = signature(omitted);
-    unmount(components.pop()!);
-    document.body.innerHTML = '';
+describe('source and enforcement boundary', () => {
+  const sourcePath = resolve(process.cwd(), 'src/components/spectrum/SpectrumToolbar.svelte');
+  const popoverPath = resolve(process.cwd(), 'src/components/spectrum/ScopeSettingsPopover.svelte');
+  const pluginPath = resolve(process.cwd(), 'scripts/radio-authority-eslint-plugin.mjs');
+  const contractPath = resolve(process.cwd(), '../docs/internals/ui-radio-control-contract.toml');
 
-    const explicit = mountToolbar({ hideScopeControls: false });
-    const explicitSig = signature(explicit);
-
-    expect(explicitSig).toBe(omittedSig);
-    expect(explicitSig.length).toBeGreaterThan(0);
+  it('has exactly one selector/binder path and no legacy or pending-value authority', () => {
+    const source = readFileSync(sourcePath, 'utf8');
+    expect(source).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
+    expect(source.match(/bindSemanticSurfaceHandlers\(\)/g)).toHaveLength(1);
+    expect(source).toContain('bindSemanticSurfaceHandlers().scopeControls');
+    expect(source).not.toMatch(/stores\/radio\.svelte|sendCommand|isFieldAvailable/);
+    expect(source).not.toMatch(/localStorage|\bACK\b|\bresult\b|\bpending\b/);
+    expect(source).not.toContain('document.body.dataset.scopeAuthority');
+    expect(source).not.toMatch(/\.agc\b|\.antenna\b|\.audioRouting\b|\.band\b|\.cw\b|\.dsp\b|\.filter\b|\.mode\b|\.rfFrontEnd\b|\.ritXit\b|\.rxAudio\b|\.scan\b|\.tx\b|\.vfo\b|\.vox\b/);
   });
 
-  it('hides exactly the fact-backed scopeControls half when hideScopeControls is true (S6b-2 flip-test-ready)', () => {
-    const target = mountToolbar({ hideScopeControls: true });
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const labels = buttons.map((b) => b.textContent?.trim());
-
-    // mode buttons (scopeControls.mode)
-    expect(labels).not.toContain('CTR');
-    expect(labels).not.toContain('FIX');
-    expect(labels).not.toContain('S-C');
-    expect(labels).not.toContain('S-F');
-    // hold (scopeControls.hold)
-    expect(labels).not.toContain('HOLD');
-    // dual + receiver-switch (scopeControls.dual / scopeControls.receiver)
-    expect(labels).not.toContain('DUAL');
-    expect(labels).not.toContain('MAIN');
-    // span/speed/ref (scopeControls.span/.speed/.refDb) — the whole group
-    expect(target.querySelector('.toolbar-group-c')).toBeNull();
-    const spanLabel = Array.from(target.querySelectorAll('.toolbar-label'))
-      .find((el) => el.textContent?.trim() === 'SPAN');
-    expect(spanLabel).toBeUndefined();
-    // settings-gear popover (centerType/rbw/duringTx/vbwNarrow, MOR-1330)
-    expect(target.querySelector('.settings-group')).toBeNull();
+  it('removes only Toolbar presentation exceptions and preserves the A07 owner', () => {
+    const plugin = readFileSync(pluginPath, 'utf8');
+    const contract = readFileSync(contractPath, 'utf8');
+    expect(plugin).not.toContain("  'src/components/spectrum/SpectrumToolbar.svelte',");
+    expect(contract).not.toContain('  { path = "src/components/spectrum/SpectrumToolbar.svelte", count = 1, owner = "MOR-1409" },');
+    expect(plugin).toContain("  'src/components/spectrum/ScopeSettingsPopover.svelte',");
+    expect(contract).toContain('  { path = "src/components/spectrum/ScopeSettingsPopover.svelte", count = 1, owner = "MOR-1409" },');
   });
 
-  it('NEVER gates the client-side view-options half, even when hideScopeControls is true (S10 category (b) — the never-gated pin)', () => {
-    const target = mountToolbar({ hideScopeControls: true });
-    const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.toolbar-btn'));
-    const labels = buttons.map((b) => b.textContent?.trim());
-
-    expect(labels).toContain('AVG');
-    expect(labels).toContain('PEAK');
-    expect(labels).toContain('BANDS');
-    expect(labels.some((l) => l?.startsWith('VIEW'))).toBe(true); // scope-demand toggle
-    expect(target.querySelector('.icon-btn')).not.toBeNull(); // fullscreen
-    expect(target.querySelector('.toolbar-select')).not.toBeNull(); // color scheme
-    const brtLabel = Array.from(target.querySelectorAll('.toolbar-label'))
-      .find((el) => el.textContent?.trim() === 'BRT');
-    expect(brtLabel).toBeDefined();
-  });
-
-  it('renders the fact-backed half unchanged when hideScopeControls is false (control-stream parity)', () => {
-    const withFalse = mountToolbar({ hideScopeControls: false });
-    const withoutProp = mountToolbar();
-    expect(signature(withFalse)).toBe(signature(withoutProp));
+  it('keeps ScopeSettingsPopover and all Toolbar CSS byte-frozen', () => {
+    const popoverHash = createHash('sha256').update(readFileSync(popoverPath)).digest('hex');
+    expect(popoverHash).toBe('95315314a00536667b30ff47d99249852884f8a1cbdb3966127b62c7987cb5bc');
+    const source = readFileSync(sourcePath, 'utf8');
+    const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
+    expect(cssHash).toBe('eb9e75ed2988082d6966d6727f73d3d77651086df38b1458aed3e9c274725fb7');
   });
 });

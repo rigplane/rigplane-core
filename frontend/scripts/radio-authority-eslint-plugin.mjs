@@ -22,7 +22,6 @@ const LEGACY_PRESENTATION_AUTHORITY = new Set([
   'src/components-v2/layout/VfoHeader.svelte',
   'src/components/spectrum/EiBiBrowser.svelte',
   'src/components/spectrum/ScopeSettingsPopover.svelte',
-  'src/components/spectrum/SpectrumToolbar.svelte',
 ]);
 const LEGACY_WRITER_OWNERS = new Set([
   'src/components-v2/layout/VfoHeader.svelte',
