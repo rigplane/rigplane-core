@@ -258,3 +258,16 @@ describe('App bootstrap rejection lifecycle (MOR-1168)', () => {
     expect(clearTimeoutSpy).toHaveBeenCalledWith(armedTimer);
   });
 });
+
+// MOR-1409 A10 — causal RED for the retirement of the battery-to-polling
+// hook. On exact base, mount subscribes to the battery monitor solely to
+// feed the (already-inert since A09b) polling-cadence multiplier; this pins
+// its removal.
+describe('App battery-monitor subscription removal (A10)', () => {
+  it('mounts without subscribing to the battery monitor', async () => {
+    const component = mountApp();
+    await settle();
+    expect(h.initBattery).not.toHaveBeenCalled();
+    unmount(component);
+  });
+});
