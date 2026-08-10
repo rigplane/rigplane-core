@@ -2,7 +2,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { getRadioState, subscribeRadioState } from '$lib/stores/radio.svelte';
-import { sendCommand } from '$lib/transport/ws-client';
+import { dispatchRadioIntent, type RadioIntent } from '$lib/runtime/commands/radio-intents';
 import {
   resetLocalExtensionKeyboardScope,
   setLocalExtensionKeyboardScope,
@@ -88,6 +88,27 @@ export function createLocalExtensionHostApi(
   };
 }
 
+/**
+ * Default extension dispatch (MOR-1409 A08): catalog-validated delegation to
+ * the typed intent facade. Unknown names, PTT, and malformed params raise a
+ * validation error inside the facade before any transport is reached — the
+ * host API fails closed with `false`.
+ */
+function dispatchThroughIntentFacade(
+  name: string,
+  params?: Record<string, unknown>,
+): boolean {
+  if (typeof name !== 'string' || name.trim() === '') {
+    return false;
+  }
+  try {
+    dispatchRadioIntent({ name, params: params ?? {} } as RadioIntent);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createDefaultLocalExtensionHostApi(
   register: (extension: LocalExtensionRegistration) => void = () => {},
 ): LocalExtensionHostApiV1 {
@@ -95,7 +116,7 @@ export function createDefaultLocalExtensionHostApi(
     getState: getRadioState,
     getCapabilities,
     subscribeState: (handler) => subscribeRadioState(handler),
-    dispatchCommand: sendCommand,
+    dispatchCommand: dispatchThroughIntentFacade,
     setKeyboardScope: setLocalExtensionKeyboardScope,
     register,
   });

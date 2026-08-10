@@ -11,7 +11,7 @@
  * @see docs/plans/2026-04-12-target-frontend-architecture.md
  */
 
-import { radio, getRadioState, patchActiveReceiver, patchRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { radio, getRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import {
   getConnectionStatus,
@@ -25,9 +25,10 @@ import {
   getRadioPowerOn,
 } from '$lib/stores/connection.svelte';
 import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
-import { sendCommand, connect, onMessage, sendRaw } from '$lib/transport/ws-client';
+import { connect, onMessage, sendRaw } from '$lib/transport/ws-client';
 import { startPolling, setPollingMultiplier } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
+import { dispatchRadioIntent, type RadioIntent } from './commands/radio-intents';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
 import { derivePresentationCapabilities } from './adapters/presentation-capabilities';
 import { systemController } from './system-controller';
@@ -36,7 +37,7 @@ import type { ScopeController, ScopeSource } from './scope-controller.svelte';
 import { PresentationResourceHost } from './resource-host';
 import type { ResourceHealth, ResourceLease } from './resource-demand';
 import { createSubscriber } from 'svelte/reactivity';
-import type { ServerState, ReceiverState } from '$lib/types/state';
+import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { WsIncoming } from '$lib/types/protocol';
 import type { ConnectionState } from '$lib/transport/ws-client';
@@ -350,21 +351,17 @@ class FrontendRuntime {
 
   // ── Command dispatch ──
 
-  /** Send a command to the radio backend. */
+  /**
+   * Dispatch a catalog-validated radio intent through the typed facade
+   * (MOR-1409 A08). Zero raw transport: unknown names or malformed params
+   * are rejected by the facade and logged, never sent.
+   */
   send(name: string, params?: Record<string, unknown>): void {
-    sendCommand(name, params ?? {});
-  }
-
-  // ── Optimistic state patches ──
-
-  /** Apply an optimistic patch to the active receiver's state. */
-  patchActiveReceiver(patch: Partial<ReceiverState>, lock?: boolean): void {
-    patchActiveReceiver(patch, lock);
-  }
-
-  /** Apply an optimistic patch to the top-level radio state. */
-  patchState(patch: Partial<ServerState>): void {
-    patchRadioState(patch);
+    try {
+      dispatchRadioIntent({ name, params: params ?? {} } as RadioIntent);
+    } catch (error) {
+      console.warn('[runtime] send() rejected non-catalog command', name, error);
+    }
   }
 
   // ── Audio control ──

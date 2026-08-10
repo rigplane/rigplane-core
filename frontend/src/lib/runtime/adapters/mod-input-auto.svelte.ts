@@ -6,9 +6,10 @@
  *
  *   - TX start (`tx-adapter.startTx`, before the MOR-617 guard arms): if the
  *     active DATA group's MOD-input source is known and != LAN(5), remember
- *     it, then set LAN through the same per-group SET command + optimistic
- *     patch as the ModePanel control (T1/MOR-615 backend, T2/MOR-616
- *     helpers). The optimistic LAN patch preempts the MOR-617 warning.
+ *     it, then dispatch the per-group SET through the typed intent facade
+ *     (T1/MOR-615 backend, T2/MOR-616 helpers). The Store is never written
+ *     optimistically (MOR-1409 A08): the MOR-617 warning stays armed
+ *     truthfully until provider readback confirms LAN.
  *   - after a field-specific authoritative PTT-off confirmation, restore the
  *     remembered source only if the group is still on LAN (a manual mid-TX
  *     change wins).
@@ -19,7 +20,7 @@
  * This module never touches the audio byte path.
  */
 
-import { getRadioState, patchRadioState } from '$lib/stores/radio.svelte';
+import { getRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { getFieldAvailability } from '$lib/state/field-status';
 import {
@@ -29,7 +30,7 @@ import {
   type ModInputCommand,
   type ModInputStateKey,
 } from '$lib/radio/mod-input';
-import { sendCommand } from '$lib/transport/ws-client';
+import { dispatchRadioIntent } from '../commands/radio-intents';
 import type { ServerState } from '$lib/types/state';
 
 /** localStorage key of the opt-in preference ('true' / 'false'). */
@@ -113,7 +114,7 @@ function activeDataMode(state: ServerState | null): number {
 
 /**
  * Opt-in TX-start hook (called by `tx-adapter.startTx` BEFORE the MOR-617
- * guard arms, so the optimistic LAN patch keeps the warning quiet).
+ * guard arms; the guard stays truthfully visible until readback confirms).
  * Same quiet-gating as the guard: no state, no data_mode capability, group
  * not read, source unknown, or already LAN → no change, no pending.
  */
@@ -130,10 +131,13 @@ export function autoSetLanModInputForTx(): void {
   if (source === null || source === LAN_MOD_INPUT_SOURCE) return;
 
   pending = { command: modInputCommand(dataMode), key, source };
-  // Same optimistic-patch + per-group SET path as the ModePanel control
-  // (MOR-616); the backend confirms via write-through readback (MOR-615).
-  patchRadioState({ [key]: LAN_MOD_INPUT_SOURCE } as Partial<ServerState>);
-  sendCommand(pending.command, { source: LAN_MOD_INPUT_SOURCE });
+  // Same per-group SET path as the ModePanel control (MOR-616), routed
+  // through the typed facade; the backend confirms via write-through
+  // readback (MOR-615).
+  dispatchRadioIntent({
+    name: pending.command,
+    params: { source: LAN_MOD_INPUT_SOURCE },
+  });
 }
 
 /**
@@ -147,8 +151,7 @@ export function restoreModInputAfterTx(): void {
   if (!p) return;
   const current = getRadioState()?.[p.key] ?? null;
   if (current !== null && current !== LAN_MOD_INPUT_SOURCE) return;
-  patchRadioState({ [p.key]: p.source } as Partial<ServerState>);
-  sendCommand(p.command, { source: p.source });
+  dispatchRadioIntent({ name: p.command, params: { source: p.source } });
 }
 
 /**

@@ -16,10 +16,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
 }));
-vi.mock('$lib/runtime/commands/radio-intents', async () => {
-  const { sendCommand } = await import('$lib/transport/ws-client');
-  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
-});
+vi.mock('$lib/runtime/commands/radio-intents', () => ({
+  dispatchRadioIntent: vi.fn(() => ({ id: 'test-lifecycle', status: 'pending' })),
+  isNormalizedLevel: (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1,
+}));
 
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
@@ -41,6 +42,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
+import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 import { runtime } from '$lib/runtime/frontend-runtime';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
@@ -50,6 +52,10 @@ import {
   dismissModInputTxGuard,
   getModInputTxGuardHandlers,
 } from '../mod-input-tx-guard.svelte';
+import {
+  restoreModInputAfterTx,
+  setAutoLanModInputEnabled,
+} from '../mod-input-auto.svelte';
 import { getTxAudioControl } from '../tx-adapter';
 import type { ServerState } from '$lib/types/state';
 
@@ -118,7 +124,11 @@ function missingStatus() {
 
 beforeEach(() => {
   getTxAudioControl().stopLocalAudio();
+  // Reset the T4 opt-in and drain any pending restore between tests.
+  setAutoLanModInputEnabled(false);
+  restoreModInputAfterTx();
   vi.mocked(sendCommand).mockClear();
+  vi.mocked(dispatchRadioIntent).mockClear();
   vi.mocked(runtime.startTx).mockClear();
   vi.mocked(runtime.stopTx).mockClear();
   resetRadioState();
@@ -221,22 +231,28 @@ describe('guard clearing (MOR-617)', () => {
 });
 
 describe('one-click Set LAN (MOR-617)', () => {
-  it('sends the active group SET command with source=5', () => {
+  it('dispatches the active group SET intent with source=5', () => {
     setState({ main: receiver(1), data1ModInput: 0 });
     armModInputTxGuard();
 
     getModInputTxGuardHandlers().onSetLan();
 
-    expect(sendCommand).toHaveBeenCalledWith('set_data1_mod_input', { source: 5 });
+    expect(dispatchRadioIntent).toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 5 },
+    });
   });
 
-  it('routes to the DATA OFF command when DATA is off', () => {
+  it('routes to the DATA OFF intent when DATA is off', () => {
     setState({ main: receiver(0), dataOffModInput: 3 });
     armModInputTxGuard();
 
     getModInputTxGuardHandlers().onSetLan();
 
-    expect(sendCommand).toHaveBeenCalledWith('set_data_off_mod_input', { source: 5 });
+    expect(dispatchRadioIntent).toHaveBeenCalledWith({
+      name: 'set_data_off_mod_input',
+      params: { source: 5 },
+    });
   });
 });
 
@@ -257,5 +273,34 @@ describe('tx-adapter TX-start hook (MOR-617)', () => {
 
     expect(runtime.startTx).toHaveBeenCalledTimes(1);
     expect(deriveModInputTxGuardProps().visible).toBe(false);
+  });
+});
+
+describe('auto-LAN truth-first interplay (MOR-1409 A08)', () => {
+  it('stays armed and visible during an auto-LAN TX start until readback confirms LAN', async () => {
+    setAutoLanModInputEnabled(true);
+    setState({ main: receiver(1), data1ModInput: 0 });
+
+    await getTxAudioControl().startTx();
+
+    // T4 dispatched the LAN set through the facade, but the Store still holds
+    // the confirmed source (MIC): the guard arms truthfully and the warning
+    // is visible — no optimistic suppression.
+    expect(dispatchRadioIntent).toHaveBeenCalledWith({
+      name: 'set_data1_mod_input',
+      params: { source: 5 },
+    });
+    const armedProps = deriveModInputTxGuardProps();
+    expect(armedProps.visible).toBe(true);
+    expect(armedProps.sourceLabel).toBe('MIC');
+
+    // Synthetic authoritative readback confirms LAN → visibility clears
+    // reactively without any guard code involvement.
+    setRadioState(makeState({ revision: 2, main: receiver(1), data1ModInput: 5 }));
+    expect(deriveModInputTxGuardProps().visible).toBe(false);
+
+    // A rejected change reverting the source re-surfaces the warning.
+    setRadioState(makeState({ revision: 3, main: receiver(1), data1ModInput: 0 }));
+    expect(deriveModInputTxGuardProps().visible).toBe(true);
   });
 });
