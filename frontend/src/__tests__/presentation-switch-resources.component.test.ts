@@ -60,8 +60,6 @@ const h = vi.hoisted(() => ({
 // ── Bottom boundary only: transport, HTTP, audio, scope channels ──
 vi.mock('$lib/transport/http-client', () => ({
   fetchCapabilities: vi.fn(),
-  startPolling: vi.fn(),
-  setPollingMultiplier: vi.fn(),
 }));
 vi.mock('$lib/transport/ws-client', () => ({
   connect: vi.fn(),
@@ -195,7 +193,7 @@ vi.mock('../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
 
 import App from '../App.svelte';
 import PresentationResourceStub from './PresentationResourceStub.svelte';
-import { fetchCapabilities, startPolling } from '$lib/transport/http-client';
+import { fetchCapabilities } from '$lib/transport/http-client';
 import { connect, getChannel, sendRaw } from '$lib/transport/ws-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { presentationResources, runtime } from '../lib/runtime/frontend-runtime';
@@ -393,7 +391,6 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
     channels = { scope: makeChannel('scope'), 'audio-scope': makeChannel('audio-scope') };
     vi.mocked(getChannel).mockImplementation((name: string) => channels[name] as never);
-    vi.mocked(startPolling).mockReturnValue(vi.fn());
     h.loadSkin.mockImplementation(
       (id: SkinId) => new Promise((resolve) => { h.pending.push({ id, resolve }); }),
     );
@@ -458,9 +455,6 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     expect(h.subscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(sendRaw).toHaveBeenCalledTimes(1);
-    // MOR-1409 A09b: the HTTP polling writer is gone; WS is the sole state
-    // writer, so bootstrap never starts polling.
-    expect(startPolling).not.toHaveBeenCalled();
     // RX audio: never restarted, never stopped, same AudioManager session.
     expect(audioManager.startRx).toHaveBeenCalledTimes(1);
     expect(audioManager.stopRx).not.toHaveBeenCalled();

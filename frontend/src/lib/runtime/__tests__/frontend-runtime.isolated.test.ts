@@ -16,8 +16,6 @@ import { effect_root, render_effect } from 'svelte/internal/client';
 
 vi.mock('$lib/transport/http-client', () => ({
   fetchCapabilities: vi.fn(),
-  startPolling: vi.fn(),
-  setPollingMultiplier: vi.fn(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
@@ -113,16 +111,11 @@ vi.mock('./system-controller', async () => {
 
 // ── Import modules under test after mocks are hoisted ──
 
-import {
-  fetchCapabilities,
-  startPolling,
-  setPollingMultiplier as httpSetPollingMultiplier,
-} from '$lib/transport/http-client';
+import { fetchCapabilities } from '$lib/transport/http-client';
 import { connect, getChannel, onMessage, sendCommand, sendRaw } from '$lib/transport/ws-client';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 import { setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
-import { systemController } from '../system-controller';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
 import { PresentationResourceHost } from '../resource-host';
 import { presentationResources } from '../frontend-runtime';
@@ -177,7 +170,6 @@ function configureAcceptedCapabilities(caps: any = fakeCaps): void {
     return vi.fn();
   });
 }
-const fakeStopPolling = vi.fn();
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
@@ -292,7 +284,6 @@ describe('FrontendRuntime.bootstrap()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     configureAcceptedCapabilities();
-    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
   });
 
   it('waits for accepted capability-store generations before configuring resources', async () => {
@@ -364,9 +355,6 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(clearLegacyPendingModInputRestore).toHaveBeenCalledTimes(1);
     expect(setCapabilities).not.toHaveBeenCalled();
 
-    // 3. No HTTP polling writer (MOR-1409 A09b) — WS is the sole state writer.
-    expect(startPolling).not.toHaveBeenCalled();
-
     // 4. WebSocket connected
     expect(connect).toHaveBeenCalledWith('/api/v1/ws');
 
@@ -402,7 +390,6 @@ describe('FrontendRuntime.bootstrap()', () => {
     await cleanup();
     expect(teardown).toHaveBeenCalledTimes(1);
     expect(order).toEqual(['resources']);
-    expect(fakeStopPolling).not.toHaveBeenCalled();
     teardown.mockRestore();
   });
 
@@ -462,21 +449,10 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(subscribeCapabilities).toHaveBeenCalledTimes(2);
   });
 
-  it('registers no polling and issues no recurring /state reads (MOR-1409 A09b)', async () => {
-    const registerSpy = vi.spyOn(systemController, 'registerPolling');
-    const rt = await freshRuntime();
-    await rt.bootstrap();
-
-    expect(registerSpy).not.toHaveBeenCalled();
-    expect(startPolling).not.toHaveBeenCalled();
-  });
-
-  it('setPollingMultiplier is an inert no-op — no http-client cadence state altered (MOR-1409 A09b)', async () => {
+  it('setPollingMultiplier is an inert no-op (MOR-1409 A09b; the HTTP-client cadence state it used to feed is gone as of A10)', async () => {
     const rt = await freshRuntime();
 
     expect(() => rt.setPollingMultiplier(5)).not.toThrow();
-
-    expect(httpSetPollingMultiplier).not.toHaveBeenCalled();
   });
 
   it('serializes concurrent callers — both share single in-flight bootstrap', async () => {
@@ -489,11 +465,9 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(subscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(sendRaw).toHaveBeenCalledTimes(1);
-    expect(startPolling).not.toHaveBeenCalled();
 
     // Both callers get the same cleanup function
     expect(cleanup1).toBe(cleanup2);
-    expect(cleanup1).not.toBe(fakeStopPolling);
   });
 });
 
@@ -501,7 +475,6 @@ describe('FrontendRuntime command dispatch and state-hatch removal (MOR-1409 A08
   beforeEach(() => {
     vi.clearAllMocks();
     configureAcceptedCapabilities();
-    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
   });
 
   it('delegates send() to the typed facade exactly once with no raw transport', async () => {
@@ -563,7 +536,6 @@ describe('FrontendRuntime hardware scope and DX facades', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     configureAcceptedCapabilities();
-    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
   });
 
   it('shares one filtered control subscription and unsubscribes exactly', async () => {
@@ -600,7 +572,6 @@ describe('FrontendRuntime canonical default scope status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     configureAcceptedCapabilities();
-    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
   });
   it('keeps capability-denied hardware inert', async () => {
     const rt = await freshRuntime();
@@ -752,7 +723,6 @@ describe('FrontendRuntime RX LIVE intent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     configureAcceptedCapabilities();
-    (startPolling as ReturnType<typeof vi.fn>).mockReturnValue(fakeStopPolling);
     presentationResources.retry('rx-audio');
   });
 

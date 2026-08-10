@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { getPollingMultiplier, initBatteryMonitor } from '../battery';
 import type { BatteryManager } from '../battery';
 
@@ -158,26 +158,5 @@ describe('initBatteryMonitor', () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(typeof cleanup).toBe('function');
     cleanup();
-  });
-});
-
-// ─── setPollingMultiplier integration ───────────────────────────────────────
-
-describe('setPollingMultiplier', () => {
-  beforeEach(() => vi.resetModules());
-
-  it('clamps multiplier to minimum 1', async () => {
-    const { setPollingMultiplier } = await import('../../transport/http-client');
-    // Should not throw and should clamp to 1
-    setPollingMultiplier(0);
-    setPollingMultiplier(-5);
-    setPollingMultiplier(0.3);
-  });
-
-  it('rounds fractional multipliers', async () => {
-    const { setPollingMultiplier } = await import('../../transport/http-client');
-    // Should not throw
-    setPollingMultiplier(2.7);
-    setPollingMultiplier(1.5);
   });
 });

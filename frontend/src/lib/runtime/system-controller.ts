@@ -3,13 +3,12 @@
  * frequency identification.
  *
  * connect()/disconnect() control the entire frontend connection lifecycle:
- * all WebSocket channels, HTTP polling, audio, and MediaSession.
+ * all WebSocket channels, audio, and MediaSession.
  */
 
 import { disconnectAll as wsDisconnectAll, reconnectAll as wsReconnectAll } from '$lib/transport/ws-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { destroyMediaSession, initMediaSession } from '$lib/media/media-session';
-import { clearEtag } from '$lib/transport/http-client';
 import { setHttpConnected, setRadioStatus } from '$lib/stores/connection.svelte';
 import { resetRadioState } from '$lib/stores/radio.svelte';
 
@@ -26,8 +25,6 @@ export interface EibiResult {
 }
 
 export class SystemController {
-  private _stopPolling: (() => void) | null = null;
-  private _startPolling: (() => (() => void)) | null = null;
   private _clientConnected = true;
   private _releaseBarrier: { run: () => Promise<void> } | null = null;
   private _disconnectInFlight: Promise<void> | null = null;
@@ -41,23 +38,12 @@ export class SystemController {
       setRadioDisconnected: () => setRadioStatus('disconnected'),
       resetRadioState: () => resetRadioState(),
       initMediaSession: () => initMediaSession(),
-      clearEtag: () => clearEtag(),
       reconnectWebSockets: () => wsReconnectAll(),
     },
   ) {}
 
   get clientConnected(): boolean {
     return this._clientConnected;
-  }
-
-  /** Register the polling start function (called once from App.svelte). */
-  registerPolling(startFn: () => (() => void)): void {
-    this._startPolling = startFn;
-  }
-
-  /** Register an active polling stop handle (called from App.svelte after startPolling). */
-  setStopPolling(stopFn: (() => void) | null): void {
-    this._stopPolling = stopFn;
   }
 
   /** Register the sole opaque barrier awaited before disconnect teardown. */
@@ -90,7 +76,7 @@ export class SystemController {
     if (!resp.ok) throw new Error(await resp.text());
   }
 
-  /** Disconnect all frontend channels: WS, audio, polling, MediaSession. */
+  /** Disconnect all frontend channels: WS, audio, MediaSession. */
   disconnect(): Promise<void> {
     if (this._disconnectInFlight) return this._disconnectInFlight;
     if (!this._clientConnected) return Promise.resolve();
@@ -120,16 +106,12 @@ export class SystemController {
 
     // 2. Close all WebSocket channels (control + scope + any named)
     this._effects.disconnectWebSockets();
-
-    // 3. Stop HTTP polling
-    this._stopPolling?.();
-    this._stopPolling = null;
     this._effects.setHttpDisconnected();
 
-    // 4. Stop MediaSession silent audio loop
+    // 3. Stop MediaSession silent audio loop
     this._effects.destroyMediaSession();
 
-    // 5. Clear stale state
+    // 4. Clear stale state
     this._effects.setRadioDisconnected();
     this._effects.resetRadioState();
   }
@@ -142,13 +124,7 @@ export class SystemController {
     // 1. Restart MediaSession
     this._effects.initMediaSession();
 
-    // 2. Restart HTTP polling
-    this._effects.clearEtag();
-    if (this._startPolling) {
-      this._stopPolling = this._startPolling();
-    }
-
-    // 3. Reconnect all WebSocket channels (control + scope + any named)
+    // 2. Reconnect all WebSocket channels (control + scope + any named)
     this._effects.reconnectWebSockets();
   }
 

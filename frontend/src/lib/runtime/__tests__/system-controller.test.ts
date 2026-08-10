@@ -32,7 +32,6 @@ function fixture() {
     setRadioDisconnected: mark('radio:disconnect'),
     resetRadioState: mark('radio:reset'),
     initMediaSession: mark('media:init'),
-    clearEtag: mark('etag'),
     reconnectWebSockets: mark('ws:reconnect'),
   });
   return { calls, controller };
@@ -41,11 +40,10 @@ function fixture() {
 describe('SystemController disconnect lifecycle', () => {
   it('keeps the no-barrier teardown synchronous and in legacy order', async () => {
     const { calls, controller } = fixture();
-    controller.setStopPolling(() => calls.push('polling'));
 
     const result = controller.disconnect();
 
-    expect(calls).toEqual([...teardown.slice(0, 2), 'polling', ...teardown.slice(2)]);
+    expect(calls).toEqual(teardown);
     await expect(result).resolves.toBeUndefined();
   });
 
@@ -115,5 +113,20 @@ describe('SystemController disconnect lifecycle', () => {
     controller.connect();
     await controller.disconnect();
     expect(replacement).toHaveBeenCalledOnce();
+  });
+});
+
+// MOR-1409 A10 — causal RED for the retirement of the HTTP /state polling
+// machinery. On exact base both hooks are present (the fixture above wires
+// `setStopPolling`); this pins their removal.
+describe('SystemController HTTP-polling registration removal (A10)', () => {
+  it('no longer exposes registerPolling or setStopPolling', () => {
+    const controller = new SystemController();
+    const surface = controller as unknown as {
+      registerPolling?: unknown;
+      setStopPolling?: unknown;
+    };
+    expect(surface.registerPolling).toBeUndefined();
+    expect(surface.setStopPolling).toBeUndefined();
   });
 });

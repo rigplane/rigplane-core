@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, tick, type Component } from 'svelte';
-  import { initBatteryMonitor } from './lib/utils/battery';
   import AppGlobalHost from './AppGlobalHost.svelte';
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
@@ -245,7 +244,6 @@
     initMediaSession();
 
     let cleanupBootstrap: (() => void) | null = null;
-    let cleanupBattery: (() => void) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let mounted = true;
     const handleResize = () => {
@@ -253,10 +251,6 @@
       windowHeight = window.innerHeight;
     };
     window.addEventListener('resize', handleResize);
-
-    initBatteryMonitor((multiplier) => {
-      runtime.setPollingMultiplier(multiplier);
-    }).then(cleanup => { cleanupBattery = cleanup; });
 
     (async () => {
       try {
@@ -288,7 +282,6 @@
       txAuthorityReady = false;
       txHost.dispose();
       destroyMediaSession();
-      cleanupBattery?.();
       cleanupBootstrap?.();
       if (retryTimer) clearTimeout(retryTimer);
       window.removeEventListener('resize', handleResize);
