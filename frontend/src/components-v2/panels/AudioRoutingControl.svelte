@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { makeAudioRoutingHandlers } from '../wiring/command-bus';
+  import { getAudioRoutingHandlers } from '$lib/runtime/adapters/panel-adapters';
   import { getReceiverLabel } from '$lib/runtime/adapters/capabilities-adapter';
 
   type AudioFocus = 'main' | 'sub' | 'both';
 
-  const handlers = makeAudioRoutingHandlers();
+  const handlers = getAudioRoutingHandlers();
 
   let focus: AudioFocus = $state('both');
   let splitStereo = $state(false);

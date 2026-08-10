@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import { readFileSync } from 'node:fs';
 
 // Mock audio-manager so we can spy on setAudioConfig calls.
 const setAudioConfigSpy = vi.fn();
@@ -19,6 +20,25 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   receiverLabel: (id: 'MAIN' | 'SUB') => id,
 }));
 
+const audioBinding = vi.hoisted(() => ({
+  handlers: undefined as any,
+  get: undefined as any,
+}));
+
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
+  const handlers = actual.getAudioRoutingHandlers();
+  audioBinding.handlers = {
+    ...handlers,
+    onFocusChange: vi.fn(handlers.onFocusChange),
+    onSplitStereoChange: vi.fn(handlers.onSplitStereoChange),
+    onChannelGainChange: vi.fn(handlers.onChannelGainChange),
+  };
+  audioBinding.get = vi.fn(() => audioBinding.handlers);
+  return { ...actual, getAudioRoutingHandlers: audioBinding.get };
+});
+
+import '$lib/runtime/adapters/panel-adapters';
 import AudioRoutingControl from '../AudioRoutingControl.svelte';
 
 let target: HTMLElement;
@@ -46,6 +66,10 @@ function installLocalStorage(): Map<string, string> {
 
 beforeEach(() => {
   setAudioConfigSpy.mockClear();
+  audioBinding.get.mockClear();
+  audioBinding.handlers.onFocusChange.mockClear();
+  audioBinding.handlers.onSplitStereoChange.mockClear();
+  audioBinding.handlers.onChannelGainChange.mockClear();
   originalLocalStorage = (globalThis as any).localStorage;
   installLocalStorage();
   target = document.createElement('div');
@@ -68,6 +92,16 @@ function mountControl() {
 }
 
 describe('AudioRoutingControl', () => {
+  it('uses only the stable local-audio adapter binding, with no panel authority escape', () => {
+    const source = readFileSync('src/components-v2/panels/AudioRoutingControl.svelte', 'utf8');
+    expect(source).toMatch(/import\s*\{\s*getAudioRoutingHandlers\s*\}\s*from\s*'\$lib\/runtime\/adapters\/panel-adapters'/);
+    for (const forbidden of [
+      'command-bus', 'panel-commands', 'radio-intents', "from '$lib/runtime'", '$lib/transport',
+      'audio-manager', '$lib/stores', 'dispatchRadioIntent', 'sendCommand', 'runtime.send',
+      'patchRadioState', 'import(', 'export {', 'export *',
+    ]) expect(source).not.toContain(forbidden);
+  });
+
   it('renders three focus buttons with radiogroup a11y', () => {
     mountControl();
     const radiogroup = target.querySelector('[role="radiogroup"]');
@@ -83,6 +117,7 @@ describe('AudioRoutingControl', () => {
     mainBtn.click();
     flushSync();
     expect(setAudioConfigSpy).toHaveBeenCalledWith({ focus: 'main' });
+    expect(audioBinding.handlers.onFocusChange).toHaveBeenCalledExactlyOnceWith('main');
     expect(localStorage.getItem('icom.audio.focus')).toBe('main');
     // aria-checked reflects new state
     expect(mainBtn.getAttribute('aria-checked')).toBe('true');
@@ -96,6 +131,7 @@ describe('AudioRoutingControl', () => {
     flushSync();
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
     expect(setAudioConfigSpy).toHaveBeenCalledWith({ split_stereo: true });
+    expect(audioBinding.handlers.onSplitStereoChange).toHaveBeenCalledExactlyOnceWith(true);
     expect(localStorage.getItem('icom.audio.split_stereo')).toBe('1');
   });
 
@@ -107,6 +143,7 @@ describe('AudioRoutingControl', () => {
     mainSlider.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
     expect(setAudioConfigSpy).toHaveBeenCalledWith({ main_gain_db: -12 });
+    expect(audioBinding.handlers.onChannelGainChange).toHaveBeenCalledExactlyOnceWith('main', -12);
     expect(localStorage.getItem('icom.audio.main_gain_db')).toBe('-12');
   });
 
