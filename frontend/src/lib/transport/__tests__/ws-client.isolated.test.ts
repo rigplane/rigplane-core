@@ -1536,6 +1536,23 @@ describe('WsChannel visibility-aware reconnect + close observability', () => {
     expect(instances[0].readyState).toBe(MockWebSocket.OPEN);
   });
 
+  it('cancels an already-scheduled reconnect when the tab goes hidden', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose(1006, '', false); // visible -> timer IS scheduled
+    setVisibility('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(instances).toHaveLength(1); // timer cancelled
+    setVisibility('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(instances).toHaveLength(2); // debt recorded -> resumes
+    expect(ch.state).toBe('connecting'); // attempt reset
+    ch.disconnect();
+  });
+
   it('(c) regression: sockets that error out of CONNECTING grow the backoff toward the 30s cap while visible', async () => {
     // Fix jitter (calcBackoff mixes in Math.random()) so the growth curve is
     // exact instead of a wide, occasionally-boundary-flaky band.
