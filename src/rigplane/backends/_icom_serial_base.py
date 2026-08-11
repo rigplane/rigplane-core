@@ -90,6 +90,14 @@ class _IcomSerialRadioBase(CoreRadio):
     # retried every _SERIAL_WATCHDOG_RETRY_S and flooded the log with full
     # tracebacks twice a second while the port was gone.
     _SERIAL_WATCHDOG_RETRY_MAX_S = 5.0
+    # Consecutive CI-V command timeouts (no ACK/response within
+    # ``_civ_get_timeout``) that force the connection state machine into
+    # link-down. The raw serial health flag (``SerialCivLink.healthy``) only
+    # flips when a read/write syscall raises; a USB-serial adapter that
+    # vanishes without the OS surfacing an error leaves it stuck healthy
+    # forever (MOR-1440 bench evidence). CI-V timeouts on the existing
+    # keep-alive cadence are the reliable probe.
+    _SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD = 3
 
     def __init__(
         self,
@@ -165,6 +173,12 @@ class _IcomSerialRadioBase(CoreRadio):
             backend=None,  # default PortAudioBackend
         )
         self._serial_audio_seq = 0
+        # MOR-1440 link-down detection: consecutive-timeout evidence tracked
+        # against the CI-V request tracker's lifetime counters (see
+        # ``_serial_civ_timeout_evidence_crossed_threshold``).
+        self._civ_consecutive_timeouts = 0
+        self._civ_watchdog_last_seen_timeouts = 0
+        self._civ_watchdog_last_seen_rx_packets = 0
 
     # ------------------------------------------------------------------
     # Backend identity
@@ -724,6 +738,12 @@ class _IcomSerialRadioBase(CoreRadio):
                     RadioConnectionState.RECONNECTING,
                 ):
                     continue
+                if (
+                    self._conn_state == RadioConnectionState.CONNECTED
+                    and self._serial_civ_timeout_evidence_crossed_threshold()
+                ):
+                    await self._declare_serial_link_down()
+                    continue
                 if self._serial_session.ready:
                     self._civ_stream_ready = True
                     self._civ_recovering = False
@@ -778,6 +798,61 @@ class _IcomSerialRadioBase(CoreRadio):
         if delay > cap:
             return cap
         return delay
+
+    def _serial_civ_timeout_evidence_crossed_threshold(self) -> bool:
+        """Track consecutive CI-V command timeouts as live-link evidence.
+
+        Deliberately does *not* key off ``_last_civ_data_received``: this
+        watchdog's own "still ready" fast path re-stamps that timestamp every
+        tick purely because the raw health flag reads true (see the branch
+        below), which would mask a silently-dead link exactly like the raw
+        flag does. ``rx_packet_count`` only advances when a frame was
+        actually parsed off the wire (``SerialCivTransport.receive_packet``),
+        so it is unaffected by that stamp and safe to use as the "real
+        traffic happened" reset signal.
+        """
+        total = self._civ_request_tracker.timeout_count
+        rx_count = getattr(self._civ_transport, "rx_packet_count", None)
+        rx_advanced = isinstance(rx_count, int) and rx_count > (
+            self._civ_watchdog_last_seen_rx_packets
+        )
+        if rx_advanced:
+            self._civ_consecutive_timeouts = 0
+        elif total > self._civ_watchdog_last_seen_timeouts:
+            self._civ_consecutive_timeouts += (
+                total - self._civ_watchdog_last_seen_timeouts
+            )
+        self._civ_watchdog_last_seen_timeouts = total
+        if isinstance(rx_count, int):
+            self._civ_watchdog_last_seen_rx_packets = rx_count
+        return (
+            self._civ_consecutive_timeouts >= self._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD
+        )
+
+    async def _declare_serial_link_down(self) -> None:
+        """Force the state machine to link-down on consecutive CI-V timeouts.
+
+        Mirrors ``soft_disconnect``'s ordering: park managed TX first (a
+        WRITE_ON granted on the strength of a provider still marked ready
+        must not land on a dead wire), then stop audio, then tear down the
+        raw serial link so the next watchdog tick's ``ready`` check reads
+        honest state instead of a stale healthy flag that would otherwise
+        undo this transition.
+        """
+        logger.error(
+            "rigplane (%s): serial link-down on %s — %d consecutive CI-V "
+            "command timeout(s) with no response; marking connection reconnecting",
+            self.model,
+            self._serial_device,
+            self._civ_consecutive_timeouts,
+        )
+        self._conn_state = RadioConnectionState.RECONNECTING
+        self._civ_stream_ready = False
+        self._civ_recovering = True
+        self._civ_consecutive_timeouts = 0
+        await self._park_managed_tx()
+        await self._stop_serial_audio_driver()
+        await self._serial_session.disconnect()
 
     # ------------------------------------------------------------------
     # Internal helpers

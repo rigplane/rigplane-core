@@ -359,6 +359,166 @@ async def test_serial_disconnect_cleans_watchdog_when_already_disconnected() -> 
     assert getattr(radio, "_civ_data_watchdog_task", None) is None
 
 
+class _FakeManagedTxRuntime:
+    """Minimal stand-in for the managed-TX supervisor (real async signature)."""
+
+    def __init__(self) -> None:
+        self.target_id = "fake-managed-tx"
+        self.ready_calls: list[bool] = []
+
+    async def set_provider_ready(self, *, ready: bool) -> None:
+        self.ready_calls.append(ready)
+
+
+@pytest.mark.asyncio
+async def test_serial_link_down_detected_when_healthy_flag_stays_stuck_true(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-1440: a vanished USB-serial device that never raises OSError/EOF.
+
+    ``SerialCivLink.healthy`` only flips false on a read/write exception. A
+    dead adapter that silently stops answering (observed on the bench) leaves
+    it stuck ``True`` forever, so the pre-existing watchdog (which only reacts
+    to that flag) never notices. Consecutive CI-V command timeouts must force
+    the state machine to link-down regardless of what the raw flag reports.
+    """
+    import logging
+
+    # No responses ever queued -> every awaited command times out. Reconnect
+    # attempts also fail (device never returns on the same path) so the
+    # detected link-down state doesn't self-heal mid-assertion.
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_min_interval = 0.001
+    radio._civ_get_timeout = 0.03
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+
+    await radio.connect()
+    assert radio.radio_ready is True
+
+    frame = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_FREQ_GET)
+
+    with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
+        # First timeout alone must not trip anything, and the raw flag must
+        # still report healthy — this is exactly the evidence the low-level
+        # watchdog (keyed off that flag) cannot see on its own.
+        with pytest.raises(RigplaneTimeoutError):
+            await radio._send_civ_raw(frame, wait_response=True)
+        assert link.healthy is True
+        assert radio.conn_state == RadioConnectionState.CONNECTED
+
+        for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD - 1):
+            with pytest.raises(RigplaneTimeoutError):
+                await radio._send_civ_raw(frame, wait_response=True)
+
+        assert await _wait_until(
+            lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
+            timeout_s=2.0,
+        )
+
+    error_lines = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.ERROR and "link-down" in r.getMessage()
+    ]
+    assert len(error_lines) == 1, (
+        f"expected exactly one link-down ERROR line, got {len(error_lines)}"
+    )
+
+    assert radio.connected is False
+    assert radio.radio_ready is False
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_link_down_propagates_to_web_radio_health() -> None:
+    """MOR-1440: honest propagation — radioHealth reflects link-down, not 'connected'."""
+    from rigplane.web.runtime_helpers import classify_radio_health
+
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_min_interval = 0.001
+    radio._civ_get_timeout = 0.03
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+
+    frame = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_FREQ_GET)
+    for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
+        with pytest.raises(RigplaneTimeoutError):
+            await radio._send_civ_raw(frame, wait_response=True)
+    assert await _wait_until(
+        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
+    )
+
+    health = classify_radio_health(radio)
+    assert health["radioLink"] != "connected"
+    assert health["radioLink"] == "reconnecting"
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_link_down_stops_audio_capture() -> None:
+    """MOR-1440: audio capture must stop on link-down, same radio same USB."""
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    usb_audio = _FakeUsbAudioDriver()
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0", civ_link=link, audio_driver=usb_audio
+    )
+    radio._civ_min_interval = 0.001
+    radio._civ_get_timeout = 0.03
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+
+    received: list[object] = []
+    await radio.start_rx(received.append)
+    assert usb_audio.rx_running is True
+
+    frame = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_FREQ_GET)
+    for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
+        with pytest.raises(RigplaneTimeoutError):
+            await radio._send_civ_raw(frame, wait_response=True)
+    assert await _wait_until(
+        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
+    )
+
+    assert usb_audio.rx_running is False
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_link_down_while_ptt_active_parks_managed_tx_safely() -> None:
+    """MOR-1440: link-down with a TX-active session must not orphan the key.
+
+    Mirrors ``soft_disconnect``'s existing PTT-off teardown discipline: mark
+    the managed-TX provider not-ready so any lease held across the gap is
+    refused rather than granted onto a dead wire.
+    """
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_min_interval = 0.001
+    radio._civ_get_timeout = 0.03
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+
+    managed_tx = _FakeManagedTxRuntime()
+    radio._managed_tx_runtime = managed_tx  # type: ignore[assignment]
+
+    frame = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_FREQ_GET)
+    for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
+        with pytest.raises(RigplaneTimeoutError):
+            await radio._send_civ_raw(frame, wait_response=True)
+    assert await _wait_until(
+        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
+    )
+
+    assert managed_tx.ready_calls == [False]
+
+    await radio.disconnect()
+
+
 @pytest.mark.asyncio
 async def test_serial_audio_opus_contract_uses_usb_driver_lifecycle() -> None:
     usb_audio = _FakeUsbAudioDriver()
