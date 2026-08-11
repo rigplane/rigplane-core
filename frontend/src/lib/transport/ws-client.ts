@@ -1,6 +1,6 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
-import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
+import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
@@ -706,7 +706,6 @@ _ctrl.onMessage((msg) => {
     const state = applyDeltaEnvelope(msg.data as Record<string, unknown>);
     if (state) {
       setRadioState(state as any);
-      setHttpConnected(true);
       markStateUpdated();
     }
   }
