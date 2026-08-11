@@ -3803,7 +3803,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         The attenuator state is updated optimistically.
 
         Args:
-            db: Attenuation in dB (0..45 in 3 dB steps).
+            db: Attenuation in dB. Valid values are declared per radio by the
+                profile's ``[attenuator] values`` (e.g. IC-7300 has a single
+                20 dB step; IC-7610 has 0..45 in 3 dB steps).
             receiver: RECEIVER_MAIN (0) or RECEIVER_SUB (1).
         """
         self._check_connected()
@@ -3812,8 +3814,20 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x11, None, receiver=receiver, operation="set_attenuator_level"
         )
-        if db < 0 or db > 45 or db % 3 != 0:
-            raise ValueError(f"Attenuator level must be 0..45 in 3 dB steps, got {db}")
+        att_values = self._profile.att_values
+        if att_values is None:
+            # Data-driven only: no universal numeric fallback. A profile that
+            # declares the "attenuator" capability must also declare its
+            # valid dB steps via [attenuator] values in its rig TOML.
+            raise CommandError(
+                f"set_attenuator_level is not supported by profile "
+                f"{self._profile.model} (missing capability: attenuator values)"
+            )
+        if db not in att_values:
+            raise ValueError(
+                f"Attenuator level must be one of {sorted(att_values)} dB "
+                f"for {self._profile.model}, got {db}"
+            )
         cmd29 = self._profile.supports_cmd29(0x11)
         civ = set_attenuator_level(
             db, to_addr=self._radio_addr, receiver=receiver, command29=cmd29

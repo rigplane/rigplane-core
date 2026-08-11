@@ -2954,6 +2954,116 @@ async def test_broadcast_notification_omits_code_for_legacy_path() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Post-ack command execution failure -> operator notification (MOR-1445)
+#
+# A websocket-queued command (e.g. set_attenuator) is acknowledged at
+# enqueue time and only actually fails later, once RadioPoller executes it
+# against the radio. CommandService already has NAK semantics for this via
+# fail_command()/lifecycle "failed"/"timed_out", but nothing was subscribed
+# to it, so the operator never learned the command silently failed. These
+# tests exercise WebServer's subscriber wiring directly at the handler
+# level, without a real RadioPoller/websocket.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_ack_command_failure_broadcasts_operator_notification() -> None:
+    """A command that fails AFTER being acknowledged reaches the operator."""
+    srv = WebServer()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    srv.register_control_event_queue(q)
+
+    intent = command_intent_from_request(
+        "set_attenuator",
+        {"db": 20, "receiver": 0},
+        source="websocket",
+        command_id="cmd-att-1",
+    )
+    srv.command_service.emit_lifecycle(intent, "accepted")
+    srv.command_service.emit_lifecycle(intent, "acknowledged")
+
+    fired = srv.command_service.fail_command(
+        "cmd-att-1",
+        message="Attenuator level must be one of [0, 45] dB for IC-7610, got 20",
+    )
+
+    assert fired is True
+    n = q.get_nowait()
+    assert n["type"] == "notification"
+    assert n["level"] == "error"
+    assert n["category"] == "command"
+    assert "Attenuator level" in n["message"]
+
+
+@pytest.mark.asyncio
+async def test_command_failure_before_ack_does_not_broadcast() -> None:
+    """A command rejected before enqueue/ack must not double-broadcast.
+
+    That synchronous rejection is already returned to the requesting client
+    as a WS response (and, client-side, as a refusal toast per MOR-1422) —
+    broadcasting it to every connected client here would be a duplicate.
+    """
+    srv = WebServer()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    srv.register_control_event_queue(q)
+
+    intent = command_intent_from_request(
+        "set_attenuator",
+        {"db": 999, "receiver": 0},
+        source="websocket",
+        command_id="cmd-att-2",
+    )
+    srv.command_service.emit_lifecycle(intent, "accepted")
+    # No "acknowledged" — this mirrors a synchronous executor rejection.
+    srv.command_service.emit_lifecycle(intent, "failed", message="bad db value")
+
+    assert q.empty()
+
+
+@pytest.mark.asyncio
+async def test_command_timed_out_after_ack_broadcasts_notification() -> None:
+    """timed_out is a terminal failure too and must also reach the operator."""
+    srv = WebServer()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    srv.register_control_event_queue(q)
+
+    intent = command_intent_from_request(
+        "set_attenuator",
+        {"db": 20, "receiver": 0},
+        source="websocket",
+        command_id="cmd-att-3",
+    )
+    srv.command_service.emit_lifecycle(intent, "accepted")
+    srv.command_service.emit_lifecycle(intent, "acknowledged")
+
+    srv.command_service.fail_command(
+        "cmd-att-3", message="radio did not respond", timed_out=True
+    )
+
+    n = q.get_nowait()
+    assert n["level"] == "error"
+    assert n["message"] == "radio did not respond"
+
+
+@pytest.mark.asyncio
+async def test_successful_command_does_not_leak_acked_id_tracking() -> None:
+    """A command that succeeds (never fails) must not accumulate tracking state."""
+    srv = WebServer()
+
+    intent = command_intent_from_request(
+        "set_attenuator",
+        {"db": 20, "receiver": 0},
+        source="websocket",
+        command_id="cmd-att-4",
+    )
+    srv.command_service.emit_lifecycle(intent, "accepted")
+    srv.command_service.emit_lifecycle(intent, "acknowledged")
+    srv.command_service.emit_lifecycle(intent, "confirmed")
+
+    assert "cmd-att-4" not in srv._acked_command_ids
+
+
+# ---------------------------------------------------------------------------
 # Sprint 0B compatibility: canonical state revision + updatedAt (#158)
 # ---------------------------------------------------------------------------
 

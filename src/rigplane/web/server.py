@@ -54,6 +54,7 @@ from ..core.command_service import (
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
+    CommandLifecycleEvent,
     CommandSource,
     FieldPath,
     Observation,
@@ -733,6 +734,18 @@ class WebServer:
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
         )
+        # Command ids currently between "acknowledged" and a terminal
+        # lifecycle state — see _on_command_lifecycle_event (MOR-1445).
+        self._acked_command_ids: set[str] = set()
+        # MOR-1445: a websocket-queued command can be acknowledged at enqueue
+        # and only fail later, once RadioPoller actually executes it against
+        # the radio (e.g. a validation error the poller surfaces post-ack).
+        # CommandService already carries NAK semantics for that via
+        # fail_command()/lifecycle "failed"/"timed_out" — nothing previously
+        # subscribed to it, so the operator got no signal. Client-side
+        # refusals already toast via MOR-1422; this covers the execution-time
+        # gap.
+        self.command_service.subscribe_lifecycle(self._on_command_lifecycle_event)
         self._http_command_service = CommandService(
             executor=_HttpCommandExecutor(self),
             state_store=self.command_state_store,
@@ -1906,6 +1919,28 @@ class WebServer:
                 logger.debug(
                     "broadcast_notification: queue full, dropping notification"
                 )
+
+    def _on_command_lifecycle_event(self, event: CommandLifecycleEvent) -> None:
+        """Surface a post-ack command execution failure to the operator (MOR-1445).
+
+        A synchronous enqueue-time rejection (e.g. an unsupported command)
+        fails before ever reaching "acknowledged" and is already returned to
+        the requesting client as a WS response, and refused-before-enqueue
+        commands already toast client-side (MOR-1422) — neither needs a
+        broadcast here. The gap this closes is the queued command that WAS
+        acknowledged and only failed later, once RadioPoller actually
+        executed it against the radio (fail_command()/"failed"/"timed_out"),
+        which previously reached no one.
+        """
+        if event.state == "acknowledged":
+            self._acked_command_ids.add(event.command_id)
+            return
+        was_acked = event.command_id in self._acked_command_ids
+        self._acked_command_ids.discard(event.command_id)
+        if was_acked and event.state in ("failed", "timed_out"):
+            self.broadcast_notification(
+                "error", event.message or "Command failed", "command"
+            )
 
     def _broadcast_dx_spot(self, spot: Any) -> None:
         """Add DX spot to buffer and push dx_spot message to all control clients."""
