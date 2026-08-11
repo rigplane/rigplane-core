@@ -2396,19 +2396,25 @@ class RadioPoller:
                     await radio.set_scope_span(span)
                     if self._radio_state:
                         self._radio_state.scope_controls.span = span
-                    await self._reconfirm_scope_field("get_scope_span", radio.get_scope_span)
+                    await self._reconfirm_scope_field(
+                        "get_scope_span", radio.get_scope_span
+                    )
             case SetScopeSpeed(speed=speed):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_speed(speed)
                     if self._radio_state:
                         self._radio_state.scope_controls.speed = speed
-                    await self._reconfirm_scope_field("get_scope_speed", radio.get_scope_speed)
+                    await self._reconfirm_scope_field(
+                        "get_scope_speed", radio.get_scope_speed
+                    )
             case SetScopeRef(ref=ref):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_ref(ref)
                     if self._radio_state:
                         self._radio_state.scope_controls.ref_db = float(ref)
-                    await self._reconfirm_scope_field("get_scope_ref", radio.get_scope_ref)
+                    await self._reconfirm_scope_field(
+                        "get_scope_ref", radio.get_scope_ref
+                    )
             case SetScopeHold(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_hold(on)
