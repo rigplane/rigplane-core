@@ -139,6 +139,7 @@ import { isFieldAvailable } from '$lib/state/field-status';
 import { validateRadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import { toSpectrumAuthority } from '../scope-adapter';
+import { getRfFrontEndHandlers } from '../panel-adapters';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
 
 /** Deep clone so a test that mutates `h.state`/`h.caps` never leaks into a sibling. */
@@ -258,14 +259,37 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
     expectIntentTransport();
   });
 
-  it('RF front end: dispatches set_attenuator / set_preamp / set_rf_gain on receiver 0', () => {
+  it('RF front end: dispatches set_attenuator / set_preamp / set_rf_gain / set_squelch on receiver 0', () => {
     makeRfFrontEndHandlers().onAttChange(0);
     makeRfFrontEndHandlers().onPreChange(1);
     makeRfFrontEndHandlers().onRfGainChange(200);
+    makeRfFrontEndHandlers().onSquelchChange(51);
     expect(exactCalls()).toEqual([
       ['set_attenuator', { db: 0, receiver: 0 }],
       ['set_preamp', { level: 1, receiver: 0 }],
       ['set_rf_gain', { level: 200, receiver: 0 }],
+      ['set_squelch', { level: 51, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+  });
+
+  // MOR-1447 regression: the live stand's captured `main.rfGain` reading
+  // (`fixtures/ic7300-state.json`) is the exact normalized float
+  // `0.8196078431372549` a slider drag reports — the walkthrough that found
+  // dragging RF gain/squelch snapping to 0%/100% only. `getRfFrontEndHandlers`
+  // (unlike the raw-int `makeRfFrontEndHandlers` exercised above) is the
+  // adapter seam every slider actually calls, and must convert that
+  // normalized reading to the raw wire integer `set_rf_gain` requires instead
+  // of failing the real handler's integer guard.
+  it('RF gain/squelch sliders: getRfFrontEndHandlers converts a normalized drag to the raw wire level (MOR-1447)', () => {
+    expect(IC7300_STATE.main!.rfGain).toBeCloseTo(0.8196078431372549);
+
+    getRfFrontEndHandlers().onRfGainChange(IC7300_STATE.main!.rfGain!);
+    getRfFrontEndHandlers().onSquelchChange(0.2);
+
+    expect(exactCalls()).toEqual([
+      ['set_rf_gain', { level: 209, receiver: 0 }],
+      ['set_squelch', { level: 51, receiver: 0 }],
     ]);
     expectIntentTransport();
   });

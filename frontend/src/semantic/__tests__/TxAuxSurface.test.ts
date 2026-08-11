@@ -414,3 +414,26 @@ describe('level intents reach the caller with the field and the raw value', () =
     });
   });
 });
+
+// ── 7. Readout formatting (MOR-1447) ────────────────────────────────────────
+
+describe('the readout formats a 0..1 level as a percent, not the raw wire float', () => {
+  // The mobile/narrow composition regression this pins: RF power read back
+  // as the literal `0.5529411764705883` instead of a formatted percent.
+  it('formats RF power as a rounded percent (fixture value 0.8 -> "80%")', () => {
+    withSurface(base(), snap(), (s) => {
+      const output = s.control('rfPower')!.querySelector('output')!;
+      expect(output.textContent).toBe('80%');
+    });
+  });
+
+  // Contrast: a raw 0..255 level and a small integer domain both keep
+  // reading as the plain number — only the declared 0..1 fraction is
+  // percent-formatted (`formatKnownLevel`'s domain-generic rule).
+  it('leaves a raw 0..255 level (mic gain) as the plain number', () => {
+    withSurface(base(), snap(), (s) => {
+      const output = s.control('micGain')!.querySelector('output')!;
+      expect(output.textContent).toBe('128');
+    });
+  });
+});

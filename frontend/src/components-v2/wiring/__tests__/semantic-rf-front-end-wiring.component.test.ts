@@ -280,23 +280,29 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
     for (const other of ALL.filter((s) => s !== h.att)) expect(other).not.toHaveBeenCalled();
   });
 
-  it('routes the RF-gain slider to onRfGainChange, verbatim', () => {
+  // MOR-1447: the surface reports the radio's normalized 0..1 reading (no
+  // rescale, per `RfFrontEndSurface.svelte`'s own contract), but the REAL
+  // `onRfGainChange` dispatches a raw 0-255 wire integer and refuses
+  // anything else — so the wiring must convert on the way through. This was
+  // the input-snaps-to-0%-or-100% regression: an unconverted intermediate
+  // drag silently failed the real handler's integer guard.
+  it('routes the RF-gain slider to onRfGainChange, converted to the raw 0-255 wire level', () => {
     render();
     const input = el('rfGain')!.querySelector('input')!;
     input.value = '0.55';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0.55);
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(Math.round(0.55 * 255));
     for (const other of ALL.filter((s) => s !== h.rfGain)) expect(other).not.toHaveBeenCalled();
   });
 
-  it('routes the squelch slider to onSquelchChange, verbatim', () => {
+  it('routes the squelch slider to onSquelchChange, converted to the raw 0-255 wire level', () => {
     render();
     const input = el('squelch')!.querySelector('input')!;
     input.value = '0.2';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0.2);
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(Math.round(0.2 * 255));
     for (const other of ALL.filter((s) => s !== h.squelch)) expect(other).not.toHaveBeenCalled();
   });
 
