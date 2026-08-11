@@ -106,7 +106,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
-import { makeBandHandlers, makeVfoHandlers } from '../command-bus';
+import { makeBandHandlers, makeVfoHandlers } from '$lib/runtime/commands/panel-commands';
 
 const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',

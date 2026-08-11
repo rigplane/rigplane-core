@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 
 vi.mock('$lib/transport/ws-client', () => ({
   getControlSession: vi.fn(() => ({ state: 'connected', epoch: 1 })),
@@ -62,9 +62,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
 import { sendCommand } from '$lib/transport/ws-client';
 import { makeRxAudioHandlers as makeRuntimeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
-import { makeRxAudioHandlers as makeWiringRxAudioHandlers } from '../command-bus';
 
-const commandBusSource = readFileSync('src/components-v2/wiring/command-bus.ts', 'utf8');
 
 describe('RX-audio presentation command authority (MOR-1124)', () => {
   beforeEach(() => {
@@ -77,17 +75,16 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
     Object.defineProperty(audioManager, 'rxEnabled', { configurable: true, value: false });
   });
 
-  it('exports the runtime factory through the wiring compatibility path', () => {
-    expect(makeWiringRxAudioHandlers).toBe(makeRuntimeRxAudioHandlers);
+  // MOR-1409 A15: the wiring compatibility path is deleted, so "the shim
+  // holds no saved-AF state and executes no RX itself" is now provable in its
+  // strongest form — the shim does not exist. The dual-path identity check
+  // this replaces was vacuous once only one path remained.
+  it('leaves no wiring compatibility path for RX audio to re-enter through', () => {
+    expect(existsSync('src/components-v2/wiring/command-bus.ts')).toBe(false);
   });
 
-  it('keeps no local saved-AF state or direct RX execution calls in command-bus', () => {
-    expect(commandBusSource).not.toMatch(/\bsavedAfLevel\b/);
-    expect(commandBusSource).not.toMatch(/audioManager\.(startRx|stopRx)\(/);
-  });
-
-  it('shares one saved AF value across repeated handlers from both public paths', () => {
-    makeWiringRxAudioHandlers().onMonitorModeChange('mute');
+  it('shares one saved AF value across repeated handlers from the sole public path', () => {
+    makeRuntimeRxAudioHandlers().onMonitorModeChange('mute');
     makeRuntimeRxAudioHandlers().onMonitorModeChange('radio');
 
     expect(sendCommand).toHaveBeenNthCalledWith(1, 'set_af_level', { level: 0, receiver: 0 });
@@ -97,7 +94,7 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
   });
 
   it('keeps LIVE start, settled exit stop, and browser-volume semantics on the shared authority', async () => {
-    const desktop = makeWiringRxAudioHandlers();
+    const desktop = makeRuntimeRxAudioHandlers();
     const essentials = makeRuntimeRxAudioHandlers();
 
     essentials.onMonitorModeChange('live');

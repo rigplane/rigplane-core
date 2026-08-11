@@ -124,7 +124,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 import { audioManager } from '$lib/audio/audio-manager';
 import { sendCommand } from '$lib/transport/ws-client';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
-import { makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers } from '../command-bus';
+import { makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
 import { desktopV2Layout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import {

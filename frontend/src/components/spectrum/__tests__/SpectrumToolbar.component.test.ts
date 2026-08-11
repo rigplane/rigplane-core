@@ -555,7 +555,7 @@ describe('source and enforcement boundary', () => {
     expect(source).not.toMatch(/\.agc\b|\.antenna\b|\.audioRouting\b|\.band\b|\.cw\b|\.dsp\b|\.filter\b|\.mode\b|\.rfFrontEnd\b|\.ritXit\b|\.rxAudio\b|\.scan\b|\.tx\b|\.vfo\b|\.vox\b/);
   });
 
-  it('removes only Toolbar and A07 presentation/writer exceptions', () => {
+  it('removes the Toolbar, A07 and A15 presentation/writer exceptions', () => {
     const plugin = readFileSync(pluginPath, 'utf8');
     const contract = readFileSync(contractPath, 'utf8');
     expect(plugin).not.toContain("  'src/components/spectrum/SpectrumToolbar.svelte',");
@@ -568,10 +568,16 @@ describe('source and enforcement boundary', () => {
       expect(plugin).not.toContain(`  '${path}',`);
       expect(contract).not.toContain(`  { path = "${path}", count = 1, owner = "MOR-1409" },`);
     }
-    expect(plugin).toContain("  'src/components-v2/layout/StatusBar.svelte',");
-    expect(plugin).toContain("  'src/components/spectrum/EiBiBrowser.svelte',");
-    expect(contract).toContain('  { path = "src/components-v2/layout/StatusBar.svelte", count = 1, owner = "MOR-1409" },');
-    expect(contract).toContain('  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },');
+    // MOR-1409 A15 emptied the presentation-authority exception set: StatusBar
+    // lost its `getFrequency` edge and EiBiBrowser's row had been stale since
+    // A05b. This assertion previously pinned those two rows as still PRESENT —
+    // the A07-era statement that only the Toolbar row had been removed. The
+    // ledger is now empty, so the same intent is expressed as absence.
+    expect(plugin).not.toContain("  'src/components-v2/layout/StatusBar.svelte',");
+    expect(plugin).not.toContain("  'src/components/spectrum/EiBiBrowser.svelte',");
+    expect(plugin).toContain('const LEGACY_PRESENTATION_AUTHORITY = new Set([]);');
+    expect(contract).not.toContain('  { path = "src/components-v2/layout/StatusBar.svelte", count = 1, owner = "MOR-1409" },');
+    expect(contract).not.toContain('  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },');
   });
 
   it('releases the old popover hash pin while keeping all Toolbar CSS byte-frozen', () => {

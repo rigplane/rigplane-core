@@ -1,21 +1,13 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const panelSource = readFileSync(
   'src/lib/runtime/commands/panel-commands.ts',
   'utf8',
 );
-const busSource = readFileSync(
-  'src/components-v2/wiring/command-bus.ts',
-  'utf8',
-);
 const stateSource = readFileSync('src/lib/types/state.ts', 'utf8');
 const fixtureBusSource = readFileSync('fixtures/stubs/command-bus.ts', 'utf8');
 const panelPropsSource = readFileSync('src/lib/runtime/props/panel-props.ts', 'utf8');
-const stateAdapterSource = readFileSync(
-  'src/components-v2/wiring/state-adapter.ts',
-  'utf8',
-);
 const mobileSource = readFileSync(
   'src/components-v2/layout/MobileRadioLayout.svelte',
   'utf8',
@@ -33,10 +25,8 @@ function factoryBlock(source: string, factory: string): string {
 }
 
 describe('MOR-1409 A03c2 local audio and meter authority', () => {
-  it('owns the complete audio-routing factory canonically and keeps the bus as a re-export', () => {
+  it('owns the complete audio-routing factory canonically', () => {
     const block = factoryBlock(panelSource, 'makeAudioRoutingHandlers');
-    expect(busSource).toContain('makeAudioRoutingHandlers,');
-    expect(busSource).not.toContain('export function makeAudioRoutingHandlers');
     expect(block).toContain('audioManager.setAudioConfig');
     expect(panelSource).toContain("const LS_FOCUS = 'icom.audio.focus'");
     expect(panelSource).toContain("const LS_SPLIT = 'icom.audio.split_stereo'");
@@ -50,9 +40,8 @@ describe('MOR-1409 A03c2 local audio and meter authority', () => {
 
   it('deletes both dead meter factories, their fixture no-op, and Store-writer residue', () => {
     expect(panelSource).not.toContain('export function makeMeterHandlers');
-    expect(busSource).not.toContain('export function makeMeterHandlers');
     expect(fixtureBusSource).not.toContain('export function makeMeterHandlers');
-    expect(`${panelSource}\n${busSource}`).not.toMatch(
+    expect(panelSource).not.toMatch(
       /patchRadioState\s*\(\s*\{\s*meterSource\s*:/,
     );
   });
@@ -75,13 +64,18 @@ describe('MOR-1409 A03c2 local audio and meter authority', () => {
       'makeScopeControlsHandlers',
       'makeKeyboardHandlers',
     ]) {
-      expect(busSource).toContain(`${canonical},`);
-      expect(busSource).not.toContain(`export function ${canonical}`);
       expect(panelSource).toContain(`export function ${canonical}`);
     }
-    expect(busSource).not.toContain('function _activateReceiver');
-    expect(busSource).not.toContain("case 'set_active_vfo'");
     expect(panelPropsSource).not.toContain('meterSource');
-    expect(stateAdapterSource).not.toContain('meterSource');
+  });
+
+  // MOR-1409 A15: every assertion this file made about the bus and the
+  // state-adapter said "the duplicate holds no logic of its own". Both
+  // duplicates are deleted, which is that statement in its terminal form —
+  // and unlike a source-text pin, it cannot be satisfied by a file that grows
+  // the logic back.
+  it('deletes both legacy duplicates outright', () => {
+    expect(existsSync('src/components-v2/wiring/command-bus.ts')).toBe(false);
+    expect(existsSync('src/components-v2/wiring/state-adapter.ts')).toBe(false);
   });
 });

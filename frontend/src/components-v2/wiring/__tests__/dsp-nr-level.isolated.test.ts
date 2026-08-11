@@ -37,7 +37,6 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import * as radioStore from '$lib/stores/radio.svelte';
-import { makeDspHandlers as makeBusDspHandlers } from '../command-bus';
 import { makeDspHandlers as makeRuntimeDspHandlers } from '$lib/runtime/commands/panel-commands';
 
 beforeEach(() => {
@@ -45,7 +44,6 @@ beforeEach(() => {
 });
 
 describe.each([
-  ['command-bus', makeBusDspHandlers],
   ['runtime panel-commands', makeRuntimeDspHandlers],
 ])('onNrLevelChange (%s)', (_name, makeHandlers) => {
   it('converts the 0-15 slider value to the 0-255 wire value before sending', () => {
