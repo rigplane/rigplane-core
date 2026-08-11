@@ -179,6 +179,14 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_consecutive_timeouts = 0
         self._civ_watchdog_last_seen_timeouts = 0
         self._civ_watchdog_last_seen_rx_packets = 0
+        # MOR-1440 review round 2: identity of the transport the above two
+        # baselines were last measured against. Every (re)connect installs a
+        # *brand-new* ``SerialCivTransport`` (see
+        # ``SerialSessionDriver.connect``), so ``rx_packet_count`` restarts at
+        # 0 while these baselines would otherwise keep a stale high-water
+        # mark from the outgoing transport — see
+        # ``_civ_watchdog_rebaseline``.
+        self._civ_watchdog_last_transport: object | None = None
 
     # ------------------------------------------------------------------
     # Backend identity
@@ -375,6 +383,14 @@ class _IcomSerialRadioBase(CoreRadio):
         self._conn_state = RadioConnectionState.CONNECTED
         self._civ_stream_ready = self._serial_session.ready
         self._civ_recovering = not self._civ_stream_ready
+        # MOR-1440 review round 2 (B1 item 2): this is the RECONNECTING ->
+        # CONNECTED transition. Re-baseline the link-death detector here,
+        # explicitly, rather than waiting for the next watchdog tick's
+        # transport-identity check to notice: any CI-V command timeouts
+        # banked while the evidence check was short-circuited during
+        # RECONNECTING (see ``_serial_civ_watchdog_loop``) must not be
+        # credited against the link that just recovered.
+        self._civ_watchdog_rebaseline()
         if self._on_reconnect is not None:
             try:
                 self._on_reconnect()
@@ -799,6 +815,38 @@ class _IcomSerialRadioBase(CoreRadio):
             return cap
         return delay
 
+    def _civ_watchdog_rebaseline(self) -> None:
+        """Reset link-death detector baselines against current state.
+
+        MOR-1440 review round 2 (B1): every (re)connect installs a
+        brand-new ``SerialCivTransport`` (``SerialSessionDriver.connect``
+        always constructs one, even on reconnect), so its
+        ``rx_packet_count`` restarts at 0 — a stale high-water mark from the
+        outgoing transport would otherwise make the "real traffic happened"
+        reset signal read false by construction right when it matters most.
+        Likewise, ``_civ_request_tracker.timeout_count`` is a lifetime
+        counter never reset on reconnect, so a frozen
+        ``_civ_watchdog_last_seen_timeouts`` baseline (left stale by the
+        RECONNECTING short-circuit in ``_serial_civ_watchdog_loop``) would
+        otherwise credit an entire outage's worth of banked timeouts as one
+        lump delta against the link that just recovered.
+
+        Called from two places: (a) lazily, inside
+        :meth:`_serial_civ_timeout_evidence_crossed_threshold`, whenever the
+        transport identity has changed since the last tick — a defensive net
+        that catches any path that swaps ``_civ_transport`` — and (b)
+        explicitly at the end of :meth:`soft_reconnect`, the actual
+        RECONNECTING -> CONNECTED transition, so the outage's banked
+        timeouts never survive to the first post-recovery evidence check.
+        """
+        rx_count = getattr(self._civ_transport, "rx_packet_count", None)
+        self._civ_watchdog_last_seen_rx_packets = (
+            rx_count if isinstance(rx_count, int) else 0
+        )
+        self._civ_watchdog_last_seen_timeouts = self._civ_request_tracker.timeout_count
+        self._civ_consecutive_timeouts = 0
+        self._civ_watchdog_last_transport = self._civ_transport
+
     def _serial_civ_timeout_evidence_crossed_threshold(self) -> bool:
         """Track consecutive CI-V command timeouts as live-link evidence.
 
@@ -810,7 +858,24 @@ class _IcomSerialRadioBase(CoreRadio):
         actually parsed off the wire (``SerialCivTransport.receive_packet``),
         so it is unaffected by that stamp and safe to use as the "real
         traffic happened" reset signal.
+
+        Shared-bus blind spot: on a shared CI-V bus (multiple radios/
+        controllers on the same serial line), ``rx_packet_count`` advances
+        for *any* frame this transport parses off the wire, including a
+        transceive broadcast from another device — not only responses to
+        our own commands. That is an acceptable false "still alive" signal
+        (traffic proves the physical bus is up), just not scoped to "this
+        radio is answering us" as tightly as it may look. Not applicable to
+        direct USB-CI-V connections (e.g. IC-7300), which have no shared bus.
+
+        MOR-1440 review round 2 (B1): a (re)connect can swap in a brand-new
+        transport between ticks. If it has, re-baseline against it instead
+        of judging this tick — see :meth:`_civ_watchdog_rebaseline`.
         """
+        if self._civ_transport is not self._civ_watchdog_last_transport:
+            self._civ_watchdog_rebaseline()
+            return False
+
         total = self._civ_request_tracker.timeout_count
         rx_count = getattr(self._civ_transport, "rx_packet_count", None)
         rx_advanced = isinstance(rx_count, int) and rx_count > (
@@ -832,12 +897,20 @@ class _IcomSerialRadioBase(CoreRadio):
     async def _declare_serial_link_down(self) -> None:
         """Force the state machine to link-down on consecutive CI-V timeouts.
 
-        Mirrors ``soft_disconnect``'s ordering: park managed TX first (a
-        WRITE_ON granted on the strength of a provider still marked ready
-        must not land on a dead wire), then stop audio, then tear down the
-        raw serial link so the next watchdog tick's ``ready`` check reads
-        honest state instead of a stale healthy flag that would otherwise
-        undo this transition.
+        Orders the *safety-critical* part of ``soft_disconnect``'s teardown
+        the same way it does: park managed TX first (a WRITE_ON granted on
+        the strength of a provider still marked ready must not land on a
+        dead wire), then stop audio, then tear down the raw serial link so
+        the next watchdog tick's ``ready`` check reads honest state instead
+        of a stale healthy flag that would otherwise undo this transition.
+
+        Deliberately does *not* mirror the rest of ``soft_disconnect``: it
+        leaves the CI-V worker and RX pump running and does not advance the
+        CI-V generation. The watchdog needs both alive to drive recovery
+        (``soft_reconnect`` — called from ``_serial_civ_watchdog_loop`` right
+        after this — is what tears them down and rebuilds them for the new
+        transport); a full disconnect-style teardown here would leave
+        nothing to restart the recovery loop.
         """
         logger.error(
             "rigplane (%s): serial link-down on %s — %d consecutive CI-V "
