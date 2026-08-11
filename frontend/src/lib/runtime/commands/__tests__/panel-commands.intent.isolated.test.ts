@@ -707,6 +707,52 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('routes VFO slot selection on a single-receiver radio although active is structurally unobservable (MOR-1423)', () => {
+    h.caps = {
+      capabilities: ['split', 'tx', 'vox'], receivers: 1, vfoScheme: 'ab',
+      stateContractVersion: 1, providerGeneration: 31,
+    };
+    h.state = oneReceiverAbState();
+    h.unavailable.add('active');
+
+    makeVfoHandlers().onVfoSelect('MAIN', 'B');
+
+    expect(exactCalls()).toEqual([['set_vfo', { vfo: 'B' }]]);
+    expectIntentTransport();
+  });
+
+  it('still requires observed active on dual-receiver radios for VFO slot selection (no regression, MOR-1423)', () => {
+    h.unavailable.add('active');
+
+    makeVfoHandlers().onVfoSelect('MAIN', 'B');
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('routes keyboard-delegated radio actions on a single-receiver radio although active is structurally unobservable (MOR-1423)', () => {
+    h.caps = {
+      capabilities: ['rit'], receivers: 1, vfoScheme: 'ab',
+      stateContractVersion: 1, providerGeneration: 31,
+    };
+    h.state = oneReceiverAbState();
+    h.unavailable.add('active');
+
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(true);
+
+    expect(exactCalls()).toEqual([['set_rit_status', { on: true }]]);
+    expectIntentTransport();
+  });
+
+  it('still requires observed active on dual-receiver radios for keyboard-delegated radio actions (no regression, MOR-1423)', () => {
+    h.unavailable.add('active');
+
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(true);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
   it('rejects pending physical SUB on one-RX A/B Selected/Unselected topology', () => {
     h.caps = { capabilities: ['pbt'], receivers: 1, vfoScheme: 'ab' };
     h.state = oneReceiverAbState();
