@@ -1289,6 +1289,90 @@ describe('control channel singleton', () => {
 
 });
 
+// ─── MOR-1422: a refused command must be operator-visible ──────────────────
+//
+// `sendCommand` used to drop a non-PTT-off command while
+// `isLiveRadioAvailable()` is false with only a `console.warn` — invisible
+// unless the operator has devtools open. A held control (a jog wheel, a
+// repeated keypress) calls `sendCommand` many times a second, so the fix is
+// ONE notice per refusal burst, not one per call — these tests exercise the
+// debounce with fake timers, and pin the two things that must NOT trigger
+// it: a healthy link, and the always-ungated PTT-off release path.
+describe('sendCommand surfaces a refused command exactly once per burst (MOR-1422)', () => {
+  let originalWebSocket: typeof WebSocket;
+
+  beforeEach(() => {
+    instances.length = 0;
+    vi.useFakeTimers();
+    originalWebSocket = globalThis.WebSocket;
+    // @ts-expect-error mock
+    globalThis.WebSocket = MockWebSocket;
+  });
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWebSocket;
+    vi.useRealTimers();
+    vi.resetModules();
+  });
+
+  it('emits exactly one notification for a burst of refused commands', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    const { onMessage, sendCommand } = await import('../ws-client');
+    const notices: unknown[] = [];
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    sendCommand('set_freq', { freq: 14_074_000, receiver: 0 }, 'a');
+    sendCommand('set_freq', { freq: 14_074_100, receiver: 0 }, 'b');
+    sendCommand('set_freq', { freq: 14_074_200, receiver: 0 }, 'c');
+
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      type: 'notification', level: 'warning', code: 'commandRefusedLinkDegraded',
+    });
+  });
+
+  it('emits a second notification once the debounce window has elapsed', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    const { onMessage, sendCommand } = await import('../ws-client');
+    const notices: unknown[] = [];
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    sendCommand('set_freq', { freq: 14_074_000, receiver: 0 }, 'first');
+    vi.advanceTimersByTime(3_000);
+    sendCommand('set_freq', { freq: 14_074_100, receiver: 0 }, 'second');
+
+    expect(notices).toHaveLength(2);
+  });
+
+  it('emits nothing while the link is healthy', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(true);
+    const { connect, onMessage, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    const notices: unknown[] = [];
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    sendCommand('set_freq', { freq: 14_074_000, receiver: 0 });
+
+    expect(notices).toHaveLength(0);
+  });
+
+  // The PTT-off release alias is the operator's emergency unkey path — it is
+  // never gated on link health (see the "allows open-socket PTT release
+  // aliases" case above) and must never be buried under a refusal toast either.
+  it('emits nothing for the ungated PTT-off release path', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    const { onMessage, sendCommand } = await import('../ws-client');
+    const notices: unknown[] = [];
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    sendCommand('ptt_off', {}, 'off-1');
+    sendCommand('ptt', { state: false }, 'off-2');
+
+    expect(notices).toHaveLength(0);
+  });
+});
+
 describe('WsChannel send queue', () => {
   let originalWebSocket: typeof WebSocket;
 
