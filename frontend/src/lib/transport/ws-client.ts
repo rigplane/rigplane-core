@@ -350,6 +350,19 @@ export class WsChannel {
     return () => this.messageHandlers.delete(handler);
   }
 
+  /**
+   * MOR-1422: a client-synthesized notification, delivered through the SAME
+   * bus a server `{"type":"notification"}` frame uses (the `errNote`
+   * pattern above) — so the one shipped toast surface (`components/shared/
+   * Toast.svelte`) renders it with no changes of its own. `code` is resolved
+   * to `core.toast.<code>` by `messageFromReasonCode`; `message` is the
+   * English fallback for a caller that never supplied one.
+   */
+  emitLocalNotification(level: 'info' | 'warning' | 'error', message: string, code: string): void {
+    const note: WsIncoming = { type: 'notification', level, message, code, category: 'command' };
+    this.messageHandlers.forEach((h) => h(note));
+  }
+
   onBinary(handler: BinaryHandler): () => void {
     this.binaryHandlers.add(handler);
     return () => this.binaryHandlers.delete(handler);
@@ -836,6 +849,17 @@ export function getControlSession(): ControlSessionTransition {
   return { state: _ctrl.state, epoch: _ctrl.sessionEpoch };
 }
 
+/**
+ * MOR-1422: the refusal below fires per COMMAND — a held control (a
+ * jog wheel, a repeated keypress) can call `sendCommand` many times a
+ * second, and a toast per call would bury the one useful signal ("your
+ * commands are not reaching the radio") under a flood. This is a burst
+ * debounce, not a rate limit on the refusal itself: `sendCommand` keeps
+ * returning `false` for every call, only the notice is throttled.
+ */
+const REFUSAL_NOTICE_DEBOUNCE_MS = 3_000;
+let lastRefusalNoticeAt = -Infinity;
+
 export function sendCommand(
   name: string,
   params: Record<string, unknown> = {},
@@ -846,6 +870,13 @@ export function sendCommand(
     console.warn('[cmd] blocked while radio health is degraded', name);
     if (pttIntent(name, params) === null) {
       _ctrl.rejectNonPtt(commandId, 'radio health is degraded');
+    }
+    const now = Date.now();
+    if (now - lastRefusalNoticeAt >= REFUSAL_NOTICE_DEBOUNCE_MS) {
+      lastRefusalNoticeAt = now;
+      _ctrl.emitLocalNotification(
+        'warning', 'Command not sent — link to the radio is degraded', 'commandRefusedLinkDegraded',
+      );
     }
     return false;
   }

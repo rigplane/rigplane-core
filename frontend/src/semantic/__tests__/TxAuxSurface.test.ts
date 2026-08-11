@@ -170,6 +170,45 @@ describe('operational availability decides whether a control is USABLE', () => {
   });
 });
 
+// ── 2b. MOR-1422: the disabled reason is legible, not just a data hook ─────
+
+describe('the disabled reason is exposed on hover and to screen readers (MOR-1422)', () => {
+  /** Resolves a control's `aria-describedby` target and returns ITS text —
+   *  the id alone would only prove wiring, not that a screen reader has
+   *  something to actually read. */
+  function describedText(el: HTMLElement): string | null {
+    const id = el.getAttribute('aria-describedby');
+    if (!id) return null;
+    return target.querySelector(`#${id}`)?.textContent ?? null;
+  }
+
+  it('puts "Not yet observed" on title and aria-describedby for an unobserved toggle', () => {
+    const view = withField(base(), 'vox', { availability: { structural: true, operational: false } });
+    withSurface(view, snap(), (s) => {
+      const control = s.control('vox')!;
+      expect(control.title).toBe('Not yet observed');
+      expect(describedText(control)).toBe('Not yet observed');
+    });
+  });
+
+  it('puts "Not yet observed" on title and aria-describedby for an unobserved level input', () => {
+    const view = withField(base(), 'rfPower', { availability: { structural: true, operational: false } });
+    withSurface(view, snap(), (s) => {
+      const input = s.input('rfPower')!;
+      expect(input.title).toBe('Not yet observed');
+      expect(describedText(input)).toBe('Not yet observed');
+    });
+  });
+
+  it('carries no reason text on hover or for screen readers once a control is usable', () => {
+    withSurface(base(), snap(), (s) => {
+      const control = s.control('vox')!;
+      expect(control.title).toBe('');
+      expect(control.hasAttribute('aria-describedby')).toBe(false);
+    });
+  });
+});
+
 // ── 3. VOX — safety note (ii), arming voice keying ─────────────────────────
 
 describe('VOX arming obeys the two-level gate (safety note ii)', () => {
