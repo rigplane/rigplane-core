@@ -299,8 +299,17 @@ export function runAssertions(
 
   // ── radio-wide facts render once, outside every strip (MOR-1068) ────────
   const global = q('[data-zone-id="global"]');
-  const wide = ['[data-vfo-split]', '[data-vfo-dual-watch]',
-    '[data-testid="vfo-active-receiver"]'];
+  // MOR-1421: the dual-watch toggle and the active-receiver readout are
+  // HIDDEN — not merely disabled — on a genuinely single-receiver radio
+  // (`caps.receivers <= 1`). Same `hasDualReceiver` gate
+  // `SemanticRadioSurfaces.svelte` computes for the real app, read here off
+  // the SAME `harness.caps` this function already treats as ground truth
+  // (`capsLoaded` below). Split stays radio-wide regardless — it is
+  // meaningful with one receiver.
+  const hasDualReceiverFacts = (harness.caps?.receivers ?? 1) > 1;
+  const wide = hasDualReceiverFacts
+    ? ['[data-vfo-split]', '[data-vfo-dual-watch]', '[data-testid="vfo-active-receiver"]']
+    : ['[data-vfo-split]'];
   const hasGlobalZone = expected.zones.includes('global');
   // MOR-1085: the reference/single composition renders the SAME radio-wide
   // switches (one `<VfoSurface viewModel={view}>` call, `showRadioWideFacts`
@@ -318,6 +327,12 @@ export function runAssertions(
     check('radio-wide-row-renders-once',
       wide.every((sel) => qa(sel).length === 1),
       wide.map((sel) => `${sel}=${qa(sel).length}`).join(' '));
+    check('single-receiver-hides-dual-receiver-chrome',
+      hasDualReceiverFacts
+        || (qa('[data-vfo-dual-watch]').length === 0
+          && qa('[data-testid="vfo-active-receiver"]').length === 0),
+      'a single-receiver radio (MOR-1421) renders no dual-watch toggle and no '
+      + 'active-receiver readout');
     if (hasGlobalZone) {
       check('radio-wide-row-lives-in-the-global-zone',
         wide.every((sel) => {
@@ -331,11 +346,12 @@ export function runAssertions(
         'a zone holding live switches must not present as dead');
     }
     const switches = qa<HTMLButtonElement>('[data-vfo-split], [data-vfo-dual-watch]');
+    const expectedSwitchCount = hasDualReceiverFacts ? 2 : 1;
     check('radio-wide-switch-gate',
-      switches.length === 2
+      switches.length === expectedSwitchCount
       && switches.every((b) => b.disabled === expected.radioWideSwitchesDisabled),
       `disabled=${JSON.stringify(switches.map((b) => b.disabled))} · `
-      + `expected all ${expected.radioWideSwitchesDisabled}`);
+      + `expected all ${expected.radioWideSwitchesDisabled}, count=${expectedSwitchCount}`);
   }
 
   // ── honest placeholders ────────────────────────────────────────────────

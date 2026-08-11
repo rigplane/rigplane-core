@@ -728,14 +728,22 @@ describe('degrading to a single-receiver view model', () => {
 
   // Kills: degrading by dropping the radio-wide row or the TX authority with
   // the second strip. Single TX authority is non-negotiable in EVERY topology.
-  it('keeps exactly one radio-wide row and exactly one TX action surface', () => {
+  //
+  // MOR-1421: `singleReceiverCaps()` is a GENUINE `receivers: 1` radio, not
+  // just an operationally-degraded dual one — the dual-watch toggle is
+  // therefore HIDDEN here (there is nothing to dual-watch with one receiver),
+  // the same operator-preference gate `single-receiver-active-wiring.
+  // component.test.ts` pins directly. Split stays: it is meaningful with one
+  // receiver, and the radio-wide row / single TX authority survive
+  // regardless — that is what this test still exists to prove.
+  it('keeps exactly one radio-wide row and exactly one TX action surface, with no dual-watch toggle to show', () => {
     h.state = singleReceiverState();
     h.caps = singleReceiverCaps();
     render();
 
     expect(qa('[data-zone-id="global"]')).toHaveLength(1);
     expect(qa('[data-vfo-split]')).toHaveLength(1);
-    expect(qa('[data-vfo-dual-watch]')).toHaveLength(1);
+    expect(qa('[data-vfo-dual-watch]')).toHaveLength(0);
     expect(qa('[data-testid="rx-tx-surface"]')).toHaveLength(1);
     expect(qa('[data-testid="rx-tx-key"]')).toHaveLength(1);
   });

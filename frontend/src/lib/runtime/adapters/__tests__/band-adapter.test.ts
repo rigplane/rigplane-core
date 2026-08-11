@@ -362,12 +362,32 @@ describe('currentBandTx fails closed (MOR-1294)', () => {
  *
  * SCOPE: only the permit. Every other band fact keeps the ordinary-fact
  * convention 7A landed with (pinned by the last case here).
+ *
+ * MOR-1421 note: this describe block used to run the whole matrix against
+ * `hfCaps` (this file's default `caps()`, a SINGLE-receiver/`vfoScheme:
+ * 'single'` fixture). That made the fixture accidentally self-contradicting
+ * once `activeReceiverId` became capability-aware (MOR-1421): a radio whose
+ * capabilities declare exactly one receiver has no "which receiver" question
+ * left to leave unconfirmed — `activeReceiver` is a tautological `'MAIN'`
+ * there regardless of the `active` field, by design, and `hfCaps` no longer
+ * exercises "unconfirmed" at all. The safety property this block guards —
+ * a permit must not rest on a GUESSED receiver — is real only where the
+ * receiver identity is genuinely ambiguous, i.e. a multi-receiver radio, so
+ * the matrix now runs against `dualCaps` (`main_sub`, `receivers: 2`). The
+ * single-receiver tautology itself is pinned separately in
+ * `radio-view-model-adapter.test.ts` ("single-receiver topology" describe,
+ * MOR-1421).
  */
 describe('currentBandTx fails closed on an unconfirmed active receiver (MOR-1356)', () => {
   /** MAIN at 14.195, inside the 20m TX allocation: the permit derivation
    *  itself says 'allowed', so every denial below is the GATE, not the
    *  frequency — the pin cannot pass vacuously. */
   const LIVE_HZ = 14195000;
+
+  const dualCaps = caps({
+    freqRanges: HF_RANGES, txBands: HAM_TX_BANDS, receivers: 2, vfoScheme: 'main_sub',
+    capabilities: ['tx', 'dual_rx'],
+  });
 
   const UNCONFIRMED: ReadonlyArray<readonly [label: string, state: () => ServerState]> = [
     [
@@ -397,14 +417,14 @@ describe('currentBandTx fails closed on an unconfirmed active receiver (MOR-1356
   ];
 
   it('sanity: the same fixture with a confirmed active receiver really reads allowed', () => {
-    const view = model(bareState(), hfCaps);
+    const view = model(bareState(), dualCaps);
     expect(view.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
     expect(view.band!.currentBandTx).toBe('allowed');
     expect(getTxPermit(LIVE_HZ, HAM_TX_BANDS)).toBe('allowed');
   });
 
   it.each(UNCONFIRMED)('reads denied when %s', (_label, makeState) => {
-    const view = model(makeState(), hfCaps);
+    const view = model(makeState(), dualCaps);
     // The model itself does not know which receiver is live…
     expect(view.activeReceiver).toEqual({ status: 'unknown' });
     // …so the frequency-only permit (which still says allowed) must not be
@@ -419,12 +439,11 @@ describe('currentBandTx fails closed on an unconfirmed active receiver (MOR-1356
       bareState({ active: 'SUB', fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh } }),
       ...UNCONFIRMED.map(([, makeState]) => makeState()),
     ];
-    const dualCaps = caps({
-      freqRanges: HF_RANGES, txBands: HAM_TX_BANDS, receivers: 2, vfoScheme: 'main_sub',
-      capabilities: ['tx', 'dual_rx'],
-    });
     const seenPermits = new Set<string>();
     for (const state of states) {
+      // hfCaps is single-receiver (MOR-1421 tautology: always 'known') and
+      // dualCaps is the genuinely-ambiguous multi-receiver case — both sides
+      // of the implication must still hold on each.
       for (const capabilities of [hfCaps, dualCaps]) {
         const view = model(state, capabilities);
         seenPermits.add(view.band!.currentBandTx);
@@ -440,8 +459,8 @@ describe('currentBandTx fails closed on an unconfirmed active receiver (MOR-1356
   it('leaves every NON-permit band fact on the ordinary-fact convention (no scope creep)', () => {
     const status = { ...bareState().fieldStatus };
     delete (status as Record<string, unknown>).active;
-    const gated = model(bareState({ fieldStatus: status }), hfCaps).band!;
-    const confirmed = model(bareState(), hfCaps).band!;
+    const gated = model(bareState({ fieldStatus: status }), dualCaps).band!;
+    const confirmed = model(bareState(), dualCaps).band!;
     expect(gated.currentBand).toEqual(confirmed.currentBand);
     expect(gated.currentBand.reading).toEqual({ status: 'known', value: '20m' });
     expect(gated.bandChoices).toEqual(confirmed.bandChoices);

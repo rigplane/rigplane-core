@@ -90,6 +90,21 @@
      */
     disabled?: boolean;
     /**
+     * MOR-1421 — a PLAIN boolean, not a capability lookup: this surface stays
+     * capability-blind by ADR (v3, MOR-1063), so the caller (`SemanticRadioSurfaces`,
+     * which already holds `runtime.caps` for the AGC/NB display-metadata
+     * precedent) decides and hands over the answer. `false` hides the
+     * radio-wide active-receiver readout and the dual-watch toggle: on a
+     * single-receiver radio "which receiver is active" has only one possible
+     * answer and "dual watch" has nothing to watch, so the operator
+     * preference is to hide both rather than show a permanent "MAIN" readout
+     * or a permanently-disabled toggle. The split toggle is unaffected — split
+     * is meaningful with one receiver. Defaults to `true`: every existing
+     * caller (all of them dual-receiver-capable radios today) renders exactly
+     * as before.
+     */
+    hasDualReceiver?: boolean;
+    /**
      * MOR-1322 (S3b) — a per-digit tuning intent for ONE receiver's frequency.
      * The same command-bus path the legacy VfoHeader used
      * (`onMainFreqChange`/`onSubFreqChange`), so this is not a new key path and
@@ -127,6 +142,7 @@
     showVfoList = true,
     groupLabel,
     disabled = false,
+    hasDualReceiver = true,
     onTuneFrequency,
     onEqualizeVfos,
     onSwapVfos,
@@ -322,7 +338,7 @@
 </script>
 
 <div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface">
-  {#if showRadioWideFacts}
+  {#if showRadioWideFacts && hasDualReceiver}
     <p
       class="active-receiver"
       data-testid="vfo-active-receiver"
@@ -430,18 +446,20 @@
       >
         {t('core.vfo.split.label')}: {stateWord(viewModel.split)}
       </button>
-      <button
-        type="button"
-        class="fact-toggle"
-        data-vfo-dual-watch
-        role="switch"
-        aria-checked={triState(viewModel.dualWatch)}
-        aria-label={t('core.vfo.dualWatch.label')}
-        disabled={viewModel.dualWatch.status === 'unknown'}
-        onclick={toggleDualWatch}
-      >
-        {t('core.vfo.dualWatch.label')}: {stateWord(viewModel.dualWatch)}
-      </button>
+      {#if hasDualReceiver}
+        <button
+          type="button"
+          class="fact-toggle"
+          data-vfo-dual-watch
+          role="switch"
+          aria-checked={triState(viewModel.dualWatch)}
+          aria-label={t('core.vfo.dualWatch.label')}
+          disabled={viewModel.dualWatch.status === 'unknown'}
+          onclick={toggleDualWatch}
+        >
+          {t('core.vfo.dualWatch.label')}: {stateWord(viewModel.dualWatch)}
+        </button>
+      {/if}
     </div>
 
     <!--
