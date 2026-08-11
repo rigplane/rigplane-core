@@ -952,6 +952,13 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onVfoSelect('SUB', 'B');
     vfo.onMainFreqChange(14_100_000);
     vfo.onSubFreqChange(7_100_000);
+    // MOR-1425 review B1: onMainFreqChange and this onFreqChange(_, 0) call
+    // both target receiver 0, mid-burst (no timer advance) — this
+    // onFreqChange call carries no `kind`, so it defaults to 'jump': an
+    // ABSOLUTE target that must land EXACTLY, immediately, and unpaced,
+    // clearing the still-hot onMainFreqChange burst rather than accumulating
+    // a delta onto it (the accumulator's own behavior is covered separately
+    // in `tuning-accumulator.test.ts` and the MOR-1425 tests below).
     vfo.onFreqChange(18_100_000, 0);
     vfo.onModeChange('CW', 1);
     vfo.onFilterChange(3, 0);
@@ -1036,6 +1043,79 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(h.setAudioConfig).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('MOR-1425: a burst of rapid steps within one round trip accumulates onto the pending target, not the stale confirmed value', () => {
+    const vfo = makeVfoHandlers();
+    const confirmed = h.state!.main!.freqHz; // 14_074_000, unchanged for the whole burst
+    const step = 1_000;
+    // Every gesture computes its target off the STILL-CONFIRMED value, the
+    // exact MOR-1425 mechanism (the presentation layer's `freq` prop does
+    // not advance until the round trip completes).
+    for (let i = 1; i <= 5; i++) vfo.onMainFreqChange(confirmed + step);
+
+    // First step is an immediate, unpaced cold start.
+    expect(h.sendCommand).toHaveBeenCalledTimes(1);
+    expect(exactCalls()[0]).toEqual(['set_freq', { freq: confirmed + step, receiver: 0 }]);
+
+    // The remaining 4 steps accumulate and flush once, paced.
+    vi.advanceTimersByTime(60);
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: confirmed + 5 * step, receiver: 0 }]);
+    // MOR-1425 invariant: never an optimistic patch — the display stays
+    // last-confirmed radio truth throughout the whole burst.
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+  });
+
+  it('MOR-1425: a contradictory confirmed frequency mid-burst resets accumulation to the new truth', () => {
+    // Driven through the real wiring (not the low-level accumulator
+    // directly) so this fails if the accumulator is ever un-wired from
+    // `onMainFreqChange` — the previous version of this test asserted only
+    // the LAST emitted value, which a naive direct-dispatch (no burst
+    // logic at all) would also have produced, since every call here
+    // computes its own target off the freq it was given. The call COUNT
+    // below is what actually depends on the accumulator being live: the
+    // 2nd gesture must be paced (held, not sent) until the 3rd gesture's
+    // contradiction both resets AND cancels it.
+    const vfo = makeVfoHandlers();
+    const confirmed = h.state!.main!.freqHz;
+    vfo.onMainFreqChange(confirmed + 1_000); // cold, immediate: target C+1_000
+    vfo.onMainFreqChange(confirmed + 1_000); // hot, accumulates to C+2_000, paced (NOT sent yet)
+    expect(h.sendCommand).toHaveBeenCalledTimes(1);
+
+    // The operator turned the physical knob: a new confirmed frequency the
+    // accumulator's own pending sequence did not predict.
+    const physical = confirmed + 500_000;
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: physical } };
+    vfo.onMainFreqChange(physical + 1_000);
+
+    // The reset step is itself a cold start: immediate, carrying a target
+    // measured from the NEW physical truth — and it must be the ONLY
+    // second call: without the accumulator, the 2nd gesture above would
+    // already have been sent immediately, making this the THIRD call.
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: physical + 1_000, receiver: 0 }]);
+
+    // The pre-reset paced flush must never fire and emit a stray 3rd call.
+    vi.advanceTimersByTime(60);
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("MOR-1425 review B1: onFreqChange(freq, receiver, 'step') opts a relative gesture into the accumulate path instead of the 'jump' default", () => {
+    const vfo = makeVfoHandlers();
+    const confirmed = h.state!.main!.freqHz;
+    // Two 'step' gestures at the SAME receiver, mid-burst: the media-key /
+    // spectrum-wheel shape (fixed increment off confirmed truth), not an
+    // arbitrary absolute target.
+    vfo.onFreqChange(confirmed + 1_000, 0, 'step'); // cold, immediate
+    vfo.onFreqChange(confirmed + 1_000, 0, 'step'); // hot, accumulates, paced
+    expect(h.sendCommand).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(60);
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: confirmed + 2_000, receiver: 0 }]);
   });
 
   it('shares one fail-closed VOX toggle and routes standalone VOX controls through lifecycle', () => {
@@ -1391,8 +1471,14 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
 
     const nullPrototype = Object.assign(Object.create(null) as Record<string, unknown>, { direction: 'up' });
+    // MOR-1425 review B5: 'tune' now shares ONE accumulator across calls
+    // (fixed from the pre-review bug where each call got independent
+    // state) — advance past the quiet window between calls so these three
+    // are independent cold starts, not one accumulating burst.
     expect(dispatchKeyboardRadioAction({ action: 'tune', params: { direction: 'up' } })).toBe(true);
+    vi.advanceTimersByTime(4_500);
     expect(dispatchKeyboardRadioAction({ action: 'tune', params: nullPrototype })).toBe(true);
+    vi.advanceTimersByTime(4_500);
     expect(dispatchKeyboardRadioAction({ action: 'tune', params: dataProxy })).toBe(true);
     expect(dataGet).not.toHaveBeenCalled();
     expect(exactCalls()).toEqual([

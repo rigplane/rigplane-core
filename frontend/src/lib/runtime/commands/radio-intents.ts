@@ -103,6 +103,13 @@ onControlSessionTransition((transition) => {
   if (transition.state === 'disconnected') cancelPendingCommands(transition.epoch);
 });
 
+/** The control-session epoch `dispatchRadioIntent` itself reads (MOR-1425
+ *  review B4) — exposed so callers outside this module (which must not
+ *  import transport directly) can detect a reconnect mid-burst. */
+export function currentControlSessionEpoch(): number {
+  return getControlSession().epoch;
+}
+
 export function dispatchRadioIntent(intent: RadioIntent): CommandLifecycle {
   if (typeof intent !== 'object' || intent === null || Array.isArray(intent)) throw new TypeError('Invalid radio intent envelope');
   const candidate = intent as unknown as Record<PropertyKey, unknown>;

@@ -420,8 +420,25 @@
    * `onSubFreqChange`), which own the optimistic patch and the `set_freq`
    * command. No new key path and no TX semantics (R9): this moves a frequency,
    * it never keys the transmitter.
+   *
+   * MOR-1425 review round 2 (B1 residual): this function funnels TWO
+   * different gesture shapes into the same per-receiver VFO handlers —
+   * `VfoSurface`'s per-digit wheel/arrow tuning below (a genuine RELATIVE
+   * step, `kind` defaults to `'step'` so every existing digit-path call site
+   * needs no change) and `enterFrequency`/`selectBand`'s bandless fallback
+   * (both an ABSOLUTE typed/default target). `onMainFreqChange`/
+   * `onSubFreqChange` themselves stay unconditional-`step()` (unchanged, so
+   * every other caller — `RadioLayout`'s legacy `VfoHeader` wiring,
+   * `MobileRadioLayout`'s `tuneBy` — is unaffected); an absolute source
+   * routes around them entirely, through `vfo.onFreqChange`'s `'jump'` path
+   * (review B1's original fix, already proven for spectrum click-to-tune /
+   * EiBi / QSY recall), which clears any in-flight burst and emits the exact
+   * target immediately, unpaced.
    */
-  function tuneFrequency(receiver: 'MAIN' | 'SUB', frequencyHz: number): void {
+  function tuneFrequency(
+    receiver: 'MAIN' | 'SUB', frequencyHz: number, kind: 'jump' | 'step' = 'step',
+  ): void {
+    if (kind === 'jump') { vfo.onFreqChange(frequencyHz, receiver === 'MAIN' ? 0 : 1, 'jump'); return; }
     if (receiver === 'SUB') vfo.onSubFreqChange(frequencyHz);
     else vfo.onMainFreqChange(frequencyHz);
   }
@@ -447,13 +464,19 @@
   function selectBand(name: string, defaultHz: number, bsrCode: number | null): void {
     const active = view?.activeReceiver;
     if (active?.status !== 'known') return;
+    // MOR-1425 review round 2 (B1 residual): this bandless fallback is an
+    // ABSOLUTE band default, not a step from the current frequency — 'jump'
+    // so a hot digit-tuning burst on this receiver never absorbs it.
     if (bsrCode !== null) band.onBandSelect(name, defaultHz, bsrCode);
-    else tuneFrequency(active.receiver, defaultHz);
+    else tuneFrequency(active.receiver, defaultHz, 'jump');
   }
   function enterFrequency(frequencyHz: number): void {
     const active = view?.activeReceiver;
     if (active?.status !== 'known') return;
-    tuneFrequency(active.receiver, frequencyHz);
+    // MOR-1425 review round 2 (B1 residual): a typed frequency is the most
+    // explicitly ABSOLUTE gesture in the UI — 'jump', same reasoning as
+    // `selectBand` above.
+    tuneFrequency(active.receiver, frequencyHz, 'jump');
   }
 
   function selectVfo(target: VfoSelection): void {

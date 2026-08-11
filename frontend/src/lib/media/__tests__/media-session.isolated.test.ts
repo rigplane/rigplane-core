@@ -218,7 +218,9 @@ describe('media-session cycle-safe radio authority', () => {
       runtimeHarness.runtime.caps,
     );
     expect(vfoHarness.handlers.onFreqChange).toHaveBeenCalledTimes(1);
-    expect(vfoHarness.handlers.onFreqChange).toHaveBeenCalledWith(target, physical);
+    // MOR-1425 review B1: media-key tuning is a fixed step increment, not
+    // an absolute target — it opts into the accumulate path explicitly.
+    expect(vfoHarness.handlers.onFreqChange).toHaveBeenCalledWith(target, physical, 'step');
     expect(legacyAlarm.tuneBy).not.toHaveBeenCalled();
     expect(legacyAlarm.patchActiveReceiver).not.toHaveBeenCalled();
     expect(legacyAlarm.sendCommand).not.toHaveBeenCalled();
@@ -228,7 +230,7 @@ describe('media-session cycle-safe radio authority', () => {
     viewHarness.current = activeView('MAIN', 14_074_000, { kind: 'relative', id: 'selected' });
     mod.initMediaSession();
     fire('nexttrack');
-    expect(vfoHarness.handlers.onFreqChange).toHaveBeenCalledWith(14_075_000, 0);
+    expect(vfoHarness.handlers.onFreqChange).toHaveBeenCalledWith(14_075_000, 0, 'step');
   });
 
   it.each([
