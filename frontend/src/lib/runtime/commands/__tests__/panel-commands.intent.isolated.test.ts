@@ -654,6 +654,59 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('routes mode/filter/RF-front-end/DSP/AF/band writes on a single-receiver radio although active is structurally unobservable (MOR-1418)', () => {
+    h.caps = {
+      capabilities: ['agc', 'rit', 'nr', 'nb', 'preamp', 'af_level', 'bsr'],
+      receivers: 1,
+      vfoScheme: 'ab',
+    };
+    h.state = oneReceiverAbState();
+    h.unavailable.add('active');
+
+    makeModeHandlers().onModeChange('CW');
+    makeFilterHandlers().onFilterChange(3);
+    makeRfFrontEndHandlers().onPreChange(1);
+    makeAgcHandlers().onAgcModeChange(2);
+    makeDspHandlers().onNbToggle(true);
+    makeRxAudioHandlers().onAfLevelChange(0.5);
+    makeBandHandlers().onBandSelect('20m', 14_225_000, 5);
+    makeRitXitHandlers().onRitToggle();
+
+    expect(exactCalls()).toEqual([
+      ['set_mode', { mode: 'CW', receiver: 0 }],
+      ['set_filter', { filter: 3, receiver: 0 }],
+      ['set_preamp', { level: 1, receiver: 0 }],
+      ['set_agc', { mode: 2, receiver: 0 }],
+      ['set_nb', { on: true, receiver: 0 }],
+      ['set_af_level', { level: 0.5, receiver: 0 }],
+      ['set_band', { band: 5 }],
+      ['set_rit_status', { on: true }],
+    ]);
+    expectIntentTransport();
+  });
+
+  it('still requires observed active on dual-receiver radios even after the single-RX bypass (no regression, MOR-1418)', () => {
+    h.caps = {
+      capabilities: ['agc', 'rit', 'nr', 'nb', 'preamp', 'af_level', 'bsr', 'dual_rx'],
+      receivers: 2,
+      vfoScheme: 'main_sub',
+    };
+    h.state = state();
+    h.unavailable.add('active');
+
+    makeModeHandlers().onModeChange('CW');
+    makeFilterHandlers().onFilterChange(3);
+    makeRfFrontEndHandlers().onPreChange(1);
+    makeAgcHandlers().onAgcModeChange(2);
+    makeDspHandlers().onNbToggle(true);
+    makeRxAudioHandlers().onAfLevelChange(0.5);
+    makeBandHandlers().onBandSelect('20m', 14_225_000, 5);
+    makeRitXitHandlers().onRitToggle();
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
   it('rejects pending physical SUB on one-RX A/B Selected/Unselected topology', () => {
     h.caps = { capabilities: ['pbt'], receivers: 1, vfoScheme: 'ab' };
     h.state = oneReceiverAbState();
@@ -1639,6 +1692,30 @@ describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
     expect(h.sendCommand).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(exactCalls()).toEqual([['set_filter_width', { width: 1800, receiver: 0 }]]);
+  });
+
+  it('commits filter width on a single-receiver radio although active is structurally unobservable (MOR-1418)', () => {
+    h.caps = {
+      ...a06Caps(), receivers: 1, vfoScheme: 'ab', capabilities: ['filter_width', 'data_mode'],
+    } as unknown as Record<string, unknown>;
+    h.state = a06State();
+    h.unavailable.add('active');
+
+    makeFilterHandlers().onFilterWidthCommit(2400, 0, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 2400, receiver: 0 }]]);
+    expectIntentTransport();
+  });
+
+  it('still requires observed active on dual-receiver radios for filter-width commit (no regression, MOR-1418)', () => {
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    h.state = a06State();
+    h.unavailable.add('active');
+
+    makeFilterHandlers().onFilterWidthCommit(2400, 0, 31);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
   });
 
   it('rejects unsafe generations, mismatched epochs, stale identity, and target disagreement', () => {

@@ -39,12 +39,18 @@ type Receiver = 0 | 1;
 
 function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver | null {
   const state = getRadioState();
-  const receiverName = target ?? state?.active;
-  if (
-    !state
-    || (receiverName !== 'MAIN' && receiverName !== 'SUB')
-    || (!target && !isFieldAvailable(state, 'active'))
-  ) return null;
+  if (!state) return null;
+  // MOR-1418: on a single-receiver radio, `active` (MAIN/SUB) is
+  // structurally unobservable — no CI-V echo ever sets it, so it never
+  // becomes an observed field. The active receiver is tautologically MAIN
+  // in that case, so an unobserved `active` must not block the write.
+  // Dual-RX radios are unaffected: `active` observation is still required
+  // whenever it is actually observed (or on any radio with receivers > 1).
+  const activeObserved = isFieldAvailable(state, 'active');
+  const singleReceiver = getCapabilities()?.receivers === 1;
+  const receiverName = target
+    ?? (activeObserved ? state.active : singleReceiver ? 'MAIN' : undefined);
+  if (receiverName !== 'MAIN' && receiverName !== 'SUB') return null;
   if (receiverName === 'SUB') {
     const receivers = getCapabilities()?.receivers;
     if (!Number.isSafeInteger(receivers) || (receivers as number) < 2 || !state.sub) return null;
@@ -789,11 +795,16 @@ export function makeFilterHandlers() {
     ): void => {
       const context = currentA03cContext();
       const stateGeneration = context?.state.providerGeneration;
-      const active = context?.state.active;
+      // MOR-1418: same single-receiver `active` bypass as knownActiveReceiver
+      // — on a one-receiver radio, active is tautologically MAIN even when
+      // structurally unobservable. Dual-RX still requires observation.
+      const activeObserved = context !== null && observedAvailableField(context.state, 'active');
+      const singleReceiver = context?.caps.receivers === 1;
+      const active = context
+        && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
       if (!context || !Number.isSafeInteger(expectedProviderGeneration)
         || expectedProviderGeneration < 0 || !Number.isSafeInteger(stateGeneration)
         || expectedProviderGeneration !== stateGeneration
-        || !observedAvailableField(context.state, 'active')
         || (active !== 'MAIN' && active !== 'SUB')
         || (active === 'MAIN' ? 0 : 1) !== receiver
         || knownA03cReceiver(context, active, 'mode') !== receiver
