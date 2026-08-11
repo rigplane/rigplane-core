@@ -42,6 +42,7 @@
 <script module lang="ts">
   import type { DisabledReasonCode, RfFrontEndField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
+  import { formatKnownLevel } from './format-level';
 
   /** The one rendering of "not read". Never 0, never the last value. */
   export const UNKNOWN_TEXT = '?';
@@ -52,6 +53,11 @@
   /** Honest text: an unread fact reads as unknown, never as a stale value. */
   export const textOf = (f: RfFrontEndField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+  /** Same freshness discipline as `textOf`, but a KNOWN level reading is
+   *  formatted against its declared `[min, max]` domain (MOR-1447) instead of
+   *  `String()`-ing the raw wire fraction. */
+  const levelTextOf = (f: RfFrontEndField<number>, min: number, max: number): string =>
+    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, min, max) : UNKNOWN_TEXT;
   const isValue = (f: RfFrontEndField<unknown>, value: unknown): boolean =>
     f.reading.status === 'known' && f.reading.value === value;
 
@@ -171,7 +177,7 @@
             disabled={!usable(rf[field])}
             oninput={(event) => changeLevel(field, event.currentTarget.valueAsNumber)}
           />
-          <output>{textOf(rf[field])}</output>
+          <output>{levelTextOf(rf[field], min, max)}</output>
         </label>
       {/if}
     {/each}

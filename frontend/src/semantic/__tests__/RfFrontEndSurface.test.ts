@@ -266,6 +266,22 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
   });
+
+  // MOR-1447: the readout must format the known 0..1 fraction as a percent,
+  // not the raw wire float — the live IC-7300 walkthrough regression this
+  // pins reads `main.rfGain` back as the literal `0.8196078431372549`.
+  it('renders a known RF-gain reading as a rounded percent, not the raw wire float', () => {
+    const r = render(withRf({ rfGain: known(0.8196078431372549) }));
+    expect(r.text('rfGain')).toContain('82%');
+    expect(r.text('rfGain')).not.toContain('0.8196078431372549');
+    r.dispose();
+  });
+
+  it('renders a known squelch reading as a rounded percent too', () => {
+    const r = render(withRf({ squelch: known(0.2) }));
+    expect(r.text('squelch')).toContain('20%');
+    r.dispose();
+  });
 });
 
 describe('DIGI-SEL and IP+ render as toggles and emit the FLIPPED value', () => {
