@@ -93,6 +93,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { desktopV2Layout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
@@ -121,12 +122,22 @@ function liveState(): ServerState {
   const receiver = (hz: number) => ({
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A',
     filter: 1, apfTypeLevel: 0, twinPeakFilter: false,
+    sMeter: 0, att: 0, preamp: 0, nb: false, nr: false,
+    afLevel: 0, rfGain: 0, squelch: 0,
   });
+  // The full runtime contract (contract version, generation, counters,
+  // connection), because this state feeds the REAL store through the REAL
+  // `setRadioState` — an incomplete fixture is silently rejected by
+  // `isValidServerState` and the store stays null for the whole file.
   return {
+    revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+    updatedAt: '2026-08-10T00:00:00Z', tunerStatus: 0,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
+    stateContractVersion: 1, providerGeneration: 0,
     breakIn: 1, breakInDelay: 64, keySpeed: 24, cwPitch: 600, dashRatio: 0,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   } as unknown as ServerState;
 }
@@ -140,6 +151,7 @@ const liveCaps = (): Capabilities => ({
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  stateContractVersion: 1, providerGeneration: 0,
 } as unknown as Capabilities);
 
 /** What App resolves for `desktop-v2` given a default (empty) workspace. */
@@ -174,8 +186,14 @@ const authorityCalls = () => h.txStart.mock.calls.length + h.txRelease.mock.call
 
 beforeEach(() => {
   h.state = liveState();
+  // The REAL capabilities store must carry a matching providerGeneration
+  // BEFORE the state lands, and the accept must be asserted — `setRadioState`
+  // returns false (and the store stays null) on a rejected fixture, which
+  // would let every zero-command pin below hold vacuously against a null
+  // store instead of the armed state.
+  setCapabilities(liveCaps());
   resetRadioState();
-  setRadioState(liveState());
+  expect(setRadioState(liveState())).toBe(true);
   h.caps = liveCaps();
   vi.mocked(sendCommand).mockClear();
   h.txStart.mockClear();
