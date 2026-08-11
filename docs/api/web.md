@@ -1089,10 +1089,23 @@ is rejected with `"error":"radio_not_ready"` instead of a silent enqueue-ACK
 (MOR-620). Unkeying (`ptt` with `state:false`, or `ptt_off`) always goes
 through: it is the safe direction.
 
-Rate-limited high-frequency `set_*` commands are ACKed with:
+High-frequency `set_*` commands (same command name, same session, arriving
+faster than one per 50ms) are coalesced with last-value-wins semantics
+(MOR-1427) instead of being dropped. Only one physical enqueue happens per
+50ms pacing window: the newest frame in the window always survives to that
+enqueue, and any frame it replaces before flush is ACKed immediately with an
+honest supersede reply instead of a real result:
 
 ```json
-{"type":"response","id":"42","ok":true,"result":{"throttled":true}}
+{"type":"response","id":"41","ok":true,"result":{"superseded":true}}
+```
+
+The frame that is actually enqueued at the pacing boundary — always the most
+recent one received, never an older one — gets the normal enqueue ACK, exactly
+like a command that was never rate-limited:
+
+```json
+{"type":"response","id":"42","ok":true,"result":{"freq":14074000,"receiver":0}}
 ```
 
 ### State update stream (`/api/v1/ws`)

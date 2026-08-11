@@ -30,7 +30,7 @@ protocol examples.
 
 ## Rate limiting
 
-`set_*` commands over WebSocket are rate-limited to one per 50 ms per client. Commands arriving before the interval expires receive an immediate ACK with `{"throttled": true}` and are not enqueued. HTTP endpoints are not throttled at this layer.
+`set_*` commands over WebSocket are physically enqueued at most once per 50 ms per client, per command name. Commands arriving before the interval expires are coalesced with last-value-wins semantics (MOR-1427) rather than dropped: the newest frame in the window always survives to the next paced enqueue. Any frame it replaces before that flush receives an immediate ACK with `{"superseded": true}` and is never enqueued; the surviving frame gets the normal enqueue ACK at the pacing boundary. HTTP endpoints are not throttled at this layer.
 
 ## Batch eligibility rules
 

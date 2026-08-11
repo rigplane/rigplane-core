@@ -483,7 +483,6 @@ class ControlHandler:
         )
         # Per-command rate limiting: command_name -> last physical-enqueue time.
         self._cmd_last: dict[str, float] = {}
-        self._cmd_drops: dict[str, int] = {}
         # Minimum interval between same command (seconds).
         # Continuous slider/knob drag sends dozens of set_* per second.
         self._CMD_MIN_INTERVAL = 0.05  # 50ms = max 20 commands/sec per client
@@ -939,11 +938,19 @@ class ControlHandler:
         if name.startswith("set_"):
             now = time.monotonic()
             last = self._cmd_last.get(name, 0.0)
-            if now - last < self._CMD_MIN_INTERVAL:
+            # MOR-1427 review B1: a pending frame for this name must always
+            # win the race, even if the deferred flush task is running late
+            # (event loop briefly busy past its deadline). Consulting only
+            # the elapsed time here lets a newer frame slip past the gate
+            # and dispatch immediately while an OLDER frame is still queued
+            # for flush — the flush then overwrites the newer value with the
+            # stale one. Checking `_cmd_pending` closes that window: as long
+            # as a frame is still waiting to flush, every new frame joins the
+            # coalesce path instead of racing it.
+            if now - last < self._CMD_MIN_INTERVAL or name in self._cmd_pending:
                 await self._coalesce_command(name, cmd_id, params, now, last)
                 return
             self._cmd_last[name] = now
-            self._cmd_drops[name] = 0
 
         await self._dispatch_command(cmd_id, name, params)
 
@@ -1012,7 +1019,24 @@ class ControlHandler:
         cmd_id, params = pending
         self._cmd_last[name] = time.monotonic()
         self._cmd_coalesced[name] = 0
-        await self._dispatch_command(cmd_id, name, params)
+        try:
+            await self._dispatch_command(cmd_id, name, params)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # MOR-1427 review N3: this task is fire-and-forget (nothing
+            # awaits it in production — only tests do, via
+            # _cmd_flush_tasks). _dispatch_command already catches command
+            # failures internally and replies with an error frame; this
+            # guards the outer edge case (e.g. the reply write itself
+            # failing on a dead socket) so it cannot escape as an
+            # unretrieved task exception.
+            logger.warning(
+                "control: deferred flush of %r (id=%r) failed",
+                name,
+                cmd_id,
+                exc_info=True,
+            )
 
     def _cancel_pending_command_flushes(self) -> None:
         """Cancel in-flight coalesced-flush tasks on session teardown (MOR-1427).
