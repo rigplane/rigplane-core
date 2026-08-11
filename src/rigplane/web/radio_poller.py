@@ -1294,6 +1294,17 @@ class RadioPoller:
                     )
                     continue
                 except Exception:
+                    # MOR-1440: a dead serial link surfaces here as a bare
+                    # TimeoutError (CI-V transport recovery-wait gate), not
+                    # ConnectionError — back off same as the branch above
+                    # instead of hammering a doomed wire every poll cycle.
+                    if not bool(getattr(self._radio, "connected", True)):
+                        _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                        logger.info(
+                            "radio-poller: radio disconnected, backing off %.1fs",
+                            _backoff,
+                        )
+                        continue
                     logger.debug("radio-poller: query error", exc_info=True)
 
                 # 2b. data_mode changed (web command or front panel) => refetch

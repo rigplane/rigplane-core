@@ -1713,6 +1713,45 @@ async def test_run_backoff_and_query_error_paths() -> None:
         await poller2._run()  # noqa: SLF001
 
 
+@pytest.mark.asyncio
+async def test_run_backs_off_on_bare_timeout_when_radio_reports_disconnected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-1440: a dead serial link surfaces as a bare exception (the CI-V
+    transport recovery-wait gate raises ``TimeoutError``, not
+    ``ConnectionError``) once the radio's own state machine already knows
+    the link is down. The poller must back off instead of silently
+    retrying a doomed wire every cycle (previously logged at DEBUG only).
+    """
+    radio = _make_radio()
+    radio.connected = False
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    call_count = {"n": 0}
+
+    async def _send_query_side_effect(*_args: object, **_kwargs: object) -> None:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise TimeoutError("CI-V transport recovery timed out")
+        # Stop the loop after observing the backoff branch once — a plain
+        # CancelledError is a BaseException, so it isn't swallowed by the
+        # generic ``except Exception`` the backoff-retry probe also runs.
+        raise asyncio.CancelledError()
+
+    poller._send_query = AsyncMock(side_effect=_send_query_side_effect)  # noqa: SLF001
+    poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
+    with (
+        patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()),
+        caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"),
+    ):
+        await poller._run()  # noqa: SLF001
+
+    backoff_lines = [
+        r for r in caplog.records if "radio disconnected, backing off" in r.getMessage()
+    ]
+    assert backoff_lines, "expected a backoff log line when radio.connected is False"
+
+
 def test_start_stop_running_and_emit_helpers() -> None:
     radio = _make_radio()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
