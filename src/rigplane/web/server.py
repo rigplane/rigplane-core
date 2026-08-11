@@ -2716,6 +2716,7 @@ class WebServer:
                     "preLabels": profile.pre_labels,
                     "agcModes": list(profile.agc_modes) if profile.agc_modes else None,
                     "agcLabels": profile.agc_labels,
+                    "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
                     "dataModeCount": profile.data_mode_count,
                     "dataModeLabels": profile.data_mode_labels,
@@ -3172,6 +3173,7 @@ class WebServer:
             "preLabels": profile.pre_labels if profile.pre_labels else {},
             "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
             "agcLabels": profile.agc_labels if profile.agc_labels else {},
+            "rfSqlControlModel": profile.rf_sql_control_model,
             "dataModeCount": profile.data_mode_count,
             "dataModeLabels": (
                 profile.data_mode_labels if profile.data_mode_labels else {}

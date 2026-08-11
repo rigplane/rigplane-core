@@ -55,6 +55,11 @@ VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
 VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
 VALID_RX_AUDIO_CHANNELS = {"mix", "left", "right"}
 VALID_VFO_READBACK = {"absolute", "selected_unselected", "none"}
+# MOR-1447 leg 2. Icom hardware wires RF gain and squelch as one physical
+# knob (hard left = RF min/SQL min, center = RF max/SQL min, hard right =
+# SQL max/RF max); "separate" is the default two-independent-controls model
+# every other rig uses.
+VALID_RF_SQL_CONTROL_MODELS = {"separate", "combined"}
 DEFAULT_KEYBOARD_PROFILE_NAME = "_keyboard-default.toml"
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
@@ -97,6 +102,9 @@ class RigConfig:
     pre_labels: dict[str, str] | None
     agc_modes: tuple[int, ...] | None
     agc_labels: dict[str, str] | None
+    # MOR-1447 leg 2: "separate" (default) or "combined" (Icom-style single
+    # RF/SQL knob — see ``VALID_RF_SQL_CONTROL_MODELS``).
+    rf_sql_control_model: str = "separate"
     filter_width_min: int = 50
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
@@ -196,6 +204,7 @@ class RigConfig:
             pre_labels=self.pre_labels,
             agc_modes=self.agc_modes,
             agc_labels=self.agc_labels,
+            rf_sql_control_model=self.rf_sql_control_model,
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
             set_mode_via_selected="set_selected_mode" in self.commands,
@@ -994,6 +1003,12 @@ def load_rig(path: Path) -> RigConfig:
                 f"{filename}: unknown capability {cap!r}. "
                 f"Known: {sorted(KNOWN_CAPABILITIES)}"
             )
+    rf_sql_control_model = data["capabilities"].get("rf_sql_control_model", "separate")
+    if rf_sql_control_model not in VALID_RF_SQL_CONTROL_MODELS:
+        raise RigLoadError(
+            f"{filename}: [capabilities].rf_sql_control_model must be one of "
+            f"{sorted(VALID_RF_SQL_CONTROL_MODELS)}, got {rf_sql_control_model!r}"
+        )
 
     # Validate [validation].write_only_controls — each entry must be a declared
     # capability. These route through the validate set-and-observe engine path
@@ -1421,6 +1436,7 @@ def load_rig(path: Path) -> RigConfig:
         pre_labels=pre_labels,
         agc_modes=agc_modes,
         agc_labels=agc_labels,
+        rf_sql_control_model=rf_sql_control_model,
         data_mode_count=data_mode_count,
         data_mode_labels=data_mode_labels,
         protocol_type=protocol_type,

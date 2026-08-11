@@ -141,6 +141,9 @@ import { validateRadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import { toSpectrumAuthority } from '../scope-adapter';
 import { getRfFrontEndHandlers } from '../panel-adapters';
+import {
+  dualParamNormXFromValues, dualParamValuesFromNormX,
+} from '../../../../components-v2/controls/value-control/value-control-core';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
 
 /** Deep clone so a test that mutates `h.state`/`h.caps` never leaks into a sibling. */
@@ -293,6 +296,52 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
       ['set_squelch', { level: 51, receiver: 0 }],
     ]);
     expectIntentTransport();
+  });
+
+  // MOR-1447 leg 2: IC-7300 is the live gate radio for
+  // `rf_sql_control_model = "combined"` (`rigs/ic7300.toml`). The captured
+  // fixture predates the declaration (a byte-faithful capture, never
+  // hand-edited — see the file header), so `IC7300_CAPABILITIES` itself
+  // still reads the default `rfSqlControlModel: undefined` -> "separate".
+  // These cases prove the DATA the combined knob would actually move,
+  // against the real captured `main.rfGain`/`main.squelch` readings, through
+  // the exact SAME `dualParamValuesFromNormX`/raw-0-255 rescale seam
+  // `RfFrontEndSurface.svelte`/`SemanticRadioSurfaces.svelte` use — ported
+  // from `DualParamRenderer`/`value-control-core.ts`, not re-derived here.
+  describe('combined RF/SQL knob (MOR-1447 leg 2) — dispatch/value cases against the real fixture', () => {
+    it('the live capture is squelch-at-min / RF-mid — the left leg of the combined knob', () => {
+      expect(IC7300_STATE.main!.rfGain).toBeCloseTo(0.8196078431372549);
+      expect(IC7300_STATE.main!.squelch).toBe(0);
+    });
+
+    it('readback projection places the knob on the left leg for the real captured reading', () => {
+      const normX = dualParamNormXFromValues(
+        IC7300_STATE.main!.rfGain!, IC7300_STATE.main!.squelch!, 0, 1,
+      );
+      expect(normX).toBeCloseTo(0.377, 3);
+    });
+
+    it('a hard-right drag from the captured position dispatches SQL max / RF max, raw 255/255', () => {
+      const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(1, 0, 1, 0.01);
+      getRfFrontEndHandlers().onRfGainChange(nextRf);
+      getRfFrontEndHandlers().onSquelchChange(nextSql);
+      expect(exactCalls()).toEqual([
+        ['set_rf_gain', { level: 255, receiver: 0 }],
+        ['set_squelch', { level: 255, receiver: 0 }],
+      ]);
+      expectIntentTransport();
+    });
+
+    it('a left-of-center drag (normX 0.23) dispatches RF 128 / SQL 0, raw wire integers', () => {
+      const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(0.23, 0, 1, 0.01);
+      getRfFrontEndHandlers().onRfGainChange(nextRf);
+      getRfFrontEndHandlers().onSquelchChange(nextSql);
+      expect(exactCalls()).toEqual([
+        ['set_rf_gain', { level: 128, receiver: 0 }],
+        ['set_squelch', { level: 0, receiver: 0 }],
+      ]);
+      expectIntentTransport();
+    });
   });
 
   it('AGC: dispatches set_agc on receiver 0', () => {

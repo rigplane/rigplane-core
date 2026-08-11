@@ -116,6 +116,10 @@ export interface Capabilities {
   preLabels?: Record<string, string>;  // Preamp labels (e.g. {"0":"OFF","1":"P1","2":"P2"})
   agcModes?: number[];    // AGC mode values (e.g. [1,2,3] = FAST/MID/SLOW)
   agcLabels?: Record<string, string>;  // AGC mode labels (e.g. {"1":"FAST","2":"MID","3":"SLOW"})
+  /** RF/SQL control model (MOR-1447 leg 2): "separate" (default, two
+   *  independent controls) or "combined" (Icom-style single RF/SQL knob).
+   *  Absent on older servers — treat as "separate". */
+  rfSqlControlModel?: 'separate' | 'combined';
   dataModeCount?: number;
   dataModeLabels?: Record<string, string>;
   keyboard?: KeyboardConfig | null;

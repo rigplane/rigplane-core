@@ -706,6 +706,9 @@ class TestHttpEndpoints:
         assert "audio" in data
         assert "modes" in data
         assert isinstance(data["modes"], list)
+        # MOR-1447 leg 2: RF/SQL control-model declaration always present,
+        # defaulting to "separate" unless the profile declares "combined".
+        assert data["rfSqlControlModel"] in ("separate", "combined")
 
     async def test_state_endpoint_contains_radio_ready(self, server: WebServer) -> None:
         host, port = _addr(server)

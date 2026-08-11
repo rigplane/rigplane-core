@@ -2406,6 +2406,38 @@ async def test_http_and_capabilities_share_the_current_store_generation() -> Non
 
 
 @pytest.mark.asyncio
+async def test_capabilities_reports_combined_rf_sql_control_model_for_ic7300() -> None:
+    """MOR-1447 leg 2: IC-7300's declared combined RF/SQL knob reaches the wire."""
+
+    class _Ic7300Radio:
+        model = "IC-7300"
+        capabilities: set[str] = set()
+
+    srv = WebServer(_Ic7300Radio())
+    writer = _FakeWriter()
+    await srv._serve_capabilities(writer)  # noqa: SLF001
+    _, payload = _response_json(writer)
+
+    assert payload["rfSqlControlModel"] == "combined"
+
+
+@pytest.mark.asyncio
+async def test_capabilities_defaults_to_separate_rf_sql_control_model() -> None:
+    """A profile that doesn't declare the combined knob stays "separate"."""
+
+    class _Ic7610Radio:
+        model = "IC-7610"
+        capabilities: set[str] = set()
+
+    srv = WebServer(_Ic7610Radio())
+    writer = _FakeWriter()
+    await srv._serve_capabilities(writer)  # noqa: SLF001
+    _, payload = _response_json(writer)
+
+    assert payload["rfSqlControlModel"] == "separate"
+
+
+@pytest.mark.asyncio
 async def test_generation_transition_changes_state_etag() -> None:
     srv = WebServer(None)
     first_writer = _FakeWriter()

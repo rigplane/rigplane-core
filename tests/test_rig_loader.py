@@ -168,6 +168,41 @@ provider = 123
         with pytest.raises(RigLoadError, match="vfo.*scheme"):
             load_rig(p)
 
+    def test_rf_sql_control_model_defaults_to_separate(self, tmp_path):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        rig = load_rig(p)
+        assert rig.rf_sql_control_model == "separate"
+        assert rig.to_profile().rf_sql_control_model == "separate"
+
+    def test_rf_sql_control_model_combined(self, tmp_path):
+        toml = _MINIMAL_TOML.replace(
+            'features = ["audio", "scope", "meters", "tx"]',
+            'features = ["audio", "scope", "meters", "tx"]\n'
+            'rf_sql_control_model = "combined"',
+        )
+        p = _write_toml(tmp_path, toml)
+        rig = load_rig(p)
+        assert rig.rf_sql_control_model == "combined"
+        assert rig.to_profile().rf_sql_control_model == "combined"
+
+    def test_rf_sql_control_model_invalid(self, tmp_path):
+        toml = _MINIMAL_TOML.replace(
+            'features = ["audio", "scope", "meters", "tx"]',
+            'features = ["audio", "scope", "meters", "tx"]\n'
+            'rf_sql_control_model = "concentric"',
+        )
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(RigLoadError, match="rf_sql_control_model"):
+            load_rig(p)
+
+    def test_ic7300_declares_combined_rf_sql_control_model(self):
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        assert rig.rf_sql_control_model == "combined"
+
+    def test_ic7610_stays_separate_rf_sql_control_model(self):
+        rig = load_rig(RIGS_DIR / "ic7610.toml")
+        assert rig.rf_sql_control_model == "separate"
+
     @pytest.mark.parametrize(
         ("scheme", "receiver_count"),
         [
