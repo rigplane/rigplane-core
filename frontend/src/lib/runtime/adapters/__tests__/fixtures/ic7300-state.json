@@ -1,0 +1,1672 @@
+{
+  "active": "MAIN",
+  "alcMeter": 0,
+  "antiVoxGain": 0,
+  "breakIn": 0,
+  "breakInDelay": 0,
+  "compMeter": 0,
+  "compressorLevel": 151,
+  "compressorOn": true,
+  "connection": {
+    "controlConnected": true,
+    "radioReady": true,
+    "rigConnected": true
+  },
+  "cwPitch": 0,
+  "cwSpot": null,
+  "dashRatio": 0,
+  "data1ModInput": 1,
+  "data2ModInput": 0,
+  "data3ModInput": 20,
+  "dataOffModInput": null,
+  "dialLock": false,
+  "driveGain": 0,
+  "dualWatch": false,
+  "fieldStatus": {
+    "active": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.active"
+    },
+    "alcMeter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.meters.alc"
+    },
+    "antiVoxGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.anti_vox_gain"
+    },
+    "breakIn": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.break_in"
+    },
+    "breakInDelay": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.break_in_delay"
+    },
+    "compMeter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.meters.comp"
+    },
+    "compressorLevel": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.986551041,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "global.operator_controls.compressor_level",
+        "commandSource": null,
+        "nativeId": "civ:14:0e",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "global.operator_controls.compressor_level"
+    },
+    "compressorOn": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969097.29602575,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "global.tx_state.compressor_on",
+        "commandSource": null,
+        "nativeId": "civ:16:44",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "global.tx_state.compressor_on"
+    },
+    "connection.controlConnected": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "connection.connection.control_connected"
+    },
+    "connection.radioReady": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "connection.connection.radio_ready"
+    },
+    "connection.rigConnected": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "connection.connection.connected"
+    },
+    "cwPitch": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.cw_pitch"
+    },
+    "cwSpot": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.cw_spot"
+    },
+    "dashRatio": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.dash_ratio"
+    },
+    "data1ModInput": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.544630791,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": "data1_mod_input_readback",
+        "provider": "web_poller",
+        "sessionId": null,
+        "source": "poll_response",
+        "transport": null
+      },
+      "storePath": "global.slow_state.data1_mod_input"
+    },
+    "data2ModInput": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.600346708,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": "data2_mod_input_readback",
+        "provider": "web_poller",
+        "sessionId": null,
+        "source": "poll_response",
+        "transport": null
+      },
+      "storePath": "global.slow_state.data2_mod_input"
+    },
+    "data3ModInput": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.65665925,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": "data3_mod_input_readback",
+        "provider": "web_poller",
+        "sessionId": null,
+        "source": "poll_response",
+        "transport": null
+      },
+      "storePath": "global.slow_state.data3_mod_input"
+    },
+    "dataOffModInput": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.data_off_mod_input"
+    },
+    "dialLock": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.dial_lock"
+    },
+    "driveGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.drive_gain"
+    },
+    "dualWatch": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.dual_watch"
+    },
+    "idMeter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.meters.id"
+    },
+    "keySpeed": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.key_speed"
+    },
+    "main.activeSlot": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.vfo.active_slot"
+    },
+    "main.afLevel": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.372859,
+      "maxAge": 10,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.operator_controls.af_level",
+        "commandSource": null,
+        "nativeId": "civ:14:01",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.operator_controls.af_level"
+    },
+    "main.afMute": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.af_mute"
+    },
+    "main.agc": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.475518333,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.operator_controls.agc",
+        "commandSource": null,
+        "nativeId": "civ:16:12",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.operator_controls.agc"
+    },
+    "main.agcTimeConstant": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.agc_time_constant"
+    },
+    "main.antiVoxGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.anti_vox_gain"
+    },
+    "main.apfFreq": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.apf_freq"
+    },
+    "main.apfOn": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.apf_on"
+    },
+    "main.apfTypeLevel": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.apf_type_level"
+    },
+    "main.att": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.576384375,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.operator_controls.att",
+        "commandSource": null,
+        "nativeId": "civ:11",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.operator_controls.att"
+    },
+    "main.audioPeakFilter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.audio_peak_filter"
+    },
+    "main.autoNotch": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.auto_notch"
+    },
+    "main.breakInDelay": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.break_in_delay"
+    },
+    "main.compressorLevel": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.compressor_level"
+    },
+    "main.contour": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slow_state.contour"
+    },
+    "main.cwPitch": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.cw_pitch"
+    },
+    "main.dataMode": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969095.503348666,
+      "maxAge": 8.662066834047437,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.active.freq_mode.data_mode",
+        "commandSource": null,
+        "nativeId": "civ:26",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.active.freq_mode.data_mode"
+    },
+    "main.dcd": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.dcd"
+    },
+    "main.digisel": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.digisel"
+    },
+    "main.digiselShift": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.digisel_shift"
+    },
+    "main.filter": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969095.503370916,
+      "maxAge": 8.662044584052637,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.active.freq_mode.filter_num",
+        "commandSource": null,
+        "nativeId": "civ:26",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.active.freq_mode.filter_num"
+    },
+    "main.filterShape": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.filter_shape"
+    },
+    "main.filterWidth": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.active.freq_mode.filter_width"
+    },
+    "main.freqHz": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.834315875,
+      "maxAge": 7.331099625094794,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.active.freq_mode.freq_hz",
+        "commandSource": null,
+        "nativeId": "civ:25",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.active.freq_mode.freq_hz"
+    },
+    "main.ifShift": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.if_shift"
+    },
+    "main.ipplus": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.ipplus"
+    },
+    "main.keySpeed": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.key_speed"
+    },
+    "main.manualNotch": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.manual_notch"
+    },
+    "main.manualNotchFreq": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.manual_notch_freq"
+    },
+    "main.manualNotchWidth": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.manual_notch_width"
+    },
+    "main.micGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.mic_gain"
+    },
+    "main.mode": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969095.503315083,
+      "maxAge": 8.662100417073816,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.active.freq_mode.mode",
+        "commandSource": null,
+        "nativeId": "civ:26",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.active.freq_mode.mode"
+    },
+    "main.monitorGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.monitor_gain"
+    },
+    "main.narrow": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.narrow"
+    },
+    "main.nb": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.935092833,
+      "maxAge": 10,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.operator_toggles.nb",
+        "commandSource": null,
+        "nativeId": "civ:16:22",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.operator_toggles.nb"
+    },
+    "main.nbLevel": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.nb_level"
+    },
+    "main.nr": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969097.037433,
+      "maxAge": 10,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.operator_toggles.nr",
+        "commandSource": null,
+        "nativeId": "civ:16:40",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.operator_toggles.nr"
+    },
+    "main.nrLevel": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.nr_level"
+    },
+    "main.pbtInner": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.pbt_inner"
+    },
+    "main.pbtOuter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.pbt_outer"
+    },
+    "main.preamp": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.680044625,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.operator_controls.preamp",
+        "commandSource": null,
+        "nativeId": "civ:16:02",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.operator_controls.preamp"
+    },
+    "main.repeaterTone": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.repeater_tone"
+    },
+    "main.repeaterTsql": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.repeater_tsql"
+    },
+    "main.rfGain": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.781336166,
+      "maxAge": 10,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.operator_controls.rf_gain",
+        "commandSource": null,
+        "nativeId": "civ:14:02",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.operator_controls.rf_gain"
+    },
+    "main.sMeter": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969097.241254291,
+      "maxAge": 2,
+      "observed": true,
+      "quality": [
+        "confirmed",
+        "uncalibrated"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.meters.s_meter",
+        "commandSource": null,
+        "nativeId": "civ:15:02",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.meters.s_meter"
+    },
+    "main.sMeterSqlOpen": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.dcd"
+    },
+    "main.squelch": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.8825625,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.operator_controls.squelch",
+        "commandSource": null,
+        "nativeId": "civ:14:03",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.operator_controls.squelch"
+    },
+    "main.toneFreq": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.tone_freq"
+    },
+    "main.tsqlFreq": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.tsql_freq"
+    },
+    "main.twinPeakFilter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_toggles.twin_peak_filter"
+    },
+    "main.unselectedVfo.dataMode": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.165458833,
+      "maxAge": 7.999956667074002,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.unselected.freq_mode.data_mode",
+        "commandSource": null,
+        "nativeId": "civ:26",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.unselected.freq_mode.data_mode"
+    },
+    "main.unselectedVfo.filterNum": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.16548175,
+      "maxAge": 7.999933750019409,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.unselected.freq_mode.filter_num",
+        "commandSource": null,
+        "nativeId": "civ:26",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.unselected.freq_mode.filter_num"
+    },
+    "main.unselectedVfo.freqHz": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969097.344755166,
+      "maxAge": 6.820660334080458,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.unselected.freq_mode.freq_hz",
+        "commandSource": null,
+        "nativeId": "civ:25",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.unselected.freq_mode.freq_hz"
+    },
+    "main.unselectedVfo.mode": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969096.1654155,
+      "maxAge": 8,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "receiver.0.unselected.freq_mode.mode",
+        "commandSource": null,
+        "nativeId": "civ:26",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "receiver.0.unselected.freq_mode.mode"
+    },
+    "main.vfoA.dataMode": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slot.A.freq_mode.data_mode"
+    },
+    "main.vfoA.filterNum": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slot.A.freq_mode.filter_num"
+    },
+    "main.vfoA.freqHz": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slot.A.freq_mode.freq_hz"
+    },
+    "main.vfoA.mode": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slot.A.freq_mode.mode"
+    },
+    "main.vfoB.dataMode": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slot.B.freq_mode.data_mode"
+    },
+    "main.vfoB.filterNum": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slot.B.freq_mode.filter_num"
+    },
+    "main.vfoB.freqHz": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slot.B.freq_mode.freq_hz"
+    },
+    "main.vfoB.mode": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.slot.B.freq_mode.mode"
+    },
+    "main.voxDelay": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.vox_delay"
+    },
+    "main.voxGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "receiver.main.operator_controls.vox_gain"
+    },
+    "mainSubTracking": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.main_sub_tracking"
+    },
+    "micGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.mic_gain"
+    },
+    "monitorGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.monitor_gain"
+    },
+    "monitorOn": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.monitor_on"
+    },
+    "nbDepth": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.nb_depth"
+    },
+    "nbWidth": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.nb_width"
+    },
+    "notchFilter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.notch_filter"
+    },
+    "overflow": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.overflow"
+    },
+    "powerLevel": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969097.089196041,
+      "maxAge": 30,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "global.operator_controls.power_level",
+        "commandSource": null,
+        "nativeId": "civ:14:0a",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "global.operator_controls.power_level"
+    },
+    "powerMeter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.meters.power"
+    },
+    "powerOn": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.power_on"
+    },
+    "ptt": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969097.14197525,
+      "maxAge": 1,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "global.tx_state.ptt",
+        "commandSource": null,
+        "nativeId": "civ:1c:00",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "global.tx_state.ptt"
+    },
+    "radioDetail.status": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "connection.connection.status"
+    },
+    "radioHealth.lastError": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "health.health.last_error"
+    },
+    "radioHealth.likelyCause": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "health.health.likely_cause"
+    },
+    "radioHealth.radioLink": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "health.health.radio_link"
+    },
+    "radioHealth.readiness": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "health.health.readiness"
+    },
+    "radioHealth.serverReachable": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 930166.71185225,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": null,
+        "commandSource": null,
+        "nativeId": null,
+        "provider": "web_lifecycle",
+        "sessionId": null,
+        "source": "local_reconcile",
+        "transport": "web"
+      },
+      "storePath": "health.health.server_reachable"
+    },
+    "refAdjust": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.ref_adjust"
+    },
+    "ritFreq": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.rit_freq"
+    },
+    "ritOn": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.rit_on"
+    },
+    "ritTx": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.rit_tx"
+    },
+    "rxAntenna1": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.rx_antenna_1"
+    },
+    "rxAntenna2": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.rx_antenna_2"
+    },
+    "scanResumeMode": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.scan_resume_mode"
+    },
+    "scanType": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.scan_type"
+    },
+    "scanning": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.scanning"
+    },
+    "scopeControls.centerType": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968647.970072375,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.center_type",
+        "commandSource": null,
+        "nativeId": "civ:27:1c",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.center_type"
+    },
+    "scopeControls.dual": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968647.759443666,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.dual",
+        "commandSource": null,
+        "nativeId": "civ:27:13",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.dual"
+    },
+    "scopeControls.duringTx": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968647.863022375,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.during_tx",
+        "commandSource": null,
+        "nativeId": "civ:27:1b",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.during_tx"
+    },
+    "scopeControls.edge": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968648.289367166,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.edge",
+        "commandSource": null,
+        "nativeId": "civ:27:16",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.edge"
+    },
+    "scopeControls.fixedEdge": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "scope_controls.global.display.fixed_edge"
+    },
+    "scopeControls.hold": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968648.394131791,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.hold",
+        "commandSource": null,
+        "nativeId": "civ:27:17",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.hold"
+    },
+    "scopeControls.mode": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968648.075839208,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.mode",
+        "commandSource": null,
+        "nativeId": "civ:27:14",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.mode"
+    },
+    "scopeControls.rbw": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "scope_controls.global.display.rbw"
+    },
+    "scopeControls.receiver": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968648.717516125,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.receiver",
+        "commandSource": null,
+        "nativeId": "civ:27:1d",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.receiver"
+    },
+    "scopeControls.refDb": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968648.501166166,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.ref_db",
+        "commandSource": null,
+        "nativeId": "civ:27:19",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.ref_db"
+    },
+    "scopeControls.span": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968648.183267916,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.span",
+        "commandSource": null,
+        "nativeId": "civ:27:15",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.span"
+    },
+    "scopeControls.speed": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968648.608424625,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.speed",
+        "commandSource": null,
+        "nativeId": "civ:27:1a",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.speed"
+    },
+    "scopeControls.vbwNarrow": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 968648.717475666,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "scope_controls.global.display.vbw_narrow",
+        "commandSource": null,
+        "nativeId": "civ:27:1d",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "scope_controls.global.display.vbw_narrow"
+    },
+    "split": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969097.395403125,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "global.tx_state.split",
+        "commandSource": null,
+        "nativeId": "civ:0f",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "global.tx_state.split"
+    },
+    "ssbTxBandwidth": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.ssb_tx_bandwidth"
+    },
+    "swrMeter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.meters.swr"
+    },
+    "tunerStatus": {
+      "availability": "available",
+      "freshness": "fresh",
+      "lastObservedMonotonic": 969097.190051,
+      "maxAge": null,
+      "observed": true,
+      "quality": [
+        "confirmed"
+      ],
+      "source": {
+        "capabilityId": "global.operator_controls.tuner_status",
+        "commandSource": null,
+        "nativeId": "civ:1c:01",
+        "provider": "icom_civ",
+        "sessionId": null,
+        "source": "command_response",
+        "transport": "civ"
+      },
+      "storePath": "global.operator_controls.tuner_status"
+    },
+    "tuningStep": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.tuning_step"
+    },
+    "txAntenna": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.tx_antenna"
+    },
+    "txBandEdges": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.tx_band_edges"
+    },
+    "txFreqMonitor": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.tx_freq_monitor"
+    },
+    "txTarget": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.tx_target"
+    },
+    "vdMeter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.meters.vd"
+    },
+    "vfoSelect": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.vfo_select"
+    },
+    "voxDelay": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.vox_delay"
+    },
+    "voxGain": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.vox_gain"
+    },
+    "voxOn": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.tx_state.vox_on"
+    },
+    "yaesu": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.slow_state.yaesu"
+    }
+  },
+  "freshnessRevision": 232,
+  "healthRevision": 1,
+  "idMeter": 0,
+  "keySpeed": 0,
+  "main": {
+    "activeSlot": "A",
+    "afLevel": 0.00392156862745098,
+    "afMute": false,
+    "agc": 3,
+    "agcTimeConstant": 0,
+    "apfFreq": 0,
+    "apfOn": false,
+    "apfTypeLevel": 0,
+    "att": 0,
+    "audioPeakFilter": 0,
+    "autoNotch": false,
+    "contour": 0,
+    "dataMode": 0,
+    "digisel": false,
+    "digiselShift": 0,
+    "filter": 1,
+    "filterShape": 0,
+    "filterWidth": null,
+    "freqHz": 14188000,
+    "ifShift": 0,
+    "ipplus": false,
+    "manualNotch": false,
+    "manualNotchFreq": 0,
+    "manualNotchWidth": 0,
+    "mode": "USB",
+    "narrow": false,
+    "nb": true,
+    "nbLevel": 0,
+    "nr": true,
+    "nrLevel": 0,
+    "pbtInner": 128,
+    "pbtOuter": 128,
+    "preamp": 0,
+    "repeaterTone": false,
+    "repeaterTsql": false,
+    "rfGain": 0.8196078431372549,
+    "sMeter": 0,
+    "sMeterSqlOpen": false,
+    "squelch": 0,
+    "toneFreq": 0,
+    "tsqlFreq": 0,
+    "twinPeakFilter": false,
+    "unselectedVfo": {
+      "dataMode": 0,
+      "filterNum": 1,
+      "freqHz": 14074000,
+      "mode": "USB"
+    },
+    "vfoA": {
+      "dataMode": 0,
+      "filterNum": null,
+      "freqHz": 0,
+      "mode": "USB"
+    },
+    "vfoB": {
+      "dataMode": 0,
+      "filterNum": null,
+      "freqHz": 0,
+      "mode": "USB"
+    }
+  },
+  "mainSubTracking": false,
+  "micGain": 0,
+  "monitorGain": 0,
+  "monitorOn": false,
+  "nbDepth": 0,
+  "nbWidth": 0,
+  "notchFilter": 0,
+  "observationSeq": 851011,
+  "overflow": false,
+  "powerLevel": 0.011764705882352941,
+  "powerMeter": 0,
+  "powerOn": true,
+  "providerGeneration": 1,
+  "ptt": false,
+  "publicStateSeq": 144497,
+  "radioDetail": {
+    "status": "connected"
+  },
+  "radioHealth": {
+    "lastError": null,
+    "likelyCause": "unknown",
+    "radioLink": "connected",
+    "readiness": "ready",
+    "serverReachable": true,
+    "sinceMs": 38930718
+  },
+  "refAdjust": 0,
+  "revision": 22144,
+  "ritFreq": 0,
+  "ritOn": false,
+  "ritTx": false,
+  "rxAntenna1": false,
+  "rxAntenna2": false,
+  "scanResumeMode": 0,
+  "scanType": 0,
+  "scanning": false,
+  "scopeControls": {
+    "centerType": 2,
+    "dual": false,
+    "duringTx": true,
+    "edge": 1,
+    "fixedEdge": {
+      "edge": 0,
+      "endHz": 0,
+      "rangeIndex": 0,
+      "startHz": 0
+    },
+    "hold": false,
+    "mode": 0,
+    "rbw": 0,
+    "receiver": 0,
+    "refDb": 5,
+    "span": 4,
+    "speed": 0,
+    "vbwNarrow": false
+  },
+  "split": false,
+  "ssbTxBandwidth": 0,
+  "stateContractVersion": 1,
+  "stateRevision": 22144,
+  "swrMeter": 0,
+  "tunerStatus": 0,
+  "tuningStep": 0,
+  "txAntenna": 1,
+  "txBandEdges": [],
+  "txFreqMonitor": false,
+  "txTarget": {
+    "reason": "not-observed",
+    "status": "unknown"
+  },
+  "updatedAt": "2026-08-11T13:39:37.278823+00:00",
+  "vdMeter": 0,
+  "vfoSelect": 0,
+  "voxDelay": 0,
+  "voxGain": 0,
+  "voxOn": false,
+  "wsClients": {
+    "audio": 0,
+    "control": 3,
+    "scope": 3
+  },
+  "yaesu": null
+}
