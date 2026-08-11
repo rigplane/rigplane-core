@@ -379,6 +379,87 @@ describe('unobserved facts survive as the explicit unknown branch', () => {
   });
 });
 
+/**
+ * MOR-1421 — `active` is structurally impossible to positively observe on
+ * some single-receiver radios: the live IC-7300 stand's `fieldStatus.active`
+ * reads observed:false/availability:'missing' FOREVER (confirmed against a
+ * live `/api/v1/state` probe, 2026-08-10 — `main.activeSlot` is equally
+ * unobserved). The old `seen(state, 'active')` gate therefore left
+ * `activeReceiver: unknown` permanently on that class of radio, which cascaded
+ * into `scope-adapter`'s spectrum authority (requires `activeReceiver.status
+ * === 'known'`), band select / frequency entry (`SemanticRadioSurfaces`'s
+ * `selectBand`/`enterFrequency`, both hard-gated on a known active receiver),
+ * and the selected VFO tile's `.is-active` highlight — none of it ever worked
+ * on a single-receiver radio.
+ *
+ * The fix is capability-aware, not state-aware: a capabilities payload that
+ * DECLARES exactly one receiver (`receivers: 1`, MAIN-only topology) leaves
+ * `active` no question to answer — MAIN is the only receiver that could ever
+ * be active — so `activeReceiver` resolves to `{status: 'known', receiver:
+ * 'MAIN'}` regardless of the `active` field's observedness or raw value. This
+ * is the tautology MOR-988 §3.2 permits (there is no live alternative to
+ * guess among), not the forbidden fabricated default.
+ */
+describe('single-receiver active-receiver resolves structurally, not from the active field (MOR-1421)', () => {
+  const SINGLE_RX_CAPS = caps({
+    vfoScheme: 'ab', receivers: 1, capabilities: SINGLE, vfoReadback: 'selected_unselected',
+  });
+
+  /** The live-stand shape: `active` and `main.activeSlot` never observed;
+   *  `main.freqHz`/`main.mode`/`main.filter` fresh — exactly the IC-7300 probe. */
+  function liveStandState(): ServerState {
+    const base = observedState();
+    const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
+    delete fieldStatus.active;
+    delete fieldStatus['main.activeSlot'];
+    return { ...base, fieldStatus } as ServerState;
+  }
+
+  it('resolves activeReceiver to MAIN though `active` was never observed', () => {
+    const view = model(liveStandState(), SINGLE_RX_CAPS);
+    expect(view.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
+    expect(view.disabledReasons).not.toContainEqual({
+      field: 'activeReceiver', code: 'field-not-observed',
+    });
+  });
+
+  it('marks the selected VFO tile isActive — the tile the operator sees highlighted', () => {
+    const view = model(liveStandState(), SINGLE_RX_CAPS);
+    const selected = view.vfos.find(
+      (vfo) => vfo.slot.kind === 'relative' && vfo.slot.role === 'selected',
+    );
+    expect(selected).toBeDefined();
+    expect(selected!.isActive).toBe(true);
+    expect(selected!.isActiveSlot).toBe(true);
+  });
+
+  // MUTATION KILLED: reading `state.active` for the single-receiver branch
+  // instead of ignoring it — the whole point is that the CAPABILITIES answer
+  // the question, not a raw field this class of radio never confirms.
+  it('is a tautology, not a fabrication — holds regardless of the raw active VALUE', () => {
+    const view = model(
+      { ...liveStandState(), active: 'SUB' as unknown as ServerState['active'] },
+      SINGLE_RX_CAPS,
+    );
+    expect(view.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
+  });
+
+  // Dual-RX guard (byte-identical to pre-MOR-1421 behaviour): the tautology
+  // is single-receiver-only — a radio whose capabilities declare a second
+  // receiver still needs a genuinely OBSERVED `active` reading.
+  it('leaves a dual-receiver radio unaffected — activeReceiver stays unknown when active is unobserved', () => {
+    const base = observedState();
+    const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
+    delete fieldStatus.active;
+    const view = model({ ...base, fieldStatus } as ServerState, TOPOLOGY_CAPS['2/main_sub']);
+    expect(view.activeReceiver).toEqual({ status: 'unknown' });
+    expect(view.vfos.some((v) => v.isActive)).toBe(false);
+    expect(view.disabledReasons).toContainEqual({
+      field: 'activeReceiver', code: 'field-not-observed',
+    });
+  });
+});
+
 describe('TX identity and permit fail closed', () => {
   it('marks exactly the VFO a known target names', () => {
     const view = model(observedState(), TOPOLOGY_CAPS['2/main_sub']);

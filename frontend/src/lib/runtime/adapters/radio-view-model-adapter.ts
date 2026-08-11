@@ -98,8 +98,26 @@ function seen(state: ServerState | null, path: string): boolean {
  * ONE criterion rather than two that can drift apart: the model must not be
  * able to say "I don't know which receiver is active" and, in the same
  * payload, hand out a TX permit scoped to the receiver it just guessed.
+ *
+ * MOR-1421: `singleReceiverTopology` — `topology.structuralCount === 1` from
+ * the caller's own `derivePresentationCapabilities` call — makes this
+ * capability-aware. On a single-receiver radio (MAIN-only topology, e.g. the
+ * IC-7300) `active` is STRUCTURALLY always MAIN: there is no second receiver
+ * for it to name, so a backend that never confirms the field (`active` reads
+ * observed:false forever on that class of radio) leaves the fact `unknown`
+ * for a reason that carries no information — "which receiver" was never an
+ * open question. Returning `'MAIN'` here is a TAUTOLOGY the capabilities
+ * already prove, not the fabricated-default guess MOR-988 §3.2 forbids
+ * (guessing picks among live possibilities; this is the only possibility).
+ * Multi-receiver radios (`singleReceiverTopology: false`, including an
+ * unrecognised/contradictory caps shape) keep the original three-part
+ * `seen()` gate byte-for-byte — there the identity is genuinely unresolved
+ * without a confirmed reading.
  */
-function activeReceiverId(state: ServerState | null): ReceiverId | null {
+function activeReceiverId(
+  state: ServerState | null, singleReceiverTopology: boolean,
+): ReceiverId | null {
+  if (singleReceiverTopology) return 'MAIN';
   const active = state?.active;
   return seen(state, 'active') && (active === 'MAIN' || active === 'SUB') ? active : null;
 }
@@ -703,7 +721,7 @@ function deriveRfFrontEndMutex(rfFrontEnd: RfFrontEndViewModel | undefined): Rea
  *    the known-band half of that invariant structurally.
  */
 function deriveBand(
-  state: ServerState | null, caps: Capabilities | null,
+  state: ServerState | null, caps: Capabilities | null, activeReceiver: ReceiverId | null,
 ): BandViewModel | undefined {
   if (!caps) return undefined;
   const freqRanges = caps.freqRanges ?? [];
@@ -732,10 +750,11 @@ function deriveBand(
   const rx = onSub ? state?.sub : state?.main;
   // MOR-1356: which receiver the raw `state.active` names is an ORDINARY fact
   // — every reading below keeps reading it ungated, per this file's own
-  // convention. The PERMIT is the exception: `activeReceiverId` is the SAME
-  // gate `activeReceiver` uses, so a receiver identity the model itself
-  // reports as unknown cannot carry TX permission (see `currentBandTx`).
-  const activeConfirmed = activeReceiverId(state) !== null;
+  // convention. The PERMIT is the exception: `activeReceiver` (passed in by
+  // the caller, MOR-1421) is the SAME gate the model's own `activeReceiver`
+  // fact uses, so a receiver identity the model itself reports as unknown
+  // cannot carry TX permission (see `currentBandTx`).
+  const activeConfirmed = activeReceiver !== null;
   const freqObserved = topFieldAvailable(state, onSub ? 'sub.freqHz' : 'main.freqHz');
   const freqHz = numOrUndef(rx?.freqHz);
   // Never over a `?? 14074000` stand-in, where the shipped `toBandSelectorProps`
@@ -1229,7 +1248,7 @@ export function toRadioViewModel(
   const topology = presentation.topology;
   if (!topology) return null;
 
-  const activeId = activeReceiverId(state);
+  const activeId = activeReceiverId(state, topology.structuralCount === 1);
   const activeReceiver: { status: 'known'; receiver: ReceiverId } | { status: 'unknown' } =
     activeId !== null ? { status: 'known', receiver: activeId } : { status: 'unknown' };
 
@@ -1383,7 +1402,7 @@ export function toRadioViewModel(
   const filterPassband = deriveFilterPassband(state, caps);
   const dsp = deriveDsp(state, caps);
   const rfFrontEnd = deriveRfFrontEnd(state, caps);
-  const band = deriveBand(state, caps);
+  const band = deriveBand(state, caps, activeId);
   const ritXit = deriveRitXit(state, caps);
   const antenna = deriveAntenna(state, caps);
   const scan = deriveScan(state);

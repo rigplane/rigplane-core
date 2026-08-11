@@ -233,6 +233,18 @@
   let nbLevelMax = $derived(nbLevelRange?.raw_max ?? 10);
   let nbLevelPercent = $derived(nbLevelRange !== null);
   /**
+   * MOR-1421 — a plain presentation gate for `VfoSurface`'s radio-wide
+   * dual-receiver chrome (the active-receiver readout, the dual-watch
+   * toggle): both ask a question that has only one possible answer on a
+   * single-receiver radio, so the operator preference is to hide them
+   * entirely rather than show a permanent "MAIN" readout or a permanently
+   * disabled toggle. Read straight off `runtime.caps` at this seam — same
+   * precedent as `agcLabels`/`nbLevelMax` above — never inside `VfoSurface`
+   * itself, which stays capability-blind by ADR (v3, MOR-1063) and receives
+   * only this plain boolean.
+   */
+  let hasDualReceiver = $derived((runtime.caps?.receivers ?? 1) > 1);
+  /**
    * MOR-1306. The RF-front-end intent vocabulary, composed from the SHIPPED
    * command bus rather than forked — same discipline as `rxAudioIntents`
    * above. `RF_FRONT_END_LEVEL_INTENT` maps the surface's field-addressed
@@ -523,6 +535,7 @@
             viewModel={view}
             showVfoList={false}
             groupLabel={t('core.vfo.radioWideGroupLabel')}
+            {hasDualReceiver}
             onToggleSplit={vfo.onSplitToggle}
             onToggleDualWatch={toggleDualWatch}
             onEqualizeVfos={vfo.onEqual}
@@ -549,6 +562,7 @@
         viewModel={view}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
+        {hasDualReceiver}
         onToggleSplit={vfo.onSplitToggle}
         onToggleDualWatch={toggleDualWatch}
         onEqualizeVfos={vfo.onEqual}

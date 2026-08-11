@@ -183,6 +183,33 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(toSpectrumAuthority(s, c)).toMatchObject({ receiver: 0, frequencyHz: 14_074_000 });
   });
 
+  /**
+   * MOR-1421 — the live IC-7300 stand's `active` field reads
+   * observed:false/availability:'missing' FOREVER; `main.activeSlot` is
+   * equally never observed. Before the fix, `activeReceiver` stayed
+   * `unknown` forever on that class of radio and this whole authority was
+   * permanently null — no spectrum, no filter-width snapping, nothing. The
+   * capability-aware fix resolves `activeReceiver` to `'MAIN'` on a
+   * single-receiver topology regardless of `active`'s observedness, which is
+   * what revives this authority.
+   */
+  it('revives the spectrum authority on a single-receiver radio even though active was never observed', () => {
+    const s = withStatus(withStatus(state({ active: 'MAIN' }), 'active', undefined), 'main.activeSlot', undefined);
+    const c = caps({
+      receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected',
+      capabilities: ['scope', 'filter_width', 'data_mode', 'pbt', 'if_shift'],
+    });
+    expect(toSpectrumAuthority(s, c)).toMatchObject({ receiver: 0, frequencyHz: 14_074_000, mode: 'USB' });
+  });
+
+  // Dual-RX guard (byte-identical to pre-MOR-1421 behaviour): a radio whose
+  // capabilities declare a SECOND receiver still needs a genuinely observed
+  // `active` reading — the tautology is single-receiver-only.
+  it('leaves a dual-receiver radio unaffected — null when active is unobserved, not stale (MOR-1421)', () => {
+    const s = withStatus(state(), 'active', undefined);
+    expect(toSpectrumAuthority(s, caps())).toBeNull();
+  });
+
   it('rejects zero active canonical VFOs in an unobserved absolute A/B slot view', () => {
     const s = state({
       main: {
