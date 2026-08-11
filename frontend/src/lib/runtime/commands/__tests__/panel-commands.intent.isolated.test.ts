@@ -1,3 +1,13 @@
+/**
+ * ISOLATED POOL (MOR-1272 naming convention): this file module-scope-mocks
+ * `$lib/state/field-status` (plus six store/transport modules). Under the
+ * `fast` project's `isolate: false`, the SUT's own import of
+ * `../props/panel-props` cached a `panel-props` instance bound to that mock
+ * in the shared worker module cache, and sibling files importing the real
+ * `panel-props` later in the same worker inherited it — the intermittent
+ * "No getFieldAvailability export is defined on the mock" failures in
+ * `panel-props.test.ts` / `rf-front-end-adapter.test.ts` (2026-08-10).
+ */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
