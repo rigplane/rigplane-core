@@ -113,4 +113,61 @@ describe('KeyboardHandler', () => {
     window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt' }));
     expect(document.body.dataset.shortcutHints).toBeUndefined();
   });
+
+  // MOR-1449 — rigs/_keyboard-default.toml (loaded into production keyboard
+  // configs for every rig, including ic7300.toml's own copy) binds the bare
+  // "Tab" key to the `vfo_swap` action ("swap-vfo"). Because `resolveAction`
+  // matched it like any other single-key binding, `handleKeydown` called
+  // `event.preventDefault()` on every Tab press outside a form field — which
+  // silently eats the browser's native focus-traversal everywhere in the app,
+  // not just on the bound action. Tab must never be assignable to a shortcut,
+  // regardless of what a rig profile's config declares.
+  const configWithTabBinding: KeyboardConfig = {
+    ...config,
+    bindings: [
+      ...config.bindings,
+      {
+        id: 'swap-vfo',
+        section: 'VFO',
+        label: 'Swap VFO',
+        sequence: ['Tab'],
+        action: 'vfo_swap',
+      },
+    ],
+  };
+
+  it('never intercepts Tab, even when a rig config binds it to a shortcut', () => {
+    const onAction = vi.fn();
+    mountHandler({ config: configWithTabBinding, onAction });
+
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it('never intercepts Shift+Tab, even when a rig config binds Tab to a shortcut', () => {
+    const onAction = vi.fn();
+    mountHandler({ config: configWithTabBinding, onAction });
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab', shiftKey: true, bubbles: true, cancelable: true,
+    });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it('still dispatches other single-key actions when a Tab binding is present', () => {
+    const onAction = vi.fn();
+    mountHandler({ config: configWithTabBinding, onAction });
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
+
+    expect(onAction).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
+    );
+  });
 });

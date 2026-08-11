@@ -64,6 +64,13 @@
     if (!enabled) return;
     if (shouldIgnoreEvent(document.activeElement)) return;
 
+    // MOR-1449: Tab is reserved for the browser's native focus traversal and
+    // must never be assignable to a shortcut — a rig profile's keyboard
+    // config (e.g. rigs/_keyboard-default.toml's "swap-vfo" binding) is not
+    // trusted to keep it free. Bail out before any sequence/binding
+    // resolution can call preventDefault() on it.
+    if (event.key === 'Tab') return;
+
     if (event.key === 'Alt' && keyboardConfig.altHints) {
       document.body.dataset.shortcutHints = 'true';
       return;
