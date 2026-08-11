@@ -32,3 +32,7 @@ test-results
 
 # Fixture verification capture output (verification-only, never committed).
 fixtures-baselines/
+
+# Built fixture-harness bundle (vite.fixtures.config.ts outDir). Regenerated
+# by fixtures/capture.mjs and by the vitest capture-preflight test.
+fixtures-dist/
