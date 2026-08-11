@@ -55,6 +55,30 @@ function calcBackoff(attempt: number): number {
   return base * (0.8 + Math.random() * 0.4);
 }
 
+function isTabHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+// ─── Close observability (MOR-1424) ─────────────────────────────────────────
+//
+// The client previously discarded the WS CloseEvent entirely (onerror just
+// called ws.close()), making reconnect-churn incidents impossible to
+// attribute. This records the most recent close across all channels
+// (control + named channels) for diagnostics.
+export interface WsCloseInfo {
+  code: number;
+  reason: string;
+  wasClean: boolean;
+  url: string;
+  timestamp: number;
+}
+
+let _lastCloseInfo: WsCloseInfo | null = null;
+
+export function getLastCloseInfo(): WsCloseInfo | null {
+  return _lastCloseInfo;
+}
+
 export class WsChannel {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,11 +101,40 @@ export class WsChannel {
   private _state: ConnectionState = 'disconnected';
   private url = '';
   private _subscribeMsg: Record<string, unknown> | null = null;
+  // MOR-1424: while the tab is hidden, the browser throttles/never-completes
+  // the WS handshake — retrying on a growing backoff just burns attempts
+  // against a connection that can't succeed yet. This flag remembers that a
+  // reconnect is owed once the tab becomes visible again.
+  private reconnectPendingVisibility = false;
+
+  constructor() {
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this._onVisibilityChange);
+    }
+  }
 
   /** Register a message to re-send automatically on every (re)connect. */
   setSubscribeMessage(msg: Record<string, unknown>) {
     this._subscribeMsg = msg;
   }
+
+  private _onVisibilityChange = () => {
+    if (isTabHidden()) {
+      // Pause the retry loop — cancel any already-scheduled reconnect, but
+      // never touch a healthy open (or in-flight connecting) socket.
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        this.reconnectPendingVisibility = true;
+      }
+      return;
+    }
+    if (this.reconnectPendingVisibility && !this.intentionalClose) {
+      this.reconnectPendingVisibility = false;
+      this.attempt = 0;
+      this._open();
+    }
+  };
 
   get state(): ConnectionState {
     return this._state;
@@ -115,6 +168,9 @@ export class WsChannel {
     if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return;
     this.url = url;
     this.intentionalClose = false;
+    // A fresh explicit connect supersedes any stale "reconnect once visible"
+    // debt from a previous, unrelated hidden episode.
+    this.reconnectPendingVisibility = false;
     this._open();
   }
 
@@ -184,14 +240,31 @@ export class WsChannel {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
+      _lastCloseInfo = {
+        code: event?.code ?? 0,
+        reason: event?.reason ?? '',
+        wasClean: event?.wasClean ?? false,
+        url: this.url,
+        timestamp: Date.now(),
+      };
+      console.info('[ws] closed', _lastCloseInfo);
       this._clearHeartbeat();
       this.trackedNonPttCommands.clear();
       this.ws = null;
       this.setState('disconnected');
       if (!this.intentionalClose) {
-        const delay = calcBackoff(this.attempt++);
-        this.reconnectTimer = setTimeout(() => this._open(), delay);
+        if (isTabHidden()) {
+          // Don't burn attempts against a throttled handshake — resume from
+          // the visibilitychange listener once the tab is visible again.
+          this.reconnectPendingVisibility = true;
+        } else {
+          const delay = calcBackoff(this.attempt++);
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this._open();
+          }, delay);
+        }
       }
     };
 
