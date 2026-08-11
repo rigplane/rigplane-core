@@ -64,6 +64,21 @@
     if (!enabled) return;
     if (shouldIgnoreEvent(document.activeElement)) return;
 
+    // MOR-1449: Tab is reserved for the browser's native focus traversal and
+    // must never be assignable to a shortcut — a rig profile's keyboard
+    // config is not trusted to keep it free (rigs/_keyboard-default.toml
+    // used to bind it to "swap-vfo"; every rig profile inherits that shared
+    // default via rig_loader.py's merge). Bail out before any sequence/
+    // binding resolution can call preventDefault() on it. A pending leader
+    // sequence must still be disarmed — Tab already didn't preventDefault
+    // there pre-fix (resolveSequenceContinuation only matches the recorded
+    // second key), but skipping clearLeaderState() would leave the leader
+    // pill armed and swallow the NEXT keystroke for up to leaderTimeoutMs.
+    if (event.key === 'Tab') {
+      if (pendingSequence) clearLeaderState();
+      return;
+    }
+
     if (event.key === 'Alt' && keyboardConfig.altHints) {
       document.body.dataset.shortcutHints = 'true';
       return;
