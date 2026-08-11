@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-08-07T13:06:46.824Z",
-  "commit": "ad37689dce84b28404d01665515b5a53c0edfcd6",
-  "commitShort": "ad37689d",
-  "branch": "codex/mor-1396",
+  "generatedAt": "2026-08-11T13:19:14.119Z",
+  "commit": "dd100a0c33c8de1cc9d0ba1b4d17fb46f6603186",
+  "commitShort": "dd100a0c",
+  "branch": "codex/MOR-1421-single-rx-active-receiver",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",
