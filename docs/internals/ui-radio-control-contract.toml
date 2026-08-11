@@ -524,7 +524,6 @@ read_only_seams = [
   "frontend/src/lib/radio/mode-filter-memory.ts",
 ]
 intent_facades = [
-  "frontend/src/components-v2/wiring/command-bus.ts",
   "frontend/src/lib/runtime/commands",
 ]
 direct_origin_owners = [
@@ -559,10 +558,7 @@ id = "presentation_authority_capability"
 kind = "legacyPresentationAuthority"
 owner = "MOR-1409"
 reason = "Presentation consumes read-only view models and typed intent facades; exact legacy edges may only shrink"
-exceptions = [
-  { path = "src/components-v2/layout/StatusBar.svelte", count = 1, owner = "MOR-1409" },
-  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },
-]
+exceptions = []
 
 [[guards]]
 id = "live_writer_capability"
@@ -570,8 +566,6 @@ kind = "legacyWriterOwners"
 owner = "MOR-1409"
 reason = "Only the WS reducer is the final owner; exact migration debt cannot expand"
 exceptions = [
-  { path = "src/components-v2/wiring/command-bus.ts", count = 1, owner = "MOR-1409" },
-  { path = "src/components-v2/wiring/state-adapter.ts", count = 1, owner = "MOR-1409" },
   { path = "src/lib/runtime/adapters/mod-input-auto.svelte.ts", count = 1, owner = "MOR-1409" },
   { path = "src/lib/runtime/commands/panel-commands.ts", count = 1, owner = "MOR-1409" },
   { path = "src/lib/runtime/frontend-runtime.ts", count = 1, owner = "MOR-1409" },
@@ -587,7 +581,6 @@ kind = "acquisitionOwners"
 owner = "MOR-1407"
 reason = "Recurring radio reads/writes stay in declared acquisition owners"
 exceptions = [
-  { path = "src/components-v2/wiring/command-bus.ts", count = 1, owner = "MOR-1407" },
   { path = "src/lib/runtime/commands/panel-commands.ts", count = 1, owner = "MOR-1407" },
   { path = "src/lib/runtime/frontend-runtime.ts", count = 1, owner = "MOR-1407" },
   { path = "src/lib/runtime/scope-controller.svelte.ts", count = 1, owner = "MOR-1407" },

@@ -33,7 +33,6 @@ const STUBS: Readonly<Record<string, string>> = {
   'src/lib/runtime/tx-controller/app-host.ts': 'fixtures/stubs/app-host.ts',
   'src/lib/runtime/adapters/mod-input-tx-guard.svelte.ts': 'fixtures/stubs/mod-input-tx-guard.ts',
   'src/lib/runtime/adapters/panel-adapters.ts': 'fixtures/stubs/panel-adapters.ts',
-  'src/components-v2/wiring/command-bus.ts': 'fixtures/stubs/command-bus.ts',
 };
 
 function fixtureStubs(): Plugin {

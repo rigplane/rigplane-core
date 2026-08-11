@@ -151,12 +151,28 @@ export function bindSemanticSurfaceHandlers() {
 // These two families had no sanctioned adapter-layer path: they are absent
 // from this module AND from `bindSemanticSurfaceHandlers()`'s frozen object,
 // so the three layouts could only reach them through the `wiring/command-bus`
-// shim A15 deletes. Singletons, like every other non-binder accessor here —
-// neither family holds per-instance state.
+// shim, which A15 deleted. Singletons, like every other non-binder accessor
+// here — neither family holds per-instance state.
 const _keyboardHandlers = makeKeyboardHandlers();
 export function getKeyboardHandlers() { return _keyboardHandlers; }
 const _systemHandlers = makeSystemHandlers();
 export function getSystemHandlers() { return _systemHandlers; }
+
+// ── Active frequency (MOR-1409 A15) ──
+/**
+ * The active VFO's observed frequency, or `null` when it has not been
+ * observed. Read-only and stateless: it derives from the same view model
+ * every other honest projection reads.
+ *
+ * Deliberately NOT `?? 0`. The store accessor this replaces for presentation
+ * (`getFrequency()`) returns `active?.freqHz ?? 0`, and a `0` here would be a
+ * radio-truth claim the radio never made — the exact fabrication A15 exists
+ * to remove. Callers must treat `null` as "unknown", not as "zero".
+ */
+export function getActiveFrequencyHz(): number | null {
+  const view = toRadioViewModel(runtime.state, runtime.caps);
+  return view?.vfos.find((candidate) => candidate.isActive)?.frequencyHz ?? null;
+}
 
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }

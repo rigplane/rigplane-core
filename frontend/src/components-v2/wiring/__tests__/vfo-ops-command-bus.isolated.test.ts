@@ -52,7 +52,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { makeVfoHandlers } from '../command-bus';
+import { makeVfoHandlers } from '$lib/runtime/commands/panel-commands';
 
 const wiringSource = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
 

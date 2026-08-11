@@ -8,7 +8,7 @@
  * "No getFieldAvailability export is defined on the mock" failures in
  * `panel-props.test.ts` / `rf-front-end-adapter.test.ts` (2026-08-10).
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
@@ -117,7 +117,6 @@ import {
   makeKeyboardHandlers,
   dispatchKeyboardRadioAction,
 } from '../panel-commands';
-import * as compatibilityBus from '$lib/../components-v2/wiring/command-bus';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { setPendingFocus } from '$lib/radio/pending-focus';
 
@@ -270,23 +269,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     resetCommandLifecycle();
     localStorage.clear();
     vi.useRealTimers();
-  });
-
-  it('exports every landed A03a and A03b1 canonical factory from the compatibility bus', () => {
-    expect(compatibilityBus.makeModeHandlers).toBe(makeModeHandlers);
-    expect(compatibilityBus.makeFilterHandlers).toBe(makeFilterHandlers);
-    expect(compatibilityBus.makeRfFrontEndHandlers).toBe(makeRfFrontEndHandlers);
-    expect(compatibilityBus.makeAgcHandlers).toBe(makeAgcHandlers);
-    expect(compatibilityBus.makeRitXitHandlers).toBe(makeRitXitHandlers);
-    expect(compatibilityBus.makeDspHandlers).toBe(makeDspHandlers);
-    expect(compatibilityBus.makeBandHandlers).toBe(makeBandHandlers);
-    expect(compatibilityBus.makePresetHandlers).toBe(makePresetHandlers);
-    expect(compatibilityBus.makeRxAudioHandlers).toBe(makeRxAudioHandlers);
-    expect(compatibilityBus.makeCwPanelHandlers).toBe(makeCwPanelHandlers);
-    expect(compatibilityBus.makeTxHandlers).toBe(makeTxHandlers);
-    expect(compatibilityBus.makeAntennaHandlers).toBe(makeAntennaHandlers);
-    expect(compatibilityBus.makeScanHandlers).toBe(makeScanHandlers);
-    expect(compatibilityBus.makeAudioRoutingHandlers).toBe(makeAudioRoutingHandlers);
   });
 
   it('keeps audio routing local with exact storage, finite-gain, and restore semantics', () => {
@@ -861,11 +843,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
-  it('exports canonical VFO and VOX factories through the compatibility bus', () => {
-    expect(compatibilityBus.makeVfoHandlers).toBe(makeVfoHandlers);
-    expect(compatibilityBus.makeVoxHandlers).toBe(makeVoxHandlers);
-  });
-
   it('routes the complete VFO family through exact typed lifecycle without Store truth', () => {
     const vfo = makeVfoHandlers();
     vfo.onSwap();
@@ -1347,9 +1324,17 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expectIntentTransport();
   });
 
+  // MOR-1409 A15: this file carried ~18 source-text assertions of the form
+  // "the compatibility bus declares no logic of its own", plus three
+  // identity-parity tests against its re-exports. The bus is deleted, so all
+  // of them are subsumed by the pin below — the terminal form of the same
+  // claim, and the only form a regrown shim cannot satisfy.
+  it('leaves no compatibility bus for canonical ownership to leak back into', () => {
+    expect(existsSync(resolve(process.cwd(), 'src/components-v2/wiring/command-bus.ts'))).toBe(false);
+  });
+
   it('keeps raw transport out of migrated blocks and Store writers out of their implementation', () => {
     const panelSource = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/panel-commands.ts'), 'utf8');
-    const busSource = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/command-bus.ts'), 'utf8');
     const assignedNames = [
       'makeAgcHandlers', 'makeBandHandlers', 'makeDspHandlers', 'makeFilterHandlers',
       'makeModeHandlers', 'makePresetHandlers', 'makeRfFrontEndHandlers',
@@ -1368,7 +1353,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       const end = Math.min(...[genericNext, ...nextStarts].filter((next) => next >= 0));
       const block = panelSource.slice(start, end);
       expect(block).not.toMatch(/\b(?:patchActiveReceiver|patchRadioState|patchReceiver|sendCommand)\s*\(/);
-      expect(busSource).not.toContain(`export function ${name}`);
     }
     const a03aNames = '';
     for (const name of [
@@ -1378,7 +1362,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       expect(a03aNames).not.toContain(`'${name}'`);
     }
     expect(panelSource).toContain('export function makeRfFrontEndHandlers');
-    expect(busSource).not.toContain('export function makeRfFrontEndHandlers');
     const rfStart = panelSource.indexOf('export function makeRfFrontEndHandlers');
     const rfEnd = panelSource.indexOf('\nexport function ', rfStart + 1);
     const rfBlock = panelSource.slice(rfStart, rfEnd);
@@ -1425,36 +1408,20 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     }
     expect(panelSource).not.toContain('onKeyerTypeChange');
     expect(panelSource).not.toContain('set_keyer_type');
-    expect(busSource).not.toContain('onKeyerTypeChange');
-    expect(busSource).not.toContain('set_keyer_type');
-    expect(busSource).not.toContain('export function makeVfoHandlers');
-    expect(busSource).not.toContain('export function makeVoxHandlers');
     expect(panelSource).toContain('export function makeVfoHandlers');
     expect(panelSource).toContain('export function makeVoxHandlers');
-    expect(busSource).not.toMatch(/function _activateReceiver\s*\(/);
-    expect(busSource).not.toContain('activeReceiverParam');
-    expect(busSource).not.toContain("case 'set_active_vfo'");
     for (const canonical of [
       'makeSystemHandlers', 'makeScopeControlsHandlers', 'makeKeyboardHandlers',
     ]) {
       expect(panelSource).toContain(`export function ${canonical}`);
-      expect(busSource).toContain(`${canonical},`);
-      expect(busSource).not.toContain(`export function ${canonical}`);
     }
     for (const action of [
       'toggle_dial_lock', 'scope_span_step', 'scope_ref_step', 'scope_toggle_hold',
       'scope_toggle_dual', 'scope_toggle_fst',
     ]) {
       expect(panelSource).toContain(`'${action}'`);
-      expect(busSource).not.toContain(`case '${action}'`);
     }
-    expect(busSource).not.toContain('patchRadioState');
-    expect(busSource).not.toContain('clampSpan');
-    expect(busSource).not.toContain('clampRef');
-    expect(busSource).not.toMatch(/^import /m);
-    expect(busSource).toMatch(/^export \{/m);
     expect(panelSource).not.toContain('export function makeMeterHandlers');
-    expect(busSource).not.toContain('export function makeMeterHandlers');
     expect(panelSource.match(/function toggleVox/g)).toHaveLength(1);
     expect(panelSource.match(/onVoxToggle:\s*toggleVox/g)).toHaveLength(2);
     expect(panelSource).not.toMatch(/dispatchRadioIntent\(\{\s*name:\s*['"]ptt(?:_on|_off)?['"]/);
@@ -1489,12 +1456,6 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
   });
 
   afterEach(() => resetCommandLifecycle());
-
-  it('owns all A03e factories canonically and identity-re-exports them from the compatibility bus', () => {
-    expect(compatibilityBus.makeSystemHandlers).toBe(makeSystemHandlers);
-    expect(compatibilityBus.makeScopeControlsHandlers).toBe(makeScopeControlsHandlers);
-    expect(compatibilityBus.makeKeyboardHandlers).toBe(makeKeyboardHandlers);
-  });
 
   it('emits the exact system and full scope vocabulary through one non-optimistic typed lifecycle each', () => {
     const system = makeSystemHandlers();

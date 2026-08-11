@@ -51,7 +51,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
-import { makeTxHandlers, makeVoxHandlers } from '../command-bus';
+import { makeTxHandlers, makeVoxHandlers } from '$lib/runtime/commands/panel-commands';
 
 /** The composed object the wiring builds — same spread, same precedence. */
 const intents = (): Record<string, (...args: never[]) => void> =>

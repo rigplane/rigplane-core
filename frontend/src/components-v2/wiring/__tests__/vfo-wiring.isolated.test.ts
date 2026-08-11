@@ -37,8 +37,8 @@ import {
   getActiveReceiver, getRadioState,
 } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
-import { toVfoOpsProps } from '../state-adapter';
-import { makeBandHandlers, makeFilterHandlers, makeModeHandlers, makeRitXitHandlers, makeVfoHandlers } from '../command-bus';
+import { toVfoOpsProps } from '$lib/runtime/props/panel-props';
+import { makeBandHandlers, makeFilterHandlers, makeModeHandlers, makeRitXitHandlers, makeVfoHandlers } from '$lib/runtime/commands/panel-commands';
 import { recordModeFilter, _resetModeFilterMemory } from '$lib/radio/mode-filter-memory';
 
 const originalDocumentQuerySelector = document.querySelector.bind(document);
