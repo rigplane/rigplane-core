@@ -1354,11 +1354,16 @@ class AudioHandler:
             # Cancel the remaining task and close WS to unblock any stuck recv()
             for task in pending:
                 task.cancel()
-            # Close WS to ensure recv() in reader raises EOF
+            # Close WS to ensure recv() in reader raises EOF. Bounded: an
+            # unbounded close() awaits drain(), which can wedge against a
+            # saturated buffer and a peer that stopped reading (MOR-1429
+            # review); fall back to a hard abort() (never blocks).
             try:
-                await self._ws.close(1001, "peer task exited")
+                await asyncio.wait_for(
+                    self._ws.close(1001, "peer task exited"), timeout=1.0
+                )
             except Exception:
-                pass
+                self._ws.abort()
             for task in pending:
                 try:
                     await task

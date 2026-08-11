@@ -36,6 +36,7 @@ class FakeConnection:
         self.sent_text: list[str] = []
         self.sent_binary: list[bytes] = []
         self.close_calls: list[tuple[int, str]] = []
+        self.abort_calls = 0
         self._alive = True
 
     async def recv(self) -> tuple[int, bytes]:
@@ -51,6 +52,10 @@ class FakeConnection:
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
         self.close_calls.append((code, reason))
+        self._alive = False
+
+    def abort(self) -> None:
+        self.abort_calls += 1
         self._alive = False
 
     def is_alive(self) -> bool:

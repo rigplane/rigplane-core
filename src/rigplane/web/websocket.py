@@ -314,7 +314,18 @@ class WebSocketConnection:
         await self._send_raw(make_frame(WS_OP_BINARY, data))
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
-        """Send a WebSocket close frame (never compressed)."""
+        """Send a WebSocket close frame (never compressed) and tear down
+        the underlying transport.
+
+        Writing the close frame is best-effort (the peer may already be
+        gone). Closing the transport is unconditional and happens every
+        call: it's what actually unblocks a reader parked in ``recv()`` /
+        ``_read_one_frame`` on a half-open peer (MOR-1429). A half-open
+        peer never sends the FIN a blocked ``readexactly()`` is waiting
+        on, so writing a close frame alone leaves the reader — and its
+        owning task — blocked forever, even once staleness has been
+        correctly detected (e.g. by ``keepalive_loop``'s pong timeout).
+        """
         if not self._closed:
             payload = struct.pack("!H", code) + reason.encode("utf-8")
             try:
@@ -322,6 +333,31 @@ class WebSocketConnection:
             except OSError:
                 pass
             self._closed = True
+        try:
+            self._writer.close()
+        except Exception:
+            pass
+
+    def abort(self) -> None:
+        """Immediately tear down the transport without flushing.
+
+        Unlike ``close()``, this never awaits ``drain()`` and therefore
+        cannot block: it calls ``transport.abort()``, which discards any
+        buffered output and fires ``connection_lost`` right away. This is
+        the fallback for when a bounded ``close()`` fails to complete
+        promptly against a peer that stopped reading with a saturated
+        write buffer — ``close()``'s close-frame write (and its own
+        best-effort ``self._writer.close()``) can otherwise wedge behind
+        ``drain()`` for as long as the peer never drains its receive
+        window (MOR-1429 review). Safe to call more than once.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._writer.transport.abort()
+        except Exception:
+            pass
 
     @property
     def closed(self) -> bool:
