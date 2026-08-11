@@ -618,3 +618,45 @@ describe('unknown is rendered as unknown (and F2 gets no local workaround)', () 
     r.dispose();
   });
 });
+
+/* ── keyboard entry: Enter commits via the same path as Set, Escape
+   cancels without dispatch (MOR-1444) ──────────────────────────── */
+
+describe('keyboard entry commits on Enter and cancels on Escape (MOR-1444)', () => {
+  const BOUNDS = { tuneMinHz: 30000, tuneMaxHz: 60000000 } as const;
+
+  function keydown(el: HTMLElement, key: string): void {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    flushSync();
+  }
+
+  it('commits the typed frequency on Enter, exactly like clicking Set', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '14250000');
+    keydown(r.input()!, 'Enter');
+    expect(onEnterFrequency).toHaveBeenCalledExactlyOnceWith(14250000);
+    r.dispose();
+  });
+
+  // Kills: an Enter-commit path that bypasses the entryReady guard the Set
+  // button already goes through (carry-forward 5 / rule 5).
+  it('refuses to commit an out-of-range entry on Enter', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '29999');
+    keydown(r.input()!, 'Enter');
+    expect(onEnterFrequency).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('clears the entry on Escape without dispatching', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '14250000');
+    keydown(r.input()!, 'Escape');
+    expect(onEnterFrequency).not.toHaveBeenCalled();
+    expect(r.input()!.value).toBe('');
+    r.dispose();
+  });
+});

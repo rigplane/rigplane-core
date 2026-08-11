@@ -303,3 +303,20 @@ export function shouldIgnoreEvent(activeElement: Element | null): boolean {
   if (!activeElement) return false;
   return IGNORED_TAGS.has(activeElement.tagName);
 }
+
+/** MOR-1444: true for a single digit character ("0".."9"), the key class a
+ *  rig profile's keyboard config binds to `band_select`. */
+export function isDigitKey(key: string): boolean {
+  return key.length === 1 && key >= '0' && key <= '9';
+}
+
+/**
+ * MOR-1444: true when the active element is the VFO/frequency display or
+ * sits inside it. `data-vfo-freq` is the existing production hook on the
+ * wrapper `<span>` around `FrequencyDisplayInteractive` in `VfoSurface.svelte`
+ * — present for every VFO tile with a tunable frequency, no new markup
+ * needed.
+ */
+export function isFrequencyDisplayFocused(activeElement: Element | null): boolean {
+  return activeElement?.closest('[data-vfo-freq]') != null;
+}

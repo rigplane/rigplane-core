@@ -210,4 +210,118 @@ describe('KeyboardHandler', () => {
     expect(onAction).not.toHaveBeenCalled();
     expect(followUp.defaultPrevented).toBe(false);
   });
+
+  // MOR-1444 — every rig profile's keyboard config binds "1".."9" to
+  // `band_select` (rigs/_keyboard-default.toml). Typing a frequency with the
+  // VFO/frequency display focused used to hop bands on every digit instead
+  // of reaching BandSurface's typed-entry box. These pins cover both sides:
+  // digits route to the entry input while the VFO display has focus, and
+  // keep firing band hotkeys exactly as before everywhere else.
+  describe('digit routing to the frequency-entry input (MOR-1444)', () => {
+    const configWithDigitBinding: KeyboardConfig = {
+      ...config,
+      bindings: [
+        ...config.bindings,
+        {
+          id: 'band-7',
+          section: 'Band',
+          label: 'Select band 7',
+          sequence: ['7'],
+          action: 'band_select',
+          params: { index: 7 },
+        },
+      ],
+    };
+
+    function appendVfoFreqDisplay(): HTMLElement {
+      const wrapper = document.createElement('span');
+      wrapper.setAttribute('data-vfo-freq', '');
+      const focusTarget = document.createElement('div');
+      focusTarget.tabIndex = 0;
+      wrapper.appendChild(focusTarget);
+      document.body.appendChild(wrapper);
+      return focusTarget;
+    }
+
+    function appendFreqEntryInput(): HTMLInputElement {
+      const input = document.createElement('input');
+      input.setAttribute('data-freq-entry', '');
+      document.body.appendChild(input);
+      return input;
+    }
+
+    it('feeds the digit into the frequency-entry input and does not fire the band hotkey', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const vfoFocusTarget = appendVfoFreqDisplay();
+      const entryInput = appendFreqEntryInput();
+      vfoFocusTarget.focus();
+      expect(document.activeElement).toBe(vfoFocusTarget);
+
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(entryInput);
+      expect(entryInput.value).toBe('7');
+    });
+
+    it('resets the entry to the freshly typed digit rather than appending to a stale value', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const vfoFocusTarget = appendVfoFreqDisplay();
+      const entryInput = appendFreqEntryInput();
+      entryInput.value = '14250000';
+      vfoFocusTarget.focus();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+
+      expect(entryInput.value).toBe('7');
+    });
+
+    it('still dispatches the band hotkey when focus is elsewhere', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      appendVfoFreqDisplay();
+      appendFreqEntryInput();
+      // Focus stays on document.body (the jsdom default) — nowhere near the
+      // VFO display.
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      );
+    });
+
+    it('falls back to the band hotkey when the VFO display is focused but no entry input exists', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const vfoFocusTarget = appendVfoFreqDisplay();
+      vfoFocusTarget.focus();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      );
+    });
+
+    it('falls back to the band hotkey when the entry input is disabled', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const vfoFocusTarget = appendVfoFreqDisplay();
+      const entryInput = appendFreqEntryInput();
+      entryInput.disabled = true;
+      vfoFocusTarget.focus();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      );
+      expect(entryInput.value).toBe('');
+    });
+  });
 });

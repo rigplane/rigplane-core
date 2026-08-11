@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_KEYBOARD_CONFIG, resolveAction, shouldIgnoreEvent } from '../keyboard-map';
+import {
+  DEFAULT_KEYBOARD_CONFIG,
+  isDigitKey,
+  isFrequencyDisplayFocused,
+  resolveAction,
+  shouldIgnoreEvent,
+} from '../keyboard-map';
 import {
   resetLocalExtensionKeyboardScope,
   setLocalExtensionKeyboardScope,
@@ -118,5 +124,54 @@ describe('shouldIgnoreEvent', () => {
     expect(shouldIgnoreEvent(null)).toBe(true);
 
     resetLocalExtensionKeyboardScope();
+  });
+});
+
+// MOR-1444 — digit keys must reach BandSurface's frequency-entry input
+// instead of a band hotkey when the VFO/frequency display has focus.
+describe('isDigitKey', () => {
+  it.each(['0', '1', '5', '9'])('treats %s as a digit', (key) => {
+    expect(isDigitKey(key)).toBe(true);
+  });
+
+  it.each(['a', 'Enter', 'Tab', '10', '', '-'])('does not treat %s as a digit', (key) => {
+    expect(isDigitKey(key)).toBe(false);
+  });
+});
+
+describe('isFrequencyDisplayFocused', () => {
+  it('is true when the active element sits inside a [data-vfo-freq] ancestor', () => {
+    const wrapper = document.createElement('span');
+    wrapper.setAttribute('data-vfo-freq', '');
+    const freqRoot = document.createElement('div');
+    wrapper.appendChild(freqRoot);
+    document.body.appendChild(wrapper);
+
+    expect(isFrequencyDisplayFocused(freqRoot)).toBe(true);
+
+    wrapper.remove();
+  });
+
+  it('is true for the [data-vfo-freq] element itself', () => {
+    const wrapper = document.createElement('span');
+    wrapper.setAttribute('data-vfo-freq', '');
+    document.body.appendChild(wrapper);
+
+    expect(isFrequencyDisplayFocused(wrapper)).toBe(true);
+
+    wrapper.remove();
+  });
+
+  it('is false for an element outside any [data-vfo-freq] ancestor', () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+
+    expect(isFrequencyDisplayFocused(el)).toBe(false);
+
+    el.remove();
+  });
+
+  it('is false for null', () => {
+    expect(isFrequencyDisplayFocused(null)).toBe(false);
   });
 });

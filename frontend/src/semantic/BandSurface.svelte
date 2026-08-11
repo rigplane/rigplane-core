@@ -167,6 +167,24 @@
     if (!entryReady) return;
     onEnterFrequency?.(typedHz);
   }
+  /** MOR-1444: Escape cancels a typed entry — clears the keystrokes without
+   *  dispatching, mirroring the "never coerce a malformed entry" rule above
+   *  rather than adding a second dispatch guard. */
+  function cancelEntry(): void {
+    entryText = '';
+  }
+  /** MOR-1444: Enter commits through the same `commitFrequency` path (and
+   *  therefore the same `entryReady` guard) the Set button already uses;
+   *  Escape cancels. Template-only wiring — no new prop, import or hook. */
+  function handleEntryKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitFrequency();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelEntry();
+    }
+  }
 </script>
 
 {#if band}
@@ -222,10 +240,11 @@
     <label class="band-row" data-testid="band-entry" data-bounds={boundsKnown}>
       <span class="band-name">FREQ</span>
       <input
-        type="number" data-testid="band-entry-input" step="1"
+        type="number" data-testid="band-entry-input" data-freq-entry step="1"
         min={band.tuneMinHz ?? undefined} max={band.tuneMaxHz ?? undefined}
         value={entryText} disabled={!receiverKnown || !boundsKnown}
         oninput={(event) => { entryText = event.currentTarget.value; }}
+        onkeydown={handleEntryKeydown}
       />
       <span data-testid="band-entry-range">{boundsKnown && band.tuneMinHz !== null
         && band.tuneMaxHz !== null

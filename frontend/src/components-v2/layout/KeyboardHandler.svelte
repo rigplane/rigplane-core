@@ -6,6 +6,8 @@
     resolveSequenceContinuation,
     resolveSequenceStart,
     shouldIgnoreEvent,
+    isDigitKey,
+    isFrequencyDisplayFocused,
     formatShortcut,
     type KeyboardActionConfig,
     type KeyboardBindingConfig,
@@ -60,9 +62,45 @@
     onAction(action);
   }
 
+  /**
+   * MOR-1444: seeds BandSurface's frequency-entry input with a digit typed
+   * while the VFO/frequency display has focus, and moves focus into it.
+   * `[data-freq-entry]` is a production hook on that input (BandSurface.svelte)
+   * distinct from its test id. Every following keystroke targets the
+   * now-focused INPUT, which `shouldIgnoreEvent` already excludes from
+   * shortcut resolution above — so only the FIRST digit of a typed-entry
+   * gesture needs this routing; native typing takes it from there. Resets
+   * (rather than appends to) any stale leftover value, since this is the
+   * start of a fresh gesture. Returns false — letting the caller fall
+   * through to normal band-hotkey resolution — when the entry surface isn't
+   * mounted or is disabled (no band group on this skin, or BandSurface's own
+   * MOR-1322/rule-5 fail-closed gates: active receiver or tuning bounds not
+   * yet known).
+   */
+  function routeDigitToFrequencyEntry(digit: string): boolean {
+    const input = document.querySelector<HTMLInputElement>('[data-freq-entry]');
+    if (!input || input.disabled) return false;
+    input.focus();
+    input.value = digit;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }
+
   function handleKeydown(event: KeyboardEvent): void {
     if (!enabled) return;
     if (shouldIgnoreEvent(document.activeElement)) return;
+
+    // MOR-1444: with the VFO/frequency display focused, a digit keystroke
+    // must feed the frequency-entry box instead of resolving as a band
+    // hotkey — every rig profile's keyboard config binds "1".."9" to
+    // band_select, and without this guard `resolveAction` below hops bands
+    // on every typed digit. Band hotkeys are untouched everywhere else.
+    if (isDigitKey(event.key) && isFrequencyDisplayFocused(document.activeElement)) {
+      if (routeDigitToFrequencyEntry(event.key)) {
+        event.preventDefault();
+        return;
+      }
+    }
 
     // MOR-1449: Tab is reserved for the browser's native focus traversal and
     // must never be assignable to a shortcut — a rig profile's keyboard
