@@ -43,14 +43,31 @@ vi.mock('$lib/runtime', () => ({
   },
 }));
 
-// state-adapter is a presentation-only seam here; AGC gating is driven by the
+// panel-props is a presentation-only seam here; AGC gating is driven by the
 // real field-status resolver, not these adapters.
-vi.mock('../../../wiring/state-adapter', () => ({
-  toTxProps: () => ({ txActive: false, voxActive: false, compActive: false, compLevel: 0, atuActive: false, atuTuning: false }),
-  toRitXitProps: () => ({ ritActive: false, xitActive: false, ritOffset: 0 }),
+//
+// MOR-1409 A14: re-pointed from the retired `wiring/state-adapter` mock to
+// `$lib/runtime/props/panel-props` (the hardened projection AmberScope now
+// imports). Every literal below is re-derived against the real hardened
+// contract, not transcribed from the stale one (plan §5 pre-authorization
+// wording): `ritOffset`/`xitOffset`/`filterWidth` use the real `NaN`
+// "unobserved" sentinel rather than the old fabricated `0`/`2400` defaults.
+// None of these three fields are asserted on by the tests in this file
+// (AGC-gating only), so the honest values are inert here — updated for
+// contract accuracy, not because a test requires it.
+vi.mock('$lib/runtime/props/panel-props', () => ({
+  toTxProps: () => ({
+    txActive: false, voxActive: false, compActive: false, compLevel: 0,
+    atuActive: false, atuTuning: false, hasTx: false, hasTuner: false, hasMonitor: false,
+  }),
+  toRitXitProps: () => ({
+    ritActive: false, xitActive: false,
+    ritOffset: Number.NaN, xitOffset: Number.NaN,
+    hasRit: true, hasXit: true,
+  }),
   toVfoOpsProps: () => ({ splitActive: false }),
   toDspProps: () => ({ notchMode: 'off', notchFreq: 0 }),
-  toFilterProps: () => ({ filterWidth: 2400, filterWidthMax: 4000, ifShift: 0 }),
+  toFilterProps: () => ({ filterWidth: Number.NaN, filterWidthMax: 9999, ifShift: 0 }),
 }));
 
 import AmberScope from '../AmberScope.svelte';

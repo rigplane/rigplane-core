@@ -6,7 +6,7 @@
   import {
     toTxProps, toRitXitProps, toVfoOpsProps, toMeterProps,
     toDspProps, toFilterProps,
-  } from '../../wiring/state-adapter';
+  } from '$lib/runtime/props/panel-props';
   import AmberFrequency from './AmberFrequency.svelte';
   import AmberSmeter from './AmberSmeter.svelte';
   import AmberAfScope from './AmberAfScope.svelte';
@@ -68,9 +68,52 @@
   let tx = $derived(toTxProps(radioState, null));
   let ritXit = $derived(toRitXitProps(radioState, null));
   let vfoOps = $derived(toVfoOpsProps(radioState, null));
-  let meter = $derived(toMeterProps(radioState));
+  let meter = $derived(toMeterProps(radioState, caps));
   let dsp = $derived(toDspProps(radioState, null));
   let filterProps = $derived(toFilterProps(radioState, caps));
+
+  // MOR-1409 A14: `panel-props`' honesty-hardened projections default an
+  // unobserved reading to `Number.NaN` instead of a plausible-looking
+  // stand-in (`ritXit.ritOffset`, `meter.rfPower`/`swr`/`alc`/`comp`,
+  // `filterProps.filterWidth` — plan §4.1/§4.2, correction `5247684776`).
+  // Three choke-point guards below keep that honest `NaN` from ever
+  // reaching a render path as a formatted "NaN" string or — worse, for the
+  // meter pipeline — a silently plausible full-scale reading
+  // (`meter-utils.ts`'s `piecewise()` clamp-and-fallthrough shape). Guards
+  // live here, at the owner-file boundary, never inside the frozen
+  // consumer components (`AmberSmeter`/`AmberFilterGhost`) or helpers
+  // (`meter-utils.ts`/`rit-utils.ts`/`smeter-scale.ts`) — adding a guard
+  // there would make a third/fourth production owner, contradicting
+  // ruling `5247582313`'s exactly-two-owner scope (plan §4.3 option (a)).
+
+  // Meter-format guard: fall back to the always-safe raw S-meter branch
+  // (never routed through the NaN-honesty projection) rather than
+  // re-fabricating the old `?? 0` default, which would silently defeat the
+  // whole migration. Source and value are derived together so the
+  // `<AmberSmeter source=…>` label never disagrees with what `value` holds.
+  function meterSourceIsFinite(source: MeterSource): boolean {
+    switch (source) {
+      case 'PO': return Number.isFinite(meter.rfPower);
+      case 'SWR': return Number.isFinite(meter.swr);
+      case 'ALC': return Number.isFinite(meter.alc);
+      case 'COMP': return Number.isFinite(meter.comp);
+      default: return true; // 'S' — raw field read, outside this projection
+    }
+  }
+
+  // RIT-offset guard: `formatOffsetKHz()` (rit-utils.ts, frozen) has no NaN
+  // branch and renders the literal "−NaN kHz" on an unobserved offset.
+  let ritOffsetLabel = $derived(
+    Number.isFinite(ritXit.ritOffset) ? formatOffsetKHz(ritXit.ritOffset) : '---',
+  );
+
+  // Filter-ratio guard: `AmberFilterGhost`/`AmberAfScope` (frozen) compute
+  // `filterWidth / filterWidthMax` with no NaN handling. `0` is a
+  // non-plausible, geometrically degenerate placeholder (collapses the
+  // ratio to the floor) — not a re-fabrication of the old 2400 Hz stand-in.
+  let safeFilterWidth = $derived(
+    Number.isFinite(filterProps.filterWidth) ? filterProps.filterWidth : 0,
+  );
 
   // ── LCD-specific derivations (no adapter equivalent) ──
   let rx = $derived(radioState?.active === 'SUB' ? radioState?.sub : radioState?.main);
@@ -85,8 +128,14 @@
     tx.txActive && userMeterSource === 'S' ? 'PO' : userMeterSource
   );
 
+  // The source actually safe to display — falls back to 'S' when the
+  // user-selected (or TX-auto-switched) source's field is unobserved.
+  let effectiveMeterSource = $derived<MeterSource>(
+    meterSourceIsFinite(activeMeterSource) ? activeMeterSource : 'S'
+  );
+
   let meterValue = $derived.by(() => {
-    switch (activeMeterSource) {
+    switch (effectiveMeterSource) {
       case 'PO': return meter.rfPower;
       case 'SWR': return meter.swr;
       case 'ALC': return meter.alc;
@@ -309,7 +358,7 @@
     return mainSMeter;                           // RX + B active: show A's own S-meter
   });
   let mainMeterSource = $derived<MeterSource>(
-    tx.txActive || vfoAActive ? activeMeterSource : 'S',
+    tx.txActive || vfoAActive ? effectiveMeterSource : 'S',
   );
 </script>
 
@@ -365,7 +414,7 @@
       {#if ritXit.ritActive || ritXit.xitActive}
         <div class="lcd-rit-row">
           <span class="rit-label">{ritXit.ritActive ? 'RIT' : 'XIT'}</span>
-          <span class="rit-value">{formatOffsetKHz(ritXit.ritOffset)}</span>
+          <span class="rit-value">{ritOffsetLabel}</span>
         </div>
       {/if}
 
@@ -417,7 +466,7 @@
           <AmberAfScope
             data={fftPixels}
             onRegisterPush={(fn) => { fftPush = fn; }}
-            filterWidth={filterProps.filterWidth}
+            filterWidth={safeFilterWidth}
             filterWidthMax={filterProps.filterWidthMax}
             ifShift={filterProps.ifShift}
             contour={contourLevel}
@@ -434,7 +483,7 @@
              Prevents the 1fr scope row from rendering as empty amber
              when the radio has no AF-FFT capability. -->
         <AmberFilterGhost
-          filterWidth={filterProps.filterWidth}
+          filterWidth={safeFilterWidth}
           filterWidthMax={filterProps.filterWidthMax}
         />
       {/if}
