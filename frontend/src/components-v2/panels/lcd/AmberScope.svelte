@@ -8,7 +8,6 @@
   import AmberFilterGhost from './AmberFilterGhost.svelte';
   import AmberIndStrip from './AmberIndStrip.svelte';
   import AmberSmeter from './AmberSmeter.svelte';
-  import { rawToDbm } from '../../meters/smeter-scale';
   import type { IndToken } from './AmberIndStrip.svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { isFieldAvailable } from '$lib/state/field-status';
@@ -263,7 +262,7 @@
     </div>
 
     <div class="lcd-meter-row" style:grid-area="meter">
-      <AmberSmeter value={rawToDbm(rx?.sMeter ?? 0)} source="S" />
+      <AmberSmeter value={rx?.sMeter ?? -54} source="S" />
     </div>
 
     <!-- ═══ Scope: dominant AfScope ═══ -->

@@ -7,7 +7,6 @@
   import AmberLcdDisplay from '../panels/lcd/AmberLcdDisplay.svelte';
   import FrequencyDisplay from '../display/FrequencyDisplay.svelte';
   import LinearSMeter from '../meters/LinearSMeter.svelte';
-  import { rawToDbm } from '../meters/smeter-scale';
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import BottomSheet from '../controls/BottomSheet.svelte';
   import BandSelector from '../controls/BandSelector.svelte';
@@ -69,9 +68,6 @@
 
   // ── VFO props ──
   let mainVfo = $derived(toVfoProps(radioState, 'main'));
-  // `mainVfo.sValue` is the raw CI-V S-meter byte (0-255), NOT calibrated
-  // dB-rel-S9 — converted once here for every consumer below (MOR-1451).
-  let mainSDbm = $derived(rawToDbm(mainVfo.sValue));
   let subVfo = $derived(toVfoProps(radioState, 'sub'));
   let vfoOps = $derived(toVfoOpsProps(radioState, caps));
   let meter = $derived(toMeterProps(radioState, caps));
@@ -640,7 +636,7 @@
 
   <!-- ═══ S-METER BAR ═══ -->
   <div class="m-smeter-bar">
-    <LinearSMeter value={mainSDbm} compact label="" />
+    <LinearSMeter value={mainVfo.sValue} compact label="" />
   </div>
 
   <!-- ═══ SCROLLABLE CONTENT ═══ -->
@@ -767,7 +763,7 @@
           {#if (tx.txActive || txKeyed) && txMetersObserved}
             <div class="m-tx-meter">
               <DockMeterPanel
-                sValue={mainSDbm}
+                sValue={mainVfo.sValue}
                 rfPower={meter.rfPower}
                 swr={meter.swr}
                 alc={meter.alc}

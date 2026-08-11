@@ -1,6 +1,5 @@
 <script lang="ts">
   import LinearSMeter from '../meters/LinearSMeter.svelte';
-  import { rawToDbm } from '../meters/smeter-scale';
   import FrequencyDisplayInteractive from '../../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import { StatusIndicator } from '$lib/Button';
   import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabilities.svelte';
@@ -13,8 +12,6 @@
     freq: number;
     mode: string;
     filter: string;
-    /** Raw CI-V S-meter byte (0-255), NOT calibrated dB-rel-S9 (MOR-1451) —
-     *  converted via `rawToDbm` before reaching `LinearSMeter`, below. */
     sValue: number;
     isActive: boolean;
     badges: Record<string, boolean | string>;
@@ -46,7 +43,6 @@
   let activeBand = $derived(findActiveBand(freq, getCapabilities()?.freqRanges ?? []));
   let badgeItems = $derived(formatBadges(badges, receiver));
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
-  let sDbm = $derived(rawToDbm(sValue));
   let receiverChromeVars = $derived({
     '--receiver-accent': `var(--v2-receiver-${receiver}-accent)`,
     '--receiver-control-border': `var(--v2-vfo-${receiver}-control-border)`,
@@ -73,7 +69,7 @@
   </div>
 
   <div class="smeter-row panel-meter">
-    <LinearSMeter value={sDbm} compact label={slotTag} variant={meterVariant} />
+    <LinearSMeter value={sValue} compact label={slotTag} variant={meterVariant} />
   </div>
 
   <div class="panel-body">

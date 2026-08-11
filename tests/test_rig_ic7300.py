@@ -367,6 +367,27 @@ class TestSMeterCalibration:
         assert calibrated is True
         assert actual == pytest.approx(expected_actual)
 
+    def test_live_evidence_raw_53_publishes_minus_30_dbm_rel_s9(self, rig):
+        """Backend-side pin for the exact MOR-1451 live-evidence value.
+
+        `runtime/_civ_rx.py`'s `_calibrated_meter_value` calls exactly this
+        function (`interpolate_meter`) over `profile.meter_calibrations`
+        before ``ServerState.main.sMeter`` is ever published — the raw wire
+        byte never reaches the frontend for a radio with a calibration
+        table (see `test_civ_rx_coverage.py`'s pre-existing "raw 111 -> -8"
+        pin for a worked example on a different profile). With this
+        profile's table, raw 53 -> -30 dB-rel-S9, which the frontend then
+        renders as S4 (`LinearSMeter.test.ts` / `meter-utils.test.ts`) —
+        not the reported "S9+40".
+        """
+        actual, calibrated = interpolate_meter(53, rig.meter_calibrations, "s_meter")
+        assert calibrated is True
+        assert actual == pytest.approx(-30.15)
+        # `_calibrated_meter_value` (runtime/_civ_rx.py) rounds s_meter to an
+        # int before publishing — this IS the value ServerState.main.sMeter
+        # (and therefore LinearSMeter's `value` prop) actually carries.
+        assert int(round(actual)) == -30
+
     def test_live_evidence_raw_53_is_not_the_ic7610_curve(self, rig):
         """Raw 53 must NOT interpolate to the IC-7610 curve's answer (~S3,
         actual -36 dB-rel-S9 at its raw-52 anchor) — the two rigs do not

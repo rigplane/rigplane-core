@@ -929,16 +929,24 @@ actual = 6.0
 label = "6.0+"
 
 # S-meter calibration — piecewise-linear lookup from raw 0-255 to dB-rel-S9.
-# Anchors per the IC-7300 CI-V S-meter convention (00 00=S0, 01 20=S9,
-# 02 41=S9+60dB — MOR-1451, live evidence: main.sMeter raw 53 was rendering
-# as S9+40 with no curve declared here). Distinct from the IC-7610 curve
-# (S9 at raw 130, not 120) — the two models do NOT share an S-meter scale,
-# hence a per-rig table rather than a shared default
-# (frontend/src/components-v2/meters/smeter-scale.ts has no hardcoded
-# fallback curve — an un-calibrated profile renders the honest raw-scale
-# number instead of borrowing another rig's anchors). Only the S0/S9/S9+60
-# anchors are documented; intermediate S-units interpolate linearly between
-# them pending a finer-grained capture.
+# Anchors verified against the official Icom CI-V Reference Guide's command
+# 15 02 ("Read S-meter level") table: "00 00=S0 ~ 01 20=S9 ~ 02 41=S9+60 dB".
+# Confirmed identically worded in BOTH the IC-7300MK2 CI-V Reference Guide
+# (icomuk.co.uk/files/icom/PDF/productAdditionalFile/
+# IC-7300MK2_ENG_CI-V_0.pdf) — the same source this repo's own CAT audit
+# (docs/validation/cat-audits/ic7300.md) already cites as standing in for
+# the original IC-7300's identically-numbered command table — and the
+# IC-7610 CI-V Reference Guide (radiomanual.info mirror), so this is the
+# documented Icom convention, not IC-7300-specific guesswork (MOR-1451;
+# live evidence: main.sMeter raw 53 rendered as "S9+40" with no curve
+# declared here before this table existed). Only the S0/S9/S9+60 anchors
+# are published; intermediate S-units interpolate linearly between them.
+#
+# NOTE for a future ticket, out of MOR-1451's scope: rigs/ic7610.toml's own
+# [meters.s_meter] table declares S9 at raw 130 (not 120) and its top
+# anchor at S9+40 (raw 240, not S9+60/241) — inconsistent with the IC-7610
+# CI-V Reference Guide's own S-meter table quoted above. IC-7610 is retired
+# from the live bench (2026-08-04) so this was not corrected here.
 [meters.s_meter]
 redline_raw = 120
 
