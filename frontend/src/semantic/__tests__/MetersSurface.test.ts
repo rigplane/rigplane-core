@@ -539,6 +539,33 @@ describe('MetersSurface and MetersDockPanel are on the same peak-hold channel', 
 
 // ── 11. Fault highlighting (MOR-1345) — dock's border, ported honestly ─────
 
+// ── MOR-1451: raw sMeter must never render as a fabricated S-unit ──────────
+// Live evidence: `meters.signal` carried raw CI-V byte 53 while the S meter
+// rendered "S9+40" — the raw byte was being fed straight into the
+// calibrated-dB-rel-S9 `LinearSMeter` contract instead of through
+// `rawToDbm` first. No capability mock is installed in this file (real
+// store, no calibration loaded in jsdom), so the radio here is
+// UNCALIBRATED — the honest-fallback path (MOR-1451) applies: the S meter
+// renders the plain raw number, never a fabricated S-unit.
+
+describe('raw sMeter renders honestly, never a fabricated S-unit (MOR-1451)', () => {
+  it('does not render S9+40 for the live-evidence raw value (53) that triggered the bug', () => {
+    const view = withRaw(base(), 'signal', 53);
+    withSurface(view, (s) => {
+      const text = s.tile('signal')!.textContent ?? '';
+      expect(text).not.toContain('S9+40');
+    });
+  });
+
+  it('renders the honest raw-scale reading (53), not a fabricated S-unit, when uncalibrated', () => {
+    const view = withRaw(base(), 'signal', 53);
+    withSurface(view, (s) => {
+      const text = s.tile('signal')!.textContent ?? '';
+      expect(text).toContain('53');
+    });
+  });
+});
+
 describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // MUTATION KILLED: a locally-invented threshold instead of the shared
   // predicate. Raw 80 is the dock's own "exactly SWR 2.0" boundary fixture

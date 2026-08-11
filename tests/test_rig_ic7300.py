@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from rigplane.commands._codec import filter_hz_to_index, filter_index_to_hz
+from rigplane.meter_cal import interpolate_meter
 from rigplane.rig_loader import load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
@@ -329,3 +330,47 @@ class TestSpectrumParams:
 
     def test_data_len_max(self, rig):
         assert rig.spectrum["data_len_max"] == 475
+
+
+# ── S-meter calibration (MOR-1451) ─────────────────────────────
+#
+# Before this table existed, the frontend fell back to a hardcoded IC-7610
+# curve (S9 at raw 130) for every radio lacking its own — including the
+# IC-7300, whose real S9 anchor is raw 120. Live evidence: main.sMeter raw
+# 53 rendered as "S9+40" regardless of the actual signal. These pin the
+# TOML data itself; the frontend conformance case (raw 53 -> S4, not
+# S9+40) lives in `frontend/src/components-v2/meters/__tests__/
+# LinearSMeter.test.ts` and `meter-utils.test.ts`.
+
+
+class TestSMeterCalibration:
+    """IC-7300 CI-V S-meter scale: 0=S0, 120=S9, 241=S9+60 — distinct from
+    the IC-7610 curve (S9 at raw 130)."""
+
+    def test_has_s_meter_calibration_block(self, rig):
+        assert rig.meter_calibrations is not None
+        assert "s_meter" in rig.meter_calibrations
+
+    def test_anchor_count(self, rig):
+        assert len(rig.meter_calibrations["s_meter"]) == 3
+
+    def test_redline_raw_is_s9(self, rig):
+        assert rig.meter_redlines["s_meter"] == 120
+
+    @pytest.mark.parametrize(
+        "raw,expected_actual",
+        [(0, -54.0), (120, 0.0), (241, 60.0)],
+    )
+    def test_anchor_round_trip(self, rig, raw, expected_actual):
+        """Interpolating at a documented anchor returns that anchor's dB-rel-S9."""
+        actual, calibrated = interpolate_meter(raw, rig.meter_calibrations, "s_meter")
+        assert calibrated is True
+        assert actual == pytest.approx(expected_actual)
+
+    def test_live_evidence_raw_53_is_not_the_ic7610_curve(self, rig):
+        """Raw 53 must NOT interpolate to the IC-7610 curve's answer (~S3,
+        actual -36 dB-rel-S9 at its raw-52 anchor) — the two rigs do not
+        share an S-meter scale."""
+        actual, calibrated = interpolate_meter(53, rig.meter_calibrations, "s_meter")
+        assert calibrated is True
+        assert actual != pytest.approx(-36.0)

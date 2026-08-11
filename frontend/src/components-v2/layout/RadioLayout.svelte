@@ -33,6 +33,7 @@
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
   import MetersDockPanel from '../panels/MetersDockPanel.svelte';
+  import { rawToDbm } from '../meters/smeter-scale';
   import { t } from '$lib/i18n';
   import {
     parseVfoLayoutScaleOverrides,
@@ -144,6 +145,14 @@
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
+
+  // Raw CI-V S-meter byte (0-255) for the active receiver, converted to the
+  // calibrated dB-rel-S9 domain `MetersDockPanel` expects — undefined stays
+  // undefined (unobserved), never fabricated (MOR-1451).
+  let dockSMeterRaw = $derived(
+    radioState?.active === 'SUB' ? radioState?.sub?.sMeter : radioState?.main?.sMeter,
+  );
+  let dockSDbm = $derived(dockSMeterRaw === undefined ? undefined : rawToDbm(dockSMeterRaw));
 
   // MOR-1235. The meters dock's TX chrome takes its truth from the App-owned
   // TX controller — the SAME source as the authoritative global lamp
@@ -349,7 +358,7 @@
   {#if !semanticMeters}
     <section class="bottom-dock">
       <MetersDockPanel
-        sValue={radioState?.active === 'SUB' ? radioState?.sub?.sMeter : radioState?.main?.sMeter}
+        sValue={dockSDbm}
         powerMeter={radioState?.powerMeter}
         swrMeter={radioState?.swrMeter}
         alcMeter={radioState?.alcMeter}

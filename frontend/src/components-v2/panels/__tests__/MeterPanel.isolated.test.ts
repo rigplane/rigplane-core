@@ -156,8 +156,25 @@ describe('getNeedleMarks POWER', () => {
 // MeterPanel component
 // ---------------------------------------------------------------------------
 
+// s_meter has no hardcoded fallback curve in meter-utils.ts (MOR-1451) — the
+// `getNeedleMarks('S')` / calibrated-domain tests above and below need an
+// explicit profile fixture (the numbers `rigs/ic7610.toml` declares, hence
+// this describe block's own "IC-7610 profile" title) rather than a silent
+// adapter-level default. Every other meter type keeps returning `null`.
+const IC7610_LIKE_S_METER_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 52, actual: -36, label: 'S3' },
+  { raw: 78, actual: -24, label: 'S5' },
+  { raw: 103, actual: -12, label: 'S7' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 165, actual: 10, label: 'S9+10' },
+  { raw: 200, actual: 20, label: 'S9+20' },
+  { raw: 240, actual: 40, label: 'S9+40' },
+];
 vi.mock('$lib/runtime/adapters/capabilities-adapter', () => ({
-  getMeterCalibration: vi.fn(() => null),
+  getMeterCalibration: vi.fn((meterType: string) =>
+    meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : null),
   getMeterRedline: vi.fn(() => null),
 }));
 

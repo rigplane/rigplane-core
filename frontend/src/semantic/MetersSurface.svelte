@@ -49,6 +49,11 @@
     formatSwr, formatVolts, idLevel, isAlcFault, isSwrFault, normalizePower, sLevel,
     swrLevel, vdLevel,
   } from '../components-v2/panels/meter-utils';
+  // Raw sMeter (0-255 CI-V byte) must be converted to the calibrated
+  // dB-rel-S9 domain `LinearSMeter`/`sLevel` expect BEFORE it reaches them —
+  // feeding the raw byte straight through renders wildly wrong readings
+  // (MOR-1451, e.g. raw 53 rendering "S9+40").
+  import { rawToDbm } from '../components-v2/meters/smeter-scale';
   import { renderSlot } from './design-language-renderers';
 
   type BarKey = Exclude<keyof MetersViewModel, 'rfState' | 'signal'>;
@@ -101,7 +106,7 @@
    * surface's decisions.
    */
   const signalDisplay = (f: MeterField): ReturnType<typeof renderSlot> =>
-    renderSlot('meters', { value: observed(f) ? sLevel(rawOf(f)) : null, max: 1, s9: sLevel(0) });
+    renderSlot('meters', { value: observed(f) ? sLevel(rawToDbm(rawOf(f))) : null, max: 1, s9: sLevel(0) });
 </script>
 
 <script lang="ts">
@@ -147,7 +152,7 @@
         {...signalDisplay(meters.signal)?.attributes ?? {}}
       >
         {#if observed(meters.signal)}
-          <LinearSMeter value={rawOf(meters.signal)} label="S" compact />
+          <LinearSMeter value={rawToDbm(rawOf(meters.signal))} label="S" compact />
         {:else}
           <span class="meter-unknown">S ?</span>
         {/if}

@@ -9,6 +9,7 @@
   } from '$lib/runtime/props/panel-props';
   import AmberFrequency from './AmberFrequency.svelte';
   import AmberSmeter from './AmberSmeter.svelte';
+  import { rawToDbm } from '../../meters/smeter-scale';
   import AmberAfScope from './AmberAfScope.svelte';
   import AmberFilterGhost from './AmberFilterGhost.svelte';
   import AmberIndStrip from './AmberIndStrip.svelte';
@@ -117,7 +118,9 @@
 
   // ── LCD-specific derivations (no adapter equivalent) ──
   let rx = $derived(radioState?.active === 'SUB' ? radioState?.sub : radioState?.main);
-  let subSValue = $derived(radioState?.sub?.sMeter ?? 0);
+  // Raw CI-V S-meter byte, converted to calibrated dB-rel-S9 for AmberSmeter
+  // (source='S' only — MOR-1451; raw is the correct domain for PO/SWR/ALC/COMP).
+  let subSValue = $derived(rawToDbm(radioState?.sub?.sMeter ?? 0));
 
   type MeterSource = 'S' | 'PO' | 'SWR' | 'ALC' | 'COMP';
   const METER_SOURCES: MeterSource[] = ['S', 'PO', 'SWR', 'ALC', 'COMP'];
@@ -140,7 +143,8 @@
       case 'SWR': return meter.swr;
       case 'ALC': return meter.alc;
       case 'COMP': return meter.comp;
-      default: return rx?.sMeter ?? 0;  // active receiver, not always main
+      // active receiver, not always main; raw -> calibrated dB-rel-S9 (MOR-1451)
+      default: return rawToDbm(rx?.sMeter ?? 0);
     }
   });
 
@@ -337,7 +341,8 @@
   let mainMode = $derived(radioState?.main?.mode ?? '---');
   let mainFilter = $derived(radioState?.main?.filter ?? '');
   let mainBand = $derived(freqToBand(mainFreqHz));
-  let mainSMeter = $derived(radioState?.main?.sMeter ?? 0);
+  // Only reached by `mainMeterValue`'s S-source branch below — raw -> dB-rel-S9 (MOR-1451).
+  let mainSMeter = $derived(rawToDbm(radioState?.main?.sMeter ?? 0));
 
   let subVfoFreqHz = $derived(radioState?.sub?.freqHz ?? 0);
   let subVfoMode = $derived(radioState?.sub?.mode ?? '');

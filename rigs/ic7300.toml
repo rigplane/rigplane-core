@@ -927,3 +927,32 @@ label = "3.0"
 raw = 240
 actual = 6.0
 label = "6.0+"
+
+# S-meter calibration — piecewise-linear lookup from raw 0-255 to dB-rel-S9.
+# Anchors per the IC-7300 CI-V S-meter convention (00 00=S0, 01 20=S9,
+# 02 41=S9+60dB — MOR-1451, live evidence: main.sMeter raw 53 was rendering
+# as S9+40 with no curve declared here). Distinct from the IC-7610 curve
+# (S9 at raw 130, not 120) — the two models do NOT share an S-meter scale,
+# hence a per-rig table rather than a shared default
+# (frontend/src/components-v2/meters/smeter-scale.ts has no hardcoded
+# fallback curve — an un-calibrated profile renders the honest raw-scale
+# number instead of borrowing another rig's anchors). Only the S0/S9/S9+60
+# anchors are documented; intermediate S-units interpolate linearly between
+# them pending a finer-grained capture.
+[meters.s_meter]
+redline_raw = 120
+
+[[meters.s_meter.calibration]]
+raw = 0
+actual = -54.0
+label = "S0"
+
+[[meters.s_meter.calibration]]
+raw = 120
+actual = 0.0
+label = "S9"
+
+[[meters.s_meter.calibration]]
+raw = 241
+actual = 60.0
+label = "S9+60"

@@ -1,23 +1,45 @@
 /**
  * Component-level render tests for AmberFrequency and AmberSmeter.
  *
- * Uses native svelte mount() in jsdom. AmberSmeter depends on smeter-scale
- * which reads from capabilities store — mocked to return IC-7610 defaults.
+ * Uses native svelte mount() in jsdom. AmberSmeter depends on smeter-scale,
+ * which reads from the capabilities store — mocked below to a fixture
+ * calibration table (formerly the smeter-scale.ts hardcoded IC-7610
+ * default; MOR-1451 removed that silent fallback, so a fixture is now
+ * required for these tests to exercise a "calibrated" AmberSmeter at all).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount } from 'svelte';
 
+// Fixture calibration table — the numbers `rigs/ic7610.toml` declares, no
+// longer a production default (MOR-1451): a radio profile with no
+// `[meters.s_meter]` table now renders an honest raw-scale label instead of
+// borrowing these.
+const IC7610_LIKE_S_METER_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 52, actual: -36, label: 'S3' },
+  { raw: 78, actual: -24, label: 'S5' },
+  { raw: 103, actual: -12, label: 'S7' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 165, actual: 10, label: 'S9+10' },
+  { raw: 200, actual: 20, label: 'S9+20' },
+  { raw: 240, actual: 40, label: 'S9+40' },
+];
+
 // Mock capabilities store before any component import
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getSmeterCalibration: () => null, // null → falls back to DEFAULT_CAL in smeter-scale
+  getSmeterCalibration: () => IC7610_LIKE_S_METER_CAL,
   getSmeterRedline: () => null,
   isAudioFftScope: () => false,
   hasAudioFft: () => false,
   hasDualReceiver: () => false,
   getCapabilities: () => null,
   // meter-utils calibrated formatters resolve through these; null → the
-  // hardcoded IC-7610 fallback knots (matching the formatters under test).
-  getMeterCalibration: () => null,
+  // hardcoded IC-7610 fallback knots (power/swr/alc/vd/id/comp — unaffected
+  // by MOR-1451, out of its scope). s_meter is the one exception: it has no
+  // such fallback, hence the explicit fixture above.
+  getMeterCalibration: (meterType: string) =>
+    meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : null,
   getMeterRedline: () => null,
   getControlRange: () => null,
 }));

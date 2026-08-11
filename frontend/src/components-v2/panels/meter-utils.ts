@@ -1,8 +1,11 @@
 // Capability-derived calibration and redline data is routed through the
 // runtime adapter (Tier 2 batch 2) so this helper no longer reaches into
 // `$lib/stores/*` directly. The adapter returns `null` when capabilities
-// haven't loaded — formatters fall back to the hardcoded IC-7610 knots
-// defined below.
+// haven't loaded — power/swr/alc/vd/id/comp formatters fall back to the
+// hardcoded IC-7610 knots defined below. The s_meter path is the one
+// exception (MOR-1451): it has NO hardcoded per-radio fallback curve —
+// `formatSMeter`/`sLevel` degrade to an honest raw-scale reading instead of
+// borrowing a foreign radio's calibration.
 import {
   getMeterCalibration,
   getMeterRedline,
@@ -81,20 +84,10 @@ const SWR_KNOTS: [number, number][] = [
 /** IC-7610 ALC max raw value */
 const ALC_MAX_DEFAULT = 120;
 
-/** IC-7610 S-meter fallback mirrors rigs/ic7610.toml. */
-const S9_RAW_DEFAULT = 130;
-const S9_SCALE_MAX_RAW_DEFAULT = 240;
-const S_METER_KNOTS_DEFAULT: [number, number][] = [
-  [0, -54],
-  [26, -48],
-  [52, -36],
-  [78, -24],
-  [103, -12],
-  [S9_RAW_DEFAULT, 0],
-  [165, 10],
-  [200, 20],
-  [S9_SCALE_MAX_RAW_DEFAULT, 40],
-];
+/** Raw scale ceiling (CI-V meter byte range), used only as the neutral
+ *  bar-geometry edge when a radio has no s_meter calibration table — never
+ *  a claimed reading (MOR-1451). */
+const RAW_SCALE_MAX = 255;
 
 // ---- Public formatters ----
 
@@ -134,31 +127,28 @@ export function formatAlc(raw: number): string {
   return `${pct}%`;
 }
 
-/**
- * Returns S-meter calibration boundaries: [s9Raw, scaleMaxRaw].
- */
-function getSmeterBounds(): [number, number] {
-  const cal = getMeterCalibration('s_meter');
-  if (cal && cal.length >= 2) {
-    const s9 = cal.find((p) => p.label === 'S9');
-    if (s9) return [s9.raw, cal[cal.length - 1].raw];
-    // Fallback: first point is floor, last point is max.
-    if (cal.length >= 2) return [cal[0].raw, cal[cal.length - 1].raw];
-  }
-  return [S9_RAW_DEFAULT, S9_SCALE_MAX_RAW_DEFAULT];
+function getSmeterKnots(): [number, number][] {
+  return calToKnots('s_meter') ?? [];
 }
 
-function getSmeterKnots(): [number, number][] {
-  return calToKnots('s_meter') ?? S_METER_KNOTS_DEFAULT;
+/** True when the active radio profile declared a real s_meter calibration
+ *  table. False means `formatSMeter`/`sLevel` below must fall back to an
+ *  honest raw-scale reading instead of fabricating one against a borrowed
+ *  curve (MOR-1451) — mirrors `smeter-scale.ts`'s `isSmeterCalibrated`. */
+function isSmeterCalibrated(): boolean {
+  return getSmeterKnots().length > 0;
 }
 
 function getSmeterMaxRaw(): number {
   const knots = getSmeterKnots();
-  return knots[knots.length - 1][0];
+  return knots.length > 0 ? knots[knots.length - 1][0] : RAW_SCALE_MAX;
 }
 
+/** Identity passthrough when uncalibrated, matching `smeter-scale.ts`'s
+ *  `calibratedToRaw`. */
 function calibratedSmeterToRaw(actual: number): number {
   const knots = getSmeterKnots();
+  if (knots.length === 0) return Math.max(0, Math.min(RAW_SCALE_MAX, actual));
   const minActual = knots[0][1];
   const maxActual = knots[knots.length - 1][1];
   const clamped = Math.max(minActual, Math.min(maxActual, actual));
@@ -178,8 +168,14 @@ function calibratedSmeterToRaw(actual: number): number {
 
 /**
  * Formats calibrated S-meter value (dB relative to S9) as an S-unit string.
+ * Falls back to the plain raw-scale number (no "S" claim) when the radio
+ * has no s_meter calibration table — never a reading borrowed from a
+ * different radio's curve (MOR-1451).
  */
 export function formatSMeter(actual: number): string {
+  if (!isSmeterCalibrated()) {
+    return String(Math.round(Math.max(0, Math.min(RAW_SCALE_MAX, actual))));
+  }
   const knots = getSmeterKnots();
   const minActual = knots[0][1];
   const maxActual = knots[knots.length - 1][1];
