@@ -24,6 +24,9 @@
  * Contract pinned by `src/__tests__/storage-isolation.isolated.test.ts`.
  */
 
+import { afterEach } from 'vitest';
+import { resetSharedTuningAccumulatorForTests } from './src/lib/runtime/commands/tuning-accumulator';
+
 /** Marker property test code can use to assert the stub is installed. */
 export const TEST_STORAGE_MARKER = '__rigplaneTestStorage';
 
@@ -63,3 +66,13 @@ for (const name of ['localStorage', 'sessionStorage'] as const) {
     configurable: true,
   });
 }
+
+// MOR-1425 review B5: the tuning accumulator is now a module-level
+// singleton shared by every `makeVfoHandlers()` caller (production
+// correctness — see `tuning-accumulator.ts`). Left unreset, a "hot" burst
+// left pending by one test's fake-timer clock is misread as still-hot by
+// the next test in the same file (`isolate: true` is per-FILE, not
+// per-test — same class of leak `localStorage` above was patched for).
+afterEach(() => {
+  resetSharedTuningAccumulatorForTests();
+});

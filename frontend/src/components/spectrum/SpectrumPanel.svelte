@@ -330,7 +330,9 @@
     if (current?.frequencyHz === null || current?.frequencyHz === undefined
       || !Number.isSafeInteger(step) || step <= 0) return;
     const frequency = snapFrequency(current.frequencyHz + (event.deltaY > 0 ? -step : step));
-    if (frequency !== null) vfoHandlers.onFreqChange(frequency, current.receiver);
+    // MOR-1425 review B1: a fixed one-step relative gesture (like digit-tuning
+    // wheel ticks), not an absolute target — keep the accumulate path.
+    if (frequency !== null) vfoHandlers.onFreqChange(frequency, current.receiver, 'step');
   }
 
   // --- Drag-to-pan (grab and slide the spectrum window) ---

@@ -31,8 +31,8 @@ import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
-import { dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
-import { createTuningAccumulator } from './tuning-accumulator';
+import { currentControlSessionEpoch, dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
+import { getSharedTuningAccumulator } from './tuning-accumulator';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -1048,22 +1048,21 @@ function supportsVfoSlot(
 }
 
 export function makeVfoHandlers() {
-  // MOR-1425: per-instance rapid-tuning-step accumulator — same precedent as
-  // the per-instance debounce state in `makeFilterHandlers()` above. Digit
-  // tuning's displayed-value-plus-step target collapses under a burst faster
-  // than the confirm round trip; this absorbs steps onto the pending target
-  // instead of dispatching the same stale target repeatedly. Constructed
-  // lazily (not here at factory-call time): `panel-adapters.ts` calls this
-  // factory at MODULE TOP LEVEL for its singleton accessor, and eager work
-  // here runs during initial module-graph evaluation, where this file's own
-  // import cycle with `system-controller`/`media-session` leaves freshly
-  // added imports TDZ-guarded. Every other handler below already defers all
-  // work (including its imports) to call time for the same reason.
-  let tuning: ReturnType<typeof createTuningAccumulator> | null = null;
-  function tuningAccumulator(): ReturnType<typeof createTuningAccumulator> {
-    return tuning ??= createTuningAccumulator({
+  // MOR-1425: rapid-tuning-step accumulator, shared module-wide (review
+  // B5) — NOT per-instance: `panel-adapters.ts` holds both a singleton
+  // accessor and fresh per-composition-root calls, and two independently-
+  // tracked accumulators for the same receiver would be blind to each
+  // other's writes. `epoch`/`generation` are the same session/capabilities
+  // reads `dispatchRadioIntent` itself uses (review B4).
+  function tuningAccumulator(): ReturnType<typeof getSharedTuningAccumulator> {
+    return getSharedTuningAccumulator({
       emit: (receiver, freq) =>
         dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: receiver as Receiver } }),
+      epoch: currentControlSessionEpoch,
+      generation: () => {
+        const value = getCapabilities()?.providerGeneration;
+        return typeof value === 'number' ? value : null;
+      },
     });
   }
 
@@ -1118,12 +1117,17 @@ export function makeVfoHandlers() {
         || !Number.isSafeInteger(freq) || !sub) return;
       tuningAccumulator().step(1, sub.freqHz, freq);
     },
-    onFreqChange: (freq: number, receiver?: Receiver) => {
+    // MOR-1425 review B1: callers mix ABSOLUTE targets (spectrum click/
+    // drag, EiBi/QSY recall) and RELATIVE steps (spectrum scroll, media
+    // keys, keyboard 'tune'). Defaults to 'jump' — absolute correctness by
+    // default — so only true step sources opt in with 'step'.
+    onFreqChange: (freq: number, receiver?: Receiver, kind: 'jump' | 'step' = 'jump') => {
       const context = currentA03cContext();
       const target = receiver === 0 ? 'MAIN' : receiver === 1 ? 'SUB' : null;
       if (!context || target === null || receiver === undefined
         || knownA03cReceiver(context, target, 'freqHz') !== receiver
         || !Number.isSafeInteger(freq)) return;
+      if (kind === 'jump') { tuningAccumulator().jump(receiver, freq); return; }
       const confirmed = receiver === 1 ? context.state.sub : context.state.main;
       if (!confirmed) return;
       tuningAccumulator().step(receiver, confirmed.freqHz, freq);
@@ -1390,7 +1394,7 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const target = typeof delta === 'number' && Number.isSafeInteger(frequency) ? frequency + delta : null;
       if (keyboardReceiverField(context, 'freqHz') && Number.isSafeInteger(step) && step > 0
         && typeof frequency === 'number' && Number.isSafeInteger(frequency) && frequency > 0
-        && typeof target === 'number' && Number.isSafeInteger(target) && target > 0) makeVfoHandlers().onFreqChange(target, receiver);
+        && typeof target === 'number' && Number.isSafeInteger(target) && target > 0) makeVfoHandlers().onFreqChange(target, receiver, 'step');
       return true;
     }
     case 'band_select': {

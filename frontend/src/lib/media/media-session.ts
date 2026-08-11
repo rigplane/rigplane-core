@@ -36,7 +36,9 @@ function tuneStep(steps: number): void {
   if (!Number.isSafeInteger(candidate)) return;
   const newFreq = snapToStep(candidate);
   if (!Number.isSafeInteger(newFreq) || newFreq <= 0 || newFreq === current) return;
-  vfoHandlers.onFreqChange(newFreq, receiver === 'SUB' ? 1 : 0);
+  // MOR-1425 review B1: a fixed step-increment gesture — keep the
+  // accumulate path, not the absolute-jump default.
+  vfoHandlers.onFreqChange(newFreq, receiver === 'SUB' ? 1 : 0, 'step');
 }
 
 /** Start a silent audio loop so the browser keeps MediaSession alive. */
