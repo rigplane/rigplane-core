@@ -5,7 +5,6 @@ import { SystemController } from '../system-controller';
 const teardown = [
   'audio',
   'ws:disconnect',
-  'http:disconnect',
   'media:destroy',
   'radio:disconnect',
   'radio:reset',
@@ -27,7 +26,6 @@ function fixture() {
   const controller = new SystemController({
     destroyAudio: mark('audio'),
     disconnectWebSockets: mark('ws:disconnect'),
-    setHttpDisconnected: mark('http:disconnect'),
     destroyMediaSession: mark('media:destroy'),
     setRadioDisconnected: mark('radio:disconnect'),
     resetRadioState: mark('radio:reset'),

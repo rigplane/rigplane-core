@@ -62,7 +62,7 @@
     getRadioStatus,
     getConnectionStatus,
     isAudioConnected,
-    getHttpConnected,
+    getWsConnected,
     getRadioPowerOn,
     getRigConnected,
     getRadioReady,
@@ -135,7 +135,13 @@
     deriveScopeIndicatorState(runtime.defaultScopeStatus, isPoweredOff),
   );
   let audioState = $derived(isPoweredOff ? 'disconnected' : (isAudioConnected() ? 'connected' : 'disconnected'));
-  let httpState = $derived(getHttpConnected() ? 'connected' : 'disconnected'); // server link — always real
+  // MOR-1419: derived from the same live WS transport signal as `controlState`
+  // (there is no separate HTTP transport anymore, post A10) refined by
+  // `radioHealth.serverReachable` when that's been observed — honest, not a
+  // stale flag that only a successful state commit ever flipped true.
+  let httpState = $derived(
+    getWsConnected() && getRadioHealth()?.serverReachable !== false ? 'connected' : 'disconnected',
+  ); // server link — always real
   let rigConnected = $derived(getRigConnected());
   let radioReady = $derived(getRadioReady());
   let radioHealth = $derived(getRadioHealth());

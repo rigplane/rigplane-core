@@ -16,7 +16,6 @@ import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities
 import {
   getConnectionStatus,
   isConnected,
-  getHttpConnected,
   getWsConnected,
   isAudioConnected,
   isStale,
@@ -46,7 +45,6 @@ export type DxMessage = Extract<WsIncoming, { type: 'dx_spot' | 'dx_spots' }>;
 
 export interface ConnectionSnapshot {
   status: 'connected' | 'partial' | 'disconnected';
-  http: boolean;
   ws: boolean;
   audio: boolean;
   stale: boolean;
@@ -144,7 +142,6 @@ class FrontendRuntime {
     return getConnectionStatus();
   }
 
-  get connectionHttp(): boolean { return getHttpConnected(); }
   get connectionWs(): boolean { return getWsConnected(); }
   get connectionAudio(): boolean { return isAudioConnected(); }
   get connectionStale(): boolean { return isStale(); }
@@ -159,7 +156,6 @@ class FrontendRuntime {
   get connection(): ConnectionSnapshot {
     return {
       status: getConnectionStatus(),
-      http: getHttpConnected(),
       ws: getWsConnected(),
       audio: isAudioConnected(),
       stale: isStale(),

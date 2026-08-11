@@ -17,7 +17,6 @@ const radioStoreMock = vi.hoisted(() => ({
 
 vi.mock('../../stores/connection.svelte', () => ({
   setWsConnected: vi.fn(),
-  setHttpConnected: vi.fn(),
   markStateUpdated: vi.fn(),
   setReconnecting: vi.fn(),
   setRadioStatus: vi.fn(),

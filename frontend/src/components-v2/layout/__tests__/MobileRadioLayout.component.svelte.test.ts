@@ -78,6 +78,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 }));
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
+  getWsConnected: vi.fn(() => false),
   getRadioPowerOn: vi.fn(() => null),
   // MOR-1279 slice 3B: the RX-audio snapshot reports audio-WS link health.
   isAudioConnected: vi.fn(() => false),
