@@ -193,6 +193,20 @@ class SerialCivLink:
         """Readiness signal suitable for higher-level radio_ready logic."""
         return self._connected and self._healthy
 
+    def set_device(self, device: str) -> None:
+        """Rebind this link to a different device node path (MOR-1453).
+
+        Used when the configured path has vanished (e.g. a renumbered
+        macOS ``/dev/cu.usbserial-*`` node after a USB replug) and a
+        sibling node has been discovered and identity-confirmed. Only
+        valid while disconnected -- callers must ``disconnect()`` first.
+        """
+        if not device.strip():
+            raise ValueError("device must be non-empty")
+        if self._connected:
+            raise RuntimeError("Cannot change device while connected.")
+        self._device = device
+
     async def connect(self) -> None:
         """Open serial CI-V transport."""
         if self._connected:

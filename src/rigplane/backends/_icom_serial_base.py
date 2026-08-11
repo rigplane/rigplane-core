@@ -8,9 +8,12 @@ serial-backed radios (IC-705, IC-7300, IC-9700, IC-7610).
 from __future__ import annotations
 
 import asyncio
+import glob
 import logging
 import os
+import re
 import time
+from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 from .._connection_state import RadioConnectionState
@@ -45,6 +48,21 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# MOR-1453: trailing device-node suffix that encodes the physical USB port
+# (macOS ``/dev/cu.usbserial-1420``) or enumeration order (Linux
+# ``/dev/ttyUSB0``). Stripped to derive a glob pattern that matches sibling
+# nodes of the same USB-serial family after a replug renumbers the node.
+_TRAILING_NODE_SUFFIX_RE = re.compile(r"(-[0-9A-Za-z]+|[0-9]+)$")
+
+
+def _derive_reconnect_glob(device: str) -> str:
+    """Best-effort glob pattern matching sibling device nodes of *device*."""
+    stripped = _TRAILING_NODE_SUFFIX_RE.sub("", device)
+    if not stripped or stripped == device:
+        return device + "*"
+    return stripped + "*"
 
 
 class _SerialAudioDriver(Protocol):
@@ -117,6 +135,8 @@ class _IcomSerialRadioBase(CoreRadio):
         civ_link: SerialCivLink | None = None,
         session_driver: SerialSessionDriver | None = None,
         audio_driver: _SerialAudioDriver | None = None,
+        reconnect_glob: str | None = None,
+        _civ_identity_probe: Callable[[str], Awaitable[int | None]] | None = None,
     ) -> None:
         from .icom7610.drivers.serial_civ_link import SerialCivLink
         from .icom7610.drivers.serial_session import SerialSessionDriver
@@ -140,6 +160,13 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_baudrate = baudrate
         self._serial_rx_device_override = rx_device
         self._serial_tx_device_override = tx_device
+        # MOR-1453: glob pattern used to rediscover a renumbered device node
+        # (e.g. macOS reassigning /dev/cu.usbserial-XXXX on a USB replug)
+        # when the configured path vanishes. Auto-derived unless overridden.
+        self._serial_reconnect_glob = reconnect_glob or _derive_reconnect_glob(device)
+        self._civ_identity_probe = (
+            _civ_identity_probe or self._default_civ_identity_probe
+        )
         if ptt_mode != "civ":
             raise ValueError(
                 "Unsupported serial PTT mode. Only 'civ' is currently supported."
@@ -161,6 +188,12 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_min_interval = serial_min_interval_ms / 1000.0
         serial_link = civ_link or SerialCivLink(device=device, baudrate=baudrate)
         self._serial_session = session_driver or SerialSessionDriver(serial_link)
+        # MOR-1453: reference to the raw link, used to rebind its device path
+        # on rediscovery. ``None`` when a bespoke ``session_driver`` was
+        # supplied directly, since its internal link is then unreachable
+        # from here -- rediscovery degrades to updating ``_serial_device``
+        # and the audio topology hint only in that (currently unused) path.
+        self._serial_civ_link = serial_link if session_driver is None else None
         self._serial_audio_driver = audio_driver or UsbAudioDriver(
             AudioDeviceConfig(
                 rx_device=rx_device,
@@ -361,6 +394,7 @@ class _IcomSerialRadioBase(CoreRadio):
         await self._stop_civ_worker()
         await self._stop_civ_rx_pump()
         await self._serial_session.disconnect()
+        await self._maybe_rediscover_serial_device()
 
         try:
             await self._serial_session.connect()
@@ -399,6 +433,69 @@ class _IcomSerialRadioBase(CoreRadio):
                     "serial soft_reconnect: _on_reconnect callback failed",
                     exc_info=True,
                 )
+
+    # ------------------------------------------------------------------
+    # Renumbered-node rediscovery (MOR-1453)
+    # ------------------------------------------------------------------
+
+    async def _maybe_rediscover_serial_device(self) -> None:
+        """Rediscover a renumbered device node before retrying connect.
+
+        The configured device path is a fixed string, but on macOS it
+        encodes the physical USB port (``/dev/cu.usbserial-1420``), so
+        replugging the radio into a different port renames the node and
+        leaves ``soft_reconnect`` retrying a path that no longer exists
+        (follow-up from MOR-1440). When the configured path is verified
+        gone, scan sibling nodes matching ``_serial_reconnect_glob`` and
+        adopt the first one that answers a CI-V identity probe at our
+        configured address -- multi-adapter hosts must never grab a
+        different radio's port, so an unconfirmed or wrong-identity
+        candidate is left alone and the caller's normal retry/backoff
+        continues to apply.
+        """
+        if os.path.exists(self._serial_device):
+            return
+        candidates = sorted(
+            set(glob.glob(self._serial_reconnect_glob)) - {self._serial_device}
+        )
+        for candidate in candidates:
+            try:
+                address = await self._civ_identity_probe(candidate)
+            except Exception:
+                logger.debug(
+                    "serial rediscovery: identity probe failed for %s",
+                    candidate,
+                    exc_info=True,
+                )
+                continue
+            if address is None or address != self._radio_addr:
+                continue
+            logger.warning(
+                "rigplane (%s): serial node %s vanished; rediscovered radio "
+                "at %s (CI-V address 0x%02X confirmed)",
+                self.model,
+                self._serial_device,
+                candidate,
+                address,
+            )
+            self._serial_device = candidate
+            if self._serial_civ_link is not None:
+                set_device = getattr(self._serial_civ_link, "set_device", None)
+                if callable(set_device):
+                    set_device(candidate)
+            set_serial_port = getattr(
+                self._serial_audio_driver, "set_serial_port", None
+            )
+            if callable(set_serial_port):
+                set_serial_port(candidate)
+            return
+
+    async def _default_civ_identity_probe(self, port: str) -> int | None:
+        """Probe *port* for a CI-V radio and return its address, or ``None``."""
+        from .discovery import probe_serial_civ
+
+        result = await probe_serial_civ(port, baud_rates=[self._serial_baudrate])
+        return result.address if result is not None else None
 
     # ------------------------------------------------------------------
     # Scope

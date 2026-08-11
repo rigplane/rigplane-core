@@ -592,6 +592,18 @@ class UsbAudioDriver:
             return self._duplex_stream.running
         return self._tx_stream is not None and self._tx_stream.running
 
+    def set_serial_port(self, serial_port: str | None) -> None:
+        """Rebind topology-based audio resolution to a new serial port.
+
+        Used after serial-node rediscovery (MOR-1453) so the next
+        ``start_rx``/``start_tx`` call re-resolves RX/TX device indices
+        against the radio's new (renumbered) device node instead of the
+        one captured at construction. ``_ensure_selected_devices``
+        recomputes the selection unconditionally on every call, so no
+        separate cache invalidation is needed here.
+        """
+        self._serial_port = serial_port
+
     @property
     def selected_rx_device(self) -> UsbAudioDevice | None:
         return self._selected_rx

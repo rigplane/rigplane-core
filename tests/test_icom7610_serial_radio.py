@@ -103,6 +103,10 @@ class _FakeSerialCivLink:
         self.sent_frames: list[bytes] = []
         self._responses: asyncio.Queue[bytes] = asyncio.Queue()
         self._responses_by_send: dict[int, list[bytes]] = {}
+        self.device_history: list[str] = []
+
+    def set_device(self, device: str) -> None:
+        self.device_history.append(device)
 
     async def connect(self) -> None:
         self.connect_calls += 1
@@ -701,6 +705,133 @@ async def test_serial_link_down_settles_after_successful_reconnect_same_node(
     )
     assert radio.conn_state == RadioConnectionState.CONNECTED
     assert radio.radio_ready is True
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_rediscovers_renumbered_node(tmp_path) -> None:
+    """MOR-1453: a replug that renames the /dev node (macOS encodes the
+    physical USB port in the ``cu.usbserial-XXXX`` suffix) must be
+    rediscovered by glob and adopted once CI-V identity is confirmed,
+    instead of retrying a vanished path forever.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    new_path = tmp_path / "cu.usbserial-9931"
+
+    link = _FakeSerialCivLink()
+    audio = _FakeUsbAudioDriver()
+    probed: list[str] = []
+
+    async def _identity_probe(port: str) -> int | None:
+        probed.append(port)
+        return IC_7610_ADDR if port == str(new_path) else None
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        audio_driver=audio,
+        reconnect_glob=str(tmp_path / "cu.usbserial-*"),
+        _civ_identity_probe=_identity_probe,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()  # deterministic: no background tick races.
+
+    # Simulate the replug: link health drops (as the watchdog would observe),
+    # the old node vanishes, and a new sibling node appears.
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    new_path.write_text("")
+
+    await radio.soft_reconnect()
+
+    assert probed == [str(new_path)]
+    assert radio._serial_device == str(new_path)
+    assert link.device_history == [str(new_path)]
+    assert radio.conn_state == RadioConnectionState.CONNECTED
+    assert radio.radio_ready is True
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_rejects_wrong_identity_node(tmp_path) -> None:
+    """MULTI-ADAPTER SAFETY (MOR-1453): a sibling node that answers with a
+    different radio's CI-V address must never be adopted.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    other_radio_path = tmp_path / "cu.usbserial-4471"
+
+    link = _FakeSerialCivLink()
+    probed: list[str] = []
+
+    async def _identity_probe(port: str) -> int | None:
+        probed.append(port)
+        return 0x94  # a different radio's CI-V address -- never ours
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        reconnect_glob=str(tmp_path / "cu.usbserial-*"),
+        _civ_identity_probe=_identity_probe,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    other_radio_path.write_text("")
+
+    await radio.soft_reconnect()
+
+    assert probed == [str(other_radio_path)]
+    assert radio._serial_device == str(old_path)  # unchanged -- never adopted
+    assert link.device_history == []
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_skips_rediscovery_when_path_still_present(
+    tmp_path,
+) -> None:
+    """Regression guard: rediscovery must never run while the configured
+    device node is still present -- the ordinary same-node reconnect path
+    (MOR-1440's lifecycle pins) sees zero behavior change.
+    """
+    device_path = tmp_path / "cu.usbserial-1420"
+    device_path.write_text("")
+
+    link = _FakeSerialCivLink(fail_connect_calls={2})
+    probed: list[str] = []
+
+    async def _identity_probe(port: str) -> int | None:
+        probed.append(port)
+        return IC_7610_ADDR
+
+    radio = Icom7610SerialRadio(
+        device=str(device_path),
+        civ_link=link,
+        _civ_identity_probe=_identity_probe,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+
+    with pytest.raises(ConnectionError, match="Failed to reconnect"):
+        await radio.soft_reconnect()
+
+    assert probed == []
+    assert radio._serial_device == str(device_path)
 
     await radio.disconnect()
 

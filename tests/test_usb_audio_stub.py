@@ -374,3 +374,18 @@ async def test_usb_audio_driver_reports_rx_and_tx_effective_contract() -> None:
     assert contract.tx.device.name == "USB Audio CODEC"
     await driver.stop_tx()
     await driver.stop_rx()
+
+
+def test_set_serial_port_rebinds_topology_resolution_hint() -> None:
+    """MOR-1453: rediscovery rebinds audio topology resolution to the
+    radio's new (renumbered) serial device node.
+    """
+    driver, _ = _make_driver()
+    driver.set_serial_port("/dev/cu.usbserial-9931")
+    assert driver._serial_port == "/dev/cu.usbserial-9931"
+
+
+def test_set_serial_port_accepts_none() -> None:
+    driver, _ = _make_driver()
+    driver.set_serial_port(None)
+    assert driver._serial_port is None
