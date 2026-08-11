@@ -130,6 +130,7 @@ import {
   makeRfFrontEndHandlers,
   makeRitXitHandlers,
   makeRxAudioHandlers,
+  makeScopeControlsHandlers,
   makeTxHandlers,
   makeVfoHandlers,
   dispatchKeyboardRadioAction,
@@ -380,6 +381,36 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  // MOR-1446: the live IC-7300 walkthrough found SPAN/SPEED/REF desynced —
+  // the radio applied the change (visible on the waterfall) but the
+  // `scopeControls.*` readout never advanced past its pre-write reading.
+  // The frontend dispatch leg was never the broken one (these three pin
+  // that): `scopeControls.span`/`speed`/`refDb` are all observed:true on
+  // this live fixture (see `ic7300-state.json`), so `acceptsScopeValue`
+  // passes and the real command factory sends the exact WS frame. The
+  // actual defect was the backend never re-confirming the leaf after a
+  // write (`radio_poller.py`'s `_reconfirm_scope_field`, MOR-1446 fix).
+  it('scope span: dispatches set_scope_span for the confirmed span leaf', () => {
+    expect(IC7300_STATE.fieldStatus?.['scopeControls.span']?.observed).toBe(true);
+    makeScopeControlsHandlers().onSpanChange(6);
+    expect(exactCalls()).toEqual([['set_scope_span', { span: 6 }]]);
+    expectIntentTransport();
+  });
+
+  it('scope speed: dispatches set_scope_speed for the confirmed speed leaf', () => {
+    expect(IC7300_STATE.fieldStatus?.['scopeControls.speed']?.observed).toBe(true);
+    makeScopeControlsHandlers().onSpeedChange(1);
+    expect(exactCalls()).toEqual([['set_scope_speed', { speed: 1 }]]);
+    expectIntentTransport();
+  });
+
+  it('scope ref: dispatches set_scope_ref for the confirmed refDb leaf', () => {
+    expect(IC7300_STATE.fieldStatus?.['scopeControls.refDb']?.observed).toBe(true);
+    makeScopeControlsHandlers().onRefChange(10);
+    expect(exactCalls()).toEqual([['set_scope_ref', { ref: 10 }]]);
+    expectIntentTransport();
   });
 });
 

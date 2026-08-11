@@ -74,6 +74,9 @@ from rigplane.web.radio_poller import (
     SetRfGain,
     SetScopeEdge,
     SetScopeRbw,
+    SetScopeRef,
+    SetScopeSpan,
+    SetScopeSpeed,
     SetScopeVbw,
     SetSplit,
     SetSquelch,
@@ -1915,6 +1918,77 @@ async def test_execute_set_scope_rbw_updates_state() -> None:
 
     radio.set_scope_rbw.assert_awaited_once_with(2)
     assert state.scope_controls.rbw == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_span_updates_state_and_reconfirms() -> None:
+    """MOR-1446: a span write must re-GET so the StateStore observation for
+    ``scope_controls.span`` refreshes — otherwise the stale pre-write
+    observation (last confirmed at ``EnableScope`` time) keeps overwriting
+    the fresh optimistic value on every subsequent state snapshot, and the
+    frontend readout desyncs from the radio's real span (MOR-1446 leg 1)."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeSpan(span=6))  # noqa: SLF001
+
+    radio.set_scope_span.assert_awaited_once_with(6)
+    assert state.scope_controls.span == 6
+    radio.get_scope_span.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_speed_updates_state_and_reconfirms() -> None:
+    """MOR-1446 leg 3: SPEED reads as inert without the reconfirm — the
+    dispatch reaches the radio, but the readout never advances past its
+    pre-write reading."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeSpeed(speed=2))  # noqa: SLF001
+
+    radio.set_scope_speed.assert_awaited_once_with(2)
+    assert state.scope_controls.speed == 2
+    radio.get_scope_speed.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_ref_updates_state_and_reconfirms() -> None:
+    """MOR-1446 leg 2: REF stays stuck at 0 without the reconfirm — the radio
+    applies the level (waterfall visibly changes) but the readout keeps
+    replaying the stale pre-write observation."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeRef(ref=5))  # noqa: SLF001
+
+    radio.set_scope_ref.assert_awaited_once_with(5)
+    assert state.scope_controls.ref_db == 5.0
+    radio.get_scope_ref.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise() -> None:
+    """A dropped confirm response (busy scope stream) must not fail the
+    command — `_reconfirm_scope_field` bounds and swallows it exactly like
+    `_fetch_scope_controls` already does for the same class of getter."""
+    radio = _make_radio()
+    state = RadioState()
+
+    async def _never_resolves() -> int:
+        await asyncio.sleep(10)
+        return 0
+
+    radio.get_scope_span = _never_resolves
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeSpan(span=6))  # noqa: SLF001
+
+    radio.set_scope_span.assert_awaited_once_with(6)
+    assert state.scope_controls.span == 6
 
 
 @pytest.mark.asyncio
