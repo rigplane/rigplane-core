@@ -287,6 +287,79 @@ describe('every band intent lands on the ACTIVE receiver (MOR-1322 B1 class)', (
   });
 });
 
+/*
+ * ── MOR-1425 review round 2 (B1 residual) ──────────────────────────────
+ *
+ * `tuneFrequency` (the shared per-receiver dispatcher behind BOTH the
+ * digit-tuning path and this surface's two absolute sources) used to funnel
+ * everything through the unconditional `step()` accumulate path. A hot
+ * digit-tuning burst on the active receiver (VfoSurface's wheel/arrow
+ * tuning, elsewhere in the composed tree) left a live pending-target window
+ * open; a typed frequency entry or a bandless band pick landing inside that
+ * window was treated as ANOTHER relative step and accumulated onto the
+ * stale pending target instead of landing at the exact value the operator
+ * asked for — reproduced live as "5 wheel ticks then typing 7_100_000 →
+ * emitted 7_105_000" and "3 ticks then a bandless band select → 3 kHz off".
+ * `enterFrequency`/`selectBand`'s bandless fallback now route through
+ * `tuneFrequency(..., 'jump')`, which clears the burst and emits the exact
+ * target immediately, unpaced (`tuning-accumulator.ts`'s `jump()`).
+ *
+ * Fake timers: the accumulator's own pacing (`quietWindowMs`/`paceMs`)
+ * needs a controllable clock so the burst stays provably HOT for the whole
+ * test and a stray late flush can be proven absent, same pattern as
+ * `panel-commands.intent.isolated.test.ts`'s MOR-1425 burst tests.
+ */
+describe('absolute band intents land exactly, unpaced, even mid a hot digit-tuning burst (MOR-1425 review round 2, B1 residual)', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('a typed frequency entry (BandSurface) lands EXACTLY, immediately, with no accumulated offset', () => {
+    render();
+    const vfo = makeVfoHandlers();
+    const confirmed = 14250000; // MAIN's confirmed freq (liveState default; MAIN is active)
+    // Prime a HOT digit-tuning burst on MAIN: the first gesture is a cold
+    // start (emits immediately), the second lands inside the quiet window
+    // and is held, paced — exactly the "wheel toward a signal" shape.
+    vfo.onMainFreqChange(confirmed + 1_000);
+    vfo.onMainFreqChange(confirmed + 1_000);
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: confirmed + 1_000, receiver: 0 }]]);
+
+    typeFrequency('7100000');
+    btn('entry-set')!.click();
+    flushSync();
+
+    // The typed ABSOLUTE target must land EXACTLY and IMMEDIATELY — not
+    // folded into the still-hot burst's accumulated target (the
+    // 7_105_000-style offset), and not held for the burst's own pace timer.
+    expect(setFreqCalls().at(-1)).toEqual(['set_freq', { freq: 7100000, receiver: 0 }]);
+
+    // The jump clears the burst's pending flush — advancing past its pace
+    // window must never emit a stray third call.
+    vi.advanceTimersByTime(60);
+    expect(setFreqCalls()).toHaveLength(2);
+  });
+
+  it('a bandless band select lands EXACTLY, immediately, with no accumulated offset', () => {
+    render();
+    const vfo = makeVfoHandlers();
+    const confirmed = 14250000;
+    vfo.onMainFreqChange(confirmed + 1_000);
+    vfo.onMainFreqChange(confirmed + 1_000);
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: confirmed + 1_000, receiver: 0 }]]);
+
+    // 'MW' carries no BSR code (see BAND_PLAN above) — the bandless
+    // `set_freq` fallback, the same absolute-default gesture reproduced
+    // live as "3 ticks then bandless band select → 3 kHz off".
+    btn('choice-MW')!.click();
+    flushSync();
+
+    expect(setFreqCalls().at(-1)).toEqual(['set_freq', { freq: 1000000, receiver: 0 }]);
+
+    vi.advanceTimersByTime(60);
+    expect(setFreqCalls()).toHaveLength(2);
+  });
+});
+
 /* ── (d) the wiring's own guard, independent of the surface's ───── */
 
 describe('the wiring refuses a receiver-scoped write with no known active receiver', () => {
