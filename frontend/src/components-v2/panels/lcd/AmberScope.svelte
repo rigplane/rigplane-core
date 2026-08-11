@@ -2,7 +2,7 @@
   import { deriveAmberScopeProps } from '$lib/runtime/adapters/panel-adapters';
   import {
     toTxProps, toRitXitProps, toVfoOpsProps, toDspProps, toFilterProps,
-  } from '../../wiring/state-adapter';
+  } from '$lib/runtime/props/panel-props';
   import AmberFrequency from './AmberFrequency.svelte';
   import AmberAfScope from './AmberAfScope.svelte';
   import AmberFilterGhost from './AmberFilterGhost.svelte';
@@ -59,6 +59,18 @@
   let vfoOps = $derived(toVfoOpsProps(radioState, null));
   let dsp = $derived(toDspProps(radioState, null));
   let filterProps = $derived(toFilterProps(radioState, caps));
+
+  // MOR-1409 A14: `filterProps.filterWidth` is `Number.NaN` when
+  // unobserved (panel-props honesty hardening, plan §4.1/§4.2 finding #3).
+  // `AmberFilterGhost`/`AmberAfScope` (frozen consumers) compute
+  // `filterWidth / filterWidthMax` with no NaN handling — guard at this
+  // owner-file choke point instead of touching either frozen component.
+  // `0` is a non-plausible, geometrically degenerate placeholder (collapses
+  // the ratio to the floor), not a re-fabrication of the old 2400 Hz
+  // stand-in (mirrors AmberCockpit's identical guard).
+  let safeFilterWidth = $derived(
+    Number.isFinite(filterProps.filterWidth) ? filterProps.filterWidth : 0,
+  );
 
   // Active receiver for indicator zone data (unchanged from pre-#897)
   let rx = $derived(radioState?.active === 'SUB' ? radioState?.sub : radioState?.main);
@@ -259,7 +271,7 @@
         <AmberAfScope
           data={fftPixels}
           onRegisterPush={(fn) => { fftPush = fn; }}
-          filterWidth={filterProps.filterWidth}
+          filterWidth={safeFilterWidth}
           filterWidthMax={filterProps.filterWidthMax}
           ifShift={filterProps.ifShift}
           bandwidth={fftBandwidth}
@@ -267,7 +279,7 @@
         />
       {:else}
         <AmberFilterGhost
-          filterWidth={filterProps.filterWidth}
+          filterWidth={safeFilterWidth}
           filterWidthMax={filterProps.filterWidthMax}
         />
       {/if}
