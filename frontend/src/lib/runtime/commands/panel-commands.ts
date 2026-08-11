@@ -32,6 +32,7 @@ import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls'
 import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
+import { createTuningAccumulator } from './tuning-accumulator';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -1047,6 +1048,25 @@ function supportsVfoSlot(
 }
 
 export function makeVfoHandlers() {
+  // MOR-1425: per-instance rapid-tuning-step accumulator — same precedent as
+  // the per-instance debounce state in `makeFilterHandlers()` above. Digit
+  // tuning's displayed-value-plus-step target collapses under a burst faster
+  // than the confirm round trip; this absorbs steps onto the pending target
+  // instead of dispatching the same stale target repeatedly. Constructed
+  // lazily (not here at factory-call time): `panel-adapters.ts` calls this
+  // factory at MODULE TOP LEVEL for its singleton accessor, and eager work
+  // here runs during initial module-graph evaluation, where this file's own
+  // import cycle with `system-controller`/`media-session` leaves freshly
+  // added imports TDZ-guarded. Every other handler below already defers all
+  // work (including its imports) to call time for the same reason.
+  let tuning: ReturnType<typeof createTuningAccumulator> | null = null;
+  function tuningAccumulator(): ReturnType<typeof createTuningAccumulator> {
+    return tuning ??= createTuningAccumulator({
+      emit: (receiver, freq) =>
+        dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: receiver as Receiver } }),
+    });
+  }
+
   return {
     onSwap: () => {
       const context = currentA03cContext();
@@ -1086,22 +1106,27 @@ export function makeVfoHandlers() {
     onSubModeClick: () => focusModePanel('SUB'),
     onMainFreqChange: (freq: number) => {
       const context = currentA03cContext();
+      const main = context?.state.main;
       if (!context || knownA03cReceiver(context, 'MAIN', 'freqHz') !== 0
-        || !Number.isSafeInteger(freq)) return;
-      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: 0 } });
+        || !Number.isSafeInteger(freq) || !main) return;
+      tuningAccumulator().step(0, main.freqHz, freq);
     },
     onSubFreqChange: (freq: number) => {
       const context = currentA03cContext();
+      const sub = context?.state.sub;
       if (!context || knownA03cReceiver(context, 'SUB', 'freqHz') !== 1
-        || !Number.isSafeInteger(freq)) return;
-      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: 1 } });
+        || !Number.isSafeInteger(freq) || !sub) return;
+      tuningAccumulator().step(1, sub.freqHz, freq);
     },
     onFreqChange: (freq: number, receiver?: Receiver) => {
       const context = currentA03cContext();
       const target = receiver === 0 ? 'MAIN' : receiver === 1 ? 'SUB' : null;
-      if (!context || target === null || knownA03cReceiver(context, target, 'freqHz') !== receiver
+      if (!context || target === null || receiver === undefined
+        || knownA03cReceiver(context, target, 'freqHz') !== receiver
         || !Number.isSafeInteger(freq)) return;
-      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver } });
+      const confirmed = receiver === 1 ? context.state.sub : context.state.main;
+      if (!confirmed) return;
+      tuningAccumulator().step(receiver, confirmed.freqHz, freq);
     },
     onModeChange: (mode: string, receiver?: Receiver) => {
       const context = currentA03cContext();

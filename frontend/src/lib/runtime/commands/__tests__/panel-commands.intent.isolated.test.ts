@@ -952,6 +952,12 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onVfoSelect('SUB', 'B');
     vfo.onMainFreqChange(14_100_000);
     vfo.onSubFreqChange(7_100_000);
+    // MOR-1425: onMainFreqChange and this onFreqChange(_, 0) call both target
+    // receiver 0 — advance past the tuning accumulator's quiet window so this
+    // is a fresh, independent, immediately-emitted step, not a burst
+    // continuation (the accumulator's own behavior is covered separately in
+    // `tuning-accumulator.test.ts` and the MOR-1425 tests below).
+    vi.advanceTimersByTime(4_500);
     vfo.onFreqChange(18_100_000, 0);
     vfo.onModeChange('CW', 1);
     vfo.onFilterChange(3, 0);
@@ -1036,6 +1042,47 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(h.setAudioConfig).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('MOR-1425: a burst of rapid steps within one round trip accumulates onto the pending target, not the stale confirmed value', () => {
+    const vfo = makeVfoHandlers();
+    const confirmed = h.state!.main!.freqHz; // 14_074_000, unchanged for the whole burst
+    const step = 1_000;
+    // Every gesture computes its target off the STILL-CONFIRMED value, the
+    // exact MOR-1425 mechanism (the presentation layer's `freq` prop does
+    // not advance until the round trip completes).
+    for (let i = 1; i <= 5; i++) vfo.onMainFreqChange(confirmed + step);
+
+    // First step is an immediate, unpaced cold start.
+    expect(h.sendCommand).toHaveBeenCalledTimes(1);
+    expect(exactCalls()[0]).toEqual(['set_freq', { freq: confirmed + step, receiver: 0 }]);
+
+    // The remaining 4 steps accumulate and flush once, paced.
+    vi.advanceTimersByTime(60);
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: confirmed + 5 * step, receiver: 0 }]);
+    // MOR-1425 invariant: never an optimistic patch — the display stays
+    // last-confirmed radio truth throughout the whole burst.
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+  });
+
+  it('MOR-1425: a contradictory confirmed frequency mid-burst resets accumulation to the new truth', () => {
+    const vfo = makeVfoHandlers();
+    const confirmed = h.state!.main!.freqHz;
+    vfo.onMainFreqChange(confirmed + 1_000); // cold, immediate
+    vfo.onMainFreqChange(confirmed + 1_000); // hot, accumulates, paced
+
+    // The operator turned the physical knob: a new confirmed frequency the
+    // accumulator's own pending sequence did not predict.
+    const physical = confirmed + 500_000;
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: physical } };
+    vfo.onMainFreqChange(physical + 1_000);
+
+    // The reset step is itself a cold start: immediate, carrying a target
+    // measured from the NEW physical truth.
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: physical + 1_000, receiver: 0 }]);
   });
 
   it('shares one fail-closed VOX toggle and routes standalone VOX controls through lifecycle', () => {
