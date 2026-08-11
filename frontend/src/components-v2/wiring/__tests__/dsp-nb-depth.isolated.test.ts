@@ -40,9 +40,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import * as radioStore from '$lib/stores/radio.svelte';
-import { makeDspHandlers as makeBusDspHandlers } from '../command-bus';
 import { makeDspHandlers as makeRuntimeDspHandlers } from '$lib/runtime/commands/panel-commands';
-import { toDspProps as toBusDspProps } from '../state-adapter';
 import { toDspProps as toRuntimeDspProps } from '$lib/runtime/props/panel-props';
 
 beforeEach(() => {
@@ -50,7 +48,6 @@ beforeEach(() => {
 });
 
 describe.each([
-  ['command-bus', makeBusDspHandlers],
   ['runtime panel-commands', makeRuntimeDspHandlers],
 ])('onNbDepthChange (%s)', (_name, makeHandlers) => {
   it('converts the 1-10 slider value to the 0-9 wire value before sending', () => {
@@ -79,7 +76,6 @@ describe.each([
 // FTX-1 (native 0-10 NB, no depth/width) and X6200 (nb_level only) render
 // correctly without phantom controls.
 describe.each([
-  ['command-bus', toBusDspProps],
   ['runtime panel-props', toRuntimeDspProps],
 ])('toDspProps NB capability gating (%s)', (_name, toDspProps) => {
   const state = { active: 'MAIN', main: {} } as any;

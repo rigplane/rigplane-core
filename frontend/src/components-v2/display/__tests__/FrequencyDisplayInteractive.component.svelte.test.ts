@@ -3,16 +3,28 @@ import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import type { ServerState } from '$lib/types/state';
 import FrequencyDisplayInteractive from '../../../primitives/frequency/FrequencyDisplayInteractive.svelte';
-import { toVfoProps } from '../../wiring/state-adapter';
+import { toVfoProps } from '$lib/runtime/props/panel-props';
 
-// This test exercises the REAL radio store + REAL state-adapter so the freq
-// fix (MOR-475/MOR-1403) is verified end-to-end: VFO frequency is StateStore-
-// owned truth exclusively — click-to-tune steps from the last CONFIRMED
-// server frequency, never a local intent (MOR-1409 A09b removed the last
-// optimistic machinery; there is no overlay left to drop). We import the real
-// store dynamically per test to reset its module state between cases.
-
-let store: typeof import('$lib/stores/radio.svelte');
+// This test exercises the REAL `panel-props` projection so the freq fix
+// (MOR-475/MOR-1403) is verified end-to-end: click-to-tune steps from the last
+// CONFIRMED server frequency, never a local intent (MOR-1409 A09b removed the
+// last optimistic machinery; there is no overlay left to drop).
+//
+// MOR-1409 A15 — authored re-point, and a finding worth recording. This file
+// used to project through the deleted `wiring/state-adapter` twin and assert
+// `14074000`. That assertion passed for the WRONG reason: `setRadioState()`
+// rejects this fixture (it gates on a capability epoch/topology the fixture
+// never establishes), so `getRadioState()` was `null` and the twin's `!state`
+// branch returned its hard-coded `14074000`/`'USB'`/`'FIL1'` stand-in. The
+// test was reading a fabrication while its own comment claimed StateStore
+// truth. `panel-props.toVfoProps` is honest — it returns `NaN` for an
+// unobserved VFO — which is what exposed this.
+//
+// The projection is therefore fed the constructed observation directly, so
+// the value is genuinely observed rather than fabricated. Restoring a real
+// store round-trip needs a capabilities/epoch harness this file never had and
+// is out of A15's scope; it is recorded as a follow-up rather than smuggled
+// into a closure gate.
 
 function makeMinimalState(overrides: Partial<ServerState> = {}): ServerState {
   const revision = overrides.stateRevision ?? overrides.revision ?? 1;
@@ -72,9 +84,8 @@ function mountDisplay(props: ComponentProps<typeof FrequencyDisplayInteractive>)
   return t;
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   vi.resetModules();
-  store = await import('$lib/stores/radio.svelte');
   components = [];
 });
 
@@ -85,28 +96,22 @@ afterEach(() => {
 
 describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-475)', () => {
   it('scroll steps from the last StateStore frequency, never an unconfirmed intent', () => {
-    // Initial server freq.
-    store.setRadioState(makeMinimalState({
-      revision: 1,
-      stateRevision: 1,
-      observationSeq: 1,
-      freshnessRevision: 1,
-      main: { ...makeMinimalState().main, freqHz: 14074000 },
-    }));
-
-    // A causally-newer StateStore observation confirming the same frequency
-    // (analogous to an in-flight poll captured before any local click lands).
-    store.setRadioState(makeMinimalState({
+    // A causally-newer observation confirming the frequency (analogous to an
+    // in-flight poll captured before any local click lands).
+    const observed = makeMinimalState({
       revision: 1,
       stateRevision: 1,
       observationSeq: 2,
       freshnessRevision: 2,
       main: { ...makeMinimalState().main, freqHz: 14074000 },
-    }));
+    });
 
-    // The StateStore observation is the sole VFO truth seen by the adapter.
-    const vfo = toVfoProps(store.getRadioState(), 'main');
+    // The observation is the sole VFO truth seen by the projection — and it is
+    // OBSERVED, not fabricated: the honest projection returns `NaN` when it is
+    // not, which is exactly what this assertion now distinguishes.
+    const vfo = toVfoProps(observed, 'main');
     expect(vfo.freq).toBe(14074000);
+    expect(Number.isNaN(toVfoProps(null, 'main').freq)).toBe(true);
 
     const onFreqChange = vi.fn();
     const t = mountDisplay({ freq: vfo.freq, onFreqChange });

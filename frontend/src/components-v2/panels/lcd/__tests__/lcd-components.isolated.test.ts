@@ -43,7 +43,8 @@ vi.mock('$lib/stores/connection.svelte', () => ({
   markScopeFrame: vi.fn(),
 }));
 
-vi.mock('../../wiring/state-adapter', () => ({
+vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/runtime/props/panel-props')>(),
   resolveFilterModeConfig: () => null,
 }));
 

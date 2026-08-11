@@ -287,7 +287,8 @@ vi.mock('../../../../components-v2/panels/filter-controls', () => ({
   deriveIfShift: vi.fn(() => 0),
 }));
 
-vi.mock('../../../../components-v2/wiring/state-adapter', () => ({
+vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/runtime/props/panel-props')>(),
   resolveFilterModeConfig: vi.fn(() => null),
 }));
 

@@ -28,7 +28,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
 }));
 
 vi.mock('$lib/runtime/adapters/vfo-adapter', () => ({ deriveVfoOps: () => props.ops }));
-vi.mock('../../../wiring/command-bus', () => ({
+vi.mock('$lib/runtime/commands/panel-commands', () => ({
   makeVfoHandlers: () => bindings.vfo,
   makeRitXitHandlers: () => bindings.ritXit,
   makeCwPanelHandlers: () => bindings.cw,

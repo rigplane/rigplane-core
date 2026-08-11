@@ -26,7 +26,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { getRadioState } from '$lib/stores/radio.svelte';
-import { makeModeHandlers, makeVfoHandlers } from '../command-bus';
+import { makeModeHandlers, makeVfoHandlers } from '$lib/runtime/commands/panel-commands';
 
 const originalDocumentQuerySelector = document.querySelector.bind(document);
 

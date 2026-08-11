@@ -17,13 +17,8 @@ const SCOPE_METADATA = new Set([
   'span', 'spanHz',
 ]);
 
-const LEGACY_PRESENTATION_AUTHORITY = new Set([
-  'src/components-v2/layout/StatusBar.svelte',
-  'src/components/spectrum/EiBiBrowser.svelte',
-]);
+const LEGACY_PRESENTATION_AUTHORITY = new Set([]);
 const LEGACY_WRITER_OWNERS = new Set([
-  'src/components-v2/wiring/command-bus.ts',
-  'src/components-v2/wiring/state-adapter.ts',
   'src/lib/runtime/adapters/mod-input-auto.svelte.ts',
   'src/lib/runtime/commands/panel-commands.ts',
   'src/lib/runtime/frontend-runtime.ts',
@@ -33,7 +28,6 @@ const LEGACY_WRITER_OWNERS = new Set([
   'src/lib/transport/ws-client.ts',
 ]);
 const ACQUISITION_OWNERS = new Set([
-  'src/components-v2/wiring/command-bus.ts',
   'src/lib/runtime/frontend-runtime.ts',
   'src/lib/runtime/commands/panel-commands.ts',
   'src/lib/runtime/scope-controller.svelte.ts',
@@ -56,7 +50,6 @@ const READ_ONLY_SEAMS = [
   'src/lib/radio/mode-filter-memory.ts',
 ];
 const INTENT_FACADES = [
-  'src/components-v2/wiring/command-bus.ts',
   'src/lib/runtime/commands',
 ];
 const DIRECT_ORIGIN_OWNERS = new Set([

@@ -64,7 +64,7 @@ import { sendCommand } from '$lib/transport/ws-client';
 import { getRadioState, getActiveReceiver } from '$lib/stores/radio.svelte';
 import { adjustTuningStep } from '$lib/stores/tuning.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
-import { makeKeyboardHandlers } from '../command-bus';
+import { makeKeyboardHandlers } from '$lib/runtime/commands/panel-commands';
 
 const makeAction = (action: string, params?: Record<string, unknown>) => ({
   id: `test-${action}`,
