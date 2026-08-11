@@ -2263,6 +2263,19 @@ class WebServer:
             while True:
                 await asyncio.sleep(interval)
                 dead_ws = self._conn_manager.reap_dead()
+                for ws in dead_ws:
+                    # MOR-1429: reap_dead() above only drops this server's
+                    # per-IP bookkeeping. The connection's owning task (a
+                    # control/scope/audio(-scope) handler, tracked in
+                    # _client_tasks) stays blocked in recv() forever on a
+                    # half-open peer unless the transport itself is closed.
+                    # ws.close() now does real teardown (MOR-1429), so the
+                    # blocked reader unblocks, the handler's own
+                    # finally/teardown path runs normally, and the owning
+                    # task then completes and self-discards from
+                    # _client_tasks via the existing done_callback
+                    # (see _accept_client).
+                    await ws.close(1001, "reaped: stale connection")
 
                 # Reap dead scope handlers
                 dead_scope = [

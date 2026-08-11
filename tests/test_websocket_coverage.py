@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -328,6 +329,48 @@ async def test_close_oserror_suppressed() -> None:
     # Must not raise
     await ws.close()
     assert ws.closed is True
+
+
+async def test_close_closes_writer_transport() -> None:
+    """close() must actually tear down the transport (MOR-1429), not just
+    write a close frame -- a reader blocked in recv()/_read_one_frame on a
+    half-open peer only unblocks once the local transport is closed; the
+    peer's TCP stack can't be relied on to ever send a FIN."""
+    reader = asyncio.StreamReader()
+    reader.feed_eof()
+    writer = _make_writer()
+    ws = WebSocketConnection(reader, writer)
+    await ws.close()
+    writer.close.assert_called_once()
+
+
+async def test_close_idempotent_still_closes_writer_each_call() -> None:
+    """A second close() call must still attempt real transport teardown,
+    not just skip out early because the logical _closed flag is set."""
+    reader = asyncio.StreamReader()
+    reader.feed_eof()
+    writer = _make_writer()
+    ws = WebSocketConnection(reader, writer)
+    await ws.close()
+    await ws.close()
+    assert writer.close.call_count == 2
+
+
+async def test_keepalive_loop_pong_timeout_forces_real_teardown() -> None:
+    """MOR-1429: keepalive's pong-timeout branch must force real teardown
+    (writer.close()), not just flip the logical _closed flag -- otherwise a
+    reader parked in recv() on a half-open peer never unblocks even though
+    the pong timeout correctly detected it as stale."""
+    reader = asyncio.StreamReader()
+    writer = _make_writer()
+    ws = WebSocketConnection(reader, writer)
+    ws._last_pong = time.monotonic() - 1000.0
+    ws._pong_timeout = 0.01
+
+    await ws.keepalive_loop(interval=0.001)
+
+    assert ws.closed is True
+    writer.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
