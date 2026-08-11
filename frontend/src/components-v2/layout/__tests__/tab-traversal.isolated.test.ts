@@ -1,13 +1,20 @@
 /**
  * MOR-1449 — Tab focus traversal was completely dead on the default
- * desktop-v2 composition. Root cause: `rigs/_keyboard-default.toml` (loaded
- * for every rig, including ic7300.toml's own copy) binds the bare "Tab" key
- * to the `vfo_swap` action ("swap-vfo"). `KeyboardHandler`'s
- * `handleKeydown` resolved it like any other single-key shortcut and called
- * `event.preventDefault()`, which silently ate the browser's native
- * focus-traversal everywhere in the app outside a form field — arrow-key
- * tuning kept working (a different binding) while Tab produced zero visible
- * reaction: no traversal, no focus ring, no reachable VFO.
+ * desktop-v2 composition. Root cause: `rigs/_keyboard-default.toml` used to
+ * bind the bare "Tab" key to the `vfo_swap` action ("swap-vfo").
+ * `profiles/rig_loader.py:1259` loads that shared default TOML for EVERY
+ * rig profile and merges each rig's local overrides on top — so all eight
+ * rig profiles inherited the binding this way, not because any individual
+ * rig (ic7300.toml included — it declares no `[ui.keyboard]` section of its
+ * own) redeclared it. `KeyboardHandler`'s `handleKeydown` resolved it like
+ * any other single-key shortcut and called `event.preventDefault()`, which
+ * silently ate the browser's native focus-traversal everywhere in the app
+ * outside a form field — arrow-key tuning kept working (a different
+ * binding) while Tab produced zero visible reaction: no traversal, no focus
+ * ring, no reachable VFO. The dead TOML binding has since been deleted; the
+ * frontend fix (reserving Tab unconditionally) is what these tests pin,
+ * reconstructing the pre-fix config shape rather than depending on the
+ * TOML no longer declaring it.
  *
  * These tests mount the REAL desktop-v2 `RadioLayout` composition with a
  * keyboard config that reproduces the production rig-profile shape
@@ -18,6 +25,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import {
+  IC7300_STATE, IC7300_CAPABILITIES,
+} from '../../../lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
   const stub = await import('./SpectrumPanelStub.svelte');
@@ -45,12 +55,12 @@ vi.mock('../../../lib/media/media-session', () => ({
   destroyMediaSession: vi.fn(),
 }));
 
-const rt = vi.hoisted(() => ({ state: null as unknown }));
+const rt = vi.hoisted(() => ({ state: null as unknown, caps: null as unknown }));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
     get state() { return rt.state; },
-    caps: null,
+    get caps() { return rt.caps; },
     connectionStatus: 'disconnected',
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
@@ -167,6 +177,7 @@ function mountLayout(skinId: any = 'desktop-v2') {
 beforeEach(() => {
   components = [];
   rt.state = null;
+  rt.caps = null;
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1440 });
   Object.defineProperty(window, 'innerHeight', { writable: true, configurable: true, value: 900 });
 });
@@ -175,6 +186,7 @@ afterEach(() => {
   components.forEach((c) => unmount(c));
   document.body.innerHTML = '';
   rt.state = null;
+  rt.caps = null;
 });
 
 describe('MOR-1449: Tab focus traversal on the desktop-v2 composition', () => {
@@ -211,7 +223,7 @@ describe('MOR-1449: Tab focus traversal on the desktop-v2 composition', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('conformance pin: the desktop-v2 composition exposes real tabbable elements, none pinned to tabindex=-1', () => {
+  it('conformance pin: the desktop-v2 composition exposes real tabbable elements', () => {
     const t = mountLayout('desktop-v2');
 
     const focusable = Array.from(
@@ -224,9 +236,47 @@ describe('MOR-1449: Tab focus traversal on the desktop-v2 composition', () => {
     // of whether it is prevented.
     expect(focusable.length).toBeGreaterThan(5);
 
-    const strandedByNegativeTabindex = focusable.filter(
-      (el) => el.getAttribute('tabindex') === '-1',
-    );
-    expect(strandedByNegativeTabindex).toEqual([]);
+    // Scoped, not blanket: `tabindex="-1"` is a legitimate pattern for
+    // programmatically-focusable containers that are NOT part of the tab
+    // order by design (e.g. RadioLayout's `.settings-modal`,
+    // StatusBar's `.np-detail` — both real dialogs already in this tree). A
+    // blanket "zero tabindex=-1 anywhere" assertion would false-red on those
+    // and on any future modal. Instead, pin specific PRIMARY interactive
+    // controls this composition is known to expose — the ones an operator
+    // actually needs to reach — and require each to be a real tab stop.
+    const PRIMARY_CONTROL_SELECTORS = [
+      '.status-bar .report-btn',
+      '.status-bar .settings-btn',
+      '.status-bar .skin-select',
+      '.status-bar .power-toggle-btn',
+      '.band-tab',
+    ];
+    for (const selector of PRIMARY_CONTROL_SELECTORS) {
+      const matches = Array.from(t.querySelectorAll<HTMLElement>(selector));
+      expect(matches.length, `expected at least one match for ${selector}`).toBeGreaterThan(0);
+      for (const el of matches) {
+        expect(
+          el.getAttribute('tabindex'),
+          `${selector} must not be pinned out of the tab order (tabindex=-1)`,
+        ).not.toBe('-1');
+      }
+    }
+  });
+
+  it('wired-state mount: the VFO frequency control is a real tab stop (tabindex=0) once the radio view model is live', () => {
+    // Uses the byte-faithful IC-7300 capture (same fixture MOR-1428's
+    // conformance suite pins) rather than a synthetic all-observed state —
+    // this is the shape a live walkthrough actually produces, and the
+    // disconnected/no-caps mount above (rt.state=null) renders the VFO tile
+    // as a plain, non-interactive text span (`hasTunableFrequency` requires
+    // an observed frequency), so it could never have caught a regression
+    // that makes the VFO itself untabbable — the ticket's actual concern.
+    rt.state = IC7300_STATE;
+    rt.caps = IC7300_CAPABILITIES;
+    const t = mountLayout('desktop-v2');
+
+    const freq = t.querySelector<HTMLElement>('.vfo-freq .freq');
+    expect(freq, 'expected the interactive frequency control to mount, not the plain-text fallback').not.toBeNull();
+    expect(freq!.getAttribute('tabindex')).toBe('0');
   });
 });

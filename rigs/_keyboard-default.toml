@@ -283,13 +283,6 @@ action = "cycle_filter"
 step = 1
 
 [[keyboard.bindings]]
-id = "swap-vfo"
-section = "VFO"
-label = "Swap VFO"
-key = "Tab"
-action = "vfo_swap"
-
-[[keyboard.bindings]]
 id = "equalize-vfo"
 section = "VFO"
 label = "Copy to other VFO"

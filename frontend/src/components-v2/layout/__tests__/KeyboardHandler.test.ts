@@ -114,14 +114,19 @@ describe('KeyboardHandler', () => {
     expect(document.body.dataset.shortcutHints).toBeUndefined();
   });
 
-  // MOR-1449 — rigs/_keyboard-default.toml (loaded into production keyboard
-  // configs for every rig, including ic7300.toml's own copy) binds the bare
-  // "Tab" key to the `vfo_swap` action ("swap-vfo"). Because `resolveAction`
-  // matched it like any other single-key binding, `handleKeydown` called
-  // `event.preventDefault()` on every Tab press outside a form field — which
-  // silently eats the browser's native focus-traversal everywhere in the app,
-  // not just on the bound action. Tab must never be assignable to a shortcut,
-  // regardless of what a rig profile's config declares.
+  // MOR-1449 — rigs/_keyboard-default.toml used to bind the bare "Tab" key
+  // to the `vfo_swap` action ("swap-vfo"). rig_loader.py loads that shared
+  // default for EVERY rig profile and merges rig-local overrides on top
+  // (profiles/rig_loader.py:1259), so all eight rig profiles inherited the
+  // binding — not just ic7300.toml, which never declared it itself. Because
+  // `resolveAction` matched it like any other single-key binding,
+  // `handleKeydown` called `event.preventDefault()` on every Tab press
+  // outside a form field — which silently ate the browser's native
+  // focus-traversal everywhere in the app, not just on the bound action.
+  // The dead binding has since been deleted from the TOML (MOR-1449 fix),
+  // but Tab must never be assignable to a shortcut regardless of what any
+  // current or future rig profile's config declares — this config object
+  // reconstructs the pre-fix shape to pin that invariant directly.
   const configWithTabBinding: KeyboardConfig = {
     ...config,
     bindings: [
@@ -132,6 +137,14 @@ describe('KeyboardHandler', () => {
         label: 'Swap VFO',
         sequence: ['Tab'],
         action: 'vfo_swap',
+      },
+      {
+        id: 'focus-af',
+        section: 'Focus',
+        label: 'Go to AF',
+        sequence: ['g', 'a'],
+        action: 'focus_target',
+        params: { target: 'af' },
       },
     ],
   };
@@ -169,5 +182,32 @@ describe('KeyboardHandler', () => {
     expect(onAction).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
     );
+  });
+
+  // Reproduces the round-2 review finding: an early `return` on Tab BEFORE
+  // the `if (pendingSequence)` branch would skip `clearLeaderState()`. Pre-fix,
+  // Tab mid-sequence disarmed the leader fine (it simply didn't match the
+  // recorded second key, so `resolveSequenceContinuation` returned null and
+  // `clearLeaderState()` still ran). A naive Tab guard placed above that
+  // branch would regress it: the leader pill would stay armed and the NEXT
+  // keystroke ('a' here) would be swallowed for up to leaderTimeoutMs and
+  // could fire an unintended `focus_target` action instead of doing nothing.
+  it('disarms a pending leader sequence on Tab instead of leaving it armed', () => {
+    const onAction = vi.fn();
+    const target = mountHandler({ config: configWithTabBinding, onAction });
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'g' }));
+    flushSync();
+    expect(target.querySelector('.keyboard-leader-pill')).not.toBeNull();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    flushSync();
+    expect(target.querySelector('.keyboard-leader-pill')).toBeNull();
+
+    const followUp = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+    window.dispatchEvent(followUp);
+
+    expect(onAction).not.toHaveBeenCalled();
+    expect(followUp.defaultPrevented).toBe(false);
   });
 });
