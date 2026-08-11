@@ -135,6 +135,7 @@ import {
   dispatchKeyboardRadioAction,
 } from '../../commands/panel-commands';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import { isFieldAvailable } from '$lib/state/field-status';
 import { validateRadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import { toSpectrumAuthority } from '../scope-adapter';
@@ -202,6 +203,19 @@ describe('IC-7300 fixture — real toRadioViewModel/toSpectrumAuthority (MOR-142
     // active-receiver readout and dual-watch toggle stay hidden.
     const hasDualReceiver = (IC7300_CAPABILITIES.receivers ?? 1) > 1;
     expect(hasDualReceiver).toBe(false);
+  });
+
+  it('carries the powerOn trap shape — raw true but never observed (MOR-1439)', () => {
+    // Confirms the fixture actually exercises the MOR-1439 bug: like `active`
+    // above, the IC-7300's serial link never confirms powerstat, so
+    // `fieldStatus.powerOn` reads observed:false/availability:'missing' even
+    // though the raw top-level `powerOn` happens to read `true` here. Ingestion
+    // (radio.svelte.ts) must gate on this field-status entry via
+    // `isFieldAvailable`, not trust the raw value — see
+    // `stores/__tests__/radio.test.ts` for the ingestion-level RED/GREEN pins.
+    expect(IC7300_STATE.powerOn).toBe(true);
+    expect(IC7300_STATE.fieldStatus?.powerOn?.observed).toBe(false);
+    expect(isFieldAvailable(IC7300_STATE, 'powerOn')).toBe(false);
   });
 });
 

@@ -698,4 +698,90 @@ describe('radio store', () => {
     expect(store.getMainReceiver()?.freqHz).toBe(14100000);
     expect(store.getFrequency()).toBe(14100000);
   });
+
+  // --- radioPowerOn honesty (MOR-1439) ---
+  //
+  // The IC-7300's serial CI-V link never reports powerstat (structural, like
+  // `active` before MOR-1418/1421/1423 — see the ic7300-profile fixture
+  // header). The live stand's captured `/api/v1/state` carries raw
+  // `powerOn: true` with `fieldStatus.powerOn` at `observed: false` /
+  // `availability: 'missing'`: an UNCONFIRMED value, not a fact. Trusting the
+  // raw boolean regardless of observedness let a never-updated default (or a
+  // stale optimistic value) collapse into a confident true/false the UI then
+  // rendered as certainty — including StatusBar's forced powered-off
+  // presentation on `radioPowerOn === false`. An unobserved powerOn must
+  // resolve to `null` ("unknown") in both directions; only a genuinely
+  // observed reading may resolve to a definite boolean.
+
+  it('collapses an unobserved raw powerOn=true to unknown — live IC-7300 trap shape (MOR-1439)', async () => {
+    const connection = await import('../connection.svelte');
+    store.setRadioState(makeState({
+      revision: 1,
+      powerOn: true,
+      fieldStatus: {
+        powerOn: {
+          storePath: 'global.tx_state.power_on',
+          observed: false,
+          freshness: 'unknown',
+          availability: 'missing',
+        },
+      },
+    }));
+
+    expect(connection.getRadioPowerOn()).toBeNull();
+  });
+
+  it('collapses an unobserved raw powerOn=false to unknown, never forced-off (MOR-1439)', async () => {
+    const connection = await import('../connection.svelte');
+    store.setRadioState(makeState({
+      revision: 1,
+      powerOn: false,
+      fieldStatus: {
+        powerOn: {
+          storePath: 'global.tx_state.power_on',
+          observed: false,
+          freshness: 'unknown',
+          availability: 'missing',
+        },
+      },
+    }));
+
+    expect(connection.getRadioPowerOn()).toBeNull();
+  });
+
+  it('still forces a definite false on a genuinely OBSERVED powerOn=false (regression)', async () => {
+    const connection = await import('../connection.svelte');
+    store.setRadioState(makeState({
+      revision: 1,
+      powerOn: false,
+      fieldStatus: {
+        powerOn: {
+          storePath: 'global.tx_state.power_on',
+          observed: true,
+          freshness: 'fresh',
+          availability: 'available',
+        },
+      },
+    }));
+
+    expect(connection.getRadioPowerOn()).toBe(false);
+  });
+
+  it('passes through a genuinely OBSERVED powerOn=true (normal case)', async () => {
+    const connection = await import('../connection.svelte');
+    store.setRadioState(makeState({
+      revision: 1,
+      powerOn: true,
+      fieldStatus: {
+        powerOn: {
+          storePath: 'global.tx_state.power_on',
+          observed: true,
+          freshness: 'fresh',
+          availability: 'available',
+        },
+      },
+    }));
+
+    expect(connection.getRadioPowerOn()).toBe(true);
+  });
 });
