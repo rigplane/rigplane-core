@@ -195,8 +195,14 @@ function observedAvailableField(
 
 function currentMemorySnapshot(): MemorySnapshot | null {
   const context = currentA03cContext();
-  const active = context?.state.active;
-  if (!context || !observedAvailableField(context.state, 'active')
+  // MOR-1423: same single-receiver `active` bypass as knownActiveReceiver
+  // (MOR-1418) — on a one-receiver radio, active is tautologically MAIN
+  // even when structurally unobservable. Dual-RX still requires observation.
+  const activeObserved = context !== null && observedAvailableField(context.state, 'active');
+  const singleReceiver = context?.caps.receivers === 1;
+  const active = context
+    && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
+  if (!context
     || (active !== 'MAIN' && active !== 'SUB')
     || knownA03cReceiver(context, active) === null) return null;
 
@@ -1063,10 +1069,17 @@ export function makeVfoHandlers() {
     onSubVfoClick: () => { activateReceiver('SUB'); },
     onVfoSelect: (receiver: 'MAIN' | 'SUB', slot: 'A' | 'B' | null) => {
       const context = currentA03cContext();
-      if (!context || !knownA03cTopLevelField(context, 'active')
+      // MOR-1423: same single-receiver `active` bypass as knownActiveReceiver
+      // (MOR-1418) — on a one-receiver radio, active is tautologically MAIN
+      // even when structurally unobservable. Dual-RX still requires observation.
+      const activeObserved = context !== null && knownA03cTopLevelField(context, 'active');
+      const singleReceiver = context?.caps.receivers === 1;
+      const active = context
+        && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
+      if (!context || (active !== 'MAIN' && active !== 'SUB')
         || knownA03cReceiver(context, receiver) === null
         || !supportsVfoSlot(context, slot)) return;
-      if (context.state.active !== receiver && !activateReceiver(receiver, context)) return;
+      if (active !== receiver && !activateReceiver(receiver, context)) return;
       if (slot !== null) dispatchRadioIntent({ name: 'set_vfo', params: { vfo: slot } });
     },
     onMainModeClick: () => focusModePanel('MAIN'),
@@ -1271,8 +1284,14 @@ const KEYBOARD_RADIO_ACTIONS = new Set([
 
 function currentKeyboardContext(): KeyboardContext | null {
   const context = currentA03cContext();
-  const active = context?.state.active;
-  if (!context || !knownA03cTopLevelField(context, 'active') || (active !== 'MAIN' && active !== 'SUB')) return null;
+  // MOR-1423: same single-receiver `active` bypass as knownActiveReceiver
+  // (MOR-1418) — on a one-receiver radio, active is tautologically MAIN
+  // even when structurally unobservable. Dual-RX still requires observation.
+  const activeObserved = context !== null && knownA03cTopLevelField(context, 'active');
+  const singleReceiver = context?.caps.receivers === 1;
+  const active = context
+    && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
+  if (!context || (active !== 'MAIN' && active !== 'SUB')) return null;
   const receiver = knownA03cReceiver(context, active);
   return receiver === null ? null : { ...context, receiver };
 }
