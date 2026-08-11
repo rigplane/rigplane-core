@@ -14,6 +14,8 @@ import pytest
 
 from rigplane._bounded_queue import BoundedQueue
 from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
     command_intent_from_request,
     command_response_observation,
 )
@@ -23,6 +25,7 @@ from rigplane.core.acquisition_scheduler import (
     StateFreshnessService,
 )
 from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -2954,113 +2957,206 @@ async def test_broadcast_notification_omits_code_for_legacy_path() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Post-ack command execution failure -> operator notification (MOR-1445)
+# Post-ack command execution failure -> issuer-only notification (MOR-1445)
 #
 # A websocket-queued command (e.g. set_attenuator) is acknowledged at
 # enqueue time and only actually fails later, once RadioPoller executes it
 # against the radio. CommandService already has NAK semantics for this via
 # fail_command()/lifecycle "failed"/"timed_out", but nothing was subscribed
-# to it, so the operator never learned the command silently failed. These
-# tests exercise WebServer's subscriber wiring directly at the handler
-# level, without a real RadioPoller/websocket.
+# to it, so the operator never learned the command silently failed.
+#
+# Per owner ruling, delivery is scoped to the session that issued the
+# command only — never a broadcast to every connected client — unifying
+# with the MOR-1422 refusal-toast doctrine (error feedback belongs to
+# whoever acted; other clients saw no state change and would get noise).
+#
+# These tests drive the real CommandService.execute() round trip (accepted
+# -> queued -> sent -> acknowledged is production code, not hand-emitted
+# states) through a stub executor, with WebServer's actual subscriber
+# (_on_command_lifecycle_event) wired the same way __init__ wires it. Only
+# the later, separate fail_command() call — the real entry point
+# RadioPoller._mark_queued_command_failed() uses — stands in for the poller
+# discovering the failure after the fact.
 # ---------------------------------------------------------------------------
 
 
+class _StubCommandExecutor:
+    """Executor test double: succeeds, or raises synchronously like a
+    real executor rejecting a command before it ever reaches the queue."""
+
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self._raises = raises
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        if self._raises is not None:
+            raise self._raises
+        return CommandExecutionResult()
+
+
+def _wire_stub_command_service(
+    srv: WebServer, executor: _StubCommandExecutor
+) -> CommandService:
+    """Swap in a stub executor, keeping the production notification wiring
+    under test (same subscribe_lifecycle call WebServer.__init__ makes)."""
+    service = CommandService(executor=executor, state_store=srv.command_state_store)
+    service.subscribe_lifecycle(srv._on_command_lifecycle_event)  # noqa: SLF001
+    srv.command_service = service
+    return service
+
+
+def _register_two_sessions(
+    srv: WebServer,
+) -> tuple[BoundedQueue[dict[str, object]], BoundedQueue[dict[str, object]]]:
+    """Register an issuing session's queue and a bystander session's queue.
+
+    Drains both afterwards: registering the second queue pushes a baseline
+    state_update to existing peers, which would otherwise be the first
+    (unrelated) message a test reads back out.
+    """
+    issuer_q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    bystander_q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    srv.register_control_event_queue(issuer_q, session_id="session-issuer")
+    srv.register_control_event_queue(bystander_q, session_id="session-bystander")
+    _drain_queue(issuer_q)
+    _drain_queue(bystander_q)
+    return issuer_q, bystander_q
+
+
 @pytest.mark.asyncio
-async def test_post_ack_command_failure_broadcasts_operator_notification() -> None:
-    """A command that fails AFTER being acknowledged reaches the operator."""
+async def test_post_ack_command_failure_notifies_issuer_only() -> None:
+    """A command that fails AFTER being acknowledged reaches the session
+    that issued it, and only that session — a second connected client
+    (bystander) gets nothing."""
     srv = WebServer()
-    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
-    srv.register_control_event_queue(q)
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    service = _wire_stub_command_service(srv, _StubCommandExecutor())
 
     intent = command_intent_from_request(
         "set_attenuator",
         {"db": 20, "receiver": 0},
         source="websocket",
         command_id="cmd-att-1",
+        session_id="session-issuer",
     )
-    srv.command_service.emit_lifecycle(intent, "accepted")
-    srv.command_service.emit_lifecycle(intent, "acknowledged")
+    await service.execute(intent)  # real accepted/queued/sent/acknowledged path
 
-    fired = srv.command_service.fail_command(
+    fired = service.fail_command(
         "cmd-att-1",
-        message="Attenuator level must be one of [0, 45] dB for IC-7610, got 20",
+        message="Attenuator level must be one of [0, 20] dB for IC-7300, got 18",
     )
 
     assert fired is True
-    n = q.get_nowait()
+    n = issuer_q.get_nowait()
     assert n["type"] == "notification"
     assert n["level"] == "error"
     assert n["category"] == "command"
-    assert "Attenuator level" in n["message"]
+    assert n["code"] == "commandExecutionFailed"
+    assert "Attenuator level" in n["params"]["reason"]
+    assert issuer_q.empty()  # exactly one notification, not more
+    assert bystander_q.empty()  # zero — never broadcast
 
 
 @pytest.mark.asyncio
-async def test_command_failure_before_ack_does_not_broadcast() -> None:
-    """A command rejected before enqueue/ack must not double-broadcast.
+async def test_command_failure_before_ack_notifies_no_one() -> None:
+    """A command rejected before enqueue/ack must not notify anyone here.
 
     That synchronous rejection is already returned to the requesting client
     as a WS response (and, client-side, as a refusal toast per MOR-1422) —
-    broadcasting it to every connected client here would be a duplicate.
+    a second notification from this seam would be a duplicate.
     """
     srv = WebServer()
-    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
-    srv.register_control_event_queue(q)
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    service = _wire_stub_command_service(
+        srv, _StubCommandExecutor(raises=ValueError("bad db value"))
+    )
 
     intent = command_intent_from_request(
         "set_attenuator",
         {"db": 999, "receiver": 0},
         source="websocket",
         command_id="cmd-att-2",
+        session_id="session-issuer",
     )
-    srv.command_service.emit_lifecycle(intent, "accepted")
-    # No "acknowledged" — this mirrors a synchronous executor rejection.
-    srv.command_service.emit_lifecycle(intent, "failed", message="bad db value")
+    with pytest.raises(ValueError, match="bad db value"):
+        await service.execute(intent)  # mirrors a synchronous executor rejection
 
-    assert q.empty()
+    assert issuer_q.empty()
+    assert bystander_q.empty()
 
 
 @pytest.mark.asyncio
-async def test_command_timed_out_after_ack_broadcasts_notification() -> None:
-    """timed_out is a terminal failure too and must also reach the operator."""
+async def test_command_timed_out_after_ack_notifies_issuer_only() -> None:
+    """timed_out is a terminal failure too and must also reach only the
+    issuing session, not a broadcast."""
     srv = WebServer()
-    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
-    srv.register_control_event_queue(q)
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    service = _wire_stub_command_service(srv, _StubCommandExecutor())
 
     intent = command_intent_from_request(
         "set_attenuator",
         {"db": 20, "receiver": 0},
         source="websocket",
         command_id="cmd-att-3",
+        session_id="session-issuer",
     )
-    srv.command_service.emit_lifecycle(intent, "accepted")
-    srv.command_service.emit_lifecycle(intent, "acknowledged")
+    await service.execute(intent)
 
-    srv.command_service.fail_command(
-        "cmd-att-3", message="radio did not respond", timed_out=True
-    )
+    service.fail_command("cmd-att-3", message="radio did not respond", timed_out=True)
 
-    n = q.get_nowait()
+    n = issuer_q.get_nowait()
     assert n["level"] == "error"
-    assert n["message"] == "radio did not respond"
+    assert n["code"] == "commandExecutionFailed"
+    assert n["params"]["reason"] == "radio did not respond"
+    assert bystander_q.empty()
 
 
 @pytest.mark.asyncio
-async def test_successful_command_does_not_leak_acked_id_tracking() -> None:
-    """A command that succeeds (never fails) must not accumulate tracking state."""
+async def test_send_notification_to_session_unknown_session_is_a_noop() -> None:
+    """A session that already disconnected (or never existed) is not an
+    error — the send is just dropped, matching the queue-full drop pattern
+    used elsewhere on this class."""
     srv = WebServer()
+    assert srv.send_notification_to_session("nonexistent", "error", "x") is False
 
-    intent = command_intent_from_request(
+
+@pytest.mark.asyncio
+async def test_target_none_and_scoped_commands_do_not_leak_state_on_success() -> None:
+    """Repro from code review: a command whose _command_target() is None
+    (e.g. set_tuner) gets pending_policy="none" and never reaches a
+    "reconciled" state; a scoped command's overlay can also expire with no
+    terminal lifecycle event at all. A hand-maintained "currently
+    acknowledged" id set would leak forever in both cases. The fix removed
+    that dict entirely — _on_command_lifecycle_event recomputes "was this
+    acknowledged" from CommandService's own history on demand, so there is
+    no WebServer-owned per-command state to leak in the first place.
+    """
+    srv = WebServer()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    srv.register_control_event_queue(q)
+    service = _wire_stub_command_service(srv, _StubCommandExecutor())
+
+    # set_tuner: unmapped by _command_target() -> target=None -> pending_policy="none".
+    tuner_intent = command_intent_from_request(
+        "set_tuner", {"on": True}, source="websocket", command_id="cmd-tuner-1"
+    )
+    assert tuner_intent.target is None
+    await service.execute(tuner_intent)
+
+    # set_attenuator: scoped (target is not None) but still just acknowledged,
+    # never explicitly reconciled/confirmed in this test.
+    att_intent = command_intent_from_request(
         "set_attenuator",
         {"db": 20, "receiver": 0},
         source="websocket",
-        command_id="cmd-att-4",
+        command_id="cmd-att-5",
     )
-    srv.command_service.emit_lifecycle(intent, "accepted")
-    srv.command_service.emit_lifecycle(intent, "acknowledged")
-    srv.command_service.emit_lifecycle(intent, "confirmed")
+    assert att_intent.target is not None
+    await service.execute(att_intent)
 
-    assert "cmd-att-4" not in srv._acked_command_ids
+    # No notification for either — both succeeded — and no per-command
+    # bookkeeping attribute exists on WebServer to have accumulated entries.
+    assert q.empty()
+    assert not hasattr(srv, "_acked_command_ids")
 
 
 # ---------------------------------------------------------------------------

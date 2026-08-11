@@ -140,6 +140,25 @@ describe('messageFromReasonCode()', () => {
     );
   });
 
+  // MOR-1445: a command accepted at enqueue can still fail once the poller
+  // actually executes it against the radio. The server broadcasts this
+  // reason code (with the backend exception text threaded as `reason`) so
+  // the operator sees a localized toast instead of a raw English string.
+  // ja-JP is a known, separately-tracked backlog gap for this code (same
+  // status as commandRefusedLinkDegraded above) — not asserted here.
+  it('resolves the MOR-1445 post-ack command-failure reason code in en-US, threading the reason', () => {
+    expect(
+      messageFromReasonCode('commandExecutionFailed', { reason: 'radio did not respond' }),
+    ).toBe('Command failed: radio did not respond');
+  });
+
+  it('resolves the MOR-1445 post-ack command-failure reason code in ru-RU (own catalog entry, not the en-US fallback)', () => {
+    setLocale('ru-RU');
+    expect(
+      messageFromReasonCode('commandExecutionFailed', { reason: 'radio did not respond' }),
+    ).toBe('Команда не выполнена: radio did not respond');
+  });
+
   it('rejects malformed codes safely (returns the unknown toast)', () => {
     expect(messageFromReasonCode('../injection.attempt')).toBe(
       'Something went wrong. Try again later.',
