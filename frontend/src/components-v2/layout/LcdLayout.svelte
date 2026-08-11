@@ -28,7 +28,7 @@
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
-  import { makeKeyboardHandlers } from '../wiring/command-bus';
+  import { getKeyboardHandlers } from '$lib/runtime/adapters/panel-adapters';
 
   // Twin-skin variant selector (#887). Default preserves today's behavior.
   // `scope` currently falls through to cockpit until C-PR1 (#895) delivers
@@ -42,7 +42,7 @@
   let displayMode = $derived(getLcdDisplayMode());
   let activeMode = $derived(radioState?.active === 'SUB' ? radioState?.sub?.mode : radioState?.main?.mode);
 
-  const keyboardHandlers = makeKeyboardHandlers();
+  const keyboardHandlers = getKeyboardHandlers();
 
   $effect(() => {
     if (activeMode) {

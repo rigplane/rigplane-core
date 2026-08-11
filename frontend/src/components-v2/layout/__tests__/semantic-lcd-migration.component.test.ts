@@ -104,8 +104,6 @@ const h = vi.hoisted(() => {
             lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
           },
           bootstrap: async () => () => {},
-          setPollingMultiplier: () => {},
-          send: () => {},
         };
       })();
       return h.runtimePromise;

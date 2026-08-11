@@ -178,11 +178,14 @@ describe('frozen facts this gate must not disturb (MOR-1409 A11 regression pins)
     expect(source).not.toContain('runtime.send(');
   });
 
-  it('RadioLayout.svelte still has exactly the two documented send() call sites (correction 5241395868)', () => {
+  // MOR-1409 A13b (correction 5246842617 §5) supersedes this pin: the two
+  // documented call sites were RadioLayout's — and the whole method's —
+  // last production callers. They are deleted (not migrated to a live
+  // binder call — VfoHeader already ignores the legacy props they fed; see
+  // `vfo-header.isolated.test.ts`'s `VfoHeader source boundary` pin) in the
+  // same head that removes `FrontendRuntime.send()` itself.
+  it('RadioLayout.svelte makes zero runtime.send() calls (MOR-1409 A13b — send() is deleted)', () => {
     const source = readSource(RADIO_LAYOUT_PATH);
-    const matches = source.match(/runtime\.send\(/g) ?? [];
-    expect(matches).toHaveLength(2);
-    expect(source).toContain("runtime.send('set_scope_dual', { dual: !current });");
-    expect(source).toContain("runtime.send('switch_scope_receiver', { receiver });");
+    expect(source).not.toMatch(/runtime\.send\(/);
   });
 });

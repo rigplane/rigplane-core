@@ -61,7 +61,6 @@ vi.mock('$lib/runtime', async () => {
     },
     get scope() { return { hardwareScopeConnected: false }; },
     bootstrap: h.bootstrap,
-    setPollingMultiplier: vi.fn(),
   };
   return { runtime: h.runtime };
 });

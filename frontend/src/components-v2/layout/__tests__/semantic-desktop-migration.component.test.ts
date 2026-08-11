@@ -46,8 +46,6 @@ const h = vi.hoisted(() => {
       },
       scope: { hardwareScopeConnected: false },
       bootstrap: async () => () => {},
-      setPollingMultiplier: () => {},
-      send: () => {},
     },
   };
 });

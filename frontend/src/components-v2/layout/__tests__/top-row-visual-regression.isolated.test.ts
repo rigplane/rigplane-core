@@ -45,7 +45,6 @@ vi.mock('$lib/runtime', () => ({
       lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
     },
     scope: { hardwareScopeConnected: false },
-    send: vi.fn(),
   },
 }));
 

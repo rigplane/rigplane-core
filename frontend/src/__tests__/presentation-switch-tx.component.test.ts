@@ -114,7 +114,6 @@ vi.mock('../lib/runtime/frontend-runtime', async () => {
       get state() { subscribe(); return h.runtimeState; },
       get caps() { subscribe(); return h.runtimeCaps; },
       bootstrap: h.bootstrap,
-      setPollingMultiplier: vi.fn(),
     },
     // Resource-demand continuity has its own dedicated proof
     // (presentation-switch-resources.component.test.ts, against the REAL

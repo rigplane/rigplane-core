@@ -33,7 +33,7 @@ vi.mock('../../../wiring/command-bus', () => ({
   makeRitXitHandlers: () => bindings.ritXit,
   makeCwPanelHandlers: () => bindings.cw,
 }));
-vi.mock('$lib/runtime', () => ({ runtime: { send: vi.fn() } }));
+vi.mock('$lib/runtime', () => ({ runtime: {} }));
 
 import VfoControlPanel from '../VfoControlPanel.svelte';
 

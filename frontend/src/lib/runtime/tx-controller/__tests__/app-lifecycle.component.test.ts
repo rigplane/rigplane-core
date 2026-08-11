@@ -50,7 +50,7 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
     runtime: {
       get state() { subscribe(); return h.radio; },
       get caps() { subscribe(); return h.caps; },
-      bootstrap: h.bootstrap, setPollingMultiplier: vi.fn(),
+      bootstrap: h.bootstrap,
     },
     // MOR-1060 swap-bridge surface; inert here (nothing is demanded).
     presentationResources: {

@@ -27,7 +27,6 @@ import {
 import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
 import { connect, onMessage, sendRaw } from '$lib/transport/ws-client';
 import { audioManager } from '$lib/audio/audio-manager';
-import { dispatchRadioIntent, type RadioIntent } from './commands/radio-intents';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
 import { derivePresentationCapabilities } from './adapters/presentation-capabilities';
 import { systemController } from './system-controller';
@@ -339,21 +338,6 @@ class FrontendRuntime {
     return cleanup;
   }
 
-  // ── Command dispatch ──
-
-  /**
-   * Dispatch a catalog-validated radio intent through the typed facade
-   * (MOR-1409 A08). Zero raw transport: unknown names or malformed params
-   * are rejected by the facade and logged, never sent.
-   */
-  send(name: string, params?: Record<string, unknown>): void {
-    try {
-      dispatchRadioIntent({ name, params: params ?? {} } as RadioIntent);
-    } catch (error) {
-      console.warn('[runtime] send() rejected non-catalog command', name, error);
-    }
-  }
-
   // ── Audio control ──
 
   acquireHardwareScope(consumer: string): ResourceLease {
@@ -434,17 +418,6 @@ class FrontendRuntime {
     toggleMute();
   }
 
-  /**
-   * Inert no-op (MOR-1409 A09b — the HTTP polling writer is gone; WS is the
-   * sole state writer, and there is no cadence left to adjust). Kept only so
-   * its sole caller, `App.svelte:258` (an A10 owner, battery monitor), keeps
-   * compiling until A10 removes that call; this stub is deleted by the
-   * published post-A13 micro-slice that also removes `send()`
-   * (correction 5241395868).
-   */
-  setPollingMultiplier(_m: number): void {
-    // Intentionally empty.
-  }
 }
 
 /** Singleton runtime instance. */
