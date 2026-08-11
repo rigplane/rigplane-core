@@ -2275,7 +2275,21 @@ class WebServer:
                     # task then completes and self-discards from
                     # _client_tasks via the existing done_callback
                     # (see _accept_client).
-                    await ws.close(1001, "reaped: stale connection")
+                    #
+                    # ws.close() awaits a drain() that can wedge for as
+                    # long as TCP RTO (~15 min) against a peer that has
+                    # stopped reading with a saturated write buffer — that
+                    # would stall this whole reaper loop, per-connection,
+                    # serially (review on PR #2378). Bound it and fall
+                    # back to a hard abort() (never blocks) so one stuck
+                    # peer can never wedge the reaper.
+                    try:
+                        await asyncio.wait_for(
+                            ws.close(1001, "reaped: stale connection"), timeout=1.0
+                        )
+                    except Exception:
+                        ws.abort()
+                        logger.warning("zombie-reaper: forced abort on stale ws")
 
                 # Reap dead scope handlers
                 dead_scope = [

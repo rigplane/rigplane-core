@@ -338,6 +338,27 @@ class WebSocketConnection:
         except Exception:
             pass
 
+    def abort(self) -> None:
+        """Immediately tear down the transport without flushing.
+
+        Unlike ``close()``, this never awaits ``drain()`` and therefore
+        cannot block: it calls ``transport.abort()``, which discards any
+        buffered output and fires ``connection_lost`` right away. This is
+        the fallback for when a bounded ``close()`` fails to complete
+        promptly against a peer that stopped reading with a saturated
+        write buffer — ``close()``'s close-frame write (and its own
+        best-effort ``self._writer.close()``) can otherwise wedge behind
+        ``drain()`` for as long as the peer never drains its receive
+        window (MOR-1429 review). Safe to call more than once.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._writer.transport.abort()
+        except Exception:
+            pass
+
     @property
     def closed(self) -> bool:
         """True if the connection has been closed."""

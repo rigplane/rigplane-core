@@ -45,6 +45,15 @@ class Connection(Protocol):
         """Close the connection with the given status code and reason."""
         ...
 
+    def abort(self) -> None:
+        """Immediately tear down the connection without flushing.
+
+        Never blocks (unlike ``close()``, which may await a drain). Used
+        as a bounded fallback when a ``close()`` call fails to complete
+        promptly (MOR-1429).
+        """
+        ...
+
     def is_alive(self) -> bool:
         """True if the connection is open and considered healthy."""
         ...
