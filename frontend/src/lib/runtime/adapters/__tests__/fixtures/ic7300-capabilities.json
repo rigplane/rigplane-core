@@ -1,0 +1,1310 @@
+{
+  "agcLabels": {
+    "1": "FAST",
+    "2": "MID",
+    "3": "SLOW"
+  },
+  "agcModes": [
+    1,
+    2,
+    3
+  ],
+  "antennas": 1,
+  "attLabels": {},
+  "attValues": [
+    0,
+    20
+  ],
+  "audio": true,
+  "audioConfig": {
+    "channels": 1,
+    "codecs": [
+      "opus"
+    ],
+    "jitterCeilingMs": 300,
+    "jitterFloorMs": 50,
+    "sampleRate": 48000
+  },
+  "audioFftAvailable": true,
+  "audioTx": true,
+  "audioTxRequiredModInputSource": null,
+  "audioTxRoute": "usb",
+  "capabilities": [
+    "af_level",
+    "agc",
+    "antenna",
+    "apf",
+    "attenuator",
+    "audio",
+    "band_edge",
+    "break_in",
+    "bsr",
+    "compressor",
+    "cw",
+    "data_mode",
+    "dial_lock",
+    "filter_shape",
+    "filter_width",
+    "ip_plus",
+    "meters",
+    "monitor",
+    "nb",
+    "notch",
+    "nr",
+    "pbt",
+    "power_control",
+    "preamp",
+    "repeater_tone",
+    "rf_gain",
+    "rit",
+    "scan",
+    "scope",
+    "split",
+    "squelch",
+    "ssb_tx_bw",
+    "system_settings",
+    "tsql",
+    "tuner",
+    "tuning_step",
+    "twin_peak",
+    "tx",
+    "vox",
+    "xfc",
+    "xit"
+  ],
+  "controls": {
+    "af_level": {
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "attenuator": {
+      "style": "toggle"
+    },
+    "compressor_level": {
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "cw_pitch": {
+      "display_max": 900,
+      "display_min": 300,
+      "display_unit": "Hz",
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "mic_gain": {
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "monitor_gain": {
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "nb": {
+      "style": "toggle_and_level"
+    },
+    "nb_level": {
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "nr": {
+      "style": "toggle_and_level"
+    },
+    "nr_level": {
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "pbt_inner": {
+      "display_max": 1200,
+      "display_min": -1200,
+      "display_unit": "Hz",
+      "raw_center": 128,
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "pbt_outer": {
+      "display_max": 1200,
+      "display_min": -1200,
+      "display_unit": "Hz",
+      "raw_center": 128,
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "rf_gain": {
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "rf_power": {
+      "raw_max": 255,
+      "raw_min": 0
+    },
+    "rit": {
+      "display_max": 999,
+      "display_min": -999,
+      "display_unit": "Hz",
+      "raw_center": 0,
+      "raw_max": 999,
+      "raw_min": -999
+    },
+    "squelch": {
+      "raw_max": 255,
+      "raw_min": 0
+    }
+  },
+  "dataModeCount": 1,
+  "dataModeLabels": {
+    "0": "OFF",
+    "1": "DATA"
+  },
+  "filterConfig": {
+    "AM": {
+      "defaults": [
+        9000,
+        6000,
+        3000
+      ],
+      "fixed": false,
+      "maxHz": 10000,
+      "minHz": 200,
+      "segments": [
+        {
+          "hzMax": 10000,
+          "hzMin": 200,
+          "indexMin": 0,
+          "stepHz": 200
+        }
+      ],
+      "stepHz": 200
+    },
+    "CW": {
+      "defaults": [
+        1200,
+        500,
+        250
+      ],
+      "fixed": false,
+      "maxHz": 3600,
+      "minHz": 50,
+      "segments": [
+        {
+          "hzMax": 500,
+          "hzMin": 50,
+          "indexMin": 0,
+          "stepHz": 50
+        },
+        {
+          "hzMax": 3600,
+          "hzMin": 600,
+          "indexMin": 10,
+          "stepHz": 100
+        }
+      ]
+    },
+    "FM": {
+      "defaults": [
+        15000,
+        10000,
+        7000
+      ],
+      "fixed": true
+    },
+    "LSB": {
+      "defaults": [
+        3000,
+        2400,
+        1800
+      ],
+      "fixed": false,
+      "maxHz": 3600,
+      "minHz": 50,
+      "segments": [
+        {
+          "hzMax": 500,
+          "hzMin": 50,
+          "indexMin": 0,
+          "stepHz": 50
+        },
+        {
+          "hzMax": 3600,
+          "hzMin": 600,
+          "indexMin": 10,
+          "stepHz": 100
+        }
+      ]
+    },
+    "RTTY": {
+      "defaults": [
+        2400,
+        500,
+        250
+      ],
+      "fixed": false,
+      "maxHz": 2700,
+      "minHz": 50,
+      "segments": [
+        {
+          "hzMax": 500,
+          "hzMin": 50,
+          "indexMin": 0,
+          "stepHz": 50
+        },
+        {
+          "hzMax": 2700,
+          "hzMin": 600,
+          "indexMin": 10,
+          "stepHz": 100
+        }
+      ]
+    },
+    "USB": {
+      "defaults": [
+        3000,
+        2400,
+        1800
+      ],
+      "fixed": false,
+      "maxHz": 3600,
+      "minHz": 50,
+      "segments": [
+        {
+          "hzMax": 500,
+          "hzMin": 50,
+          "indexMin": 0,
+          "stepHz": 50
+        },
+        {
+          "hzMax": 3600,
+          "hzMin": 600,
+          "indexMin": 10,
+          "stepHz": 100
+        }
+      ]
+    }
+  },
+  "filterWidthMax": 9999,
+  "filterWidthMin": 50,
+  "filters": [
+    "FIL1",
+    "FIL2",
+    "FIL3"
+  ],
+  "freqRanges": [
+    {
+      "bands": [
+        {
+          "bsrCode": 1,
+          "default": 1825000,
+          "end": 2000000,
+          "name": "160m",
+          "start": 1800000
+        },
+        {
+          "bsrCode": 2,
+          "default": 3700000,
+          "end": 4000000,
+          "name": "80m",
+          "start": 3500000
+        },
+        {
+          "default": 5357000,
+          "end": 5410000,
+          "name": "60m",
+          "start": 5330000
+        },
+        {
+          "bsrCode": 3,
+          "default": 7100000,
+          "end": 7300000,
+          "name": "40m",
+          "start": 7000000
+        },
+        {
+          "bsrCode": 4,
+          "default": 10130000,
+          "end": 10150000,
+          "name": "30m",
+          "start": 10100000
+        },
+        {
+          "bsrCode": 5,
+          "default": 14200000,
+          "end": 14350000,
+          "name": "20m",
+          "start": 14000000
+        },
+        {
+          "bsrCode": 6,
+          "default": 18120000,
+          "end": 18168000,
+          "name": "17m",
+          "start": 18068000
+        },
+        {
+          "bsrCode": 7,
+          "default": 21200000,
+          "end": 21450000,
+          "name": "15m",
+          "start": 21000000
+        },
+        {
+          "bsrCode": 8,
+          "default": 24940000,
+          "end": 24990000,
+          "name": "12m",
+          "start": 24890000
+        },
+        {
+          "bsrCode": 9,
+          "default": 28500000,
+          "end": 29700000,
+          "name": "10m",
+          "start": 28000000
+        }
+      ],
+      "end": 60000000,
+      "label": "HF",
+      "start": 30000
+    },
+    {
+      "bands": [
+        {
+          "bsrCode": 10,
+          "default": 50125000,
+          "end": 54000000,
+          "name": "6m",
+          "start": 50000000
+        }
+      ],
+      "end": 54000000,
+      "label": "6m",
+      "start": 50000000
+    }
+  ],
+  "keyboard": {
+    "altHints": true,
+    "bindings": [
+      {
+        "action": "adjust_tuning_step",
+        "description": "Select the next tuning step value on the frontend.",
+        "id": "step-up",
+        "label": "Increase tuning step",
+        "params": {
+          "direction": "up"
+        },
+        "section": "Tuning",
+        "sequence": [
+          "ArrowUp"
+        ]
+      },
+      {
+        "action": "adjust_tuning_step",
+        "description": "Select the previous tuning step value on the frontend.",
+        "id": "step-down",
+        "label": "Decrease tuning step",
+        "params": {
+          "direction": "down"
+        },
+        "section": "Tuning",
+        "sequence": [
+          "ArrowDown"
+        ]
+      },
+      {
+        "action": "tune",
+        "description": "Tune the active receiver down by the current frontend tuning step.",
+        "id": "nudge-left",
+        "label": "Tune down",
+        "params": {
+          "direction": "down",
+          "fine": false
+        },
+        "repeatable": true,
+        "section": "Tuning",
+        "sequence": [
+          "ArrowLeft"
+        ]
+      },
+      {
+        "action": "tune",
+        "description": "Tune the active receiver up by the current frontend tuning step.",
+        "id": "nudge-right",
+        "label": "Tune up",
+        "params": {
+          "direction": "up",
+          "fine": false
+        },
+        "repeatable": true,
+        "section": "Tuning",
+        "sequence": [
+          "ArrowRight"
+        ]
+      },
+      {
+        "action": "tune",
+        "description": "Jump the active receiver up by 1 kHz.",
+        "id": "page-up",
+        "label": "Tune +1 kHz",
+        "params": {
+          "deltaHz": 1000
+        },
+        "repeatable": true,
+        "section": "Tuning",
+        "sequence": [
+          "PageUp"
+        ]
+      },
+      {
+        "action": "tune",
+        "description": "Jump the active receiver down by 1 kHz.",
+        "id": "page-down",
+        "label": "Tune -1 kHz",
+        "params": {
+          "deltaHz": -1000
+        },
+        "repeatable": true,
+        "section": "Tuning",
+        "sequence": [
+          "PageDown"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-1",
+        "label": "160m",
+        "params": {
+          "index": 1
+        },
+        "section": "Bands",
+        "sequence": [
+          "1"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-2",
+        "label": "80m",
+        "params": {
+          "index": 2
+        },
+        "section": "Bands",
+        "sequence": [
+          "2"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-3",
+        "label": "60m",
+        "params": {
+          "index": 3
+        },
+        "section": "Bands",
+        "sequence": [
+          "3"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-4",
+        "label": "40m",
+        "params": {
+          "index": 4
+        },
+        "section": "Bands",
+        "sequence": [
+          "4"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-5",
+        "label": "30m",
+        "params": {
+          "index": 5
+        },
+        "section": "Bands",
+        "sequence": [
+          "5"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-6",
+        "label": "20m",
+        "params": {
+          "index": 6
+        },
+        "section": "Bands",
+        "sequence": [
+          "6"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-7",
+        "label": "15m",
+        "params": {
+          "index": 7
+        },
+        "section": "Bands",
+        "sequence": [
+          "7"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-8",
+        "label": "10m",
+        "params": {
+          "index": 8
+        },
+        "section": "Bands",
+        "sequence": [
+          "8"
+        ]
+      },
+      {
+        "action": "band_select",
+        "id": "band-9",
+        "label": "6m",
+        "params": {
+          "index": 9
+        },
+        "section": "Bands",
+        "sequence": [
+          "9"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-lsb",
+        "label": "LSB",
+        "params": {
+          "mode": "LSB"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F1"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-usb",
+        "label": "USB",
+        "params": {
+          "mode": "USB"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F2"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-cw",
+        "label": "CW",
+        "params": {
+          "mode": "CW"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F3"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-cwr",
+        "label": "CW-R",
+        "params": {
+          "mode": "CW-R"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F4"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-am",
+        "label": "AM",
+        "params": {
+          "mode": "AM"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F5"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-fm",
+        "label": "FM",
+        "params": {
+          "mode": "FM"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F6"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-rtty",
+        "label": "RTTY",
+        "params": {
+          "mode": "RTTY"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F7"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-rttyr",
+        "label": "RTTY-R",
+        "params": {
+          "mode": "RTTY-R"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F8"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-psk",
+        "label": "PSK",
+        "params": {
+          "mode": "PSK"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F9"
+        ]
+      },
+      {
+        "action": "mode_select",
+        "id": "mode-pskr",
+        "label": "PSK-R",
+        "params": {
+          "mode": "PSK-R"
+        },
+        "section": "Modes",
+        "sequence": [
+          "F10"
+        ]
+      },
+      {
+        "action": "cycle_data_mode",
+        "id": "cycle-data-mode",
+        "label": "Cycle DATA",
+        "section": "Modes",
+        "sequence": [
+          "d"
+        ]
+      },
+      {
+        "action": "cycle_filter",
+        "id": "cycle-filter",
+        "label": "Next filter",
+        "params": {
+          "step": 1
+        },
+        "section": "Filter",
+        "sequence": [
+          "f"
+        ]
+      },
+      {
+        "action": "open_filter_settings",
+        "id": "open-filter-settings",
+        "label": "Filter settings",
+        "section": "Filter",
+        "sequence": [
+          "F"
+        ]
+      },
+      {
+        "action": "cycle_filter",
+        "id": "wider-filter",
+        "label": "Wider filter",
+        "params": {
+          "step": -1
+        },
+        "section": "Filter",
+        "sequence": [
+          "w"
+        ]
+      },
+      {
+        "action": "cycle_filter",
+        "id": "narrower-filter",
+        "label": "Narrower filter",
+        "params": {
+          "step": 1
+        },
+        "section": "Filter",
+        "sequence": [
+          "W"
+        ]
+      },
+      {
+        "action": "vfo_swap",
+        "id": "swap-vfo",
+        "label": "Swap VFO",
+        "section": "VFO",
+        "sequence": [
+          "Tab"
+        ]
+      },
+      {
+        "action": "vfo_equalize",
+        "id": "equalize-vfo",
+        "label": "Copy to other VFO",
+        "section": "VFO",
+        "sequence": [
+          "="
+        ]
+      },
+      {
+        "action": "toggle_split",
+        "id": "toggle-split",
+        "label": "Toggle split",
+        "section": "VFO",
+        "sequence": [
+          "s"
+        ]
+      },
+      {
+        "action": "switch_active_vfo",
+        "id": "switch-active-vfo",
+        "label": "Toggle active receiver",
+        "section": "VFO",
+        "sequence": [
+          "m"
+        ]
+      },
+      {
+        "action": "set_active_vfo",
+        "id": "activate-main",
+        "label": "Activate MAIN receiver",
+        "modifiers": [
+          "SHIFT"
+        ],
+        "params": {
+          "vfo": "MAIN"
+        },
+        "section": "VFO",
+        "sequence": [
+          "M"
+        ]
+      },
+      {
+        "action": "set_active_vfo",
+        "id": "activate-sub",
+        "label": "Activate SUB receiver",
+        "modifiers": [
+          "SHIFT"
+        ],
+        "params": {
+          "vfo": "SUB"
+        },
+        "section": "VFO",
+        "sequence": [
+          "S"
+        ]
+      },
+      {
+        "action": "toggle_nr",
+        "id": "toggle-nr",
+        "label": "Noise reduction",
+        "section": "DSP",
+        "sequence": [
+          "n"
+        ]
+      },
+      {
+        "action": "toggle_nb",
+        "id": "toggle-nb",
+        "label": "Noise blanker",
+        "section": "DSP",
+        "sequence": [
+          "b"
+        ]
+      },
+      {
+        "action": "cycle_agc",
+        "id": "cycle-agc",
+        "label": "Cycle AGC",
+        "section": "DSP",
+        "sequence": [
+          "a"
+        ]
+      },
+      {
+        "action": "cycle_preamp",
+        "id": "cycle-preamp",
+        "label": "Cycle preamp",
+        "section": "RF Front End",
+        "sequence": [
+          "p"
+        ]
+      },
+      {
+        "action": "cycle_att",
+        "id": "cycle-att",
+        "label": "Cycle attenuator",
+        "section": "RF Front End",
+        "sequence": [
+          "t"
+        ]
+      },
+      {
+        "action": "toggle_auto_notch",
+        "id": "toggle-auto-notch",
+        "label": "Auto notch",
+        "section": "DSP",
+        "sequence": [
+          "o"
+        ]
+      },
+      {
+        "action": "toggle_monitor",
+        "id": "toggle-monitor",
+        "label": "Monitor",
+        "section": "TX",
+        "sequence": [
+          "k"
+        ]
+      },
+      {
+        "action": "toggle_ip_plus",
+        "id": "toggle-ip-plus",
+        "label": "IP+",
+        "section": "DSP",
+        "sequence": [
+          "i"
+        ]
+      },
+      {
+        "action": "toggle_dial_lock",
+        "id": "toggle-dial-lock",
+        "label": "Dial lock",
+        "section": "System",
+        "sequence": [
+          "l"
+        ]
+      },
+      {
+        "action": "toggle_rit",
+        "id": "toggle-rit",
+        "label": "RIT",
+        "section": "RIT/XIT",
+        "sequence": [
+          "r"
+        ]
+      },
+      {
+        "action": "toggle_xit",
+        "id": "toggle-xit",
+        "label": "XIT",
+        "section": "RIT/XIT",
+        "sequence": [
+          "x"
+        ]
+      },
+      {
+        "action": "clear_rit_xit",
+        "id": "clear-rit-xit",
+        "label": "Clear offset",
+        "section": "RIT/XIT",
+        "sequence": [
+          "Escape"
+        ]
+      },
+      {
+        "action": "adjust_af_level",
+        "id": "af-level-up",
+        "label": "AF gain up",
+        "modifiers": [
+          "CTRL"
+        ],
+        "params": {
+          "delta": 5
+        },
+        "repeatable": true,
+        "section": "Levels",
+        "sequence": [
+          "ArrowUp"
+        ]
+      },
+      {
+        "action": "adjust_af_level",
+        "id": "af-level-down",
+        "label": "AF gain down",
+        "modifiers": [
+          "CTRL"
+        ],
+        "params": {
+          "delta": -5
+        },
+        "repeatable": true,
+        "section": "Levels",
+        "sequence": [
+          "ArrowDown"
+        ]
+      },
+      {
+        "action": "adjust_rf_gain",
+        "id": "rf-level-up",
+        "label": "RF gain up",
+        "modifiers": [
+          "CTRL",
+          "SHIFT"
+        ],
+        "params": {
+          "delta": 5
+        },
+        "repeatable": true,
+        "section": "Levels",
+        "sequence": [
+          "ArrowUp"
+        ]
+      },
+      {
+        "action": "adjust_rf_gain",
+        "id": "rf-level-down",
+        "label": "RF gain down",
+        "modifiers": [
+          "CTRL",
+          "SHIFT"
+        ],
+        "params": {
+          "delta": -5
+        },
+        "repeatable": true,
+        "section": "Levels",
+        "sequence": [
+          "ArrowDown"
+        ]
+      },
+      {
+        "action": "toggle_help",
+        "id": "help",
+        "label": "Keyboard help",
+        "section": "System",
+        "sequence": [
+          "?"
+        ]
+      },
+      {
+        "action": "focus_target",
+        "id": "focus-af",
+        "label": "Go to AF",
+        "params": {
+          "target": "af"
+        },
+        "section": "Focus",
+        "sequence": [
+          "g",
+          "a"
+        ]
+      },
+      {
+        "action": "focus_target",
+        "id": "focus-rf",
+        "label": "Go to RF",
+        "params": {
+          "target": "rf"
+        },
+        "section": "Focus",
+        "sequence": [
+          "g",
+          "r"
+        ]
+      },
+      {
+        "action": "focus_target",
+        "id": "focus-filter",
+        "label": "Go to Filter",
+        "params": {
+          "target": "filter"
+        },
+        "section": "Focus",
+        "sequence": [
+          "g",
+          "f"
+        ]
+      },
+      {
+        "action": "focus_target",
+        "id": "focus-mode",
+        "label": "Go to Mode",
+        "params": {
+          "target": "mode"
+        },
+        "section": "Focus",
+        "sequence": [
+          "g",
+          "m"
+        ]
+      },
+      {
+        "action": "focus_target",
+        "id": "focus-pbt",
+        "label": "Go to PBT",
+        "params": {
+          "target": "pbt"
+        },
+        "section": "Focus",
+        "sequence": [
+          "g",
+          "p"
+        ]
+      },
+      {
+        "action": "focus_target",
+        "id": "focus-waterfall",
+        "label": "Go to Waterfall",
+        "params": {
+          "target": "waterfall"
+        },
+        "section": "Focus",
+        "sequence": [
+          "g",
+          "w"
+        ]
+      },
+      {
+        "action": "focus_target",
+        "id": "focus-vfo",
+        "label": "Go to VFO",
+        "params": {
+          "target": "vfo"
+        },
+        "section": "Focus",
+        "sequence": [
+          "g",
+          "v"
+        ]
+      },
+      {
+        "action": "scope_span_step",
+        "description": "Step the scope span to the next smaller value.",
+        "id": "scope-span-down",
+        "label": "Decrease scope span",
+        "params": {
+          "direction": "down"
+        },
+        "section": "Spectrum",
+        "sequence": [
+          "["
+        ]
+      },
+      {
+        "action": "scope_span_step",
+        "description": "Step the scope span to the next larger value.",
+        "id": "scope-span-up",
+        "label": "Increase scope span",
+        "params": {
+          "direction": "up"
+        },
+        "section": "Spectrum",
+        "sequence": [
+          "]"
+        ]
+      },
+      {
+        "action": "scope_ref_step",
+        "description": "Lower the scope reference level by one step.",
+        "id": "scope-ref-down",
+        "label": "Decrease scope reference level",
+        "params": {
+          "direction": "down"
+        },
+        "section": "Spectrum",
+        "sequence": [
+          "-"
+        ]
+      },
+      {
+        "action": "scope_ref_step",
+        "description": "Raise the scope reference level by one step.",
+        "id": "scope-ref-up",
+        "label": "Increase scope reference level",
+        "params": {
+          "direction": "up"
+        },
+        "section": "Spectrum",
+        "sequence": [
+          "+"
+        ]
+      },
+      {
+        "action": "scope_toggle_hold",
+        "description": "Freeze or release the scope waterfall.",
+        "id": "scope-toggle-hold",
+        "label": "Toggle scope hold",
+        "modifiers": [
+          "SHIFT"
+        ],
+        "section": "Spectrum",
+        "sequence": [
+          "H"
+        ]
+      },
+      {
+        "action": "scope_toggle_dual",
+        "description": "Enable or disable simultaneous MAIN+SUB scope rendering.",
+        "id": "scope-toggle-dual",
+        "label": "Toggle dual scope",
+        "modifiers": [
+          "SHIFT"
+        ],
+        "section": "Spectrum",
+        "sequence": [
+          "D"
+        ]
+      },
+      {
+        "action": "scope_toggle_fst",
+        "description": "Cycle the scope sweep speed (FST).",
+        "id": "scope-toggle-fst",
+        "label": "Toggle fast scroll (FST)",
+        "modifiers": [
+          "SHIFT"
+        ],
+        "section": "Spectrum",
+        "sequence": [
+          "F"
+        ]
+      }
+    ],
+    "helpTitle": "Radio Keyboard",
+    "leaderKey": "g",
+    "leaderTimeoutMs": 1000
+  },
+  "meterCalibrations": {
+    "swr": [
+      {
+        "actual": 1,
+        "label": "1.0",
+        "raw": 0
+      },
+      {
+        "actual": 1.5,
+        "label": "1.5",
+        "raw": 48
+      },
+      {
+        "actual": 2,
+        "label": "2.0",
+        "raw": 80
+      },
+      {
+        "actual": 3,
+        "label": "3.0",
+        "raw": 120
+      },
+      {
+        "actual": 6,
+        "label": "6.0+",
+        "raw": 240
+      }
+    ]
+  },
+  "meterRedlines": {
+    "swr": 120
+  },
+  "model": "IC-7300",
+  "modes": [
+    "USB",
+    "LSB",
+    "CW",
+    "CW-R",
+    "AM",
+    "FM",
+    "RTTY",
+    "RTTY-R"
+  ],
+  "preLabels": {},
+  "preValues": [
+    0,
+    1,
+    2
+  ],
+  "providerGeneration": 1,
+  "receivers": 1,
+  "scope": true,
+  "scopeConfig": {
+    "amplitudeMax": 160,
+    "centerMode": true,
+    "defaultSpan": 3600
+  },
+  "scopeSource": "hardware",
+  "stateContractVersion": 1,
+  "tx": true,
+  "txBands": [
+    {
+      "end": 2000000,
+      "name": "160m",
+      "start": 1800000
+    },
+    {
+      "end": 4000000,
+      "name": "80m",
+      "start": 3500000
+    },
+    {
+      "end": 5410000,
+      "name": "60m",
+      "start": 5330000
+    },
+    {
+      "end": 7300000,
+      "name": "40m",
+      "start": 7000000
+    },
+    {
+      "end": 10150000,
+      "name": "30m",
+      "start": 10100000
+    },
+    {
+      "end": 14350000,
+      "name": "20m",
+      "start": 14000000
+    },
+    {
+      "end": 18168000,
+      "name": "17m",
+      "start": 18068000
+    },
+    {
+      "end": 21450000,
+      "name": "15m",
+      "start": 21000000
+    },
+    {
+      "end": 24990000,
+      "name": "12m",
+      "start": 24890000
+    },
+    {
+      "end": 29700000,
+      "name": "10m",
+      "start": 28000000
+    },
+    {
+      "end": 54000000,
+      "name": "6m",
+      "start": 50000000
+    }
+  ],
+  "vfoReadback": "selected_unselected",
+  "vfoScheme": "ab",
+  "webrtc": {
+    "available": true,
+    "enabled": false
+  }
+}
