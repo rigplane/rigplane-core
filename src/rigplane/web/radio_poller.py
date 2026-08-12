@@ -3096,19 +3096,29 @@ class RadioPoller:
         if scheduler is None:
             return
         now = time.monotonic()
-        # MOR-1485: gate tx_only cadence membership (TX/PA meters) on observed
-        # PTT via the RadioState mirror. That mirror is LIVE on the scheduler
-        # path: _civ_rx._handle_1c deliberately keeps writing RadioState.ptt
-        # (its siblings migrated to observations; PTT is dual-written), and
-        # global.tx_state.ptt is cadence-polled at 0.3s by this very
-        # scheduler — so the mirror refreshes from the scheduler's own
-        # traffic. (_pick_high_meter reads the same field, but only on the
-        # legacy non-scheduler branch — not a precedent for this path.)
-        tx_active = (
-            getattr(self._radio_state, "ptt", False)
-            if self._radio_state is not None
-            else False
-        )
+        # MOR-1525: gate tx_only cadence membership (TX/PA meters: power, SWR,
+        # ALC, comp) on the CANONICAL ``global.tx_state.ptt`` observation, not
+        # the legacy RadioState.ptt mirror the MOR-1485 comment above used to
+        # justify. The mirror was live-proven to desync from the canonical
+        # fact: after a TX it stayed True while the StateStore's own
+        # observation had already flipped False in RX, so the tx_only group
+        # kept polling at ~1s cadence during confirmed RX (operator-visible
+        # as the SWR readout flapping 0<->1, MOR-1525). Read the same field
+        # ``build_public_state_payload_from_snapshot`` serves to the UI, so
+        # this can never disagree with what the operator is shown. Fail
+        # closed: unobserved/stale/unknown ptt -> tx_active False, so
+        # tx_only meters stay idle rather than spuriously poll — the honest
+        # direction when the fact isn't known.
+        try:
+            ptt_field = self._state_store.snapshot().field(
+                FieldPath.global_("tx_state", "ptt")
+            )
+        except KeyError:
+            tx_active = False
+        else:
+            tx_active = ptt_field.freshness is FreshnessState.FRESH and bool(
+                ptt_field.value
+            )
         scheduler.due_requests(now=now, tx_active=tx_active)
         pending = scheduler.pending_requests()
         pending_ids = {request.id for request in pending}

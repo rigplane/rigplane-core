@@ -528,7 +528,13 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
 
     with patch(
         "rigplane.web.radio_poller.time.monotonic",
-        side_effect=(100.0, 101.1, 101.2),
+        # MOR-1525: each ``_send_scheduler_requests`` cycle now also reads
+        # the canonical PTT observation via ``StateStore.snapshot()``, which
+        # takes its own ``time.monotonic()`` reading. The extra reads are
+        # harmless duplicates of the cycle's own timestamp (no
+        # ``tx_state.ptt`` observation exists in this test, so tx_active
+        # stays False regardless of their exact value).
+        side_effect=(100.0, 100.0, 101.1, 101.1, 101.2, 101.2),
     ):
         await poller._send_query()  # noqa: SLF001
         await poller._send_query()  # noqa: SLF001
@@ -3212,6 +3218,189 @@ async def test_poll_demand_does_not_pile_duplicates() -> None:
     assert len(executor.calls) == 1, (
         f"in-flight group re-queued: {len(executor.calls)} executor calls"
     )
+
+
+# ---------------------------------------------------------------------------
+# MOR-1525: tx_active must be sourced from the canonical
+# ``global.tx_state.ptt`` StateStore observation, not the legacy
+# RadioState.ptt mirror. Live evidence: after a TX, the mirror stayed True
+# while the canonical observation had already flipped False in RX, so the
+# tx_only meter group (power/SWR/ALC/comp) kept polling at ~1s cadence
+# during confirmed RX -- operator-visible as the SWR readout flapping 0<->1
+# between a fresh poll (1.0) and the TTL-stale race (2.0s).
+# ---------------------------------------------------------------------------
+
+
+class _TxActiveSpyScheduler(AcquisitionScheduler):
+    """AcquisitionScheduler that records each ``tx_active`` it is called with.
+
+    ``AcquisitionScheduler`` is a ``__slots__`` class, so its bound method
+    cannot be monkeypatched on an instance -- subclassing (which regains a
+    ``__dict__``) is the direct way to observe exactly what
+    ``_send_scheduler_requests`` derived and passed through, independent of
+    the scheduler's own (separately tested) tx_only gating behavior.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.tx_active_calls: list[bool] = []
+
+    def due_requests(
+        self, *, now: float | None = None, tx_active: bool = False
+    ) -> tuple[Any, ...]:
+        self.tx_active_calls.append(tx_active)
+        return super().due_requests(now=now, tx_active=tx_active)
+
+
+def _tx_only_profile(path: FieldPath) -> RadioAcquisitionProfile:
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=(FieldCapability(path=path, polling=True),),
+        default_policy=AcquisitionPolicy(
+            cadence_seconds=1.0, freshness_ttl_seconds=2.0
+        ),
+        field_policies={
+            path: AcquisitionPolicy(
+                cadence_seconds=1.0, freshness_ttl_seconds=2.0, tx_only=True
+            ),
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_tx_active_ignores_stuck_mirror_when_canonical_reads_false() -> None:
+    """MOR-1525 (live bug): a RadioState.ptt mirror stuck True post-TX must
+    NOT keep the tx_only meter group polling once the canonical StateStore
+    observation has already flipped False."""
+    radio = _make_radio(active="MAIN")
+    power = FieldPath.global_("meters", "power")
+    scheduler = _TxActiveSpyScheduler(profile=_tx_only_profile(power))
+    radio._acquisition_scheduler = scheduler
+
+    store = StateStore()
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+    state = RadioState()
+    state.ptt = True  # the stale/stuck legacy mirror (the live bug)
+
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert scheduler.tx_active_calls == [False]
+    assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.asyncio
+async def test_tx_active_true_when_canonical_observation_is_true() -> None:
+    """MOR-1525: the tx_only group polls once the canonical PTT observation
+    reads True, independent of the legacy mirror's value."""
+    radio = _make_radio(active="MAIN")
+    power = FieldPath.global_("meters", "power")
+    scheduler = _TxActiveSpyScheduler(profile=_tx_only_profile(power))
+    radio._acquisition_scheduler = scheduler
+
+    store = StateStore()
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=True,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+    state = RadioState()  # mirror left at its default (False) -- irrelevant now
+
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert scheduler.tx_active_calls == [True]
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].paths == (power,)
+
+
+@pytest.mark.asyncio
+async def test_tx_active_false_when_canonical_ptt_unobserved() -> None:
+    """MOR-1525: an unobserved canonical PTT fact fails closed to
+    tx_active=False -- tx_only meters stay idle rather than guess. The legacy
+    mirror is deliberately set True here: it must NOT influence the result,
+    so this test only goes green on the fix (mirror-sourced code would read
+    tx_active=True and fail this assertion)."""
+    radio = _make_radio(active="MAIN")
+    power = FieldPath.global_("meters", "power")
+    scheduler = _TxActiveSpyScheduler(profile=_tx_only_profile(power))
+    radio._acquisition_scheduler = scheduler
+
+    store = StateStore()  # nothing observed yet
+    state = RadioState()
+    state.ptt = True  # legacy mirror says True -- must be ignored
+
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert scheduler.tx_active_calls == [False]
+    assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.asyncio
+async def test_tx_active_stops_tx_only_group_when_canonical_ptt_de_keys() -> None:
+    """MOR-1525: once the canonical observation flips back to False, the very
+    next drain must stop treating the tx_only group as due (de-key)."""
+    radio = _make_radio(active="MAIN")
+    power = FieldPath.global_("meters", "power")
+    scheduler = _TxActiveSpyScheduler(profile=_tx_only_profile(power))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+
+    store = StateStore()
+    now = time.monotonic()
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=True,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=now,
+        )
+    )
+    state = RadioState()
+
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+        acquisition_executor=executor,
+    )
+
+    # TX cycle: the tx_only group is due and sent.
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert scheduler.tx_active_calls == [True]
+    assert len(scheduler.pending_requests()) == 1
+    assert len(executor.calls) == 1
+
+    # De-key: canonical PTT flips False.
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=now + 0.1,
+        )
+    )
+
+    # Next drain: tx_active must read False and no NEW tx_only work is sent.
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert scheduler.tx_active_calls == [True, False]
+    assert len(executor.calls) == 1  # unchanged -- no re-send while de-keyed
 
 
 # ---------------------------------------------------------------------------
