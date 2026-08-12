@@ -61,12 +61,26 @@
   const isValue = (f: RfFrontEndField<unknown>, value: unknown): boolean =>
     f.reading.status === 'known' && f.reading.value === value;
 
-  /** `[field, label, min, max, step]`, RAW wire units (0..1 fractions, no
-   *  rescale) — same discipline as `TxAuxSurface.TX_AUX_LEVELS`. */
+  /** `[field, label, min, max, step]`. The radio's own normalized 0..1
+   *  reading (a wire-protocol FRACTION, not the raw 0-255 wire unit) — same
+   *  discipline as `TxAuxSurface.TX_AUX_LEVELS`. Rescaled to the raw 0-255
+   *  integer `set_rf_gain`/`set_squelch` require at the wiring seam
+   *  (`SemanticRadioSurfaces.svelte`'s `RF_FRONT_END_LEVEL_INTENT`, MOR-1447),
+   *  never inside this presentation-only file. */
   export const RF_FRONT_END_LEVELS = [
     ['rfGain', 'RF gain', 0, 1, 0.01],
     ['squelch', 'Squelch', 0, 1, 0.01],
   ] as const;
+  /** The combined-knob domain (MOR-1447 leg 2): both `rfGain` and `squelch`
+   *  share this [0,1] range, an invariant of the combined control model —
+   *  `dualParamValuesFromNormX`/`dualParamNormXFromValues` map ONE knob
+   *  position onto both fields over the SAME domain. */
+  const [, , RF_SQL_MIN, RF_SQL_MAX, RF_SQL_STEP] = RF_FRONT_END_LEVELS[0];
+  /** Profile-declared control model (MOR-1447 leg 2, data-driven from
+   *  `[capabilities].rf_sql_control_model` in the rig TOML — never a
+   *  vendor/model-name branch in code). `'separate'` is the default: two
+   *  independent sliders, unchanged from leg 1. */
+  export type RfSqlControlModel = 'separate' | 'combined';
   /** `[field, label]` on/off controls. */
   export const RF_FRONT_END_TOGGLES = [
     ['digiSel', 'DIGI-SEL'], ['ipPlus', 'IP+'],
@@ -84,9 +98,16 @@
 
 <script lang="ts">
   import type { RadioViewModel } from './radio-view-model';
+  import {
+    dualParamValuesFromNormX,
+    dualParamNormXFromValues,
+  } from '../components-v2/controls/value-control/value-control-core';
 
   interface Props {
     view: RadioViewModel;
+    /** Icom-style single-knob RF/SQL (MOR-1447 leg 2). Defaults to
+     *  `'separate'` — the two independent sliders leg 1 fixed. */
+    controlModel?: RfSqlControlModel;
     onPreampChange?: (level: number) => void;
     onAttenuatorChange?: (db: number) => void;
     onLevelChange?: (field: RfFrontEndLevelField, value: number) => void;
@@ -97,7 +118,9 @@
      *  it rather than the wiring re-reading raw state to derive it. */
     onToggle?: (field: RfFrontEndToggleField, next: boolean) => void;
   }
-  let { view, onPreampChange, onAttenuatorChange, onLevelChange, onToggle }: Props = $props();
+  let {
+    view, controlModel = 'separate', onPreampChange, onAttenuatorChange, onLevelChange, onToggle,
+  }: Props = $props();
 
   let rf = $derived(view.rfFrontEnd);
   /** Carry-forwards 2/3: matched on the DOTTED field path, never re-derived
@@ -114,6 +137,63 @@
   }
   function changeLevel(field: RfFrontEndLevelField, value: number): void {
     if (rf && usable(rf[field])) onLevelChange?.(field, value);
+  }
+  /** MOR-1447 leg 2: both fields structurally present AND the profile
+   *  declares the combined knob — the gate for rendering ONE control instead
+   *  of two. A profile that declares `'combined'` but only observes one of
+   *  the pair structurally falls back to the two-slider rendering below
+   *  (the per-field `{#if rf[field].availability.structural}` gates still
+   *  apply), same "render what's actually there" discipline as every other
+   *  field in this file. */
+  let combinedUsable = $derived(
+    controlModel === 'combined'
+    && !!rf?.rfGain.availability.structural
+    && !!rf?.squelch.availability.structural,
+  );
+  const knownOr = (f: RfFrontEndField<number> | undefined, fallback: number): number =>
+    f && f.reading.status === 'known' ? f.reading.value : fallback;
+  /** Readback projection (MOR-1447 leg 2): the honest inverse of the
+   *  hardware knob. Ported verbatim from `dualParamNormXFromValues`
+   *  (`components-v2/controls/value-control/value-control-core.ts`) — the
+   *  same math `DualParamRenderer.svelte` already draws with. Ambiguity
+   *  handling is inherited from that function: if SQL reads above its
+   *  minimum, the knob is projected to the right leg (RF forced to max) —
+   *  the physical knob genuinely cannot express "RF below max AND SQL above
+   *  min" at once, so this is the one honest reading, not a guess.
+   */
+  let combinedNormX = $derived(
+    dualParamNormXFromValues(
+      knownOr(rf?.rfGain, RF_SQL_MIN),
+      knownOr(rf?.squelch, RF_SQL_MIN),
+      RF_SQL_MIN,
+      RF_SQL_MAX,
+    ),
+  );
+  function changeCombined(normX: number): void {
+    // Both halves must be independently usable, not merely structurally
+    // present (mirrors carry-forward 2/3's "the handler itself refuses to
+    // emit, independent of `disabled`" discipline): one physical knob must
+    // not silently half-write the pair — e.g. move RF while SQL is degraded
+    // and stays untouched, desyncing what looks like a single control.
+    if (!rf || !usable(rf.rfGain) || !usable(rf.squelch)) return;
+    const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(
+      normX, RF_SQL_MIN, RF_SQL_MAX, RF_SQL_STEP,
+    );
+    // Per-field change guard, mirroring `DualParamRenderer.svelte`'s
+    // `emitPair` (`value-control-core.ts`'s companion component — only emits
+    // a field that actually moved). Without this, every input event
+    // unconditionally re-sends BOTH fields — a left-leg drag spams redundant
+    // `set_squelch(0)` and a right-leg drag spams redundant `set_rf_gain(255)`
+    // on every tick, roughly doubling the CI-V write rate versus both the
+    // real hardware knob and the leg-1 two-slider path. On the live serial
+    // IC-7300 gate radio that write-rate doubling is the queue-lag/"Commander
+    // stopped" hazard shape.
+    if (rf.rfGain.reading.status === 'known' && nextRf !== rf.rfGain.reading.value) {
+      changeLevel('rfGain', nextRf);
+    }
+    if (rf.squelch.reading.status === 'known' && nextSql !== rf.squelch.reading.value) {
+      changeLevel('squelch', nextSql);
+    }
   }
   function toggle(field: RfFrontEndToggleField): void {
     const f = rf?.[field];
@@ -164,23 +244,41 @@
       </div>
     {/if}
 
-    {#each RF_FRONT_END_LEVELS as [field, label, min, max, step] (field)}
-      {#if rf[field].availability.structural}
-        <label
-          class="rf-front-end-level" data-testid={`rf-front-end-${field}`}
-          data-observed={usable(rf[field])}
+    {#if combinedUsable}
+      <label
+        class="rf-front-end-level" data-testid="rf-front-end-rf-sql"
+        data-observed={usable(rf.rfGain) && usable(rf.squelch)}
+      >
+        <span class="rf-front-end-name">RF/SQL</span>
+        <input
+          type="range" min={RF_SQL_MIN} max={RF_SQL_MAX} step={RF_SQL_STEP}
+          value={combinedNormX}
+          disabled={!usable(rf.rfGain) || !usable(rf.squelch)}
+          oninput={(event) => changeCombined(event.currentTarget.valueAsNumber)}
+        />
+        <output
+          >{levelTextOf(rf.rfGain, RF_SQL_MIN, RF_SQL_MAX)} / {levelTextOf(rf.squelch, RF_SQL_MIN, RF_SQL_MAX)}</output
         >
-          <span class="rf-front-end-name">{label}</span>
-          <input
-            type="range" {min} {max} {step}
-            value={rf[field].reading.status === 'known' ? rf[field].reading.value : 0}
-            disabled={!usable(rf[field])}
-            oninput={(event) => changeLevel(field, event.currentTarget.valueAsNumber)}
-          />
-          <output>{levelTextOf(rf[field], min, max)}</output>
-        </label>
-      {/if}
-    {/each}
+      </label>
+    {:else}
+      {#each RF_FRONT_END_LEVELS as [field, label, min, max, step] (field)}
+        {#if rf[field].availability.structural}
+          <label
+            class="rf-front-end-level" data-testid={`rf-front-end-${field}`}
+            data-observed={usable(rf[field])}
+          >
+            <span class="rf-front-end-name">{label}</span>
+            <input
+              type="range" {min} {max} {step}
+              value={rf[field].reading.status === 'known' ? rf[field].reading.value : 0}
+              disabled={!usable(rf[field])}
+              oninput={(event) => changeLevel(field, event.currentTarget.valueAsNumber)}
+            />
+            <output>{levelTextOf(rf[field], min, max)}</output>
+          </label>
+        {/if}
+      {/each}
+    {/if}
 
     {#each RF_FRONT_END_TOGGLES as [field, label] (field)}
       {#if rf[field].availability.structural}

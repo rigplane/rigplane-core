@@ -214,7 +214,10 @@ function liveState(withRfFrontEnd: boolean): ServerState {
   } as unknown as ServerState;
 }
 
-const liveCaps = (withRfFrontEnd: boolean): Capabilities => ({
+// MOR-1447 leg 2: `rfSqlControlModel` defaults to omitted/'separate' — only the
+// combined-knob describe block below passes 'combined' explicitly, so every
+// pre-existing test in this file keeps exercising the unchanged two-slider path.
+const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'combined'): Capabilities => ({
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: withRfFrontEnd
     ? ['audio', 'tx', 'dual_rx', 'preamp', 'attenuator', 'rf_gain', 'squelch', 'digisel', 'ip_plus']
@@ -225,6 +228,7 @@ const liveCaps = (withRfFrontEnd: boolean): Capabilities => ({
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  ...(rfSqlControlModel !== undefined ? { rfSqlControlModel } : {}),
 } as unknown as Capabilities);
 
 let target: HTMLDivElement;
@@ -286,13 +290,18 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // anything else — so the wiring must convert on the way through. This was
   // the input-snaps-to-0%-or-100% regression: an unconverted intermediate
   // drag silently failed the real handler's integer guard.
+  // MOR-1447 verifier follow-up: literal expected value, not the same
+  // `Math.round(...)` formula the production seam itself uses — a mutation
+  // that swapped `Math.round` for `Math.trunc`/`Math.floor` would still pass
+  // a formula-mirroring assertion (140.25 truncates to 140 too). 0.55*255 is
+  // pinned as the literal 140.
   it('routes the RF-gain slider to onRfGainChange, converted to the raw 0-255 wire level', () => {
     render();
     const input = el('rfGain')!.querySelector('input')!;
     input.value = '0.55';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(Math.round(0.55 * 255));
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     for (const other of ALL.filter((s) => s !== h.rfGain)) expect(other).not.toHaveBeenCalled();
   });
 
@@ -302,8 +311,21 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
     input.value = '0.2';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(Math.round(0.2 * 255));
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(51);
     for (const other of ALL.filter((s) => s !== h.squelch)) expect(other).not.toHaveBeenCalled();
+  });
+
+  // Rounding-rule pin (MOR-1447 leg 1 verifier follow-up item a): 0.5 is the
+  // exact tie case where `Math.round` (128) and a truncating conversion
+  // (127) diverge — 0.5*255 = 127.5. The literal 128 is the ONLY value that
+  // proves `Math.round` specifically, not merely "some" integer conversion.
+  it('rounds a 0.5 drag to the raw wire level 128, not the truncated 127', () => {
+    render();
+    const input = el('rfGain')!.querySelector('input')!;
+    input.value = '0.5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(128);
   });
 
   // (d): `onDigiSelToggle`/`onIpPlusToggle` take an explicit `on: boolean` —
@@ -374,6 +396,149 @@ describe('the surface mounts only when the view model carries the group', () => 
     (h.state as unknown as { ptt: boolean }).ptt = true;
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
+  });
+});
+
+/* ── MOR-1447 leg 2: the profile-declared combined RF/SQL knob ──────────
+ * IC-7300 is the live gate radio for `rf_sql_control_model = "combined"`
+ * (`rigs/ic7300.toml`). These cases pin the dispatch/value contract this
+ * wiring must honor once `runtime.caps.rfSqlControlModel` reads "combined":
+ * ONE knob position maps to BOTH `set_rf_gain`/`set_squelch`, over the exact
+ * same normalized→raw-0-255 seam (`RF_FRONT_END_LEVEL_INTENT`) leg 1 fixed —
+ * no new conversion path, no vendor branch. */
+
+describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it', () => {
+  const ALL = [h.att, h.pre, h.rfGain, h.squelch, h.digiSel, h.ipPlus];
+
+  it('renders ONE rf-sql control, not the two separate sliders', () => {
+    h.caps = liveCaps(true, 'combined');
+    render();
+    expect(el('rf-sql')).not.toBeNull();
+    expect(el('rfGain')).toBeNull();
+    expect(el('squelch')).toBeNull();
+  });
+
+  it('keeps rendering the two separate sliders when the profile omits the declaration', () => {
+    h.caps = liveCaps(true); // no rfSqlControlModel -> defaults to 'separate'
+    render();
+    expect(el('rf-sql')).toBeNull();
+    expect(el('rfGain')).not.toBeNull();
+    expect(el('squelch')).not.toBeNull();
+  });
+
+  // Hard left: RF min, SQL min — both converted to the raw 0-255 wire level.
+  it('routes a hard-left drag to RF min / SQL min, both raw wire integers', () => {
+    h.caps = liveCaps(true, 'combined');
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '0';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
+    for (const other of ALL.filter((s) => s !== h.rfGain && s !== h.squelch)) {
+      expect(other).not.toHaveBeenCalled();
+    }
+  });
+
+  // Center (inside the dead zone): RF max, SQL min — the hardware's default
+  // "everything wide open, no squelch" rest position.
+  it('routes the knob center to RF max / SQL min', () => {
+    h.caps = liveCaps(true, 'combined');
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '0.5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  // Hard right: SQL max, RF forced to max too (owner semantics: "hard right
+  // = SQL max (RF max)").
+  it('routes a hard-right drag to SQL max / RF max, both raw wire integers', () => {
+    h.caps = liveCaps(true, 'combined');
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(255);
+  });
+
+  // Left-of-center: RF sweeps, SQL stays pinned at min. Literal expected
+  // values (not re-derived from the mapping formula) — 0.23 lands exactly
+  // halfway across the left leg (`dualParamValuesFromNormX`'s own math,
+  // ported from `DualParamRenderer`/`value-control-core.ts`).
+  it('sweeps RF only on a left-of-center drag, leaving SQL pinned at min', () => {
+    h.caps = liveCaps(true, 'combined');
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '0.23';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(128);
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  // Right-of-center: RF pinned at max, SQL sweeps.
+  it('sweeps SQL only on a right-of-center drag, leaving RF pinned at max', () => {
+    h.caps = liveCaps(true, 'combined');
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '0.77';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(128);
+  });
+
+  // Readback projection: SQL above min projects the knob to the right leg
+  // (RF forced to max) — the one honest reading when the physical knob
+  // cannot express "RF below max AND SQL above min" at once.
+  it('positions the knob on the right leg when SQL reads above min, on initial render', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.state = liveState(true);
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 0.8196078431372549;
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0.2;
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    expect(input.valueAsNumber).toBeCloseTo(0.632, 3);
+  });
+
+  // Verifier follow-up R1, pinned end-to-end through the real
+  // `RF_FRONT_END_LEVEL_INTENT` seam (not just the pure surface): an
+  // unconditional pair-emit would double-dispatch on every drag, including
+  // ones where one half is already at its target — the queue-lag/"Commander
+  // stopped" hazard shape on the live serial IC-7300 gate radio.
+  it('a drag landing on the ALREADY-CONFIRMED position dispatches NEITHER set_rf_gain nor set_squelch', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.state = liveState(true);
+    // The knob's own "center, at rest" position: RF max, SQL min.
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '0.5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).not.toHaveBeenCalled();
+    expect(h.squelch).not.toHaveBeenCalled();
+  });
+
+  it('a drag that only moves RF dispatches set_rf_gain ONLY — SQL is already at its target, no redundant set_squelch', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.state = liveState(true);
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '0'; // hard left: RF -> 0 (changes), SQL stays 0 (unchanged)
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
+    expect(h.squelch).not.toHaveBeenCalled();
   });
 });
 

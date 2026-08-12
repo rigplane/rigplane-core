@@ -265,6 +265,16 @@
    * integers).
    */
   const rfFrontEndIntents = semanticHandlers.rfFrontEnd;
+  /**
+   * MOR-1447 leg 2. The profile-declared RF/SQL control model — data-driven
+   * from `[capabilities].rf_sql_control_model` in the rig TOML, read at this
+   * seam straight off `runtime.caps`, same "caps-echo display metadata"
+   * precedent as `hasDualReceiver`/`agcLabels` above. `RfFrontEndSurface`
+   * itself renders whichever model this resolves to and stays otherwise
+   * capability-blind; there is no vendor/model-name branch anywhere in this
+   * file or in the surface.
+   */
+  let rfSqlControlModel = $derived(runtime.caps?.rfSqlControlModel ?? 'separate');
   const RF_FRONT_END_LEVEL_INTENT: Record<RfFrontEndLevelField, (value: number) => void> = {
     rfGain: (value) => rfFrontEndIntents.onRfGainChange(Math.round(value * 255)),
     squelch: (value) => rfFrontEndIntents.onSquelchChange(Math.round(value * 255)),
@@ -888,6 +898,7 @@
     {#if view?.rfFrontEnd}
       <RfFrontEndSurface
         {view}
+        controlModel={rfSqlControlModel}
         onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
         onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}
         onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
