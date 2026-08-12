@@ -1586,7 +1586,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if isinstance(mode, Mode):
             return mode
         raw_mode = mode
-        mode_key = mode.strip().upper()
+        mode_key = mode.strip().upper().replace("-", "_")
         try:
             return Mode[mode_key]
         except KeyError as exc:
