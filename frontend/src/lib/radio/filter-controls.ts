@@ -8,7 +8,7 @@
 // PBT raw <-> display conversion
 // Reads range from capabilities if available, falls back to IC-7610 defaults
 import { getControlRange } from '$lib/stores/capabilities.svelte';
-import type { Capabilities } from '$lib/types/capabilities';
+import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 
 export const FILTER_BIPOLAR_MIN = -1200;
 export const FILTER_BIPOLAR_MAX = 1200;
@@ -263,6 +263,101 @@ export function clampFilterWidth(
 ): number {
   const clamped = Math.max(FILTER_WIDTH_MIN, Math.min(maxHz, value));
   return Math.round(clamped / stepHz) * stepHz;
+}
+
+/**
+ * Quantize a raw filter-width value (Hz) to the nearest value the radio's
+ * OWN capability-declared width rule actually accepts (MOR-1518). The
+ * IC-7300's `USB`/`LSB`/`CW`/`RTTY` rules split into two `segments` with
+ * DIFFERENT step sizes either side of 500/600 Hz (50 Hz below, 100 Hz above
+ * — `rigs/ic7300.toml`'s `[filters.width.USB]`). A single fixed step (this
+ * module's own `FILTER_WIDTH_STEP`, still this function's fallback for a
+ * capability-absent rule) produces exactly the illegal mid-drag widths the
+ * live bench reported (1050/2150/3150 Hz) once the drag crosses into the
+ * coarser upper segment — the backend's `filter_hz_to_index`
+ * (`src/rigplane/commands/_codec.py`) then rejects them with "Filter width
+ * N is not aligned to N Hz steps", the reported sticky-toast spray.
+ *
+ * `rule` is meant to be `resolveFilterModeConfig`'s own per-mode output —
+ * the SAME resolved config `panel-commands.ts`'s `validResolvedFilterWidth`
+ * checks against — so quantization and validation are never out of step.
+ * `rule` absent, `fixed`, or table-shaped (table-mode widths are snapped
+ * elsewhere, by `FilterPanel.svelte`'s `hzToTableIndex`/`tableIndexToHz`)
+ * falls straight through to the pre-existing `clampFilterWidth` single-step
+ * behavior — unchanged pre-MOR-1518 behavior, data-driven doctrine: no step
+ * is ever synthesized for a radio (or mode) that declares none.
+ *
+ * Segment selection: the value first clamps to the rule's overall
+ * [minHz, maxHz] span, then picks the segment whose own [hzMin, hzMax]
+ * contains it. A value that lands in a GAP BETWEEN two segments (the
+ * IC-7300's own 500→600 Hz gap: filter index 9 is 500 Hz, index 10 jumps
+ * straight to 600 Hz — there is no legal width in between) snaps to
+ * whichever segment edge is numerically closer; an exact tie prefers the
+ * upper segment, the same round-half-up convention `Math.round` itself uses
+ * for in-segment snapping. Malformed segment entries (non-finite bounds,
+ * non-positive step, `hzMin > hzMax`) are dropped before selection; if that
+ * leaves nothing usable, this falls back to the same plain clamp — never a
+ * crash, never a fabricated step.
+ *
+ * `rule.fixed`/`rule.table` shapes pass `value` through UNCHANGED rather
+ * than falling into the generic clamp: the clamp's own default bounds
+ * (50-3600 Hz) are themselves an ordinary-range assumption that does not
+ * hold for every fixed width a radio declares (e.g. the IC-7300's FM
+ * `[filters.width.FM]` is `fixed = true` with `defaults = [15000, 10000,
+ * 7000]` — well above 3600 Hz). Clamping those against the wrong bounds
+ * would silently corrupt an otherwise-legal fixed width, a worse defect
+ * than the pre-MOR-1518 raw-passthrough this function replaces. Table-mode
+ * widths already have their own nearest-entry snap
+ * (`FilterPanel.svelte`'s `hzToTableIndex`/`tableIndexToHz`) — this
+ * function staying a no-op for them is not a regression.
+ */
+export function quantizeFilterWidthToRule(
+  value: number,
+  rule: FilterModeConfig | null | undefined,
+): number {
+  if (!Number.isFinite(value)) return value;
+  if (!rule) return clampFilterWidth(value);
+  if (rule.fixed || rule.table) return value;
+
+  const rawSegments: FilterSegmentConfig[] = rule.segments && rule.segments.length > 0
+    ? rule.segments
+    : [{
+        hzMin: rule.minHz ?? FILTER_WIDTH_MIN,
+        hzMax: rule.maxHz ?? FILTER_WIDTH_MAX,
+        stepHz: rule.stepHz ?? FILTER_WIDTH_STEP,
+        indexMin: 0,
+      }];
+  const segments = rawSegments
+    .filter((segment) =>
+      Number.isFinite(segment.hzMin) && Number.isFinite(segment.hzMax)
+      && Number.isFinite(segment.stepHz) && segment.stepHz > 0
+      && segment.hzMin <= segment.hzMax)
+    .sort((a, b) => a.hzMin - b.hzMin);
+  if (segments.length === 0) return clampFilterWidth(value);
+
+  const minHz = segments[0].hzMin;
+  const maxHz = segments[segments.length - 1].hzMax;
+  const clamped = Math.max(minHz, Math.min(maxHz, value));
+
+  let target = segments[0];
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (clamped >= segment.hzMin && clamped <= segment.hzMax) { target = segment; break; }
+    if (clamped < segment.hzMin) {
+      // In the gap immediately before `segment` — pick whichever neighbor
+      // edge is closer (tie prefers the upper/current segment).
+      const previous = segments[i - 1];
+      target = previous && (clamped - previous.hzMax) < (segment.hzMin - clamped)
+        ? previous
+        : segment;
+      break;
+    }
+    target = segment; // past this segment's hzMax — "closest below" so far
+  }
+
+  const bounded = Math.max(target.hzMin, Math.min(target.hzMax, clamped));
+  const steps = Math.round((bounded - target.hzMin) / target.stepHz);
+  return Math.max(target.hzMin, Math.min(target.hzMax, target.hzMin + steps * target.stepHz));
 }
 
 export function deriveIfShift(pbtInner: number, pbtOuter: number): number {

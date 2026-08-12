@@ -2016,3 +2016,119 @@ describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
     expect(h.sendCommand).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * MOR-1518 (live IC-7300 bench): dragging the Filter Width slider mid-drag
+ * emitted raw, unaligned values (1050/2150/3150 Hz — legal in the 50 Hz
+ * segment below 500 Hz, illegal once the drag crosses into the 100 Hz
+ * segment above it, `A06_SEGMENTS`/`rigs/ic7300.toml`) straight onto the
+ * wire, which the backend's `filter_hz_to_index`
+ * (`src/rigplane/commands/_codec.py`) rejected with "Filter width N is not
+ * aligned to N Hz steps" — three sticky error toasts per drag.
+ *
+ * `onFilterWidthChange` (the slider's own debounced handler,
+ * `FilterSurface.svelte`'s raw `<input type="range">` and `FilterPanel`'s
+ * table-mode slider both call it), `onFilterPresetChange` (the settings
+ * modal's per-filter direct-entry slider), and `onFilterDefaults` (restore-
+ * defaults) are the three `set_filter_width` dispatch sites that carry a
+ * caller-supplied width rather than an already-legal radio-observed one —
+ * this suite pins each of them to the resolved rule's OWN nearest legal
+ * value, never the raw input.
+ */
+describe('MOR-1518 client-side filter-width quantization at command emission', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    h.state = a06State();
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    h.unavailable.clear();
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+  });
+
+  afterEach(() => {
+    resetCommandLifecycle();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    [1050, 1100],
+    [2150, 2200],
+    [3150, 3200],
+  ])('quantizes onFilterWidthChange(%i) to the nearest legal segment value (%i)', (raw, expected) => {
+    makeFilterHandlers().onFilterWidthChange(raw);
+    vi.advanceTimersByTime(200);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: expected, receiver: 0 }]]);
+  });
+
+  it('snaps a value inside the 500-600 Hz segment gap to the nearer edge (boundary crossing)', () => {
+    makeFilterHandlers().onFilterWidthChange(520);
+    vi.advanceTimersByTime(200);
+    makeFilterHandlers().onFilterWidthChange(580);
+    vi.advanceTimersByTime(200);
+
+    expect(exactCalls()).toEqual([
+      ['set_filter_width', { width: 500, receiver: 0 }],
+      ['set_filter_width', { width: 600, receiver: 0 }],
+    ]);
+  });
+
+  it('leaves an already-legal width completely untouched', () => {
+    makeFilterHandlers().onFilterWidthChange(1800);
+    vi.advanceTimersByTime(200);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 1800, receiver: 0 }]]);
+  });
+
+  it('quantizes the modal preset (direct-entry) path the same way as the slider', () => {
+    // Active filter is 2 (`a06State`'s fixture); targeting preset slot 1
+    // makes the handler's own pre-existing filter-switch dance (select 1,
+    // write its width, restore 2) fire around the width write — the MOR-1518
+    // assertion is that the WIDTH itself is quantized (1100, not the raw
+    // 1050), not the unrelated filter-switch sequencing.
+    makeFilterHandlers().onFilterPresetChange(1, 1050);
+    vi.advanceTimersByTime(200);
+
+    expect(exactCalls()).toEqual([
+      ['set_filter', { filter: 1, receiver: 0 }],
+      ['set_filter_width', { width: 1100, receiver: 0 }],
+      ['set_filter', { filter: 2, receiver: 0 }],
+    ]);
+  });
+
+  it('quantizes restore-defaults widths too, even though profile defaults are normally already legal', () => {
+    // Active filter is already 1 (matches `defaults[0]`'s slot). A
+    // deliberately-misaligned "defaults" array proves `onFilterDefaults` is
+    // not exempt just because real profile defaults are pre-validated; the
+    // trailing `set_filter` restore is `onFilterDefaults`'s own pre-existing
+    // behavior, unrelated to this fix.
+    const withFilter1 = a06State();
+    h.state = { ...withFilter1, main: { ...withFilter1.main, filter: 1 } } as ServerState;
+    makeFilterHandlers().onFilterDefaults([1050]);
+
+    expect(exactCalls()).toEqual([
+      ['set_filter_width', { width: 1100, receiver: 0 }],
+      ['set_filter', { filter: 1, receiver: 0 }],
+    ]);
+  });
+
+  it('quantizes against a SECOND, differently-stepped mode rule on the same fixture set (data-driven, not IC-7300-specific)', () => {
+    h.caps = {
+      ...a06Caps(A06_STEP), // minHz: 250, maxHz: 3550, stepHz: 100
+    } as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthChange(1836);
+    vi.advanceTimersByTime(200);
+
+    // Anchored at minHz=250: round((1836-250)/100)=16 -> 250+1600=1850.
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 1850, receiver: 0 }]]);
+  });
+
+  it('falls back to the pre-MOR-1518 default 50 Hz clamp when the mode has no declared width rule at all', () => {
+    h.caps = { ...a06Caps(), filterConfig: {} } as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthChange(1055);
+    vi.advanceTimersByTime(200);
+
+    // clampFilterWidth's own pre-existing default: round(1055/50)*50 = 1050.
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 1050, receiver: 0 }]]);
+  });
+});
