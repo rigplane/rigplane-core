@@ -333,6 +333,7 @@ export interface FilterProps {
   currentMode: string;
   currentFilter: number;
   filterShape: number;
+  hasFilterShape: boolean;
   filterLabels: string[];
   filterWidth: number;
   filterWidthMin: number;
@@ -371,6 +372,14 @@ export function toFilterProps(
     currentMode: rx?.mode ?? '---',
     currentFilter: rx?.filter ?? 1,
     filterShape: rx?.filterShape ?? 0,
+    // MOR-1503: whether the radio has a REAL filter_shape command of its
+    // own (Icom family, e.g. IC-7300). The FTX-1 declares no
+    // `filter_shape` capability, so FilterPanel.svelte uses THIS flag to
+    // decide whether to show the SHARP/SOFT shape buttons — a
+    // capability-absent radio gets the section hidden instead of dead
+    // buttons commanding a control the radio does not have (same class
+    // as MOR-1494's IF-shift row).
+    hasFilterShape: hasCap(caps, 'filter_shape'),
     filterLabels: caps?.filters ?? [],
     filterWidth: rx?.filterWidth ?? Number.NaN,
     filterWidthMin:

@@ -7,6 +7,7 @@ const mockProps = {
   currentMode: 'USB',
   currentFilter: 2,
   filterShape: 0,
+  hasFilterShape: true,
   filterLabels: ['FIL1', 'FIL2', 'FIL3'],
   filterWidth: 2400,
   filterConfig: {
@@ -111,6 +112,7 @@ beforeEach(() => {
     currentMode: 'USB',
     currentFilter: 2,
     filterShape: 0,
+    hasFilterShape: true,
     filterLabels: ['FIL1', 'FIL2', 'FIL3'],
     filterWidth: 2400,
     filterConfig: {
@@ -374,6 +376,49 @@ describe('callbacks', () => {
     const button = Array.from(document.querySelectorAll('button')).find((el) => el.textContent?.trim() === 'SOFT') as HTMLButtonElement;
     button.click();
     expect(mockHandlers.onFilterShapeChange).toHaveBeenCalledWith(1);
+  });
+});
+
+/**
+ * MOR-1503: capability-absent controls must be HIDDEN, not shown dead
+ * (same class as MOR-1494's IF-shift row). `filter_shape` is a real
+ * command only on Icom radios (e.g. IC-7300, `rigs/ic7300.toml` declares
+ * the capability); the FTX-1's capability set does not include it, yet
+ * the settings modal rendered the SHARP/SOFT shape buttons
+ * unconditionally. The panel must render the shape section only when
+ * `hasFilterShape` (data-driven from the radio's own capability set) is
+ * true — never from a hardcoded model/family check.
+ */
+describe('filter shape visibility (MOR-1503)', () => {
+  it('hides the SHARP/SOFT shape buttons in the modal for an FTX-1-shaped capability set (no filter_shape)', () => {
+    const t = mountPanel({ hasFilterShape: false });
+    const gear = t.querySelector('.settings-button') as HTMLButtonElement;
+    gear.click();
+    flushSync();
+
+    const buttons = Array.from(document.querySelectorAll('button')).map((el) => el.textContent?.trim());
+    expect(buttons).not.toContain('SHARP');
+    expect(buttons).not.toContain('SOFT');
+  });
+
+  it('hides the whole shape section in the modal for an FTX-1-shaped capability set', () => {
+    const t = mountPanel({ hasFilterShape: false });
+    const gear = t.querySelector('.settings-button') as HTMLButtonElement;
+    gear.click();
+    flushSync();
+
+    expect(document.querySelector('.shape-section')).toBeNull();
+  });
+
+  it('renders the SHARP/SOFT shape buttons in the modal for an IC-7300-shaped capability set (filter_shape)', () => {
+    const t = mountPanel({ hasFilterShape: true });
+    const gear = t.querySelector('.settings-button') as HTMLButtonElement;
+    gear.click();
+    flushSync();
+
+    const buttons = Array.from(document.querySelectorAll('button')).map((el) => el.textContent?.trim());
+    expect(buttons).toContain('SHARP');
+    expect(buttons).toContain('SOFT');
   });
 });
 

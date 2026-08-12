@@ -13,6 +13,11 @@
   let currentMode = $derived(p.currentMode);
   let currentFilter = $derived(p.currentFilter);
   let filterShape = $derived(p.filterShape);
+  // MOR-1503: only radios with a REAL filter_shape command (Icom family,
+  // e.g. IC-7300) show the SHARP/SOFT shape buttons. The FTX-1 declares
+  // no `filter_shape` capability — rendering the buttons anyway is a dead
+  // control, same class as MOR-1494's IF-shift row.
+  let hasFilterShape = $derived(p.hasFilterShape ?? false);
   let filterLabels = $derived(p.filterLabels ?? ['FIL1', 'FIL2', 'FIL3']);
   let filterWidth = $derived(p.filterWidth);
   let filterWidthMin = $derived(p.filterWidthMin ?? 50);
@@ -352,29 +357,31 @@
         </div>
       {/each}
 
-      <div class="shape-section">
-        <div class="shape-title">Shape</div>
-        <div class="shape-buttons">
-          <button
-            type="button"
-            class="shape-button v2-control-button"
-            class:active={filterShape === 0}
-            style="--control-accent:var(--v2-accent-cyan); --control-active-text:var(--v2-text-white)"
-            onclick={() => onFilterShapeChange?.(0)}
-          >
-            SHARP
-          </button>
-          <button
-            type="button"
-            class="shape-button v2-control-button"
-            class:active={filterShape === 1}
-            style="--control-accent:var(--v2-accent-green-bright); --control-active-text:var(--v2-bg-darkest)"
-            onclick={() => onFilterShapeChange?.(1)}
-          >
-            SOFT
-          </button>
+      {#if hasFilterShape}
+        <div class="shape-section">
+          <div class="shape-title">Shape</div>
+          <div class="shape-buttons">
+            <button
+              type="button"
+              class="shape-button v2-control-button"
+              class:active={filterShape === 0}
+              style="--control-accent:var(--v2-accent-cyan); --control-active-text:var(--v2-text-white)"
+              onclick={() => onFilterShapeChange?.(0)}
+            >
+              SHARP
+            </button>
+            <button
+              type="button"
+              class="shape-button v2-control-button"
+              class:active={filterShape === 1}
+              style="--control-accent:var(--v2-accent-green-bright); --control-active-text:var(--v2-bg-darkest)"
+              onclick={() => onFilterShapeChange?.(1)}
+            >
+              SOFT
+            </button>
+          </div>
         </div>
-      </div>
+      {/if}
 
       {#if filterConfig?.fixed}
         <div class="modal-note">This mode uses fixed filter widths.</div>
