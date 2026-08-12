@@ -170,6 +170,41 @@ command_response_observable = [
     "global.tx_state.ptt",
     "global.operator_controls.tuner_status",
     "global.tx_state.split",
+    # MOR-1483 (field-policy membership wave, leg 1): VOX/MON toggles.
+    # Non-polling (command_response only) — riding the MOR-1490
+    # prime_unobserved mechanism rather than a poll cadence; see the
+    # field_policies comment below. voxDelay (1A-05 ctl-mem 02-92) is NOT
+    # added here: its ingress decode already exists
+    # (``_CTL_MEM_VOX_DELAY_PREFIX``), but the scheduler's acquisition
+    # executor has no query builder for 2-byte ctl-mem sub-addressing
+    # (``AcquisitionQuerySender`` is a 3-tuple command/sub/receiver only) —
+    # that's new mechanism, not a table entry, so it's out of scope here.
+    "global.tx_state.vox_on",
+    "global.tx_state.monitor_on",
+    # MOR-1491 (field-policy membership wave, leg 2): filter/PBT facts.
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.main.operator_controls.filter_shape",
+    "receiver.main.operator_controls.pbt_inner",
+    "receiver.main.operator_controls.pbt_outer",
+    # MOR-1492 (field-policy membership wave, leg 3): DSP level facts.
+    "receiver.main.operator_controls.nr_level",
+    "receiver.main.operator_controls.nb_level",
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    "global.operator_controls.notch_filter",
+    "receiver.main.operator_controls.manual_notch_width",
+    "receiver.main.operator_controls.agc_time_constant",
+    # MOR-1493 (field-policy membership wave, leg 4): RIT/XIT and CW keyer
+    # facts.
+    "global.operator_controls.rit_freq",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
+    "global.operator_controls.break_in",
+    "global.operator_controls.break_in_delay",
+    "global.operator_controls.key_speed",
+    "global.operator_controls.cw_pitch",
+    "receiver.main.operator_controls.audio_peak_filter",
+    "receiver.main.operator_toggles.twin_peak_filter",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -234,6 +269,152 @@ adaptive_decay = false
 [state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
 cadence_seconds = 15.0
 freshness_ttl_seconds = 25.0
+adaptive_decay = false
+
+# MOR-1483/1491/1492/1493 (field-policy membership wave): non-polling
+# (command_response) membership riding the MOR-1490 priming mechanism
+# (AcquisitionScheduler.prime_unobserved). These fields are deliberately
+# NOT in [state_acquisition.capabilities].polling_only above, so
+# due_requests() never touches them; instead prime_unobserved() queues a
+# BACKGROUND read for each once it's never-observed, re-deriving the
+# never-observed set every ~30s
+# (StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS) until each field
+# lands its first observation — worst case a few re-derive windows if the
+# scheduler's 5-path-per-call burst cap (prime_unobserved's
+# _PRIME_UNOBSERVED_BURST_LIMIT) paces this whole group across multiple
+# calls. cadence_seconds is pinned equal to freshness_ttl_seconds purely so
+# diagnostics don't show a misleadingly fast number — it is otherwise inert
+# here because these capabilities carry polling=False.
+[state_acquisition.field_policies."global.tx_state.vox_on"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.monitor_on"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_outer"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.nr_level"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.notch_filter"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_width"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.rit_freq"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.rit_on"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.rit_tx"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in_delay"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.audio_peak_filter"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────

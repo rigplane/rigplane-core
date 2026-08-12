@@ -130,10 +130,10 @@
   },
   {
     "name": "cmd16_sub47_break_in_global_value",
-    "comment": "0x16/0x47 global value (break_in 0..2)",
+    "comment": "0x16/0x47 break_in is observation-backed (MOR-1493 field-policy membership wave); the legacy RadioState mirror is no longer written (stays at default).",
     "frame": {"command": 22, "sub": 71, "data": "02"},
     "expected_state": {
-      "break_in": 2
+      "break_in": 0
     }
   },
   {
