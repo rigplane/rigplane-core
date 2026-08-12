@@ -454,13 +454,19 @@ describe('defaultHzTxPermit is never presented as band-wide permission (carry-fo
 /* ── (d) frequency entry validates against the envelope ─────────── */
 
 describe('frequency entry validates against tuneMinHz/tuneMaxHz (carry-forward 5)', () => {
-  const BOUNDS = { tuneMinHz: 30000, tuneMaxHz: 60000000 } as const;
+  // MOR-1462: a realistic BAND-SCOPED range (20m), not the general-coverage
+  // 30 kHz … 60 MHz fixture used elsewhere in this file — every boundary
+  // value below is 8 digits, so its ×1000 kHz reading is always far outside
+  // this range and the smart-unit heuristic falls through to the Hz path
+  // unambiguously. That keeps this block a pin on the Hz BOUNDARY check
+  // itself, not on unit selection (MOR-1462 owns that, in its own block).
+  const BOUNDS = { tuneMinHz: 14000000, tuneMaxHz: 14350000 } as const;
 
   it.each([
-    ['one hertz below the minimum', 29999, false],
-    ['exactly the minimum', 30000, true],
-    ['exactly the maximum', 60000000, true],
-    ['one hertz above the maximum', 60000001, false],
+    ['one hertz below the minimum', 13999999, false],
+    ['exactly the minimum', 14000000, true],
+    ['exactly the maximum', 14350000, true],
+    ['one hertz above the maximum', 14350001, false],
   ])('%s is accepted=%s', (_label, hz, accepted) => {
     const onEnterFrequency = vi.fn();
     const r = render(withB(BOUNDS), { onEnterFrequency });
@@ -475,7 +481,7 @@ describe('frequency entry validates against tuneMinHz/tuneMaxHz (carry-forward 5
 
   // Kills: dropping the handler-side range check. `disabled` alone satisfies a
   // `.click()`-based assertion, so the guard is bypassed here on its own.
-  it.each([29999, 60000001])('refuses %i even when the disabled attribute is bypassed', (hz) => {
+  it.each([13999999, 14350001])('refuses %i even when the disabled attribute is bypassed', (hz) => {
     const onEnterFrequency = vi.fn();
     const r = render(withB(BOUNDS), { onEnterFrequency });
     typeFrequency(r.input()!, String(hz));
@@ -484,11 +490,17 @@ describe('frequency entry validates against tuneMinHz/tuneMaxHz (carry-forward 5
     r.dispose();
   });
 
-  it('publishes the envelope as the input min/max as well', () => {
+  // MOR-1462: the input's native min/max is GONE — a kHz-scale keystroke
+  // (e.g. `7100`) is a valid, in-range reading despite sitting numerically
+  // far below a Hz-stated `tuneMinHz`, so a native constraint would flag it
+  // invalid for a reason this file's own JS-side interpretation disagrees
+  // with. `entry-range` still publishes the envelope in prose.
+  it('publishes the envelope in the entry-range text, with no native min/max to contradict unit-aware validation', () => {
     const r = render(withB(BOUNDS));
-    expect(r.input()!.getAttribute('min')).toBe('30000');
-    expect(r.input()!.getAttribute('max')).toBe('60000000');
-    expect(r.text('entry-range')).toBe(`${mhz(30000)} … ${mhz(60000000)}`);
+    expect(r.input()!.getAttribute('min')).toBeNull();
+    expect(r.input()!.getAttribute('max')).toBeNull();
+    expect(r.input()!.getAttribute('inputmode')).toBe('decimal');
+    expect(r.text('entry-range')).toBe(`${mhz(14000000)} … ${mhz(14350000)}`);
     r.dispose();
   });
 
@@ -500,6 +512,126 @@ describe('frequency entry validates against tuneMinHz/tuneMaxHz (carry-forward 5
     expect(r.btn('entry-set')!.disabled).toBe(true);
     bypassClick(r.btn('entry-set')!);
     expect(onEnterFrequency).not.toHaveBeenCalled();
+    r.dispose();
+  });
+});
+
+/* ── smart kHz/MHz/Hz interpretation of a typed entry (MOR-1462) ──
+   Owner ruling B, the standard ham direct-entry heuristic: a decimal point
+   means MHz (exact decimal-string-to-Hz, no float round-trip); a bare
+   integer is kHz when ×1000 is in range, Hz when only the raw reading is,
+   and kHz wins the ambiguous case where both are. Commit still lands on the
+   MOR-1425 exact-jump path (`onEnterFrequency` receives the interpreted
+   Hz), and Enter/Set share the one `entryReady` guard, same as MOR-1444. */
+
+describe('smart kHz/MHz/Hz interpretation of a typed entry (MOR-1462, owner ruling B)', () => {
+  // General-coverage range (30 kHz … 60 MHz) — wide enough that a bare
+  // integer's kHz reading and its raw-Hz reading can BOTH be in range,
+  // which is exactly the ambiguity the ticket rules on.
+  const BOUNDS = { tuneMinHz: 30000, tuneMaxHz: 60000000 } as const;
+
+  it.each([
+    ['bare kHz-scale integer', '7100', 7100000],
+    ['another bare kHz-scale integer', '14074', 14074000],
+    ['MHz decimal, one fractional digit', '7.1', 7100000],
+    ['MHz decimal, exact to the Hz (no float round-trip)', '14.0741', 14074100],
+    // Verifier-flagged: `14.0741` alone does NOT distinguish digit-scaling
+    // from `Math.trunc(Number(text) * 1_000_000)` — `Number('14.0741') *
+    // 1e6 === 14074100` exactly in IEEE-754. `8.000001`/`1.000001` are
+    // witnesses where the float product genuinely lands a fraction below
+    // the integer (e.g. 8000000.999999999), so a truncating float
+    // round-trip is off by exactly 1 Hz. THESE are the exactness pin.
+    ['MHz decimal where float*1e6 truncates 1 Hz low', '8.000001', 8000001],
+    ['MHz decimal where float*1e6 truncates 1 Hz low (2)', '1.000001', 1000001],
+    ['already-Hz integer, out of kHz range', '7100000', 7100000],
+  ])('interprets %s (%s) as %i Hz and dispatches it exactly', (_label, typed, expectedHz) => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, typed);
+    expect(r.btn('entry-set')!.disabled).toBe(false);
+    r.btn('entry-set')!.click();
+    flushSync();
+    expect(onEnterFrequency).toHaveBeenCalledExactlyOnceWith(expectedHz);
+    r.dispose();
+  });
+
+  // THE AMBIGUITY PIN. Both readings of `40000` are in range (40 kHz raw,
+  // 40 MHz ×1000) — the ticket rules kHz wins.
+  it('resolves a kHz-vs-Hz ambiguous entry to kHz', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '40000');
+    r.btn('entry-set')!.click();
+    flushSync();
+    expect(onEnterFrequency).toHaveBeenCalledExactlyOnceWith(40000000);
+    r.dispose();
+  });
+
+  it('refuses an entry that is out of range under every reading, dispatching nothing', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    // ~100 MHz raw, ~100 GHz ×1000 — both out of the 30 kHz … 60 MHz range.
+    typeFrequency(r.input()!, '99999999');
+    expect(r.btn('entry-set')!.disabled).toBe(true);
+    bypassClick(r.btn('entry-set')!);
+    expect(onEnterFrequency).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('refuses a decimal entry finer than 1 Hz (more than 6 fractional digits)', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '14.1234567');
+    expect(r.btn('entry-set')!.disabled).toBe(true);
+    bypassClick(r.btn('entry-set')!);
+    expect(onEnterFrequency).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('refuses an in-progress decimal with no fractional digits yet', () => {
+    const r = render(withB(BOUNDS));
+    typeFrequency(r.input()!, '14.');
+    expect(r.btn('entry-set')!.disabled).toBe(true);
+    r.dispose();
+  });
+
+  it('shows the interpreted MHz value as a commit hint before Set is pressed', () => {
+    const r = render(withB(BOUNDS));
+    typeFrequency(r.input()!, '7100');
+    expect(r.text('entry-hint')).toBe(`→ ${mhz(7100000)}`);
+    r.dispose();
+  });
+
+  it('shows no hint while the entry cannot be resolved', () => {
+    const r = render(withB(BOUNDS));
+    typeFrequency(r.input()!, 'abc');
+    expect(r.el('entry-hint')).toBeNull();
+    r.dispose();
+  });
+
+  // Review hardening: the hint must not render a target next to a Set
+  // button the MOR-1322 receiver-known gate has disabled — an interpretable
+  // entry alone is not enough, `entryReady` (the SAME gate Set/Enter use)
+  // decides the hint too.
+  it('hides the hint when the entry parses but the active receiver is unknown', () => {
+    const r = render({ ...withB(BOUNDS), activeReceiver: { status: 'unknown' } });
+    typeFrequency(r.input()!, '7100');
+    expect(r.btn('entry-set')!.disabled).toBe(true);
+    expect(r.el('entry-hint')).toBeNull();
+    r.dispose();
+  });
+
+  // Commit still lands on the SAME MOR-1425 exact-jump path Enter/Set
+  // already share for an integer entry — no second dispatch shape for MHz.
+  it('commits an MHz decimal entry on Enter, exactly like Set', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '14.0741');
+    r.input()!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    flushSync();
+    expect(onEnterFrequency).toHaveBeenCalledExactlyOnceWith(14074100);
     r.dispose();
   });
 });
@@ -651,11 +783,14 @@ describe('keyboard entry commits on Enter and cancels on Escape (MOR-1444)', () 
   });
 
   // Kills: an Enter-commit path that bypasses the entryReady guard the Set
-  // button already goes through (carry-forward 5 / rule 5).
+  // button already goes through (carry-forward 5 / rule 5). '29' is out of
+  // range under BOTH readings (29 Hz and 29 kHz = 29000 Hz both sit below
+  // `tuneMinHz`), so this stays a pure entryReady-guard pin, independent of
+  // MOR-1462's unit selection.
   it('refuses to commit an out-of-range entry on Enter', () => {
     const onEnterFrequency = vi.fn();
     const r = render(withB(BOUNDS), { onEnterFrequency });
-    typeFrequency(r.input()!, '29999');
+    typeFrequency(r.input()!, '29');
     keydown(r.input()!, 'Enter');
     expect(onEnterFrequency).not.toHaveBeenCalled();
     r.dispose();

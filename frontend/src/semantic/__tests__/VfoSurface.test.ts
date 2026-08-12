@@ -22,6 +22,7 @@ import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
 import { validateRadioViewModel, type RadioViewModel, type VfoSlot } from '../radio-view-model';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
+import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
 
 const ids: readonly TopologyFixtureId[] = ['1/single', '1/ab', '2/ab_shared', '2/main_sub'];
 
@@ -1008,6 +1009,106 @@ describe('per-digit tuning (MOR-1322) — intents (R9: frequency, never TX)', ()
       .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
     flushSync();
     expect(onTuneFrequency).not.toHaveBeenCalled();
+  });
+});
+
+// ── MOR-1441: pending-target affordance ─────────────────────────────────
+describe('pending-target affordance (MOR-1441)', () => {
+  // Kills: rendering the pending target with no distinguishing marker, or
+  // rendering the CONFIRMED digits while a pending target exists — either
+  // way the operator loses sight of where a hot burst is heading, or the
+  // pending value gets presented as confirmed truth.
+  it('renders the pending target, marked distinct from confirmed, on the receiver that has one', () => {
+    const t = mountSurface({
+      viewModel: tunableTile,
+      onTuneFrequency: vi.fn(),
+      pendingFrequencyHz: { MAIN: 14260000 },
+    });
+    const main = activeSlot(t); // MAIN's active tile (isActive: true)
+    const mainGroup = main.querySelector<HTMLElement>('.freq')!;
+    expect(mainGroup.dataset.freqStatus).toBe('pending');
+    const digitsText = [...main.querySelectorAll('.digit')].map((d) => d.textContent).join('');
+    expect(digitsText).toBe('14260000');
+    expect(digitsText).not.toBe(String(tunableTile.vfos[0].frequencyHz));
+
+    // SUB's active-slot tile has no pending entry — stays confirmed.
+    const sub = activeSlots(t).find((sl) => tileOf(sl).dataset.vfoReceiver === 'SUB')!;
+    const subGroup = sub.querySelector<HTMLElement>('.freq')!;
+    expect(subGroup.dataset.freqStatus).toBe('confirmed');
+  });
+
+  // Kills: leaving the marker "pending" (or the digits stuck on a stale
+  // target) once no in-flight `set_freq` exists for the receiver — the
+  // MOR-1441 snap-to-confirmed-on-echo/expiry rule.
+  it('renders confirmed digits when no pending target is supplied', () => {
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
+    const group = activeSlot(t).querySelector<HTMLElement>('.freq')!;
+    expect(group.dataset.freqStatus).toBe('confirmed');
+    const digitsText = [...activeSlot(t).querySelectorAll('.digit')].map((d) => d.textContent).join('');
+    expect(digitsText).toBe(String(tunableTile.vfos[0].frequencyHz));
+  });
+
+  // ── MOR-1441 REVIEW FIX: the anti-runaway pin ───────────────────────────
+  // Reproduced defect: VfoSurface fed the PENDING display value into
+  // `FrequencyDisplayInteractive`'s `freq` prop, which doubles as the SOLE
+  // arithmetic base for wheel/arrow gestures. Every hot tick then computed
+  // its next target off an already-drifted base and fed the excess back
+  // into the MOR-1425 tuning accumulator's own delta — a positive-feedback
+  // loop the verifier reproduced against the REAL accumulator (10 ticks of
+  // +10 Hz intent -> +1910 Hz actual; 30 ticks -> +15.7 MHz; a TX-out-of-
+  // band hazard). This drives the actual production seam — VfoSurface's
+  // `onTuneFrequency` feeding a REAL `createTuningAccumulator`, with
+  // `pendingFrequencyHz` updated between ticks exactly as a live re-render
+  // would (`SemanticRadioSurfaces` re-deriving it from the accumulator's own
+  // emitted target). THE kill: N hot ticks must land on confirmed + N*step,
+  // never runaway growth.
+  it('MUTATION KILL: N hot wheel ticks accumulate linearly (confirmed + N*step), never runaway', () => {
+    vi.useFakeTimers();
+    try {
+      const CONFIRMED = tunableTile.vfos[0].frequencyHz!; // MAIN's active tile
+      const N = 10;
+      let target = CONFIRMED;
+      const accumulator = createTuningAccumulator({
+        emit: (_receiver, freq) => { target = freq; },
+        paceMs: 0,
+      });
+
+      let pendingFrequencyHz: Partial<Record<'MAIN' | 'SUB', number>> = {};
+      let stepSize: number | null = null;
+
+      for (let i = 0; i < N; i++) {
+        let requested: number | null = null;
+        const onTuneFrequency = (_receiver: 'MAIN' | 'SUB', hz: number) => {
+          requested = hz;
+          accumulator.step(0, CONFIRMED, hz);
+        };
+        const el = document.createElement('div');
+        document.body.appendChild(el);
+        const component = mount(VfoSurface, {
+          target: el,
+          props: { viewModel: tunableTile, onTuneFrequency, pendingFrequencyHz },
+        });
+        flushSync();
+
+        const digits = activeSlot(el).querySelectorAll<HTMLElement>('.digit');
+        const oneKhzDigit = digits[digits.length - 4]; // 1 kHz place, robust to MHz digit-count trim
+        oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+        flushSync();
+        vi.advanceTimersByTime(1); // flush the accumulator's paced emit
+
+        unmount(component);
+        document.body.removeChild(el);
+
+        expect(requested, `tick ${i}`).not.toBeNull();
+        if (stepSize === null) stepSize = requested! - CONFIRMED;
+        pendingFrequencyHz = { MAIN: target };
+      }
+
+      expect(stepSize).not.toBeNull();
+      expect(target).toBe(CONFIRMED + N * stepSize!);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

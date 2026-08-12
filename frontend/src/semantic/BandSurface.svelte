@@ -99,6 +99,46 @@
   export const defaultPermitLabel = (choice: BandChoice): string =>
     `TX at ${mhz(choice.defaultHz)}: ${choice.defaultHzTxPermit.status}`;
 
+  /**
+   * MOR-1462 (owner ruling B) — the standard ham direct-entry heuristic. A
+   * decimal point always means MHz, parsed as an EXACT DECIMAL STRING to
+   * integer Hz (never `Number(text) * 1e6` — a float round-trip can miss
+   * the exact Hz a double cannot represent, which rule 5's boundary
+   * comparison must never lose a digit to). A bare integer is read as kHz
+   * when that reading falls inside the radio's declared tunable range, Hz
+   * when only the raw reading does, and kHz WINS when both do (the
+   * ambiguous case — e.g. a range wide enough that both `7100` and
+   * `7100`×1000 are in-band). `null` means the SAME visible refusal a
+   * malformed or out-of-range entry already produced (rule 5, unrelaxed):
+   * `entryReady` stays false and nothing dispatches.
+   */
+  export function interpretFrequencyEntry(
+    raw: string, minHz: number, maxHz: number,
+  ): number | null {
+    const text = raw.trim();
+    if (text === '' || !Number.isFinite(minHz) || !Number.isFinite(maxHz)) return null;
+    if (text.includes('.')) return parseMhzToHz(text, minHz, maxHz);
+    if (!/^\d+$/.test(text)) return null;
+    const value = Number(text);
+    const asKhz = value * 1000;
+    if (asKhz >= minHz && asKhz <= maxHz) return asKhz;
+    if (value >= minHz && value <= maxHz) return value;
+    return null;
+  }
+
+  /** MHz decimal string -> exact integer Hz by scaling the DIGITS
+   *  themselves, so `14.0741` lands on exactly 14074100 with no
+   *  double-precision round-trip. More than 6 fractional digits is finer
+   *  than 1 Hz and is refused outright, same as an out-of-range value. */
+  function parseMhzToHz(text: string, minHz: number, maxHz: number): number | null {
+    const match = /^(\d+)\.(\d+)$/.exec(text);
+    if (!match) return null;
+    const [, whole, frac] = match;
+    if (frac.length > 6) return null;
+    const hz = Number(whole) * 1_000_000 + Number(frac.padEnd(6, '0'));
+    return hz >= minHz && hz <= maxHz ? hz : null;
+  }
+
   /** Rule (3): consulted ONLY once `currentBandTx` already said `denied` (or,
    *  from the fix-round F1 caveat, once the authoritative `txPermit` itself is
    *  not `allowed`) — and only over TX-SCOPED entries. `capability-unavailable`
@@ -152,20 +192,32 @@
   /** The operator's raw keystrokes, kept as typed: an empty or malformed entry
    *  must stay refusable rather than coerce to 0 Hz. */
   let entryText = $state('');
-  let typedHz = $derived(entryText.trim() === '' ? Number.NaN : Number(entryText));
-  let inRange = $derived(
-    Number.isFinite(typedHz) && band?.tuneMinHz != null && band?.tuneMaxHz != null
-      && typedHz >= band.tuneMinHz && typedHz <= band.tuneMaxHz,
+  /** MOR-1462: the smart kHz/MHz/Hz interpretation of `entryText`, or `null`
+   *  while it cannot resolve to an in-range Hz value. Bounds must be KNOWN
+   *  first (rule 5) — this stays `null`, never a guess, until they are. */
+  let interpretedHz = $derived(
+    boundsKnown && band?.tuneMinHz != null && band?.tuneMaxHz != null
+      ? interpretFrequencyEntry(entryText, band.tuneMinHz, band.tuneMaxHz)
+      : null,
   );
-  let entryReady = $derived(receiverKnown && boundsKnown && inRange);
+  let entryReady = $derived(receiverKnown && boundsKnown && interpretedHz !== null);
+  /** The operator-visible confirmation of what their keystrokes resolved to
+   *  — shown before commit so a kHz/MHz/Hz misread is caught before it
+   *  tunes, per the ticket's own "→ 7.100 MHz" example. Gated on
+   *  `entryReady` (review hardening), not just a resolvable `interpretedHz`
+   *  — otherwise a valid-looking target could render next to a Set button
+   *  the receiver-unknown gate has permanently disabled. */
+  let entryHint = $derived(
+    entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '',
+  );
 
   function selectBand(choice: BandChoice): void {
     if (!receiverKnown) return;
     onSelectBand?.(choice.name, choice.defaultHz, choice.bsrCode);
   }
   function commitFrequency(): void {
-    if (!entryReady) return;
-    onEnterFrequency?.(typedHz);
+    if (!entryReady || interpretedHz === null) return;
+    onEnterFrequency?.(interpretedHz);
   }
   /** MOR-1444: Escape cancels a typed entry — clears the keystrokes without
    *  dispatching, mirroring the "never coerce a malformed entry" rule above
@@ -262,13 +314,25 @@
 
     <label class="band-row" data-testid="band-entry" data-bounds={boundsKnown}>
       <span class="band-name">FREQ</span>
+      <!-- MOR-1462: type="text"/inputmode="decimal" rather than
+           type="number" — the smart interpretation accepts kHz-scale
+           keystrokes numerically far below `tuneMinHz` (a valid kHz entry
+           for a band whose bounds are stated in Hz), which a native
+           number-input min/max would flag as invalid despite being
+           correct; unit resolution is entirely this file's own JS-side
+           `interpretFrequencyEntry`, not the browser's. The
+           `[data-freq-entry]` hook and the reset-on-first-digit routing in
+           KeyboardHandler.svelte are type-agnostic (`.value =`/`input`
+           event only) and are unaffected by this change. -->
       <input
-        type="number" data-testid="band-entry-input" data-freq-entry step="1"
-        min={band.tuneMinHz ?? undefined} max={band.tuneMaxHz ?? undefined}
+        type="text" inputmode="decimal" data-testid="band-entry-input" data-freq-entry
         value={entryText} disabled={!receiverKnown || !boundsKnown}
         oninput={(event) => { entryText = event.currentTarget.value; }}
         onkeydown={handleEntryKeydown}
       />
+      {#if entryHint}
+        <span data-testid="band-entry-hint">{entryHint}</span>
+      {/if}
       <span data-testid="band-entry-range">{boundsKnown && band.tuneMinHz !== null
         && band.tuneMaxHz !== null
         ? `${mhz(band.tuneMinHz)} … ${mhz(band.tuneMaxHz)}`
