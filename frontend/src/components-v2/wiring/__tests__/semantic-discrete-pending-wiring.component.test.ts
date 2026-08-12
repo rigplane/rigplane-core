@@ -141,18 +141,24 @@ function nbConfirmedState(): ServerState {
 }
 
 /**
- * A confirming-but-non-transitioning observation (MOR-1488 review R2,
- * F2 test-theatre fix): `liveState()` with `main.nb` left at `false`
+ * A non-transitioning observation (MOR-1488 review R2, F2 test-theatre
+ * fix; reused for review R3): `liveState()` with `main.nb` left at `false`
  * (unchanged) but `observationSeq`/`freshnessRevision` advanced past the
  * fixture's initial value — `stateRevision`/`revision` deliberately stay
- * put. This is "the radio was freshly re-polled and nb is still off": no
- * field value moved, so `core.state_store._apply_one` would never bump
- * `stateRevision` for a push like this (it only bumps on `semantic_changed`)
- * — but `observationSeq` bumps unconditionally, on every applied
- * observation. A sequence guard keyed on `stateRevision` would never see
- * this push as "newer" and would leave a pending record stuck until the
- * grace backstop; a guard keyed on `observationSeq` (the implementation
- * under test) settles it as the first post-ack observation, as intended.
+ * put. This is "the radio was freshly re-polled (or an unrelated field's
+ * meter poll landed) and nb is still off": no field value moved, so
+ * `core.state_store._apply_one` would never bump `stateRevision` for a
+ * push like this (it only bumps on `semantic_changed`), but `observationSeq`
+ * bumps unconditionally, on every applied observation.
+ *
+ * Dual role by test: whether this push CONFIRMS or MISMATCHES depends only
+ * on what the in-flight command's own target is at each call site — this
+ * fixture always reports `nb: false`.
+ *   - R2's double-toggle test targets OFF (`false`): this push MATCHES and
+ *     is the genuine confirming observation that settles the record.
+ *   - R3's tests target ON (`true`, a single click): this push MISMATCHES
+ *     — proving a mismatched post-ack push must NOT retire the record (R3's
+ *     asymmetric settle), only a matching one or the grace backstop can.
  */
 function nbReobservedState(): ServerState {
   const base = liveState();
@@ -360,5 +366,78 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     flushSync();
 
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
+  });
+
+  /**
+   * MOR-1488 review R3: `observationSeq` bumps on EVERY applied field
+   * observation, not just a re-read of THIS command's field — a 25ms meter
+   * poll advances it exactly as much as the commanded field's own confirming
+   * re-read would, but that confirming re-read is a full poll round-robin
+   * away (~1.3s worst case), not the very next push. R2 settled the record
+   * on the first post-ack push regardless of match, which fired on the next
+   * unrelated meter poll (~50ms after ack) — collapsing the pending window
+   * right back to a few frames, the original bench symptom. `nbReobservedState()`
+   * (defined above, `main.nb` still `false`) doubles here as a stand-in for
+   * exactly that unrelated meter-poll push: it advances `observationSeq` but
+   * does not confirm THIS command's target (`true`). It must not clear the
+   * marker.
+   */
+  it('does not clear the marker on a post-ack push that advances observationSeq without confirming the target (MOR-1488 review R3)', () => {
+    render();
+    q<HTMLButtonElement>('[data-testid="dsp-nbActive"]')!.click();
+    flushSync();
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+
+    const command = getCommandLifecycles().find(
+      (candidate) => candidate.name === 'set_nb' && candidate.status === 'pending',
+    );
+    expect(command).toBeDefined();
+    acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+    flushSync();
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+
+    // A post-ack push arrives (observationSeq advances) but `main.nb` is
+    // still `false` — NOT the commanded `true`. Not evidence of failure,
+    // just an observation that has not reached this field's round-robin
+    // slot yet.
+    expect(setRadioState(nbReobservedState())).toBe(true);
+    flushSync();
+
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+  });
+
+  /**
+   * MOR-1488 review R3: the grace backstop, not the sequence guard, is what
+   * bounds an acknowledged command whose field is never actually observed
+   * to confirm. `ACK_CONFIRM_GRACE_MS` (2000ms, R3) budgets a full poll
+   * round-robin (~1.3s, `radio_poller.py:529-531`) plus headroom, so it
+   * retires the marker once that much time has passed since ack — even in
+   * the presence of a post-ack push that still does not confirm.
+   */
+  it('retires the marker via the 2000ms grace backstop once it has elapsed, even with a non-confirming push (MOR-1488 review R3)', () => {
+    vi.useFakeTimers();
+    try {
+      render();
+      q<HTMLButtonElement>('[data-testid="dsp-nbActive"]')!.click();
+      flushSync();
+      const command = getCommandLifecycles().find(
+        (candidate) => candidate.name === 'set_nb' && candidate.status === 'pending',
+      );
+      expect(command).toBeDefined();
+      acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+      flushSync();
+      expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+
+      vi.advanceTimersByTime(2_001);
+      // Still non-confirming (`main.nb` stays `false`, target is `true`) —
+      // the sequence guard alone would leave this pending forever; only the
+      // elapsed grace window retires it.
+      expect(setRadioState(nbReobservedState())).toBe(true);
+      flushSync();
+
+      expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

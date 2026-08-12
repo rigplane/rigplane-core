@@ -254,24 +254,35 @@ function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefine
 }
 
 /**
- * Grace backstop (MOR-1488 review R2) — retire an acknowledged-pending
- * command this long after its ack even with no confirming observation.
- * Covers the never-confirms-at-all classes the sequence guard below cannot,
- * because none of them ever produce a post-ack state push to guard against:
- * (1) MOR-1445 post-ack execution failure — the server acks `ok:true` at
- *     enqueue time, and a later failure reaches only a session notification
- *     (`server.py` `commandExecutionFailed`) that `ws-client.ts`'s
- *     `_emitCommandResult` never maps back to this command id; (2) MOR-1427
- *     coalescing — `_cmd_pending` keys a 50ms coalescing window by command
- *     NAME only, so a superseded frame acks `ok:true`+`superseded` and never
- *     reaches the radio at all; (3) link death after ack. Without this
- *     backstop, any of the three leaves the marker claiming "in flight"
- *     forever. `Date.now()` itself is not reactive — this only takes effect
- *     the next time something re-invokes `latestPendingParam` (the next
- *     state push, or any other `$derived` recompute), not the instant the
- *     clock crosses the threshold.
+ * Grace backstop (MOR-1488 review R2, timing revised R3) — retire an
+ * acknowledged-pending command this long after its ack even with no
+ * confirming observation. Covers the never-confirms-at-all classes the
+ * sequence guard below cannot, because none of them ever produce a
+ * confirming post-ack push to guard against: (1) MOR-1445 post-ack
+ * execution failure — the server acks `ok:true` at enqueue time, and a
+ * later failure reaches only a session notification (`server.py`
+ * `commandExecutionFailed`) that `ws-client.ts`'s `_emitCommandResult`
+ * never maps back to this command id; (2) MOR-1427 coalescing —
+ * `_cmd_pending` keys a 50ms coalescing window by command NAME only, so a
+ * superseded frame acks `ok:true`+`superseded` and never reaches the radio
+ * at all; (3) link death after ack. Without this backstop, any of the three
+ * leaves the marker claiming "in flight" forever. `Date.now()` itself is
+ * not reactive — this only takes effect the next time something re-invokes
+ * `latestPendingParam` (the next state push, or any other `$derived`
+ * recompute), not the instant the clock crosses the threshold.
+ *
+ * 2000ms (R3, was 1500ms): review R3 found the commanded field's own
+ * confirming re-read is a full poll round-robin away, not the next state
+ * push — `_state_queries.py` schedules per-field reads across the
+ * round-robin and `radio_poller.py:529-531` cycles roughly 25 queries at
+ * ~25ms apiece, so worst case is ~1.3s for one full rotation. 1500ms left
+ * too little margin: a command acked just after its field's slot in the
+ * rotation could retire on the grace backstop moments before the actual
+ * confirming readback arrives. 2000ms budgets a full rotation (≈1.3s) plus
+ * headroom for scheduling jitter, matching the sequence guard below's
+ * "mismatch is not evidence of failure, only of not-yet-observed" doctrine.
  */
-const ACK_CONFIRM_GRACE_MS = 1_500;
+const ACK_CONFIRM_GRACE_MS = 2_000;
 
 /**
  * Shared by the four accessors below: the freshest command matching
@@ -302,14 +313,25 @@ const ACK_CONFIRM_GRACE_MS = 1_500;
  * that increments on every applied state push regardless of whether any
  * field's value actually changed; see `ackObservationSeq`'s own doc comment
  * for why `stateRevision` cannot serve this role) has advanced PAST the
- * ack-time value. The FIRST post-ack push settles the record either way and
- * it is no longer read as pending: if the confirmed field now matches the
- * target, the command is excluded (leg-1 "pending is display-only,
- * confirmed reading stays the group's sole selection source" doctrine); if
- * it still does not match, the command is ALSO excluded — the value did not
- * take, and continuing to claim "in flight" past that point would itself be
- * a fabrication. This bounds the pending window to exactly one poll cycle
- * past ack.
+ * ack-time value.
+ *
+ * MOR-1488 review R3 (asymmetric settle, revises R2's "either way"):
+ * `observationSeq` bumps on EVERY applied field observation — a 25ms meter
+ * poll (`core.state_store._apply_one`) advances it exactly as much as a
+ * genuine re-read of THIS command's field. But the commanded field's own
+ * confirming re-read is scheduled a full poll round-robin away
+ * (`_state_queries.py`, `radio_poller.py:529-531`, ~25 queries at ~25ms —
+ * up to ~1.3s worst case), not on the very next push. R2 retired the
+ * record on the first post-ack push regardless of match, which fires
+ * ~50ms after ack (the next unrelated meter poll) — collapsing the
+ * pending window back to a few frames, the exact symptom this PR set out
+ * to fix. So as of R3: a post-ack push whose confirmed field MATCHES the
+ * target is a real confirmation and clears the record (leg-1 "pending is
+ * display-only, confirmed reading stays the group's sole selection source"
+ * doctrine). A post-ack push that does NOT match is NOT evidence the value
+ * failed to take — it is far more likely an unrelated field's observation
+ * that simply hasn't reached this one's round-robin slot yet — so the
+ * record stays pending and is left to the grace backstop above to bound.
  *
  * When no `ackObservationSeq` was captured (no radio state had ever been
  * observed at ack time — a real gap only in cold-start/test-double
@@ -353,17 +375,19 @@ function latestPendingParam(
 
   const ackObservationSeq = latest.ackObservationSeq;
   const currentObservationSeq = runtime.state?.observationSeq;
-  if (ackObservationSeq === undefined || currentObservationSeq === undefined) {
-    // No sequencing data to guard with — fall back to a direct match.
-    return confirmedReceiverState(receiver)?.[confirmedField] === latest.value ? undefined : latest.value;
-  }
-  if (currentObservationSeq <= ackObservationSeq) {
+  if (ackObservationSeq !== undefined && currentObservationSeq !== undefined
+    && currentObservationSeq <= ackObservationSeq) {
     // No push observed since ack yet — stay pending regardless of any
     // coincidental match against the (necessarily stale) current snapshot.
     return latest.value;
   }
-  // First post-ack push: settle the record either way (see doc comment).
-  return undefined;
+  // Either the guard has no sequencing data to work with (fall back to a
+  // direct match, pre-R2 behavior) or a post-ack push has arrived: either
+  // way, only a MATCH settles the record (R3) — a mismatch here is not
+  // evidence the value failed to take (the commanded field's own
+  // confirming re-read is a full round-robin away, see doc comment above),
+  // so it stays pending for the grace backstop to bound instead.
+  return confirmedReceiverState(receiver)?.[confirmedField] === latest.value ? undefined : latest.value;
 }
 
 /** Freshest unconfirmed `set_filter` target for `receiver`, or `null`.
