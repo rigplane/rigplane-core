@@ -3971,3 +3971,92 @@ async def test_a_lost_operator_unkey_keeps_the_backstop_armed() -> None:
 
     lost, forced = ["set_ptt(False:LOST)", *_TEARDOWN], ["set_ptt(False)", *_TEARDOWN]
     assert radio.calls == [*_KEY, *lost, *forced]
+
+
+# ---------------------------------------------------------------------------
+# MOR-1443: auto-command VFO A once when active-VFO identity is unqueryable.
+# ---------------------------------------------------------------------------
+
+
+async def _run_once(poller: RadioPoller) -> None:
+    """Drive ``_run`` through its one-time startup fetches, then stop.
+
+    Mirrors the established harness above (e.g.
+    ``test_scheduler_polling_does_not_starve_user_command_queue``): make the
+    queue's ``wait`` raise ``CancelledError`` so the main poll loop exits
+    after the once-per-connect startup sequence runs.
+    """
+
+    poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
+    with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
+        await poller._run()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_run_auto_commands_vfo_a_when_identity_unqueryable() -> None:
+    """IC-7300 (``vfo_readback == "selected_unselected"``) cannot passively
+    report which slot (A/B) is active (issue #2303 forbids probing via
+    swap). MOR-1443: on connect, with activeSlot still unobserved, the
+    poller must command VFO A exactly once through the normal confirmed
+    select path so identity becomes known."""
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
+
+    await _run_once(poller)
+
+    radio._set_vfo_slot_confirmed.assert_awaited_once_with("A", receiver=0)
+    assert store.snapshot().field("receiver.0.vfo.active_slot").value == "A"
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_auto_command_vfo_when_identity_queryable() -> None:
+    """A profile that CAN report active-VFO identity (any ``vfo_readback``
+    other than ``selected_unselected`` — e.g. absolute CI-V readback, or a
+    Yaesu CAT / rigctld backend that reads it directly) must never have the
+    poller emit an uncommanded VFO write; it should keep reading."""
+
+    radio = _make_radio(model="IC-7610")  # vfo_readback defaults to "none"
+    assert radio.profile.vfo_readback != "selected_unselected"
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await _run_once(poller)
+
+    radio._set_vfo_slot_confirmed.assert_not_awaited()
+    assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
+
+
+@pytest.mark.asyncio
+async def test_run_skips_auto_vfo_command_when_identity_already_observed() -> None:
+    """Reconnect with retained state: activeSlot is already known (e.g. a
+    prior commanded select survived the reconnect). The poller must not
+    re-command VFO A — no write when identity is already established."""
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    store.apply(
+        Observation(
+            path=FieldPath.active_slot("0"),
+            value="B",
+            source=SourceMetadata(
+                source="command_response",
+                provider="vfo_binding",
+                native_id="explicit_slot_ack_readback",
+            ),
+            timestamp_monotonic=time.monotonic(),
+            provider_generation=generation,
+        )
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await _run_once(poller)
+
+    radio._set_vfo_slot_confirmed.assert_not_awaited()
+    assert store.snapshot().field("receiver.0.vfo.active_slot").value == "B"

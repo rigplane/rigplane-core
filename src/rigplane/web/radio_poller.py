@@ -1236,6 +1236,15 @@ class RadioPoller:
         except Exception:
             logger.debug("radio-poller: MOD-input initial fetch failed", exc_info=True)
 
+        # MOR-1443: some CI-V radios can never passively report which VFO
+        # slot (A/B) is active; command VFO A once so identity is known.
+        try:
+            await self._establish_vfo_identity()
+        except Exception:
+            logger.debug(
+                "radio-poller: auto VFO identity establish failed", exc_info=True
+            )
+
         try:
             while True:
                 # 0. External CAT session (e.g. Hamlib A1 bridge) owns the wire —
@@ -3085,6 +3094,54 @@ class RadioPoller:
     @staticmethod
     def _relative_vfo_fields() -> tuple[str, ...]:
         return ("freq_hz", "mode", "filter_num", "data_mode")
+
+    async def _establish_vfo_identity(self) -> None:
+        """Command VFO A once, but only when the radio cannot ever report
+        which slot (A/B) is active on its own (MOR-1443).
+
+        Discriminator: ``vfo_readback == "selected_unselected"`` is
+        profile/capability data (``rigs/<model>.toml``), not a hardcoded
+        model check. It already means "this CI-V radio can read the
+        selected/unselected VFO's frequency+mode, but never which physical
+        slot is selected" — issue #2303 forbids learning that passively
+        (a swap-based probe would itself mutate the radio), so absent a
+        commanded write, ``activeSlot`` stays unknown forever and the UI is
+        stuck behind the manual "Select VFO A/B" fallback.
+
+        Ruled exception to the no-uncommanded-writes doctrine (owner
+        decision, MOR-1443, session 19): the owner explicitly accepted the
+        radio-visible side effect — a radio left on VFO B at app start gets
+        switched to A once. Radios that CAN report identity on their own
+        (absolute CI-V VFO readback, Yaesu CAT ``get_vfo_select``, the
+        rigctld client) declare a different ``vfo_readback`` value (or use a
+        backend that never touches this poller at all) and never reach this
+        branch — they keep reading, never writing.
+
+        Fires at most once per connect (this coroutine only runs from the
+        one-time startup section of :meth:`_run`, never from the recurring
+        poll loop) and only when identity is still unobserved — a value
+        already present in the state store (e.g. retained across a
+        soft-reconnect) is left untouched. Goes through the normal
+        :class:`SelectVfo` command path so the existing confirmed-select
+        readback is what marks identity observed, exactly like an
+        operator-issued "Select VFO A/B" would.
+        """
+
+        if self._profile.vfo_readback != "selected_unselected":
+            return
+        receiver = 1 if self._current_active().upper() == "SUB" else 0
+        try:
+            self._state_store.snapshot().field(FieldPath.active_slot(str(receiver)))
+        except KeyError:
+            pass
+        else:
+            return  # identity already observed — nothing to establish
+        logger.info(
+            "radio-poller: active-VFO identity unqueryable and unobserved; "
+            "auto-commanding VFO A once (MOR-1443, receiver=%d)",
+            receiver,
+        )
+        await self._execute(SelectVfo(vfo="A"))
 
     def _vfo_identity_paths(self, receiver: int) -> tuple[FieldPath, ...]:
         receiver_id = str(receiver)
