@@ -1347,6 +1347,82 @@ def test_prime_unobserved_skips_unsupported_and_hookless_fields() -> None:
     assert scheduler.pending_requests() == ()
 
 
+def test_prime_unobserved_deduplicates_requests_for_coalesced_fields() -> None:
+    """MOR-1490 review R2, Finding 3: return contract for shared-policy groups.
+
+    Two policy fields that map to the same internal request key (identical
+    scope/family/receiver/slot/acquisition-method/policy) coalesce into ONE
+    ``AcquisitionRequest`` carrying both paths. ``prime_unobserved`` must
+    return that request once, not once per field it queued — a caller
+    counting "how many reads got sent" from a raw per-call queue list would
+    otherwise double count.
+    """
+
+    clock = FreshnessClock(start=304.0)
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    cw_pitch = FieldPath.global_("operator_controls", "cw_pitch")
+    shared_policy = AcquisitionPolicy(cadence_seconds=15.0, freshness_ttl_seconds=25.0)
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=mic_gain, command_response_observable=True),
+            FieldCapability(path=cw_pitch, command_response_observable=True),
+        ),
+        field_policies={
+            mic_gain: shared_policy,
+            cw_pitch: shared_policy,
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    queued = scheduler.prime_unobserved(observed_paths=())
+
+    assert len(queued) == 1
+    assert set(queued[0].paths) == {mic_gain, cw_pitch}
+    assert len({request.id for request in queued}) == len(queued)
+
+
+def test_prime_unobserved_caps_new_paths_and_next_call_queues_the_rest() -> None:
+    """MOR-1490 review R2, Finding 4: bounded burst per invocation.
+
+    With more unobserved policy fields than the burst cap, one call queues
+    only the cap's worth of NEW paths; the remaining fields are left
+    untouched (not deferred, not failed) so a later call — in production the
+    next bounded re-derivation — picks them up.
+    """
+
+    clock = FreshnessClock(start=305.0)
+    paths = [FieldPath.global_("operator_controls", f"field_{i}") for i in range(7)]
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=tuple(
+            FieldCapability(path=path, command_response_observable=True)
+            for path in paths
+        ),
+        field_policies={
+            # Distinct policy per path so none of these coalesce into a
+            # shared request — keeps the per-call path count unambiguous.
+            path: AcquisitionPolicy(
+                cadence_seconds=15.0 + index, freshness_ttl_seconds=25.0
+            )
+            for index, path in enumerate(paths)
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    first = scheduler.prime_unobserved(observed_paths=())
+    first_paths = {path for request in first for path in request.paths}
+    assert len(first_paths) == 5
+
+    second = scheduler.prime_unobserved(observed_paths=())
+    second_paths = {path for request in second for path in request.paths}
+    # The first 5 paths already have an outstanding (unanswered) request and
+    # are skipped, not re-queued — so the second call reaches exactly the
+    # remaining, never-attempted paths.
+    assert second_paths == set(paths) - first_paths
+    assert first_paths | second_paths == set(paths)
+
+
 def test_state_freshness_service_primes_once_then_reconciliation_cadence_resumes() -> (
     None
 ):
@@ -1395,7 +1471,24 @@ def test_state_freshness_service_primes_once_then_reconciliation_cadence_resumes
     assert reconciled[0].priority is AcquisitionPriority.RECONCILIATION
 
 
-def test_state_freshness_service_primes_exactly_once_across_many_ticks() -> None:
+def test_state_freshness_service_reprimes_unobserved_field_after_bounded_interval() -> (
+    None
+):
+    """MOR-1490 review R2, Finding 1: bounded re-derivation, not a one-shot latch.
+
+    Replaces the old "primes exactly once, ever" expectation. A boolean
+    latch meant a single dropped prime read stranded the field at
+    ``UNKNOWN`` until process restart — reconnects don't rebuild the
+    scheduler/service, so nothing ever re-armed the flag. The fix re-derives
+    the never-observed set at a bounded interval
+    (:data:`StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS`):
+
+    - no re-prime while inside the window;
+    - a re-prime once the window elapses, as long as the field is still
+      unobserved;
+    - no re-prime once the field has been observed (self-extinguishing).
+    """
+
     clock = FreshnessClock(start=320.0)
     mic_gain = FieldPath.global_("operator_controls", "mic_gain")
     profile = RadioAcquisitionProfile(
@@ -1414,17 +1507,21 @@ def test_state_freshness_service_primes_exactly_once_across_many_ticks() -> None
     service = StateFreshnessService(
         store=store, scheduler=scheduler, interval_seconds=1.0
     )
+    interval = StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS
 
     service.tick(now=clock.now())
     primed = scheduler.pending_requests()
     assert len(primed) == 1
+    assert primed[0].reason == "prime-unobserved"
 
-    # The radio never answers. Once the caller reports the (real, unhealthy)
-    # timeout, the scheduler drops the request outright — this field has no
-    # cadence-driven retry (mic_gain here is command-response-only), so no
-    # automatic requeue happens. That IS the existing backoff idiom for
-    # non-cadence fields (see AcquisitionScheduler.record_acquisition_failure);
-    # priming must not invent a bespoke retry loop on top of it.
+    # The radio never answers this first prime. Once the caller reports the
+    # (real, unhealthy) timeout, the scheduler drops the request outright —
+    # this field has no cadence-driven retry (mic_gain here is
+    # command-response-only), so no automatic requeue happens. That IS the
+    # existing backoff idiom for non-cadence fields (see
+    # AcquisitionScheduler.record_acquisition_failure); priming must not
+    # invent a bespoke retry loop on top of it — the bounded re-derivation
+    # below is what eventually catches this field back up.
     scheduler.record_acquisition_failure(
         primed[0],
         reason="acquisition_request_timeout",
@@ -1433,12 +1530,34 @@ def test_state_freshness_service_primes_exactly_once_across_many_ticks() -> None
     )
     assert scheduler.pending_requests() == ()
 
-    for _ in range(50):
+    # Inside the re-derivation window: no re-prime yet.
+    for _ in range(int(interval) - 1):
         clock.advance(1.0)
         service.tick(now=clock.now())
-
-    # No hot loop: the one-shot prime never re-fires on its own.
     assert scheduler.pending_requests() == ()
+
+    # Window elapses: the still-unobserved field gets re-primed.
+    clock.advance(1.0)
+    service.tick(now=clock.now())
+    reprimed = scheduler.pending_requests()
+    assert len(reprimed) == 1
+    assert reprimed[0].reason == "prime-unobserved"
+
+    # The radio answers this time — the field becomes observed.
+    change = store.apply(_observation(mic_gain, 40, at=clock.now(), max_age=25.0))
+    scheduler.record_acquisition_result(reprimed[0], change)
+    assert scheduler.pending_requests() == ()
+
+    # Advance past another full re-derivation window. The field is now
+    # observed, so prime_unobserved must self-extinguish for it — no
+    # "prime-unobserved" request should reappear (any ordinary stale-refresh
+    # reconciliation the freshness decay independently schedules is a
+    # separate, expected mechanism and is not asserted against here).
+    clock.advance(interval)
+    service.tick(now=clock.now())
+    assert all(
+        request.reason != "prime-unobserved" for request in scheduler.pending_requests()
+    )
 
 
 def test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps() -> None:
