@@ -389,7 +389,7 @@ describe('this surface is never a second key path (safety note iii)', () => {
 // ── 6. Level intents carry the field and the raw value ─────────────────────
 
 describe('level intents reach the caller with the field and the raw value', () => {
-  it.each(TX_AUX_LEVELS)('emits (%s, value) on input', (field, _label, min, max, step) => {
+  it.each(TX_AUX_LEVELS)('emits (%s, value) on input', (field, _label, min, max, step, _format) => {
     const onLevelChange = vi.fn();
     withSurface(base(), snap(), (s) => {
       const input = s.input(field)!;
@@ -415,9 +415,16 @@ describe('level intents reach the caller with the field and the raw value', () =
   });
 });
 
-// ── 7. Readout formatting (MOR-1447) ────────────────────────────────────────
+// ── 7. Readout formatting (MOR-1452) ────────────────────────────────────────
 
-describe('the readout formats a 0..1 level as a percent, not the raw wire float', () => {
+describe('every TX-aux level slider reads back as a percent of its own domain', () => {
+  /** Same source-stripper the section-5 safety pins use, redefined locally
+   *  since it is a plain module-scope const there, not exported. */
+  const source = readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
   // The mobile/narrow composition regression this pins: RF power read back
   // as the literal `0.5529411764705883` instead of a formatted percent.
   it('formats RF power as a rounded percent (fixture value 0.8 -> "80%")', () => {
@@ -427,13 +434,57 @@ describe('the readout formats a 0..1 level as a percent, not the raw wire float'
     });
   });
 
-  // Contrast: a raw 0..255 level and a small integer domain both keep
-  // reading as the plain number — only the declared 0..1 fraction is
-  // percent-formatted (`formatKnownLevel`'s domain-generic rule).
-  it('leaves a raw 0..255 level (mic gain) as the plain number', () => {
+  // MOR-1452: before this ticket, a raw 0..255 level (mic gain) rendered as
+  // the plain wire integer ("128") while RF power (0..1) already read as a
+  // percent — two conventions on the same panel. Both now read as a percent
+  // of their OWN declared domain: 128 of 0..255 is "50%", not "128".
+  it('formats a raw 0..255 level (mic gain) as a percent of its own domain, not the raw wire int', () => {
     withSurface(base(), snap(), (s) => {
       const output = s.control('micGain')!.querySelector('output')!;
-      expect(output.textContent).toBe('128');
+      expect(output.textContent).toBe('50%');
     });
+  });
+
+  // Every other level field on the surface follows the same one convention —
+  // percent of its own declared [min, max], never a bare number regardless
+  // of whether the field's native range happens to be 0..255 or 0..1.
+  // `voxDelay` is deliberately excluded — see the seconds-unit test below.
+  it.each([
+    ['driveGain', '50%'],
+    ['voxGain', '20%'],
+    ['antiVoxGain', '12%'],
+    ['compressorLevel', '4%'],
+    ['monitorLevel', '50%'],
+  ])('formats %s as %s', (field, expected) => {
+    withSurface(base(), snap(), (s) => {
+      const output = s.control(field)!.querySelector('output')!;
+      expect(output.textContent).toBe(expected);
+    });
+  });
+
+  // MOR-1452 review fix: VOX delay is a DURATION (0.1s raw steps), not a
+  // level fraction — a percent-of-domain reading ("100%" for the fixture's
+  // 20) hid the actual truth (2.0s) behind a number with no operator
+  // meaning. Mirrors `VoxPanel.svelte`'s own `delayDisplay` precedent for
+  // this exact field: `${(raw * 0.1).toFixed(1)}s`.
+  it('formats VOX delay as seconds, not a percent (fixture value 20 -> "2.0s")', () => {
+    withSurface(base(), snap(), (s) => {
+      const output = s.control('voxDelay')!.querySelector('output')!;
+      expect(output.textContent).toBe('2.0s');
+    });
+  });
+
+  // MUTATION KILLED: a bare `rawToPercentDisplay` reference (no wrapping) as
+  // a TX_AUX_LEVELS format silently reads ITS OWN default args (0, 255)
+  // instead of the row's declared [min, max] — invisible for every field
+  // that happens to declare exactly 0..255 (every plain level here), wrong
+  // the instant a domain doesn't match those defaults. The default format
+  // must be built from THIS row's own bound `min`/`max` at the call site
+  // (`levelTextOf`), not stored as a per-row literal or a bare reference, so
+  // a future domain change flows into the readout automatically instead of
+  // silently going stale.
+  it('builds the default percent format from the row\'s own bound min/max, not a bare rawToPercentDisplay reference', () => {
+    expect(source).not.toMatch(/,\s*rawToPercentDisplay\s*[,\]]/);
+    expect(source).toMatch(/rawToPercentDisplay\(v,\s*min,\s*max\)/);
   });
 });
