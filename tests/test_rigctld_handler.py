@@ -2798,6 +2798,31 @@ async def test_set_level_preamp_20db(
 
 
 @pytest.mark.asyncio
+async def test_set_level_preamp_out_of_domain_returns_einval_not_a_write(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    """MOR-1523 R1: this legacy Icom fallback path (used whenever
+    ``create_routing()`` returns ``None`` — every Icom radio, since none of
+    them implement ``RigctldRoutable``) snaps ``L PREAMP 20`` to the nearest
+    of the hardcoded ``_PREAMP_IDX_TO_DB = [0, 12, 20]`` table (idx=2), then
+    calls ``radio.set_preamp(2)`` unconditionally — it has no idea whether
+    the connected profile's declared ``[preamp] values`` domain actually
+    includes 2. An X6200 declares only ``[0, 1]`` (no second preamp stage);
+    MOR-1523's new ``IcomRadio.set_preamp()`` validation seat now raises
+    ``ValueError`` for that radio's idx=2, and this test proves the raise
+    reaches the rigctl client as ``RPRT`` ``EINVAL`` (via the handler's
+    top-level ``except ValueError`` mapping) instead of the byte silently
+    reaching the transport, which is what happened before this PR."""
+    mock_radio.set_preamp = AsyncMock(
+        side_effect=ValueError("Preamp level must be one of [0, 1] for X6200, got 2")
+    )
+    resp = await handler.execute(set_cmd("set_level", "PREAMP", "20"))
+    assert not resp.ok
+    assert resp.error == HamlibError.EINVAL
+    mock_radio.set_preamp.assert_awaited_once_with(2)
+
+
+@pytest.mark.asyncio
 async def test_set_level_att(handler: RigctldHandler, mock_radio: AsyncMock) -> None:
     resp = await handler.execute(set_cmd("set_level", "ATT", "18"))
     assert resp.ok

@@ -244,7 +244,12 @@ export function toRfFrontEndProps(
   const rx = state ? activeRx(state) : null;
   const attValues = caps?.attValues ?? [0, 6, 12, 18];
   const attLabels = caps?.attLabels ?? {};
-  const preValues = caps?.preValues ?? [0, 1, 2];
+  // MOR-1409 A11: an unknown/unobserved preamp capability must not present a
+  // fabricated 3-level [0, 1, 2] IC-7300-shaped catalog — an X6200 profile
+  // (declared [0, 1], no P.AMP2 stage) would otherwise get an invented
+  // option it can't honor. Mirrors `toAgcProps`'s `agcModes: caps?.agcModes
+  // ?? []` (MOR-1523 R1: this was the last un-converted twin of that fix).
+  const preValues = caps?.preValues ?? [];
   const preLabels = caps?.preLabels ?? {};
   const rfGainAvailable = activeFieldShown(state, 'rfGain');
   const squelchAvailable = activeFieldShown(state, 'squelch');
