@@ -29,6 +29,7 @@ import type { FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilit
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import {
   mapIfShiftToPbt, nbDepthDisplayToRaw, nrDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
+  quantizeFilterWidthToRule,
 } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
@@ -734,6 +735,24 @@ function validResolvedFilterWidth(width: number, rule: FilterModeConfig | null):
     && (width - rule.minHz) % rule.stepHz === 0;
 }
 
+/**
+ * The active filter-width rule for `receiver` (MOR-1518) — the SAME
+ * `resolveFilterModeConfig(caps, mode, dataMode)` resolution
+ * `onFilterWidthCommit` already reads via its own `currentA03cContext()`
+ * (below), but usable from the debounced/preset handlers, which key off
+ * `knownActiveReceiver` rather than the stricter A06a1 context. `null` when
+ * state/caps are unavailable or the mode has no declared rule — the
+ * capability-absent case `quantizeFilterWidthToRule` itself falls back to
+ * the plain clamp for.
+ */
+function activeFilterRule(receiver: Receiver): FilterModeConfig | null {
+  const state = getRadioState();
+  const caps = getCapabilities();
+  if (!state || !caps) return null;
+  const rx = receiver === 1 ? state.sub : state.main;
+  return resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+}
+
 export function makeFilterHandlers() {
   return {
     onFilterChange: (filter: number) => {
@@ -741,6 +760,16 @@ export function makeFilterHandlers() {
       if (receiver === null) return;
       dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver } });
     },
+    // MOR-1518: `width` here is a raw, possibly mid-drag or mid-keystroke
+    // slider value — the native `<input type="range">` in `FilterSurface`/
+    // `FilterPanel` steps by a single fixed increment that cannot match
+    // every mode's radio-declared step (the IC-7300's own USB/LSB/CW/RTTY
+    // rules widen from 50 Hz to 100 Hz above 500 Hz, `rigs/ic7300.toml`).
+    // `quantizeFilterWidthToRule` snaps to a value the resolved per-mode
+    // rule actually accepts BEFORE it reaches the wire — the "command-
+    // emission point", not just a display-layer clamp — so this handler
+    // never dispatches the alignment-error-triggering values the live
+    // bench reported (1050/2150/3150 Hz).
     onFilterWidthChange: (() => {
       let timer: ReturnType<typeof setTimeout> | null = null;
       return (width: number) => {
@@ -749,7 +778,9 @@ export function makeFilterHandlers() {
         timer = setTimeout(() => {
           timer = null;
           const receiver = knownActiveReceiver('filterWidth');
-          if (receiver !== null) dispatchRadioIntent({ name: 'set_filter_width', params: { width, receiver } });
+          if (receiver === null) return;
+          const quantized = quantizeFilterWidthToRule(width, activeFilterRule(receiver));
+          dispatchRadioIntent({ name: 'set_filter_width', params: { width: quantized, receiver } });
         }, 200);
       };
     })(),
@@ -795,6 +826,12 @@ export function makeFilterHandlers() {
       if (receiver === null) return;
       dispatchRadioIntent({ name: 'set_filter_shape', params: { shape, receiver } });
     },
+    // MOR-1518: `width` is a direct-entry value from the filter-settings
+    // modal's per-preset slider (`FilterPanel.svelte`'s `handlePresetChange`)
+    // — the same "any direct-entry path into the width command" the ticket
+    // calls out. Quantized against the CURRENT receiver's resolved rule at
+    // fire time (not the rule captured when the drag started), matching
+    // `currentReceiver`/`currentActive` already being re-read fresh below.
     onFilterPresetChange: (() => {
       let timer: ReturnType<typeof setTimeout> | null = null;
       return (filter: number, width: number) => {
@@ -807,10 +844,11 @@ export function makeFilterHandlers() {
           const currentReceiver = knownActiveReceiver('filter');
           const currentActive = currentReceiver === null ? null : getActiveReceiver()?.filter;
           if (currentReceiver === null || !Number.isSafeInteger(currentActive)) return;
+          const quantized = quantizeFilterWidthToRule(width, activeFilterRule(currentReceiver));
           if (filter !== currentActive) {
             dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver: currentReceiver } });
           }
-          dispatchRadioIntent({ name: 'set_filter_width', params: { width, receiver: currentReceiver } });
+          dispatchRadioIntent({ name: 'set_filter_width', params: { width: quantized, receiver: currentReceiver } });
           if (filter !== currentActive) {
             dispatchRadioIntent({ name: 'set_filter', params: { filter: currentActive as number, receiver: currentReceiver } });
           }
@@ -821,12 +859,16 @@ export function makeFilterHandlers() {
       const receiver = knownActiveReceiver('filterWidth');
       const activeFilter = receiver === null ? null : getActiveReceiver()?.filter;
       if (receiver === null || !Number.isSafeInteger(activeFilter)) return;
+      const rule = activeFilterRule(receiver);
       for (let i = 0; i < defaults.length; i++) {
         const filter = i + 1;
         if (filter !== activeFilter) {
           dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver } });
         }
-        dispatchRadioIntent({ name: 'set_filter_width', params: { width: defaults[i], receiver } });
+        dispatchRadioIntent({
+          name: 'set_filter_width',
+          params: { width: quantizeFilterWidthToRule(defaults[i], rule), receiver },
+        });
       }
       if ((activeFilter as number) <= defaults.length) {
         dispatchRadioIntent({ name: 'set_filter', params: { filter: activeFilter as number, receiver } });
