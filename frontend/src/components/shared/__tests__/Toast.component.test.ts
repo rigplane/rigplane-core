@@ -294,3 +294,43 @@ describe('Toast — dismissal timing (MOR-1489)', () => {
     expect(countToasts()).toBe(0);
   });
 });
+
+describe('Toast — sticky error cap (MOR-1489 review R2)', () => {
+  // Sticky errors removed the old 5s TTL, which doubled as a flood bound:
+  // a reconnect-triggered sendQueue flush, a run of acknowledged-then-failed
+  // commands, or a control that errors on every click can each emit many
+  // `error` toasts back to back. Cap how many stay on screen at once,
+  // evicting the oldest first, so a burst can't cover the cockpit in
+  // click-intercepting nodes.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function errorMessages(): string[] {
+    return Array.from(host.querySelectorAll('.toast.error .toast-msg')).map(
+      (el) => el.textContent?.trim() ?? '',
+    );
+  }
+
+  it('holds at most MAX_STICKY_ERRORS error toasts, evicting the oldest first', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    const total = 5; // MAX_STICKY_ERRORS (3) + 2
+    for (let i = 1; i <= total; i++) {
+      dispatchNotification({ level: 'error', message: `Command failed #${i}` });
+      flushSync();
+    }
+    // Let every evicted toast's outro transition finish detaching its node.
+    vi.advanceTimersByTime(200);
+    flushSync();
+
+    const messages = errorMessages();
+    expect(messages).toHaveLength(3);
+    expect(messages).toEqual(['Command failed #3', 'Command failed #4', 'Command failed #5']);
+  });
+});

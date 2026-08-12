@@ -29,6 +29,19 @@
    */
   const AUTO_DISMISS_MS = 5_000;
 
+  /**
+   * MOR-1489 review R2: sticky errors removed the old 5s TTL, which was
+   * also the flood bound. A reconnect-triggered sendQueue flush, a run of
+   * acknowledged-then-failed commands, or a control that errors on every
+   * click (MOR-1487 class) can each emit many `error` toasts back to back
+   * with no dedup. Uncapped, that stacks click-intercepting nodes over the
+   * cockpit — on mobile a handful already covers the viewport. Cap how many
+   * sticky errors can be visible at once, evicting the oldest first, same
+   * spirit as `REFUSAL_NOTICE_DEBOUNCE_MS` guarding the warning path in
+   * ws-client.ts.
+   */
+  const MAX_STICKY_ERRORS = 3;
+
   function dismiss(id: string) {
     toasts = toasts.filter((t) => t.id !== id);
   }
@@ -51,6 +64,13 @@
     // transient status updates and keep the timed auto-dismiss.
     if (level !== 'error') {
       setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
+      return;
+    }
+    const errorIds = toasts.filter((toast) => toast.level === 'error').map((toast) => toast.id);
+    const overflow = errorIds.length - MAX_STICKY_ERRORS;
+    if (overflow > 0) {
+      const evictIds = new Set(errorIds.slice(0, overflow));
+      toasts = toasts.filter((toast) => !evictIds.has(toast.id));
     }
   }
 
