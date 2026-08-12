@@ -208,13 +208,15 @@
     return undefined;
   }
 
-  /** MOR-1481: equalize/swap carry exactly the one gate their `.vfo-ops`
-   *  container's own `title` already states. A `title`/`aria-describedby`
-   *  on an ancestor is not treated as the DESCENDANT control's own hover
-   *  text or accessible description, so this restates it on the button
-   *  itself. */
+  /** MOR-1481 rework (R2): this is the OPS ROW's own reason — no button here
+   *  "selects a VFO" (that is what `relativeSelectionHelp` describes, and it
+   *  is correct on the Select VFO A/B resolver buttons below, which DO). On
+   *  equalize/swap/quick-split/quick-dual-watch the operator has not
+   *  selected anything; the honest claim is that identity itself is
+   *  unresolved, so this draws from its own catalog key instead of
+   *  reusing the resolver buttons' English-only literal. */
   function identityOnlyReasonText(): string | undefined {
-    return relativeIdentityUnknown ? relativeSelectionHelp : undefined;
+    return relativeIdentityUnknown ? t('core.vfo.ops.identityUnknownReason') : undefined;
   }
   /** MOR-1481: quick-split's own operational gate
    *  (`viewModel.split.status === 'unknown'`) is the SAME condition
@@ -223,12 +225,12 @@
    *  apply — it is the more actionable claim (the A/B resolver exists for
    *  it), while nothing on this surface resolves an unread split state. */
   function quickSplitReasonText(): string | undefined {
-    if (relativeIdentityUnknown) return relativeSelectionHelp;
+    if (relativeIdentityUnknown) return t('core.vfo.ops.identityUnknownReason');
     return viewModel.split.status === 'unknown' ? t('core.vfo.split.unknownReason') : undefined;
   }
   /** Mirrors `quickSplitReasonText` for dual watch. */
   function quickDualWatchReasonText(): string | undefined {
-    if (relativeIdentityUnknown) return relativeSelectionHelp;
+    if (relativeIdentityUnknown) return t('core.vfo.ops.identityUnknownReason');
     return viewModel.dualWatch.status === 'unknown' ? t('core.vfo.dualWatch.unknownReason') : undefined;
   }
 
@@ -500,19 +502,30 @@
     {/each}
   </div>
   {#if relativeIdentityUnknown && relativeReceiver !== null}
+    {@const absoluteReason = disabled
+      ? t('core.vfo.select.receiverUnavailableReason')
+      : relativeSelectionPending
+        ? t('core.vfo.select.pendingReason')
+        : undefined}
+    {@const absoluteReasonId = reasonId('select-absolute', absoluteReason)}
     <div class="vfo-identity-selectors" data-testid="vfo-identity-selectors">
       <button
         type="button" class="vfo-select" data-vfo-select-absolute="A"
-        title={relativeSelectionHelp} aria-label="Select VFO A"
+        title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO A"
+        aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('A')}
       >Select VFO A</button>
       <button
         type="button" class="vfo-select" data-vfo-select-absolute="B"
-        title={relativeSelectionHelp} aria-label="Select VFO B"
+        title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO B"
+        aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('B')}
       >Select VFO B</button>
+      {#if absoluteReason !== undefined}
+        <span id={absoluteReasonId} class="sr-only">{absoluteReason}</span>
+      {/if}
     </div>
   {/if}
   {/if}

@@ -23,6 +23,7 @@ import VfoSurface from '../VfoSurface.svelte';
 import { validateRadioViewModel, type RadioViewModel, type VfoSlot } from '../radio-view-model';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
+import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
 
 const ids: readonly TopologyFixtureId[] = ['1/single', '1/ab', '2/ab_shared', '2/main_sub'];
 
@@ -829,12 +830,46 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
       })),
     });
     const target = mountSurface({ viewModel: model });
-    const expected = 'Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.';
+    // MOR-1481 rework (R2): the ops row is not a resolver button — no button
+    // here "selects a VFO", so its reason must NOT be the resolver buttons'
+    // `relativeSelectionHelp` literal (false here: it is a different claim,
+    // and that literal is also not in the i18n catalog). This is the honest
+    // catalog text instead.
+    const falseResolverLiteral = 'Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.';
+    const expected = 'The radio has not confirmed which VFO is A and which is B yet — press Select VFO A or Select VFO B first.';
     for (const op of ['equalize', 'swap', 'quick-split', 'quick-dual-watch'] as const) {
       const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
       expect(button.disabled, op).toBe(true);
       expect(button.title, op).toBe(expected);
+      expect(button.title, op).not.toBe(falseResolverLiteral);
       expect(describedText(target, button), op).toBe(expected);
+    }
+  });
+
+  // MOR-1481 rework (R2): the catalog key resolves per-locale, not just an
+  // honest-in-English literal — pin ru-RU directly so a future regression
+  // back to a hardcoded (English-only) string is caught even if it happens
+  // to read as plausible prose in English.
+  it('resolves the ops-row identity reason from the i18n catalog and renders Russian under ru-RU', () => {
+    const model: RadioViewModel = validateRadioViewModel({
+      ...topologyFixtures['1/ab'],
+      vfos: topologyFixtures['1/ab'].vfos.map((vfo, index) => ({
+        ...vfo,
+        slot: { kind: 'relative', role: index === 0 ? 'selected' : 'unselected' },
+        label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
+        isActive: index === 0,
+        isActiveSlot: index === 0,
+      })),
+    });
+    setLocale('ru-RU');
+    try {
+      const target = mountSurface({ viewModel: model });
+      const expectedRu = 'Радио ещё не подтвердило, какой VFO — A, а какой — B. Сначала нажмите Select VFO A или Select VFO B.';
+      const button = target.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!;
+      expect(button.title).toBe(expectedRu);
+      expect(describedText(target, button)).toBe(expectedRu);
+    } finally {
+      _resetLocale();
     }
   });
 
@@ -893,6 +928,64 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     expect(button.disabled).toBe(false);
     expect(button.title).toBe('');
     expect(button.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  // MOR-1481 rework (R2): the Select VFO A/B resolver buttons used to render
+  // no reason at all whenever the MOR-1256 strip-level `disabled` prop forced
+  // them off (a silent, unexplained disabled control), and always fell back
+  // to `relativeSelectionHelp` while a resolution was merely pending (a
+  // promise the radio was not, in that instant, capable of keeping).
+  describe('Select VFO A/B resolver buttons carry an honest reason (MOR-1481 rework)', () => {
+    const relativeModel = (): RadioViewModel => validateRadioViewModel({
+      ...topologyFixtures['1/ab'],
+      vfos: topologyFixtures['1/ab'].vfos.map((vfo, index) => ({
+        ...vfo,
+        slot: { kind: 'relative', role: index === 0 ? 'selected' : 'unselected' },
+        label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
+        isActive: index === 0,
+        isActiveSlot: index === 0,
+      })),
+    });
+
+    it('carries the receiver-unavailable reason when forced off by the strip-level `disabled` prop', () => {
+      const target = mountSurface({ viewModel: relativeModel(), disabled: true });
+      const expected = "This receiver is not available right now, so it can't be selected.";
+      for (const id of ['A', 'B'] as const) {
+        const button = target.querySelector<HTMLButtonElement>(`[data-vfo-select-absolute="${id}"]`)!;
+        expect(button.disabled, id).toBe(true);
+        expect(button.title, id).toBe(expected);
+        expect(describedText(target, button), id).toBe(expected);
+      }
+    });
+
+    it('carries the pending reason — not the receiver-unavailable one — while a resolution is in flight', () => {
+      vi.useFakeTimers();
+      const onSelectVfo = vi.fn();
+      const target = mountSurface({ viewModel: relativeModel(), onSelectVfo });
+      const a = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="A"]')!;
+      const b = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="B"]')!;
+      a.click();
+      flushSync();
+      const expected = 'Waiting for the radio to confirm the selection.';
+      expect(a.disabled).toBe(true);
+      expect(a.title).toBe(expected);
+      expect(describedText(target, a)).toBe(expected);
+      expect(b.disabled).toBe(true);
+      expect(b.title).toBe(expected);
+      expect(describedText(target, b)).toBe(expected);
+      vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+    });
+
+    it('falls back to `relativeSelectionHelp` when neither disabled nor pending applies', () => {
+      const target = mountSurface({ viewModel: relativeModel() });
+      const a = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="A"]')!;
+      expect(a.disabled).toBe(false);
+      expect(a.title).toBe(
+        'Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.',
+      );
+      expect(a.hasAttribute('aria-describedby')).toBe(false);
+    });
   });
 
   // Two independently mounted surfaces (the dual-receiver cockpit's real

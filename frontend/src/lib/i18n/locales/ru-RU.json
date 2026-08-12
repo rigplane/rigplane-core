@@ -195,8 +195,10 @@
   "core.vfo.splitDigest.tx": "TX {frequency}",
   "core.vfo.select.unknownSlotReason": "Радио ещё не подтвердило идентичность (A/B) этого VFO, поэтому его нельзя выбрать.",
   "core.vfo.select.receiverUnavailableReason": "Этот приёмник сейчас недоступен, поэтому его нельзя выбрать.",
+  "core.vfo.select.pendingReason": "Ожидание подтверждения выбора от радио.",
   "core.vfo.split.unknownReason": "Радио ещё не подтвердило состояние split.",
   "core.vfo.dualWatch.unknownReason": "Радио ещё не подтвердило состояние dual watch.",
+  "core.vfo.ops.identityUnknownReason": "Радио ещё не подтвердило, какой VFO — A, а какой — B. Сначала нажмите Select VFO A или Select VFO B.",
 
   "core.band.tx.reason.outOfBand": "ваша частота передачи вне настроенных диапазонов передачи — переведите передающий VFO в разрешённый диапазон",
   "core.band.tx.reason.targetUnknown": "радио не подтвердило частоту, на которой оно будет передавать",

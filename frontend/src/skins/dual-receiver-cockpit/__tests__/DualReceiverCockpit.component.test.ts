@@ -842,10 +842,15 @@ describe('operational audio-scope availability (scope=false + audioFft=true)', (
   const markup = (): string => target.innerHTML
     .replace(/rx-tx-\d+/g, 'rx-tx-N')
     .replace(/tx-aux-blocked-\d+/g, 'tx-aux-blocked-N')
-    // MOR-1481: TUNE's own dedicated reason id carries the same per-instance
-    // `TxAuxSurface` counter as `tx-aux-blocked-N` above — same volatility,
-    // same normalization.
-    .replace(/tx-aux-reason-\d+-tune-atu/g, 'tx-aux-reason-N-tune-atu');
+    // MOR-1481 rework (R2): every per-field reason id (`tx-aux-reason-N-atu`,
+    // `-vox`, `-rfPower`, … and TUNE's own dedicated `-tune-atu`) carries the
+    // same per-instance `TxAuxSurface` counter as `tx-aux-blocked-N` above —
+    // same volatility, same normalization. Before the rework, a field whose
+    // availability was fully declared but whose READING was unobserved
+    // rendered no reason id at all (the very defect the rework fixes), so
+    // this test never observed more than the TUNE-specific id; now every
+    // field does, and the general form is required.
+    .replace(/tx-aux-reason-\d+-/g, 'tx-aux-reason-N-');
 
   it('changes nothing in the cockpit, and denies nothing about the radio', () => {
     h.state = mainSubState('MAIN');

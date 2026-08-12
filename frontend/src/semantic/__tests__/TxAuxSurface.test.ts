@@ -207,6 +207,32 @@ describe('the disabled reason is exposed on hover and to screen readers (MOR-142
       expect(control.hasAttribute('aria-describedby')).toBe(false);
     });
   });
+
+  // MOR-1481 rework (R2). The gap this witness closes: `reasonTextOf` used to
+  // be a bare `disabledReasonText(f.availability)` call, which only reads
+  // `availability` (structural/operational) and has no view of
+  // `reading.status` — while `disabled` on every control gates on `usable(f)`,
+  // which DOES include `reading.status`. A field with availability fully
+  // declared but an unobserved reading was therefore rendered disabled with
+  // NO title and NO aria-describedby, for EVERY ONE of the twelve fields on
+  // this surface (TUNE was merely the first instance caught on the live
+  // bench; the fix had to move into the shared `reasonTextOf`/`reasonIdOf`
+  // helpers so all twelve stop sharing the defect, not just ATU).
+  it.each(ALL_FIELDS)(
+    'puts "Not yet observed" on title and aria-describedby for "%s" when only its READING is unobserved',
+    (field) => {
+      const view = withField(base(), field, { unknown: true });
+      withSurface(view, snap(), (s) => {
+        // Toggles carry title/aria-describedby on the <button> itself; level
+        // fields carry it on the <input> inside the <label> (same split
+        // `isDisabled` above already draws).
+        const control = s.control(field)!;
+        const el = control instanceof HTMLButtonElement ? control : s.input(field)!;
+        expect(el.title, field).toBe('Not yet observed');
+        expect(describedText(el), field).toBe('Not yet observed');
+      });
+    },
+  );
 });
 
 // ── 3. VOX — safety note (ii), arming voice keying ─────────────────────────
@@ -410,6 +436,24 @@ describe('TUNE carries its own disabled reason (MOR-1481)', () => {
     const tx = snap({ fault: 'on-timeout' });
     withSurface(view, tx, (s) => {
       expect(s.tune()!.title).toBe('Not yet observed');
+    });
+  });
+
+  // MOR-1481 rework (R2, finding 4): `aria-describedby` must agree with
+  // `title` about how many reasons apply — a screen reader reading a second,
+  // TX-authority-block reason the visible title never mentions would
+  // contradict the "never both" doctrine above. Both `keyBlockedReasons`
+  // (fault latched) AND the ATU-unobserved gate apply simultaneously here,
+  // so this is the actual "both" case, not a vacuous one.
+  it('points aria-describedby at exactly the ATU reason, never both, when a TX-authority block also applies', () => {
+    const view = withField(base(), 'atu', { unknown: true });
+    const tx = snap({ fault: 'on-timeout' });
+    expect(keyBlockedReasons(view, tx).length).toBeGreaterThan(0);
+    withSurface(view, tx, (s) => {
+      const tune = s.tune()!;
+      const ids = tune.getAttribute('aria-describedby')?.split(' ').filter(Boolean) ?? [];
+      expect(ids).toHaveLength(1);
+      expect(describedText(tune)).toBe('Not yet observed');
     });
   });
 });
