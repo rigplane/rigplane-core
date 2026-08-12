@@ -15,11 +15,24 @@
  * absent" cases) — so that branch is pinned here, directly, against the
  * contract's own `Availability` shape.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { _resetLocale } from '$lib/i18n/store.svelte';
 import { disabledReasonText } from '../disabled-reason';
 import type { Availability } from '../radio-view-model';
 
 describe('disabledReasonText (MOR-1422)', () => {
+  // `disabledReasonText` reads the shared i18n locale singleton via `t()`, and
+  // this file runs in the non-isolated "fast" vitest project where module
+  // state leaks across files within a worker — pin the locale per test so a
+  // preceding pseudo-locale test cannot garble the expected English strings.
+  beforeEach(() => {
+    _resetLocale();
+  });
+
+  afterEach(() => {
+    _resetLocale();
+  });
+
   it('returns "not supported by this radio" when the radio never declared the capability', () => {
     const availability: Availability = { structural: false, operational: false };
     expect(disabledReasonText(availability)).toBe('Not supported by this radio');
