@@ -17,6 +17,7 @@ const mockProps = {
     stepHz: 50,
   } as { defaults: number[]; fixed: boolean; minHz: number; maxHz: number; stepHz: number } | null,
   ifShift: 0,
+  hasIfShift: true,
   hasPbt: false,
   pbtInner: 0,
   pbtOuter: 0,
@@ -120,6 +121,7 @@ beforeEach(() => {
       stepHz: 50,
     },
     ifShift: 0,
+    hasIfShift: true,
     hasPbt: false,
     pbtInner: 0,
     pbtOuter: 0,
@@ -218,6 +220,60 @@ describe('PBT sliders visibility', () => {
   it('renders 1 slider total when hasPbt=false', () => {
     const t = mountPanel();
     expect(t.querySelectorAll('[role="slider"]').length).toBe(1);
+  });
+});
+
+/**
+ * MOR-1494: capability-absent controls must be HIDDEN, not shown dead.
+ * IC-7300 (PBT-only, no `if_shift` command) previously rendered the IF
+ * Shift slider permanently disabled with a PBT-derived stand-in value.
+ * `if_shift` is a real command only on Yaesu-family radios (e.g. FTX-1);
+ * Icom radios expose PBT Inner/Outer instead. The panel must render
+ * IF Shift only when `hasIfShift` (data-driven from the radio's own
+ * capability set) is true — never from a hardcoded model/family check.
+ */
+describe('IF Shift visibility (MOR-1494)', () => {
+  it('hides the IF Shift row for an IC-7300-shaped capability set (pbt, no if_shift)', () => {
+    const t = mountPanel({ hasIfShift: false, hasPbt: true, pbtInner: 0, pbtOuter: 0 });
+    const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
+    expect(labels).not.toContain('IF Shift');
+    expect(labels).not.toContain('IF Shift (derived)');
+  });
+
+  it('renders only the real PBT Inner/Outer sliders for an IC-7300-shaped capability set, bound to their own values', () => {
+    const t = mountPanel({ hasIfShift: false, hasPbt: true, pbtInner: 100, pbtOuter: -50 });
+    const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
+    expect(labels).toContain('PBT Inner');
+    expect(labels).toContain('PBT Outer');
+    const sliders = t.querySelectorAll<HTMLElement>('[role="slider"]');
+    expect(sliders.length).toBe(2);
+    // PBT Inner renders before PBT Outer (source order) -- values must track
+    // their OWN prop, not a shared/derived stand-in.
+    expect(sliders[0].getAttribute('aria-valuenow')).toBe('100');
+    expect(sliders[1].getAttribute('aria-valuenow')).toBe('-50');
+  });
+
+  it('renders the IF Shift row for an FTX-1-shaped capability set (if_shift, no pbt), bound to the real ifShift value', () => {
+    const t = mountPanel({ hasIfShift: true, hasPbt: false, ifShift: 275 });
+    const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
+    expect(labels).toContain('IF Shift');
+    const sliders = t.querySelectorAll<HTMLElement>('[role="slider"]');
+    expect(sliders.length).toBe(1);
+    expect(sliders[0].getAttribute('aria-valuenow')).toBe('275');
+  });
+
+  it('leaves the FTX-1-shaped IF Shift slider enabled (no PBT to disable it on)', () => {
+    const t = mountPanel({ hasIfShift: true, hasPbt: false });
+    const sliders = t.querySelectorAll<HTMLElement>('[role="slider"]');
+    expect(sliders.length).toBe(1);
+    expect(sliders[0].getAttribute('aria-disabled')).not.toBe('true');
+  });
+
+  it('hides the IF Shift row when the capability set has neither if_shift nor pbt', () => {
+    const t = mountPanel({ hasIfShift: false, hasPbt: false });
+    const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
+    expect(labels).not.toContain('IF Shift');
+    expect(t.querySelectorAll('[role="slider"]').length).toBe(0);
   });
 });
 

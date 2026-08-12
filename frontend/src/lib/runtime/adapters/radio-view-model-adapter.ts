@@ -465,6 +465,21 @@ function deriveFilterPassband(
   return {
     filterShape: txAuxField(hasFilters, filterShapeObserved, numOrUndef(rx?.filterShape)),
     ifShift: txAuxField(ifShiftStructural, ifShiftOperational, ifShiftValue),
+    // MOR-1494 review round. Deliberately NOT `ifShiftStructural` above.
+    // `ifShiftStructural`/`ifShiftOperational`/`ifShiftValue` stay exactly as
+    // they were — a radio with `pbt` but no `if_shift` still gets an honest
+    // derived `ifShift` READING (`scope-adapter.ts`'s `toSpectrumAuthority`
+    // reads `filterPassband.ifShift` for the passband-center overlay on
+    // EVERY radio that has PBT, IC-7300 included, and must keep doing so).
+    // This flag answers a DIFFERENT question — does the radio have a REAL
+    // `if_shift` COMMAND of its own — for `FilterSurface.svelte` to decide
+    // whether to show the IF-shift CONTROL at all. IC-7300 (PBT-only) has no
+    // such command; showing the control permanently disabled with a
+    // PBT-derived stand-in is a dead control, not a usable one (the owner's
+    // MOR-1494 ruling: hide capability-absent controls, don't show them
+    // dead). See `FilterPassbandViewModel.ifShiftControlStructural`'s doc
+    // comment (`radio-view-model.ts`) for the full split.
+    ifShiftControlStructural: hasIfShiftCap,
     pbtInner: txAuxField(hasPbtCap, pbtInnerObserved, pbtInnerHz),
     pbtOuter: txAuxField(hasPbtCap, pbtOuterObserved, pbtOuterHz),
     dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(rx?.dataMode)),

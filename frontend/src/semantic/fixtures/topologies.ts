@@ -285,6 +285,12 @@ export function withFilterPassband(fixture: RadioViewModel): RadioViewModel {
   const filterPassband: FilterPassbandViewModel = {
     filterShape: known(1),
     ifShift: known(0),
+    // MOR-1494 review round: "fully observed" means a radio with a REAL
+    // if_shift command (e.g. FTX-1), so this base fixture defaults the
+    // control-presentation gate to true — tests exercising the IC-7300-
+    // shaped (no if_shift) case override it explicitly via
+    // `withIfShiftControlStructural` in the consuming test file.
+    ifShiftControlStructural: true,
     pbtInner: known(0),
     pbtOuter: known(0),
     dataMode: known(0),

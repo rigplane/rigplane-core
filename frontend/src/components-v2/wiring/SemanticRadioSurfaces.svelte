@@ -859,14 +859,26 @@
     UNLIKE `txAuxSurface`/`metersSurface` (and like `rxAudioSurface` above) it
     is rendered in the SINGLE composition ONLY (fix round, verify-MOR-1304 F1).
     `FilterSurface` renders up to 14 focusable controls (mode/filter/shape
-    buttons, width and passband-level sliders) and no manifest declares a
-    `filter` zone, so mounting it bare in the dual cockpit would put every one
-    of those controls outside every declared zone and after the `rx-tx` zone
-    that MOR-1069 requires to end the tab order — exactly the shape the
-    MOR-1279/MOR-1336 zone-mount ruling forbids for any control-bearing
-    surface. `'filter'` became DECLARABLE with this slice, so the cockpit
-    gains the surface the moment a rework slice's manifest declares a zone for
-    it — a layout decision, separately reviewed, exactly as rxAudio left it.
+    buttons, width and passband-level sliders) and the DUAL COCKPIT manifest
+    (`dual-receiver-cockpit.ts`) declares no `filter` zone, so mounting it
+    bare there would put every one of those controls outside every declared
+    zone and after the `rx-tx` zone that MOR-1069 requires to end the tab
+    order — exactly the shape the MOR-1279/MOR-1336 zone-mount ruling forbids
+    for any control-bearing surface. `'filter'` became DECLARABLE with this
+    slice, for whichever layout's manifest chooses to declare a zone for it —
+    a layout decision, separately reviewed, exactly as rxAudio left it.
+
+    CORRECTION (MOR-1494 review round): the SINGLE composition (`desktop-v2`)
+    already made that layout decision — `desktop-declarations.ts:71` declares
+    `{ id: 'filter', surfaces: ['filter'] }` (landed with MOR-1366, S7). Since
+    then `FilterSurface`, not `LeftSidebar`'s legacy `FilterPanel`, has been
+    the LIVE renderer on `desktop-v2` (`RadioLayout.svelte`'s
+    `!declared.has('filter')` suppression). This paragraph previously read as
+    if no manifest anywhere had declared the zone yet; it hadn't been updated
+    after S7 landed, and that staleness led a later review round to
+    misdiagnose which component renders the IF-shift control on desktop-v2.
+    The dual cockpit remains the one composition still undeclared for this
+    zone — the rest of this comment's reasoning about IT stands.
   -->
   {#snippet filterSurface()}
     {#if view?.modeFilter || view?.filterPassband}

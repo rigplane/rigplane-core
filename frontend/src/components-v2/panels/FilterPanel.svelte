@@ -19,6 +19,12 @@
   let filterWidthMax = $derived(p.filterWidthMax ?? 9999);
   let filterConfig = $derived(p.filterConfig ?? null);
   let ifShift = $derived(p.ifShift);
+  // MOR-1494: only radios with a REAL if_shift command (Yaesu-family, e.g.
+  // FTX-1) show this control. Icom radios (PBT-only, e.g. IC-7300) have no
+  // if_shift command at all — showing it permanently disabled with a
+  // PBT-derived stand-in value is a dead control, not a usable one; PBT
+  // Inner/Outer below are the genuine controls for those radios.
+  let hasIfShift = $derived(p.hasIfShift ?? false);
   let pbtInner = $derived(p.pbtInner ?? 0);
   let pbtOuter = $derived(p.pbtOuter ?? 0);
   let hasPbt = $derived(p.hasPbt ?? false);
@@ -159,18 +165,20 @@
       variant="hardware-illuminated"
     />
 
-    <ValueControl
-      label="IF SHIFT"
-      value={ifShift}
-      min={-1200}
-      max={1200}
-      step={20}
-      unit="Hz"
-      renderer="bipolar"
-      accentColor="var(--v2-accent-cyan)"
-      onChange={onIfShiftChange}
-      variant="hardware-illuminated"
-    />
+    {#if hasIfShift}
+      <ValueControl
+        label="IF SHIFT"
+        value={ifShift}
+        min={-1200}
+        max={1200}
+        step={20}
+        unit="Hz"
+        renderer="bipolar"
+        accentColor="var(--v2-accent-cyan)"
+        onChange={onIfShiftChange}
+        variant="hardware-illuminated"
+      />
+    {/if}
 
     <div class="filter-actions">
       <button
@@ -221,19 +229,21 @@
       <span class="bw-value">{formatWidthDisplay(filterWidth)}</span>
     </div>
 
-    <ValueControl
-      label={hasPbt ? "IF Shift (derived)" : "IF Shift"}
-      value={ifShift}
-      min={-1200}
-      max={1200}
-      step={25}
-      unit="Hz"
-      renderer="bipolar"
-      accentColor="var(--v2-accent-cyan)"
-      disabled={hasPbt}
-      onChange={onIfShiftChange}
-      variant="hardware-illuminated"
-    />
+    {#if hasIfShift}
+      <ValueControl
+        label={hasPbt ? "IF Shift (derived)" : "IF Shift"}
+        value={ifShift}
+        min={-1200}
+        max={1200}
+        step={25}
+        unit="Hz"
+        renderer="bipolar"
+        accentColor="var(--v2-accent-cyan)"
+        disabled={hasPbt}
+        onChange={onIfShiftChange}
+        variant="hardware-illuminated"
+      />
+    {/if}
     {#if hasPbt}
       <ValueControl
         label="PBT Inner"
