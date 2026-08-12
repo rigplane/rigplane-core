@@ -1544,6 +1544,54 @@ class TestSetModeFireAndForget:
 
 
 # ---------------------------------------------------------------------------
+# MOR-1487: hyphenated display labels ("CW-R", "RTTY-R") must coerce to the
+# underscored Mode enum tokens (Mode.CW_R, Mode.RTTY_R). The frontend sends
+# rig-TOML display labels verbatim; _coerce_mode is the boundary that must
+# normalize them.
+# ---------------------------------------------------------------------------
+
+
+class TestCoerceModeHyphenNormalization:
+    """Unit tests for ``IcomRadio._coerce_mode`` — no radio/transport needed."""
+
+    def test_coerce_mode_hyphenated_cw_r(self) -> None:
+        assert IcomRadio._coerce_mode("CW-R") == Mode.CW_R
+
+    def test_coerce_mode_hyphenated_rtty_r(self) -> None:
+        assert IcomRadio._coerce_mode("RTTY-R") == Mode.RTTY_R
+
+    def test_coerce_mode_hyphenated_lowercase_and_whitespace(self) -> None:
+        """Hyphen normalization composes with existing case/whitespace tolerance."""
+        assert IcomRadio._coerce_mode("  cw-r  ") == Mode.CW_R
+        assert IcomRadio._coerce_mode(" rtty-r ") == Mode.RTTY_R
+
+    def test_coerce_mode_mode_enum_passthrough_unchanged(self) -> None:
+        """A ``Mode`` instance is returned as-is, no string processing."""
+        assert IcomRadio._coerce_mode(Mode.CW_R) is Mode.CW_R
+
+    def test_coerce_mode_underscored_token_unchanged(self) -> None:
+        """Existing underscored-token behavior is preserved."""
+        assert IcomRadio._coerce_mode("CW_R") == Mode.CW_R
+        assert IcomRadio._coerce_mode("RTTY_R") == Mode.RTTY_R
+
+    def test_coerce_mode_plain_token_case_insensitive(self) -> None:
+        """Plain (non-hyphenated) tokens keep working, any case/whitespace."""
+        assert IcomRadio._coerce_mode(" usb ") == Mode.USB
+        assert IcomRadio._coerce_mode("Lsb") == Mode.LSB
+
+    def test_coerce_mode_invalid_still_raises_with_supported_modes_message(
+        self,
+    ) -> None:
+        """Truly unknown mode names still raise with the supported-modes list."""
+        with pytest.raises(ValueError, match="Unknown mode") as exc_info:
+            IcomRadio._coerce_mode("not-a-mode")
+        message = str(exc_info.value)
+        assert "Supported modes:" in message
+        assert "CW_R" in message
+        assert "RTTY_R" in message
+
+
+# ---------------------------------------------------------------------------
 # #48 regression: CI-V timeout isolation
 # ---------------------------------------------------------------------------
 
