@@ -86,4 +86,18 @@ describe('panel-adapters pending-frequency accessor (MOR-1441)', () => {
     state.commands = [cmd({ name: 'set_mode', params: { mode: 'USB', receiver: 0 } })];
     expect(getPendingFrequencyHz(0)).toBeNull();
   });
+
+  // B3 (review): a `>` tie-break freezes on the EARLIER of two same-`createdAt`
+  // commands (millisecond-resolution timestamps, and a double-dispatch within
+  // one ms is real — the MOR-1425 accumulator can flush and a caller step in
+  // the same tick). `getCommandLifecycles()` returns commands in dispatch
+  // (array) order, so on a tie the LATER array entry is the actually-freshest
+  // one. Kills: reverting `>=` back to `>`.
+  it('on a same-millisecond createdAt tie, prefers the LATER dispatched command (array order)', () => {
+    state.commands = [
+      cmd({ createdAt: 5, params: { freq: 14100000, receiver: 0 } }),
+      cmd({ createdAt: 5, params: { freq: 14105000, receiver: 0 } }),
+    ];
+    expect(getPendingFrequencyHz(0)).toBe(14105000);
+  });
 });

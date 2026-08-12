@@ -245,6 +245,32 @@
    */
   let hasDualReceiver = $derived((runtime.caps?.receivers ?? 1) > 1);
   /**
+   * MOR-1441 (review B5) — memoized across `pendingFrequencyHzCache`: this
+   * `$derived` re-runs on ANY command-lifecycle mutation (`getCommandLifecycles()`
+   * is one shared reactive array covering every intent, not just `set_freq`),
+   * so an unrelated command's ack/timeout would otherwise mint a brand-new
+   * `{MAIN?,SUB?}` object every time — per-keystroke prop-identity churn for
+   * every consumer down the `VfoSurface`/`FrequencyDisplayInteractive` chain,
+   * even when neither receiver's pending value actually changed. Returning
+   * the SAME object when both values are unchanged lets Svelte's own
+   * reference-equality check skip that downstream work.
+   */
+  type PendingFrequencyHzCache = {
+    main: number | null; sub: number | null; value: Partial<Record<'MAIN' | 'SUB', number>>;
+  };
+  let pendingFrequencyHzCache: PendingFrequencyHzCache | null = null;
+  function computePendingFrequencyHz(): Partial<Record<'MAIN' | 'SUB', number>> {
+    const main = getPendingFrequencyHz(0);
+    const sub = getPendingFrequencyHz(1);
+    const cache: PendingFrequencyHzCache | null = pendingFrequencyHzCache;
+    if (cache !== null && cache.main === main && cache.sub === sub) return cache.value;
+    const result: Partial<Record<'MAIN' | 'SUB', number>> = {};
+    if (main !== null) result.MAIN = main;
+    if (sub !== null) result.SUB = sub;
+    pendingFrequencyHzCache = { main, sub, value: result };
+    return result;
+  }
+  /**
    * MOR-1441 — the pending (not-yet-confirmed) frequency target per
    * receiver, for `VfoSurface`'s digit control to render distinctly from
    * confirmed radio truth while a hot tuning burst is in flight. Read at
@@ -252,14 +278,7 @@
    * `hasDualReceiver` above) so `VfoSurface` stays command-bus-blind,
    * receiving only the plain per-receiver value.
    */
-  let pendingFrequencyHz = $derived((() => {
-    const result: Partial<Record<'MAIN' | 'SUB', number>> = {};
-    const main = getPendingFrequencyHz(0);
-    const sub = getPendingFrequencyHz(1);
-    if (main !== null) result.MAIN = main;
-    if (sub !== null) result.SUB = sub;
-    return result;
-  })());
+  let pendingFrequencyHz = $derived(computePendingFrequencyHz());
   /**
    * MOR-1306. The RF-front-end intent vocabulary, composed from the SHIPPED
    * command bus rather than forked — same discipline as `rxAudioIntents`

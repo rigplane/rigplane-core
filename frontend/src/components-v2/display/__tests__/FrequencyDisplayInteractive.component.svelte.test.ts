@@ -135,8 +135,8 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
 describe('FrequencyDisplayInteractive pending-target marker (MOR-1441)', () => {
   // Kills: rendering a pending target with no distinguishing marker — the
   // readout would then present an unconfirmed value as confirmed truth.
-  it('marks the group data-freq-status="pending" when pending is true', () => {
-    const t = mountDisplay({ freq: 14260000, pending: true });
+  it('marks the group data-freq-status="pending" when pendingDisplayHz is set', () => {
+    const t = mountDisplay({ freq: 14250000, pendingDisplayHz: 14260000 });
     const group = t.querySelector<HTMLElement>('.freq')!;
     expect(group.dataset.freqStatus).toBe('pending');
   });
@@ -147,5 +147,65 @@ describe('FrequencyDisplayInteractive pending-target marker (MOR-1441)', () => {
     const t = mountDisplay({ freq: 14074000 });
     const group = t.querySelector<HTMLElement>('.freq')!;
     expect(group.dataset.freqStatus).toBe('confirmed');
+  });
+
+  // B2 (screen-reader honesty): the italic/opacity marker is a VISUAL-only
+  // channel. Kills: a pending frequency read aloud by a screen reader as
+  // though it were confirmed, with no distinguishing word at all.
+  it('exposes the pending state to assistive tech via a rendered, linked word', () => {
+    const t = mountDisplay({
+      freq: 14250000,
+      pendingDisplayHz: 14260000,
+      pendingAnnouncement: 'Pending, not yet confirmed',
+    });
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    const describedById = group.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    const description = t.querySelector<HTMLElement>(`#${describedById}`)!;
+    expect(description).toBeTruthy();
+    expect(description.textContent).toBe('Pending, not yet confirmed');
+    expect(description.classList.contains('sr-only')).toBe(true);
+  });
+
+  // Kills: rendering the marker attribute/DOM but skipping the aria link
+  // when the confirmed (non-pending) readout is shown — no phantom
+  // describedby pointing at nothing.
+  it('carries no aria-describedby when confirmed', () => {
+    const t = mountDisplay({ freq: 14074000 });
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    expect(group.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  // ── MOR-1441 REVIEW FIX: the display→gesture→accumulator seam ──────────
+  // Reproduced defect: an earlier revision fed the PENDING display value
+  // into the SAME `freq` prop the gesture handlers use for arithmetic, so
+  // `adjustFreqByDigit` computed off an already-drifted base and every hot
+  // tick fed a growing excess back into the MOR-1425 tuning accumulator
+  // (positive feedback — 10 ticks of +10 Hz intent measured out to
+  // +1910 Hz actual against the real accumulator). THE kill: a wheel tick
+  // must request `confirmed + step`, never `pendingDisplayHz + step`.
+  it('MUTATION KILL: a wheel tick on a pending display computes from CONFIRMED, not the pending value', () => {
+    const CONFIRMED = 14250000;
+    const PENDING = 14260000; // already 10 kHz ahead of confirmed
+    const onFreqChange = vi.fn();
+    const t = mountDisplay({ freq: CONFIRMED, pendingDisplayHz: PENDING, onFreqChange });
+
+    // Digits render the PENDING value (14260000): confirm the fixture is
+    // genuinely showing a pending target, not accidentally testing the
+    // confirmed-only path.
+    const digitsText = Array.from(t.querySelectorAll<HTMLElement>('.digit')).map((d) => d.textContent).join('');
+    expect(digitsText).toBe('14260000');
+
+    // The 1 kHz digit — same DOM position/multiplier convention as the
+    // MOR-475 test above.
+    const oneKhzDigit = t.querySelectorAll<HTMLElement>('.digit')[4];
+    oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    flushSync();
+
+    expect(onFreqChange).toHaveBeenCalledTimes(1);
+    // THE assertion: confirmed + 1kHz step. The pre-fix code would have
+    // requested 14261000 (pending + step) here instead.
+    expect(onFreqChange).toHaveBeenCalledWith(CONFIRMED + 1000);
+    expect(onFreqChange).not.toHaveBeenCalledWith(PENDING + 1000);
   });
 });

@@ -233,7 +233,10 @@ export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
     if (command.params.receiver !== receiver) continue;
     const freq = command.params.freq;
     if (typeof freq !== 'number') continue;
-    if (!latest || command.createdAt > latest.createdAt) latest = { createdAt: command.createdAt, freq };
+    // `>=`, not `>`: `getCommandLifecycles()` is in dispatch (array) order, so
+    // on a same-millisecond `createdAt` tie the LATER entry in that order is
+    // the actually-freshest one — `>` would freeze on the earlier of the two.
+    if (!latest || command.createdAt >= latest.createdAt) latest = { createdAt: command.createdAt, freq };
   }
   return latest?.freq ?? null;
 }

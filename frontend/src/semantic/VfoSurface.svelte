@@ -394,9 +394,21 @@
           aria-disabled={hasTunableFrequency(vfo) && disabled ? 'true' : undefined}
         >
           {#if hasTunableFrequency(vfo)}
+            <!--
+              MOR-1441 REVIEW FIX (severe): `freq` is ALWAYS confirmed radio
+              truth (`vfo.frequencyHz`), never `pendingHz` — the pending
+              target is display-only, via `pendingDisplayHz`. Passing
+              `pendingHz` as `freq` fed the growing pending value back into
+              `FrequencyDisplayInteractive`'s own gesture arithmetic
+              (`adjustFreqByDigit(freq, ...)`), which itself feeds the
+              MOR-1425 tuning accumulator's delta — a positive-feedback
+              runaway reproduced by the verifier (10 ticks of +10 Hz intent
+              measured out to +1910 Hz actual; 30 ticks to +15.7 MHz).
+            -->
             <FrequencyDisplayInteractive
-              freq={pendingHz ?? vfo.frequencyHz ?? 0}
-              pending={pendingHz !== null}
+              freq={vfo.frequencyHz ?? 0}
+              pendingDisplayHz={pendingHz}
+              pendingAnnouncement={pendingHz !== null ? t('core.vfo.freq.pendingAnnouncement') : undefined}
               compact
               active={vfo.isActive}
               receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}
