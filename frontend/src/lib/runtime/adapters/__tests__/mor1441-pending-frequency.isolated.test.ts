@@ -6,26 +6,46 @@
  * radio truth while a `set_freq` intent for the receiver is still in
  * flight, so the operator sees where a hot tuning burst (MOR-1425) is
  * heading rather than a stale confirmed value. It must never surface a
- * command that has already resolved (ack/fail/cancel/timeout) as though it
- * were still pending — that would present RESOLVED state as PENDING, the
- * exact honesty violation MOR-1441 exists to prevent.
+ * command that has already resolved (failed/cancelled/timed-out) as though
+ * it were still pending — that would present RESOLVED state as PENDING,
+ * the exact honesty violation MOR-1441 exists to prevent.
+ *
+ * MOR-1478 (root cause shared with leg 2's MOR-1488): a transport ack is
+ * NOT a confirming observation. During a long web-driven tuning spin the
+ * MOR-1425 accumulator emits a steady stream of `set_freq` commands; each
+ * WS ack lands within milliseconds, well before the next confirming poll
+ * echoes `main.freqHz`/`sub.freqHz` back. Releasing pending on ack alone
+ * (the pre-fix behavior) let the LAST ack in a spin briefly present the
+ * stale pre-spin confirmed value as though it were current — a ~500ms
+ * flash of wrong data — before the next poll actually caught up. This
+ * accessor now goes through the SAME `latestPendingParam` decision table
+ * leg 2's four discrete accessors use
+ * (`mor1441-pending-discrete.isolated.test.ts`): an acknowledged command
+ * stays pending until the radio's OWN observed state confirms the target,
+ * or the 2s grace backstop elapses.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 type FakeCommand = {
   name: string;
   status: string;
   createdAt: number;
+  updatedAt?: number;
+  ackObservationSeq?: number;
   params: Record<string, unknown>;
 };
+type FakeReceiverState = Record<string, unknown>;
 
 const state: { commands: FakeCommand[] } = { commands: [] };
+const runtimeState: { state: { main: FakeReceiverState; sub: FakeReceiverState; observationSeq?: number } | null } = {
+  state: null,
+};
 
 vi.mock('$lib/stores/commands.svelte', () => ({
   getCommandLifecycles: () => state.commands,
 }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
-  runtime: { get state() { return null; }, get caps() { return null; } },
+  runtime: { get state() { return runtimeState.state; }, get caps() { return null; } },
 }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({
   getAppTxController: () => null,
@@ -44,7 +64,9 @@ const cmd = (over: Partial<FakeCommand> = {}): FakeCommand => ({
   ...over,
 });
 
-describe('panel-adapters pending-frequency accessor (MOR-1441)', () => {
+describe('panel-adapters pending-frequency accessor (MOR-1441, MOR-1478)', () => {
+  afterEach(() => { runtimeState.state = null; });
+
   it('returns the pending set_freq target for the given receiver', () => {
     state.commands = [cmd({ params: { freq: 14100000, receiver: 0 } })];
     expect(getPendingFrequencyHz(0)).toBe(14100000);
@@ -60,10 +82,10 @@ describe('panel-adapters pending-frequency accessor (MOR-1441)', () => {
     expect(getPendingFrequencyHz(0)).toBeNull();
   });
 
-  // THE kill: an acknowledged/failed/cancelled/timed-out command has
-  // RESOLVED — reading it as pending would misrepresent resolved state as
-  // still in flight, exactly the fabrication MOR-1441 forbids.
-  it.each(['acknowledged', 'failed', 'cancelled', 'timed-out'])(
+  // THE kill: a resolved-and-final command misrepresented as still pending —
+  // the exact fabrication MOR-1441 forbids. 'acknowledged' is deliberately
+  // NOT in this list (MOR-1478/MOR-1488) — see the tests below.
+  it.each(['failed', 'cancelled', 'timed-out'])(
     'ignores a %s set_freq command', (status) => {
       state.commands = [cmd({ status, params: { freq: 14100000, receiver: 0 } })];
       expect(getPendingFrequencyHz(0)).toBeNull();
@@ -99,5 +121,76 @@ describe('panel-adapters pending-frequency accessor (MOR-1441)', () => {
       cmd({ createdAt: 5, params: { freq: 14105000, receiver: 0 } }),
     ];
     expect(getPendingFrequencyHz(0)).toBe(14105000);
+  });
+
+  // MOR-1478 (live-bench finding): a transport ack is not a confirming
+  // observation. With no observed radio state yet (or one that has not
+  // caught up), an acknowledged `set_freq` must still read as pending —
+  // this is the assertion that failed against the pre-fix code (it
+  // returned `null`, letting the stale confirmed value flash through for
+  // the ~500ms until the next poll actually caught up).
+  it('still returns the target for an acknowledged command when the confirmed state has not caught up', () => {
+    runtimeState.state = { main: { freqHz: 14100000 }, sub: {} };
+    state.commands = [cmd({ status: 'acknowledged', params: { freq: 14150000, receiver: 0 } })];
+    expect(getPendingFrequencyHz(0)).toBe(14150000);
+  });
+
+  // The other half of the same rule: once the radio's OWN observed state
+  // confirms the target, the acknowledged command must stop reading as
+  // pending — pending is display-only, the confirmed reading stays
+  // authoritative once it actually catches up.
+  it('ignores an acknowledged command once the confirmed state matches the target', () => {
+    runtimeState.state = { main: { freqHz: 14150000 }, sub: {} };
+    state.commands = [cmd({ status: 'acknowledged', params: { freq: 14150000, receiver: 0 } })];
+    expect(getPendingFrequencyHz(0)).toBeNull();
+  });
+
+  // SUB receiver parity: the confirming read must follow the SAME receiver
+  // split as the command match, not always read MAIN.
+  it('confirms against the SUB receiver state for receiver 1', () => {
+    runtimeState.state = { main: {}, sub: { freqHz: 14150000 } };
+    state.commands = [cmd({ status: 'acknowledged', params: { freq: 14150000, receiver: 1 } })];
+    expect(getPendingFrequencyHz(1)).toBeNull();
+  });
+
+  // The multi-command spin case (MOR-1478): a long tuning burst emits MANY
+  // `set_freq` commands (MOR-1425 accumulator, paced just above the
+  // server's 50ms coalescing window, MOR-1427). Only the LATEST command's
+  // own confirmation state may drive the display — an EARLIER command's
+  // target happening to already match confirmed radio truth must not leak
+  // through and prematurely clear the marker for a later, still-unconfirmed
+  // target.
+  it('tracks only the latest command\'s confirmation state during a multi-command spin', () => {
+    // Confirms the FIRST (earlier, already-superseded) target only.
+    runtimeState.state = { main: { freqHz: 14110000 }, sub: {} };
+    state.commands = [
+      cmd({ createdAt: 1, status: 'acknowledged', params: { freq: 14110000, receiver: 0 } }),
+      cmd({ createdAt: 2, status: 'acknowledged', params: { freq: 14120000, receiver: 0 } }),
+    ];
+    expect(getPendingFrequencyHz(0)).toBe(14120000);
+  });
+
+  // Grace backstop (MOR-1478, shared 3000ms constant with leg 2): once
+  // elapsed, an acknowledged command whose field is never actually
+  // observed to confirm must retire even with a non-confirming push —
+  // otherwise a dropped confirming observation (MOR-1445 post-ack failure,
+  // MOR-1427 coalescing, link death) would leave the marker pending
+  // forever.
+  it('retires the marker via the grace backstop once it has elapsed, even with a non-confirming state', () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      runtimeState.state = { main: { freqHz: 14100000 }, sub: {} };
+      state.commands = [cmd({
+        status: 'acknowledged', createdAt: now, updatedAt: now, params: { freq: 14150000, receiver: 0 },
+      })];
+      expect(getPendingFrequencyHz(0)).toBe(14150000);
+
+      vi.advanceTimersByTime(3_001);
+      // Still non-confirming (`main.freqHz` unchanged, target never reached).
+      expect(getPendingFrequencyHz(0)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
