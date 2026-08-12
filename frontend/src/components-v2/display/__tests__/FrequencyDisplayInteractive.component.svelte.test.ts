@@ -2,21 +2,53 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import type { ServerState } from '$lib/types/state';
+import type { Capabilities } from '$lib/types/capabilities';
 import FrequencyDisplayInteractive from '../../../primitives/frequency/FrequencyDisplayInteractive.svelte';
-import { toVfoProps } from '../../wiring/state-adapter';
+import { toVfoProps } from '$lib/runtime/props/panel-props';
 
-// This test exercises the REAL radio store + REAL state-adapter so the freq
-// fix (MOR-475/MOR-1403) is verified end-to-end: VFO frequency is StateStore-
-// owned truth exclusively — click-to-tune steps from the last CONFIRMED
-// server frequency, never a local intent (MOR-1409 A09b removed the last
-// optimistic machinery; there is no overlay left to drop). We import the real
-// store dynamically per test to reset its module state between cases.
+// This test exercises the REAL radio store + REAL panel-props projection so
+// the freq fix (MOR-475/MOR-1403) is verified end-to-end: VFO frequency is
+// StateStore-owned truth exclusively — click-to-tune steps from the last
+// CONFIRMED server frequency, never a local intent (MOR-1409 A09b removed the
+// last optimistic machinery; there is no overlay left to drop).
+//
+// MOR-1409 A15 follow-up: the fixture must actually SURVIVE the store's
+// acceptance gate. `setRadioState()` validates `stateContractVersion`,
+// `providerGeneration` (against the capabilities epoch), and `txTarget` — an
+// under-specified fixture is silently rejected, `getRadioState()` stays
+// `null`, and any projection of it reads the honest "unobserved" sentinel
+// (`NaN`), not a real frequency. The old revision of this test fell into
+// exactly that trap: the store rejected the fixture and the (since-deleted)
+// wiring/state-adapter's `!state` branch supplied a fabricated 14074000 that
+// the assertion then "confirmed". We therefore establish the capabilities
+// epoch first and assert every `setRadioState()` call returns true, so the
+// projected frequency is provably store-owned truth.
+//
+// We import the real stores dynamically per test to reset their module state
+// between cases.
 
 let store: typeof import('$lib/stores/radio.svelte');
+let capabilities: typeof import('$lib/stores/capabilities.svelte');
+
+const PROVIDER_GENERATION = 0;
+
+function makeCapabilities(overrides: Partial<Capabilities> = {}): Capabilities {
+  return {
+    model: 'TEST', scope: false, audio: false, tx: false, capabilities: [],
+    receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
+    audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+    webrtc: { available: false, enabled: false }, txBands: null,
+    stateContractVersion: 1, providerGeneration: PROVIDER_GENERATION,
+    ...overrides,
+  };
+}
 
 function makeMinimalState(overrides: Partial<ServerState> = {}): ServerState {
   const revision = overrides.stateRevision ?? overrides.revision ?? 1;
   return {
+    stateContractVersion: 1,
+    providerGeneration: PROVIDER_GENERATION,
+    txTarget: { status: 'unknown', reason: 'not-observed' },
     revision,
     stateRevision: revision,
     freshnessRevision: overrides.freshnessRevision ?? 1,
@@ -74,6 +106,9 @@ function mountDisplay(props: ComponentProps<typeof FrequencyDisplayInteractive>)
 
 beforeEach(async () => {
   vi.resetModules();
+  // Same module registry: radio.svelte's own capabilities import resolves to
+  // this instance, so the epoch we establish here is the one the gate checks.
+  capabilities = await import('$lib/stores/capabilities.svelte');
   store = await import('$lib/stores/radio.svelte');
   components = [];
 });
@@ -85,27 +120,34 @@ afterEach(() => {
 
 describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-475)', () => {
   it('scroll steps from the last StateStore frequency, never an unconfirmed intent', () => {
-    // Initial server freq.
-    store.setRadioState(makeMinimalState({
+    // The capabilities epoch must exist BEFORE any state is offered, or the
+    // store rejects every observation (capabilitiesMatchGeneration fails).
+    expect(capabilities.setCapabilities(makeCapabilities())).toBe(true);
+
+    // Initial server freq — the gate must ACCEPT it, otherwise the test is
+    // projecting `null` and the 14074000 below would be a fabrication.
+    expect(store.setRadioState(makeMinimalState({
       revision: 1,
       stateRevision: 1,
       observationSeq: 1,
       freshnessRevision: 1,
       main: { ...makeMinimalState().main, freqHz: 14074000 },
-    }));
+    }))).toBe(true);
 
     // A causally-newer StateStore observation confirming the same frequency
     // (analogous to an in-flight poll captured before any local click lands).
-    store.setRadioState(makeMinimalState({
+    expect(store.setRadioState(makeMinimalState({
       revision: 1,
       stateRevision: 1,
       observationSeq: 2,
       freshnessRevision: 2,
       main: { ...makeMinimalState().main, freqHz: 14074000 },
-    }));
+    }))).toBe(true);
 
-    // The StateStore observation is the sole VFO truth seen by the adapter.
-    const vfo = toVfoProps(store.getRadioState(), 'main');
+    // The StateStore observation is the sole VFO truth seen by the projection.
+    const state = store.getRadioState();
+    expect(state).not.toBeNull();
+    const vfo = toVfoProps(state, 'main');
     expect(vfo.freq).toBe(14074000);
 
     const onFreqChange = vi.fn();
