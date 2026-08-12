@@ -23,6 +23,18 @@
       `modeObserved`, `filterWidth` on its own `widthObserved`); this file
       never substitutes one field's gate for another's.
 
+  CAPABILITY-ABSENT CONTROLS ARE HIDDEN, NOT SHOWN DEAD (MOR-1494 review
+  round). The `ifShift` ROW is the ONE exception to rule (2) above: it gates
+  on `filterPassband.ifShiftControlStructural`, NOT on
+  `filterPassband.ifShift.availability.structural`. The latter stays `true`
+  for any radio with EITHER `if_shift` OR `pbt` (a PBT-only radio like
+  IC-7300 still gets an honest derived `ifShift` reading, e.g. for
+  `scope-adapter.ts`'s passband-center overlay) — showing that as a control
+  the operator can never actually turn is exactly the "shown dead" defect
+  MOR-1494 fixed. `ifShiftControlStructural` answers the narrower question
+  this row needs: does the radio have a REAL `if_shift` command. See
+  `radio-view-model.ts`'s `FilterPassbandViewModel` doc comment.
+
   PENDING AFFORDANCE (MOR-1441 leg 2). `pendingFilter` is a plain, command-
   bus-blind display prop — same "read at the wiring seam, hand down a plain
   value" precedent as `pendingFrequencyHz` (leg 1, `VfoSurface`). It marks
@@ -188,7 +200,7 @@
         </div>
       {/if}
       {#each FILTER_PASSBAND_LEVELS as [field, label, min, max, step] (field)}
-        {#if filterPassband[field].availability.structural}
+        {#if field === 'ifShift' ? filterPassband.ifShiftControlStructural : filterPassband[field].availability.structural}
           <label
             class="filter-level" data-testid={`filter-${field}`}
             data-disabled-reason={reasonOf(filterPassband[field])}

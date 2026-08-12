@@ -61,6 +61,21 @@ function withPassbandField(
   };
 }
 
+/**
+ * MOR-1494 review round. `ifShiftControlStructural` is a plain boolean
+ * SIBLING of `ifShift` on `filterPassband` (see `radio-view-model.ts`'s
+ * `FilterPassbandViewModel` doc comment) — not a `FilterPassbandField`, so
+ * `withPassbandField` above (which only knows the `{reading, availability}`
+ * shape) cannot set it. A dedicated helper, same idiom as
+ * `withModeFilterField`/`withPassbandField`.
+ */
+function withIfShiftControlStructural(view: RadioViewModel, value: boolean): RadioViewModel {
+  return {
+    ...view,
+    filterPassband: { ...view.filterPassband!, ifShiftControlStructural: value } as FilterPassbandViewModel,
+  };
+}
+
 let target: HTMLDivElement;
 beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target); });
 afterEach(() => { target.remove(); });
@@ -151,9 +166,76 @@ describe('structural availability decides whether a control EXISTS', () => {
     withSurface(view, (s) => expect(s.group('filter-data-mode')).toBeNull());
   });
 
-  it.each(FILTER_PASSBAND_LEVELS)('renders no "%s" control when structurally absent', (field) => {
-    const view = withPassbandField(base(), field, { availability: ABSENT });
-    withSurface(view, (s) => expect(s.group(`filter-${field}`)).toBeNull());
+  // `ifShift` is deliberately excluded from this generic sweep (MOR-1494
+  // review round) — its ROW gates on the separate `ifShiftControlStructural`
+  // flag, not on its OWN field's `availability.structural`, so setting that
+  // to ABSENT here would no longer hide it. See the dedicated
+  // "IF-shift control gate is separate from the derived fact" block below.
+  it.each(FILTER_PASSBAND_LEVELS.filter(([field]) => field !== 'ifShift'))(
+    'renders no "%s" control when structurally absent',
+    (field) => {
+      const view = withPassbandField(base(), field, { availability: ABSENT });
+      withSurface(view, (s) => expect(s.group(`filter-${field}`)).toBeNull());
+    },
+  );
+});
+
+// ── 2b. IF-shift control gate is separate from the derived fact (MOR-1494) ──
+
+/**
+ * MOR-1494 review round. IC-7300 (PBT-only, no `if_shift` command) rendered
+ * the IF Shift row permanently disabled with a PBT-derived stand-in value —
+ * a dead control shown instead of hidden. The fix splits the presentation
+ * gate (`ifShiftControlStructural`, this block) from the derived-fact gate
+ * (`ifShift.availability.structural`, UNCHANGED — pinned untouched by the
+ * last test below, which is the trap a naive fix would have missed:
+ * `scope-adapter.ts`'s passband-center overlay reads `filterPassband.ifShift`
+ * directly and must keep getting the PBT-derived reading for a radio just
+ * like this one).
+ */
+describe('IF-shift control gate is separate from the derived fact (MOR-1494)', () => {
+  it('IC-7300-shaped (pbt, no if_shift): hides the ifShift row', () => {
+    const view = withIfShiftControlStructural(base(), false);
+    withSurface(view, (s) => expect(s.group('filter-ifShift')).toBeNull());
+  });
+
+  it('IC-7300-shaped (pbt, no if_shift): the underlying derived ifShift FACT stays structural and known — scope-adapter.ts still gets it', () => {
+    const view = withIfShiftControlStructural(base(), false);
+    // `ifShiftControlStructural: false` here mirrors what the adapter would
+    // compute for a pbt-only radio; `ifShift`'s OWN field is UNTOUCHED by
+    // this override and stays exactly what `base()` (a "fully observed"
+    // fixture) gives it — the row-hiding change above must never reach into
+    // this field.
+    expect(view.filterPassband!.ifShift.availability.structural).toBe(true);
+    expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: 0 });
+  });
+
+  it('FTX-1-shaped (if_shift, no pbt): renders the ifShift row, enabled, bound to the real value', () => {
+    // base() defaults ifShiftControlStructural to true (see fixtures/
+    // topologies.ts) — the FTX-1-shaped case, no override needed.
+    withSurface(base(), (s) => {
+      expect(s.group('filter-ifShift')).not.toBeNull();
+      expect(s.input('filter-ifShift')!.disabled).toBe(false);
+    });
+  });
+
+  it('neither if_shift nor pbt: hides the ifShift row, no crash', () => {
+    let view = withIfShiftControlStructural(base(), false);
+    view = withPassbandField(view, 'ifShift', {
+      availability: { structural: false, operational: false },
+    });
+    withSurface(view, (s) => expect(s.group('filter-ifShift')).toBeNull());
+  });
+
+  it('still applies operational gating (disabled + reason) to a structurally-shown ifShift row', () => {
+    const view = withPassbandField(base(), 'ifShift', {
+      availability: { structural: true, operational: false },
+    });
+    withSurface(view, (s) => {
+      expect(s.group('filter-ifShift')).not.toBeNull();
+      expect(s.input('filter-ifShift')!.disabled).toBe(true);
+      expect(s.group('filter-ifShift')!.dataset.disabledReason).toBe('field-not-observed');
+    });
   });
 });
 
@@ -178,6 +260,11 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
+  // `ifShift` stays in this sweep (unlike the structural-gating one above,
+  // MOR-1494 review round): `base()`'s `ifShiftControlStructural` is true
+  // and this override never touches it, so the row still shows; only the
+  // field's own `operational` (unaffected by the MOR-1494 split) decides
+  // whether it's disabled here.
   it.each(FILTER_PASSBAND_LEVELS)('keeps "%s" present but disabled when unreadable', (field) => {
     const view = withPassbandField(base(), field, { availability: PRESENT_UNREADABLE });
     withSurface(view, (s) => {

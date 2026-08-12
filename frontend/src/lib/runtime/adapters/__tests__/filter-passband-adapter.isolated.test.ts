@@ -387,6 +387,48 @@ describe('ifShift raw-field vs PBT-derived branch selection (MOR-1284)', () => {
 });
 
 /**
+ * `ifShiftControlStructural` (MOR-1494 review round) — a SEPARATE,
+ * presentation-only flag `FilterSurface.svelte` uses to decide whether to
+ * show the IF-shift ROW, deliberately independent of `ifShift.availability.
+ * structural` above (which stays `hasIfShiftCap || hasPbtCap`, unchanged,
+ * because `scope-adapter.ts`'s passband-center overlay still needs the
+ * derived reading for a PBT-only radio). `ifShiftControlStructural` answers
+ * the narrower question: does the radio have a REAL `if_shift` command.
+ */
+describe('ifShiftControlStructural — the presentation-only IF-shift control gate (MOR-1494)', () => {
+  it('IC-7300-shaped (pbt, no if_shift): false, even though the derived fact stays structural', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, pbtInner: 200, pbtOuter: 60 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
+    }), caps({ capabilities: ['pbt'] }));
+    expect(view.filterPassband!.ifShiftControlStructural).toBe(false);
+    // The trap: a naive fix that reused `ifShiftStructural` for this flag
+    // too would silently break `scope-adapter.ts`'s derived reading for
+    // exactly this radio shape. It must stay untouched.
+    expect(view.filterPassband!.ifShift.availability.structural).toBe(true);
+    expect(view.filterPassband!.ifShift.reading.status).toBe('known');
+  });
+
+  it('FTX-1-shaped (if_shift, no pbt): true', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, ifShift: 300 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.ifShift': fresh },
+    }), caps({ capabilities: ['if_shift'] }));
+    expect(view.filterPassband!.ifShiftControlStructural).toBe(true);
+  });
+
+  it('neither if_shift nor pbt: false', () => {
+    const view = model(bareState(), caps({ filters: ['FIL1'] }));
+    expect(view.filterPassband!.ifShiftControlStructural).toBe(false);
+  });
+
+  it('both if_shift and pbt (hypothetical radio): true — a real if_shift command always wins the presentation gate', () => {
+    const view = model(bareState(), caps({ capabilities: ['if_shift', 'pbt'] }));
+    expect(view.filterPassband!.ifShiftControlStructural).toBe(true);
+  });
+});
+
+/**
  * HONESTY GATE (MOR-1284, following the 4A F2 lesson). `ifShift`'s derived
  * branch must never fabricate a reading from ONE observed PBT field and the
  * other's silently-defaulted value — the same "never emit a known value

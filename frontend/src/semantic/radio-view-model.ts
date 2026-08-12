@@ -336,6 +336,24 @@ export type FilterPassbandField<T> = TxAuxField<T>;
 export interface FilterPassbandViewModel {
   filterShape: FilterPassbandField<number>;
   ifShift: FilterPassbandField<number>;
+  /**
+   * MOR-1494 review round. `ifShift.availability.structural` above stays
+   * `hasIfShiftCap || hasPbtCap` UNCHANGED — that OR is a fact-derivation
+   * gate (a radio with `pbt` but no `if_shift` still gets an honest derived
+   * `ifShift` READING, e.g. for `scope-adapter.ts`'s passband-center
+   * overlay). This is a SEPARATE, presentation-only gate: whether the radio
+   * has a REAL `if_shift` COMMAND of its own. IC-7300 (PBT-only) has none —
+   * showing its IF-shift CONTROL permanently disabled with a PBT-derived
+   * stand-in is a dead control (the owner's MOR-1494 ruling: hide
+   * capability-absent controls, don't show them dead). `FilterSurface.svelte`
+   * gates the ifShift ROW on this flag, and ONLY this flag — never on
+   * `ifShift.availability.structural`, which stays reserved for consumers of
+   * the derived fact itself (see `deriveFilterPassband`'s doc comment).
+   * A plain boolean, not `FilterPassbandField`-wrapped, for the same reason
+   * `ModeFilterViewModel.modeChoices`/`filterChoices` aren't: a structural
+   * fact about the radio MODEL, not a live reading that can itself go stale.
+   */
+  ifShiftControlStructural: boolean;
   pbtInner: FilterPassbandField<number>;
   pbtOuter: FilterPassbandField<number>;
   dataMode: FilterPassbandField<number>;
@@ -1380,14 +1398,19 @@ function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   };
 }
 
-/** N4 again: exactly the five facts the adapter reads, no speculative keys.
+/** N4 again: exactly the six facts the adapter reads, no speculative keys.
  *  See `radio-view-model-adapter.ts::deriveFilterPassband`. */
 function validateFilterPassband(value: unknown, path: string): FilterPassbandViewModel {
   const v = record(value, path);
-  exactKeys(v, ['filterShape', 'ifShift', 'pbtInner', 'pbtOuter', 'dataMode'], path);
+  exactKeys(
+    v,
+    ['filterShape', 'ifShift', 'ifShiftControlStructural', 'pbtInner', 'pbtOuter', 'dataMode'],
+    path,
+  );
   return {
     filterShape: validateTxAuxField(v.filterShape, `${path}.filterShape`, num),
     ifShift: validateTxAuxField(v.ifShift, `${path}.ifShift`, num),
+    ifShiftControlStructural: bool(v.ifShiftControlStructural, `${path}.ifShiftControlStructural`),
     pbtInner: validateTxAuxField(v.pbtInner, `${path}.pbtInner`, num),
     pbtOuter: validateTxAuxField(v.pbtOuter, `${path}.pbtOuter`, num),
     dataMode: validateTxAuxField(v.dataMode, `${path}.dataMode`, num),

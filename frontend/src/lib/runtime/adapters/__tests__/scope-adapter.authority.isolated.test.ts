@@ -25,6 +25,7 @@ import {
   parseScopeFrame, snapSpectrumFilterWidth, toSpectrumAuthority,
 } from '../scope-adapter';
 import { toRadioViewModel } from '../radio-view-model-adapter';
+import { deriveIfShift, pbtRawToHz } from '$lib/radio/filter-controls';
 
 const fresh: FieldStatus = {
   storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available',
@@ -303,6 +304,27 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     const changed = toSpectrumAuthority(state({ main: { ...receiver(14_074_000), filterWidth: 1800 } }), caps());
     expect(first?.digest).toBe(equal?.digest);
     expect(first?.digest).not.toBe(changed?.digest);
+  });
+
+  /**
+   * MOR-1494 review round — the trap. `FilterSurface.svelte`'s IF-shift ROW
+   * now hides for an IC-7300-shaped radio (pbt, no if_shift capability), via
+   * a NEW `ifShiftControlStructural` presentation flag. This authority's
+   * `ifShiftHz` must be UNAFFECTED: it reads `filterPassband.ifShift`
+   * directly (`toSpectrumAuthority`'s own `knownReading` call, keyed on the
+   * field's `reading.status`, never on `ifShiftControlStructural`), which
+   * still derives from PBT for exactly this radio shape. A fix that gated
+   * the DERIVED fact instead of adding a separate presentation flag would
+   * have silently broken this passband-center overlay.
+   */
+  it('IC-7300-shaped caps (pbt, no if_shift): ifShiftHz still derives from PBT (MOR-1494 trap)', () => {
+    const icomCaps = caps({
+      capabilities: ['scope', 'dual_rx', 'filter_width', 'data_mode', 'pbt'],
+    });
+    const result = toSpectrumAuthority(state(), icomCaps);
+    const expectedIfShiftHz = deriveIfShift(pbtRawToHz(140), pbtRawToHz(116));
+    expect(result?.ifShiftHz).toBe(expectedIfShiftHz);
+    expect(result?.ifShiftHz).not.toBeNull();
   });
 });
 

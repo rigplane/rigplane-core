@@ -240,18 +240,26 @@ describe('IF Shift visibility (MOR-1494)', () => {
     expect(labels).not.toContain('IF Shift (derived)');
   });
 
-  it('renders only the real PBT Inner/Outer sliders for an IC-7300-shaped capability set', () => {
-    const t = mountPanel({ hasIfShift: false, hasPbt: true, pbtInner: 0, pbtOuter: 0 });
+  it('renders only the real PBT Inner/Outer sliders for an IC-7300-shaped capability set, bound to their own values', () => {
+    const t = mountPanel({ hasIfShift: false, hasPbt: true, pbtInner: 100, pbtOuter: -50 });
     const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
     expect(labels).toContain('PBT Inner');
     expect(labels).toContain('PBT Outer');
-    expect(t.querySelectorAll('[role="slider"]').length).toBe(2);
+    const sliders = t.querySelectorAll<HTMLElement>('[role="slider"]');
+    expect(sliders.length).toBe(2);
+    // PBT Inner renders before PBT Outer (source order) -- values must track
+    // their OWN prop, not a shared/derived stand-in.
+    expect(sliders[0].getAttribute('aria-valuenow')).toBe('100');
+    expect(sliders[1].getAttribute('aria-valuenow')).toBe('-50');
   });
 
-  it('renders the IF Shift row for an FTX-1-shaped capability set (if_shift, no pbt)', () => {
-    const t = mountPanel({ hasIfShift: true, hasPbt: false });
+  it('renders the IF Shift row for an FTX-1-shaped capability set (if_shift, no pbt), bound to the real ifShift value', () => {
+    const t = mountPanel({ hasIfShift: true, hasPbt: false, ifShift: 275 });
     const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
     expect(labels).toContain('IF Shift');
+    const sliders = t.querySelectorAll<HTMLElement>('[role="slider"]');
+    expect(sliders.length).toBe(1);
+    expect(sliders[0].getAttribute('aria-valuenow')).toBe('275');
   });
 
   it('leaves the FTX-1-shaped IF Shift slider enabled (no PBT to disable it on)', () => {
