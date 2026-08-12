@@ -1729,6 +1729,58 @@ async def test_serve_static_forbidden_missing_read_error_and_success(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_serve_static_assets_immutable_others_no_cache(tmp_path) -> None:
+    """Content-hashed files under assets/ get long-lived immutable caching;
+    non-hashed entries (index.html, top-level files) keep no-cache."""
+    static_dir = tmp_path / "static"
+    assets = static_dir / "assets"
+    assets.mkdir(parents=True)
+    (static_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+    (static_dir / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    (assets / "index-BvQ0Yc9H.js").write_text("console.log(1)", encoding="utf-8")
+    (assets / "Orbitron-D3ZWvfzD.woff2").write_bytes(b"\x00font")
+
+    srv = WebServer(None, WebConfig(static_dir=static_dir))
+    immutable = "Cache-Control: public, max-age=31536000, immutable"
+    no_cache = "Cache-Control: no-cache, no-store, must-revalidate"
+
+    for asset in ("assets/index-BvQ0Yc9H.js", "assets/Orbitron-D3ZWvfzD.woff2"):
+        writer = _FakeWriter()
+        await srv._serve_static(writer, asset)  # noqa: SLF001
+        text = writer.buffer.decode("ascii", errors="replace")
+        assert "200 OK" in text
+        assert immutable in text, f"{asset}: expected immutable caching"
+        assert no_cache not in text
+
+    for plain in ("index.html", "favicon.svg"):
+        writer = _FakeWriter()
+        await srv._serve_static(writer, plain)  # noqa: SLF001
+        text = writer.buffer.decode("ascii", errors="replace")
+        assert "200 OK" in text
+        assert no_cache in text, f"{plain}: expected no-cache"
+        assert immutable not in text
+
+
+@pytest.mark.asyncio
+async def test_serve_static_rejects_name_prefix_sibling_dir(tmp_path) -> None:
+    """A sibling dir whose name starts with the static dir's name (e.g.
+    static.old next to static) must get 403, not file contents or a
+    connection-killing exception."""
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    sibling = tmp_path / "static.old"
+    sibling.mkdir()
+    (sibling / "secret.html").write_text("<html>secret</html>", encoding="utf-8")
+
+    srv = WebServer(None, WebConfig(static_dir=static_dir))
+    writer = _FakeWriter()
+    await srv._serve_static(writer, "../static.old/secret.html")  # noqa: SLF001
+    text = writer.buffer.decode("ascii", errors="replace")
+    assert "403 Forbidden" in text
+    assert "secret" not in text
+
+
+@pytest.mark.asyncio
 async def test_handle_websocket_missing_key_unknown_channel_and_control_handler() -> (
     None
 ):

@@ -5414,7 +5414,7 @@ class WebServer:
         # Prevent path traversal
         static_dir = self._config.static_dir.resolve()
         target = (static_dir / filename).resolve()
-        if not str(target).startswith(str(static_dir)):
+        if not target.is_relative_to(static_dir):
             await _send_response(writer, 403, "Forbidden", b"Forbidden", {})
             return
 
@@ -5432,6 +5432,14 @@ class WebServer:
 
         mime, _ = mimetypes.guess_type(str(target))
         ct = mime or "application/octet-stream"
+        # Vite emits content-hashed filenames under assets/, so those are
+        # safe to cache forever; everything else (index.html, favicon)
+        # keeps non-hashed names and must be revalidated on every load.
+        rel = target.relative_to(static_dir)
+        if rel.parts and rel.parts[0] == "assets":
+            cache = "public, max-age=31536000, immutable"
+        else:
+            cache = "no-cache, no-store, must-revalidate"
         await _send_response(
             writer,
             200,
@@ -5439,7 +5447,7 @@ class WebServer:
             body,
             {
                 "Content-Type": ct,
-                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Cache-Control": cache,
             },
         )
 
