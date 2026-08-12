@@ -74,11 +74,12 @@
      * `RadioLayout.svelte` — see its `$effect` — and, per ruling A,
      * `LcdLayout.svelte`). `MobileRadioLayout.svelte` has no such driver
      * AND its own STEP picker is disconnected local state that can
-     * disagree with this shared store on the same screen (MOR-1509,
-     * design-research ticket owner-commissioned for the right mobile step
-     * UX). Showing a toggle that silently does nothing on subsequent mode
-     * changes would be exactly the invisible-state-change dishonesty this
-     * ticket exists to close, so the gate is structural — a prop the
+     * disagree with this shared store on the same screen (defect tracked
+     * as MOR-1509). The right mobile step UX is an owner-commissioned
+     * design-research ticket, MOR-1513, not solved by this ticket. Showing
+     * a toggle that silently does nothing on subsequent mode changes would
+     * be exactly the invisible-state-change dishonesty this ticket exists
+     * to close, so the gate is structural — a prop the
      * owning layout passes — NOT a skin-name string check. Defaults
      * `false` (toggle shown) so `RadioLayout`, which does have the driver,
      * needs no change; `MobileRadioLayout` passes `true` explicitly.
