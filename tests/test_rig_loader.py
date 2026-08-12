@@ -168,6 +168,105 @@ provider = 123
         with pytest.raises(RigLoadError, match="vfo.*scheme"):
             load_rig(p)
 
+    # ── [agc] domain declaration (MOR-1522) ─────────────────────────
+
+    def test_agc_modes_and_labels_load(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = [1, 2, 3]
+labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
+""",
+        )
+        rig = load_rig(p)
+        assert rig.agc_modes == (1, 2, 3)
+        assert rig.agc_labels == {"1": "FAST", "2": "MID", "3": "SLOW"}
+
+    def test_agc_section_rejects_unknown_key(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+mode = [1, 2, 3]
+""",
+        )
+        with pytest.raises(RigLoadError, match=r"\[agc\].*unknown key"):
+            load_rig(p)
+
+    def test_agc_modes_rejects_empty_list(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = []
+""",
+        )
+        with pytest.raises(RigLoadError, match=r"\[agc\]\.modes"):
+            load_rig(p)
+
+    def test_agc_modes_rejects_non_integer_entries(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = [1, "FAST", 3]
+""",
+        )
+        with pytest.raises(RigLoadError, match=r"\[agc\]\.modes"):
+            load_rig(p)
+
+    def test_agc_labels_rejects_orphan_key_not_in_modes(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = [1, 2, 3]
+labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW", "9" = "PHANTOM" }
+""",
+        )
+        with pytest.raises(RigLoadError, match=r"\[agc\]\.labels.*9"):
+            load_rig(p)
+
+    def test_agc_labels_rejects_declared_without_modes(self, tmp_path):
+        """MOR-1522 R1 (B2): [agc].labels with no [agc].modes must not load
+        silently — that would yield a capability-present radio with an
+        empty domain, short-circuiting both runtime validation seats
+        (``agc_modes is not None`` in ``IcomRadio.set_agc`` /
+        ``YaesuCatRadio.set_agc``)."""
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
+""",
+        )
+        with pytest.raises(
+            RigLoadError, match=r"\[agc\]\.labels declared without \[agc\]\.modes"
+        ):
+            load_rig(p)
+
+    def test_agc_capability_absent_declares_no_domain(self, tmp_path):
+        """A radio that never mentions AGC at all — no capability, no
+        [agc] section — is valid: capability-absent hides the selector
+        (MOR-1494 pattern), it is not a malformed declaration."""
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        rig = load_rig(p)
+        assert rig.agc_modes is None
+        assert rig.agc_labels is None
+
     def test_rf_sql_control_model_defaults_to_separate(self, tmp_path):
         p = _write_toml(tmp_path, _MINIMAL_TOML)
         rig = load_rig(p)
@@ -1004,3 +1103,100 @@ class TestWriteOnlyControls:
         assert "filter_width" not in caps
         # Unrelated caps stay untouched.
         assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
+
+
+# ── AGC domain declaration, table-driven over every shipped profile ──────
+# (MOR-1522). "Shipped profile" = every rigs/*.toml except the UI-only
+# _keyboard-default.toml, taken from the directory listing itself rather
+# than a hand-maintained name list, so a new profile can't silently land
+# in the ambiguous middle this test forbids.
+
+_SHIPPED_RIG_TOMLS = sorted(
+    p for p in RIGS_DIR.glob("*.toml") if p.name != "_keyboard-default.toml"
+)
+
+
+class TestAgcDomainDeclaredOrCapabilityAbsent:
+    """Every shipped profile must land on one of exactly two sides:
+
+    (a) it does not declare the ``agc`` capability at all — the
+        capability-absent selector-hiding pattern (MOR-1494) — or
+    (b) it declares ``agc`` AND a non-empty ``[agc] modes`` domain that
+        every declared value can be encoded into a legal wire command.
+
+    No profile may declare the capability without a domain, or a domain
+    without the capability.
+    """
+
+    @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+    def test_agc_capability_and_domain_agree(self, toml_path):
+        rig = load_rig(toml_path)
+        has_agc_capability = "agc" in rig.capabilities
+
+        if not has_agc_capability:
+            assert rig.agc_modes is None, (
+                f"{toml_path.name}: declares [agc] modes without the "
+                f"'agc' capability feature"
+            )
+            return
+
+        assert rig.agc_modes, (
+            f"{toml_path.name}: declares the 'agc' capability but no "
+            f"(or an empty) [agc] modes domain"
+        )
+
+    @pytest.mark.parametrize(
+        "toml_path",
+        [p for p in _SHIPPED_RIG_TOMLS if load_rig(p).protocol_type == "civ"],
+        ids=lambda p: p.stem,
+    )
+    def test_civ_agc_modes_encode_to_a_legal_command(self, toml_path):
+        """Every declared mode for a CI-V family radio must round-trip
+        through the real wire-command builder without raising — the
+        profile's domain must map to a legal command, not just a legal
+        Python int (MOR-1522)."""
+        from rigplane.commands.dsp import set_agc
+
+        rig = load_rig(toml_path)
+        if rig.agc_modes is None:
+            pytest.skip(f"{toml_path.name}: no agc capability")
+        for mode in rig.agc_modes:
+            civ = set_agc(mode, to_addr=rig.civ_addr)
+            # All shipped AGC domains are single-digit (0-9), so the BCD
+            # byte equals the raw mode value — this is both the
+            # "encodes without raising" check and a byte-shape pin.
+            assert civ.endswith(bytes([0x16, 0x12, mode, 0xFD])), (
+                f"{toml_path.name}: mode {mode} did not encode to the "
+                f"expected 0x16 0x12 {mode:#04x} wire command"
+            )
+
+    def test_ic7300_declares_exactly_fast_mid_slow_no_off(self):
+        """The MOR-1522 regression pin: IC-7300 must show FAST/MID/SLOW
+        only. Confirmed against docs/validation/cat-audits/ic7300.md
+        (CI-V 0x16 0x12: 1=FAST, 2=MID, 3=SLOW, no OFF)."""
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        assert rig.agc_modes == (1, 2, 3)
+        assert 0 not in rig.agc_modes
+
+    def test_x6200_keeps_its_declared_off(self):
+        """A profile that DOES have AGC OFF must keep it — the fix must not
+        over-correct into dropping OFF everywhere. X6200 CI-V doc (PDF page
+        8): 0x16 0x12 0x00..0x03 = off/fast/slow/auto."""
+        rig = load_rig(RIGS_DIR / "x6200.toml")
+        assert 0 in rig.agc_modes
+        assert rig.agc_labels["0"] == "OFF"
+
+    def test_ftx1_keeps_its_declared_off(self):
+        """FTX-1 (live bench hardware) also legitimately has AGC OFF."""
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+        assert 0 in rig.agc_modes
+        assert rig.agc_labels["0"] == "OFF"
+
+    def test_x6100_and_tx500_declare_no_agc_capability(self):
+        """Neither has AGC wired at all today (X6100: no confirmed hardware
+        capture; TX-500: no backend/CAT implementation at all) — capability-
+        absent is correct for both, not an empty/invented domain."""
+        for name in ("x6100", "tx500"):
+            rig = load_rig(RIGS_DIR / f"{name}.toml")
+            assert "agc" not in rig.capabilities
+            assert rig.agc_modes is None

@@ -411,12 +411,19 @@ def set_agc(
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    """Build a set AGC mode command."""
+    """Build a set AGC mode command.
+
+    Encodes the raw single-BCD-byte AGC mode value. Which mode values are
+    legal for a given radio (IC-7300's FAST/MID/SLOW vs. the X6200's
+    OFF/FAST/SLOW/AUTO) is a per-profile domain, not a universal one — this
+    builder only enforces the wire-format's single-BCD-byte range and
+    leaves domain validation to the profile-aware caller (MOR-1522).
+    """
     return _build_function_value_set(
         _SUB_AGC,
-        int(AgcMode(mode)),
-        minimum=int(AgcMode.FAST),
-        maximum=int(AgcMode.SLOW),
+        int(mode),
+        minimum=0,
+        maximum=99,
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,

@@ -1208,8 +1208,29 @@ def load_rig(path: Path) -> RigConfig:
     pre_labels = dict(pre_section["labels"]) if "labels" in pre_section else None
 
     agc_section = data.get("agc", {})
+    if agc_section:
+        _reject_unknown_keys(
+            filename, "[agc]", agc_section, frozenset({"modes", "labels"})
+        )
     agc_modes = tuple(agc_section["modes"]) if "modes" in agc_section else None
+    if agc_modes is not None and (
+        not agc_modes
+        or any(isinstance(m, bool) or not isinstance(m, int) for m in agc_modes)
+    ):
+        raise RigLoadError(
+            f"{filename}: [agc].modes must be a non-empty list of integers"
+        )
     agc_labels = dict(agc_section["labels"]) if "labels" in agc_section else None
+    if agc_labels is not None and agc_modes is None:
+        raise RigLoadError(f"{filename}: [agc].labels declared without [agc].modes")
+    if agc_labels is not None and agc_modes is not None:
+        declared = {str(m) for m in agc_modes}
+        orphan_labels = sorted(set(agc_labels) - declared)
+        if orphan_labels:
+            raise RigLoadError(
+                f"{filename}: [agc].labels key {orphan_labels[0]!r} has no "
+                f"matching entry in [agc].modes {sorted(agc_modes)}"
+            )
 
     # Parse [data_mode] (optional)
     # If data_mode is in features but no [data_mode] section, default to 1 mode (OFF/DATA)

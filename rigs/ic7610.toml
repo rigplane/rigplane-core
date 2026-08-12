@@ -657,7 +657,10 @@ values = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45]
 values = [0, 1, 2]
 
 [agc]
-# CI-V 0x16 0x12: 1=FAST, 2=MID, 3=SLOW
+# CI-V 0x16 0x12: 1=FAST, 2=MID, 3=SLOW, NO OFF (MOR-1522). IC-7610 hardware
+# retired 2026-08-04 — no live verification possible, so this rides the
+# documented CI-V Reference Guide command table only (same disclosure basis
+# as the filter_shape state_acquisition note above).
 modes = [1, 2, 3]
 labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
 
