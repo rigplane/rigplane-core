@@ -371,6 +371,10 @@ These live alongside this guide:
   embedded Pro coordinate the active locale (URL query parameter,
   `localStorage` envelope, precedence rules). Translators rarely need
   this, but UI developers integrating new surfaces do.
+- [Faceplate locale-invariance policy](./faceplate-locale-invariance.md) —
+  the full rule for instrument/faceplate terms (mode names, SPLIT, RIT/XIT,
+  AGC/NB/NR, VFO A/B, TX/RX, band names, ON/OFF and other value words):
+  they render identically in every locale, matching en-US verbatim.
 
 The strategy-level glossary (which terms are translatable, plural rules,
 per-locale §2.D reserved terms for `ja-JP` and `ru-RU`, etc.) lives at

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Capabilities } from '../../types/capabilities';
 
 function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
@@ -28,6 +28,20 @@ describe('capabilities store', () => {
   beforeEach(async () => {
     vi.resetModules();
     store = await import('../capabilities.svelte');
+  });
+
+  // MOR-1468: this file runs in the ``fast`` project (``isolate: false``),
+  // so ``vi.resetModules()`` clears a module-graph cache shared with every
+  // other test file in the worker. Without a matching post-test reset, the
+  // LAST dynamically-imported instance here (and whatever state the final
+  // test left it in — cleared, mid-epoch, mid-vfoScheme flip, etc.) stays
+  // the active cache entry for the ``capabilities.svelte`` specifier, and
+  // any sibling file that takes a plain static import — or whose own
+  // ``vi.mock('$lib/stores/capabilities.svelte', ...)`` needs a clean graph
+  // to bind against — inherits that leftover state instead of a fresh one.
+  // Mirrors the i18n locale-singleton fix (#2397/#2398).
+  afterEach(() => {
+    vi.resetModules();
   });
 
   it('starts with null capabilities', () => {

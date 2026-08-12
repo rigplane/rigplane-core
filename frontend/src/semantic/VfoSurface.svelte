@@ -114,6 +114,16 @@
      */
     onTuneFrequency?: (receiver: ReceiverId, frequencyHz: number) => void;
     /**
+     * MOR-1441 — the pending (not-yet-confirmed) tuning target for a
+     * receiver, keyed by `ReceiverId`. The caller (`SemanticRadioSurfaces`,
+     * which already holds the command-bus for the MOR-1421 `hasDualReceiver`
+     * precedent) computes this from the in-flight `set_freq` intent; this
+     * surface stays command-bus-blind and only renders the plain value it is
+     * handed. Absent (or missing that receiver's key) renders the plain
+     * confirmed readout, exactly as before this prop existed.
+     */
+    pendingFrequencyHz?: Partial<Record<ReceiverId, number>>;
+    /**
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
      * (copy one VFO onto the other), swap, and the two composite "quick"
@@ -144,6 +154,7 @@
     disabled = false,
     hasDualReceiver = true,
     onTuneFrequency,
+    pendingFrequencyHz,
     onEqualizeVfos,
     onSwapVfos,
     onQuickSplit,
@@ -358,6 +369,7 @@
       {@const selectable = isSelectable(vfo)}
       {@const selectDisabled = selectable && (vfo.slot.kind === 'unknown' || disabled)}
       {@const freq = frequencyDisplay(vfo)}
+      {@const pendingHz = pendingFrequencyHz?.[vfo.receiver] ?? null}
       <div
         class="vfo-tile"
         class:is-active={vfo.isActive}
@@ -382,8 +394,21 @@
           aria-disabled={hasTunableFrequency(vfo) && disabled ? 'true' : undefined}
         >
           {#if hasTunableFrequency(vfo)}
+            <!--
+              MOR-1441 REVIEW FIX (severe): `freq` is ALWAYS confirmed radio
+              truth (`vfo.frequencyHz`), never `pendingHz` — the pending
+              target is display-only, via `pendingDisplayHz`. Passing
+              `pendingHz` as `freq` fed the growing pending value back into
+              `FrequencyDisplayInteractive`'s own gesture arithmetic
+              (`adjustFreqByDigit(freq, ...)`), which itself feeds the
+              MOR-1425 tuning accumulator's delta — a positive-feedback
+              runaway reproduced by the verifier (10 ticks of +10 Hz intent
+              measured out to +1910 Hz actual; 30 ticks to +15.7 MHz).
+            -->
             <FrequencyDisplayInteractive
               freq={vfo.frequencyHz ?? 0}
+              pendingDisplayHz={pendingHz}
+              pendingAnnouncement={pendingHz !== null ? t('core.vfo.freq.pendingAnnouncement') : undefined}
               compact
               active={vfo.isActive}
               receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}

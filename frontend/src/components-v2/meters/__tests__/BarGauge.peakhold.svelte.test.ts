@@ -5,7 +5,7 @@ import BarGauge from '../BarGauge.svelte';
 // MOR-1282: BarGauge's optional peak-hold marker channel. Reuses
 // meter-utils::updatePeakHold/peakHoldDisplay — the single MOR-1252 semantics
 // implementation MetersDockPanel already channels through (see
-// MetersDockPanel.peakhold.svelte.test.ts) — so the marker here and the
+// MetersDockPanel.peakhold.svelte.isolated.test.ts) — so the marker here and the
 // dock's own held Po/SWR/ALC/Id readouts can never disagree about hold/decay
 // timing. These tests drive the 100 ms decay ticker with fake timers, mirroring
 // the dock's own test convention.
@@ -43,7 +43,7 @@ function mountReactive(props: Record<string, unknown>) {
 // Asserting on NodeList length (not `querySelector(...) + toBeNull()`) sidesteps
 // a Svelte dev-mode "rune used outside .svelte" red herring vitest's
 // failure-message pretty-printer trips when it inspects a live mounted node —
-// the same convention `LinearSMeter.reduced-motion.svelte.test.ts` documents.
+// the same convention `LinearSMeter.reduced-motion.svelte.isolated.test.ts` documents.
 function markerCount(t: HTMLElement): number {
   return t.querySelectorAll('[data-testid="bar-gauge-peak-marker"]').length;
 }

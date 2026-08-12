@@ -16,7 +16,7 @@
  *
  * `sMeter` legitimately stays RAW only for a radio with no calibration
  * table — `smeter-scale.ts`'s `isSmeterCalibrated()` / the honest-fallback
- * tests in `LinearSMeter.test.ts` and `meter-utils.test.ts` cover that
+ * tests in `LinearSMeter.isolated.test.ts` and `meter-utils.isolated.test.ts` cover that
  * case; this file guards the opposite direction, at every call site that
  * reads `.sMeter` or a `sValue` derived from it.
  */

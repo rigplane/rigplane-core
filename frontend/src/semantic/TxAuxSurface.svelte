@@ -29,7 +29,7 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
-  import { formatKnownLevel } from './format-level';
+  import { rawToPercentDisplay } from '../components-v2/controls/value-control/value-control-core';
   import { disabledReasonText } from './disabled-reason';
 
   /** On/off controls, `[field, label]`. ATU's reading is a three-state enum,
@@ -37,19 +37,37 @@
   export const TX_AUX_TOGGLES = [
     ['atu', 'ATU'], ['vox', 'VOX'], ['compressor', 'COMP'], ['monitor', 'MON'],
   ] as const;
-  /** `[field, label, min, max, step]` in RAW wire units — the MOR-1244
-   *  contract applies no normalisation, so these are exactly the ranges
-   *  `TxPanel`/`VoxPanel` have always used (RF power 0..1, VOX delay 0..20,
-   *  everything else 0..255). Rescaling here would silently move a level. */
+  /** `[field, label, min, max, step, format]` — every row is a 6-tuple (kept
+   *  uniform for `it.each` typing, not a mix of 5- and 6-element tuples) but
+   *  `format` is `undefined` for most fields. The slider bound and step are
+   *  RAW wire units (the MOR-1244 contract applies no normalisation, so
+   *  these are exactly the ranges `TxPanel`/`VoxPanel` have always used: RF
+   *  power 0..1, VOX delay 0..20, everything else 0..255 — rescaling the
+   *  VALUE here would silently move a level).
+   *
+   *  `format` is the DISPLAY-only convention (MOR-1452). An `undefined` row
+   *  gets the default — a percent of ITS OWN `min`/`max` (the SAME two
+   *  values bound to `<input min max>` a few lines below, not a duplicated
+   *  literal) via `rawToPercentDisplay`. That default is built at
+   *  `levelTextOf`'s call site, not stored per-row, precisely so it cannot
+   *  drift from a row's declared domain the way a bare `rawToPercentDisplay`
+   *  reference silently would (that reference reads ITS OWN [0,255] default
+   *  args, not the row's — invisible for every field that happens to declare
+   *  exactly 0..255, wrong the moment one doesn't; caught in review).
+   *
+   *  `voxDelay` overrides the default: its raw units are 0.1s steps (`20` ⇒
+   *  2.0s), a genuine duration, not a level fraction — a percent of it is
+   *  meaningless. Mirrors `VoxPanel.svelte`'s own `delayDisplay`, the
+   *  existing precedent for this exact field. */
   export const TX_AUX_LEVELS = [
-    ['rfPower', 'RF power', 0, 1, 0.01],
-    ['micGain', 'Mic gain', 0, 255, 1],
-    ['driveGain', 'Drive gain', 0, 255, 1],
-    ['voxGain', 'VOX gain', 0, 255, 1],
-    ['antiVoxGain', 'Anti-VOX', 0, 255, 1],
-    ['voxDelay', 'VOX delay', 0, 20, 1],
-    ['compressorLevel', 'COMP level', 0, 255, 1],
-    ['monitorLevel', 'MON level', 0, 255, 1],
+    ['rfPower', 'RF power', 0, 1, 0.01, undefined],
+    ['micGain', 'Mic gain', 0, 255, 1, undefined],
+    ['driveGain', 'Drive gain', 0, 255, 1, undefined],
+    ['voxGain', 'VOX gain', 0, 255, 1, undefined],
+    ['antiVoxGain', 'Anti-VOX', 0, 255, 1, undefined],
+    ['voxDelay', 'VOX delay', 0, 20, 1, (v: number) => `${(v * 0.1).toFixed(1)}s`],
+    ['compressorLevel', 'COMP level', 0, 255, 1, undefined],
+    ['monitorLevel', 'MON level', 0, 255, 1, undefined],
   ] as const;
   export type TxAuxToggleField = (typeof TX_AUX_TOGGLES)[number][0];
   export type TxAuxLevelField = (typeof TX_AUX_LEVELS)[number][0];
@@ -69,12 +87,22 @@
     f.reading.status !== 'known' ? '?'
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
         : String(f.reading.value);
-  /** Same freshness discipline as `textOf`, but a KNOWN level reading is
-   *  formatted against its declared `[min, max]` domain (MOR-1447) instead of
-   *  `String()`-ing the raw wire fraction — e.g. RF power reading back as
-   *  the literal `0.5529411764705883` instead of "55%". */
-  const levelTextOf = (f: TxAuxField<number>, min: number, max: number): string =>
-    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, min, max) : '?';
+  /** Same freshness discipline as `textOf`, but a KNOWN level reading is run
+   *  through its `format` (MOR-1452) instead of `String()`-ing the raw wire
+   *  value — e.g. RF power reading back as "80%" instead of the literal
+   *  `0.5529411764705883`, and mic gain as "50%" instead of `128`. Absent a
+   *  per-row override, the default is built HERE, from the SAME `min`/`max`
+   *  the caller destructured for this field's `<input>` bounds — never a
+   *  bare `rawToPercentDisplay` reference, which would silently ignore them. */
+  const levelTextOf = (
+    f: TxAuxField<number>,
+    min: number,
+    max: number,
+    format?: (v: number) => string,
+  ): string => {
+    if (f.reading.status !== 'known') return '?';
+    return (format ?? ((v: number) => rawToPercentDisplay(v, min, max)))(f.reading.value);
+  };
   const numberOf = (f: TxAuxField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
 
@@ -152,7 +180,7 @@
       {/if}
     </div>
 
-    {#each TX_AUX_LEVELS as [field, label, min, max, step] (field)}
+    {#each TX_AUX_LEVELS as [field, label, min, max, step, format] (field)}
       {#if txAux[field].availability.structural}
         <label
           class="tx-aux-level" data-testid={`tx-aux-${field}`} data-field={field}
@@ -169,7 +197,7 @@
           {#if reasonTextOf(txAux[field]) !== undefined}
             <span id={reasonIdOf(field, txAux[field])} class="sr-only">{reasonTextOf(txAux[field])}</span>
           {/if}
-          <output>{levelTextOf(txAux[field], min, max)}</output>
+          <output>{levelTextOf(txAux[field], min, max, format)}</output>
         </label>
       {/if}
     {/each}

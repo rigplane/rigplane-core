@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ServerState } from '../../types/state';
 
 type ServerStateWithObservation = ServerState & {
@@ -171,6 +171,20 @@ describe('radio store', () => {
       webrtc: { available: false, enabled: false }, txBands: null,
       stateContractVersion: 1, providerGeneration: 0,
     });
+  });
+
+  // MOR-1468: the ``fast`` project runs with ``isolate: false``, so the
+  // ``vi.resetModules()`` graph clear above is shared with every other test
+  // file in the worker. Without a matching post-test reset, this file's
+  // LAST dynamically-imported ``capabilities.svelte`` instance (and
+  // whatever this suite mutated it to — dual-RX, a bumped provider
+  // generation, etc.) stays the active cache entry, and any sibling file
+  // that later takes a plain static import of the same module — or whose
+  // own ``vi.mock('$lib/stores/capabilities.svelte', ...)`` needs a clean
+  // graph to bind against — inherits that stale state instead of a fresh
+  // one. Mirrors the i18n locale-singleton fix (#2397/#2398).
+  afterEach(() => {
+    vi.resetModules();
   });
 
   it('starts with null state', () => {
