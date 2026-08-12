@@ -30,10 +30,19 @@ function sourceOf(relPath: string): string {
     .replace(/^\s*\/\/.*$/gm, '');
 }
 
-/** No `rawToDbm(` call anywhere near an `sMeter`/`sValue` read in `source`. */
+/**
+ * No `rawToDbm(` call anywhere near an sMeter-ish identifier in `source`.
+ * Case-insensitive and matches the whole `[sS]?[mM]eter`/`sValue` family
+ * (`sMeter`, `mainSMeter`, `dockSMeterRaw`, `subSValue`, `mainVfo.sValue`,
+ * …) so a differently-cased or differently-named local variable can't slip
+ * a double conversion past this guard — the case-sensitive, exact-name
+ * version of this predicate is what let the reverted bug through review
+ * undetected by any test the first time.
+ */
 function hasNoRawToDbmOnSMeter(source: string): boolean {
-  return !/rawToDbm\([^)]*(?:sMeter|sValue)/.test(source)
-    && !/(?:sMeter|sValue)[^;]*rawToDbm\(/.test(source);
+  const meterish = /(?:s[Mm]eter|sValue)/;
+  return !new RegExp(`rawToDbm\\([^)]*${meterish.source}`, 'i').test(source)
+    && !new RegExp(`${meterish.source}[^;]*rawToDbm\\(`, 'i').test(source);
 }
 
 describe('sMeter is never re-wrapped in rawToDbm at a production call site (MOR-1451)', () => {
