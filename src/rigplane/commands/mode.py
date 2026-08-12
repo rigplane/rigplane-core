@@ -189,6 +189,8 @@ def get_filter_shape(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read DSP IF filter shape command."""
     return _build_function_get(
@@ -196,7 +198,7 @@ def get_filter_shape(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_filter_shape",
     )
@@ -208,6 +210,8 @@ def set_filter_shape(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set DSP IF filter shape command."""
     return _build_function_value_set(
@@ -218,7 +222,7 @@ def set_filter_shape(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_filter_shape",
     )
@@ -360,6 +364,8 @@ def get_agc_time_constant(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read AGC time constant command."""
     return _build_ctl_mem_single_bcd_get(
@@ -367,7 +373,7 @@ def get_agc_time_constant(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_agc_time_constant",
     )
@@ -379,6 +385,8 @@ def set_agc_time_constant(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set AGC time constant command."""
     return _build_ctl_mem_single_bcd_set(
@@ -389,7 +397,7 @@ def set_agc_time_constant(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_agc_time_constant",
     )

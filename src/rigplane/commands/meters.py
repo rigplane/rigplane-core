@@ -84,6 +84,8 @@ def get_s_meter_sql_status(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read S-meter squelch status command."""
     return _build_meter_bool_get(
@@ -91,7 +93,7 @@ def get_s_meter_sql_status(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_s_meter_sql_status",
     )
@@ -119,6 +121,8 @@ def get_various_squelch(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read various-squelch status command (0x15 0x05, Command29)."""
     return _build_meter_bool_get(
@@ -126,7 +130,7 @@ def get_various_squelch(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_various_squelch",
     )

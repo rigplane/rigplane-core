@@ -431,6 +431,8 @@ def get_audio_peak_filter(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read audio peak filter mode command."""
     return _build_function_get(
@@ -438,7 +440,7 @@ def get_audio_peak_filter(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_audio_peak_filter",
     )
@@ -450,6 +452,8 @@ def set_audio_peak_filter(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set audio peak filter mode command."""
     return _build_function_value_set(
@@ -460,7 +464,7 @@ def set_audio_peak_filter(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_audio_peak_filter",
     )
@@ -471,6 +475,8 @@ def get_auto_notch(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read auto-notch status command."""
     return _build_function_get(
@@ -478,7 +484,7 @@ def get_auto_notch(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_auto_notch",
     )
@@ -490,6 +496,8 @@ def set_auto_notch(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set auto-notch status command."""
     return _build_function_bool_set(
@@ -498,7 +506,7 @@ def set_auto_notch(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_auto_notch",
     )
@@ -623,13 +631,15 @@ def get_manual_notch(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     return _build_function_get(
         _SUB_MANUAL_NOTCH,
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_manual_notch",
     )
@@ -641,6 +651,8 @@ def set_manual_notch(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     return _build_function_bool_set(
         _SUB_MANUAL_NOTCH,
@@ -648,7 +660,7 @@ def set_manual_notch(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_manual_notch",
     )
@@ -659,6 +671,8 @@ def get_manual_notch_width(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a 'get manual notch width' CI-V command (0x16 0x57)."""
     return _build_function_get(
@@ -666,7 +680,7 @@ def get_manual_notch_width(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_manual_notch_width",
     )
@@ -678,6 +692,8 @@ def set_manual_notch_width(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a 'set manual notch width' CI-V command (0x16 0x57). 0=WIDE, 1=MID, 2=NAR."""
     return _build_function_value_set(
@@ -688,7 +704,7 @@ def set_manual_notch_width(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_manual_notch_width",
     )
@@ -699,13 +715,15 @@ def get_twin_peak_filter(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     return _build_function_get(
         _SUB_TWIN_PEAK_FILTER,
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_twin_peak_filter",
     )
@@ -717,6 +735,8 @@ def set_twin_peak_filter(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     return _build_function_bool_set(
         _SUB_TWIN_PEAK_FILTER,
@@ -724,7 +744,7 @@ def set_twin_peak_filter(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_twin_peak_filter",
     )
