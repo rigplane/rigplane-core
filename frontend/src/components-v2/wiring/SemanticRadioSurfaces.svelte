@@ -26,7 +26,10 @@
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
-  import { bindSemanticSurfaceHandlers, getPendingFrequencyHz } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    bindSemanticSurfaceHandlers, getPendingFrequencyHz,
+    getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
+  } from '$lib/runtime/adapters/panel-adapters';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
   import {
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
@@ -437,6 +440,33 @@
     toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
   );
 
+  /**
+   * MOR-1441 leg 2 — active receiver's wire index (0=MAIN, 1=SUB) for the
+   * discrete-control pending accessors below, or `null` while unobserved.
+   * Same conversion `tuneFrequency` below already uses.
+   */
+  let activeReceiverIndex: 0 | 1 | null = $derived(
+    view?.activeReceiver.status === 'known'
+      ? (view.activeReceiver.receiver === 'MAIN' ? 0 : 1)
+      : null,
+  );
+  /**
+   * MOR-1441 leg 2 — pending targets for `FilterSurface`/`DspSurface`/
+   * `RfFrontEndSurface`, read off the command-bus lifecycle list like
+   * `pendingFrequencyHz` below. Unlike that memoized `{MAIN?,SUB?}` object
+   * (review B5), these are plain scalars — Svelte's own reactivity already
+   * skips downstream work on an unchanged primitive, so no cache is needed
+   * for the same effect. `null` while the active receiver is unobserved.
+   */
+  let pendingFilter = $derived(
+    activeReceiverIndex === null ? null : getPendingFilterSelection(activeReceiverIndex),
+  );
+  let pendingPreamp = $derived(
+    activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
+  );
+  let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
+  let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
+
   // Bound once per instance, never per render — see `surfaceSeq` above.
   function requestKey(): void {
     tx.start(sourceId, `${sourceId}-${++leaseSeq}`, 'latched');
@@ -842,6 +872,7 @@
     {#if view?.modeFilter || view?.filterPassband}
       <FilterSurface
         {view}
+        {pendingFilter}
         onModeChange={filterIntents.onModeChange}
         onFilterChange={filterIntents.onFilterChange}
         onFilterWidthChange={filterIntents.onFilterWidthChange}
@@ -906,7 +937,7 @@
   {#snippet dspSurface()}
     {#if view?.dsp}
       <DspSurface
-        {view} {agcLabels} {nbLevelMax} {nbLevelPercent}
+        {view} {agcLabels} {nbLevelMax} {nbLevelPercent} {pendingNb} {pendingNr}
         onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
         onNotchModeChange={dspIntents.onNotchModeChange}
@@ -936,6 +967,7 @@
       <RfFrontEndSurface
         {view}
         controlModel={rfSqlControlModel}
+        {pendingPreamp}
         onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
         onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}
         onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}

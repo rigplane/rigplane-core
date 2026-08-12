@@ -22,6 +22,16 @@
       each one carries its OWN operational flag (the adapter gates them on
       `modeObserved`, `filterWidth` on its own `widthObserved`); this file
       never substitutes one field's gate for another's.
+
+  PENDING AFFORDANCE (MOR-1441 leg 2). `pendingFilter` is a plain, command-
+  bus-blind display prop — same "read at the wiring seam, hand down a plain
+  value" precedent as `pendingFrequencyHz` (leg 1, `VfoSurface`). It marks
+  the targeted filter-select CHOICE distinctly (`data-pending`) and the
+  group `data-filter-status="pending"`, but `isSelected`/`aria-pressed`
+  keep reading `modeFilter.currentFilter`'s CONFIRMED reading exclusively —
+  the leg-1 lesson applied here: pending never becomes a selection source,
+  so a click while pending still dispatches the CLICKED (explicit) value,
+  never something computed off the pending display.
 -->
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
@@ -57,10 +67,15 @@
 </script>
 
 <script lang="ts">
+  import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
     view: RadioViewModel;
+    /** MOR-1441 leg 2 — the freshest in-flight `set_filter` target for the
+     *  active receiver, DISPLAY ONLY (see the file header). `null` when
+     *  nothing is pending. */
+    pendingFilter?: number | null;
     onModeChange?: (mode: string) => void;
     onFilterChange?: (filter: number) => void;
     onFilterWidthChange?: (width: number) => void;
@@ -70,9 +85,11 @@
     onPbtOuterChange?: (value: number) => void;
   }
   let {
-    view, onModeChange, onFilterChange, onFilterWidthChange,
+    view, pendingFilter = null, onModeChange, onFilterChange, onFilterWidthChange,
     onFilterShapeChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
   }: Props = $props();
+
+  const pendingFilterId = $props.id();
 
   let modeFilter = $derived(view.modeFilter);
   let filterPassband = $derived(view.filterPassband);
@@ -122,15 +139,21 @@
         <div
           class="filter-choice-group" data-testid="filter-select"
           data-disabled-reason={reasonOf(modeFilter.currentFilter)}
+          data-filter-status={pendingFilter !== null ? 'pending' : 'confirmed'}
+          aria-describedby={pendingFilter !== null ? pendingFilterId : undefined}
         >
           {#each modeFilter.filterChoices as choice, index (choice)}
             <button
               type="button" class="filter-choice" data-testid={`filter-select-${index + 1}`}
               aria-pressed={isSelected(modeFilter.currentFilter, index + 1)}
+              data-pending={pendingFilter === index + 1}
               disabled={!usable(modeFilter.currentFilter)}
               onclick={() => selectFilter(index + 1)}
             >{choice}</button>
           {/each}
+          {#if pendingFilter !== null}
+            <span id={pendingFilterId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>
+          {/if}
         </div>
       {/if}
       {#if modeFilter.filterWidth.availability.structural}
@@ -201,4 +224,13 @@
   .filter-level-name { min-width: 8ch; }
   .filter-choice[aria-pressed='true'] { font-weight: 700; }
   .filter-choice:disabled { cursor: not-allowed; }
+  /* MOR-1441 leg 2 — a pending (unconfirmed) target never renders identically
+     to confirmed truth. Structural (italic + reduced opacity), never a
+     color-only tell — same doctrine `.freq[data-freq-status='pending']`
+     (leg 1) established. */
+  .filter-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
 </style>

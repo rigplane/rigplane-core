@@ -437,6 +437,61 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   });
 });
 
+/* ── MOR-1441 leg 2: the preamp pending-target affordance ───────────── */
+
+describe('pending-target affordance (MOR-1441 leg 2)', () => {
+  it('marks only the pending choice, leaves the CONFIRMED choice checked, and marks the group', () => {
+    const r = render(withRf({ preamp: known(0) }), { pendingPreamp: 2 });
+    const group = r.el('preamp')!;
+    expect(group.dataset.preampStatus).toBe('pending');
+    expect(r.el('preamp-0')!.getAttribute('aria-checked')).toBe('true');
+    expect(r.el('preamp-0')!.dataset.pending).toBe('false');
+    expect(r.el('preamp-2')!.getAttribute('aria-checked')).toBe('false');
+    expect(r.el('preamp-2')!.dataset.pending).toBe('true');
+    r.dispose();
+  });
+
+  it('renders confirmed status and no pending marker when nothing is pending', () => {
+    const r = render(base());
+    const group = r.el('preamp')!;
+    expect(group.dataset.preampStatus).toBe('confirmed');
+    for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.dataset.pending).toBe('false');
+    r.dispose();
+  });
+
+  it('renders a screen-reader announcement only while pending', () => {
+    const pending = render(base(), { pendingPreamp: 1 });
+    expect(pending.el('preamp')!.querySelector('.sr-only')).not.toBeNull();
+    pending.dispose();
+    const confirmed = render(base());
+    expect(confirmed.el('preamp')!.querySelector('.sr-only')).toBeNull();
+    confirmed.dispose();
+  });
+
+  // THE seam test (MOR-1441 leg-1 lesson applied to a discrete control): a
+  // click while a DIFFERENT preamp level is pending must still dispatch the
+  // CLICKED value verbatim — never something read off the pending display,
+  // and never suppressed by the mutex/change-guard machinery above (which
+  // reads only confirmed fields, untouched by this leg).
+  it('SEAM: clicking a choice while a DIFFERENT level is pending emits the CLICKED value, unaffected by pending', () => {
+    const onPreampChange = vi.fn();
+    const r = render(base(), { onPreampChange, pendingPreamp: 2 });
+    r.el('preamp-1')!.click();
+    flushSync();
+    expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(1);
+    r.dispose();
+  });
+
+  it('SEAM: clicking the PENDING choice itself still emits it explicitly, never suppressed', () => {
+    const onPreampChange = vi.fn();
+    const r = render(base(), { onPreampChange, pendingPreamp: 2 });
+    r.el('preamp-2')!.click();
+    flushSync();
+    expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(2);
+    r.dispose();
+  });
+});
+
 describe('DIGI-SEL and IP+ render as toggles and emit the FLIPPED value', () => {
   it.each(RF_FRONT_END_TOGGLES)('shows the observed %s state as pressed/unpressed', (field) => {
     const r = render(withRf({ [field]: known(true) } as Partial<RfFrontEndViewModel>));
