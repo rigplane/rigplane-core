@@ -279,6 +279,10 @@ _GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
 # tuner on or start a tune (MOR-488 batch 5).
 _GLOBAL_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
     "tuner_status": (0x1C, 0x01),
+    # break_in (MOR-1493): documented BCD-nibble 0x16 value read (OFF/SEMI/
+    # FULL), same query shape as compressor_on/monitor_on/vox_on above but
+    # 3-valued rather than a plain toggle.
+    "break_in": (0x16, 0x47),
 }
 _GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
     "power": 0x11,
@@ -692,10 +696,12 @@ class AcquisitionScheduler:
         policy carries a ``cadence_seconds`` is therefore left to
         :meth:`due_requests` entirely; this method never touches it,
         regardless of whether it happens to also carry a ``field_policies``
-        entry. On the shipped IC-7300 profile this means
-        ``prime_unobserved`` queues nothing today — its effect is still
-        purely mechanism-only until a future non-polling field is added
-        (MOR-1491/1492/1493).
+        entry. On the shipped IC-7300 profile ``prime_unobserved`` now
+        actively primes the non-polling ``command_response`` field-policy
+        membership added by MOR-1483/1491/1492/1493 (VOX/MON toggles,
+        filter/PBT facts, DSP level facts, RIT/XIT and CW keyer facts) —
+        this mechanism was previously wired but exercised by nothing on any
+        shipped profile.
 
         Two further guards keep one call from flooding the transport:
 

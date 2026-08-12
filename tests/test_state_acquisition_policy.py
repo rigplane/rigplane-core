@@ -563,6 +563,92 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     assert profile.cmd29_routes == frozenset()
 
 
+def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None:
+    """MOR-1483/1491/1492/1493 (field-policy membership wave) guard.
+
+    ``AcquisitionScheduler.prime_unobserved`` (MOR-1490) only has an effect on
+    a ``field_policies`` path whose capability is NOT pollable -- that is
+    exactly the shape a "poll membership" addition riding the priming
+    mechanism takes (see the mechanism's own docstring). A path added there
+    without a matching CI-V query mapping head-of-line-starves the burst cap
+    forever (``no_civ_query_mapping``); a path added without an ingress
+    observation mapping primes silently and never actually leaves ``UNKNOWN``.
+
+    This iterates the *real*, currently-loaded IC-7300 profile's
+    ``field_policies`` table generically -- filtered to non-polling entries,
+    a structural property, not a hardcoded list of field names -- so any
+    future membership addition of this shape is caught by this same test
+    without editing it.
+    """
+
+    from rigplane.core.acquisition_scheduler import IcomCivAcquisitionExecutor
+    from rigplane.runtime import _civ_rx
+
+    profile = get_radio_profile("IC-7300")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+
+    async def _noop_send(command: int, sub: int | None, receiver: int | None) -> None:
+        return None
+
+    executor = IcomCivAcquisitionExecutor(_noop_send)
+
+    # Ingress mappings that live as hardcoded command/sub branches in
+    # ``_observations_from_frame`` rather than one of its lookup dicts:
+    # rit_freq/rit_on/rit_tx (cmd 0x21), agc_time_constant (cmd 0x1A sub
+    # 0x04), filter_width (cmd 0x1A sub 0x03, profile-dependent decode), and
+    # cw_pitch/key_speed (cmd 0x14, non-linear decode helpers). Kept as an
+    # explicit set -- not derivable from a dict import -- because the
+    # production code itself is branch-shaped there, not table-shaped;
+    # extend this set if a future field adds another such branch.
+    hardcoded_observable = {
+        ("global", "operator_controls", "rit_freq"),
+        ("global", "tx_state", "rit_on"),
+        ("global", "tx_state", "rit_tx"),
+        ("receiver", "operator_controls", "agc_time_constant"),
+        ("receiver", "freq_mode", "filter_width"),
+        ("global", "operator_controls", "cw_pitch"),
+        ("global", "operator_controls", "key_speed"),
+    }
+    table_observable = set(_civ_rx._OBSERVABLE_CMD14_FIELDS.values())
+    table_observable |= set(_civ_rx._OBSERVABLE_CMD15_FIELDS.values())
+    table_observable |= set(_civ_rx._OBSERVABLE_CMD16_FIELDS.values())
+    table_observable |= {
+        spec for spec, _decode_mode in _civ_rx._OBSERVABLE_CMD16_VALUE_FIELDS.values()
+    }
+    table_observable |= set(_civ_rx._OBSERVABLE_CMD1B_FIELDS.values())
+    known_observable = table_observable | hardcoded_observable
+
+    non_polling_paths = [
+        path
+        for path in acquisition.field_policies
+        if not acquisition.capability_for(path).can_poll
+    ]
+    # This membership wave is the reason any non-polling field_policies entry
+    # exists on IC-7300 at all -- guard against the set silently going empty
+    # again (e.g. a future edit moves everything back into polling_only and
+    # stops exercising prime_unobserved on this profile).
+    assert non_polling_paths
+
+    for path in non_polling_paths:
+        capability = acquisition.capability_for(path)
+        assert capability.command_response_observable or capability.unsolicited_push, (
+            f"{path}: non-polling field_policies entry with no acquisition hook"
+        )
+
+        query = executor.query_for_path(path)
+        assert query is not None, (
+            f"{path}: no CI-V query mapping (no_civ_query_mapping) -- "
+            "prime_unobserved would head-of-line-starve the burst cap on this"
+        )
+
+        key = (path.scope.value, path.family.value, path.name)
+        assert key in known_observable, (
+            f"{path}: no ingress observation mapping -- a primed read for "
+            "this path would never leave UNKNOWN"
+        )
+
+
 def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     ftx1 = get_radio_profile("FTX-1")
     acquisition = ftx1.state_acquisition

@@ -194,6 +194,17 @@ command_response_observable = [
     "global.operator_controls.notch_filter",
     "receiver.main.operator_controls.manual_notch_width",
     "receiver.main.operator_controls.agc_time_constant",
+    # MOR-1493 (field-policy membership wave, leg 4): RIT/XIT and CW keyer
+    # facts.
+    "global.operator_controls.rit_freq",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
+    "global.operator_controls.break_in",
+    "global.operator_controls.break_in_delay",
+    "global.operator_controls.key_speed",
+    "global.operator_controls.cw_pitch",
+    "receiver.main.operator_controls.audio_peak_filter",
+    "receiver.main.operator_toggles.twin_peak_filter",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -347,6 +358,60 @@ reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.rit_freq"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.rit_on"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.rit_tx"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in_delay"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.audio_peak_filter"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"

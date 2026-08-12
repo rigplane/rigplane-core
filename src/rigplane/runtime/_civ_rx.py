@@ -289,12 +289,13 @@ _OBSERVABLE_CMD14_FIELDS = {
     0x08: ("receiver", "operator_controls", "pbt_outer"),
     0x0A: ("global", "operator_controls", "power_level"),
     0x0B: ("global", "operator_controls", "mic_gain"),
-    # notch_filter (MOR-1492): documented BCD-pair 0x14 level, same decode
-    # as the other global level fields below; the legacy ``_handle_14``
-    # mirror write is suppressed for this sub via
-    # ``_CMD14_OBSERVATION_BACKED_SUBS``.
+    # notch_filter (MOR-1492) / break_in_delay (MOR-1493): documented
+    # BCD-pair 0x14 levels, same decode as the other global level fields
+    # below; the legacy ``_handle_14`` mirror write is suppressed for these
+    # subs via ``_CMD14_OBSERVATION_BACKED_SUBS``.
     0x0D: ("global", "operator_controls", "notch_filter"),
     0x0E: ("global", "operator_controls", "compressor_level"),
+    0x0F: ("global", "operator_controls", "break_in_delay"),
     0x12: ("receiver", "operator_controls", "nb_level"),
     0x15: ("global", "operator_controls", "monitor_gain"),
     0x16: ("global", "operator_controls", "vox_gain"),
@@ -329,6 +330,7 @@ _CMD14_OBSERVATION_BACKED_SUBS = frozenset(
         0x0B,  # mic_gain (global)
         0x0D,  # notch_filter (global — MOR-1492)
         0x0E,  # compressor_level (global)
+        0x0F,  # break_in_delay (global — MOR-1493)
         0x15,  # monitor_gain (global)
         0x09,  # cw_pitch (global)
         0x0C,  # key_speed (global, raw level → WPM — MOR-493)
@@ -347,6 +349,7 @@ _CMD16_OBSERVATION_BACKED_VALUE_SUBS = frozenset(
         0x12,  # agc (receiver, BCD nibble)
         0x32,  # audio_peak_filter (receiver, BCD nibble — MOR-452)
         0x56,  # filter_shape (receiver, BCD nibble — MOR-1491)
+        0x47,  # break_in (global, BCD nibble — MOR-1493)
     }
 )
 
@@ -426,6 +429,9 @@ _OBSERVABLE_CMD16_VALUE_FIELDS = {
     # ``_get_bcd_level(..., bcd_bytes=1)``).
     0x56: (("receiver", "operator_controls", "filter_shape"), "bcd_nibble"),
     0x57: (("receiver", "operator_controls", "manual_notch_width"), "bcd_nibble"),
+    # break_in (MOR-1493, global): same BCD-nibble decode, 3-valued
+    # (OFF/SEMI/FULL) rather than a plain toggle.
+    0x47: (("global", "operator_controls", "break_in"), "bcd_nibble"),
 }
 
 

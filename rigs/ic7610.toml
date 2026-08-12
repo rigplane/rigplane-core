@@ -225,6 +225,14 @@ polling_only = [
     "global.operator_controls.notch_filter",
     "receiver.main.operator_controls.manual_notch_width",
     "receiver.sub.operator_controls.manual_notch_width",
+    # MOR-1493 (field-policy membership wave, profile parity): break_in
+    # (16-47) / break_in_delay (14-0F) — same rationale/sourcing as above
+    # (documented S/R, already in [commands]/[break_in]). rit_freq/rit_on/
+    # rit_tx/key_speed/cw_pitch/audio_peak_filter/twin_peak_filter are
+    # already polled on this profile (see polling_only above) -- no addition
+    # needed for those.
+    "global.operator_controls.break_in",
+    "global.operator_controls.break_in_delay",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -623,6 +631,19 @@ adaptive_decay = false
 [state_acquisition.field_policies."receiver.sub.operator_controls.manual_notch_width"]
 cadence_seconds = 1.5
 freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+# MOR-1493 (field-policy membership wave, profile parity). break_in matches
+# compressor_on/monitor_on/vox_on's 1.5s/3.0s 0x16-toggle tier; break_in_delay
+# matches notch_filter's 3.0s/5.0s 0x14-level tier above.
+[state_acquisition.field_policies."global.operator_controls.break_in"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in_delay"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────

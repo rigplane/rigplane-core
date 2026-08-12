@@ -3011,7 +3011,6 @@ def test_update_radio_state_cmd14_receiver_dsp_levels_observation_backed(
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "raw", "field", "expected"),
     [
-        (0x0F, 104, "break_in_delay", 104),
         (0x14, 105, "drive_gain", 105),
     ],
 )
@@ -3041,9 +3040,10 @@ def test_update_radio_state_cmd14_global_dsp_levels(
         (0x17, 108, "anti_vox_gain", 108),
         # key_speed raw level 146 → 30 WPM via the linear key-speed map (MOR-493).
         (0x0C, 146, "key_speed", 30),
-        # notch_filter promoted to a neutral observation (MOR-1492
-        # field-policy membership wave); plain BCD-pair decode.
+        # notch_filter/break_in_delay promoted to neutral observations
+        # (MOR-1492/1493 field-policy membership wave); plain BCD-pair decode.
         (0x0D, 102, "notch_filter", 102),
+        (0x0F, 104, "break_in_delay", 104),
     ],
 )
 def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
@@ -3053,9 +3053,9 @@ def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
     field: str,
     expected: int,
 ) -> None:
-    """MOR-437/MOR-459/MOR-1492: cw_pitch/mic_gain/compressor_level/
+    """MOR-437/MOR-459/MOR-1492/MOR-1493: cw_pitch/mic_gain/compressor_level/
     monitor_gain, the VOX gain pair (vox_gain/anti_vox_gain), and
-    notch_filter are observation-backed; the legacy
+    notch_filter/break_in_delay are observation-backed; the legacy
     global RadioState mirror was removed.
 
     cw_pitch in particular asserts the exact non-linear raw→Hz mapping
@@ -3171,10 +3171,10 @@ def test_update_radio_state_cmd16_ipplus(radio_with_state: IcomRadio) -> None:
         # receiver toggle (MOR-466); 0x41 auto_notch, 0x44 compressor_on,
         # 0x45 monitor_on, 0x46 vox_on, 0x48 manual_notch (MOR-437); 0x12 agc +
         # 0x1A/0x04 agc_time_constant (BE-2); 0x32 audio_peak_filter +
-        # 0x4F twin_peak_filter (MOR-452); and 0x56 filter_shape (MOR-1491
-        # field-policy membership wave) are now observation-backed — the
-        # legacy RadioState mirror was removed, so they no longer belong here.
-        (0x16, 0x47, b"\x02", None, "radio", "break_in", 2),
+        # 0x4F twin_peak_filter (MOR-452); and 0x56 filter_shape + 0x47
+        # break_in (MOR-1491/1493 field-policy membership wave) are now
+        # observation-backed — the legacy RadioState mirror was removed, so
+        # they no longer belong here.
         (0x16, 0x50, b"\x01", None, "radio", "dial_lock", True),
         (0x16, 0x58, b"\x02", None, "radio", "ssb_tx_bandwidth", 2),
     ],
@@ -3253,6 +3253,21 @@ def test_update_radio_state_cmd16_manual_notch_width_observation_backed(
     # BCD-nibble decode of 0x02 == 2 (NAR).
     field = radio_with_state._state_store.snapshot().field(
         "receiver.1.operator_controls.manual_notch_width"
+    )
+    assert field.value == 2
+
+
+def test_update_radio_state_cmd16_break_in_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-1493: cmd 0x16/0x47 mirror removed; StateStore is source of truth."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x16, sub=0x47, data=b"\x02")
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # BCD-nibble decode of 0x02 == 2 (FULL), matching the removed legacy mirror.
+    assert rs.break_in == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "global.operator_controls.break_in"
     )
     assert field.value == 2
 
