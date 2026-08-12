@@ -1010,8 +1010,31 @@ class ControlHandler:
         (levels, offsets, gains, ...) are deliberately excluded from
         target-keying — last-value-wins across DIFFERENT values remains
         the point of coalescing them.
+
+        NOTE (review B2): target-keying trades away MOR-1427's total
+        order PER NAME -- a coalesced frame for target A can flush after
+        a later immediate frame for target B. No in-tree dispatch site
+        emits same-target twice then a different target inside one 50 ms
+        window, so this is latent; if such a flow appears, flush pending
+        sibling keys of the same (name, receiver) family first.
+
+        NOTE (review B5): the target is interpolated with !r (int 1 and
+        str "1" under-coalesce -- the safe direction; the frontend sends
+        integers consistently), while receiver is interpolated bare after
+        normalization below, so 0/"0"/absent share one key.
         """
-        receiver = params.get("receiver", 0)
+        # Review B1: params comes straight off the wire and this runs
+        # BEFORE the _dispatch_command try/except -- a non-dict must not
+        # raise here (one malformed frame would otherwise tear down the
+        # whole control session); it just gets the default key.
+        if not isinstance(params, dict):
+            return f"{name}:0"
+        receiver_raw = params.get("receiver", 0)
+        # Review B3: normalize to the validated receiver domain so a
+        # hostile client cannot mint unbounded pacing buckets via
+        # receiver=0..N garbage; anything outside {0, 1} shares the
+        # default bucket (dispatch validation rejects it later anyway).
+        receiver = receiver_raw if receiver_raw in (0, 1) else 0
         target_param = self._COALESCE_TARGET_PARAM.get(name)
         if target_param is not None:
             return f"{name}:{receiver}:{params.get(target_param)!r}"

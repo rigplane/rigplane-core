@@ -244,3 +244,30 @@ async def test_slider_command_still_coalesces_across_different_values() -> None:
     by_id = _messages_by_id(ws)
     for i in range(1, n - 1):
         assert by_id[str(i)]["result"] == {"superseded": True}
+
+
+# ---------------------------------------------------------------------------
+# (e) Review B1 regression: params comes straight off the wire and
+#     _coalesce_key runs BEFORE _dispatch_command's try/except -- a
+#     malformed (non-dict) params must yield a normal ok:false response,
+#     never an exception that would tear down the control session.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_params", [None, [1], "x", 7])
+async def test_malformed_params_do_not_raise_and_reply_not_ok(
+    bad_params: Any,
+) -> None:
+    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    queue = _QueueRecorder()
+    radio = SimpleNamespace(connected=True, capabilities={"nb"})
+    handler = _control_handler(
+        ws=ws, radio=radio, server=SimpleNamespace(command_queue=queue)
+    )
+
+    await handler._handle_command(
+        {"id": "bad", "name": "set_freq", "params": bad_params}
+    )
+
+    by_id = _messages_by_id(ws)
+    assert by_id["bad"]["ok"] is False
