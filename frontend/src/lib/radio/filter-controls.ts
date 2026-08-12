@@ -49,18 +49,28 @@ function pbtRange(): PbtRange {
  * a caller already has in hand rather than a module-global. Returns
  * `undefined` when the caps object carries no usable range, so `pbtRawToHz`/
  * `pbtHzToRaw` fall through to their own store-lookup default.
+ *
+ * MOR-1291: "usable" requires each of `raw_center`/`display_min`/
+ * `display_max` to be a finite number (rejecting `NaN`/`Infinity`, not just
+ * `undefined`), plus `raw_center !== 0` and `display_max !== 0` — both are
+ * divisors in `pbtRawToHz`/`pbtHzToRaw`, so a zero there would silently
+ * produce `NaN`/`Infinity` "known" readings rather than an honest
+ * unavailable one. A caps payload with a malformed `pbt_inner` entry is
+ * treated the same as one with no entry at all: `undefined`, never a
+ * fabricated or garbage value.
  */
 export function pbtRangeFromCaps(caps: Capabilities | null | undefined): PbtRange | undefined {
   const ctrl = caps?.controls?.pbt_inner;
+  if (!ctrl) return undefined;
+  const { raw_center: rawCenter, display_min: displayMin, display_max: displayMax } = ctrl;
   if (
-    ctrl &&
-    ctrl.raw_center !== undefined &&
-    ctrl.display_min !== undefined &&
-    ctrl.display_max !== undefined
+    typeof rawCenter !== 'number' || !Number.isFinite(rawCenter) || rawCenter === 0
+    || typeof displayMin !== 'number' || !Number.isFinite(displayMin)
+    || typeof displayMax !== 'number' || !Number.isFinite(displayMax) || displayMax === 0
   ) {
-    return { rawCenter: ctrl.raw_center, displayMin: ctrl.display_min, displayMax: ctrl.display_max };
+    return undefined;
   }
-  return undefined;
+  return { rawCenter, displayMin, displayMax };
 }
 
 /**
@@ -77,8 +87,17 @@ export function pbtRawToHz(raw: number, range?: PbtRange): number {
   return Math.round((raw - rawCenter) * (displayMax / rawCenter));
 }
 
-export function pbtHzToRaw(hz: number): number {
-  const { rawCenter, displayMax } = pbtRange();
+/**
+ * `range`, when supplied (MOR-1291, mirroring `pbtRawToHz`'s own `range`
+ * parameter, MOR-1284 F1), is used INSTEAD of the capabilities STORE lookup
+ * — pass `pbtRangeFromCaps(caps)` from a caller that already holds a `caps`
+ * argument so the conversion is a pure function of that argument rather than
+ * a hidden dependency on module-global store state. Every EXISTING call site
+ * omits `range` and keeps today's store-lookup behavior unchanged — this
+ * parameter is strictly additive.
+ */
+export function pbtHzToRaw(hz: number, range?: PbtRange): number {
+  const { rawCenter, displayMax } = range ?? pbtRange();
   const raw = Math.round(hz * (rawCenter / displayMax) + rawCenter);
   return Math.max(0, Math.min(255, raw));
 }

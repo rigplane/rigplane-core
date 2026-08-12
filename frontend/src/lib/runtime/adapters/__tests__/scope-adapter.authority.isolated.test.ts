@@ -93,6 +93,12 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
     capabilities: ['scope', 'dual_rx', 'filter_width', 'data_mode', 'pbt', 'if_shift'],
     receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1'],
     filterConfig: { USB: SEGMENT_RULE, LSB: SEGMENT_RULE },
+    // MOR-1291: a REAL `pbt`-capable radio's capabilities payload declares
+    // its own `controls.pbt_inner` range (IC-7610-shaped here) — the
+    // frontend fact layer no longer fabricates this scale from a store
+    // fallback when it is omitted, so this fixture must carry it explicitly
+    // for `pbtInnerHz`/`pbtOuterHz`/`ifShiftHz` below to stay populated.
+    controls: { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 } },
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false }, txBands: [],
     ...overrides,

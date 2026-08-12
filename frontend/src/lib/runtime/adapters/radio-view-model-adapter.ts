@@ -399,19 +399,29 @@ function deriveModeFilter(
  *  - `filterShape` is OPTIONAL and undeclared by any capability tag of its
  *    own; it is part of the same filter subsystem 4A's `filterWidth` is, so
  *    its structural gate is the SAME `hasFilters` signal that field uses.
- *  - `pbtInner`/`pbtOuter` are OPTIONAL, gated on `hasCap(caps, 'pbt')` —
- *    `toFilterProps`'s own `hasPbt` capability, verbatim.
+ *  - `pbtInner`/`pbtOuter` are OPTIONAL, gated on `hasCap(caps, 'pbt')` AND a
+ *    usable `pbt_inner` range declared by THIS `caps` argument itself
+ *    (`pbtRangeFromCaps`, MOR-1291) — `toFilterProps`'s own `hasPbt`
+ *    capability check alone is not enough here: unlike the v2 `panel-props.ts`
+ *    path, this fact layer never falls back to a plausible IC-7610-shaped
+ *    default (rawCenter 128 / ±1200 Hz) when a radio's own capabilities omit
+ *    the range. A `pbt`-capable radio with no declared scale is exposed as
+ *    structurally absent, not as a confidently-known reading sourced from
+ *    module-global store state.
  *  - `ifShift` mirrors `toFilterProps`'s own conditional BYTE-FOR-BYTE: a
  *    radio with the `if_shift` capability reports its own raw field; one
- *    without it, but WITH `pbt`, gets `deriveIfShift(pbtInner, pbtOuter)` —
- *    the ONE shipped fallback, not a re-derivation. Structural is therefore
- *    the OR of both paths (same "real OR, not a stand-in for AND" discipline
- *    `deriveRxAudio`'s `hasAfLevel` uses); operational for the derived path
- *    requires BOTH pbtInner AND pbtOuter to be honestly observed — deriving
- *    from one observed and one silently-defaulted-to-128 input is exactly
- *    the fabrication `deriveModeFilter`'s F2 fix forbids, so neither pbtInner
- *    nor pbtOuter nor ifShift ever computes over the OTHER field's ` ?? 128`
- *    fallback the way `toFilterProps` does.
+ *    without it, but WITH `pbt` AND a usable PBT range, gets
+ *    `deriveIfShift(pbtInner, pbtOuter)` — the ONE shipped fallback, not a
+ *    re-derivation. Structural is therefore the OR of both paths (same "real
+ *    OR, not a stand-in for AND" discipline `deriveRxAudio`'s `hasAfLevel`
+ *    uses), with the derived side additionally requiring the PBT range
+ *    (MOR-1291, same reasoning as `pbtInner`/`pbtOuter` above — there is no
+ *    scale to derive an Hz value with otherwise); operational for the
+ *    derived path requires BOTH pbtInner AND pbtOuter to be honestly
+ *    observed — deriving from one observed and one silently-defaulted-to-128
+ *    input is exactly the fabrication `deriveModeFilter`'s F2 fix forbids, so
+ *    neither pbtInner nor pbtOuter nor ifShift ever computes over the OTHER
+ *    field's ` ?? 128` fallback the way `toFilterProps` does.
  */
 function deriveFilterPassband(
   state: ServerState | null, caps: Capabilities | null,
@@ -446,13 +456,34 @@ function deriveFilterPassband(
   // `__tests__/filter-passband-adapter.isolated.test.ts`. Computed only from the
   // field's OWN raw value — never from a `?? 128` stand-in — so an unobserved
   // pbtInner/pbtOuter never silently seeds a derived ifShift.
+  //
+  // MOR-1291: `pbtScale` is used ONLY when it resolves to a CONCRETE range.
+  // Unlike `controlRangeFromCapsOrDefault`'s `nr_level`/`nb_depth` story
+  // below, PBT has no per-radio-model default worth falling back to — the
+  // IC-7610-shaped `{rawCenter:128, displayMin:-1200, displayMax:1200}`
+  // `pbtRawToHz`/`pbtHzToRaw` fall back to (via their own store lookup, when
+  // called with NO `range` argument) is exactly the fabrication this ticket
+  // closes: a caps object that declares the `pbt` capability but omits its
+  // OWN `controls.pbt_inner` range is treated as an honest "this radio's PBT
+  // scale is unknown", never silently coerced to a plausible-looking IC-7610
+  // reading sourced from module-global store state. `pbtRawToHz` is
+  // therefore never invoked with `pbtScale` absent — the store-fallback
+  // branch inside it exists only for the unrelated legacy `panel-props.ts`
+  // v2 call sites that still call it with no `range` argument at all.
   const pbtScale = pbtRangeFromCaps(caps);
+  const hasPbtRange = pbtScale !== undefined;
   const pbtInnerRaw = numOrUndef(rx?.pbtInner);
   const pbtOuterRaw = numOrUndef(rx?.pbtOuter);
-  const pbtInnerHz = pbtInnerRaw !== undefined ? pbtRawToHz(pbtInnerRaw, pbtScale) : undefined;
-  const pbtOuterHz = pbtOuterRaw !== undefined ? pbtRawToHz(pbtOuterRaw, pbtScale) : undefined;
+  const pbtInnerHz = pbtScale && pbtInnerRaw !== undefined ? pbtRawToHz(pbtInnerRaw, pbtScale) : undefined;
+  const pbtOuterHz = pbtScale && pbtOuterRaw !== undefined ? pbtRawToHz(pbtOuterRaw, pbtScale) : undefined;
 
-  const ifShiftStructural = hasIfShiftCap || hasPbtCap;
+  // `hasPbtRange` gates the DERIVED path the same way `hasPbtCap` alone used
+  // to: a radio that declares `pbt` but no usable `pbt_inner` range can never
+  // actually produce a PBT-derived ifShift Hz value (there is no scale to
+  // convert with), so claiming `structural: true` there would promise a
+  // reading that can never arrive. `hasIfShiftCap`'s own branch is untouched
+  // — a REAL if_shift command needs no PBT scale at all.
+  const ifShiftStructural = hasIfShiftCap || (hasPbtCap && hasPbtRange);
   const ifShiftOperational = hasIfShiftCap
     ? ifShiftRawObserved
     : (pbtInnerObserved && pbtOuterObserved);
@@ -480,8 +511,15 @@ function deriveFilterPassband(
     // dead). See `FilterPassbandViewModel.ifShiftControlStructural`'s doc
     // comment (`radio-view-model.ts`) for the full split.
     ifShiftControlStructural: hasIfShiftCap,
-    pbtInner: txAuxField(hasPbtCap, pbtInnerObserved, pbtInnerHz),
-    pbtOuter: txAuxField(hasPbtCap, pbtOuterObserved, pbtOuterHz),
+    // MOR-1291: structural requires BOTH the `pbt` capability tag AND a
+    // usable `pbt_inner` range from THIS caps argument — a radio that
+    // declares the capability but omits (or malforms) its own range is
+    // exposed as structurally absent (unavailable), same "hide, don't show
+    // dead" doctrine `ifShiftControlStructural` above already established,
+    // never a plausible IC-7610-shaped reading manufactured from a
+    // module-global store fallback (see the `pbtScale` doc comment above).
+    pbtInner: txAuxField(hasPbtCap && hasPbtRange, pbtInnerObserved, pbtInnerHz),
+    pbtOuter: txAuxField(hasPbtCap && hasPbtRange, pbtOuterObserved, pbtOuterHz),
     dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(rx?.dataMode)),
   };
 }

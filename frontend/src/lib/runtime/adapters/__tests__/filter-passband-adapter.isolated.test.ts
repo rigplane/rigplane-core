@@ -44,6 +44,20 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
 const NEUTRAL_STORE_CAPS = caps();
 afterEach(() => setCapabilities(NEUTRAL_STORE_CAPS));
 
+/**
+ * MOR-1291: the IC-7610/IC-7300-shaped range a REAL radio profile's caps
+ * payload declares in its own `controls.pbt_inner` entry. Since the adapter
+ * no longer falls back to the capabilities STORE (or any other default) for
+ * `pbtInner`/`pbtOuter`/`ifShift` when `caps` omits its own range, every test
+ * below that wants those fields to be structurally present must declare this
+ * (or another explicit) range on its `caps` fixture — a bare `capabilities:
+ * ['pbt']` with no `controls` entry is now the "unsupported/unavailable"
+ * case, not an implicit stand-in for this shape.
+ */
+const DEFAULT_PBT_RANGE: ControlRange = {
+  raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200,
+};
+
 const fresh: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const stale: FieldStatus = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale' };
 
@@ -112,7 +126,9 @@ describe('filterPassband evidence gate (MOR-1284, N3)', () => {
 
 describe('filterPassband per-field structural gates (MOR-1284)', () => {
   it('filterShape is structurally absent with no declared filters, even with pbt present', () => {
-    const view = model(bareState(), caps({ capabilities: ['pbt'] }));
+    const view = model(bareState(), caps({
+      capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE },
+    }));
     expect(view.filterPassband!.filterShape.availability.structural).toBe(false);
     expect(view.filterPassband!.pbtInner.availability.structural).toBe(true);
   });
@@ -122,6 +138,38 @@ describe('filterPassband per-field structural gates (MOR-1284)', () => {
     expect(view.filterPassband!.pbtInner.availability.structural).toBe(false);
     expect(view.filterPassband!.pbtOuter.availability.structural).toBe(false);
     expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
+  });
+
+  /**
+   * MOR-1291: the `pbt` capability tag ALONE is no longer enough —
+   * `pbtInner`/`pbtOuter` also require a usable `pbt_inner` range declared by
+   * THIS caps object. Without it there is no fabricated IC-7610-shaped
+   * substitute; the fields are structurally absent, same as if the `pbt`
+   * capability were missing entirely.
+   */
+  it('pbtInner/pbtOuter are structurally absent when pbt is declared but caps carries no usable pbt_inner range', () => {
+    const view = model(bareState(), caps({ capabilities: ['pbt'] }));
+    expect(view.filterPassband!.pbtInner).toEqual({
+      reading: { status: 'unknown' }, availability: { structural: false, operational: false },
+    });
+    expect(view.filterPassband!.pbtOuter).toEqual({
+      reading: { status: 'unknown' }, availability: { structural: false, operational: false },
+    });
+  });
+
+  it.each([
+    ['raw_center missing', { raw_min: 0, raw_max: 255, display_min: -1200, display_max: 1200 }],
+    ['display_min missing', { raw_min: 0, raw_max: 255, raw_center: 128, display_max: 1200 }],
+    ['display_max missing', { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200 }],
+    ['display_max is zero (division-by-zero guard)', { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 0 }],
+    ['raw_center is zero (division-by-zero guard)', { raw_min: 0, raw_max: 255, raw_center: 0, display_min: -1200, display_max: 1200 }],
+    ['display_max is NaN', { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: Number.NaN }],
+  ] as const)('pbtInner/pbtOuter are structurally absent for an invalid pbt_inner range — %s', (_label, badRange) => {
+    const view = model(bareState(), caps({
+      capabilities: ['pbt'], controls: { pbt_inner: badRange as unknown as ControlRange },
+    }));
+    expect(view.filterPassband!.pbtInner.availability.structural).toBe(false);
+    expect(view.filterPassband!.pbtOuter.availability.structural).toBe(false);
   });
 
   it('dataMode is structurally absent without the data_mode capability, even with filters+pbt present', () => {
@@ -164,35 +212,48 @@ describe('dataMode derivation (MOR-1284)', () => {
 });
 
 /**
- * PARITY PIN (MOR-1284, following the 4A F1 lesson). `pbtInner`/`pbtOuter`/
- * `ifShift` must consume the REAL `$lib/radio/filter-controls` helpers, not
- * a re-derived formula. The discriminating axis a naive re-implementation
- * would miss is the SAME one the X6200 CAT audit flagged for filter-width
- * tables: `pbtRawToHz` reads its raw<->Hz scale from the capabilities
- * STORE's `controls.pbt_inner` (rawCenter/displayMax), not from a constant.
- * A hand-rolled `(raw - 128) * (1200 / 128)` inside the adapter would match
- * every row that leaves the store at its IC-7610-shaped default and silently
- * diverge the instant a radio profile declares a non-default `pbt_inner`
- * control range — exactly the class of bug the 9-row `resolveFilterModeConfig`
- * matrix in `mode-filter-adapter.test.ts` killed for filter width.
+ * PARITY PIN (MOR-1284, following the 4A F1 lesson; MOR-1291 update). Every
+ * row now declares its OWN explicit `controls.pbt_inner` range — including
+ * the "default IC-7610-shaped" rows, which used to rely on `caps` omitting
+ * the range and `pbtRawToHz` falling through to the capabilities STORE.
+ * MOR-1291 removed that fallback from the fact layer: a `caps` object must
+ * declare its own range, explicitly, the same way a real IC-7610/IC-7300
+ * profile's capabilities payload does. `pbtInner`/`pbtOuter`/`ifShift` must
+ * consume the REAL `$lib/radio/filter-controls` helpers, not a re-derived
+ * formula — the discriminating axis a naive re-implementation would miss is
+ * the SAME one the X6200 CAT audit flagged for filter-width tables:
+ * `pbtRawToHz` reads its raw<->Hz scale from its `range` ARGUMENT, not from a
+ * constant. A hand-rolled `(raw - 128) * (1200 / 128)` inside the adapter
+ * would match every row that leaves the range at its IC-7610-shaped default
+ * and silently diverge the instant a radio profile declares a non-default
+ * `pbt_inner` control range — exactly the class of bug the 9-row
+ * `resolveFilterModeConfig` matrix in `mode-filter-adapter.test.ts` killed
+ * for filter width.
  *
  * Each row's "expected" value is computed by calling the SAME shipped
- * `pbtRawToHz`/`deriveIfShift` this test imports directly — this is a
+ * `pbtRawToHz`/`deriveIfShift` this test imports directly, with the SAME
+ * explicit range the row's `caps` fixture declares — this is a
  * regression/mutation-kill pin on the ADAPTER's wiring to those functions,
  * not a re-proof of their own arithmetic.
  */
-describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers (MOR-1284)', () => {
+describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers (MOR-1284, MOR-1291)', () => {
   const customPbtRange: ControlRange = {
     raw_min: 0, raw_max: 200, raw_center: 100, display_min: -900, display_max: 900,
   };
 
   const MATRIX: ReadonlyArray<{
-    name: string; controls?: Record<string, ControlRange>; pbtInner: number; pbtOuter: number;
+    name: string; controls: Record<string, ControlRange>; pbtInner: number; pbtOuter: number;
   }> = [
-    { name: 'default IC-7610 range, both centered (128/128)', pbtInner: 128, pbtOuter: 128 },
-    { name: 'default range, odd raw values that force rounding', pbtInner: 191, pbtOuter: 64 },
     {
-      name: 'custom capabilities-store PBT range (rawCenter 100, displayMax 900), asymmetric',
+      name: 'default IC-7610 range, both centered (128/128)',
+      controls: { pbt_inner: DEFAULT_PBT_RANGE }, pbtInner: 128, pbtOuter: 128,
+    },
+    {
+      name: 'default range, odd raw values that force rounding',
+      controls: { pbt_inner: DEFAULT_PBT_RANGE }, pbtInner: 191, pbtOuter: 64,
+    },
+    {
+      name: 'custom capabilities-declared PBT range (rawCenter 100, displayMax 900), asymmetric',
       controls: { pbt_inner: customPbtRange }, pbtInner: 50, pbtOuter: 175,
     },
     {
@@ -202,18 +263,20 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
   ];
 
   it.each(MATRIX)('$name', ({ controls, pbtInner, pbtOuter }) => {
-    // The SAME caps object drives both the global store (what `pbtRawToHz`
-    // reads) and the adapter's `caps` parameter (what `hasCap` reads) —
-    // mirroring how `frontend-runtime.ts` wires `setCapabilities` and
-    // `runtime.caps` from one shared object in production.
-    const parityCaps = caps({ capabilities: ['pbt'], ...(controls ? { controls } : {}) });
-    setCapabilities(parityCaps);
+    const parityCaps = caps({ capabilities: ['pbt'], controls });
+    // The store is deliberately left at an UNRELATED shape (the neutral
+    // default) for every row — MOR-1291 proof-of-independence: the caps
+    // object's OWN range must drive the result, never the store.
+    setCapabilities(NEUTRAL_STORE_CAPS);
 
-    // Independently-derived expectation from the REAL imported functions —
-    // NOT a copy of the adapter's inputs; the adapter's OUTPUT is compared
-    // against what the shipped helpers themselves say.
-    const expectedInnerHz = pbtRawToHz(pbtInner);
-    const expectedOuterHz = pbtRawToHz(pbtOuter);
+    // Independently-derived expectation from the REAL imported functions,
+    // called with the SAME explicit range the row's `caps` fixture
+    // declares — NOT a copy of the adapter's inputs; the adapter's OUTPUT is
+    // compared against what the shipped helpers themselves say.
+    const range = controls.pbt_inner;
+    const explicitRange = { rawCenter: range.raw_center!, displayMin: range.display_min!, displayMax: range.display_max! };
+    const expectedInnerHz = pbtRawToHz(pbtInner, explicitRange);
+    const expectedOuterHz = pbtRawToHz(pbtOuter, explicitRange);
     const expectedIfShift = deriveIfShift(expectedInnerHz, expectedOuterHz);
 
     const view = model(bareState({
@@ -231,10 +294,12 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
   });
 
   it('the custom-range rows actually produce a different scale than the default (sanity on the discriminator itself)', () => {
-    setCapabilities(NEUTRAL_STORE_CAPS);
-    const defaultHz = pbtRawToHz(50);
-    setCapabilities(caps({ controls: { pbt_inner: customPbtRange } }));
-    const customHz = pbtRawToHz(50);
+    const defaultHz = pbtRawToHz(50, { rawCenter: 128, displayMin: -1200, displayMax: 1200 });
+    const customHz = pbtRawToHz(50, {
+      rawCenter: customPbtRange.raw_center!,
+      displayMin: customPbtRange.display_min!,
+      displayMax: customPbtRange.display_max!,
+    });
     expect(customHz).not.toBe(defaultHz);
   });
 
@@ -245,9 +310,9 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
     // diverge on exactly one side of this assertion.
     const wideRange: ControlRange = { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -2000, display_max: 2000 };
     const parityCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: wideRange } });
-    setCapabilities(parityCaps);
+    setCapabilities(NEUTRAL_STORE_CAPS); // store deliberately unrelated — caps' own range must drive this
 
-    const expectedInnerHz = pbtRawToHz(255);
+    const expectedInnerHz = pbtRawToHz(255, { rawCenter: 128, displayMin: -2000, displayMax: 2000 });
     const expectedIfShift = deriveIfShift(expectedInnerHz, expectedInnerHz);
     expect(Math.abs(expectedInnerHz)).toBeGreaterThan(1200);
     expect(Math.abs(expectedIfShift)).toBe(1200);
@@ -263,22 +328,24 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
 });
 
 /**
- * F1 (BLOCKER, verify round 1). `pbtInner`/`pbtOuter`/`ifShift` must be a
- * PURE function of `(state, caps)` — never of the capabilities STORE
- * singleton `pbtRawToHz` otherwise falls back to. Before the fix,
- * `deriveFilterPassband` called `pbtRawToHz(raw)` with no range argument, so
- * identical `(state, caps)` produced DIFFERENT facts depending on whatever
- * the store happened to hold, and — worse — a radio whose OWN `caps`
- * declared a non-default `controls.pbt_inner` range read a confidently wrong
- * `{status:'known'}` value sourced from an unrelated (e.g. still-empty)
- * store, exactly the fabrication class MOR-1280's F2 fix closed for
- * filterWidthMin/Max. Fix: `pbtRangeFromCaps(caps)` derives the range
- * explicitly from THIS call's own `caps` argument and is passed into
- * `pbtRawToHz` — the store lookup is now used ONLY when `caps` carries no
- * usable range of its own (the honest "we don't know this radio's scale"
- * case), never as an override of a range `caps` already declares.
+ * F1 (BLOCKER, verify round 1; MOR-1291 supersedes the store-fallback half
+ * of this pin). `pbtInner`/`pbtOuter`/`ifShift` must be a PURE function of
+ * `(state, caps)` — never of the capabilities STORE singleton. Before the
+ * MOR-1284 F1 fix, `deriveFilterPassband` called `pbtRawToHz(raw)` with no
+ * range argument, so identical `(state, caps)` produced DIFFERENT facts
+ * depending on whatever the store happened to hold, and — worse — a radio
+ * whose OWN `caps` declared a non-default `controls.pbt_inner` range read a
+ * confidently wrong `{status:'known'}` value sourced from an unrelated
+ * (e.g. still-empty) store, exactly the fabrication class MOR-1280's F2 fix
+ * closed for filterWidthMin/Max. F1 fixed the "caps declares its own range"
+ * half via `pbtRangeFromCaps(caps)`; MOR-1291 closes the REMAINING half —
+ * `caps` declaring NO range of its own no longer falls through to the store
+ * for a plausible substitute either. It is now structurally absent, full
+ * stop, so the store's content can never leak into the fact at all —
+ * "true independence" below, not merely "self-consistent with whatever the
+ * store happened to hold at read time" (the old block's weaker property).
  */
-describe('pbtInner/pbtOuter/ifShift are deterministic in (state, caps) — MOR-1284 F1', () => {
+describe('pbtInner/pbtOuter/ifShift are deterministic in (state, caps) — MOR-1284 F1, MOR-1291', () => {
   const rangeA: ControlRange = { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 };
   const rangeB: ControlRange = { raw_min: 0, raw_max: 200, raw_center: 100, display_min: -900, display_max: 900 };
   // The `caps` argument itself declares NO `controls.pbt_inner` — this is
@@ -294,21 +361,25 @@ describe('pbtInner/pbtOuter/ifShift are deterministic in (state, caps) — MOR-1
     ['store A (default-shaped)', caps({ controls: { pbt_inner: rangeA } })],
     ['store B (non-default)', caps({ controls: { pbt_inner: rangeB } })],
     ['store EMPTY (no controls at all)', caps()],
-  ] as const)('identical (state, caps) ⇒ identical facts, regardless of the store — %s', (_label, storeCaps) => {
-    setCapabilities(storeCaps);
-    const view = model(stateWithPbt, capsWithNoOwnRange);
-    // `capsWithNoOwnRange` has no `controls.pbt_inner` of its own, so
-    // `pbtRangeFromCaps` returns `undefined` and the adapter's own
-    // documented fallback (store lookup) applies HERE — this block's point
-    // is that a `caps` argument WITHOUT its own range still degrades
-    // predictably to "whatever pbtRange()'s try/catch default is" rather
-    // than reading three different values for three different stores when
-    // nothing about the request changed. Assert against the one real
-    // conversion function, not a hand-copied constant.
-    const expected = pbtRawToHz(200);
-    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: expected });
-    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'known', value: expected });
-  });
+  ] as const)(
+    'TRUE INDEPENDENCE PIN (MOR-1291): caps without its own range obtains NOTHING from the store — structurally absent regardless of store A / B / EMPTY — %s',
+    (_label, storeCaps) => {
+      setCapabilities(storeCaps);
+      const view = model(stateWithPbt, capsWithNoOwnRange);
+      // `capsWithNoOwnRange` has no `controls.pbt_inner` of its own, so
+      // `pbtRangeFromCaps` returns `undefined` — MOR-1291: the adapter no
+      // longer falls through to the store for ANY substitute value here, so
+      // the fact is identically structurally-absent across all three store
+      // shapes, never merely "the same known value the store happens to
+      // agree with itself on".
+      const absent = {
+        reading: { status: 'unknown' as const }, availability: { structural: false, operational: false },
+      };
+      expect(view.filterPassband!.pbtInner).toEqual(absent);
+      expect(view.filterPassband!.pbtOuter).toEqual(absent);
+      expect(view.filterPassband!.ifShift).toEqual(absent);
+    },
+  );
 
   it('caps-declared range WINS over a conflicting store — the pre-capabilities-landed boot window (verifier Probe 2)', () => {
     // The store sits at its neutral/empty default (the ordinary "capabilities
@@ -318,8 +389,8 @@ describe('pbtInner/pbtOuter/ifShift are deterministic in (state, caps) — MOR-1
     const capsWithOwnRange = caps({ capabilities: ['pbt'], controls: { pbt_inner: rangeB } });
     const view = model(stateWithPbt, capsWithOwnRange);
     const expectedFromCaps = pbtRawToHz(200, { rawCenter: 100, displayMin: -900, displayMax: 900 });
-    const expectedFromEmptyStore = pbtRawToHz(200); // what the OLD store-only code would have said
-    expect(expectedFromCaps).not.toBe(expectedFromEmptyStore);
+    const shapeAStoreWouldHaveGiven = pbtRawToHz(200, { rawCenter: 128, displayMin: -1200, displayMax: 1200 });
+    expect(expectedFromCaps).not.toBe(shapeAStoreWouldHaveGiven);
     expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: expectedFromCaps });
   });
 
@@ -366,7 +437,7 @@ describe('ifShift raw-field vs PBT-derived branch selection (MOR-1284)', () => {
 
   it('without if_shift capability but with pbt, derives from PBT even when a stray raw ifShift field is present', () => {
     setCapabilities(NEUTRAL_STORE_CAPS);
-    const pbtOnlyCaps = caps({ capabilities: ['pbt'] });
+    const pbtOnlyCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } });
     const view = model(bareState({
       main: { ...bareState().main, ifShift: 900, pbtInner: 128, pbtOuter: 128 },
       fieldStatus: {
@@ -374,7 +445,8 @@ describe('ifShift raw-field vs PBT-derived branch selection (MOR-1284)', () => {
         'main.pbtInner': fresh, 'main.pbtOuter': fresh,
       },
     }), pbtOnlyCaps);
-    const expected = deriveIfShift(pbtRawToHz(128), pbtRawToHz(128));
+    const defaultRange = { rawCenter: 128, displayMin: -1200, displayMax: 1200 };
+    const expected = deriveIfShift(pbtRawToHz(128, defaultRange), pbtRawToHz(128, defaultRange));
     expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: expected });
     expect(view.filterPassband!.ifShift.reading).not.toEqual({ status: 'known', value: 900 });
   });
@@ -390,23 +462,45 @@ describe('ifShift raw-field vs PBT-derived branch selection (MOR-1284)', () => {
  * `ifShiftControlStructural` (MOR-1494 review round) — a SEPARATE,
  * presentation-only flag `FilterSurface.svelte` uses to decide whether to
  * show the IF-shift ROW, deliberately independent of `ifShift.availability.
- * structural` above (which stays `hasIfShiftCap || hasPbtCap`, unchanged,
- * because `scope-adapter.ts`'s passband-center overlay still needs the
- * derived reading for a PBT-only radio). `ifShiftControlStructural` answers
- * the narrower question: does the radio have a REAL `if_shift` command.
+ * structural` above (which is `hasIfShiftCap || (hasPbtCap && hasPbtRange)`
+ * as of MOR-1291 — see that block's own header comment — because
+ * `scope-adapter.ts`'s passband-center overlay still needs the derived
+ * reading for a PBT-only radio THAT DECLARES A USABLE RANGE).
+ * `ifShiftControlStructural` answers the narrower question: does the radio
+ * have a REAL `if_shift` command.
  */
 describe('ifShiftControlStructural — the presentation-only IF-shift control gate (MOR-1494)', () => {
-  it('IC-7300-shaped (pbt, no if_shift): false, even though the derived fact stays structural', () => {
+  it('IC-7300-shaped (pbt + declared range, no if_shift): false, even though the derived fact stays structural', () => {
     const view = model(bareState({
       main: { ...bareState().main, pbtInner: 200, pbtOuter: 60 },
       fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
-    }), caps({ capabilities: ['pbt'] }));
+    }), caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } }));
     expect(view.filterPassband!.ifShiftControlStructural).toBe(false);
     // The trap: a naive fix that reused `ifShiftStructural` for this flag
     // too would silently break `scope-adapter.ts`'s derived reading for
     // exactly this radio shape. It must stay untouched.
     expect(view.filterPassband!.ifShift.availability.structural).toBe(true);
     expect(view.filterPassband!.ifShift.reading.status).toBe('known');
+  });
+
+  /**
+   * MOR-1291: the NEW degrade case — `pbt` declared but NO usable range.
+   * `ifShiftControlStructural` stays `false` (still no real `if_shift`
+   * command; unaffected by the range), but now the underlying derived
+   * `ifShift` FACT also becomes structurally absent, since there is no scale
+   * to derive an Hz value with. This is the fabrication path MOR-1291
+   * closes — a caps-declared-but-rangeless PBT radio no longer gets an
+   * IC-7610-shaped stand-in reading via the store fallback.
+   */
+  it('IC-7300-shaped WITHOUT a declared PBT range: ifShiftControlStructural stays false, AND the derived ifShift fact becomes structurally absent too', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, pbtInner: 200, pbtOuter: 60 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
+    }), caps({ capabilities: ['pbt'] }));
+    expect(view.filterPassband!.ifShiftControlStructural).toBe(false);
+    expect(view.filterPassband!.ifShift).toEqual({
+      reading: { status: 'unknown' }, availability: { structural: false, operational: false },
+    });
   });
 
   it('FTX-1-shaped (if_shift, no pbt): true', () => {
@@ -436,7 +530,7 @@ describe('ifShiftControlStructural — the presentation-only IF-shift control ga
  * enforces for filterWidthMin/Max vs `modeObserved`.
  */
 describe('filterPassband honesty gate — no derivation from a half-observed input (MOR-1284, F2 lesson)', () => {
-  const pbtCaps = caps({ capabilities: ['pbt'] });
+  const pbtCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } });
 
   it('pbtInner observed, pbtOuter UNOBSERVED — ifShift must NOT derive from a fabricated pbtOuter default', () => {
     const view = model(bareState({

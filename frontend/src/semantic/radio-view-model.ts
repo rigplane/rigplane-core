@@ -337,11 +337,14 @@ export interface FilterPassbandViewModel {
   filterShape: FilterPassbandField<number>;
   ifShift: FilterPassbandField<number>;
   /**
-   * MOR-1494 review round. `ifShift.availability.structural` above stays
-   * `hasIfShiftCap || hasPbtCap` UNCHANGED — that OR is a fact-derivation
-   * gate (a radio with `pbt` but no `if_shift` still gets an honest derived
-   * `ifShift` READING, e.g. for `scope-adapter.ts`'s passband-center
-   * overlay). This is a SEPARATE, presentation-only gate: whether the radio
+   * MOR-1494 review round. `ifShift.availability.structural` above is a
+   * fact-derivation gate — `hasIfShiftCap || (hasPbtCap && hasPbtRange)`
+   * as of MOR-1291 (previously `hasIfShiftCap || hasPbtCap`; a radio that
+   * declares `pbt` but no usable `pbt_inner` range can never actually
+   * produce a derived reading, so it no longer claims structural presence
+   * either). A radio with `pbt` AND a declared range still gets an honest
+   * derived `ifShift` READING, e.g. for `scope-adapter.ts`'s passband-center
+   * overlay. This is a SEPARATE, presentation-only gate: whether the radio
    * has a REAL `if_shift` COMMAND of its own. IC-7300 (PBT-only) has none —
    * showing its IF-shift CONTROL permanently disabled with a PBT-derived
    * stand-in is a dead control (the owner's MOR-1494 ruling: hide
