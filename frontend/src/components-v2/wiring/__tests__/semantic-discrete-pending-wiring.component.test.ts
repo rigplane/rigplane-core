@@ -367,7 +367,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
    * failure, MOR-1427 coalescing, link death) leg 2's own grace test
    * documents.
    */
-  it('retires the VFO frequency marker via the 2000ms grace backstop once it has elapsed, even with a non-confirming push (MOR-1478)', () => {
+  it('retires the VFO frequency marker via the 3000ms grace backstop once it has elapsed, even with a non-confirming push (MOR-1478)', () => {
     vi.useFakeTimers();
     try {
       render();
@@ -383,7 +383,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
       flushSync();
       expect(freqEl()?.dataset.freqStatus).toBe('pending');
 
-      vi.advanceTimersByTime(2_001);
+      vi.advanceTimersByTime(3_001);
       // Still non-confirming (`main.freqHz` stays at the pre-spin value) —
       // only the elapsed grace window retires it.
       expect(setRadioState(freqReobservedState())).toBe(true);
@@ -546,7 +546,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
    * retires the marker once that much time has passed since ack — even in
    * the presence of a post-ack push that still does not confirm.
    */
-  it('retires the marker via the 2000ms grace backstop once it has elapsed, even with a non-confirming push (MOR-1488 review R3)', () => {
+  it('retires the marker via the 3000ms grace backstop once it has elapsed, even with a non-confirming push (MOR-1488 review R3)', () => {
     vi.useFakeTimers();
     try {
       render();
@@ -560,7 +560,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
       flushSync();
       expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
 
-      vi.advanceTimersByTime(2_001);
+      vi.advanceTimersByTime(3_001);
       // Still non-confirming (`main.nb` stays `false`, target is `true`) —
       // the sequence guard alone would leave this pending forever; only the
       // elapsed grace window retires it.

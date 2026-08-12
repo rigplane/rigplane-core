@@ -283,8 +283,17 @@ function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefine
  * confirming readback arrives. 2000ms budgets a full rotation (≈1.3s) plus
  * headroom for scheduling jitter, matching the sequence guard below's
  * "mismatch is not evidence of failure, only of not-yet-observed" doctrine.
+ *
+ * 3000ms (MOR-1478): leg 2's ~1.3s round-robin is not the binding
+ * constraint once leg 1 shares this table — `tuning-accumulator.ts:6,44`
+ * records the observed `set_freq` confirm round trip at 0.5–2s on live
+ * hardware, so a 2000ms budget expires exactly at the documented worst
+ * case and drops the readout back to the stale pre-spin value for the
+ * remainder — the MOR-1478 symptom itself. 3000ms keeps ~50% headroom
+ * over the slowest documented confirm, matching the margin leg 2's own
+ * 2000ms held over its 1.3s rotation.
  */
-const ACK_CONFIRM_GRACE_MS = 2_000;
+const ACK_CONFIRM_GRACE_MS = 3_000;
 
 /**
  * Shared by `getPendingFrequencyHz` above (leg 1, MOR-1478) and the four

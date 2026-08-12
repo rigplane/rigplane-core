@@ -170,7 +170,7 @@ describe('panel-adapters pending-frequency accessor (MOR-1441, MOR-1478)', () =>
     expect(getPendingFrequencyHz(0)).toBe(14120000);
   });
 
-  // Grace backstop (MOR-1478, shared 2000ms constant with leg 2): once
+  // Grace backstop (MOR-1478, shared 3000ms constant with leg 2): once
   // elapsed, an acknowledged command whose field is never actually
   // observed to confirm must retire even with a non-confirming push —
   // otherwise a dropped confirming observation (MOR-1445 post-ack failure,
@@ -186,7 +186,7 @@ describe('panel-adapters pending-frequency accessor (MOR-1441, MOR-1478)', () =>
       })];
       expect(getPendingFrequencyHz(0)).toBe(14150000);
 
-      vi.advanceTimersByTime(2_001);
+      vi.advanceTimersByTime(3_001);
       // Still non-confirming (`main.freqHz` unchanged, target never reached).
       expect(getPendingFrequencyHz(0)).toBeNull();
     } finally {
