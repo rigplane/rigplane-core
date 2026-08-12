@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
 // MOR-1451: the s_meter path in `meter-utils.ts` no longer ships a hardcoded
 // per-radio fallback curve (power/swr/alc/vd/id/comp are unaffected — out of
@@ -7,6 +9,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // assumed the old default was always in effect; this fixture — the same
 // IC-7610 numbers, now explicit — stands in for "some radio profile
 // published a curve" instead of a silent adapter-level default.
+//
+// The curve is seeded into the REAL capabilities store, not vi.mock'd:
+// this file runs in the `fast` pool (`isolate: false`), where a module-scope
+// mock races the shared module cache — a sibling file can leave
+// `meter-utils.ts` bound to a different module instance than the one the
+// mock (and its `beforeEach` reconfiguration) applies to, and the tests
+// flip red with no production change. Seeding real store state is
+// deterministic under any cache order.
 const IC7610_LIKE_S_METER_CAL = [
   { raw: 0, actual: -54, label: 'S0' },
   { raw: 26, actual: -48, label: 'S1' },
@@ -19,16 +29,27 @@ const IC7610_LIKE_S_METER_CAL = [
   { raw: 240, actual: 40, label: 'S9+40' },
 ];
 
-vi.mock('$lib/runtime/adapters/capabilities-adapter', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/adapters/capabilities-adapter')>();
+function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
   return {
-    ...actual,
-    getMeterCalibration: vi.fn((meterType: string) =>
-      meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : actual.getMeterCalibration(meterType)),
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    ...overrides,
   };
-});
+}
 
-import { getMeterCalibration } from '$lib/runtime/adapters/capabilities-adapter';
 import {
   normalize,
   formatPowerWatts,
@@ -50,8 +71,13 @@ import {
 } from './meter-utils';
 
 beforeEach(() => {
-  vi.mocked(getMeterCalibration).mockImplementation((meterType: string) =>
-    meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : null);
+  setCapabilities(makeCaps({
+    meterCalibrations: { s_meter: IC7610_LIKE_S_METER_CAL },
+  }));
+});
+
+afterEach(() => {
+  clearCapabilities();
 });
 
 describe('normalize', () => {
@@ -274,8 +300,8 @@ describe('sLevel (calibrated bar)', () => {
 
 describe('formatSMeter / sLevel — uncalibrated fallback (MOR-1451)', () => {
   beforeEach(() => {
-    vi.mocked(getMeterCalibration).mockImplementation((meterType: string) =>
-      meterType === 's_meter' ? null : IC7610_LIKE_S_METER_CAL);
+    // A profile that declares no meter calibration at all.
+    setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
   it('formatSMeter renders the plain raw number, not a fabricated S-unit', () => {
@@ -304,8 +330,10 @@ describe('formatSMeter — IC-7300 profile conformance (MOR-1451)', () => {
   ];
 
   beforeEach(() => {
-    vi.mocked(getMeterCalibration).mockImplementation((meterType: string) =>
-      meterType === 's_meter' ? IC7300_S_METER_CAL : null);
+    setCapabilities(makeCaps({
+      model: 'IC-7300',
+      meterCalibrations: { s_meter: IC7300_S_METER_CAL },
+    }));
   });
 
   it('0 dB-rel-S9 -> S9 (the documented anchor)', () => {

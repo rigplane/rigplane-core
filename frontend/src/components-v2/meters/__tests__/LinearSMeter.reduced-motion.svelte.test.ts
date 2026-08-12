@@ -21,10 +21,35 @@ const IC7610_LIKE_CAL = [
   { raw: 200, actual: 20, label: 'S9+20' },
   { raw: 240, actual: 40, label: 'S9+40' },
 ];
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getSmeterCalibration: () => IC7610_LIKE_CAL,
-  getSmeterRedline: () => null,
-}));
+
+// The curve is seeded into the REAL capabilities store, not vi.mock'd: this
+// file runs in the `fast` pool (`isolate: false`), where a module-scope mock
+// races the shared module cache — a sibling file can leave `smeter-scale.ts`
+// bound to a different module instance than the one the mock applies to.
+// Seeding real store state is deterministic under any cache order.
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+
+function makeCaps(): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    meterCalibrations: { s_meter: IC7610_LIKE_CAL },
+  };
+}
 
 import LinearSMeter from '../LinearSMeter.svelte';
 
@@ -116,6 +141,7 @@ beforeEach(() => {
   // cancelAnimationFrame assertions below.
   rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
   cafSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+  setCapabilities(makeCaps());
 });
 
 afterEach(() => {
@@ -124,6 +150,7 @@ afterEach(() => {
   components = [];
   roots = [];
   vi.restoreAllMocks();
+  clearCapabilities();
 });
 
 function peakLineCount(target: HTMLElement): number {
