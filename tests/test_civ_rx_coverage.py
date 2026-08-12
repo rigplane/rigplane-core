@@ -1979,12 +1979,22 @@ _VALUE_CONTROL_CASES = (
         30,
     ),
     # 0x1A 0x05 0x02 0x92 vox_delay: 1-byte BCD ctl-mem level (0-20) promoted to
-    # a global operator-control int (MOR-459).
+    # a global operator-control int (MOR-459). This is IC-7610's ctl-mem
+    # control number.
     (
         _make_frame(cmd=0x1A, sub=0x05, data=b"\x02\x92\x12"),
         "global.operator_controls.vox_delay",
         "voxDelay",
         12,
+    ),
+    # 0x1A 0x05 0x01 0x91 vox_delay (MOR-1483 leg 2): same field, IC-7300's
+    # ctl-mem control number — different per-model 2-byte prefix than the
+    # 0x02 0x92 case above, decoded through the same generic prefix match.
+    (
+        _make_frame(cmd=0x1A, sub=0x05, data=b"\x01\x91\x15"),
+        "global.operator_controls.vox_delay",
+        "voxDelay",
+        15,
     ),
     # 0x10 tuning_step: device step index (0-8), BCD nibble-pair byte 0x05 → 5;
     # NOT Hz. Promoted to a global slow-state int (MOR-461).

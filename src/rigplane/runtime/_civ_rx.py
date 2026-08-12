@@ -555,11 +555,20 @@ _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x02\x92": ("vox_delay", 1),
 }
 
-# 0x1A/0x05 ctl-mem prefix whose RadioState mirror write was migrated to the
-# StateStore observation pipeline (MOR-459). ``_handle_1a`` skips the redundant
-# ``setattr`` mirror for this prefix; ``_observations_from_frame`` is the source
-# of truth and reuses the identical ``parse_level_response`` decode.
+# 0x1A/0x05 ctl-mem prefix(es) whose RadioState mirror write was migrated to
+# the StateStore observation pipeline (MOR-459). ``_handle_1a`` skips the
+# redundant ``setattr`` mirror for these prefixes; ``_observations_from_frame``
+# is the source of truth and reuses the identical ``parse_level_response``
+# decode. Two prefixes because voxDelay's ctl-mem control number is
+# per-model, not a CI-V-wide constant: 0x02 0x92 is IC-7610's (retired
+# hardware, docs/validation/cat-audits/ic7610.md), 0x01 0x91 is IC-7300's —
+# the live reference (docs/validation/cat-audits/ic7300.md; MOR-1483 leg 2).
 _CTL_MEM_VOX_DELAY_PREFIX = b"\x02\x92"
+_CTL_MEM_VOX_DELAY_PREFIX_IC7300 = b"\x01\x91"
+_CTL_MEM_VOX_DELAY_PREFIXES = (
+    _CTL_MEM_VOX_DELAY_PREFIX,
+    _CTL_MEM_VOX_DELAY_PREFIX_IC7300,
+)
 
 # CI-V data watchdog (wfview icomudpcivdata::watchdog)
 # If no CI-V data for this long, send open_close to restart the stream.
@@ -2322,11 +2331,13 @@ class CivRuntime:
         elif (
             frame.command == 0x1A
             and frame.sub == 0x05
-            and frame.data.startswith(_CTL_MEM_VOX_DELAY_PREFIX)
+            and bytes(frame.data[:2]) in _CTL_MEM_VOX_DELAY_PREFIXES
         ):
             # VOX hang delay: 1-byte BCD ctl-mem level, reusing the exact decode
-            # of ``_handle_1a`` (``parse_level_response`` with the 0x02 0x92
-            # prefix). Promoted to a global operator-control int (MOR-459).
+            # of ``_handle_1a``. The 2-byte ctl-mem control number is
+            # per-model (``_CTL_MEM_VOX_DELAY_PREFIXES``), so match whichever
+            # one the frame actually carries. Promoted to a global
+            # operator-control int (MOR-459; multi-model MOR-1483 leg 2).
             observations.append(
                 self._observation(
                     FieldPath.global_("operator_controls", "vox_delay"),
@@ -2334,7 +2345,7 @@ class CivRuntime:
                         frame,
                         command=0x1A,
                         sub=0x05,
-                        prefix=_CTL_MEM_VOX_DELAY_PREFIX,
+                        prefix=bytes(frame.data[:2]),
                         bcd_bytes=1,
                     ),
                     frame=frame,

@@ -2491,6 +2491,70 @@ def test_ic7610_real_profile_tx_vox_pollable_and_emit_reads() -> None:
     assert expected <= set(sent)
 
 
+def test_ic7300_vox_delay_query_for_path_ctl_mem_multibyte_sub() -> None:
+    """MOR-1483 (leg 2): voxDelay's CI-V read is a 2-byte ctl-mem sub-address
+
+    (``1A 05 01 91`` — see ``rigs/ic7300.toml``'s ``get_vox_delay``), which the
+    plain ``(command, sub, receiver)`` 3-tuple cannot express with ``sub`` as a
+    single byte. ``query_for_path`` now returns the CI-V sub-command byte
+    (0x05) followed by the 2-byte ctl-mem control number packed into ``sub``
+    as ``bytes`` — the minimal extension of the existing envelope.
+    """
+
+    vox_delay = FieldPath.global_("operator_controls", "vox_delay")
+    executor = IcomCivAcquisitionExecutor(_unused_send_query)
+
+    query = executor.query_for_path(vox_delay)
+
+    assert query == (0x1A, b"\x05\x01\x91", None)
+
+
+async def _unused_send_query(
+    command: int, sub: int | bytes | None, receiver: int | None
+) -> None:
+    raise AssertionError("send_query should not be invoked by query_for_path")
+
+
+def test_ic7300_real_profile_vox_delay_is_primed_and_executor_builds_multibyte_frame() -> (
+    None
+):
+    """MOR-1483 (leg 2) end-to-end: never-observed voxDelay, policy present.
+
+    ``prime_unobserved`` queues a BACKGROUND read for the never-observed
+    ``global.operator_controls.vox_delay`` field (membership added to
+    ``rigs/ic7300.toml``'s non-polling ``field_policies``/
+    ``command_response_observable`` alongside voxOn/monitorOn), and the CI-V
+    executor must build the correct multi-byte ``1A 05 01 91`` frame for it —
+    the exact wire bytes ``rigs/ic7300.toml``'s ``get_vox_delay`` declares.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic7300.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    vox_delay = FieldPath.global_("operator_controls", "vox_delay")
+    assert acquisition.capability_for(vox_delay).can_poll is False
+    assert acquisition.capability_for(vox_delay).command_response_observable is True
+
+    clock = FreshnessClock(start=400.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+
+    queued = scheduler.prime_unobserved(observed_paths=())
+    request = next(req for req in queued if vox_delay in req.paths)
+    assert request.acquisition_method == "command_response"
+
+    sent: list[tuple[int, int | bytes | None, int | None]] = []
+
+    async def send_query(
+        command: int, sub: int | bytes | None, receiver: int | None
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+    execution = asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
+    assert execution.failed_paths == ()
+    assert (0x1A, b"\x05\x01\x91", None) in sent
+
+
 def test_ic7610_real_profile_vfo_global_query_for_path() -> None:
     sent: list[tuple[int, int | None, int | None]] = []
 
