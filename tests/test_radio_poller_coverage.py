@@ -92,6 +92,7 @@ from rigplane.core.tx_safety import (
     TxSource,
 )
 from rigplane.web.handlers.control import ControlHandler
+from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 from rigplane.web.web_startup import stop_web_server
 
 # MOR-1181 asserts on ordered ``radio.calls`` against a REAL supervisor, so it
@@ -4394,9 +4395,10 @@ async def test_tx_target_unsupported_for_non_selected_unselected_profile() -> No
 
 
 @pytest.mark.asyncio
-async def test_run_publishes_tx_target_each_cycle() -> None:
-    """Integration proof: the main poll loop republishes tx_target every
-    cycle, not just the pure ``_compute_tx_target`` helper above."""
+async def test_run_publishes_tx_target_on_first_cycle() -> None:
+    """Integration proof: the main poll loop's step 3b actually reaches
+    ``_publish_tx_target`` (not just the pure ``_compute_tx_target`` helper
+    tested above) and performs the field's first-ever write."""
 
     radio = _make_radio(model="IC-7300")
     store = StateStore()
@@ -4407,3 +4409,116 @@ async def test_run_publishes_tx_target_each_cycle() -> None:
 
     field = store.snapshot().field("global.tx_state.tx_target")
     assert isinstance(field.value, (KnownTxTarget, UnknownTxTarget))
+
+
+@pytest.mark.asyncio
+async def test_publish_tx_target_never_writes_for_unsupported_profile() -> None:
+    """Review R2, F2: early-return before any state-store write for radios
+    ``_compute_tx_target`` would call ``unsupported`` — no reason to restate
+    that constant on every reachable poll-loop tick."""
+
+    radio = _make_radio(model="IC-9700")
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    poller._publish_tx_target()  # noqa: SLF001
+
+    assert "global.tx_state.tx_target" not in store.snapshot().as_dict()
+
+
+@pytest.mark.asyncio
+async def test_publish_tx_target_skips_noop_but_writes_on_change_or_ttl() -> None:
+    """Review R2, F2: an unchanged, still-FRESH value must not bump the
+    store's global ``observation_seq`` — that busts delivery-key no-op
+    suppression / HTTP 304s for the WHOLE snapshot, not just this field —
+    but a real value change, or the stored entry aging past its own TTL
+    (F1), both still write (the latter heals the field back to FRESH)."""
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    generation = store.begin_provider_generation()
+    radio = _make_radio(model="IC-7300")
+    _seed_tx_target_ready(
+        store,
+        generation=generation,
+        slot="A",
+        split=False,
+        active_freq=14_250_000,
+        now=10.0,
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    # _publish_tx_target stamps real time.monotonic() (matching production —
+    # StateFreshnessService.tick() also defaults to it); pin it to the same
+    # manual FreshnessClock domain as the store so mark_stale_due()'s own
+    # advance() lines up with what got written.
+    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=clock.now):
+        poller._publish_tx_target()  # noqa: SLF001 — first write
+        seq_after_first = store.snapshot().observation_seq
+
+        poller._publish_tx_target()  # noqa: SLF001 — unchanged, fresh: no-op
+        assert store.snapshot().observation_seq == seq_after_first
+
+        _apply_tx_target_input(
+            store, FieldPath.global_("tx_state", "split"), True, generation=generation
+        )
+        poller._publish_tx_target()  # noqa: SLF001 — value changed: writes
+        seq_after_change = store.snapshot().observation_seq
+        assert seq_after_change > seq_after_first
+        assert store.snapshot().field(
+            "global.tx_state.tx_target"
+        ).value == KnownTxTarget(receiver="MAIN", slot="B", frequency_hz=7_150_000)
+
+        poller._publish_tx_target()  # noqa: SLF001 — unchanged again: no-op
+        assert store.snapshot().observation_seq == seq_after_change
+
+        clock.advance(3.5)  # past tx_target's 3.0s TTL; inputs' TTL is longer
+        store.mark_stale_due()
+        assert (
+            store.snapshot().field("global.tx_state.tx_target").freshness
+            is FreshnessState.STALE
+        )
+        poller._publish_tx_target()  # noqa: SLF001 — TTL expired: writes again
+        healed = store.snapshot().field("global.tx_state.tx_target")
+        assert healed.freshness is FreshnessState.FRESH
+        assert store.snapshot().observation_seq > seq_after_change
+
+
+@pytest.mark.asyncio
+async def test_tx_target_projection_degrades_to_stale_without_republish() -> None:
+    """Review R2, F1: with every input still fresh, letting tx_target's OWN
+    entry age past its OWN TTL without a fresh republish must still fail
+    the PUBLIC projection closed — not freeze it at the last known
+    identity (the exact fail-open the verifier's +600s probe caught)."""
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    generation = store.begin_provider_generation()
+    radio = _make_radio(model="IC-7300")
+    _seed_tx_target_ready(
+        store,
+        generation=generation,
+        slot="A",
+        split=False,
+        active_freq=14_250_000,
+        now=10.0,
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=clock.now):
+        poller._publish_tx_target()  # noqa: SLF001
+
+    fresh_payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert (
+        fresh_payload["txTarget"]
+        == KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=14_250_000).to_dict()
+    )
+
+    clock.advance(3.5)  # past tx_target's 3.0s TTL; inputs' own TTL is longer
+    store.mark_stale_due()  # NOT calling poller._publish_tx_target() again
+
+    stale_payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert stale_payload["txTarget"] == {"status": "unknown", "reason": "stale"}

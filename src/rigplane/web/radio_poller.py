@@ -1379,8 +1379,13 @@ class RadioPoller:
 
                 # 3b. Re-derive tx_target from currently observed active-VFO
                 # identity/split/frequency facts (MOR-1496). State-store reads
-                # only, no wire I/O — run every cycle so freshness tracks the
-                # weakest input instead of freezing at its last value.
+                # only, no wire I/O. NOT reached on every iteration — the
+                # external-CAT/backoff/dead-link branches above all `continue`
+                # past this — so the field carries its own TTL (F1,
+                # _tx_target_max_age) rather than relying on cadence to
+                # notice a stale input; _publish_tx_target itself skips the
+                # write when nothing changed and the stored entry is still
+                # fresh (F2).
                 try:
                     self._publish_tx_target()
                 except Exception:
@@ -3318,26 +3323,90 @@ class RadioPoller:
             frequency_hz=frequency,
         )
 
-    def _publish_tx_target(self) -> None:
-        """Recompute and republish the derived TX target (MOR-1496).
+    def _tx_target_max_age(self) -> float:
+        """TTL for the derived ``tx_target`` field itself (review R2, F1).
 
-        Called every poll-loop tick so the field's freshness tracks its
-        weakest input rather than decaying on its own clock — this derived
-        field carries no ``max_age`` of its own, so a stale input is only
-        reflected once re-derivation notices it. Uses ``apply_current`` (not
-        ``apply``): this runs synchronously off the just-read snapshot with
-        no ``await`` in between, so it always stamps the store's current
-        provider generation.
+        Without this, ``StateStore.mark_stale_due`` skips the field forever
+        (it only ages entries with ``max_age`` set — see its own docstring),
+        so a stale input would silently freeze ``tx_target`` at its last
+        FRESH value instead of degrading, a fail-open on a TX gate. Reuses
+        this profile's default acquisition TTL — ``policy_for`` falls back
+        to ``default_policy`` for any path with no declared capability (3.0s
+        on IC-7300) — which needs no capability declaration for
+        ``tx_target`` itself; see :meth:`_publish_tx_target` for why that
+        declaration must never exist. Falls back to a small multiple of the
+        poll loop's own fast interval if a profile has no acquisition policy
+        at all.
         """
+        acquisition = self._profile.state_acquisition
+        ttl = (
+            None
+            if acquisition is None
+            else acquisition.policy_for(
+                FieldPath.global_("tx_state", "tx_target")
+            ).freshness_ttl_seconds
+        )
+        return ttl if ttl is not None else self._fast_interval * 4
+
+    def _publish_tx_target(self) -> None:
+        """Recompute and, if changed or stale, republish tx_target (MOR-1496).
+
+        Reached only on poll-loop iterations that fall through to step 4 —
+        NOT "every tick": the external-CAT pause and the connection-backoff/
+        dead-link branches above all ``continue`` past this point, so the
+        weakest-input-tracking claim below depends on :meth:`_tx_target_max_age`
+        giving the field its own TTL (F1), not on this being called on a fixed
+        cadence.
+
+        Skips the store write when the recomputed value is unchanged AND the
+        currently stored entry is still FRESH (review R2, F2): re-applying an
+        identical value on every reachable tick was bumping the store's
+        global ``observation_seq`` for no semantic change, which busts
+        delivery-key no-op suppression and HTTP 304s for the WHOLE snapshot,
+        not just this field. A value change, or the stored entry having aged
+        past its own TTL, both still write — the latter is what lets a
+        healthy-again re-derivation heal the field back to FRESH after it
+        went stale.
+
+        Never declare ``global.tx_state.tx_target`` in any profile's
+        polling_only/unsolicited_push capability metadata (rigs/*.toml or
+        ``RadioAcquisitionProfile.field_policies``): its absence from
+        capability metadata is exactly what lets the TTL-driven
+        reconciliation request this ``max_age`` generates drop cleanly
+        instead of looping — ``AcquisitionScheduler.query_for_path`` has no
+        CI-V wire mapping for this derived field, so a declared/pollable
+        capability here would retry forever as ``no_civ_query_mapping``.
+
+        Uses ``apply_current`` (not ``apply``): this runs synchronously off
+        the just-read snapshot with no ``await`` in between, so it always
+        stamps the store's current provider generation.
+        """
+        if self._profile.vfo_readback != "selected_unselected":
+            return
+
+        target = self._compute_tx_target()
+        path = FieldPath.global_("tx_state", "tx_target")
+        try:
+            current = self._state_store.snapshot().field(path)
+        except KeyError:
+            current = None
+        if (
+            current is not None
+            and current.freshness is FreshnessState.FRESH
+            and current.value == target
+        ):
+            return
+
         observation = Observation(
-            path=FieldPath.global_("tx_state", "tx_target"),
-            value=self._compute_tx_target(),
+            path=path,
+            value=target,
             source=SourceMetadata(
                 source="local_reconcile",
                 provider="icom_civ",
                 native_id="tx_target_derivation",
             ),
             timestamp_monotonic=time.monotonic(),
+            max_age=self._tx_target_max_age(),
         )
         self._state_store.apply_current(observation)
 
