@@ -134,4 +134,94 @@ describe('radio-link chip steady state (MOR-1526)', () => {
     store.setWsConnected(false);
     expect(store.getRadioLinkState()).toBe('disconnected');
   });
+
+  // ── Round 1 (verifier review): F1/F2/F4 findings ──────────────────────
+
+  it('F1: a reconnect overlay stuck mid-flight (no terminal event) is cleared by the disconnect reset, not left stuck across a ws down/up cycle', () => {
+    // A reconnect starts but never resolves with a terminal event — e.g.
+    // a server restart, or reconnect_loop hitting asyncio.CancelledError on
+    // either exit path (radio_reconnect.py:207) — so `radioStatus` never
+    // advances past 'reconnecting' on its own.
+    store.setRadioStatus('reconnecting');
+    expect(store.getRadioLinkState()).toBe('reconnecting');
+
+    // ws-client's onStateChange 'disconnected' branch (the F1/F2 delta)
+    // resets all four fields unconditionally, regardless of whether a
+    // terminal connection_status event ever arrived.
+    store.setRadioStatus('disconnected');
+    store.setRigConnected(false);
+    store.setRadioReady(false);
+    store.setRadioHealth(null);
+    store.setWsConnected(false);
+    expect(store.getRadioLinkState()).toBe('disconnected');
+
+    // Reconnect to a healthy server that — per the ticket's own premise —
+    // never emits connection_status on a session with no further
+    // reconnects. Without the reset above, the overlay would still be
+    // 'reconnecting' and would suppress these live facts forever.
+    store.setWsConnected(true);
+    store.setRigConnected(true);
+    store.setRadioReady(true);
+    store.setRadioHealth({
+      serverReachable: true,
+      radioLink: 'connected',
+      readiness: 'ready',
+      likelyCause: 'unknown',
+      sinceMs: 0,
+      lastError: null,
+    });
+
+    expect(store.getRadioLinkState()).toBe('connected');
+  });
+
+  it('F2: the up-edge (wsConnected flips true again) does not paint green from stale pre-drop facts', () => {
+    store.setWsConnected(true);
+    store.setRigConnected(true);
+    store.setRadioReady(true);
+    store.setRadioHealth({
+      serverReachable: true,
+      radioLink: 'connected',
+      readiness: 'ready',
+      likelyCause: 'unknown',
+      sinceMs: 0,
+      lastError: null,
+    });
+    expect(store.getRadioLinkState()).toBe('connected');
+
+    // ws drops — the F1/F2 reset clears the facts, not just wsConnected.
+    store.setWsConnected(false);
+    store.setRigConnected(false);
+    store.setRadioReady(false);
+    store.setRadioHealth(null);
+    expect(store.getRadioLinkState()).toBe('disconnected');
+
+    // Up-edge: the transport reconnects (setWsConnected(true) fires
+    // synchronously at ws-client.ts:550) before any fresh state_update has
+    // refreshed rigConnected/radioReady/radioHealth. Without the F1/F2
+    // reset above, those would still carry the pre-drop true/true/connected
+    // values and this would read 'connected' — a transient green flash for
+    // a radio that isn't actually back yet. With the reset, rigConnected/
+    // radioReady are false, so the F4 formula correctly reports 'degraded'
+    // (link up, rig/ready not yet confirmed) — NEVER 'connected'. That's
+    // the assertion this test exists to pin.
+    store.setWsConnected(true);
+    expect(store.getRadioLinkState()).not.toBe('connected');
+    expect(store.getRadioLinkState()).toBe('degraded');
+  });
+
+  it('F4: emits degraded (MOR-620 vocabulary), not connected or disconnected, when the link is up but rigConnected/radioReady have not both caught up', () => {
+    store.setWsConnected(true);
+    store.setRigConnected(true);
+    store.setRadioReady(false);
+    store.setRadioHealth({
+      serverReachable: true,
+      radioLink: 'connected',
+      readiness: 'stalled',
+      likelyCause: 'unknown',
+      sinceMs: 500,
+      lastError: null,
+    });
+
+    expect(store.getRadioLinkState()).toBe('degraded');
+  });
 });

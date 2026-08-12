@@ -20,6 +20,12 @@ vi.mock('../../stores/connection.svelte', () => ({
   markStateUpdated: vi.fn(),
   setReconnecting: vi.fn(),
   setRadioStatus: vi.fn(),
+  // MOR-1526 F1/F2: ws-client's onStateChange now resets these three on a
+  // 'disconnected' transition too — must be present or every test that
+  // fires simulateClose() throws "setRigConnected is not a function".
+  setRigConnected: vi.fn(),
+  setRadioReady: vi.fn(),
+  setRadioHealth: vi.fn(),
   isLiveRadioAvailable: vi.fn(() => true),
   // Under the fast pool's ``isolate: false`` this hoisted mock is shared
   // module-wide; scope-controller.svelte (loaded by a sibling fast-pool
@@ -71,7 +77,14 @@ vi.mock('../http-client', () => ({
   fetchCapabilities: vi.fn(() => new Promise(() => {})),
 }));
 
-import { isLiveRadioAvailable, setRadioStatus, setWsConnected } from '../../stores/connection.svelte';
+import {
+  isLiveRadioAvailable,
+  setRadioStatus,
+  setWsConnected,
+  setRigConnected,
+  setRadioReady,
+  setRadioHealth,
+} from '../../stores/connection.svelte';
 import { resetRadioState, setRadioState } from '../../stores/radio.svelte';
 
 beforeEach(() => {
@@ -1269,6 +1282,41 @@ describe('control channel singleton', () => {
     instances[0].simulateMessage(JSON.stringify({ type: 'event', name: 'connection_status' }));
     instances[0].simulateMessage(JSON.stringify({ type: 'event', name: 'connection_status', data: { state: 7 } }));
     expect(setRadioStatus).not.toHaveBeenCalled();
+  });
+
+  it('resets radioStatus/rigConnected/radioReady/radioHealth on every ws disconnect, even without a terminal connection_status event (MOR-1526 F1/F2)', async () => {
+    vi.mocked(setRadioStatus).mockClear();
+    vi.mocked(setRigConnected).mockClear();
+    vi.mocked(setRadioReady).mockClear();
+    vi.mocked(setRadioHealth).mockClear();
+    const { connect, disconnect } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    // A reconnect starts but the server just vanishes (no terminal event —
+    // radio_reconnect.py's reconnect_loop can exit via CancelledError on
+    // either its watchdog-triggered or attempt-loop path without ever
+    // emitting a final connection_status).
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'event',
+      name: 'connection_status',
+      data: { state: 'reconnecting', attempt: 1, next_retry_seconds: 1 },
+    }));
+    expect(setRadioStatus).toHaveBeenLastCalledWith('reconnecting');
+
+    instances[0].simulateClose();
+
+    expect(setRadioStatus).toHaveBeenLastCalledWith('disconnected');
+    expect(setRigConnected).toHaveBeenCalledWith(false);
+    expect(setRadioReady).toHaveBeenCalledWith(false);
+    expect(setRadioHealth).toHaveBeenCalledWith(null);
+
+    // simulateClose() drives the singleton `_ctrl` into its own real-timer
+    // reconnect loop (this describe block runs with real timers). Without
+    // an explicit disconnect() here, that dangling backoff timer can fire
+    // mid-run and create a stray MockWebSocket instance that pollutes the
+    // shared `instances` registry for unrelated later tests in this file.
+    disconnect();
   });
 
   it('rejects a same-session full snapshot that rolls revision truth backward', async () => {

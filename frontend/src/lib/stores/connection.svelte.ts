@@ -184,21 +184,30 @@ export function getRadioHealth(): RadioHealth | null {
 // instant the transport drops — without this gate a real disconnect would
 // keep showing the last-known-good facts, reproducing the same class of lie
 // this fix removes.
-let radioLinkSteady = $derived<'connected' | 'disconnected'>(
+// F4 (verifier review round 1): `radioState === 'connected'` now implies
+// `rigConnected && radioReady` by construction, which silently starved
+// MOR-620's "connected but not radio-ready (CI-V link degraded)" signal —
+// StatusBar could never observe that combination to downgrade to
+// 'degraded' anymore. Owner ruling: keep MOR-620's vocabulary alive by
+// having the steady state emit 'degraded' itself, rather than retiring
+// the distinction.
+let radioLinkSteady = $derived<'connected' | 'degraded' | 'disconnected'>(
   wsConnected
     && rigConnected
     && radioReady
     && radioHealth?.serverReachable !== false
     && (radioHealth == null || radioHealth.radioLink === 'connected')
     ? 'connected'
-    : 'disconnected',
+    : wsConnected && radioHealth?.serverReachable !== false && (!rigConnected || !radioReady)
+      ? 'degraded'
+      : 'disconnected',
 );
 
-let radioLinkState = $derived<'connected' | 'connecting' | 'reconnecting' | 'disconnected'>(
+let radioLinkState = $derived<'connected' | 'connecting' | 'reconnecting' | 'degraded' | 'disconnected'>(
   radioStatus === 'connecting' || radioStatus === 'reconnecting' ? radioStatus : radioLinkSteady,
 );
 
-export function getRadioLinkState(): 'connected' | 'connecting' | 'reconnecting' | 'disconnected' {
+export function getRadioLinkState(): 'connected' | 'connecting' | 'reconnecting' | 'degraded' | 'disconnected' {
   return radioLinkState;
 }
 

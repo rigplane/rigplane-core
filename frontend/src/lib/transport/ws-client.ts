@@ -1,6 +1,6 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
-import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
+import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus, setRigConnected, setRadioReady, setRadioHealth } from '../stores/connection.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
@@ -557,6 +557,24 @@ _ctrl.onStateChange((s) => {
     _capabilityRefreshGeneration = null;
     resetRadioState();
     clearCapabilities();
+    // MOR-1526 (F1/F2 verifier findings): a WS drop that never gets a
+    // terminal `connection_status` event (server restart; reconnect_loop
+    // hitting asyncio.CancelledError on either exit path in
+    // radio_reconnect.py) used to leave `radioStatus` stuck at
+    // 'connecting'/'reconnecting' forever — the reconnect overlay then
+    // permanently suppressed the honest steady-state facts once the
+    // session reconnected to a server that (by the ticket's own premise)
+    // never emits `connection_status` on a healthy session. It also left
+    // rigConnected/radioReady/radioHealth at their last-known-good values,
+    // which `setWsConnected(true)` on the up-edge could briefly pair with
+    // before the first full state envelope refreshes them — a transient
+    // false-green flash for a radio that isn't actually back yet. Reset
+    // all four here so the chip fails closed across every disconnect path,
+    // not just the ones that happen to emit a terminal event.
+    setRadioStatus('disconnected');
+    setRigConnected(false);
+    setRadioReady(false);
+    setRadioHealth(null);
   }
 });
 // Delta state tracking for incremental updates
