@@ -159,9 +159,11 @@
     if (radioHealth?.readiness === 'delayed' || radioHealth?.readiness === 'stalled') {
       return 'degraded';
     }
-    // MOR-620: a session that is connected but not radio-ready (CI-V link
-    // degraded) must be visibly degraded, not silently green.
-    return radioState === 'connected' && (!rigConnected || !radioReady) ? 'degraded' : radioState;
+    // MOR-620's "connected but not radio-ready" downgrade now lives in the
+    // store's own steady-state derivation (getRadioLinkState in
+    // connection.svelte.ts) — `radioState` already reads 'degraded' for
+    // that combination, so there is nothing left to downgrade here.
+    return radioState;
   });
   let radioHealthLabel = $derived.by(() => {
     switch (radioHealth?.likelyCause) {

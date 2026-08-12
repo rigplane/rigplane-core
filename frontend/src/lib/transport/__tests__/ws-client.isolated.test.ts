@@ -20,12 +20,6 @@ vi.mock('../../stores/connection.svelte', () => ({
   markStateUpdated: vi.fn(),
   setReconnecting: vi.fn(),
   setRadioStatus: vi.fn(),
-  // MOR-1526 F1/F2: ws-client's onStateChange now resets these three on a
-  // 'disconnected' transition too — must be present or every test that
-  // fires simulateClose() throws "setRigConnected is not a function".
-  setRigConnected: vi.fn(),
-  setRadioReady: vi.fn(),
-  setRadioHealth: vi.fn(),
   isLiveRadioAvailable: vi.fn(() => true),
   // Under the fast pool's ``isolate: false`` this hoisted mock is shared
   // module-wide; scope-controller.svelte (loaded by a sibling fast-pool
@@ -81,9 +75,6 @@ import {
   isLiveRadioAvailable,
   setRadioStatus,
   setWsConnected,
-  setRigConnected,
-  setRadioReady,
-  setRadioHealth,
 } from '../../stores/connection.svelte';
 import { resetRadioState, setRadioState } from '../../stores/radio.svelte';
 
@@ -1322,11 +1313,8 @@ describe('control channel singleton', () => {
     expect(setRadioStatus).not.toHaveBeenCalled();
   });
 
-  it('resets radioStatus/rigConnected/radioReady/radioHealth on every ws disconnect, even without a terminal connection_status event (MOR-1526 F1/F2)', async () => {
+  it('resets radioStatus on every ws disconnect, even without a terminal connection_status event (MOR-1526 F1)', async () => {
     vi.mocked(setRadioStatus).mockClear();
-    vi.mocked(setRigConnected).mockClear();
-    vi.mocked(setRadioReady).mockClear();
-    vi.mocked(setRadioHealth).mockClear();
     const { connect, disconnect } = await import('../ws-client');
     connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
@@ -1345,9 +1333,11 @@ describe('control channel singleton', () => {
     instances[0].simulateClose();
 
     expect(setRadioStatus).toHaveBeenLastCalledWith('disconnected');
-    expect(setRigConnected).toHaveBeenCalledWith(false);
-    expect(setRadioReady).toHaveBeenCalledWith(false);
-    expect(setRadioHealth).toHaveBeenCalledWith(null);
+    // R2 ruling: rigConnected/radioReady/radioHealth are deliberately NOT
+    // reset by this handler — see the R2 comment in ws-client.ts. Resetting
+    // them would be visible to isLiveRadioAvailable()/sendCommand, a
+    // command-gate change this display fix must not make. Their isolation
+    // is pinned at the store level instead (connection.test.ts's F2 case).
 
     // simulateClose() drives the singleton `_ctrl` into its own real-timer
     // reconnect loop (this describe block runs with real timers). Without

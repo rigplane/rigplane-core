@@ -145,13 +145,14 @@ describe('radio-link chip steady state (MOR-1526)', () => {
     store.setRadioStatus('reconnecting');
     expect(store.getRadioLinkState()).toBe('reconnecting');
 
-    // ws-client's onStateChange 'disconnected' branch (the F1/F2 delta)
-    // resets all four fields unconditionally, regardless of whether a
-    // terminal connection_status event ever arrived.
+    // ws-client's onStateChange 'disconnected' branch (the F1 delta) resets
+    // `radioStatus` unconditionally, regardless of whether a terminal
+    // connection_status event ever arrived. (R2 ruling: rigConnected/
+    // radioReady/radioHealth are deliberately NOT reset here — see F2
+    // below and the R2 comment in ws-client.ts — resetting them would be
+    // visible to isLiveRadioAvailable()/sendCommand, a command-gate change
+    // this display fix must not make.)
     store.setRadioStatus('disconnected');
-    store.setRigConnected(false);
-    store.setRadioReady(false);
-    store.setRadioHealth(null);
     store.setWsConnected(false);
     expect(store.getRadioLinkState()).toBe('disconnected');
 
@@ -188,25 +189,35 @@ describe('radio-link chip steady state (MOR-1526)', () => {
     });
     expect(store.getRadioLinkState()).toBe('connected');
 
-    // ws drops — the F1/F2 reset clears the facts, not just wsConnected.
+    // ws drops. R2 ruling: rigConnected/radioReady/radioHealth are NOT
+    // reset (unlike an earlier revision of this fix) — only wsConnected
+    // flips, which is what real transport-level onclose observes. The
+    // steady-state formula's `wsConnected &&` gate on both the 'connected'
+    // and 'degraded' branches is what actually produces 'disconnected'
+    // here, not a fact reset.
     store.setWsConnected(false);
-    store.setRigConnected(false);
-    store.setRadioReady(false);
-    store.setRadioHealth(null);
     expect(store.getRadioLinkState()).toBe('disconnected');
 
     // Up-edge: the transport reconnects (setWsConnected(true) fires
     // synchronously at ws-client.ts:550) before any fresh state_update has
-    // refreshed rigConnected/radioReady/radioHealth. Without the F1/F2
-    // reset above, those would still carry the pre-drop true/true/connected
-    // values and this would read 'connected' — a transient green flash for
-    // a radio that isn't actually back yet. With the reset, rigConnected/
-    // radioReady are false, so the F4 formula correctly reports 'degraded'
-    // (link up, rig/ready not yet confirmed) — NEVER 'connected'. That's
-    // the assertion this test exists to pin.
+    // refreshed rigConnected/radioReady/radioHealth on THIS session.
+    // `setWsConnected(false)` above cleared `factsObservedThisSession`, and
+    // nothing has set it back to true yet — so even though rigConnected/
+    // radioReady/radioHealth still carry the pre-drop true/true/connected
+    // values (stale, never reset), the chip must not read them as current
+    // truth. It reports 'degraded' (link up, facts not yet reconfirmed on
+    // this session) — NEVER 'connected'. That's the assertion this test
+    // exists to pin.
     store.setWsConnected(true);
     expect(store.getRadioLinkState()).not.toBe('connected');
     expect(store.getRadioLinkState()).toBe('degraded');
+
+    // And the command gate is untouched by any of this: rigConnected/
+    // radioReady/radioHealth were never reset, so isLiveRadioAvailable()
+    // (which sendCommand() gates on) still reads the session as available.
+    // The chip fix must not move the command gate — this is the pin for
+    // that isolation.
+    expect(store.isLiveRadioAvailable()).toBe(true);
   });
 
   it('F4: emits degraded (MOR-620 vocabulary), not connected or disconnected, when the link is up but rigConnected/radioReady have not both caught up', () => {

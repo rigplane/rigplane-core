@@ -15,6 +15,14 @@ let controlConnected = $state(false);
 let radioHealth = $state<RadioHealth | null>(null);
 let lastResponseTime = $state<number | null>(null);
 
+// MOR-1526 F2: rigConnected/radioReady/radioHealth are refreshed only by
+// state_update and go stale (not reset) on a transport drop. Clearing them
+// would be visible to isLiveRadioAvailable()/sendCommand — a command-gate
+// change this display fix must not make. Instead, track whether the facts
+// have been observed on the CURRENT transport session; the chip refuses to
+// go green until they have.
+let factsObservedThisSession = $state(false);
+
 let lastStateUpdate = $state(0);
 const STALE_THRESHOLD_MS = 5000;
 let staleState = $state(false);
@@ -43,6 +51,7 @@ let connectionStatus = $derived<'connected' | 'partial' | 'disconnected'>(
 
 export function setWsConnected(v: boolean): void {
   wsConnected = v;
+  if (!v) factsObservedThisSession = false;
 }
 
 export function setReconnecting(v: boolean): void {
@@ -131,6 +140,7 @@ export function getRadioPowerOn(): boolean | null {
 
 export function setRigConnected(v: boolean): void {
   rigConnected = v;
+  factsObservedThisSession = true;
 }
 
 export function getRigConnected(): boolean {
@@ -191,14 +201,24 @@ export function getRadioHealth(): RadioHealth | null {
 // 'degraded' anymore. Owner ruling: keep MOR-620's vocabulary alive by
 // having the steady state emit 'degraded' itself, rather than retiring
 // the distinction.
+//
+// F2 (verifier review round 2): the up-edge honesty guard is
+// `factsObservedThisSession`, not a reset of rigConnected/radioReady/
+// radioHealth themselves (see setWsConnected/setRigConnected above and the
+// R2 comment in ws-client.ts) — those three must stay untouched by this
+// display fix because isLiveRadioAvailable()/sendCommand() also read them
+// for command-gating. Until a fresh state_update lands on the CURRENT
+// transport session, the steady state can never claim 'connected' — at
+// worst it reads 'degraded' off the pre-drop facts, never green.
 let radioLinkSteady = $derived<'connected' | 'degraded' | 'disconnected'>(
   wsConnected
+    && factsObservedThisSession
     && rigConnected
     && radioReady
     && radioHealth?.serverReachable !== false
     && (radioHealth == null || radioHealth.radioLink === 'connected')
     ? 'connected'
-    : wsConnected && radioHealth?.serverReachable !== false && (!rigConnected || !radioReady)
+    : wsConnected && radioHealth?.serverReachable !== false && (!factsObservedThisSession || !rigConnected || !radioReady)
       ? 'degraded'
       : 'disconnected',
 );
