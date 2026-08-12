@@ -213,6 +213,10 @@
   "core.vfo.ops.quickDualWatch": "Quick dual watch",
   "core.vfo.splitDigest.rx": "RX {frequency}",
   "core.vfo.splitDigest.tx": "TX {frequency}",
+  "core.vfo.select.unknownSlotReason": "The radio has not confirmed this VFO's A/B identity yet, so it can't be selected.",
+  "core.vfo.select.receiverUnavailableReason": "This receiver is not available right now, so it can't be selected.",
+  "core.vfo.split.unknownReason": "The radio has not confirmed the split state yet.",
+  "core.vfo.dualWatch.unknownReason": "The radio has not confirmed the dual watch state yet.",
 
   "core.band.tx.reason.outOfBand": "your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band",
   "core.band.tx.reason.targetUnknown": "the radio has not confirmed the frequency it would transmit on",

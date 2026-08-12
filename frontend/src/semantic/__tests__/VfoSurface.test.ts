@@ -796,6 +796,128 @@ describe('VFO ops (MOR-1321) — unknown honesty on the quick triggers', () => {
   });
 });
 
+describe('VFO ops disabled reasons (MOR-1481)', () => {
+  const base = topologyFixtures['2/main_sub'];
+
+  /** Resolves a control's `aria-describedby` target and returns ITS text —
+   *  the id alone would only prove wiring, not that a screen reader has
+   *  something to actually read. Mirrors `TxAuxSurface.test.ts`'s helper. */
+  function describedText(target: HTMLElement, el: HTMLElement): string | null {
+    const id = el.getAttribute('aria-describedby');
+    if (!id) return null;
+    return target.querySelector(`#${id}`)?.textContent ?? null;
+  }
+
+  it('carries no reason text on hover or for screen readers on any op button once every fact is known', () => {
+    const target = mountSurface({ viewModel: base });
+    for (const op of ['equalize', 'swap', 'quick-split', 'quick-dual-watch'] as const) {
+      const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
+      expect(button.title, op).toBe('');
+      expect(button.hasAttribute('aria-describedby'), op).toBe(false);
+    }
+  });
+
+  it('puts the identity reason on every op button\'s own title and aria-describedby while A/B identity is unknown', () => {
+    const model: RadioViewModel = validateRadioViewModel({
+      ...topologyFixtures['1/ab'],
+      vfos: topologyFixtures['1/ab'].vfos.map((vfo, index) => ({
+        ...vfo,
+        slot: { kind: 'relative', role: index === 0 ? 'selected' : 'unselected' },
+        label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
+        isActive: index === 0,
+        isActiveSlot: index === 0,
+      })),
+    });
+    const target = mountSurface({ viewModel: model });
+    const expected = 'Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.';
+    for (const op of ['equalize', 'swap', 'quick-split', 'quick-dual-watch'] as const) {
+      const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
+      expect(button.disabled, op).toBe(true);
+      expect(button.title, op).toBe(expected);
+      expect(describedText(target, button), op).toBe(expected);
+    }
+  });
+
+  it('puts a split-specific reason on quick split (and the split fact-toggle) while identity is known but split is unknown', () => {
+    const model = validateRadioViewModel({ ...base, split: { status: 'unknown' } });
+    const target = mountSurface({ viewModel: model });
+    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('The radio has not confirmed the split state yet.');
+    expect(describedText(target, button)).toBe('The radio has not confirmed the split state yet.');
+    // Neither equalize nor swap depends on split — neither carries this reason.
+    expect(target.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!.title).toBe('');
+    const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
+    expect(toggle.title).toBe('The radio has not confirmed the split state yet.');
+    expect(describedText(target, toggle)).toBe('The radio has not confirmed the split state yet.');
+  });
+
+  it('puts a dual-watch-specific reason on quick dual watch (and the dual-watch fact-toggle) while identity is known but dualWatch is unknown', () => {
+    const model = validateRadioViewModel({ ...base, dualWatch: { status: 'unknown' } });
+    const target = mountSurface({ viewModel: model });
+    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-dual-watch]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('The radio has not confirmed the dual watch state yet.');
+    expect(describedText(target, button)).toBe('The radio has not confirmed the dual watch state yet.');
+    const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
+    expect(toggle.title).toBe('The radio has not confirmed the dual watch state yet.');
+    expect(describedText(target, toggle)).toBe('The radio has not confirmed the dual watch state yet.');
+  });
+
+  it('a per-tile select control disabled by its own unknown slot carries a reason', () => {
+    const base1ab = topologyFixtures['1/ab'];
+    const model: RadioViewModel = validateRadioViewModel({
+      ...base1ab,
+      vfos: [base1ab.vfos[0], { ...base1ab.vfos[1], slot: { kind: 'unknown' } }],
+    });
+    const target = mountSurface({ viewModel: model });
+    const button = target.querySelectorAll<HTMLButtonElement>('[data-vfo-select]')[0];
+    const expected = "The radio has not confirmed this VFO's A/B identity yet, so it can't be selected.";
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(expected);
+    expect(describedText(target, button)).toBe(expected);
+  });
+
+  it('a per-tile select control forced off by the MOR-1256 strip-level `disabled` prop carries a reason', () => {
+    const target = mountSurface({ viewModel: base, disabled: true });
+    const button = target.querySelectorAll<HTMLButtonElement>('[data-vfo-select]')[0];
+    const expected = "This receiver is not available right now, so it can't be selected.";
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(expected);
+    expect(describedText(target, button)).toBe(expected);
+  });
+
+  it('an enabled per-tile select control carries no reason', () => {
+    const target = mountSurface({ viewModel: base });
+    const button = target.querySelector<HTMLButtonElement>('[data-vfo-select]')!;
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe('');
+    expect(button.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  // Two independently mounted surfaces (the dual-receiver cockpit's real
+  // shape) must not collide on `aria-describedby` target ids.
+  it('reason ids stay unique across two mounted surfaces', () => {
+    const model: RadioViewModel = validateRadioViewModel({
+      ...topologyFixtures['1/ab'],
+      vfos: topologyFixtures['1/ab'].vfos.map((vfo, index) => ({
+        ...vfo,
+        slot: { kind: 'relative', role: index === 0 ? 'selected' : 'unselected' },
+        label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
+        isActive: index === 0,
+        isActiveSlot: index === 0,
+      })),
+    });
+    const targetA = mountSurface({ viewModel: model });
+    const targetB = mountSurface({ viewModel: model });
+    const idA = targetA.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!.getAttribute('aria-describedby');
+    const idB = targetB.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!.getAttribute('aria-describedby');
+    expect(idA).not.toBeNull();
+    expect(idB).not.toBeNull();
+    expect(idA).not.toBe(idB);
+  });
+});
+
 describe('split RX/TX digest (MOR-1321)', () => {
   // Kills: reading TX off the active VFO (or RX off the TX target) — the two
   // sides would then agree by construction and the digest could never show the

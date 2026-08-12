@@ -841,7 +841,11 @@ describe('operational audio-scope availability (scope=false + audioFft=true)', (
    */
   const markup = (): string => target.innerHTML
     .replace(/rx-tx-\d+/g, 'rx-tx-N')
-    .replace(/tx-aux-blocked-\d+/g, 'tx-aux-blocked-N');
+    .replace(/tx-aux-blocked-\d+/g, 'tx-aux-blocked-N')
+    // MOR-1481: TUNE's own dedicated reason id carries the same per-instance
+    // `TxAuxSurface` counter as `tx-aux-blocked-N` above — same volatility,
+    // same normalization.
+    .replace(/tx-aux-reason-\d+-tune-atu/g, 'tx-aux-reason-N-tune-atu');
 
   it('changes nothing in the cockpit, and denies nothing about the radio', () => {
     h.state = mainSubState('MAIN');
