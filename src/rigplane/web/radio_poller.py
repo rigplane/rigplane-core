@@ -1075,18 +1075,35 @@ class RadioPoller:
             ("get_scope_rbw", radio.get_scope_rbw),
         )
         for label, getter in scope_getters:
-            try:
-                await asyncio.wait_for(getter(), timeout=self._SCOPE_GETTER_TIMEOUT)
-            except asyncio.TimeoutError:
-                logger.debug(
-                    "radio-poller: %s timed out after %.0f ms (response dropped)",
-                    label,
-                    self._SCOPE_GETTER_TIMEOUT * 1000,
-                )
-            except Exception:
-                logger.debug("radio-poller: %s failed", label, exc_info=True)
+            ok = await self._scope_getter_attempt(label, getter)
+            if not ok and label == "get_scope_rbw":
+                # rbw's fieldStatus intermittently reports "missing" on the
+                # live stand (MOR-1524) — one bounded retry, still within
+                # this getter's own timeout budget, recovers most drops
+                # without extending the overall fetch cadence.
+                await self._scope_getter_attempt(label, getter)
             await asyncio.sleep(self._adaptive_gap())
         logger.info("radio-poller: scope controls fetched (receiver=%d)", scope_rx)
+
+    async def _scope_getter_attempt(self, label: str, getter: Any) -> bool:
+        """Run one bounded scope-control GET; return ``True`` on success.
+
+        Shared by ``_fetch_scope_controls`` so a dropped response (common on
+        busy scope streams) only costs ``_SCOPE_GETTER_TIMEOUT`` before the
+        caller decides whether to retry or move on.
+        """
+        try:
+            await asyncio.wait_for(getter(), timeout=self._SCOPE_GETTER_TIMEOUT)
+            return True
+        except asyncio.TimeoutError:
+            logger.debug(
+                "radio-poller: %s timed out after %.0f ms (response dropped)",
+                label,
+                self._SCOPE_GETTER_TIMEOUT * 1000,
+            )
+        except Exception:
+            logger.debug("radio-poller: %s failed", label, exc_info=True)
+        return False
 
     async def _reconfirm_scope_field(self, label: str, getter: Any) -> None:
         """Force a fresh confirmed observation for one scope-control leaf.
@@ -2585,6 +2602,12 @@ class RadioPoller:
                     operation="switch_scope_receiver",
                 )
                 await self._civ(0x27, sub=0x12, data=bytes([receiver]))
+                if self._radio_state:
+                    self._radio_state.scope_controls.receiver = receiver
+                if CAP_SCOPE in self._caps:
+                    await self._reconfirm_scope_field(
+                        "get_scope_receiver", radio.get_scope_receiver
+                    )
                 logger.info(
                     "radio-poller: scope receiver → %s",
                     "SUB" if receiver else "MAIN",
@@ -2594,11 +2617,17 @@ class RadioPoller:
                     await radio.set_scope_during_tx(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.during_tx = on
+                    await self._reconfirm_scope_field(
+                        "get_scope_during_tx", radio.get_scope_during_tx
+                    )
             case SetScopeCenterType(center_type=center_type):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_center_type(center_type)
                     if self._radio_state:
                         self._radio_state.scope_controls.center_type = center_type
+                    await self._reconfirm_scope_field(
+                        "get_scope_center_type", radio.get_scope_center_type
+                    )
             case SetScopeFixedEdge(edge=edge, start_hz=start_hz, end_hz=end_hz):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_fixed_edge(
@@ -2611,11 +2640,17 @@ class RadioPoller:
                     await radio.set_scope_dual(dual)
                     if self._radio_state:
                         self._radio_state.scope_controls.dual = dual
+                    await self._reconfirm_scope_field(
+                        "get_scope_dual", radio.get_scope_dual
+                    )
             case SetScopeMode(mode=mode):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_mode(mode)
                     if self._radio_state:
                         self._radio_state.scope_controls.mode = mode
+                    await self._reconfirm_scope_field(
+                        "get_scope_mode", radio.get_scope_mode
+                    )
             case SetScopeSpan(span=span):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_span(span)
@@ -2645,21 +2680,33 @@ class RadioPoller:
                     await radio.set_scope_hold(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.hold = on
+                    await self._reconfirm_scope_field(
+                        "get_scope_hold", radio.get_scope_hold
+                    )
             case SetScopeEdge(edge=edge):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_edge(edge)
                     if self._radio_state:
                         self._radio_state.scope_controls.edge = edge
+                    await self._reconfirm_scope_field(
+                        "get_scope_edge", radio.get_scope_edge
+                    )
             case SetScopeVbw(narrow=narrow):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_vbw(narrow)
                     if self._radio_state:
                         self._radio_state.scope_controls.vbw_narrow = narrow
+                    await self._reconfirm_scope_field(
+                        "get_scope_vbw", radio.get_scope_vbw
+                    )
             case SetScopeRbw(rbw=rbw):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_rbw(rbw)
                     if self._radio_state:
                         self._radio_state.scope_controls.rbw = rbw
+                    await self._reconfirm_scope_field(
+                        "get_scope_rbw", radio.get_scope_rbw
+                    )
             case SetPowerstat(on=on):
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_powerstat(on)
