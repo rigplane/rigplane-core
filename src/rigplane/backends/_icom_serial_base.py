@@ -504,11 +504,23 @@ class _IcomSerialRadioBase(CoreRadio):
         - PRIMARY: match candidates (OS-enumerated, filtered by
           ``_serial_reconnect_glob``) against our own USB ``serial_number``
           captured at the last connect -- no port is ever opened for this.
-        - FALLBACK (only when our adapter exposed no serial_number): the
-          CI-V probe, but skip -- never open -- a candidate whose vid/pid
-          is *known* to differ from ours. Narrows, does not eliminate, the
-          collision risk when neither side exposes a serial number and
-          both share (or lack) vid/pid -- documented residual gap.
+          An empty string (pyserial surfaces ``""``, not ``None``, for a
+          stripped-descriptor adapter on some Linux/Windows hosts) is
+          treated as "no fingerprint", not a wildcard -- falls through to
+          FALLBACK instead of matching any other empty-serial candidate.
+          A candidate is also rejected when its enumerated vid/pid is
+          *known* to differ from ours, closing coincidental cross-vendor
+          serial-string collisions.
+        - FALLBACK (adapter exposed no usable serial_number): the CI-V
+          probe, but skip -- never open -- a candidate whose vid/pid is
+          *known* to differ from ours. When our own identity is entirely
+          unknown (enumeration failed or never found our path), FALLBACK
+          runs with zero vid/pid filtering. Narrows, does not eliminate,
+          the collision risk when neither side exposes a serial number
+          and both share (or lack) vid/pid -- documented residual gap.
+          Ports rejected by ``discovery._is_candidate`` (e.g. non-USB or
+          virtual ports) are never enumerated and so never rediscoverable
+          -- silent by design, matching initial discovery's own filter.
         """
         if os.path.exists(self._serial_device):
             return
@@ -535,11 +547,16 @@ class _IcomSerialRadioBase(CoreRadio):
             None,
         )
         adopted: str | None = None
-        if target_serial is not None:
+        if target_serial:
             for candidate in candidates:
-                if candidate.serial_number == target_serial:
-                    adopted = candidate.device
-                    break
+                if candidate.serial_number != target_serial:
+                    continue
+                if target_vid is not None and candidate.vid not in (None, target_vid):
+                    continue
+                if target_pid is not None and candidate.pid not in (None, target_pid):
+                    continue
+                adopted = candidate.device
+                break
         else:
             for candidate in candidates:
                 if target_vid is not None and candidate.vid not in (None, target_vid):
