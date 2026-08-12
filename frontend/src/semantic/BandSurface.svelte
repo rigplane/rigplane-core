@@ -76,11 +76,15 @@
     'capability-unavailable': 'core.band.tx.reason.rangesNotConfigured',
   };
   /** Resolves a `TX_REASON_CODES` entry to its operator-legible sentence in
-   *  the active locale. An unrecognised code (should not happen —
-   *  `TX_REASON_CODES` is the only caller) fails closed to `UNKNOWN_TEXT`
-   *  rather than surfacing the raw code. */
+   *  the active locale. MOR-1448 review F5: `Object.hasOwn`, not the `in`
+   *  operator — `in` also matches inherited `Object.prototype` keys (e.g. a
+   *  code of `'toString'` or `'constructor'`), which would then resolve
+   *  `REASON_KEY[code]` to an inherited FUNCTION rather than undefined and
+   *  hand `t()` a non-string key instead of failing closed. `hasOwn` makes
+   *  "unrecognised code" mean exactly "no OWN entry", so it reliably falls
+   *  through to `UNKNOWN_TEXT` rather than surfacing garbage. */
   export const reasonLabel = (code: DisabledReasonCode | string): string =>
-    code in REASON_KEY ? t(REASON_KEY[code]) : UNKNOWN_TEXT;
+    Object.hasOwn(REASON_KEY, code) ? t(REASON_KEY[code]) : UNKNOWN_TEXT;
   /** The denial's words when no code explains it: `txPermit` says the TX
    *  TARGET may key, so what is missing is the band-scoped resolution itself
    *  (unobserved live frequency, or a frequency in no band of the plan). */
@@ -189,16 +193,22 @@
    * MOR-1448: the fix-round F1 caveat as ONE operator-legible sentence,
    * replacing the old `TX target {status}: {reason}` contract-vocabulary
    * concatenation (raw field/code words leaking straight into the operator
-   * UI). Still states the true tri-state `status` word verbatim (rule 1 —
-   * the verdict is never softened or hidden) and the SAME `txDeniedReason`
-   * explanation; only the sentence it is assembled into changed. Pure
-   * string assembly — no gating, dispatch, or state-machine logic touched.
+   * UI). Review round F4: the tri-state `status` is no longer interpolated
+   * as a raw English enum word into (in particular) the ru-RU sentence —
+   * that produced "частота передачи — unknown: …", an English word stranded
+   * mid-Russian-prose. Instead each non-`'allowed'` status picks its OWN
+   * catalog key, so the verdict is still stated explicitly (rule 1 — never
+   * softened or hidden) but as actual language in every locale: `denied`
+   * reads as "transmitting there is not allowed", `unknown` as "your actual
+   * transmit frequency cannot be confirmed". The `reason` half is still the
+   * SAME `txDeniedReason` explanation. Pure string assembly — no gating,
+   * dispatch, or state-machine logic touched.
    */
   export function txCaveatMessage(view: RadioViewModel): string {
-    return t('core.band.tx.caveat', {
-      status: view.txPermit.status,
-      reason: txDeniedReason(view),
-    });
+    const key = view.txPermit.status === 'denied'
+      ? 'core.band.tx.caveat.denied'
+      : 'core.band.tx.caveat.unknown';
+    return t(key, { reason: txDeniedReason(view) });
   }
 </script>
 

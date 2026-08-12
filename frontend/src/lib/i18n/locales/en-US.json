@@ -214,12 +214,13 @@
   "core.vfo.splitDigest.rx": "RX {frequency}",
   "core.vfo.splitDigest.tx": "TX {frequency}",
 
-  "core.band.tx.reason.outOfBand": "this frequency is outside your configured transmit ranges — tune to a frequency inside an allowed band to transmit here",
-  "core.band.tx.reason.targetUnknown": "the transmit frequency has not been read from the radio yet — press PTT or select a VFO to set it",
+  "core.band.tx.reason.outOfBand": "your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band",
+  "core.band.tx.reason.targetUnknown": "this radio has not reported which VFO transmits, so the transmit frequency cannot be confirmed",
   "core.band.tx.reason.rangesNotConfigured": "no transmit ranges are configured for this radio, so permission cannot be checked here",
-  "core.band.tx.reason.bandUnresolved": "the current band could not be determined from the frequency read from the radio",
+  "core.band.tx.reason.bandUnresolved": "the current band could not be determined",
   "core.band.tx.reason.receiverUnconfirmed": "the active receiver has not been confirmed yet — select a receiver to continue",
-  "core.band.tx.caveat": "TX is allowed on this frequency, but your actual transmit frequency is {status}: {reason}",
+  "core.band.tx.caveat.denied": "TX is allowed on this frequency, but transmitting at your actual frequency is not allowed: {reason}",
+  "core.band.tx.caveat.unknown": "TX is allowed on this frequency, but your actual transmit frequency is unconfirmed: {reason}",
 
   "core.disabledReason.missing": "Not supported by this radio",
   "core.disabledReason.unobserved": "Not yet observed",

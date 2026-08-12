@@ -111,7 +111,10 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
   // (`t()`), never a second fact derivation. See the two tests below for
   // the narrowed guard this replaces.
   it('imports nothing but the fact contract, plus the i18n wording lookup', () => {
-    const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
+    // MOR-1448 review F6: quote-agnostic — a double-quoted import must be
+    // caught exactly like a single-quoted one, not slip past a single-quote
+    // -only pattern.
+    const specifiers = [...CODE.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
     expect([...new Set(specifiers)]).toEqual(['$lib/i18n', './radio-view-model']);
   });
@@ -130,7 +133,8 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
   // OTHER `$lib/*` import (transport, capabilities, tx-permit, command
   // bus, ...) still fails this test.
   it('imports no $lib module except the i18n catalog lookup', () => {
-    const libSpecifiers = [...CODE.matchAll(/from\s+'(\$lib\/[^']+)'/g)].map((m) => m[1]);
+    // MOR-1448 review F6: same quote-agnostic fix as above.
+    const libSpecifiers = [...CODE.matchAll(/from\s+['"](\$lib\/[^'"]+)['"]/g)].map((m) => m[1]);
     expect(new Set(libSpecifiers)).toEqual(new Set(['$lib/i18n']));
   });
 
@@ -281,9 +285,23 @@ describe('the TX-target permit caveat (fix-round F1)', () => {
    phrases can silently return. ──────────────────────────────────────── */
 
 describe('MOR-1448 — every TX readiness reason resolves to operator-legible copy', () => {
+  // Review round F1-F4 add specific phrases that must never come back:
+  //   F1 — 'press PTT' was a FABRICATED remedy for `targetUnknown`: on Icom
+  //        rigs the unconfirmed state is permanent (no CAT emitter for
+  //        txTarget at all), so telling the operator to press PTT was
+  //        actively wrong, not just jargon.
+  //   F3 — 'read from the radio' falsely implied a frequency reading was
+  //        attempted for the `bandUnresolved` fallback, which fires
+  //        precisely when the band was never read.
+  //   F4 — 'frequency is denied' / 'frequency is unknown' were the old
+  //        non-idiomatic, raw-enum-interpolated caveat construction
+  //        (`TX target {status}: …` and its English-word-in-ru-prose
+  //        successor) — the caveat is now assembled from a PER-STATUS
+  //        catalog key instead of an interpolated tri-state word.
   const CONTRACT_SPEAK = [
     'was never observed', 'TX target unknown', 'TX target allowed', 'TX target denied',
-    'field:', 'fieldStatus',
+    'field:', 'fieldStatus', 'press PTT', 'read from the radio',
+    'frequency is denied', 'frequency is unknown',
   ];
 
   it.each([
@@ -302,16 +320,33 @@ describe('MOR-1448 — every TX readiness reason resolves to operator-legible co
     expect(activeReceiverUnconfirmedReason()).toBe(t('core.band.tx.reason.receiverUnconfirmed'));
   });
 
-  it('assembles the rendered caveat through the core.band.tx.caveat catalog key', () => {
+  // MOR-1448 review F4: the caveat's tri-state status now selects a WHOLE
+  // catalog key (`.unknown` / `.denied`) instead of interpolating the raw
+  // English status word into (in particular) translated prose. Both
+  // branches are pinned below so swapping either key — or reintroducing a
+  // `{status}` placeholder — fails a test by name.
+  it('assembles the rendered caveat through the core.band.tx.caveat.unknown catalog key', () => {
     const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'allowed' });
     const r = render({
       ...view,
       txPermit: { status: 'unknown', reason: 'tx-target-unknown' },
       disabledReasons: [{ field: 'txPermit', code: 'tx-target-unknown' }] as readonly DisabledReason[],
     });
-    expect(r.text('tx-caveat')).toBe(t('core.band.tx.caveat', {
-      status: 'unknown',
+    expect(r.text('tx-caveat')).toBe(t('core.band.tx.caveat.unknown', {
       reason: t('core.band.tx.reason.targetUnknown'),
+    }));
+    r.dispose();
+  });
+
+  it('assembles the rendered caveat through the core.band.tx.caveat.denied catalog key', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'allowed' });
+    const r = render({
+      ...view,
+      txPermit: DENIED,
+      disabledReasons: [{ field: 'txPermit', code: 'out-of-band' }] as readonly DisabledReason[],
+    });
+    expect(r.text('tx-caveat')).toBe(t('core.band.tx.caveat.denied', {
+      reason: t('core.band.tx.reason.outOfBand'),
     }));
     r.dispose();
   });
@@ -321,8 +356,8 @@ describe('MOR-1448 — every TX readiness reason resolves to operator-legible co
       reasonLabel('out-of-band'), reasonLabel('tx-target-unknown'),
       reasonLabel('capability-unavailable'), unresolvedReason(),
       activeReceiverUnconfirmedReason(),
-      t('core.band.tx.caveat', { status: 'unknown', reason: reasonLabel('tx-target-unknown') }),
-      t('core.band.tx.caveat', { status: 'denied', reason: reasonLabel('out-of-band') }),
+      t('core.band.tx.caveat.unknown', { reason: reasonLabel('tx-target-unknown') }),
+      t('core.band.tx.caveat.denied', { reason: reasonLabel('out-of-band') }),
     ];
     for (const text of rendered) {
       for (const phrase of CONTRACT_SPEAK) expect(text).not.toContain(phrase);
