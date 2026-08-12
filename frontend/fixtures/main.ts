@@ -31,6 +31,7 @@ import ReferenceLayout from './ReferenceLayout.svelte';
 import {
   runAssertions, styleProbe, tokenSnapshot, type AssertionOptions,
 } from './assertions';
+import { setCapabilities } from '../src/lib/stores/capabilities.svelte';
 import { fixtureById } from './catalog';
 import { DEFAULT_AUDIO_RUNTIME, harness, IDLE_TX } from './harness-state';
 
@@ -77,6 +78,16 @@ if (language) {
 
 harness.state = fixture.state();
 harness.caps = fixture.caps();
+// MOR-1451: `harness.caps` above feeds the STUBBED `runtime.caps` seam only
+// (`fixtures/stubs/runtime.ts`) — components that read capability-derived
+// calibration data (e.g. `smeter-scale.ts`'s `getSmeterCalibration()`) go
+// through the REAL, unstubbed `$lib/stores/capabilities.svelte` singleton
+// instead, which production populates only via a live WebSocket
+// (`ws-client.ts`). The fixture harness opens no WebSocket, so that
+// singleton must be populated directly here for the S-meter (or any other
+// capabilities-calibrated readout) to render as the fixture intends rather
+// than falling back to the honest-uncalibrated path.
+setCapabilities(fixture.caps());
 harness.tx = { ...IDLE_TX, ...fixture.tx };
 harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
 harness.audioRuntime = { ...DEFAULT_AUDIO_RUNTIME, ...fixture.audioRuntime };
