@@ -1,8 +1,25 @@
+import { getRadioState } from './radio.svelte';
+
 export type CommandLifecycleStatus = 'pending' | 'acknowledged' | 'failed' | 'cancelled' | 'timed-out';
 export interface CommandLifecycle {
   id: string; name: string; params: Readonly<Record<string, unknown>>;
   originalEpoch: number; eventEpoch?: number; createdAt: number; updatedAt: number;
   timeoutMs: number; status: CommandLifecycleStatus; error?: string;
+  /**
+   * The radio-observed `observationSeq` (MOR-1488 review R2) at the instant
+   * this command transitioned to 'acknowledged', or `undefined` if no radio
+   * state had been observed yet. `observationSeq` is the one counter that
+   * increments on every applied state push regardless of whether any field's
+   * value actually changed (`core.state_store._apply_one` bumps it
+   * unconditionally, before the semantic-change check that gates
+   * `stateRevision`) — the "did a fresh poll cycle happen since ack" signal
+   * `panel-adapters.ts`'s `latestPendingParam` needs. `stateRevision` would
+   * NOT serve this: a poll that re-confirms an unchanged value never bumps
+   * it, which is exactly the case a fast double-toggle produces (the
+   * superseded command's target coincides with the pre-existing confirmed
+   * value) and would leave the sequence guard permanently unable to fire.
+   */
+  ackObservationSeq?: number;
 }
 export interface BeginCommandInput {
   id: string; name: string; params: Readonly<Record<string, unknown>>;
@@ -36,6 +53,7 @@ function transition(
   if (!command) return;
   command.status = status; command.eventEpoch = eventEpoch; command.updatedAt = Date.now();
   if (error) command.error = error;
+  if (status === 'acknowledged') command.ackObservationSeq = getRadioState()?.observationSeq;
   clearRecordTimer(command);
 }
 

@@ -140,6 +140,28 @@ function nbConfirmedState(): ServerState {
   } as unknown as ServerState;
 }
 
+/**
+ * A confirming-but-non-transitioning observation (MOR-1488 review R2,
+ * F2 test-theatre fix): `liveState()` with `main.nb` left at `false`
+ * (unchanged) but `observationSeq`/`freshnessRevision` advanced past the
+ * fixture's initial value — `stateRevision`/`revision` deliberately stay
+ * put. This is "the radio was freshly re-polled and nb is still off": no
+ * field value moved, so `core.state_store._apply_one` would never bump
+ * `stateRevision` for a push like this (it only bumps on `semantic_changed`)
+ * — but `observationSeq` bumps unconditionally, on every applied
+ * observation. A sequence guard keyed on `stateRevision` would never see
+ * this push as "newer" and would leave a pending record stuck until the
+ * grace backstop; a guard keyed on `observationSeq` (the implementation
+ * under test) settles it as the first post-ack observation, as intended.
+ */
+function nbReobservedState(): ServerState {
+  const base = liveState();
+  return {
+    ...base,
+    observationSeq: 2, freshnessRevision: 2,
+  } as unknown as ServerState;
+}
+
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -293,6 +315,48 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
 
     // The confirming observation: the radio's own state now echoes `nb: true`.
     expect(setRadioState(nbConfirmedState())).toBe(true);
+    flushSync();
+
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
+  });
+
+  /**
+   * MOR-1488 review R2 (F2, closes the "test theatre" finding): a fast
+   * double-toggle acks the SECOND (OFF) command while the receiver state
+   * still reflects the value from BEFORE either dispatch — the target of
+   * OFF (`false`) happens to equal that stale, pre-both-clicks snapshot. A
+   * plain "does the target match the current confirmed reading" comparison
+   * (the pre-R2 implementation) would clear the marker the instant OFF
+   * acks, even though nothing has actually been re-observed since either
+   * click. This proves the sequence guard blocks exactly that, and that the
+   * FIRST genuine post-ack push (even one that only reconfirms the
+   * already-correct value, never advancing `stateRevision`) is what
+   * actually settles it — the counters `nbConfirmedState()`'s sibling
+   * `nbReobservedState()` bumps are not decorative.
+   */
+  it('does not clear the marker from a stale pre-ack snapshot on a fast double-toggle, only on the next real push (MOR-1488 review R2, closes F2)', () => {
+    render();
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
+
+    // Click ON, then OFF again before either is ever observed by a poll.
+    dispatchRadioIntent({ name: 'set_nb', params: { on: true, receiver: 0 } });
+    dispatchRadioIntent({ name: 'set_nb', params: { on: false, receiver: 0 } });
+    flushSync();
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+
+    const off = getCommandLifecycles().find(
+      (candidate) => candidate.name === 'set_nb' && candidate.params.on === false && candidate.status === 'pending',
+    );
+    expect(off).toBeDefined();
+    acknowledgeCommand(off!.id, off!.originalEpoch, off!.originalEpoch);
+    flushSync();
+
+    // OFF's target (false) already equals the stale confirmed snapshot —
+    // must NOT clear from that coincidence alone.
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+
+    // The first real post-ack push, even a non-transitioning reconfirmation.
+    expect(setRadioState(nbReobservedState())).toBe(true);
     flushSync();
 
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');

@@ -254,6 +254,26 @@ function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefine
 }
 
 /**
+ * Grace backstop (MOR-1488 review R2) — retire an acknowledged-pending
+ * command this long after its ack even with no confirming observation.
+ * Covers the never-confirms-at-all classes the sequence guard below cannot,
+ * because none of them ever produce a post-ack state push to guard against:
+ * (1) MOR-1445 post-ack execution failure — the server acks `ok:true` at
+ *     enqueue time, and a later failure reaches only a session notification
+ *     (`server.py` `commandExecutionFailed`) that `ws-client.ts`'s
+ *     `_emitCommandResult` never maps back to this command id; (2) MOR-1427
+ *     coalescing — `_cmd_pending` keys a 50ms coalescing window by command
+ *     NAME only, so a superseded frame acks `ok:true`+`superseded` and never
+ *     reaches the radio at all; (3) link death after ack. Without this
+ *     backstop, any of the three leaves the marker claiming "in flight"
+ *     forever. `Date.now()` itself is not reactive — this only takes effect
+ *     the next time something re-invokes `latestPendingParam` (the next
+ *     state push, or any other `$derived` recompute), not the instant the
+ *     clock crosses the threshold.
+ */
+const ACK_CONFIRM_GRACE_MS = 1_500;
+
+/**
  * Shared by the four accessors below: the freshest command matching
  * `intentName`/`receiver` that has not reached a terminal failure/expiry
  * status, or `undefined`. Same authority and `>=` freshest-wins tie-break
@@ -266,16 +286,51 @@ function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefine
  * echoes the new value back (~500ms keep-alive, CLAUDE.md). Treating ack as
  * "no longer pending" (the pre-fix behavior) collapsed the italic pending
  * window to something imperceptible live, presenting an unconfirmed value
- * as confirmed. An acknowledged command whose target does not yet match
- * `confirmedField` on the receiver's observed state therefore still counts
- * as pending here; once the radio's own state confirms the target, the
- * command is excluded, matching the "pending is display-only, confirmed
- * reading stays the group's sole selection source" leg-1 doctrine.
+ * as confirmed.
+ *
+ * MOR-1488 review R2 (sequence guard, closes F2): matching the CURRENT
+ * confirmed snapshot at ack time is not enough on its own — that snapshot
+ * can predate the command entirely. A fast double-toggle (confirmed
+ * nb:false → click ON → click OFF before either is observed) acks the OFF
+ * command while the receiver state still reflects the value from BEFORE
+ * both clicks; OFF's target (false) happens to equal that stale snapshot,
+ * so a plain match would clear the marker immediately even though nothing
+ * has actually been re-observed since. `command.ackObservationSeq`
+ * (`commands.svelte.ts`, captured the instant a command reaches
+ * 'acknowledged') fixes this: the command stays pending until the runtime's
+ * current `observationSeq` (`$lib/stores/radio.svelte` — the one counter
+ * that increments on every applied state push regardless of whether any
+ * field's value actually changed; see `ackObservationSeq`'s own doc comment
+ * for why `stateRevision` cannot serve this role) has advanced PAST the
+ * ack-time value. The FIRST post-ack push settles the record either way and
+ * it is no longer read as pending: if the confirmed field now matches the
+ * target, the command is excluded (leg-1 "pending is display-only,
+ * confirmed reading stays the group's sole selection source" doctrine); if
+ * it still does not match, the command is ALSO excluded — the value did not
+ * take, and continuing to claim "in flight" past that point would itself be
+ * a fabrication. This bounds the pending window to exactly one poll cycle
+ * past ack.
+ *
+ * When no `ackObservationSeq` was captured (no radio state had ever been
+ * observed at ack time — a real gap only in cold-start/test-double
+ * scenarios) or the runtime currently has no observed state either, the
+ * sequence guard has nothing to compare against and falls back to a direct
+ * match against the current confirmed reading (the pre-R2 behavior).
+ *
+ * The match itself intentionally reads the receiver's plain schema value
+ * (`confirmedReceiverState(receiver)?.[confirmedField]`), not `fieldStatus`
+ * freshness — a field that has never been observed at all reads as
+ * `undefined` here, which never `===`-matches a real target value, so an
+ * unobserved field is correctly treated as "not yet confirmed" rather than
+ * silently matching.
  */
 function latestPendingParam(
   intentName: string, paramKey: string, receiver: 0 | 1, confirmedField: keyof ServerState['main'],
 ): unknown {
-  let latest: { createdAt: number; value: unknown; status: string } | null = null;
+  let latest: {
+    createdAt: number; value: unknown; status: string;
+    updatedAt: number; ackObservationSeq: number | undefined;
+  } | null = null;
   for (const command of getCommandLifecycles()) {
     if (command.name !== intentName) continue;
     if (command.status !== 'pending' && command.status !== 'acknowledged') continue;
@@ -283,13 +338,32 @@ function latestPendingParam(
     const value = command.params[paramKey];
     if (value === undefined) continue;
     if (!latest || command.createdAt >= latest.createdAt) {
-      latest = { createdAt: command.createdAt, value, status: command.status };
+      latest = {
+        createdAt: command.createdAt, value, status: command.status,
+        updatedAt: command.updatedAt, ackObservationSeq: command.ackObservationSeq,
+      };
     }
   }
   if (!latest) return undefined;
-  if (latest.status === 'acknowledged'
-    && confirmedReceiverState(receiver)?.[confirmedField] === latest.value) return undefined;
-  return latest.value;
+  if (latest.status !== 'acknowledged') return latest.value;
+
+  // Grace backstop: fires regardless of what the sequence guard below would
+  // otherwise decide — see the constant's own doc comment.
+  if (Date.now() - latest.updatedAt > ACK_CONFIRM_GRACE_MS) return undefined;
+
+  const ackObservationSeq = latest.ackObservationSeq;
+  const currentObservationSeq = runtime.state?.observationSeq;
+  if (ackObservationSeq === undefined || currentObservationSeq === undefined) {
+    // No sequencing data to guard with — fall back to a direct match.
+    return confirmedReceiverState(receiver)?.[confirmedField] === latest.value ? undefined : latest.value;
+  }
+  if (currentObservationSeq <= ackObservationSeq) {
+    // No push observed since ack yet — stay pending regardless of any
+    // coincidental match against the (necessarily stale) current snapshot.
+    return latest.value;
+  }
+  // First post-ack push: settle the record either way (see doc comment).
+  return undefined;
 }
 
 /** Freshest unconfirmed `set_filter` target for `receiver`, or `null`.
