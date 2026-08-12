@@ -625,6 +625,50 @@ class AcquisitionScheduler:
 
     poll_due_requests = due_requests
 
+    def prime_unobserved(
+        self,
+        observed_paths: Iterable[FieldPath],
+        *,
+        reason: str = "prime-unobserved",
+    ) -> tuple[AcquisitionRequest, ...]:
+        """Queue one BACKGROUND read per never-observed field with a policy.
+
+        ``StateStore.mark_stale_due`` only decays fields already present in
+        the store (MOR-432 keeps decay externally driven, but it still can't
+        decay what was never entered), and :meth:`due_requests` only cadence-
+        polls capabilities flagged ``polling=True``. A field carrying an
+        explicit :attr:`RadioAcquisitionProfile.field_policies` override that
+        is neither polled nor ever observed would otherwise stay ``UNKNOWN``
+        forever — no reconciliation hint is ever generated for it (MOR-1490).
+
+        This is a one-shot catch-up: the caller (:class:`StateFreshnessService`)
+        invokes it once per connect epoch, at :data:`AcquisitionPriority.BACKGROUND`
+        so it never competes with fast meters/PTT. Unsupported/hookless paths
+        fall out through the normal :meth:`ensure_fresh` availability gate, and
+        an unanswered prime is dropped by the existing
+        :meth:`record_acquisition_failure` accounting — no bespoke retry loop.
+        """
+
+        observed = frozenset(observed_paths)
+        queued: list[AcquisitionRequest] = []
+        for path, policy in self._profile.field_policies.items():
+            if path in observed:
+                continue
+            max_age = policy.freshness_ttl_seconds
+            if max_age is None or max_age <= 0:
+                max_age = policy.cadence_seconds
+            if max_age is None or max_age <= 0:
+                max_age = _MIN_RECONCILIATION_MAX_AGE
+            result = self.ensure_fresh(
+                (path,),
+                max_age=max_age,
+                priority=AcquisitionPriority.BACKGROUND,
+                reason=reason,
+            )
+            if result.request is not None:
+                queued.append(result.request)
+        return tuple(queued)
+
     def record_acquisition_result(
         self,
         request: AcquisitionRequest,
@@ -1362,7 +1406,13 @@ class StateFreshnessService:
     production delivery store.
     """
 
-    __slots__ = ("_interval_seconds", "_on_delta", "_scheduler", "_store")
+    __slots__ = (
+        "_interval_seconds",
+        "_on_delta",
+        "_primed_unobserved",
+        "_scheduler",
+        "_store",
+    )
 
     def __init__(
         self,
@@ -1377,16 +1427,35 @@ class StateFreshnessService:
         self._scheduler = scheduler
         self._interval_seconds = interval_seconds
         self._on_delta = on_delta
+        self._primed_unobserved = False
 
     def tick(self, *, now: float | None = None) -> SnapshotDelta:
         """Advance stale fields once and queue reconciliation through scheduler."""
 
+        self._prime_unobserved_once()
         delta = self._store.mark_stale_due(now=now)
         for request in delta.reconciliation_requests:
             self._queue_reconciliation(request)
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
+
+    def _prime_unobserved_once(self) -> None:
+        """Queue the connect-epoch catch-up read exactly once (MOR-1490).
+
+        Guarded by a flag rather than re-derived every tick: recomputing the
+        never-observed set from a full store snapshot on every 50ms tick would
+        add needless work to the hot freshness loop for a one-time event.
+        """
+
+        if self._primed_unobserved:
+            return
+        self._primed_unobserved = True
+        scheduler = self._scheduler
+        if scheduler is None:
+            return
+        observed = (field.path for field in self._store.snapshot().fields)
+        scheduler.prime_unobserved(observed)
 
     async def run(self) -> None:
         """Run the periodic freshness loop until cancelled by the host."""

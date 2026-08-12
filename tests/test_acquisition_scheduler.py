@@ -17,6 +17,7 @@ from rigplane.core.acquisition_scheduler import (
     IcomCivAcquisitionExecutor,
     MeterObservationCoalescer,
     RadioStateModelService,
+    StateFreshnessService,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -1240,6 +1241,204 @@ def test_due_polling_skips_unsupported_unhooked_and_unsolicited_only_fields() ->
 
     assert len(requests) == 1
     assert requests[0].paths == (supported,)
+
+
+def test_prime_unobserved_queues_background_read_for_never_observed_policy_field() -> (
+    None
+):
+    clock = FreshnessClock(start=300.0)
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=mic_gain, command_response_observable=True),
+        ),
+        field_policies={
+            mic_gain: AcquisitionPolicy(
+                cadence_seconds=15.0, freshness_ttl_seconds=25.0
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    queued = scheduler.prime_unobserved(observed_paths=())
+
+    assert len(queued) == 1
+    assert queued[0].paths == (mic_gain,)
+    assert queued[0].priority is AcquisitionPriority.BACKGROUND
+    assert queued[0].reason == "prime-unobserved"
+    assert queued[0].acquisition_method == "command_response"
+    assert queued[0].max_age == 25.0
+    assert scheduler.pending_requests() == queued
+
+
+def test_prime_unobserved_skips_already_observed_field() -> None:
+    clock = FreshnessClock(start=301.0)
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=mic_gain, command_response_observable=True),
+        ),
+        field_policies={
+            mic_gain: AcquisitionPolicy(
+                cadence_seconds=15.0, freshness_ttl_seconds=25.0
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    queued = scheduler.prime_unobserved(observed_paths=(mic_gain,))
+
+    assert queued == ()
+    assert scheduler.pending_requests() == ()
+
+
+def test_prime_unobserved_does_not_touch_fields_without_explicit_policy_override() -> (
+    None
+):
+    clock = FreshnessClock(start=302.0)
+    unlisted = FieldPath.global_("operator_controls", "squelch")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=unlisted, command_response_observable=True),
+        ),
+        default_policy=AcquisitionPolicy(
+            cadence_seconds=5.0, freshness_ttl_seconds=15.0
+        ),
+        # Deliberately no explicit `field_policies` entry for `unlisted` — the
+        # prime pass only catches up fields with an explicit policy override
+        # (MOR-1490 scope: mechanism only, not blanket priming of every field
+        # that merely falls back to the profile default).
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    queued = scheduler.prime_unobserved(observed_paths=())
+
+    assert queued == ()
+    assert scheduler.pending_requests() == ()
+
+
+def test_prime_unobserved_skips_unsupported_and_hookless_fields() -> None:
+    clock = FreshnessClock(start=303.0)
+    unsupported = FieldPath.global_("tx_state", "power_on")
+    unhooked = FieldPath.global_("health", "state")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(
+                path=unsupported,
+                availability=FieldAvailability.UNSUPPORTED,
+                diagnostic="not exposed",
+            ),
+            FieldCapability(path=unhooked),
+        ),
+        field_policies={
+            unsupported: AcquisitionPolicy(freshness_ttl_seconds=10.0),
+            unhooked: AcquisitionPolicy(freshness_ttl_seconds=10.0),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    queued = scheduler.prime_unobserved(observed_paths=())
+
+    assert queued == ()
+    assert scheduler.pending_requests() == ()
+
+
+def test_state_freshness_service_primes_once_then_reconciliation_cadence_resumes() -> (
+    None
+):
+    clock = FreshnessClock(start=310.0)
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=mic_gain, command_response_observable=True),
+        ),
+        field_policies={
+            mic_gain: AcquisitionPolicy(
+                cadence_seconds=15.0, freshness_ttl_seconds=25.0
+            ),
+        },
+    )
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    service = StateFreshnessService(
+        store=store, scheduler=scheduler, interval_seconds=1.0
+    )
+
+    delta = service.tick(now=clock.now())
+
+    primed = scheduler.pending_requests()
+    assert len(primed) == 1
+    assert primed[0].reason == "prime-unobserved"
+    assert primed[0].priority is AcquisitionPriority.BACKGROUND
+    assert delta.reconciliation_requests == ()
+
+    # Radio answers the primed read; production credits it the same way a
+    # normal acquisition result is credited.
+    change = store.apply(_observation(mic_gain, 40, at=clock.now(), max_age=25.0))
+    scheduler.record_acquisition_result(primed[0], change)
+    assert scheduler.pending_requests() == ()
+
+    # Advance past the field's max_age: ordinary stale-refresh cadence now
+    # owns this field exactly like any other observed field.
+    clock.advance(25.1)
+    delta2 = service.tick(now=clock.now())
+
+    assert delta2.reconciliation_requests[0].path == mic_gain
+    reconciled = scheduler.pending_requests()
+    assert len(reconciled) == 1
+    assert reconciled[0].reason == "stale"
+    assert reconciled[0].priority is AcquisitionPriority.RECONCILIATION
+
+
+def test_state_freshness_service_primes_exactly_once_across_many_ticks() -> None:
+    clock = FreshnessClock(start=320.0)
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=mic_gain, command_response_observable=True),
+        ),
+        field_policies={
+            mic_gain: AcquisitionPolicy(
+                cadence_seconds=15.0, freshness_ttl_seconds=25.0
+            ),
+        },
+    )
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    service = StateFreshnessService(
+        store=store, scheduler=scheduler, interval_seconds=1.0
+    )
+
+    service.tick(now=clock.now())
+    primed = scheduler.pending_requests()
+    assert len(primed) == 1
+
+    # The radio never answers. Once the caller reports the (real, unhealthy)
+    # timeout, the scheduler drops the request outright — this field has no
+    # cadence-driven retry (mic_gain here is command-response-only), so no
+    # automatic requeue happens. That IS the existing backoff idiom for
+    # non-cadence fields (see AcquisitionScheduler.record_acquisition_failure);
+    # priming must not invent a bespoke retry loop on top of it.
+    scheduler.record_acquisition_failure(
+        primed[0],
+        reason="acquisition_request_timeout",
+        now=clock.now(),
+        link_healthy=False,
+    )
+    assert scheduler.pending_requests() == ()
+
+    for _ in range(50):
+        clock.advance(1.0)
+        service.tick(now=clock.now())
+
+    # No hot loop: the one-shot prime never re-fires on its own.
+    assert scheduler.pending_requests() == ()
 
 
 def test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps() -> None:
