@@ -339,6 +339,7 @@ export interface FilterProps {
   filterWidthMax: number;
   filterConfig: FilterModeConfig | null;
   ifShift: number;
+  hasIfShift: boolean;
   hasPbt: boolean;
   pbtInner: number;
   pbtOuter: number;
@@ -388,6 +389,14 @@ export function toFilterProps(
     ifShift: hasCap(caps, 'if_shift')
       ? (rx?.ifShift ?? 0)
       : deriveIfShift(pbtInner, pbtOuter),
+    // MOR-1494: whether the radio has a REAL if_shift command of its own.
+    // Icom radios (PBT only, e.g. IC-7300) declare no `if_shift` capability
+    // at all — `ifShift` above still computes a PBT-derived display value
+    // for consumers that want it, but FilterPanel.svelte uses THIS flag to
+    // decide whether to show the IF-shift control, so a capability-absent
+    // radio gets the row hidden instead of a permanently-disabled control
+    // with a synthetic reading (PBT Inner/Outer are the real controls there).
+    hasIfShift: hasCap(caps, 'if_shift'),
     hasPbt: hasCap(caps, 'pbt'),
     pbtInner,
     pbtOuter,
