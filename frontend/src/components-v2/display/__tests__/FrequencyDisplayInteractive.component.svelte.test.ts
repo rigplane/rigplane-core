@@ -208,4 +208,31 @@ describe('FrequencyDisplayInteractive pending-target marker (MOR-1441)', () => {
     expect(onFreqChange).toHaveBeenCalledWith(CONFIRMED + 1000);
     expect(onFreqChange).not.toHaveBeenCalledWith(PENDING + 1000);
   });
+
+  // MOR-1441 round-2 review: the wheel pin above does not cover the
+  // click-to-select + ArrowUp/ArrowDown path, a separate reachable gesture
+  // (`handleKeyDown`, lines ~100/104) with its OWN `adjustFreqByDigit(freq, ...)`
+  // call sites — a keyboard-only regression of the same bug (sourcing from
+  // `pendingDisplayHz` instead of `freq`) would reproduce the identical
+  // runaway on this path alone and slip past the wheel-only pin.
+  it('MUTATION KILL: arrow keys on a pending display compute from CONFIRMED, not the pending value', () => {
+    const CONFIRMED = 14250000;
+    const PENDING = 14260000; // already 10 kHz ahead of confirmed
+    const onFreqChange = vi.fn();
+    const t = mountDisplay({ freq: CONFIRMED, pendingDisplayHz: PENDING, onFreqChange });
+
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1].click(); // select the 1 Hz digit
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    group.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    group.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    flushSync();
+
+    expect(onFreqChange).toHaveBeenCalledTimes(2);
+    // THE assertion: confirmed ± 1 Hz. The pre-fix code would have computed
+    // from PENDING (14260001/14259999) here instead.
+    expect(onFreqChange.mock.calls[0][0]).toBe(CONFIRMED + 1);
+    expect(onFreqChange.mock.calls[1][0]).toBe(CONFIRMED - 1);
+    expect(onFreqChange).not.toHaveBeenCalledWith(PENDING + 1);
+  });
 });
