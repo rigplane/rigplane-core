@@ -4740,7 +4740,9 @@ async def test_scan_command_echo_is_not_labelled_a_poll_readback() -> None:
     """
     radio = _make_radio(active="MAIN", model="IC-7300")
     store = StateStore()
-    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState(), state_store=store)
+    poller = RadioPoller(
+        radio, CommandQueue(), radio_state=RadioState(), state_store=store
+    )
 
     await poller._execute(ScanStart(scan_type=0x01))  # noqa: SLF001
 
