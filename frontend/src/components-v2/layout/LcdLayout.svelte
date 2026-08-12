@@ -13,9 +13,7 @@
     }
   }
 
-  import { runtime } from '$lib/runtime';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
-  import { applyModeDefault } from '$lib/stores/tuning.svelte';
   import AmberCockpit from '../panels/lcd/AmberCockpit.svelte';
   import AmberScope from '../panels/lcd/AmberScope.svelte';
   import LcdContrastControl from '../panels/lcd/LcdContrastControl.svelte';
@@ -35,20 +33,26 @@
   // a dedicated AmberScope component.
   let { variant = 'cockpit' }: { variant?: 'cockpit' | 'scope' } = $props();
 
-  let radioState = $derived(runtime.state);
   let keyboardConfig = $derived(getKeyboardConfig());
   // Reactive Display Mode (#838) — the class is applied to .lcd-frame
   // so CSS effects in lcd-vintage.css can layer on top of the base render.
   let displayMode = $derived(getLcdDisplayMode());
-  let activeMode = $derived(radioState?.active === 'SUB' ? radioState?.sub?.mode : radioState?.main?.mode);
 
   const keyboardHandlers = getKeyboardHandlers();
 
-  $effect(() => {
-    if (activeMode) {
-      applyModeDefault(activeMode);
-    }
-  });
+  // MOR-1486: amber-lcd (this skin) has no tuning-STEP control anywhere —
+  // neither AmberCockpit nor AmberScope render one — so an operator here
+  // has no way to see the shared tuning-step store change, and no way to
+  // discover or restore auto-step's state at all. Silently mutating that
+  // shared store from mode changes on a skin that cannot show the result
+  // is exactly the invisible-state-change dishonesty MOR-1486 was opened
+  // to close (see the PR body for the ruling). Building a step affordance
+  // into this skin's hardware-mimicking chrome is out of scope here, so
+  // the minimal honest fix is: this layout does not drive the tuning-step
+  // store's mode-follow behavior at all. Mode-follow still works normally
+  // on skins that do have a STEP control (RadioLayout.svelte); amber-lcd
+  // just doesn't participate, and the shared step state is left exactly
+  // as set elsewhere.
 </script>
 
 <div class="lcd-layout">

@@ -105,14 +105,21 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasDualReceiver: vi.fn(() => capabilityHarness.dual),
 }));
 
-const tuningHarness = vi.hoisted(() => ({
-  adjustTuningStep: vi.fn(),
-}));
+const tuningHarness = vi.hoisted(() => {
+  const state = { autoStep: false };
+  return {
+    state,
+    adjustTuningStep: vi.fn(),
+    setAutoStep: vi.fn((on: boolean) => { state.autoStep = on; }),
+    isAutoStep: vi.fn(() => state.autoStep),
+  };
+});
 
 vi.mock('$lib/stores/tuning.svelte', () => ({
   getTuningStep: vi.fn(() => 1000),
   adjustTuningStep: tuningHarness.adjustTuningStep,
-  isAutoStep: vi.fn(() => false),
+  isAutoStep: tuningHarness.isAutoStep,
+  setAutoStep: tuningHarness.setAutoStep,
   formatStep: vi.fn(() => '1.0k'),
 }));
 
@@ -236,6 +243,7 @@ function clearIntentSpies() {
 beforeEach(() => {
   components = [];
   vi.clearAllMocks();
+  tuningHarness.state.autoStep = false;
   capabilityHarness.scope = true;
   capabilityHarness.dual = true;
   authorityHarness.current = authority();
@@ -536,6 +544,88 @@ describe('structural and browser-local behavior', () => {
   });
 });
 
+// ── Auto-step toggle (MOR-1486) ─────────────────────────────────────────────
+//
+// Prior to this ticket, `_autoStep` could only ever be re-enabled by wiping
+// browser storage — there was no control that called `setAutoStep(true)`.
+// The 'A' badge was a passive 9px glyph with no click handler. This suite
+// pins the fix: the badge is now a real, keyboard-accessible toggle button
+// (`aria-pressed` + a title in both states) that flips the store, and a
+// manual step change (STEP click) still disables auto-step exactly as
+// before — the toggle only restores the way *back*.
+describe('auto-step toggle (MOR-1486)', () => {
+  function autoToggle(root: HTMLElement) {
+    return button(root, 'AUTO');
+  }
+
+  it('renders as a real button with aria-pressed, reflecting the store', () => {
+    tuningHarness.state.autoStep = true;
+    const target = mountToolbar();
+    const toggle = autoToggle(target);
+    expect(toggle).toBeDefined();
+    expect(toggle?.tagName).toBe('BUTTON');
+    expect(toggle?.getAttribute('aria-pressed')).toBe('true');
+    expect(toggle?.classList.contains('active')).toBe(true);
+  });
+
+  it('reflects the off state with aria-pressed=false and no active class', () => {
+    tuningHarness.state.autoStep = false;
+    const target = mountToolbar();
+    const toggle = autoToggle(target);
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle?.classList.contains('active')).toBe(false);
+  });
+
+  it('clicking the toggle calls setAutoStep with the flipped value', () => {
+    tuningHarness.state.autoStep = false;
+    const target = mountToolbar();
+    autoToggle(target)!.click();
+    flushSync();
+    expect(tuningHarness.setAutoStep).toHaveBeenCalledTimes(1);
+    expect(tuningHarness.setAutoStep).toHaveBeenCalledWith(true);
+  });
+
+  it('clicking an already-on toggle disables it (round trip)', () => {
+    tuningHarness.state.autoStep = true;
+    const target = mountToolbar();
+    autoToggle(target)!.click();
+    flushSync();
+    expect(tuningHarness.setAutoStep).toHaveBeenCalledWith(false);
+  });
+
+  it('carries a non-empty title in both states, distinct from one another', () => {
+    tuningHarness.state.autoStep = true;
+    const onTarget = mountToolbar();
+    const onTitle = autoToggle(onTarget)?.title;
+    expect(onTitle).toBeTruthy();
+
+    tuningHarness.state.autoStep = false;
+    const offTarget = mountToolbar();
+    const offTitle = autoToggle(offTarget)?.title;
+    expect(offTitle).toBeTruthy();
+
+    expect(onTitle).not.toBe(offTitle);
+  });
+
+  it('a manual STEP click still disables auto-step (unaffected by the new toggle)', () => {
+    const target = mountToolbar();
+    buttons(target).find((item) => item.title === 'Increase tuning step')!.click();
+    flushSync();
+    expect(tuningHarness.adjustTuningStep).toHaveBeenCalledWith('up');
+    // adjustTuningStep is the store's own internal responsibility for
+    // disabling auto-step (covered by tuning.isolated.test.ts) — the
+    // toolbar itself never calls setAutoStep(false) directly from a step
+    // click, only from the toggle.
+    expect(tuningHarness.setAutoStep).not.toHaveBeenCalled();
+  });
+
+  it('exists whether auto-step is on or off — not gated on the badge condition removed by this ticket', () => {
+    tuningHarness.state.autoStep = false;
+    const target = mountToolbar();
+    expect(autoToggle(target)).toBeDefined();
+  });
+});
+
 // ── Static boundary and freeze proof ───────────────────────────────────────
 
 describe('source and enforcement boundary', () => {
@@ -587,6 +677,9 @@ describe('source and enforcement boundary', () => {
     expect(popover).not.toMatch(/stores\/radio\.svelte|sendCommand|\?\? false/);
     const source = readFileSync(sourcePath, 'utf8');
     const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
-    expect(cssHash).toBe('eb9e75ed2988082d6966d6727f73d3d77651086df38b1458aed3e9c274725fb7');
+    // MOR-1486: `.auto-badge` (the passive 'A' glyph) was removed and
+    // `.auto-step-toggle.active` (the new real toggle's amber styling) was
+    // added — this hash is re-pinned to that legitimate CSS change.
+    expect(cssHash).toBe('42438ae899f89f4f7b6aef982755c1e1e166945a98b5cb1d6cb246c4eef96e57');
   });
 });

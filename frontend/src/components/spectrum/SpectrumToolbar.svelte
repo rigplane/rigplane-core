@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { getTuningStep, adjustTuningStep, isAutoStep, formatStep } from '../../lib/stores/tuning.svelte';
+  import { getTuningStep, adjustTuningStep, isAutoStep, setAutoStep, formatStep } from '../../lib/stores/tuning.svelte';
+  import { t } from '$lib/i18n';
   import { type ColorSchemeName } from '../../lib/renderers/waterfall-renderer';
   import { hasCapability, hasDualReceiver } from '../../lib/stores/capabilities.svelte';
   import { runtime } from '$lib/runtime/frontend-runtime';
@@ -142,6 +143,20 @@
     adjustTuningStep('down');
   }
 
+  /**
+   * MOR-1486: the 'A' badge used to be a passive, non-interactive glyph —
+   * `setAutoStep(true)` was unreachable from any control once a manual step
+   * change (this control, ArrowUp/Down, or the RC-28 companion) disabled
+   * it; only a fresh browser profile ever restored it. This makes the
+   * state a real toggle: `aria-pressed` + a title explaining both states
+   * (see `core.spectrum.autoStep.*` in the i18n catalog) so the operator
+   * can always find their way back.
+   */
+  function toggleAutoStep(e: MouseEvent) {
+    e.preventDefault();
+    setAutoStep(!autoStep);
+  }
+
   let scopeFacts = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
 
   type NumberScopeField = 'mode' | 'edge' | 'span' | 'speed' | 'refDb' | 'receiver';
@@ -231,13 +246,19 @@
     >
       <span class="toolbar-label">STEP</span>
       <span class="toolbar-value">{stepLabel}</span>
-      {#if autoStep}<span class="auto-badge">A</span>{/if}
     </button>
     <button
       class="toolbar-btn small step-arrow"
       onclick={cycleStep}
       title="Increase tuning step"
     >▶</button>
+    <button
+      class="toolbar-btn small auto-step-toggle"
+      class:active={autoStep}
+      aria-pressed={autoStep}
+      onclick={toggleAutoStep}
+      title={autoStep ? t('core.spectrum.autoStep.onTitle') : t('core.spectrum.autoStep.offTitle')}
+    >AUTO</button>
   </div>
   {#if hasCapability('scope')}
     <div class="toolbar-separator"></div>
@@ -567,10 +588,13 @@
     text-align: center;
   }
 
-  .auto-badge {
+  /* Auto-step toggle keeps the amber tone the old passive badge used, so
+     the "this is following the mode automatically" association carries
+     over even though it is now a real, clickable control. */
+  .auto-step-toggle.active {
     color: #fbbf24;
-    font-size: 9px;
-    font-weight: 600;
+    border-color: rgba(251, 191, 36, 0.4);
+    background: rgba(251, 191, 36, 0.12);
   }
 
   .step-group {
