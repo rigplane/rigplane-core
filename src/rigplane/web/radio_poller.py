@@ -94,8 +94,15 @@ from ..core.radio_protocol import (
     RelativeVfoReadbackCapable,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
-from ..core.state_store import StateStore
+from ..core.state_store import FreshnessState, StateSnapshot, StateStore
 from ..core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS, TxOutcome
+from ..core.tx_target import (
+    KnownTxTarget,
+    TxReceiver,
+    TxSlot,
+    TxTarget,
+    UnknownTxTarget,
+)
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
@@ -1369,6 +1376,17 @@ class RadioPoller:
                                 "radio-poller: unselected-slot poll error",
                                 exc_info=True,
                             )
+
+                # 3b. Re-derive tx_target from currently observed active-VFO
+                # identity/split/frequency facts (MOR-1496). State-store reads
+                # only, no wire I/O — run every cycle so freshness tracks the
+                # weakest input instead of freezing at its last value.
+                try:
+                    self._publish_tx_target()
+                except Exception:
+                    logger.debug(
+                        "radio-poller: tx_target derivation error", exc_info=True
+                    )
 
                 # 4. Wait for next cycle
                 await self._queue.wait(timeout=self._fast_interval)
@@ -3206,6 +3224,122 @@ class RadioPoller:
 
     def _discard_vfo_identity(self, receiver: int) -> None:
         self._state_store.discard(self._vfo_identity_paths(receiver))
+
+    def _tx_target_receiver(self) -> tuple[int, TxReceiver]:
+        """Resolve the receiver index + MAIN/SUB label carrying TX.
+
+        Mirrors :meth:`establish_vfo_identity`'s own resolution (MOR-1443).
+        """
+        receiver = 1 if self._current_active().upper() == "SUB" else 0
+        label: TxReceiver = "SUB" if receiver == 1 else "MAIN"
+        return receiver, label
+
+    @staticmethod
+    def _tx_target_input(
+        snapshot: StateSnapshot, path: FieldPath
+    ) -> tuple[Any, UnknownTxTarget | None]:
+        """Look up one derivation input: ``(value, None)`` if FRESH, else
+        ``(None, UnknownTxTarget(...))`` explaining why it cannot be used."""
+        try:
+            field = snapshot.field(path)
+        except KeyError:
+            return None, UnknownTxTarget(reason="not-observed")
+        if field.freshness is FreshnessState.STALE:
+            return None, UnknownTxTarget(reason="stale")
+        if field.freshness is not FreshnessState.FRESH:
+            return None, UnknownTxTarget(reason="not-observed")
+        return field.value, None
+
+    def _compute_tx_target(self) -> TxTarget:
+        """Derive TX target identity from already-observed CI-V facts (MOR-1496).
+
+        Unlike Yaesu CAT's native ``get_tx_func`` (see
+        ``backends/yaesu_cat/observations.py``), Icom CI-V never reports a TX
+        target directly. The facts that determine it are already tracked
+        independently in the state store: active-VFO identity
+        (``receiver.<rx>.vfo.active_slot``, established once per connect by
+        :meth:`establish_vfo_identity`, MOR-1443, since this CI-V scheme can
+        never passively report which slot is active), split
+        (``global.tx_state.split``, cmd 0x0F), and the selected/unselected
+        frequencies (``receiver.<rx>.[active|unselected].freq_mode.freq_hz``,
+        cmd 0x25).
+
+        Split OFF transmits on the selected-slot frequency; split ON
+        transmits on the OTHER (unselected) slot's frequency — do not copy
+        Yaesu's MAIN/SUB ``get_tx_func`` toggle semantics here, it answers a
+        different question. Any input unobserved or stale fails this closed;
+        each input is re-checked on every call, so the result's freshness is
+        only ever as good as its weakest input.
+
+        Only radios that can never passively report VFO identity
+        (``vfo_readback == "selected_unselected"``, the exact gate
+        :meth:`establish_vfo_identity` uses) get a derivation; other CI-V VFO
+        schemes (absolute readback, MAIN/SUB-only radios like IC-9700/IC-7610)
+        stay ``unsupported`` rather than guess at unvalidated split semantics.
+        """
+        if self._profile.vfo_readback != "selected_unselected":
+            return UnknownTxTarget(reason="unsupported")
+
+        receiver, receiver_label = self._tx_target_receiver()
+        receiver_id = str(receiver)
+        snapshot = self._state_store.snapshot()
+
+        slot, unknown = self._tx_target_input(
+            snapshot, FieldPath.active_slot(receiver_id)
+        )
+        if unknown is not None:
+            return unknown
+        if slot not in ("A", "B"):
+            return UnknownTxTarget(reason="contradiction")
+
+        split_value, unknown = self._tx_target_input(
+            snapshot, FieldPath.global_("tx_state", "split")
+        )
+        if unknown is not None:
+            return unknown
+        split_on = bool(split_value)
+
+        if split_on:
+            freq_path = FieldPath.unselected(receiver_id, "freq_mode", "freq_hz")
+            target_slot: TxSlot = "B" if slot == "A" else "A"
+        else:
+            freq_path = FieldPath.active(receiver_id, "freq_mode", "freq_hz")
+            target_slot = cast(TxSlot, slot)
+
+        frequency, unknown = self._tx_target_input(snapshot, freq_path)
+        if unknown is not None:
+            return unknown
+        if type(frequency) is not int or isinstance(frequency, bool) or frequency <= 0:
+            return UnknownTxTarget(reason="contradiction")
+
+        return KnownTxTarget(
+            receiver=receiver_label,
+            slot=target_slot,
+            frequency_hz=frequency,
+        )
+
+    def _publish_tx_target(self) -> None:
+        """Recompute and republish the derived TX target (MOR-1496).
+
+        Called every poll-loop tick so the field's freshness tracks its
+        weakest input rather than decaying on its own clock — this derived
+        field carries no ``max_age`` of its own, so a stale input is only
+        reflected once re-derivation notices it. Uses ``apply_current`` (not
+        ``apply``): this runs synchronously off the just-read snapshot with
+        no ``await`` in between, so it always stamps the store's current
+        provider generation.
+        """
+        observation = Observation(
+            path=FieldPath.global_("tx_state", "tx_target"),
+            value=self._compute_tx_target(),
+            source=SourceMetadata(
+                source="local_reconcile",
+                provider="icom_civ",
+                native_id="tx_target_derivation",
+            ),
+            timestamp_monotonic=time.monotonic(),
+        )
+        self._state_store.apply_current(observation)
 
     async def _select_and_bind_vfo_slot(
         self,

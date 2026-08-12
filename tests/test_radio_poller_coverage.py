@@ -30,7 +30,8 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.radio_protocol import RelativeVfoState
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
+from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.core.types import CivFrame
 from rigplane.core.command_service import (
     CommandExecutionResult,
@@ -4139,3 +4140,270 @@ async def test_establish_vfo_identity_skips_during_external_cat_session() -> Non
 
     radio._set_vfo_slot_confirmed.assert_not_awaited()
     assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
+
+
+# ---------------------------------------------------------------------------
+# MOR-1496: derive tx_target for Icom CI-V radios from active-VFO identity
+# (MOR-1443), split, and per-slot frequencies — a pure re-derivation off
+# already-observed fields (Icom has no Yaesu-style ``get_tx_func`` fact).
+# ---------------------------------------------------------------------------
+
+
+def _apply_tx_target_input(
+    store: StateStore,
+    path: FieldPath,
+    value: Any,
+    *,
+    generation: int,
+    max_age: float | None = None,
+    now: float | None = None,
+) -> None:
+    store.apply(
+        Observation(
+            path=path,
+            value=value,
+            source=SourceMetadata(source="test", provider="test"),
+            timestamp_monotonic=time.monotonic() if now is None else now,
+            max_age=max_age,
+            provider_generation=generation,
+        )
+    )
+
+
+def _seed_tx_target_ready(
+    store: StateStore,
+    *,
+    generation: int,
+    slot: str = "A",
+    split: bool = False,
+    active_freq: int = 14_250_000,
+    unselected_freq: int = 7_150_000,
+    now: float | None = None,
+) -> None:
+    """Seed identity/split/selected+unselected freq — all four inputs.
+
+    IC-7300's ``RadioPoller.__init__`` wires
+    ``StateStore.configure_relative_vfo_retention``, which stages the
+    active/unselected ``freq_mode`` family behind a "complete tuple"
+    bootstrap: ``freq_hz`` alone never lands until its sibling ``mode`` for
+    BOTH slots also arrives within one coherence window. All six
+    observations here share one ``now`` so they land as a single bootstrap
+    batch; the retention system then owns their max_age (not a parameter
+    here — see the ``split`` staleness test for a case that bypasses it).
+    """
+
+    shared_now = time.monotonic() if now is None else now
+    _apply_tx_target_input(
+        store,
+        FieldPath.active_slot("0"),
+        slot,
+        generation=generation,
+        now=shared_now,
+    )
+    _apply_tx_target_input(
+        store,
+        FieldPath.global_("tx_state", "split"),
+        split,
+        generation=generation,
+        now=shared_now,
+    )
+    for builder, freq in (
+        (FieldPath.active, active_freq),
+        (FieldPath.unselected, unselected_freq),
+    ):
+        _apply_tx_target_input(
+            store,
+            builder("0", "freq_mode", "freq_hz"),
+            freq,
+            generation=generation,
+            now=shared_now,
+        )
+        _apply_tx_target_input(
+            store,
+            builder("0", "freq_mode", "mode"),
+            "USB",
+            generation=generation,
+            now=shared_now,
+        )
+
+
+@pytest.mark.asyncio
+async def test_tx_target_known_from_selected_freq_when_split_off() -> None:
+    """Split OFF: TX rides the selected-slot (active-VFO) frequency."""
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    _seed_tx_target_ready(
+        store, generation=generation, slot="A", split=False, active_freq=14_250_000
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    target = poller._compute_tx_target()  # noqa: SLF001
+
+    assert target == KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=14_250_000)
+
+
+@pytest.mark.asyncio
+async def test_tx_target_known_from_unselected_freq_when_split_on() -> None:
+    """Split ON: TX rides the OTHER (unselected) VFO's frequency."""
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    _seed_tx_target_ready(
+        store, generation=generation, slot="A", split=True, unselected_freq=7_150_000
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    target = poller._compute_tx_target()  # noqa: SLF001
+
+    assert target == KnownTxTarget(receiver="MAIN", slot="B", frequency_hz=7_150_000)
+
+
+@pytest.mark.asyncio
+async def test_tx_target_follows_split_flip() -> None:
+    """Flipping split alone must flip the target on the next re-derivation."""
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    _seed_tx_target_ready(
+        store,
+        generation=generation,
+        slot="B",
+        split=False,
+        active_freq=21_050_000,
+        unselected_freq=3_573_000,
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    off_target = poller._compute_tx_target()  # noqa: SLF001
+    assert off_target == KnownTxTarget(
+        receiver="MAIN", slot="B", frequency_hz=21_050_000
+    )
+
+    _apply_tx_target_input(
+        store, FieldPath.global_("tx_state", "split"), True, generation=generation
+    )
+
+    on_target = poller._compute_tx_target()  # noqa: SLF001
+    assert on_target == KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=3_573_000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing", ("identity", "split", "freq"), ids=("identity", "split", "freq")
+)
+async def test_tx_target_unknown_when_one_input_not_observed(missing: str) -> None:
+    """Any single required input missing (identity/split/freq) fails the
+    whole derivation closed — the other two alone are never enough."""
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    if missing != "identity":
+        _apply_tx_target_input(
+            store, FieldPath.active_slot("0"), "A", generation=generation
+        )
+    if missing != "split":
+        _apply_tx_target_input(
+            store, FieldPath.global_("tx_state", "split"), False, generation=generation
+        )
+    if missing != "freq":
+        _apply_tx_target_input(
+            store,
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_250_000,
+            generation=generation,
+        )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    target = poller._compute_tx_target()  # noqa: SLF001
+
+    assert target == UnknownTxTarget(reason="not-observed")
+
+
+@pytest.mark.asyncio
+async def test_tx_target_degrades_to_stale_when_input_goes_stale() -> None:
+    """A KnownTxTarget must not survive its weakest input aging out — the
+    field has no TTL of its own, so this only holds if re-derivation notices
+    the input went ``stale`` and republishes accordingly.
+
+    Ages out ``split`` (plain global field, ``max_age=1.0``) while leaving
+    identity/frequency alone (their own multi-second retention max_age, see
+    ``_seed_tx_target_ready``'s docstring) — isolating that ANY one stale
+    input fails the whole derivation, not a coincidental simultaneous decay.
+    """
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    generation = store.begin_provider_generation()
+    radio = _make_radio(model="IC-7300")
+    _seed_tx_target_ready(
+        store,
+        generation=generation,
+        slot="A",
+        split=False,
+        active_freq=14_250_000,
+        now=10.0,
+    )
+    _apply_tx_target_input(
+        store,
+        FieldPath.global_("tx_state", "split"),
+        False,
+        generation=generation,
+        max_age=1.0,
+        now=10.0,
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    fresh_target = poller._compute_tx_target()  # noqa: SLF001
+    assert fresh_target == KnownTxTarget(
+        receiver="MAIN", slot="A", frequency_hz=14_250_000
+    )
+
+    clock.advance(2.0)
+    store.mark_stale_due()
+
+    assert (
+        store.snapshot().field(FieldPath.global_("tx_state", "split")).freshness
+        is FreshnessState.STALE
+    )
+    assert (
+        store.snapshot().field(FieldPath.active("0", "freq_mode", "freq_hz")).freshness
+        is FreshnessState.FRESH
+    )
+    stale_target = poller._compute_tx_target()  # noqa: SLF001
+    assert stale_target == UnknownTxTarget(reason="stale")
+
+
+@pytest.mark.asyncio
+async def test_tx_target_unsupported_for_non_selected_unselected_profile() -> None:
+    """MAIN/SUB CI-V radios (IC-9700/IC-7610, ``vfo_readback == "none"``)
+    never get an unproven split derivation — only selected/unselected
+    single-VFO radios (IC-7300 live bench, IC-705 same scheme) do."""
+
+    radio = _make_radio(model="IC-9700")
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    target = poller._compute_tx_target()  # noqa: SLF001
+
+    assert target == UnknownTxTarget(reason="unsupported")
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_tx_target_each_cycle() -> None:
+    """Integration proof: the main poll loop republishes tx_target every
+    cycle, not just the pure ``_compute_tx_target`` helper above."""
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await _run_once(poller)
+
+    field = store.snapshot().field("global.tx_state.tx_target")
+    assert isinstance(field.value, (KnownTxTarget, UnknownTxTarget))
