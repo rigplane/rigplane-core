@@ -2227,6 +2227,22 @@ class WebServer:
             finally:
                 if self._radio_poller is not None:
                     self._radio_poller._initial_fetch_done.set()
+                    # MOR-1443 review R2, finding 1: reset_vfo_session() above
+                    # discarded active_slot for this new connection epoch, and
+                    # unlike the process-startup call site, RadioPoller._run()
+                    # never re-fires after a soft-reconnect (it only runs its
+                    # one-time startup section once). Without this call,
+                    # identity stays unknown until the process restarts even
+                    # though the readback is unqueryable again. The gate reads
+                    # unobserved here (reset just cleared it), so this emits
+                    # the same confirmed VFO-A select the startup path does.
+                    try:
+                        await self._radio_poller.establish_vfo_identity()
+                    except Exception:
+                        logger.warning(
+                            "reconnect: auto VFO identity establish failed",
+                            exc_info=True,
+                        )
             # Re-enable scope after refetch completes.
             # Do NOT gate on self._radio_ready(): that property waits for
             # CI-V broadcast data, but on IC-7610 in the "deaf" firmware

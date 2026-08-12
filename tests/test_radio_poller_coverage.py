@@ -4034,9 +4034,15 @@ async def test_run_does_not_auto_command_vfo_when_identity_queryable() -> None:
 
 @pytest.mark.asyncio
 async def test_run_skips_auto_vfo_command_when_identity_already_observed() -> None:
-    """Reconnect with retained state: activeSlot is already known (e.g. a
-    prior commanded select survived the reconnect). The poller must not
-    re-command VFO A — no write when identity is already established."""
+    """activeSlot is already known when the establish check runs — no
+    reconnect path retains it across a drop, ``reset_vfo_session()``
+    unconditionally discards it (MOR-1443 review R2, finding 3). This
+    models the window it legitimately reappears in: an operator-issued
+    "Select VFO A/B" drained by the still-running poll loop between
+    ``reset_vfo_session()`` and the reconnect-path establish call can
+    observe identity again first. The poller must not re-command VFO A
+    over that observation — no write when identity is already
+    established."""
 
     radio = _make_radio(model="IC-7300")
     store = StateStore()
@@ -4060,3 +4066,76 @@ async def test_run_skips_auto_vfo_command_when_identity_already_observed() -> No
 
     radio._set_vfo_slot_confirmed.assert_not_awaited()
     assert store.snapshot().field("receiver.0.vfo.active_slot").value == "B"
+
+
+@pytest.mark.asyncio
+async def test_establish_vfo_identity_refires_after_reconnect_reset() -> None:
+    """MOR-1443 review R2, finding 1: ``RadioPoller._run()`` only fires its
+    one-time startup section once, so after a soft-reconnect discards
+    ``active_slot`` via ``reset_vfo_session()`` identity would otherwise
+    stay unknown until process restart. ``WebServer._on_radio_reconnect()``
+    /``_refetch_and_reenable()`` (server.py) now call the public
+    ``establish_vfo_identity()`` itself, in the ``finally`` right after
+    re-setting the poller readiness gate. This test reproduces that exact
+    sequence directly against ``RadioPoller`` — run startup once, reset
+    the VFO session, clear+set ``_initial_fetch_done`` the way the server
+    does, then invoke the reconnect-path establish call — and asserts a
+    second confirmed ``SelectVfo("A")`` emits, with ``active_slot``
+    observed again afterward."""
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await _run_once(poller)
+    radio._set_vfo_slot_confirmed.assert_awaited_once_with("A", receiver=0)
+    assert store.snapshot().field("receiver.0.vfo.active_slot").value == "A"
+
+    # Reconnect sequence: reset_vfo_session() discards the connection-epoch
+    # identity fact, then the server clears and re-sets the poller
+    # readiness gate around the refetch — mirroring
+    # WebServer._on_radio_reconnect() / _refetch_and_reenable() exactly.
+    poller.reset_vfo_session()
+    assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
+    poller._initial_fetch_done.clear()  # noqa: SLF001
+    poller._initial_fetch_done.set()  # noqa: SLF001
+
+    # The first establish call already drained the fixture's two-value
+    # ``read_relative_vfo`` side_effect (selected + unselected); the
+    # reconnect-path establish drives another confirmed select-and-bind
+    # round, which reads both again.
+    radio.read_relative_vfo = AsyncMock(
+        side_effect=(
+            RelativeVfoState(14_200_000, "USB", 1, 0),
+            RelativeVfoState(7_100_000, "LSB", 2, 0),
+        )
+    )
+
+    await poller.establish_vfo_identity()
+
+    assert radio._set_vfo_slot_confirmed.await_args_list == [
+        call("A", receiver=0),
+        call("A", receiver=0),
+    ]
+    assert store.snapshot().field("receiver.0.vfo.active_slot").value == "A"
+
+
+@pytest.mark.asyncio
+async def test_establish_vfo_identity_skips_during_external_cat_session() -> None:
+    """MOR-1443 review R2, finding 2: the poll loop's external-CAT
+    ownership pause (:1256, ``is True`` on ``external_cat_session_active``)
+    must also gate the establish-once write, or this PR's write escapes
+    it. An external CAT session (e.g. Hamlib A1 bridge) owns the wire, so
+    the auto-commanded VFO A must not fire while it is active."""
+
+    radio = _make_radio(model="IC-7300")
+    radio.external_cat_session_active = True
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await poller.establish_vfo_identity()
+
+    radio._set_vfo_slot_confirmed.assert_not_awaited()
+    assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()

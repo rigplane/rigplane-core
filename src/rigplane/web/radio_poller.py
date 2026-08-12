@@ -1239,9 +1239,11 @@ class RadioPoller:
         # MOR-1443: some CI-V radios can never passively report which VFO
         # slot (A/B) is active; command VFO A once so identity is known.
         try:
-            await self._establish_vfo_identity()
+            await self.establish_vfo_identity()
         except Exception:
-            logger.debug(
+            # A ruled behaviour (owner decision, MOR-1443) silently not
+            # happening is worth surfacing above debug (review R2).
+            logger.warning(
                 "radio-poller: auto VFO identity establish failed", exc_info=True
             )
 
@@ -3095,7 +3097,7 @@ class RadioPoller:
     def _relative_vfo_fields() -> tuple[str, ...]:
         return ("freq_hz", "mode", "filter_num", "data_mode")
 
-    async def _establish_vfo_identity(self) -> None:
+    async def establish_vfo_identity(self) -> None:
         """Command VFO A once, but only when the radio cannot ever report
         which slot (A/B) is active on its own (MOR-1443).
 
@@ -3117,16 +3119,37 @@ class RadioPoller:
         backend that never touches this poller at all) and never reach this
         branch — they keep reading, never writing.
 
-        Fires at most once per connect (this coroutine only runs from the
-        one-time startup section of :meth:`_run`, never from the recurring
-        poll loop) and only when identity is still unobserved — a value
-        already present in the state store (e.g. retained across a
-        soft-reconnect) is left untouched. Goes through the normal
-        :class:`SelectVfo` command path so the existing confirmed-select
-        readback is what marks identity observed, exactly like an
-        operator-issued "Select VFO A/B" would.
+        Called once per connect from the one-time startup section of
+        :meth:`_run`, and again from the web server's reconnect path
+        (``WebServer._on_radio_reconnect`` → its ``_refetch_and_reenable``
+        closure, right after the poller readiness gate is re-set) so that a
+        soft-reconnect re-establishes identity too, instead of staying
+        unknown until process restart (MOR-1443 review R2, finding 1).
+        ``reset_vfo_session()`` always runs first on that path and
+        unconditionally discards ``active_slot`` — no reconnect path
+        retains it. The already-observed gate below therefore is not about
+        surviving a reconnect: between ``reset_vfo_session()`` clearing
+        identity and this coroutine's own read of the state store, the
+        poll loop is still running and may drain an operator-initiated
+        ``SelectVfo`` in that window, legitimately observing identity again
+        first — the gate exists to avoid a redundant second commanded
+        write over that observation (and to guard any future retention
+        path). Also paused, like the rest of this poller's writes, while an
+        external CAT session owns the wire (MOR-166 slice 2) — a commanded
+        VFO A here would collide with the owner's byte stream.
+
+        Goes through the normal :class:`SelectVfo` command path so the
+        existing confirmed-select readback is what marks identity observed,
+        exactly like an operator-issued "Select VFO A/B" would.
         """
 
+        # External CAT session (e.g. Hamlib A1 bridge) owns the wire — this
+        # write must not escape that pause any more than the poll loop's own
+        # writes do (MOR-1443 review R2, finding 2). ``is True`` (not just
+        # truthy), matching the poll loop's own guard, so duck-typed / mock
+        # radios never quiesce by accident — only a real bool flag does.
+        if getattr(self._radio, "external_cat_session_active", False) is True:
+            return
         if self._profile.vfo_readback != "selected_unselected":
             return
         receiver = 1 if self._current_active().upper() == "SUB" else 0
