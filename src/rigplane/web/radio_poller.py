@@ -1394,9 +1394,7 @@ class RadioPoller:
         try:
             self._seed_scan_facts_at_connect()
         except Exception:
-            logger.warning(
-                "radio-poller: scan facts seed failed", exc_info=True
-            )
+            logger.warning("radio-poller: scan facts seed failed", exc_info=True)
 
         try:
             while True:
