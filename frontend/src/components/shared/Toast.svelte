@@ -23,6 +23,25 @@
 
   let toasts = $state<ToastItem[]>([]);
 
+  /**
+   * Auto-dismiss delay for non-error toasts (info/warning), ms. One knob —
+   * do not hardcode per-toast timeouts elsewhere.
+   */
+  const AUTO_DISMISS_MS = 5_000;
+
+  /**
+   * MOR-1489 review R2: sticky errors removed the old 5s TTL, which was
+   * also the flood bound. A reconnect-triggered sendQueue flush, a run of
+   * acknowledged-then-failed commands, or a control that errors on every
+   * click (MOR-1487 class) can each emit many `error` toasts back to back
+   * with no dedup. Uncapped, that stacks click-intercepting nodes over the
+   * cockpit — on mobile a handful already covers the viewport. Cap how many
+   * sticky errors can be visible at once, evicting the oldest first, same
+   * spirit as `REFUSAL_NOTICE_DEBOUNCE_MS` guarding the warning path in
+   * ws-client.ts.
+   */
+  const MAX_STICKY_ERRORS = 3;
+
   function dismiss(id: string) {
     toasts = toasts.filter((t) => t.id !== id);
   }
@@ -35,7 +54,24 @@
   ) {
     const id = makeCommandId();
     toasts = [...toasts, { id, level, message, code, params }];
-    setTimeout(() => dismiss(id), 5_000);
+    // MOR-1489: error toasts stay on screen until the operator dismisses
+    // them (click anywhere on the toast — the existing close affordance).
+    // WCAG 2.2.1 (Timing Adjustable) recommends that time-limited messages
+    // conveying important information — errors in particular — either not
+    // time out or let the user extend/disable the limit; operators on the
+    // bench reported error toasts (e.g. a command-failure notification)
+    // disappearing before they could read them. Info/warning toasts are
+    // transient status updates and keep the timed auto-dismiss.
+    if (level !== 'error') {
+      setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
+      return;
+    }
+    const errorIds = toasts.filter((toast) => toast.level === 'error').map((toast) => toast.id);
+    const overflow = errorIds.length - MAX_STICKY_ERRORS;
+    if (overflow > 0) {
+      const evictIds = new Set(errorIds.slice(0, overflow));
+      toasts = toasts.filter((toast) => !evictIds.has(toast.id));
+    }
   }
 
   /**
