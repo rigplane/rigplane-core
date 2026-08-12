@@ -109,6 +109,11 @@
   );
   let spanHz = $derived(endFreq > startFreq ? endFreq - startFreq : 0);
   let spectrumAuthority = $derived(toSpectrumAuthority(runtime.state, runtime.caps));
+  // MOR-1497: the grab cursor must not promise a drag the gate will refuse.
+  // Mirrors completeFrequencyAuthority's condition exactly.
+  let canPan = $derived(
+    spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null,
+  );
   let scopeMode = $derived(frameScopeMode);
   // Tuning indicator: center for CTR/SCROLL-C, proportional for FIX/SCROLL-F
   let isFixedScope = $derived(isFixedScopeFn(scopeMode));
@@ -199,6 +204,18 @@
     return current;
   }
 
+  // MOR-1497: plain drag-to-pan only moves frequency — it must not be gated
+  // on passband fields (mode/filterWidthHz/ifShiftHz) it never reads. On
+  // Icom radios ifShiftHz is structurally unobservable (no IF-shift command,
+  // PBT-only), so completeGestureAuthority(false) returned null forever and
+  // silently disabled the drag gesture while the grab cursor kept implying
+  // it worked. Passband-resize (handlePassbandResizeStart) keeps the full
+  // gate — it genuinely needs mode/filterWidthHz/ifShiftHz/rule.
+  function completeFrequencyAuthority(): SpectrumAuthority | null {
+    const current = readAuthority();
+    return current && current.frequencyHz !== null ? current : null;
+  }
+
   function readSampleGeometry(element: HTMLElement): SampleGeometry | null {
     const { width } = element.getBoundingClientRect();
     if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(startFreq)
@@ -216,6 +233,24 @@
     const current = readAuthority();
     const geometry = readSampleGeometry(element);
     return current?.digest === capture.authority.digest
+      && geometry?.frameMode === capture.geometry.frameMode
+      && geometry.startFreq === capture.geometry.startFreq
+      && geometry.endFreq === capture.geometry.endFreq
+      && geometry.elementWidth === capture.geometry.elementWidth;
+  }
+
+  // MOR-1497: freq-only counterpart of captureStillCurrent for plain
+  // drag-to-pan. The full digest includes passband fields (mode/
+  // filterWidthHz/ifShiftHz/rule/scopeControls/...) the pan gesture never
+  // reads, so re-checking it would spuriously abort a completed pan whenever
+  // any of those unrelated fields changed mid-drag. Re-check only the
+  // identity/geometry the gesture actually depends on.
+  function captureFrequencyStillCurrent(capture: GestureCapture, element: HTMLElement): boolean {
+    const current = readAuthority();
+    const geometry = readSampleGeometry(element);
+    return current?.providerGeneration === capture.authority.providerGeneration
+      && current.receiver === capture.authority.receiver
+      && current.frequencyHz === capture.authority.frequencyHz
       && geometry?.frameMode === capture.geometry.frameMode
       && geometry.startFreq === capture.geometry.startFreq
       && geometry.endFreq === capture.geometry.endFreq
@@ -340,7 +375,7 @@
     if (event.button !== 0 || resizeCapture) return;
     if (event.target instanceof Element && event.target.closest('button, select, input')) return;
     const surface = event.currentTarget as HTMLElement | null;
-    const accepted = completeGestureAuthority(false);
+    const accepted = completeFrequencyAuthority();
     const geometry = surface ? readSampleGeometry(surface) : null;
     if (!surface || !accepted || !geometry) return;
     const rect = surface.getBoundingClientRect();
@@ -378,7 +413,7 @@
     const capture = dragCapture;
     if (!capture || capture.pointerId !== event.pointerId || !dragSurface) return;
     const candidate = dragCandidate;
-    const stable = captureStillCurrent(capture, dragSurface);
+    const stable = captureFrequencyStillCurrent(capture, dragSurface);
     dragging = false;
     dragCapture = null;
     dragSurface = null;
@@ -444,7 +479,7 @@
         <div class="tick" style="top: {tick.position}%">{tick.label}</div>
       {/each}
     </div>
-    <div class="spectrum-area" class:panning={dragging} bind:this={spectrumArea} onpointerdown={handleDragStart} role="presentation">
+    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} onpointerdown={handleDragStart} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
       {:else if !scopeConnected}
@@ -474,7 +509,7 @@
   {/if}
   <div class="waterfall-area">
     <div class="waterfall-scale"></div>
-    <div class="waterfall-content" class:panning={dragging} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
+    <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
       <WaterfallCanvas options={waterfallOptions} onFreqClick={handleTune} onRegisterPush={(fn) => waterfallPush = fn} />
       <DxOverlay spots={dxSpots} {startFreq} {endFreq} onTune={handleTune} />
       <!-- Tuning + passband indicator overlays the waterfall -->
@@ -552,6 +587,10 @@
     min-width: 0;
     min-height: 0;
     position: relative;
+    cursor: default;
+  }
+
+  .spectrum-area.draggable {
     cursor: grab;
   }
 
@@ -602,6 +641,10 @@
     flex: 1 1 auto;
     min-width: 0;
     position: relative;
+    cursor: default;
+  }
+
+  .waterfall-content.draggable {
     cursor: grab;
   }
 
