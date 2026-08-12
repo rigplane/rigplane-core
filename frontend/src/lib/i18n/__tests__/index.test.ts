@@ -13,6 +13,7 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
+  _resetLocale();
 });
 
 describe('t()', () => {

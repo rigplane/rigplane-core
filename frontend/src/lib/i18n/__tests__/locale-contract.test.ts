@@ -17,6 +17,7 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
+  _resetLocale();
   vi.restoreAllMocks();
 });
 
