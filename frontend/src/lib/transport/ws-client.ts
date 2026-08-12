@@ -884,7 +884,16 @@ export function sendCommand(
   id?: string,
 ): boolean {
   const commandId = id ?? makeCommandId();
-  if (!isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
+  // This health gate only speaks for a LIVE transport. While the socket is
+  // open, rigConnected/radioReady/radioHealth are continuously refreshed by
+  // state_update, so `!isLiveRadioAvailable()` means the radio link is
+  // known-bad — refuse loudly rather than send into a black hole. While the
+  // socket is down those same facts were just reset by the 'disconnected'
+  // transition above (MOR-1526 F1/F2) and say nothing about the radio; the
+  // transport-offline case is governed by WsChannel.send's own offline
+  // policy (idempotent keep-latest queue / non-idempotent reject /
+  // pendingPttRelease), which predates this gate and stays authoritative.
+  if (_ctrl.isConnected() && !isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
     console.warn('[cmd] blocked while radio health is degraded', name);
     if (pttIntent(name, params) === null) {
       _ctrl.rejectNonPtt(commandId, 'radio health is degraded');
