@@ -215,7 +215,7 @@
   "core.vfo.splitDigest.tx": "TX {frequency}",
 
   "core.band.tx.reason.outOfBand": "your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band",
-  "core.band.tx.reason.targetUnknown": "this radio has not reported which VFO transmits, so the transmit frequency cannot be confirmed",
+  "core.band.tx.reason.targetUnknown": "the radio has not confirmed the frequency it would transmit on",
   "core.band.tx.reason.rangesNotConfigured": "no transmit ranges are configured for this radio, so permission cannot be checked here",
   "core.band.tx.reason.bandUnresolved": "the current band could not be determined",
   "core.band.tx.reason.receiverUnconfirmed": "the active receiver has not been confirmed yet — select a receiver to continue",
