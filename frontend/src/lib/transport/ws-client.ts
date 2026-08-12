@@ -891,11 +891,19 @@ export function sendCommand(
   // open, rigConnected/radioReady/radioHealth are continuously refreshed by
   // state_update, so `!isLiveRadioAvailable()` means the radio link is
   // known-bad — refuse loudly rather than send into a black hole. While the
-  // socket is down those same facts were just reset by the 'disconnected'
-  // transition above (MOR-1526 F1/F2) and say nothing about the radio; the
-  // transport-offline case is governed by WsChannel.send's own offline
-  // policy (idempotent keep-latest queue / non-idempotent reject /
-  // pendingPttRelease), which predates this gate and stays authoritative.
+  // socket is down, jurisdiction hands off entirely to WsChannel.send's own
+  // offline policy (idempotent keep-latest queue / non-idempotent reject /
+  // pendingPttRelease), which predates this gate and stays authoritative —
+  // a queued command ships (or doesn't) on the transport's terms, not a
+  // stale health snapshot from before the drop. (MOR-1526 R2: an earlier
+  // revision of the display fix in the 'disconnected' branch above reset
+  // rigConnected/radioReady/radioHealth on every disconnect, which would
+  // have made `!isLiveRadioAvailable()` unconditionally true for the whole
+  // offline window and this gate redundant with the transport's own
+  // policy; that reset was reverted, so these fields keep their real,
+  // request-driven values across a disconnect — this `_ctrl.isConnected()`
+  // guard is what keeps the two policies from double-judging the same
+  // command.)
   if (_ctrl.isConnected() && !isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
     console.warn('[cmd] blocked while radio health is degraded', name);
     if (pttIntent(name, params) === null) {
