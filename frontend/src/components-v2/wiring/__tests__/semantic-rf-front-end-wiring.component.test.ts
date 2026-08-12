@@ -506,6 +506,40 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     const input = el('rf-sql')!.querySelector('input')!;
     expect(input.valueAsNumber).toBeCloseTo(0.632, 3);
   });
+
+  // Verifier follow-up R1, pinned end-to-end through the real
+  // `RF_FRONT_END_LEVEL_INTENT` seam (not just the pure surface): an
+  // unconditional pair-emit would double-dispatch on every drag, including
+  // ones where one half is already at its target — the queue-lag/"Commander
+  // stopped" hazard shape on the live serial IC-7300 gate radio.
+  it('a drag landing on the ALREADY-CONFIRMED position dispatches NEITHER set_rf_gain nor set_squelch', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.state = liveState(true);
+    // The knob's own "center, at rest" position: RF max, SQL min.
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '0.5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).not.toHaveBeenCalled();
+    expect(h.squelch).not.toHaveBeenCalled();
+  });
+
+  it('a drag that only moves RF dispatches set_rf_gain ONLY — SQL is already at its target, no redundant set_squelch', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.state = liveState(true);
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
+    (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
+    render();
+    const input = el('rf-sql')!.querySelector('input')!;
+    input.value = '0'; // hard left: RF -> 0 (changes), SQL stays 0 (unchanged)
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
+    expect(h.squelch).not.toHaveBeenCalled();
+  });
 });
 
 /* ── MOR-1366 (S7), N1 fold — desktop-v2's REAL rf-front-end zone binds ─── */

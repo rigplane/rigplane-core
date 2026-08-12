@@ -318,40 +318,61 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     r.dispose();
   });
 
-  it('emits BOTH rfGain and squelch on a hard-left drag: RF min, SQL min', () => {
+  // Per-field change guard (verifier follow-up R1, mirrors
+  // `DualParamRenderer.svelte`'s `emitPair`): only a field whose mapped
+  // value actually differs from its current confirmed reading emits. `base()`
+  // starts at rfGain=known(1)/squelch=known(0) — the knob's own "center, at
+  // rest" position — so each case below is chosen to isolate exactly ONE
+  // field changing, mirroring the real single-knob write pattern instead of
+  // spamming a redundant re-send of the field that didn't move.
+
+  it('a hard-left drag emits ONLY rfGain — squelch is already at min, unchanged', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
     const input = r.el('rf-sql')!.querySelector('input')!;
     input.value = '0';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect(onLevelChange).toHaveBeenCalledTimes(2);
-    expect(onLevelChange).toHaveBeenNthCalledWith(1, 'rfGain', 0);
-    expect(onLevelChange).toHaveBeenNthCalledWith(2, 'squelch', 0);
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0);
     r.dispose();
   });
 
-  it('emits RF max / SQL min at the knob center (the dead zone default)', () => {
+  it('the knob center emits NOTHING — RF is already max and SQL already min, the "at rest" position', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
     const input = r.el('rf-sql')!.querySelector('input')!;
     input.value = '0.5';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect(onLevelChange).toHaveBeenNthCalledWith(1, 'rfGain', 1);
-    expect(onLevelChange).toHaveBeenNthCalledWith(2, 'squelch', 0);
+    expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
   });
 
-  it('emits SQL max / RF max on a hard-right drag — owner semantics: "hard right = SQL max (RF max)"', () => {
+  it('a hard-right drag emits ONLY squelch — RF is already at max, unchanged (owner semantics: "hard right = SQL max (RF max)")', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
     const input = r.el('rf-sql')!.querySelector('input')!;
     input.value = '1';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    expect(onLevelChange).toHaveBeenNthCalledWith(1, 'rfGain', 1);
-    expect(onLevelChange).toHaveBeenNthCalledWith(2, 'squelch', 1);
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('squelch', 1);
+    r.dispose();
+  });
+
+  it('a leg-crossing drag emits BOTH — RF and SQL are both actually moving, unlike the single-leg cases above', () => {
+    const onLevelChange = vi.fn();
+    // Starts already on the right leg (RF max, SQL 0.5) instead of at rest,
+    // then crosses to the left leg — both halves genuinely change value.
+    const r = render(withRf({ rfGain: known(1), squelch: known(0.5) }), {
+      controlModel: 'combined', onLevelChange,
+    });
+    const input = r.el('rf-sql')!.querySelector('input')!;
+    input.value = '0.23';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledTimes(2);
+    expect(onLevelChange).toHaveBeenCalledWith('rfGain', 0.5);
+    expect(onLevelChange).toHaveBeenCalledWith('squelch', 0);
     r.dispose();
   });
 
@@ -383,7 +404,7 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     r.dispose();
   });
 
-  it('disables the combined slider and emits nothing while either field is unusable', () => {
+  it('disables the combined slider and emits nothing while squelch is unusable', () => {
     const onLevelChange = vi.fn();
     const r = render(withRf({ squelch: unread<number>(DEGRADED) }), {
       controlModel: 'combined', onLevelChange,
@@ -391,6 +412,24 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const input = r.el('rf-sql')!.querySelector('input')!;
     expect(input.disabled).toBe(true);
     input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  // Verifier follow-up R2: the mirror of the case above. A mutation that
+  // dropped ONLY the `!usable(rf.rfGain)` half of the guard (leaving
+  // `!usable(rf.squelch)` in place) would still pass the test above — it
+  // needs this independent mirror to be killed.
+  it('disables the combined slider and emits nothing while rfGain is unusable', () => {
+    const onLevelChange = vi.fn();
+    const r = render(withRf({ rfGain: unread<number>(DEGRADED) }), {
+      controlModel: 'combined', onLevelChange,
+    });
+    const input = r.el('rf-sql')!.querySelector('input')!;
+    expect(input.disabled).toBe(true);
+    input.value = '0';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();

@@ -179,8 +179,21 @@
     const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(
       normX, RF_SQL_MIN, RF_SQL_MAX, RF_SQL_STEP,
     );
-    changeLevel('rfGain', nextRf);
-    changeLevel('squelch', nextSql);
+    // Per-field change guard, mirroring `DualParamRenderer.svelte`'s
+    // `emitPair` (`value-control-core.ts`'s companion component — only emits
+    // a field that actually moved). Without this, every input event
+    // unconditionally re-sends BOTH fields — a left-leg drag spams redundant
+    // `set_squelch(0)` and a right-leg drag spams redundant `set_rf_gain(255)`
+    // on every tick, roughly doubling the CI-V write rate versus both the
+    // real hardware knob and the leg-1 two-slider path. On the live serial
+    // IC-7300 gate radio that write-rate doubling is the queue-lag/"Commander
+    // stopped" hazard shape.
+    if (rf.rfGain.reading.status === 'known' && nextRf !== rf.rfGain.reading.value) {
+      changeLevel('rfGain', nextRf);
+    }
+    if (rf.squelch.reading.status === 'known' && nextSql !== rf.squelch.reading.value) {
+      changeLevel('squelch', nextSql);
+    }
   }
   function toggle(field: RfFrontEndToggleField): void {
     const f = rf?.[field];
