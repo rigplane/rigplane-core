@@ -45,11 +45,13 @@
      * `data-vfo-freq` + `data-vfo-active` (mirroring `active`) on its
      * focusable root, so the MOR-1444 keyboard routing guard
      * (`isFrequencyDisplayFocused` in `keyboard-map.ts`) recognizes ANY
-     * mount without a bespoke wrapper. Before this, only `VfoSurface.svelte`'s
-     * own `[data-vfo-tile]`-wrapped `[data-vfo-freq]` span qualified — so a
-     * digit typed on the desktop-v2 HEADER VFO display (`VfoPanel.svelte`,
-     * mounted with no such wrapper) fell through to a real `band_select`
-     * hotkey. `VfoSurface.svelte` already supplies its own equivalent hook —
+     * mount without a bespoke wrapper.
+     * DEFENSE-IN-DEPTH ONLY (verifier F1): no current mount depends on this
+     * — the `VfoPanel`/`VfoHeader` header path it originally targeted renders
+     * on no shipping skin, and `VfoSurface.svelte` (the one live mount) opts
+     * out with `vfoFreqHook={false}`. Kept so a future non-semantic mount of
+     * this primitive self-qualifies without bespoke wrapper markup.
+     * `VfoSurface.svelte` already supplies its own equivalent hook —
      * on the SAME wrapper element its own tests key `data-freq-tunable` off
      * of — so it opts out here with `vfoFreqHook={false}` to avoid a second,
      * nested `[data-vfo-freq]` match for every tunable tile.

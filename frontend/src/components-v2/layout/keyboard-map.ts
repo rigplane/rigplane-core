@@ -321,19 +321,21 @@ export function isDigitKey(key: string): boolean {
  * for its own layout/testing needs; that wrapper carries no `data-vfo-active`
  * of its own; and other historical structures.
  *
- * MOR-1480 (header/VfoPanel escape, reproduced): before this fix the guard
- * required an ANCESTOR `[data-vfo-tile]` to supply `data-vfo-active` — a
- * shape only `VfoSurface.svelte` produces. `VfoPanel.svelte` (mounted by the
- * desktop-v2 header via `VfoHeader.svelte`/`DualVfoDisplay.svelte`) renders
- * `FrequencyDisplayInteractive` directly, with no `[data-vfo-tile]` ancestor
- * — so the guard silently failed there and a digit typed on the HEADER VFO
- * display fell through to `resolveAction()` and fired real `band_select`
- * hotkeys (bench-observed: typed digits produced uncommanded `set_band` +
- * BSR band hops). Reading the matched `[data-vfo-freq]` element's OWN
- * `data-vfo-active` first — falling back to the ancestor tile's only when the
- * matched element doesn't carry the attribute itself — makes every current
- * and future mount of the primitive self-sufficient instead of relying on a
- * specific parent shape.
+ * MOR-1480 (verifier F1, CONFIRMED): the guard originally required an
+ * ANCESTOR `[data-vfo-tile]` to supply `data-vfo-active` — a shape only
+ * `VfoSurface.svelte` produces. That gap was first attributed to the
+ * desktop-v2 HEADER display (`VfoHeader.svelte` -> `VfoPanel.svelte`), which
+ * was WRONG: `VfoHeader` renders on NO shipping skin (`RadioLayout.svelte:83`
+ * `semanticDeck = declared.has('vfo')` is true for every registered manifest;
+ * the legacy else-branch at `RadioLayout.svelte:293-296` is pinned dead by
+ * `semantic-desktop-migration.component.test.ts`, "drops the legacy twin").
+ * Reading the matched `[data-vfo-freq]` element's OWN `data-vfo-active` first
+ * — falling back to the ancestor tile's only when absent — is kept purely as
+ * DEFENSE-IN-DEPTH so any future non-semantic mount is self-sufficient; NO
+ * current mount depends on it (`VfoSurface.svelte` opts out with
+ * `vfoFreqHook={false}`). The bench-observed uncommanded `set_band` + BSR
+ * hops came from the SEMANTIC tree — the `resolveAction()` fall-through now
+ * closed by the swallow-always guard in `KeyboardHandler.svelte`.
  *
  * MOR-1444 B1 (round-2 review, reproduced): `hasTunableFrequency` gates on
  * `isActiveSlot`, not the radio-wide `isActive` (VfoSurface.svelte:258-259)
