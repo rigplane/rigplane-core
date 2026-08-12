@@ -525,7 +525,7 @@ async def test_get_attenuator_level_raises_when_no_state(
 
 
 async def test_set_attenuator_level_invalid_db_raises(radio: IcomRadio) -> None:
-    with pytest.raises(ValueError, match="3 dB steps"):
+    with pytest.raises(ValueError, match="must be one of"):
         await radio.set_attenuator_level(7)  # not a multiple of 3
 
 
@@ -539,6 +539,73 @@ async def test_set_attenuator_level_valid_sends_command(
 ) -> None:
     await radio.set_attenuator_level(18)
     assert len(mock_transport.sent_packets) > 0
+
+
+# ---------------------------------------------------------------------------
+# set_attenuator_level() per-radio validation (MOR-1445)
+#
+# The `radio` fixture defaults to IC-7610 (0..45 dB, 3 dB steps — the
+# existing tests above cover that regression). IC-7300 declares a single
+# 20 dB attenuator step (rigs/ic7300.toml [attenuator] values = [0, 20]);
+# validation must come from the radio's declared `att_values`, not a
+# universal constant.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ic7300_radio(mock_transport: MockTransport):
+    r = IcomRadio("192.168.1.101", timeout=0.05, model="IC-7300")
+    r._civ_transport = mock_transport
+    r._ctrl_transport = mock_transport
+    r._connected = True
+    yield r
+    r._connected = False
+
+
+async def test_set_attenuator_level_ic7300_accepts_declared_20db(
+    ic7300_radio: IcomRadio, mock_transport: MockTransport
+) -> None:
+    """IC-7300's real attenuator step (20 dB) must be accepted."""
+    await ic7300_radio.set_attenuator_level(20)
+    assert len(mock_transport.sent_packets) > 0
+
+
+async def test_set_attenuator_level_ic7300_rejects_undeclared_value(
+    ic7300_radio: IcomRadio,
+) -> None:
+    """IC-7610's 18 dB step is not a valid IC-7300 attenuator value."""
+    with pytest.raises(ValueError, match="20"):
+        await ic7300_radio.set_attenuator_level(18)
+
+
+async def test_set_attenuator_level_ic7610_rejects_ic7300_step(
+    radio: IcomRadio,
+) -> None:
+    """Regression: the 0..45/3dB radio (IC-7610) still rejects out-of-set values."""
+    with pytest.raises(ValueError, match="45"):
+        await radio.set_attenuator_level(20)
+
+
+async def test_set_attenuator_level_no_declared_values_raises_command_error(
+    mock_transport: MockTransport,
+) -> None:
+    """Data-driven only: a profile with no declared att_values must fail
+    loud (CommandError naming the missing capability), never fall back to
+    a hardcoded numeric range (owner directive, MOR-1445)."""
+    import dataclasses
+
+    from rigplane.profiles import get_radio_profile
+
+    undeclared = dataclasses.replace(get_radio_profile("IC-7300"), att_values=None)
+    r = IcomRadio("192.168.1.102", timeout=0.05, profile=undeclared)
+    r._civ_transport = mock_transport
+    r._ctrl_transport = mock_transport
+    r._connected = True
+    try:
+        with pytest.raises(CommandError, match="missing capability"):
+            await r.set_attenuator_level(20)
+    finally:
+        r._connected = False
 
 
 # ---------------------------------------------------------------------------

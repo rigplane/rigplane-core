@@ -525,7 +525,9 @@ class ControlHandler:
         # Sent directly (not via event queue) so it arrives right after hello
         # and before the recv loop — no interleaving with command responses.
         if self._server is not None:
-            initial = self._server.register_control_event_queue(self._event_queue)
+            initial = self._server.register_control_event_queue(
+                self._event_queue, session_id=self._session_id
+            )
             # Old focused handler doubles have no StateStore-backed
             # registration API and return a MagicMock/None.  Production
             # WebServer always returns the canonical shared-encoder baseline.
@@ -539,7 +541,9 @@ class ControlHandler:
                 await self._ws.send_text(encode_json(msg))
             except BaseException as exc:
                 logger.debug("control: failed to send initial state", exc_info=True)
-                self._server.unregister_control_event_queue(self._event_queue)
+                self._server.unregister_control_event_queue(
+                    self._event_queue, session_id=self._session_id
+                )
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 return
@@ -571,7 +575,9 @@ class ControlHandler:
             except asyncio.CancelledError:
                 pass
             if self._server is not None:
-                self._server.unregister_control_event_queue(self._event_queue)
+                self._server.unregister_control_event_queue(
+                    self._event_queue, session_id=self._session_id
+                )
 
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""

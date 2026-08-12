@@ -137,6 +137,7 @@
   "core.toast.audioBridgeStarted": "Аудиомост запущен",
   "core.toast.audioBridgeStopped": "Аудиомост остановлен",
   "core.toast.commandRefusedLinkDegraded": "Команда не отправлена — связь с трансивером деградировала",
+  "core.toast.commandExecutionFailed": "Команда не выполнена: {reason}",
   "core.toast.unknown": "Что-то пошло не так. Попробуйте позже.",
 
   "core.mobile.nav.label": "Навигация по трансиверу",
