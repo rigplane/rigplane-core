@@ -1351,6 +1351,184 @@ def test_due_polling_tx_only_does_not_gate_non_tx_only_meter_in_same_call() -> N
     assert requests[0].paths == (vd,)
 
 
+def test_reconciliation_of_tx_only_field_suppressed_while_tx_inactive() -> None:
+    """MOR-1531: reconciliation drain must honor ``tx_only`` like ``due_requests``.
+
+    Reproduces the live SWR-flap loop (MOR-1525): ``mark_stale_due`` emits a
+    "stale" ``ReconciliationRequest`` the moment a ``tx_only`` field (e.g.
+    ``global.meters.swr``) crosses its ``freshness_ttl_seconds`` -- even
+    though it was only ever observed once (an earlier TX, or a rigctld
+    one-shot read). Pre-fix, ``AcquisitionScheduler.ensure_fresh`` queued
+    that hint at ``RECONCILIATION`` priority with no ``tx_only`` check, and
+    ``pending_requests()`` handed it straight to the poller regardless of
+    ``tx_active`` -- the poller answered it, the field went FRESH again, and
+    it went STALE again exactly ``freshness_ttl_seconds`` later: a
+    self-sustaining poll<->decay loop in pure RX. This field is observed
+    exactly once (never re-applied here), so if the fix holds it can never
+    be drained and must simply stay STALE. A non-``tx_only`` field with the
+    identical TTL is the control: it must keep getting reconciled normally.
+    """
+
+    clock = FreshnessClock(start=500.0)
+    swr = FieldPath.global_("meters", "swr")
+    vd = FieldPath.global_("meters", "vd")
+    profile = _profile(
+        [swr, vd],
+        field_policies={
+            swr: AcquisitionPolicy(
+                cadence_seconds=None,
+                freshness_ttl_seconds=2.0,
+                tx_only=True,
+            ),
+            vd: AcquisitionPolicy(
+                cadence_seconds=None,
+                freshness_ttl_seconds=2.0,
+            ),
+        },
+    )
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    service = StateFreshnessService(
+        store=store, scheduler=scheduler, interval_seconds=1.0
+    )
+
+    # Both fields observed exactly once (swr as if from an earlier TX or a
+    # rigctld one-shot cmd15 read); TX never happens again during the loop.
+    store.apply(_observation(swr, 1, at=clock.now(), max_age=2.0))
+    store.apply(_observation(vd, 130, at=clock.now(), max_age=2.0))
+
+    saw_swr_stale_transition = False
+    vd_reconciled_count = 0
+    for i in range(5):
+        clock.advance(2.1)
+        delta = service.tick(now=clock.now())
+        scheduler.due_requests(now=clock.now(), tx_active=False)
+        pending = scheduler.pending_requests()
+
+        swr_requests = [
+            r
+            for r in pending
+            if swr in r.paths and r.priority is AcquisitionPriority.RECONCILIATION
+        ]
+        assert swr_requests == [], (
+            f"iteration {i}: tx_only field re-polled via reconciliation "
+            "while TX inactive -- this is the MOR-1525 SWR-flap loop"
+        )
+
+        for transition in delta.freshness:
+            if transition.path == swr and transition.current is FreshnessState.STALE:
+                saw_swr_stale_transition = True
+
+        vd_requests = [
+            r
+            for r in pending
+            if vd in r.paths and r.priority is AcquisitionPriority.RECONCILIATION
+        ]
+        if vd_requests:
+            vd_reconciled_count += 1
+            change = store.apply(_observation(vd, 130 + i, at=clock.now(), max_age=2.0))
+            scheduler.record_acquisition_result(vd_requests[0], change)
+
+    assert saw_swr_stale_transition, (
+        "decay must still publish STALE for the tx_only field even though "
+        "its re-poll is suppressed (constraint 3)"
+    )
+    assert vd_reconciled_count >= 1, (
+        "control field (non-tx_only, same TTL) must keep getting reconciled"
+    )
+
+
+def test_reconciliation_of_tx_only_field_still_fires_while_tx_active() -> None:
+    """MOR-1531 constraint 2: TX-active reconciliation of tx_only fields is unchanged."""
+
+    clock = FreshnessClock(start=700.0)
+    swr = FieldPath.global_("meters", "swr")
+    profile = _profile(
+        [swr],
+        field_policies={
+            swr: AcquisitionPolicy(
+                cadence_seconds=None,
+                freshness_ttl_seconds=2.0,
+                tx_only=True,
+            ),
+        },
+    )
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    service = StateFreshnessService(
+        store=store, scheduler=scheduler, interval_seconds=1.0
+    )
+
+    store.apply(_observation(swr, 1, at=clock.now(), max_age=2.0))
+
+    clock.advance(2.1)
+    delta = service.tick(now=clock.now())
+    scheduler.due_requests(now=clock.now(), tx_active=True)
+    pending = scheduler.pending_requests()
+
+    assert delta.reconciliation_requests
+    assert any(
+        swr in r.paths and r.priority is AcquisitionPriority.RECONCILIATION
+        for r in pending
+    ), "reconciliation of a tx_only field must still fire while TX is active"
+
+
+def test_reconciliation_queued_during_tx_but_drained_after_dekey_is_deferred_not_lost() -> (
+    None
+):
+    """MOR-1531 constraint 1: drain-time consistency, not enqueue-time.
+
+    A ``RECONCILIATION`` request enqueued while the scheduler's cached
+    ``tx_active`` was True (from the same drain cycle's ``due_requests``
+    call) must not fire on the immediately following drain if TX has ended
+    by then -- the gate reads ``tx_active`` at drain time, not whatever was
+    true when the request was queued. It also must not be permanently
+    dropped: once TX resumes, the same still-queued request fires on the
+    very next drain.
+    """
+
+    clock = FreshnessClock(start=600.0)
+    swr = FieldPath.global_("meters", "swr")
+    profile = _profile(
+        [swr],
+        field_policies={
+            swr: AcquisitionPolicy(
+                cadence_seconds=None,
+                freshness_ttl_seconds=2.0,
+                tx_only=True,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    # Drain cycle #1: TX active -> due_requests caches tx_active=True, then a
+    # stale-reconciliation hint arrives (as StateFreshnessService would emit
+    # it) while that cached value is still True.
+    scheduler.due_requests(now=clock.now(), tx_active=True)
+    result = scheduler.ensure_fresh(
+        swr,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+    assert result.status is AcquisitionStatus.QUEUED
+
+    # TX ends before the next drain reads pending_requests().
+    clock.advance(0.1)
+    scheduler.due_requests(now=clock.now(), tx_active=False)
+    assert scheduler.pending_requests() == (), (
+        "a reconciliation queued during TX must not fire once drained after de-key"
+    )
+
+    # TX resumes: the same still-queued request must fire -- not lost.
+    clock.advance(0.1)
+    scheduler.due_requests(now=clock.now(), tx_active=True)
+    resumed = scheduler.pending_requests()
+    assert len(resumed) == 1
+    assert resumed[0].paths == (swr,)
+    assert resumed[0].priority is AcquisitionPriority.RECONCILIATION
+
+
 def test_prime_unobserved_queues_background_read_for_never_observed_policy_field() -> (
     None
 ):
