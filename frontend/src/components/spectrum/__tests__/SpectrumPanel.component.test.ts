@@ -287,7 +287,8 @@ vi.mock('../../../../components-v2/panels/filter-controls', () => ({
   deriveIfShift: vi.fn(() => 0),
 }));
 
-vi.mock('../../../../components-v2/wiring/state-adapter', () => ({
+vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/runtime/props/panel-props')>(),
   resolveFilterModeConfig: vi.fn(() => null),
 }));
 
@@ -618,7 +619,9 @@ describe('SpectrumPanel component', () => {
     });
     panel.dispatchEvent(wheelEvent);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
-    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_075_000, 0);
+    // MOR-1425 review B1: scroll-to-tune is a fixed one-step relative
+    // gesture — it opts into the accumulate path explicitly.
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_075_000, 0, 'step');
     expect(mockRuntime.send).not.toHaveBeenCalled();
   });
 

@@ -31,7 +31,8 @@ import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
-import { dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
+import { currentControlSessionEpoch, dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
+import { getSharedTuningAccumulator } from './tuning-accumulator';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -39,12 +40,18 @@ type Receiver = 0 | 1;
 
 function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver | null {
   const state = getRadioState();
-  const receiverName = target ?? state?.active;
-  if (
-    !state
-    || (receiverName !== 'MAIN' && receiverName !== 'SUB')
-    || (!target && !isFieldAvailable(state, 'active'))
-  ) return null;
+  if (!state) return null;
+  // MOR-1418: on a single-receiver radio, `active` (MAIN/SUB) is
+  // structurally unobservable — no CI-V echo ever sets it, so it never
+  // becomes an observed field. The active receiver is tautologically MAIN
+  // in that case, so an unobserved `active` must not block the write.
+  // Dual-RX radios are unaffected: `active` observation is still required
+  // whenever it is actually observed (or on any radio with receivers > 1).
+  const activeObserved = isFieldAvailable(state, 'active');
+  const singleReceiver = getCapabilities()?.receivers === 1;
+  const receiverName = target
+    ?? (activeObserved ? state.active : singleReceiver ? 'MAIN' : undefined);
+  if (receiverName !== 'MAIN' && receiverName !== 'SUB') return null;
   if (receiverName === 'SUB') {
     const receivers = getCapabilities()?.receivers;
     if (!Number.isSafeInteger(receivers) || (receivers as number) < 2 || !state.sub) return null;
@@ -189,8 +196,14 @@ function observedAvailableField(
 
 function currentMemorySnapshot(): MemorySnapshot | null {
   const context = currentA03cContext();
-  const active = context?.state.active;
-  if (!context || !observedAvailableField(context.state, 'active')
+  // MOR-1423: same single-receiver `active` bypass as knownActiveReceiver
+  // (MOR-1418) — on a one-receiver radio, active is tautologically MAIN
+  // even when structurally unobservable. Dual-RX still requires observation.
+  const activeObserved = context !== null && observedAvailableField(context.state, 'active');
+  const singleReceiver = context?.caps.receivers === 1;
+  const active = context
+    && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
+  if (!context
     || (active !== 'MAIN' && active !== 'SUB')
     || knownA03cReceiver(context, active) === null) return null;
 
@@ -789,11 +802,16 @@ export function makeFilterHandlers() {
     ): void => {
       const context = currentA03cContext();
       const stateGeneration = context?.state.providerGeneration;
-      const active = context?.state.active;
+      // MOR-1418: same single-receiver `active` bypass as knownActiveReceiver
+      // — on a one-receiver radio, active is tautologically MAIN even when
+      // structurally unobservable. Dual-RX still requires observation.
+      const activeObserved = context !== null && observedAvailableField(context.state, 'active');
+      const singleReceiver = context?.caps.receivers === 1;
+      const active = context
+        && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
       if (!context || !Number.isSafeInteger(expectedProviderGeneration)
         || expectedProviderGeneration < 0 || !Number.isSafeInteger(stateGeneration)
         || expectedProviderGeneration !== stateGeneration
-        || !observedAvailableField(context.state, 'active')
         || (active !== 'MAIN' && active !== 'SUB')
         || (active === 'MAIN' ? 0 : 1) !== receiver
         || knownA03cReceiver(context, active, 'mode') !== receiver
@@ -1030,6 +1048,24 @@ function supportsVfoSlot(
 }
 
 export function makeVfoHandlers() {
+  // MOR-1425: rapid-tuning-step accumulator, shared module-wide (review
+  // B5) — NOT per-instance: `panel-adapters.ts` holds both a singleton
+  // accessor and fresh per-composition-root calls, and two independently-
+  // tracked accumulators for the same receiver would be blind to each
+  // other's writes. `epoch`/`generation` are the same session/capabilities
+  // reads `dispatchRadioIntent` itself uses (review B4).
+  function tuningAccumulator(): ReturnType<typeof getSharedTuningAccumulator> {
+    return getSharedTuningAccumulator({
+      emit: (receiver, freq) =>
+        dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: receiver as Receiver } }),
+      epoch: currentControlSessionEpoch,
+      generation: () => {
+        const value = getCapabilities()?.providerGeneration;
+        return typeof value === 'number' ? value : null;
+      },
+    });
+  }
+
   return {
     onSwap: () => {
       const context = currentA03cContext();
@@ -1052,32 +1088,49 @@ export function makeVfoHandlers() {
     onSubVfoClick: () => { activateReceiver('SUB'); },
     onVfoSelect: (receiver: 'MAIN' | 'SUB', slot: 'A' | 'B' | null) => {
       const context = currentA03cContext();
-      if (!context || !knownA03cTopLevelField(context, 'active')
+      // MOR-1423: same single-receiver `active` bypass as knownActiveReceiver
+      // (MOR-1418) — on a one-receiver radio, active is tautologically MAIN
+      // even when structurally unobservable. Dual-RX still requires observation.
+      const activeObserved = context !== null && knownA03cTopLevelField(context, 'active');
+      const singleReceiver = context?.caps.receivers === 1;
+      const active = context
+        && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
+      if (!context || (active !== 'MAIN' && active !== 'SUB')
         || knownA03cReceiver(context, receiver) === null
         || !supportsVfoSlot(context, slot)) return;
-      if (context.state.active !== receiver && !activateReceiver(receiver, context)) return;
+      if (active !== receiver && !activateReceiver(receiver, context)) return;
       if (slot !== null) dispatchRadioIntent({ name: 'set_vfo', params: { vfo: slot } });
     },
     onMainModeClick: () => focusModePanel('MAIN'),
     onSubModeClick: () => focusModePanel('SUB'),
     onMainFreqChange: (freq: number) => {
       const context = currentA03cContext();
+      const main = context?.state.main;
       if (!context || knownA03cReceiver(context, 'MAIN', 'freqHz') !== 0
-        || !Number.isSafeInteger(freq)) return;
-      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: 0 } });
+        || !Number.isSafeInteger(freq) || !main) return;
+      tuningAccumulator().step(0, main.freqHz, freq);
     },
     onSubFreqChange: (freq: number) => {
       const context = currentA03cContext();
+      const sub = context?.state.sub;
       if (!context || knownA03cReceiver(context, 'SUB', 'freqHz') !== 1
-        || !Number.isSafeInteger(freq)) return;
-      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: 1 } });
+        || !Number.isSafeInteger(freq) || !sub) return;
+      tuningAccumulator().step(1, sub.freqHz, freq);
     },
-    onFreqChange: (freq: number, receiver?: Receiver) => {
+    // MOR-1425 review B1: callers mix ABSOLUTE targets (spectrum click/
+    // drag, EiBi/QSY recall) and RELATIVE steps (spectrum scroll, media
+    // keys, keyboard 'tune'). Defaults to 'jump' — absolute correctness by
+    // default — so only true step sources opt in with 'step'.
+    onFreqChange: (freq: number, receiver?: Receiver, kind: 'jump' | 'step' = 'jump') => {
       const context = currentA03cContext();
       const target = receiver === 0 ? 'MAIN' : receiver === 1 ? 'SUB' : null;
-      if (!context || target === null || knownA03cReceiver(context, target, 'freqHz') !== receiver
+      if (!context || target === null || receiver === undefined
+        || knownA03cReceiver(context, target, 'freqHz') !== receiver
         || !Number.isSafeInteger(freq)) return;
-      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver } });
+      if (kind === 'jump') { tuningAccumulator().jump(receiver, freq); return; }
+      const confirmed = receiver === 1 ? context.state.sub : context.state.main;
+      if (!confirmed) return;
+      tuningAccumulator().step(receiver, confirmed.freqHz, freq);
     },
     onModeChange: (mode: string, receiver?: Receiver) => {
       const context = currentA03cContext();
@@ -1260,8 +1313,14 @@ const KEYBOARD_RADIO_ACTIONS = new Set([
 
 function currentKeyboardContext(): KeyboardContext | null {
   const context = currentA03cContext();
-  const active = context?.state.active;
-  if (!context || !knownA03cTopLevelField(context, 'active') || (active !== 'MAIN' && active !== 'SUB')) return null;
+  // MOR-1423: same single-receiver `active` bypass as knownActiveReceiver
+  // (MOR-1418) — on a one-receiver radio, active is tautologically MAIN
+  // even when structurally unobservable. Dual-RX still requires observation.
+  const activeObserved = context !== null && knownA03cTopLevelField(context, 'active');
+  const singleReceiver = context?.caps.receivers === 1;
+  const active = context
+    && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
+  if (!context || (active !== 'MAIN' && active !== 'SUB')) return null;
   const receiver = knownA03cReceiver(context, active);
   return receiver === null ? null : { ...context, receiver };
 }
@@ -1335,7 +1394,7 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const target = typeof delta === 'number' && Number.isSafeInteger(frequency) ? frequency + delta : null;
       if (keyboardReceiverField(context, 'freqHz') && Number.isSafeInteger(step) && step > 0
         && typeof frequency === 'number' && Number.isSafeInteger(frequency) && frequency > 0
-        && typeof target === 'number' && Number.isSafeInteger(target) && target > 0) makeVfoHandlers().onFreqChange(target, receiver);
+        && typeof target === 'number' && Number.isSafeInteger(target) && target > 0) makeVfoHandlers().onFreqChange(target, receiver, 'step');
       return true;
     }
     case 'band_select': {

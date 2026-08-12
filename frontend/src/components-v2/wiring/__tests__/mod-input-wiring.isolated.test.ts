@@ -6,8 +6,8 @@
  * `set_data_off_mod_input` / `set_data1_mod_input` / `set_data2_mod_input` /
  * `set_data3_mod_input`, payload `{ source: int }`).
  *
- * Both duplicates are covered: the wiring `command-bus` and the runtime
- * `panel-commands` (the one ModePanel actually uses via panel-adapters).
+ * Covered on the runtime `panel-commands` copy — the one ModePanel actually
+ * uses via panel-adapters, and since A15 the only one that exists.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -36,11 +36,9 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { getActiveReceiver, getRadioState } from '$lib/stores/radio.svelte';
-import { makeModeHandlers as makeWiringModeHandlers } from '../command-bus';
 import { makeModeHandlers as makeRuntimeModeHandlers } from '$lib/runtime/commands/panel-commands';
 
 const factories: ReadonlyArray<readonly [string, () => { onModInputChange: (source: number) => void }]> = [
-  ['command-bus', makeWiringModeHandlers],
   ['panel-commands', makeRuntimeModeHandlers],
 ];
 

@@ -13,6 +13,7 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
+  _resetLocale();
 });
 
 describe('t()', () => {
@@ -60,6 +61,23 @@ describe('t()', () => {
     });
     expect(sentence).toContain('192.168.55.40');
   });
+
+  // MOR-1422: the `disabledReasonText` shared helper (`semantic/
+  // disabled-reason.ts`) resolves these two keys for every semantic surface
+  // that renders a present-but-unusable control. Both locales are asserted
+  // by their OWN text (not just "resolves to something") so a catalog that
+  // dropped one language's entry — silently falling back to en-US — fails
+  // this test instead of shipping unnoticed.
+  it('carries the MOR-1422 disabled-reason strings in en-US', () => {
+    expect(t('core.disabledReason.missing')).toBe('Not supported by this radio');
+    expect(t('core.disabledReason.unobserved')).toBe('Not yet observed');
+  });
+
+  it('carries the MOR-1422 disabled-reason strings in ru-RU (own catalog entries)', () => {
+    setLocale('ru-RU');
+    expect(t('core.disabledReason.missing')).toBe('Не поддерживается этим трансивером');
+    expect(t('core.disabledReason.unobserved')).toBe('Ещё не считано');
+  });
 });
 
 describe('tPlural()', () => {
@@ -103,6 +121,44 @@ describe('messageFromReasonCode()', () => {
     expect(messageFromReasonCode('completelyMadeUpCode')).toBe(
       'Something went wrong. Try again later.',
     );
+  });
+
+  // MOR-1422: the client-synthesized `sendCommand` refusal notice
+  // (`$lib/transport/ws-client`) resolves through this SAME function — a
+  // missing catalog entry would silently fall back to `core.toast.unknown`
+  // rather than fail loudly, so the fallback text is exactly what a missing
+  // key looks like and is what these two locale assertions rule out.
+  it('resolves the MOR-1422 command-refusal reason code in en-US', () => {
+    expect(messageFromReasonCode('commandRefusedLinkDegraded')).toBe(
+      'Command not sent — link to the radio is degraded',
+    );
+  });
+
+  it('resolves the MOR-1422 command-refusal reason code in ru-RU (own catalog entry, not the en-US fallback)', () => {
+    setLocale('ru-RU');
+    expect(messageFromReasonCode('commandRefusedLinkDegraded')).toBe(
+      'Команда не отправлена — связь с трансивером деградировала',
+    );
+  });
+
+  // MOR-1445: a command accepted at enqueue can still fail once the poller
+  // actually executes it against the radio. The server sends this reason
+  // code to the issuing session only, never a broadcast (with the backend
+  // exception text threaded as `reason`) so the operator sees a localized
+  // toast instead of a raw English string.
+  // ja-JP is a known, separately-tracked backlog gap for this code (same
+  // status as commandRefusedLinkDegraded above) — not asserted here.
+  it('resolves the MOR-1445 post-ack command-failure reason code in en-US, threading the reason', () => {
+    expect(
+      messageFromReasonCode('commandExecutionFailed', { reason: 'radio did not respond' }),
+    ).toBe('Command failed: radio did not respond');
+  });
+
+  it('resolves the MOR-1445 post-ack command-failure reason code in ru-RU (own catalog entry, not the en-US fallback)', () => {
+    setLocale('ru-RU');
+    expect(
+      messageFromReasonCode('commandExecutionFailed', { reason: 'radio did not respond' }),
+    ).toBe('Команда не выполнена: radio did not respond');
   });
 
   it('rejects malformed codes safely (returns the unknown toast)', () => {

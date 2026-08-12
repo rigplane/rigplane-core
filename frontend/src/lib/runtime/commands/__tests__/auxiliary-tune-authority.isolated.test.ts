@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   state: null as Record<string, unknown> | null,
@@ -83,7 +83,18 @@ function state() {
   };
 }
 
+// MOR-1425: `getVfoHandlers()` is a module-level singleton, so its tuning
+// accumulator persists across the `it()` blocks below. Fake timers stay
+// active (and only ever move forward) for the whole file: each `beforeEach`
+// advances the shared clock well past the accumulator's quiet window so a
+// receiver touched by a prior test starts this one cold, exactly as it did
+// before MOR-1425. Re-calling `useFakeTimers()` per test would instead
+// resync "now" to real wall time and cancel out the advance.
+beforeAll(() => vi.useFakeTimers());
+afterAll(() => vi.useRealTimers());
+
 beforeEach(() => {
+  vi.advanceTimersByTime(10_000);
   h.state = state();
   h.caps = {
     stateContractVersion: 1,

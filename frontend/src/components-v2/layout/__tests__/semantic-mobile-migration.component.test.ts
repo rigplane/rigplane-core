@@ -93,6 +93,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 }));
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
+  getWsConnected: vi.fn(() => false),
   getRadioPowerOn: vi.fn(() => null),
   // MOR-1279 slice 3B: the RX-audio snapshot reports audio-WS link health.
   isAudioConnected: vi.fn(() => false),
@@ -123,67 +124,13 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getAgcLabels: vi.fn(() => ({ 0: 'OFF', 1: 'FAST', 2: 'MID', 3: 'SLOW' })),
   getVfoScheme: vi.fn(() => 'ab'), getAntennaCount: vi.fn(() => 1),
 }));
-vi.mock('../../wiring/command-bus', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../wiring/command-bus')>();
-  const n = vi.fn();
-  return {
-    ...actual,
-    makeVfoHandlers: () => ({
-      onMainFreqChange: n, onSubFreqChange: n, onVfoSwap: n, onVfoEqual: n, onReceiverSelect: n,
-      onMainVfoClick: n, onSubVfoClick: n, onSplitToggle: n, onSwap: n, onEqual: n,
-      onVfoSelect: n, onDualWatchToggle: n,
-    }),
-    // MOR-1265 — the semantic wiring now also composes the txAux intents.
-    makeVoxHandlers: () => ({
-      onVoxToggle: n, onVoxGainChange: n, onAntiVoxGainChange: n, onVoxDelayChange: n,
-    }),
-    makeMeterHandlers: () => ({ onMeterSourceChange: n }), makeKeyboardHandlers: () => ({ dispatch: n }),
-    // MOR-1279 slice 3B: the semantic RX-audio surface's routing intents and
-    // its one-click MOD-input LAN remedy.
-    makeModeHandlers: () => ({ onModeChange: n, onDataModeChange: n, onModInputChange: n }),
-    makeAudioRoutingHandlers: () => ({ onFocusChange: n, onSplitStereoChange: n }),
-    makeFilterHandlers: () => ({ onFilterChange: n, onFilterWidthChange: n }),
-    makeBandHandlers: () => ({ onBandSelect: n }), makePresetHandlers: () => ({ onPresetSelect: n }),
-    makeRxAudioHandlers: () => ({ onAfLevelChange: n, onMonitorModeChange: n }),
-    makeTxHandlers: () => ({ onPttChange: n, onPowerChange: n, onTuneStart: n, onAtuToggle: n, onRfPowerChange: n, onMicGainChange: n, onAtuTune: n, onVoxToggle: n, onCompToggle: n, onCompLevelChange: n, onMonToggle: n, onMonLevelChange: n, onDriveGainChange: n }),
-    makeRfFrontEndHandlers: () => ({ onAttChange: n, onPreChange: n, onRfGainChange: n }),
-    makeAgcHandlers: () => ({ onAgcModeChange: n }),
-    makeRitXitHandlers: () => ({ onRitToggle: n, onRitClear: n, onXitToggle: n, onXitClear: n }),
-    makeDspHandlers: () => ({ onNrToggle: n, onNbToggle: n, onNotchToggle: n, onNrModeChange: n, onNotchModeChange: n }),
-    // MOR-1310 slice 9B added the semantic CW surface's setting intents here.
-    makeCwPanelHandlers: () => ({
-      onSpeedChange: n, onKeySpeedChange: n, onCwPitchChange: n,
-      onBreakInDelayChange: n, onBreakInModeChange: n, onApfChange: n,
-      onTwinPeakToggle: n, onReversePaddleToggle: n,
-    }),
-    makeAntennaHandlers: () => ({ onAntennaSelect: n }),
-    makeScanHandlers: () => ({ onScanStart: n, onScanStop: n, onDfSpanChange: n, onResumeChange: n }),
-    // MOR-1311 slice 11B: the scope-toolbar/popover intent vocabulary.
-    makeScopeControlsHandlers: () => ({
-      onModeChange: n, onEdgeChange: n, onSpanChange: n, onSpeedChange: n, onHoldChange: n,
-      onRefChange: n, onDualChange: n, onReceiverChange: n, onDuringTxChange: n,
-      onCenterTypeChange: n, onVbwChange: n, onRbwChange: n,
-    }),
-  };
-});
-vi.mock('../../wiring/state-adapter', () => {
-  const vfo = { freq: 14074000, mode: 'USB', filter: 'FIL1', sValue: 0, badges: {}, receiver: 'main', isActive: true };
-  return {
-    toVfoProps: vi.fn(() => vfo), toVfoOpsProps: vi.fn(() => ({ split: false, dualWatch: false })),
-    toMeterProps: vi.fn(() => ({ signal: 0, rfPower: 0, swr: 0, alc: 0, txActive: false, meterSource: 'S' })),
-    toModeProps: vi.fn(() => ({ currentMode: 'USB', modes: ['USB', 'LSB', 'CW', 'AM', 'FM'], dataMode: 0 })),
-    toFilterProps: vi.fn(() => ({ currentFilter: 1, filterLabels: ['FIL1', 'FIL2', 'FIL3'] })),
-    toBandSelectorProps: vi.fn(() => ({ currentFreq: 14074000 })),
-    toRxAudioProps: vi.fn(() => ({ afLevel: 0.5, monitorMode: 'local' })),
-    toTxProps: vi.fn(() => ({ rfPower: 0.5, txActive: false, atuActive: false, atuTuning: false })),
-    toRfFrontEndProps: vi.fn(() => ({ att: 0, preamp: 0, rfGain: 1 })),
-    toAgcProps: vi.fn(() => ({ agcMode: 3 })),
-    toRitXitProps: vi.fn(() => ({ ritOn: false, ritOffset: 0, xitOn: false, xitOffset: 0 })),
-    toDspProps: vi.fn(() => ({ nr: false, nb: false, notch: false })), toCwProps: vi.fn(() => ({ speed: 20 })),
-    toAntennaProps: vi.fn(() => ({ selected: 1 })),
-    toScanProps: vi.fn(() => ({ scanning: false, scanType: 'off', scanResumeMode: 'time' })),
-  };
-});
+// MOR-1409 A15: the `wiring/command-bus` and `wiring/state-adapter` mocks
+// that stood here were dead weight — MobileRadioLayout stopped importing
+// either module at A13a (pinned by MobileRadioLayout.honesty), so the mocks
+// intercepted nothing. A15 deletes both modules; the mocks are removed
+// rather than re-pointed, because re-pointing them at panel-commands /
+// panel-props would ACTIVATE previously inert stubs and change what this
+// suite actually exercises.
 
 const txHost = vi.hoisted(() => ({ current: undefined as unknown as TxHostFacade }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({

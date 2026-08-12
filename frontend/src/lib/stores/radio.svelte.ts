@@ -282,9 +282,14 @@ export function setRadioState(state: ServerState): boolean {
     lastHealthRevision = nextHealthRevision;
     radio.current = nextState;
     notifyRadioStateSubscribers();
-    // Sync power status to connection store
+    // Sync power status to connection store. MOR-1439: the IC-7300's serial
+    // CI-V link never confirms powerstat (structural, like `active` before
+    // MOR-1418/1421/1423) — an unobserved raw value is not a fact and must
+    // collapse to `null` ("unknown"), never a confident true/false, or the UI
+    // renders certainty (including StatusBar's forced powered-off
+    // presentation) for a reading the radio never actually gave.
     if (nextState.powerOn !== undefined) {
-      setRadioPowerOn(nextState.powerOn);
+      setRadioPowerOn(isFieldAvailable(nextState, 'powerOn') ? nextState.powerOn : null);
     }
     // Sync connection readiness fields
     if (nextState.connection) {

@@ -1,7 +1,9 @@
 /**
  * Cross-module test: verifies that `$lib/radio/pending-focus` is a single
- * shared instance — VFO handler (command-bus) sets the pending focus and
- * Mode handler (panel-commands) consumes the same value.
+ * shared instance — the VFO handler sets the pending focus and the Mode
+ * handler consumes the same value. Both come from `panel-commands`; before
+ * MOR-1409 A15 the VFO half was reached through the `command-bus` re-export,
+ * which resolved to the same function object.
  *
  * This is the regression guard for #1044: before the extract, each module
  * held its own private `let` so writes from one side were invisible to the
@@ -64,8 +66,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { getRadioState } from '$lib/stores/radio.svelte';
-import { makeVfoHandlers } from '../../components-v2/wiring/command-bus';
-import { makeModeHandlers } from '../runtime/commands/panel-commands';
+import { makeVfoHandlers, makeModeHandlers } from '../runtime/commands/panel-commands';
 import { recordModeFilter, _resetModeFilterMemory } from './mode-filter-memory';
 
 const originalDocumentQuerySelector = document.querySelector.bind(document);
@@ -101,7 +102,7 @@ describe('shared pending-focus — cross-module handoff (#1044)', () => {
     vi.useRealTimers();
   });
 
-  it('VFO handler (command-bus) sets focus that Mode handler (panel-commands) consumes', () => {
+  it('VFO handler sets focus that Mode handler consumes', () => {
     const vfo = makeVfoHandlers();
     const mode = makeModeHandlers();
 

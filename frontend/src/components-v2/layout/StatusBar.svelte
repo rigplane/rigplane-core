@@ -62,13 +62,13 @@
     getRadioStatus,
     getConnectionStatus,
     isAudioConnected,
-    getHttpConnected,
+    getWsConnected,
     getRadioPowerOn,
     getRigConnected,
     getRadioReady,
     getRadioHealth,
   } from '$lib/stores/connection.svelte';
-  import { getFrequency } from '$lib/stores/radio.svelte';
+  import { getActiveFrequencyHz } from '$lib/runtime/adapters/panel-adapters';
   import { hasAnyScope, hasAudio, hasSpectrum } from '$lib/stores/capabilities.svelte';
   import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
@@ -135,7 +135,13 @@
     deriveScopeIndicatorState(runtime.defaultScopeStatus, isPoweredOff),
   );
   let audioState = $derived(isPoweredOff ? 'disconnected' : (isAudioConnected() ? 'connected' : 'disconnected'));
-  let httpState = $derived(getHttpConnected() ? 'connected' : 'disconnected'); // server link — always real
+  // MOR-1419: derived from the same live WS transport signal as `controlState`
+  // (there is no separate HTTP transport anymore, post A10) refined by
+  // `radioHealth.serverReachable` when that's been observed — honest, not a
+  // stale flag that only a successful state commit ever flipped true.
+  let httpState = $derived(
+    getWsConnected() && getRadioHealth()?.serverReachable !== false ? 'connected' : 'disconnected',
+  ); // server link — always real
   let rigConnected = $derived(getRigConnected());
   let radioReady = $derived(getRadioReady());
   let radioHealth = $derived(getRadioHealth());
@@ -235,7 +241,10 @@
 
   // Poll frequency and identify station
   $effect(() => {
-    const freq = getFrequency();
+    const freq = getActiveFrequencyHz();
+    // `null` is "not observed"; `0` was never a real tuned frequency. Both
+    // mean "nothing to identify" — the same short-circuit this guard applied
+    // before A15 replaced the store read, so the idle render is unchanged.
     if (!freq || Math.abs(freq - lastIdentifiedFreq) < 500) return;
 
     // Debounce: wait 800ms after freq stops changing

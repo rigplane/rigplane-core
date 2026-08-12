@@ -24,7 +24,7 @@ export class MockWebSocket {
 
   onopen: (() => void) | null = null;
   onmessage: ((e: MessageEvent) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((e: { code: number; reason: string; wasClean: boolean }) => void) | null = null;
   onerror: (() => void) | null = null;
 
   constructor(url: string) {
@@ -36,9 +36,11 @@ export class MockWebSocket {
     this.sent.push(data);
   }
 
-  close() {
+  // Mirrors the real WebSocket#close(code?, reason?) signature — a locally
+  // initiated close (no server frame observed) is conventionally "clean".
+  close(code?: number, reason?: string) {
     this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code: code ?? 1005, reason: reason ?? '', wasClean: true });
   }
 
   // Test helpers
@@ -51,9 +53,9 @@ export class MockWebSocket {
     this.onmessage?.({ data } as MessageEvent);
   }
 
-  simulateClose() {
+  simulateClose(code = 1006, reason = '', wasClean = false) {
     this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code, reason, wasClean });
   }
 
   simulateError() {

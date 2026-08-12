@@ -572,4 +572,64 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(store.getRadioState()?.providerGeneration).toBe(1);
     expect(store.getRadioState()?.ptt).toBe(true);
   });
+
+  // ─── MOR-1419: server-link chip honesty ────────────────────────────────
+  //
+  // The StatusBar server-link chip (and the `connectionStatus`/`isConnected`
+  // it shares with the control-link indicator + connect/disconnect toggle)
+  // used to read an orphaned `httpConnected` store field. Its only real
+  // producer was deleted in the A10 HTTP-polling retirement (#2362); the
+  // sole remaining producer was `setHttpConnected(true)` inside the
+  // `state_update` handler, gated on `applyDeltaEnvelope` returning a
+  // committed state. On cold start, `commitCurrentState()` fails until
+  // capabilities resolve (`capabilitiesMatchGeneration` false), so that
+  // gate silently drops the very first `state_update` — and a quiet radio
+  // that never sends a second one left the chip red forever despite a
+  // fully healthy WS link. These tests drive the real `ws-client` against
+  // the real `connection.svelte` store (this file's whole point) to prove
+  // the derived signal no longer depends on that race.
+  it('reports connected once the WS session is up, even while capabilities are still pending (cold-start race)', async () => {
+    let resolveCaps: ((value: ReturnType<typeof makeCapabilities>) => void) | undefined;
+    fetchCapabilities.mockImplementationOnce(() => new Promise((resolve) => { resolveCaps = resolve; }));
+    const { wsClient, store } = await loadModules();
+    const connection = await import('../../stores/connection.svelte');
+
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1 })));
+
+    // Capabilities are still unresolved — the full envelope could not be
+    // committed yet (the exact cold-start race).
+    expect(store.getRadioState()).toBeNull();
+    // But the honest live source (the WS transport itself) is already up,
+    // so the server-link chip must not be stuck red.
+    expect(connection.getWsConnected()).toBe(true);
+    expect(connection.getConnectionStatus()).toBe('connected');
+    expect(connection.isConnected()).toBe(true);
+
+    // Capabilities resolving later still lets the state commit retroactively.
+    resolveCaps!(makeCapabilities());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.getRadioState()?.revision).toBe(1);
+    expect(connection.getConnectionStatus()).toBe('connected');
+  });
+
+  it('reports disconnected immediately on a real WS drop, even after a prior committed state', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    const connection = await import('../../stores/connection.svelte');
+
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1 })));
+    expect(store.getRadioState()?.revision).toBe(1);
+    expect(connection.getConnectionStatus()).toBe('connected');
+
+    instances[0].simulateClose();
+
+    expect(connection.getWsConnected()).toBe(false);
+    expect(connection.getConnectionStatus()).toBe('disconnected');
+    expect(connection.isConnected()).toBe(false);
+  });
 });

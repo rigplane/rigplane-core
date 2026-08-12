@@ -3,7 +3,6 @@ import type { ServerState } from '../types/state';
 
 type RadioHealth = NonNullable<ServerState['radioHealth']>;
 
-let httpConnected = $state(false);
 let wsConnected = $state(false);
 let audioConnected = $state(false);
 let scopeConnected = $state(false);
@@ -28,16 +27,19 @@ if (typeof window !== 'undefined') {
   }, 1000);
 }
 
-let isFullyConnected = $derived(httpConnected && wsConnected);
+// MOR-1419: "server link" honesty. The A10 HTTP-polling retirement (#2362)
+// deleted the only real producer of the legacy `httpConnected` field (the
+// HTTP state poller); the field became an orphan that only ever mirrored
+// (imperfectly, and with a cold-start race) the WS transport it now
+// duplicates. `wsConnected` — set synchronously from the real transport's
+// state-change callback — is the single honest live signal for both the
+// control-link and server-link indicators.
+let isFullyConnected = $derived(wsConnected);
 let overallConnected = $derived(wsConnected && audioConnected);
 let audioAliveControlDead = $derived(audioConnected && !wsConnected);
 let connectionStatus = $derived<'connected' | 'partial' | 'disconnected'>(
-  isFullyConnected ? 'connected' : httpConnected || wsConnected ? 'partial' : 'disconnected',
+  wsConnected ? 'connected' : 'disconnected',
 );
-
-export function setHttpConnected(v: boolean): void {
-  httpConnected = v;
-}
 
 export function setWsConnected(v: boolean): void {
   wsConnected = v;
@@ -57,10 +59,6 @@ export function getConnectionStatus(): 'connected' | 'partial' | 'disconnected' 
 
 export function isConnected(): boolean {
   return isFullyConnected;
-}
-
-export function getHttpConnected(): boolean {
-  return httpConnected;
 }
 
 export function getWsConnected(): boolean {

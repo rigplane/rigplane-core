@@ -105,6 +105,7 @@ class RigConfig:
     pre_values: tuple[int, ...] | None
     agc_modes: tuple[int, ...] | None
     agc_labels: dict[str, str] | None
+    rf_sql_control_model: str = "separate"   # "separate" | "combined" (Icom-style single RF/SQL knob)
     protocol_type: str = "civ"               # "civ" | "kenwood_cat" | "yaesu_cat"
     protocol_address: int | None = None
     protocol_baud: int | None = None
@@ -219,6 +220,7 @@ except RigLoadError as e:
 | `[protocol].type` valid (if present) | `[protocol].type must be one of {'civ', 'kenwood_cat', 'yaesu_cat'}` |
 | `[controls.X].style` valid (if present) | `[controls.X].style must be one of {'toggle', 'stepped', ...}` |
 | `[[rules]].kind` valid (if present) | `rule kind must be one of {'mutex', 'disables', 'requires', 'value_limit'}` |
+| `[capabilities].rf_sql_control_model` valid (if present) | `[capabilities].rf_sql_control_model must be one of ['combined', 'separate']` |
 | `[modes].list` non-empty | `[modes].list must not be empty` |
 | `[filters].list` non-empty | `[filters].list must not be empty` |
 

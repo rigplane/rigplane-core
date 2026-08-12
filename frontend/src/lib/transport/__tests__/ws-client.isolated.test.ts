@@ -17,7 +17,6 @@ const radioStoreMock = vi.hoisted(() => ({
 
 vi.mock('../../stores/connection.svelte', () => ({
   setWsConnected: vi.fn(),
-  setHttpConnected: vi.fn(),
   markStateUpdated: vi.fn(),
   setReconnecting: vi.fn(),
   setRadioStatus: vi.fn(),
@@ -1290,6 +1289,90 @@ describe('control channel singleton', () => {
 
 });
 
+// ─── MOR-1422: a refused command must be operator-visible ──────────────────
+//
+// `sendCommand` used to drop a non-PTT-off command while
+// `isLiveRadioAvailable()` is false with only a `console.warn` — invisible
+// unless the operator has devtools open. A held control (a jog wheel, a
+// repeated keypress) calls `sendCommand` many times a second, so the fix is
+// ONE notice per refusal burst, not one per call — these tests exercise the
+// debounce with fake timers, and pin the two things that must NOT trigger
+// it: a healthy link, and the always-ungated PTT-off release path.
+describe('sendCommand surfaces a refused command exactly once per burst (MOR-1422)', () => {
+  let originalWebSocket: typeof WebSocket;
+
+  beforeEach(() => {
+    instances.length = 0;
+    vi.useFakeTimers();
+    originalWebSocket = globalThis.WebSocket;
+    // @ts-expect-error mock
+    globalThis.WebSocket = MockWebSocket;
+  });
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWebSocket;
+    vi.useRealTimers();
+    vi.resetModules();
+  });
+
+  it('emits exactly one notification for a burst of refused commands', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    const { onMessage, sendCommand } = await import('../ws-client');
+    const notices: unknown[] = [];
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    sendCommand('set_freq', { freq: 14_074_000, receiver: 0 }, 'a');
+    sendCommand('set_freq', { freq: 14_074_100, receiver: 0 }, 'b');
+    sendCommand('set_freq', { freq: 14_074_200, receiver: 0 }, 'c');
+
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      type: 'notification', level: 'warning', code: 'commandRefusedLinkDegraded',
+    });
+  });
+
+  it('emits a second notification once the debounce window has elapsed', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    const { onMessage, sendCommand } = await import('../ws-client');
+    const notices: unknown[] = [];
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    sendCommand('set_freq', { freq: 14_074_000, receiver: 0 }, 'first');
+    vi.advanceTimersByTime(3_000);
+    sendCommand('set_freq', { freq: 14_074_100, receiver: 0 }, 'second');
+
+    expect(notices).toHaveLength(2);
+  });
+
+  it('emits nothing while the link is healthy', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(true);
+    const { connect, onMessage, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    const notices: unknown[] = [];
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    sendCommand('set_freq', { freq: 14_074_000, receiver: 0 });
+
+    expect(notices).toHaveLength(0);
+  });
+
+  // The PTT-off release alias is the operator's emergency unkey path — it is
+  // never gated on link health (see the "allows open-socket PTT release
+  // aliases" case above) and must never be buried under a refusal toast either.
+  it('emits nothing for the ungated PTT-off release path', async () => {
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    const { onMessage, sendCommand } = await import('../ws-client');
+    const notices: unknown[] = [];
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    sendCommand('ptt_off', {}, 'off-1');
+    sendCommand('ptt', { state: false }, 'off-2');
+
+    expect(notices).toHaveLength(0);
+  });
+});
+
 describe('WsChannel send queue', () => {
   let originalWebSocket: typeof WebSocket;
 
@@ -1447,5 +1530,200 @@ describe('WsChannel send queue', () => {
 
     expect(received).toHaveLength(1);
     expect(received[0].level).toBe('error');
+  });
+});
+
+// ─── MOR-1424: visibility-aware reconnect + close observability ────────────
+//
+// The RC stand observed six ws-only reconnects from one tab, each closed
+// client-side within 0-1s at 13-37s growing intervals. Root cause: when the
+// browser's WS handshake never reaches onopen (background-tab throttling),
+// `attempt` keeps growing and `calcBackoff` climbs toward the 30s cap —
+// exactly the churn signature seen. Test (c) below promotes that diagnosis
+// (scratch repro test "4b") into permanent coverage.
+
+function setVisibility(state: 'visible' | 'hidden') {
+  Object.defineProperty(document, 'visibilityState', {
+    value: state,
+    configurable: true,
+  });
+}
+
+describe('WsChannel visibility-aware reconnect + close observability', () => {
+  let originalWebSocket: typeof WebSocket;
+
+  beforeEach(() => {
+    instances.length = 0;
+    vi.useFakeTimers();
+    originalWebSocket = globalThis.WebSocket;
+    // @ts-expect-error mock
+    globalThis.WebSocket = MockWebSocket;
+    setVisibility('visible');
+  });
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWebSocket;
+    setVisibility('visible');
+    vi.useRealTimers();
+    vi.resetModules();
+  });
+
+  it('(a) pauses the reconnect loop while the tab is hidden — no new attempts scheduled', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    setVisibility('hidden');
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose(1006, '', false);
+
+    expect(ch.state).toBe('disconnected');
+    await vi.advanceTimersByTimeAsync(60_000);
+    // Without the fix this grows to 2+ instances as calcBackoff schedules a
+    // retry against a handshake that keeps getting throttled.
+    expect(instances).toHaveLength(1);
+    // Cleanup: an intentional disconnect prevents this channel's still-live
+    // visibilitychange listener (document listeners outlive the `it` block)
+    // from reconnecting during a later test's visibilitychange dispatch.
+    ch.disconnect();
+  });
+
+  it('(b) reconnects immediately with attempt reset when the tab becomes visible again', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    setVisibility('hidden');
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose(1006, '', false);
+    expect(instances).toHaveLength(1);
+
+    setVisibility('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    // attempt was reset to 0 before reconnecting, so _open() sets 'connecting'
+    // (not 'reconnecting') — same as a first-ever connection attempt.
+    expect(instances).toHaveLength(2);
+    expect(ch.state).toBe('connecting');
+  });
+
+  it('(b2) a healthy open socket is left untouched when the tab goes hidden', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    expect(ch.state).toBe('connected');
+
+    setVisibility('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(ch.state).toBe('connected');
+    expect(instances).toHaveLength(1);
+    expect(instances[0].readyState).toBe(MockWebSocket.OPEN);
+  });
+
+  it('cancels an already-scheduled reconnect when the tab goes hidden', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose(1006, '', false); // visible -> timer IS scheduled
+    setVisibility('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(instances).toHaveLength(1); // timer cancelled
+    setVisibility('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(instances).toHaveLength(2); // debt recorded -> resumes
+    expect(ch.state).toBe('connecting'); // attempt reset
+    ch.disconnect();
+  });
+
+  it('(c) regression: sockets that error out of CONNECTING grow the backoff toward the 30s cap while visible', async () => {
+    // Fix jitter (calcBackoff mixes in Math.random()) so the growth curve is
+    // exact instead of a wide, occasionally-boundary-flaky band.
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5); // multiplier = 0.8 + 0.5*0.4 = 1.0
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+
+    const delays: number[] = [];
+    let lastNow = Date.now();
+    for (let cycle = 0; cycle < 7; cycle++) {
+      const ws = instances[instances.length - 1];
+      // No simulateOpen() — the handshake never completes, so `attempt` is
+      // never reset to 0 and calcBackoff keeps climbing.
+      ws.simulateError();
+      const before = instances.length;
+      let waited = 0;
+      while (instances.length === before && waited < 40_000) {
+        await vi.advanceTimersByTimeAsync(100);
+        waited += 100;
+      }
+      const now = Date.now();
+      delays.push(now - lastNow);
+      lastNow = now;
+    }
+    ch.disconnect();
+    randomSpy.mockRestore();
+
+    // Deterministic backoff bases (attempt 0..6, cap at BACKOFF_MAX_MS):
+    // 1s, 2s, 4s, 8s, 16s, 30s, 30s. Last 3 land squarely in the observed
+    // 13-37s churn band (measured with 100ms polling granularity).
+    const last3 = delays.slice(-3);
+    expect(last3[0]).toBeGreaterThanOrEqual(16_000);
+    expect(last3[0]).toBeLessThan(16_100);
+    expect(last3[1]).toBeGreaterThanOrEqual(30_000);
+    expect(last3[1]).toBeLessThan(30_100);
+    expect(last3[2]).toBeGreaterThanOrEqual(30_000);
+    expect(last3[2]).toBeLessThan(30_100);
+  });
+
+  it('(b3) a fresh connect() clears a stale hidden-pending flag — no spurious extra reconnect on later visibilitychange', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    setVisibility('hidden');
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose(1006, '', false); // sets reconnectPendingVisibility = true
+    expect(instances).toHaveLength(1);
+
+    // Unrelated fresh reconnect while still hidden (e.g. explicit reconnect()
+    // call, or a manual re-connect) — must supersede the stale pending flag.
+    ch.connect('ws://test');
+    expect(instances).toHaveLength(2);
+    instances[1].simulateOpen();
+    expect(ch.state).toBe('connected');
+
+    setVisibility('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    // Without the fix, the stale reconnectPendingVisibility flag from the
+    // first episode would fire a spurious extra _open() here even though
+    // the channel is already healthily connected.
+    expect(instances).toHaveLength(2);
+    expect(ch.state).toBe('connected');
+  });
+
+  it('(d) records the last WS close code/reason/wasClean for diagnostics', async () => {
+    const { WsChannel, getLastCloseInfo } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose(1006, 'abnormal closure', false);
+
+    expect(getLastCloseInfo()).toMatchObject({
+      code: 1006,
+      reason: 'abnormal closure',
+      wasClean: false,
+    });
+  });
+
+  it('(d2) records a clean, intentional close too', async () => {
+    const { WsChannel, getLastCloseInfo } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    ch.disconnect();
+
+    expect(getLastCloseInfo()).toMatchObject({ wasClean: true });
   });
 });

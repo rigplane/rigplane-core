@@ -1,6 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
+
+// MOR-1451: `smeter-scale.ts` has no hardcoded fallback calibration curve —
+// an uncalibrated radio collapses `value` (dB-rel-S9) toward the raw-scale
+// identity mapping, which drags a `value: 20` fixture from "~S9+20" (near
+// full-scale) down to a few segments and starves the peak-hold ballistics
+// below of the travel distance they're built to exercise. None of the
+// assertions here are about calibration correctness — they need *some*
+// stable calibrated domain, so this fixture (the numbers `rigs/ic7610.toml`
+// happens to declare) stands in for "a radio profile published a curve".
+const IC7610_LIKE_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 52, actual: -36, label: 'S3' },
+  { raw: 78, actual: -24, label: 'S5' },
+  { raw: 103, actual: -12, label: 'S7' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 165, actual: 10, label: 'S9+10' },
+  { raw: 200, actual: 20, label: 'S9+20' },
+  { raw: 240, actual: 40, label: 'S9+40' },
+];
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getSmeterCalibration: () => IC7610_LIKE_CAL,
+  getSmeterRedline: () => null,
+}));
+
 import LinearSMeter from '../LinearSMeter.svelte';
 
 // MOR-1233: LinearSMeter runs two independent requestAnimationFrame loops —

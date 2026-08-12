@@ -170,6 +170,45 @@ describe('operational availability decides whether a control is USABLE', () => {
   });
 });
 
+// ── 2b. MOR-1422: the disabled reason is legible, not just a data hook ─────
+
+describe('the disabled reason is exposed on hover and to screen readers (MOR-1422)', () => {
+  /** Resolves a control's `aria-describedby` target and returns ITS text —
+   *  the id alone would only prove wiring, not that a screen reader has
+   *  something to actually read. */
+  function describedText(el: HTMLElement): string | null {
+    const id = el.getAttribute('aria-describedby');
+    if (!id) return null;
+    return target.querySelector(`#${id}`)?.textContent ?? null;
+  }
+
+  it('puts "Not yet observed" on title and aria-describedby for an unobserved toggle', () => {
+    const view = withField(base(), 'vox', { availability: { structural: true, operational: false } });
+    withSurface(view, snap(), (s) => {
+      const control = s.control('vox')!;
+      expect(control.title).toBe('Not yet observed');
+      expect(describedText(control)).toBe('Not yet observed');
+    });
+  });
+
+  it('puts "Not yet observed" on title and aria-describedby for an unobserved level input', () => {
+    const view = withField(base(), 'rfPower', { availability: { structural: true, operational: false } });
+    withSurface(view, snap(), (s) => {
+      const input = s.input('rfPower')!;
+      expect(input.title).toBe('Not yet observed');
+      expect(describedText(input)).toBe('Not yet observed');
+    });
+  });
+
+  it('carries no reason text on hover or for screen readers once a control is usable', () => {
+    withSurface(base(), snap(), (s) => {
+      const control = s.control('vox')!;
+      expect(control.title).toBe('');
+      expect(control.hasAttribute('aria-describedby')).toBe(false);
+    });
+  });
+});
+
 // ── 3. VOX — safety note (ii), arming voice keying ─────────────────────────
 
 describe('VOX arming obeys the two-level gate (safety note ii)', () => {
@@ -372,6 +411,29 @@ describe('level intents reach the caller with the field and the raw value', () =
       expect(s.input('rfPower')!.valueAsNumber).toBe(0.8);
       expect(s.input('micGain')!.valueAsNumber).toBe(128);
       expect(s.input('voxDelay')!.valueAsNumber).toBe(20);
+    });
+  });
+});
+
+// ── 7. Readout formatting (MOR-1447) ────────────────────────────────────────
+
+describe('the readout formats a 0..1 level as a percent, not the raw wire float', () => {
+  // The mobile/narrow composition regression this pins: RF power read back
+  // as the literal `0.5529411764705883` instead of a formatted percent.
+  it('formats RF power as a rounded percent (fixture value 0.8 -> "80%")', () => {
+    withSurface(base(), snap(), (s) => {
+      const output = s.control('rfPower')!.querySelector('output')!;
+      expect(output.textContent).toBe('80%');
+    });
+  });
+
+  // Contrast: a raw 0..255 level and a small integer domain both keep
+  // reading as the plain number — only the declared 0..1 fraction is
+  // percent-formatted (`formatKnownLevel`'s domain-generic rule).
+  it('leaves a raw 0..255 level (mic gain) as the plain number', () => {
+    withSurface(base(), snap(), (s) => {
+      const output = s.control('micGain')!.querySelector('output')!;
+      expect(output.textContent).toBe('128');
     });
   });
 });

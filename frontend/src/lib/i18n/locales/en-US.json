@@ -156,6 +156,8 @@
   "core.toast.radioDisconnected": "Radio disconnected",
   "core.toast.audioBridgeStarted": "Audio bridge started",
   "core.toast.audioBridgeStopped": "Audio bridge stopped",
+  "core.toast.commandRefusedLinkDegraded": "Command not sent — link to the radio is degraded",
+  "core.toast.commandExecutionFailed": "Command failed: {reason}",
   "core.toast.unknown": "Something went wrong. Try again later.",
 
   "core.mobile.nav.label": "Radio navigation",
@@ -207,6 +209,9 @@
   "core.vfo.ops.quickDualWatch": "Quick dual watch",
   "core.vfo.splitDigest.rx": "RX {frequency}",
   "core.vfo.splitDigest.tx": "TX {frequency}",
+
+  "core.disabledReason.missing": "Not supported by this radio",
+  "core.disabledReason.unobserved": "Not yet observed",
 
   "core.txGuard.modInputNotLan": "MOD input is {source}, not LAN — your voice from the web will not be transmitted (TX).",
   "core.txGuard.setLan": "Set LAN",

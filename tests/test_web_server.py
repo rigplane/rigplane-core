@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
 import struct
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -704,6 +706,9 @@ class TestHttpEndpoints:
         assert "audio" in data
         assert "modes" in data
         assert isinstance(data["modes"], list)
+        # MOR-1447 leg 2: RF/SQL control-model declaration always present,
+        # defaulting to "separate" unless the profile declares "combined".
+        assert data["rfSqlControlModel"] in ("separate", "combined")
 
     async def test_state_endpoint_contains_radio_ready(self, server: WebServer) -> None:
         host, port = _addr(server)
@@ -2308,6 +2313,236 @@ class TestWsKeepalive:
         task = asyncio.create_task(ws.keepalive_loop(interval=0.01))
         # Should complete quickly since _closed is True
         await asyncio.wait_for(task, timeout=1.0)
+
+
+# ---------------------------------------------------------------------------
+# MOR-1429: half-open WS session reaping
+# ---------------------------------------------------------------------------
+
+
+class TestHalfOpenWsReaper:
+    """A half-open WS peer (accepted, then silent -- no FIN, no pongs) must
+    not leak in ``_client_tasks`` forever.
+
+    Live incident: a half-open control session was still counted in
+    ``active=``/``wsClients`` 48+ minutes after the peer went silent, even
+    though the 60s pong-timeout keepalive correctly flagged it as dead.
+    Root cause: ``WebSocketConnection.close()`` only wrote a close frame and
+    never closed the transport, so the reader blocked in ``recv()`` never
+    unblocked -- the owning task in ``_client_tasks`` never completed.
+    """
+
+    @staticmethod
+    def _server_ws(server: WebServer, ip: str, path: str) -> WebSocketConnection:
+        conns = server._conn_manager._connections[(ip, path)]  # noqa: SLF001
+        assert len(conns) == 1, f"expected exactly one tracked ws, got {len(conns)}"
+        return conns[0]
+
+    @staticmethod
+    async def _wait_until(predicate: Any, timeout: float = 2.0) -> None:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("condition not met within timeout")
+
+    async def test_half_open_peer_reaped_by_zombie_reaper(
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A stale (pong-timed-out) control session must be reaped within
+        one zombie-reaper pass: task completes, PTT OFF teardown ran, and
+        the disconnect is logged -- without the peer ever sending a FIN."""
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
+        try:
+            await _ws_skip_handshake(reader)
+
+            before = len(server._client_tasks)  # noqa: SLF001
+            assert before >= 1
+
+            ws = self._server_ws(server, "127.0.0.1", "/api/v1/ws")
+            # Fake clock: simulate a peer that stopped answering PONGs long
+            # ago, per the existing keepalive test convention (no real 60s
+            # wait).
+            ws._last_pong = time.monotonic() - 1000.0  # noqa: SLF001
+            ws._pong_timeout = 0.01  # noqa: SLF001
+            assert ws.is_alive() is False
+
+            reaper = asyncio.create_task(
+                server._zombie_reaper(interval=0.01)  # noqa: SLF001
+            )
+            try:
+                with caplog.at_level(logging.INFO):
+                    await asyncio.wait_for(
+                        self._wait_until(
+                            lambda: len(server._client_tasks) < before  # noqa: SLF001
+                        ),
+                        timeout=2.0,
+                    )
+            finally:
+                reaper.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reaper
+
+            assert len(server._client_tasks) == before - 1  # noqa: SLF001
+
+            # The exact PTT-OFF teardown log line pinned by MOR-1013/MOR-1429:
+            # a session must not disconnect (by any path) without this.
+            assert any(
+                "requested PTT OFF on control session teardown" in r.message
+                for r in caplog.records
+            ), "reaped session must have run the unconditional PTT OFF teardown"
+            assert any("ws disconnect" in r.message for r in caplog.records)
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    async def test_cooperative_close_regression(
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A normal client-initiated close must still run the exact same
+        teardown sequence -- the reaping fix must not disturb it."""
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
+        await _ws_skip_handshake(reader)
+
+        before = len(server._client_tasks)  # noqa: SLF001
+        with caplog.at_level(logging.INFO):
+            await _close_ws(writer)
+            await self._wait_until(
+                lambda: len(server._client_tasks) < before  # noqa: SLF001
+            )
+
+        assert len(server._client_tasks) == before - 1  # noqa: SLF001
+        assert any(
+            "requested PTT OFF on control session teardown" in r.message
+            for r in caplog.records
+        )
+        assert any("ws disconnect" in r.message for r in caplog.records)
+
+    async def test_healthy_client_not_aborted_by_reaper(
+        self, server: WebServer, mock_radio: MagicMock
+    ) -> None:
+        """A connection with a recent pong must survive multiple
+        zombie-reaper passes at a tight interval (no false-positive kill of
+        a healthy, merely slow, client)."""
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
+        try:
+            await _ws_skip_handshake(reader)
+            before = len(server._client_tasks)  # noqa: SLF001
+
+            ws = self._server_ws(server, "127.0.0.1", "/api/v1/ws")
+            ws._last_pong = time.monotonic()  # noqa: SLF001 -- fresh, healthy
+            assert ws.is_alive() is True
+
+            reaper = asyncio.create_task(
+                server._zombie_reaper(interval=0.01)  # noqa: SLF001
+            )
+            try:
+                await asyncio.sleep(0.1)  # let several reaper passes run
+            finally:
+                reaper.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reaper
+
+            assert len(server._client_tasks) == before  # noqa: SLF001
+            assert ws.closed is False
+        finally:
+            await _close_ws(writer)
+
+    async def test_saturated_peer_reaper_not_wedged(
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A stale connection whose transport write buffer is saturated
+        above the high-water mark, against a peer that has stopped
+        READING (not merely silent), must not wedge the zombie-reaper.
+
+        Regression for the drain-wedge blocker found in PR #2378 review:
+        ``ws.close()`` awaits ``writer.drain()``, which blocks against a
+        saturated transport buffer and a non-reading peer -- exactly the
+        state a half-open peer leaves the reaper in. A MagicMock writer
+        cannot express this; this test uses a real asyncio socket pair,
+        with the client-side reader deliberately never read from.
+        """
+        host, port = _addr(server)
+        reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
+        try:
+            await _ws_skip_handshake(reader)
+
+            before = len(server._client_tasks)  # noqa: SLF001
+            assert before >= 1
+
+            ws = self._server_ws(server, "127.0.0.1", "/api/v1/ws")
+            ws._last_pong = time.monotonic() - 1000.0  # noqa: SLF001
+            ws._pong_timeout = 0.01  # noqa: SLF001
+            assert ws.is_alive() is False
+
+            # Saturate the server-side transport write buffer while the
+            # peer (this test's `reader`) never reads again -- push well
+            # past a lowered high-water mark directly via the transport
+            # so setup itself never blocks on drain().
+            transport = ws._writer.transport  # noqa: SLF001
+            transport.set_write_buffer_limits(high=4096)
+            big_chunk = b"\x00" * (1024 * 1024)  # 1 MiB per write, x4
+            for _ in range(4):
+                transport.write(big_chunk)
+            # `reader` is intentionally never read from below -- the peer
+            # stops consuming, so both the OS socket buffers and the
+            # transport's own queue fill and stay full.
+            await asyncio.sleep(0.05)
+            assert transport.get_write_buffer_size() > 4096, (
+                "setup invalid: transport buffer did not saturate above "
+                "the high-water mark"
+            )
+
+            reaper = asyncio.create_task(
+                server._zombie_reaper(interval=0.05)  # noqa: SLF001
+            )
+            try:
+                with caplog.at_level(logging.INFO):
+                    # Bounded budget -- must fail FAST (not hang for
+                    # minutes/TCP-RTO) if the reaper's close() is not
+                    # bounded with an abort() fallback.
+                    await asyncio.wait_for(
+                        self._wait_until(
+                            lambda: len(server._client_tasks) < before  # noqa: SLF001
+                        ),
+                        timeout=5.0,
+                    )
+                # The reaper task must still be alive and looping -- proof
+                # a second pass runs, i.e. the reaper itself was not
+                # wedged by the saturated close().
+                await asyncio.sleep(0.2)
+                assert not reaper.done(), (
+                    "zombie-reaper task died or is wedged after reaping "
+                    "the saturated-peer connection"
+                )
+            finally:
+                reaper.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reaper
+
+            assert len(server._client_tasks) == before - 1  # noqa: SLF001
+            assert any(
+                "zombie-reaper: forced abort on stale ws" in r.message
+                for r in caplog.records
+            ), "reaper must have hit the bounded-close abort() fallback"
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
 
 # ---------------------------------------------------------------------------

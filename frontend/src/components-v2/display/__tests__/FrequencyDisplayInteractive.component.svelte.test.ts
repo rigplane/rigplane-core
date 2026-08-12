@@ -4,25 +4,31 @@ import type { ComponentProps } from 'svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import FrequencyDisplayInteractive from '../../../primitives/frequency/FrequencyDisplayInteractive.svelte';
+// Static import while the stores below are imported dynamically per test:
+// safe ONLY while `panel-props` stays a pure state→props module with no store
+// imports. If a projection ever starts reading a store, move this into the
+// per-test dynamic import too — a split module graph here would quietly
+// reintroduce the exact fabrication bug this file exists to pin.
 import { toVfoProps } from '$lib/runtime/props/panel-props';
 
-// This test exercises the REAL radio store + REAL panel-props projection so
+// This test exercises the REAL radio store + REAL `panel-props` projection so
 // the freq fix (MOR-475/MOR-1403) is verified end-to-end: VFO frequency is
 // StateStore-owned truth exclusively — click-to-tune steps from the last
 // CONFIRMED server frequency, never a local intent (MOR-1409 A09b removed the
 // last optimistic machinery; there is no overlay left to drop).
 //
-// MOR-1409 A15 follow-up: the fixture must actually SURVIVE the store's
-// acceptance gate. `setRadioState()` validates `stateContractVersion`,
-// `providerGeneration` (against the capabilities epoch), and `txTarget` — an
-// under-specified fixture is silently rejected, `getRadioState()` stays
-// `null`, and any projection of it reads the honest "unobserved" sentinel
-// (`NaN`), not a real frequency. The old revision of this test fell into
-// exactly that trap: the store rejected the fixture and the (since-deleted)
-// wiring/state-adapter's `!state` branch supplied a fabricated 14074000 that
-// the assertion then "confirmed". We therefore establish the capabilities
-// epoch first and assert every `setRadioState()` call returns true, so the
-// projected frequency is provably store-owned truth.
+// MOR-1409 A15 finding, and its follow-up (done here): this file used to
+// project through the deleted `wiring/state-adapter` twin and assert
+// `14074000`. That assertion passed for the WRONG reason: `setRadioState()`
+// rejected the fixture (it gates on a capability epoch/topology the fixture
+// never established), so `getRadioState()` was `null` and the twin's `!state`
+// branch returned its hard-coded `14074000`/`'USB'`/`'FIL1'` stand-in. The
+// test was reading a fabrication while its own comment claimed StateStore
+// truth. A15 re-pointed the projection to the honest `panel-props.toVfoProps`
+// (`NaN` for an unobserved VFO) and deferred the store round-trip; this file
+// now carries the capabilities/epoch harness that round-trip needs, and every
+// `setRadioState()` call asserts acceptance so the trap cannot silently
+// return.
 //
 // We import the real stores dynamically per test to reset their module state
 // between cases.
@@ -144,11 +150,15 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
       main: { ...makeMinimalState().main, freqHz: 14074000 },
     }))).toBe(true);
 
-    // The StateStore observation is the sole VFO truth seen by the projection.
+    // The StateStore observation is the sole VFO truth seen by the projection
+    // — and it is OBSERVED, not fabricated: the honest projection returns
+    // `NaN` when it is not (A15's negative control, kept), which is exactly
+    // what these assertions distinguish.
     const state = store.getRadioState();
     expect(state).not.toBeNull();
     const vfo = toVfoProps(state, 'main');
     expect(vfo.freq).toBe(14074000);
+    expect(Number.isNaN(toVfoProps(null, 'main').freq)).toBe(true);
 
     const onFreqChange = vi.fn();
     const t = mountDisplay({ freq: vfo.freq, onFreqChange });

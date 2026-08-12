@@ -16,7 +16,7 @@
  * flags), never as a copy of the fixture input, so an adapter or wiring
  * regression breaks the assertion rather than silently re-baselining a picture.
  */
-import type { Capabilities } from '$lib/types/capabilities';
+import type { Capabilities, MeterCalPoint } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import {
   IDLE_TX, type AudioRuntimeState, type ModGuardProps, type TxSnapshot,
@@ -227,8 +227,42 @@ function withMeters(state: ServerState): ServerState {
  * `structural: false` to `structural: true` — `operational` stays `false`
  * because no fixture state carries `scopeControls`.
  */
+/**
+ * MOR-1451 — the visual harness's `model: 'fixture'` capabilities never
+ * declared an `s_meter` calibration table, so every S-meter surface in
+ * every baseline rendered through the frontend's since-removed hardcoded
+ * IC-7610-shaped fallback curve — a real radio state the visual gate never
+ * actually covered (no capture had ever exercised the calibrated path).
+ * Declaring a table here is required, not incidental: with no table, the
+ * fixture is honestly UNCALIBRATED (MOR-1451's whole point), and every
+ * S-meter readout renders the plain raw number + "uncalibrated" instead of
+ * an S-unit — which is what a real un-calibrated radio (ic705/ic9700/tx500/
+ * x6100/x6200) would show, not what the reference layouts intend to depict.
+ * Anchors are the IC-7300's documented CI-V S-meter scale (0=S0, 120=S9,
+ * 241=S9+60 — see `rigs/ic7300.toml`'s citation), chosen as the
+ * representative calibrated curve since it is freshly verified against the
+ * official Icom CI-V Reference Guide.
+ */
+const S_METER_CAL: MeterCalPoint[] = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 120, actual: 0, label: 'S9' },
+  { raw: 241, actual: 60, label: 'S9+60' },
+];
+
 const baseCaps = (): Capabilities => ({
   model: 'fixture', scope: true, audio: true, tx: true,
+  // MOR-1451: `meterCalibrations` only reaches `smeter-scale.ts`'s
+  // `getSmeterCalibration()` through the REAL, generation-gated
+  // `$lib/stores/capabilities.svelte` singleton (`setCapabilities()`,
+  // production's only caller: `ws-client.ts`'s full-state handler) — a
+  // SEPARATE channel from the stubbed `runtime.caps` this object also
+  // feeds. `hasCurrentEpoch()` (capabilities.svelte.ts) rejects anything
+  // without a matching `stateContractVersion`/`providerGeneration` pair,
+  // so both are required here for `fixtures/main.ts`'s `setCapabilities`
+  // call (added alongside this) to actually accept the object instead of
+  // silently resetting the singleton to `null`.
+  stateContractVersion: 1, providerGeneration: 1,
+  meterCalibrations: { s_meter: S_METER_CAL },
   capabilities: [
     'audio', 'tx', 'dual_rx', 'tuner', 'dual_watch', 'lan_dual_rx_audio_routing',
     'af_level', 'rf_gain', 'squelch', 'attenuator', 'preamp', 'digisel', 'ip_plus',

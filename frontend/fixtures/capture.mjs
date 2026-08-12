@@ -337,6 +337,33 @@ try {
     });
     const page = await context.newPage();
     const consoleErrors = [];
+    // MOR-1430: attached BEFORE `page.goto` below (deterministic — no race
+    // with navigation) alongside the console/pageerror traps.
+    //
+    // Chrome's own "Failed to load resource: the server responded with a
+    // status of ###" console entry (emitted for ANY failed fetch/XHR/script/
+    // stylesheet/image load, regardless of whether page JS catches the
+    // rejection) never carries the URL — Playwright's `console` event only
+    // exposes the rendered text, which Chrome deliberately keeps generic.
+    // That made a fixture-harness 404 unattributable from CI logs alone
+    // (MOR-1430 sub-defect 1). `page.on('response')` and `page.on(
+    // 'requestfailed')` DO carry the request identity, so this pushes one
+    // precise `method URL -> status` (or `-> errorText` for a network-level
+    // failure with no response at all, e.g. connection refused) entry per
+    // failed resource — independent of, and in addition to, Chrome's own
+    // generic console text below.
+    page.on('response', (response) => {
+      if (response.status() < 400) return;
+      consoleErrors.push(
+        `resource-error: ${response.request().method()} ${response.url()} -> ${response.status()}`,
+      );
+    });
+    page.on('requestfailed', (request) => {
+      consoleErrors.push(
+        `resource-failed: ${request.method()} ${request.url()} -> `
+        + `${request.failure()?.errorText ?? 'unknown error'}`,
+      );
+    });
     page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
     page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
     if (spec.media) await page.emulateMedia(spec.media);

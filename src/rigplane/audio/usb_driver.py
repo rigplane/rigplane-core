@@ -31,10 +31,20 @@ from .backend import (
 
 logger = logging.getLogger(__name__)
 
+_SILENCE_WARN_SECONDS = 10
+"""Consecutive bit-exact-zero RX seconds before the silence watchdog warns."""
+
 _DEPENDENCY_HINT = (
     "USB audio backend requires optional dependencies sounddevice and numpy. "
     "Install with: pip install rigplane[bridge]"
 )
+
+
+def _is_silent_frame(frame: bytes) -> bool:
+    """Cheap bit-exact-zero check — one memcmp, no per-sample Python loop."""
+    return bool(frame) and frame == bytes(len(frame))
+
+
 # Ordered by selection preference (lower index = stronger match). The
 # C-Media identity ranks the Xiegu X6200's audio codec ahead of an unknown
 # commodity device on platforms without topology resolution (MOR-219). It is
@@ -582,6 +592,24 @@ class UsbAudioDriver:
             return self._duplex_stream.running
         return self._tx_stream is not None and self._tx_stream.running
 
+    def set_serial_port(self, serial_port: str | None) -> None:
+        """Rebind topology-based audio resolution to a new serial port.
+
+        Used after serial-node rediscovery (MOR-1453) so the next audio
+        resolution re-resolves RX/TX device indices against the radio's
+        new (renumbered) device node instead of the one captured at
+        construction. ``start_rx``/``start_tx`` call ``_ensure_selected_
+        devices`` unconditionally, so they always see the new port -- but
+        ``duplex_mode`` and ``selected_rx_device``/``selected_tx_device``
+        read the ``_selected_rx``/``_selected_tx`` cache directly without
+        forcing a fresh resolution, so it is cleared here to avoid
+        reporting a stale device from the old port between rediscovery
+        and the next start call.
+        """
+        self._serial_port = serial_port
+        self._selected_rx = None
+        self._selected_tx = None
+
     @property
     def selected_rx_device(self) -> UsbAudioDevice | None:
         return self._selected_rx
@@ -814,6 +842,44 @@ class UsbAudioDriver:
             f"{device.name}; tried {list(self._sample_rate_candidates(requested_sample_rate))}."
         )
 
+    def _silence_watchdog(
+        self, callback: Callable[[bytes], None], frame_ms: int
+    ) -> Callable[[bytes], None]:
+        """Wrap *callback* to warn once on sustained bit-exact RX silence.
+
+        macOS silently hands microphone-unpermissioned capture contexts
+        (e.g. ssh-spawned processes) all-zero CoreAudio frames: the stream
+        opens fine and frames keep flowing, but every sample is exactly 0 —
+        indistinguishable from a live capture of true silence without this
+        check. Tracks consecutive all-zero frames with a plain counter (no
+        new timer); warns once after ``_SILENCE_WARN_SECONDS``, then logs
+        one INFO on recovery and re-arms for the next silent stretch.
+        """
+        threshold = max(1, -(-(_SILENCE_WARN_SECONDS * 1000) // max(1, frame_ms)))
+        state = {"silent_frames": 0, "warned": False}
+
+        def _watchdog(frame: bytes) -> None:
+            if _is_silent_frame(frame):
+                state["silent_frames"] += 1
+                if state["silent_frames"] == threshold and not state["warned"]:
+                    state["warned"] = True
+                    logger.warning(
+                        "usb-audio: RX capture has delivered only digital "
+                        "silence for ~%ds — the input may lack OS capture "
+                        "permission (macOS: grant Microphone to the "
+                        "launching app/context) or the radio's USB audio "
+                        "output may be off",
+                        _SILENCE_WARN_SECONDS,
+                    )
+            else:
+                if state["warned"]:
+                    logger.info("RX audio signal detected")
+                state["silent_frames"] = 0
+                state["warned"] = False
+            callback(frame)
+
+        return _watchdog
+
     def _store_stream_contract(self, contract: UsbAudioStreamContract) -> None:
         if contract.direction == "rx":
             self._usb_audio_contract = UsbAudioContract(
@@ -891,7 +957,7 @@ class UsbAudioDriver:
                 deliver_channels=contract.channels,
                 rx_audio_channel=self._config.rx_audio_channel,
             )
-            await self._rx_stream.start(callback)
+            await self._rx_stream.start(self._silence_watchdog(callback, fm))
             self._store_stream_contract(contract)
             logger.info(
                 "usb-audio: RX capture running — device=[%d] %s",

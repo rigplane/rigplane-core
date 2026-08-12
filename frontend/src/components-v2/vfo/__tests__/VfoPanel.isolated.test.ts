@@ -198,6 +198,20 @@ describe('panel structure', () => {
     expect(t.querySelector('svg')).not.toBeNull();
   });
 
+  // MOR-1451: `sValue` is the raw CI-V S-meter byte (0-255), not calibrated
+  // dB-rel-S9. Before the fix, VfoPanel passed it straight into
+  // `LinearSMeter` (which expects calibrated dB) — raw 53 rendered as
+  // "S9+40" regardless of the actual signal. `getSmeterCalibration` is
+  // mocked to `null` above (no radio profile curve in this suite), so the
+  // honest-fallback path applies: the S meter must render the plain raw
+  // number, never a fabricated S-unit.
+  it('does not render S9+40 for a raw sMeter reading (MOR-1451)', () => {
+    const t = mountPanel({ ...baseProps, sValue: 53 });
+    const text = t.querySelector('svg')?.textContent ?? '';
+    expect(text).not.toContain('S9+40');
+    expect(text).toContain('53');
+  });
+
   it('renders the active band label from capabilities', () => {
     const t = mountPanel(baseProps);
     const indicators = Array.from(t.querySelectorAll('.control-strip .v2-status-indicator'));

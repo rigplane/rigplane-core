@@ -210,7 +210,7 @@ describe('O1: editing via either gate reaches the wire as the identical command'
   });
 
   it('composes the shipped RIT/XIT and scan command factories', async () => {
-    const real = await import('../command-bus');
+    const real = await import('$lib/runtime/commands/panel-commands');
     for (const name of ['onRitToggle', 'onXitToggle', 'onRitOffsetChange', 'onXitOffsetChange', 'onClear']) {
       expect(typeof (real.makeRitXitHandlers() as Record<string, unknown>)[name]).toBe('function');
     }

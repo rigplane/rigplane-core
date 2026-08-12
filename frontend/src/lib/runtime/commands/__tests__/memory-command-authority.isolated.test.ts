@@ -126,6 +126,32 @@ describe('MOR-1409 A05a memory command authority', () => {
     expect(h.calls).toHaveLength(0);
   });
 
+  it('routes recall/store/clear on a single-receiver radio although active is structurally unobservable (MOR-1423)', () => {
+    h.caps = caps('ab');
+    h.state = state('ab');
+    delete (h.state.fieldStatus as Record<string, unknown>).active;
+
+    const handlers = makeMemoryHandlers();
+    expect(handlers.onRecall(1)).toBe(true);
+    expect(handlers.onStore(2, 14_074_000, 'USB')).toBe(true);
+    expect(handlers.onClear(99)).toBe(true);
+    expect(h.calls.map(({ name, params }) => ({ name, params }))).toEqual([
+      { name: 'set_memory_mode', params: { channel: 1 } }, { name: 'memory_to_vfo', params: { channel: 1 } },
+      { name: 'set_memory_mode', params: { channel: 2 } }, { name: 'memory_write', params: {} },
+      { name: 'memory_clear', params: { channel: 99 } },
+    ]);
+  });
+
+  it('still requires observed active on dual-receiver radios for recall/store/clear (no regression, MOR-1423)', () => {
+    delete (h.state!.fieldStatus as Record<string, unknown>).active;
+
+    const handlers = makeMemoryHandlers();
+    expect(handlers.onRecall(1)).toBe(false);
+    expect(handlers.onStore(1, 14_074_000, 'USB')).toBe(false);
+    expect(handlers.onClear(1)).toBe(false);
+    expect(h.calls).toHaveLength(0);
+  });
+
   it('rejects absent active identity, generation drift, and impossible physical topology before dispatch', () => {
     const handlers = makeMemoryHandlers();
     h.state = { ...h.state!, active: undefined } as unknown as ServerState;

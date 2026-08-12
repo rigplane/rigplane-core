@@ -9,7 +9,7 @@
 import { disconnectAll as wsDisconnectAll, reconnectAll as wsReconnectAll } from '$lib/transport/ws-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { destroyMediaSession, initMediaSession } from '$lib/media/media-session';
-import { setHttpConnected, setRadioStatus } from '$lib/stores/connection.svelte';
+import { setRadioStatus } from '$lib/stores/connection.svelte';
 import { resetRadioState } from '$lib/stores/radio.svelte';
 
 export interface EibiStation {
@@ -33,7 +33,6 @@ export class SystemController {
     private readonly _effects = {
       destroyAudio: () => audioManager.destroy(),
       disconnectWebSockets: () => wsDisconnectAll(),
-      setHttpDisconnected: () => setHttpConnected(false),
       destroyMediaSession: () => destroyMediaSession(),
       setRadioDisconnected: () => setRadioStatus('disconnected'),
       resetRadioState: () => resetRadioState(),
@@ -104,9 +103,10 @@ export class SystemController {
     // 1. Stop audio (RX/TX playback + audio WS)
     this._effects.destroyAudio();
 
-    // 2. Close all WebSocket channels (control + scope + any named)
+    // 2. Close all WebSocket channels (control + scope + any named). This
+    // synchronously flips `wsConnected` false via the control channel's
+    // state-change callback (MOR-1419) — no separate HTTP flag to clear.
     this._effects.disconnectWebSockets();
-    this._effects.setHttpDisconnected();
 
     // 3. Stop MediaSession silent audio loop
     this._effects.destroyMediaSession();

@@ -481,12 +481,22 @@ class ControlHandler:
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
         )
-        # Per-command rate limiting: command_name -> (last_time, drop_count)
+        # Per-command rate limiting: command_name -> last physical-enqueue time.
         self._cmd_last: dict[str, float] = {}
-        self._cmd_drops: dict[str, int] = {}
         # Minimum interval between same command (seconds).
         # Continuous slider/knob drag sends dozens of set_* per second.
         self._CMD_MIN_INTERVAL = 0.05  # 50ms = max 20 commands/sec per client
+        # MOR-1427: last-value-wins coalescing for commands arriving inside
+        # the pacing window above, instead of the old silent hard-drop.
+        # command_name -> (command_id, params) of the most recent frame
+        # still waiting for its paced flush.
+        self._cmd_pending: dict[str, tuple[Any, dict[str, Any]]] = {}
+        # command_name -> the single deferred-flush task scheduled for it
+        # (one handle per (session, command) — this session owns them all).
+        self._cmd_flush_tasks: dict[str, asyncio.Task[None]] = {}
+        # command_name -> count of frames coalesced (superseded before they
+        # could flush) in the current burst — reset once that burst flushes.
+        self._cmd_coalesced: dict[str, int] = {}
         shared_service = getattr(server, "command_service", None)
         if isinstance(shared_service, CommandService):
             self._command_service = shared_service
@@ -515,7 +525,9 @@ class ControlHandler:
         # Sent directly (not via event queue) so it arrives right after hello
         # and before the recv loop — no interleaving with command responses.
         if self._server is not None:
-            initial = self._server.register_control_event_queue(self._event_queue)
+            initial = self._server.register_control_event_queue(
+                self._event_queue, session_id=self._session_id
+            )
             # Old focused handler doubles have no StateStore-backed
             # registration API and return a MagicMock/None.  Production
             # WebServer always returns the canonical shared-encoder baseline.
@@ -529,7 +541,9 @@ class ControlHandler:
                 await self._ws.send_text(encode_json(msg))
             except BaseException as exc:
                 logger.debug("control: failed to send initial state", exc_info=True)
-                self._server.unregister_control_event_queue(self._event_queue)
+                self._server.unregister_control_event_queue(
+                    self._event_queue, session_id=self._session_id
+                )
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 return
@@ -554,13 +568,16 @@ class ControlHandler:
             self._release_ptt_on_teardown()
             self._publish_session_liveness(live=False)
             self._clear_mod_input_restore_on_teardown()
+            self._cancel_pending_command_flushes()
             event_task.cancel()
             try:
                 await event_task
             except asyncio.CancelledError:
                 pass
             if self._server is not None:
-                self._server.unregister_control_event_queue(self._event_queue)
+                self._server.unregister_control_event_queue(
+                    self._event_queue, session_id=self._session_id
+                )
 
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""
@@ -920,36 +937,135 @@ class ControlHandler:
             return
 
         # ── Server-side rate limiting (per client, per command) ──
-        # Only throttle SET commands (continuous slider/knob drag).
-        # GET and read-only commands pass through.
+        # Only pace SET commands (continuous slider/knob drag). GET and
+        # read-only commands pass through. MOR-1427: a command arriving
+        # inside the pacing window is coalesced (last-value-wins) instead
+        # of hard-dropped — see _coalesce_command / _flush_coalesced_command.
         if name.startswith("set_"):
             now = time.monotonic()
             last = self._cmd_last.get(name, 0.0)
-            if now - last < self._CMD_MIN_INTERVAL:
-                drops = self._cmd_drops.get(name, 0) + 1
-                self._cmd_drops[name] = drops
-                if drops == 1 or drops % 50 == 0:
-                    logger.warning(
-                        "rate-limit: dropping %s (%.0fms since last, dropped=%d)",
-                        name,
-                        (now - last) * 1000,
-                        drops,
-                    )
-                # Still ACK the client so it doesn't stall
-                await self._ws.send_text(
-                    encode_json(
-                        {
-                            "type": "response",
-                            "id": cmd_id,
-                            "ok": True,
-                            "result": {"throttled": True},
-                        }
-                    )
-                )
+            # MOR-1427 review B1: a pending frame for this name must always
+            # win the race, even if the deferred flush task is running late
+            # (event loop briefly busy past its deadline). Consulting only
+            # the elapsed time here lets a newer frame slip past the gate
+            # and dispatch immediately while an OLDER frame is still queued
+            # for flush — the flush then overwrites the newer value with the
+            # stale one. Checking `_cmd_pending` closes that window: as long
+            # as a frame is still waiting to flush, every new frame joins the
+            # coalesce path instead of racing it.
+            if now - last < self._CMD_MIN_INTERVAL or name in self._cmd_pending:
+                await self._coalesce_command(name, cmd_id, params, now, last)
                 return
             self._cmd_last[name] = now
-            self._cmd_drops[name] = 0
 
+        await self._dispatch_command(cmd_id, name, params)
+
+    async def _coalesce_command(
+        self,
+        name: str,
+        cmd_id: Any,
+        params: dict[str, Any],
+        now: float,
+        last: float,
+    ) -> None:
+        """Last-value-wins coalescing for a frame inside the pacing window (MOR-1427).
+
+        The most recent frame for *name* always survives to the next paced
+        flush. Any frame it replaces gets an honest ``superseded`` reply
+        right away instead of the old silent-drop ``throttled`` ack — it
+        never reaches the command queue, so it must not claim it did.
+        Physical-enqueue pacing (``_CMD_MIN_INTERVAL``) is unchanged: this
+        only decides *which* frame's value is the one flushed when the
+        window reopens, never how often the window opens.
+        """
+        previous = self._cmd_pending.get(name)
+        if previous is not None:
+            prev_cmd_id, _ = previous
+            count = self._cmd_coalesced.get(name, 0) + 1
+            self._cmd_coalesced[name] = count
+            if count == 1 or count % 50 == 0:
+                logger.warning(
+                    "rate-limit: coalescing %s (%.0fms since last, coalesced=%d)",
+                    name,
+                    (now - last) * 1000,
+                    count,
+                )
+            await self._ws.send_text(
+                encode_json(
+                    {
+                        "type": "response",
+                        "id": prev_cmd_id,
+                        "ok": True,
+                        "result": {"superseded": True},
+                    }
+                )
+            )
+        self._cmd_pending[name] = (cmd_id, params)
+        if name not in self._cmd_flush_tasks:
+            delay = max(self._CMD_MIN_INTERVAL - (now - last), 0.0)
+            self._cmd_flush_tasks[name] = asyncio.create_task(
+                self._flush_coalesced_command(name, delay)
+            )
+
+    async def _flush_coalesced_command(self, name: str, delay: float) -> None:
+        """Deferred physical enqueue for a coalesced burst (MOR-1427).
+
+        Fires once, at the pacing boundary, and dispatches whichever frame
+        is the most recently pending one for *name* at that moment — never
+        necessarily the frame that originally triggered the delay.
+        """
+        try:
+            if delay > 0.0:
+                await asyncio.sleep(delay)
+        finally:
+            self._cmd_flush_tasks.pop(name, None)
+        pending = self._cmd_pending.pop(name, None)
+        if pending is None:
+            return
+        cmd_id, params = pending
+        self._cmd_last[name] = time.monotonic()
+        self._cmd_coalesced[name] = 0
+        try:
+            await self._dispatch_command(cmd_id, name, params)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # MOR-1427 review N3: this task is fire-and-forget (nothing
+            # awaits it in production — only tests do, via
+            # _cmd_flush_tasks). _dispatch_command already catches command
+            # failures internally and replies with an error frame; this
+            # guards the outer edge case (e.g. the reply write itself
+            # failing on a dead socket) so it cannot escape as an
+            # unretrieved task exception.
+            logger.warning(
+                "control: deferred flush of %r (id=%r) failed",
+                name,
+                cmd_id,
+                exc_info=True,
+            )
+
+    def _cancel_pending_command_flushes(self) -> None:
+        """Cancel in-flight coalesced-flush tasks on session teardown (MOR-1427).
+
+        A flush firing after the socket is gone would enqueue a stale
+        command on behalf of a session that no longer exists and try to
+        write an ack to a dead transport. Bookkeeping only — the command
+        queue and radio state are untouched; this never enqueues anything.
+        """
+        for task in self._cmd_flush_tasks.values():
+            task.cancel()
+        self._cmd_flush_tasks.clear()
+        self._cmd_pending.clear()
+
+    async def _dispatch_command(
+        self, cmd_id: Any, name: str, params: dict[str, Any]
+    ) -> None:
+        """Validate, enqueue, and ACK a single command.
+
+        Shared by the immediate pass-through path and the deferred
+        coalesced flush (MOR-1427) so both produce byte-identical
+        validation/enqueue/ack behavior.
+        """
         if name not in self._COMMANDS:
             await self._ws.send_text(
                 encode_json(

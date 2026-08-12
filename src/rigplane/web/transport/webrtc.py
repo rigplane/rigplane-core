@@ -139,6 +139,23 @@ class WebRtcDataChannelConnection:
         self._channel.close()
         await self._pc.close()
 
+    def abort(self) -> None:
+        """Synchronously mark the channel closed, for ``Connection`` parity.
+
+        WebRTC data channels have no TCP-drain equivalent to wedge on, so
+        there is nothing here to bound the way ``WebSocketConnection.abort``
+        bounds a stuck ``drain()`` (MOR-1429); this exists only so
+        ``WebRtcDataChannelConnection`` keeps satisfying the ``Connection``
+        protocol now that a bounded-close fallback caller may call
+        ``.abort()`` on any ``Connection``. ``close()`` remains the normal
+        (awaited, full) teardown path.
+        """
+        self._mark_closed()
+        try:
+            self._channel.close()
+        except Exception:
+            pass
+
     def is_alive(self) -> bool:
         """True while the channel is open and the PC is not closed/failed."""
         if self._closed:

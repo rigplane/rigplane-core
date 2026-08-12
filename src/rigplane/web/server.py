@@ -54,6 +54,7 @@ from ..core.command_service import (
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
+    CommandLifecycleEvent,
     CommandSource,
     FieldPath,
     Observation,
@@ -457,6 +458,30 @@ async def _read_capped_body(
     )
 
 
+def _notification_payload(
+    level: str,
+    message: str,
+    category: str,
+    *,
+    code: str | None,
+    params: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the wire-schema notification dict shared by broadcast and
+    targeted (single-session) sends. See WebServer.broadcast_notification
+    for the field contract."""
+    notification: dict[str, Any] = {
+        "type": "notification",
+        "level": level,
+        "message": message,
+        "category": category,
+    }
+    if code is not None:
+        notification["code"] = code
+    if params:
+        notification["params"] = dict(params)
+    return notification
+
+
 def _redact_token_in_path(path: str) -> str:
     """Return `path` with any `token=` query value replaced by `***`.
 
@@ -733,6 +758,17 @@ class WebServer:
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
         )
+        # MOR-1445: a websocket-queued command can be acknowledged at enqueue
+        # and only fail later, once RadioPoller actually executes it against
+        # the radio (e.g. a validation error the poller surfaces post-ack).
+        # CommandService already carries NAK semantics for that via
+        # fail_command()/lifecycle "failed"/"timed_out" — nothing previously
+        # subscribed to it, so the operator got no signal. Client-side
+        # refusals already toast via MOR-1422; this covers the execution-time
+        # gap. Only self.command_service (the websocket-queued path) is
+        # subscribed — self._http_command_service below executes synchronously
+        # and its caller already sees the exception directly.
+        self.command_service.subscribe_lifecycle(self._on_command_lifecycle_event)
         self._http_command_service = CommandService(
             executor=_HttpCommandExecutor(self),
             state_store=self.command_state_store,
@@ -813,6 +849,10 @@ class WebServer:
         self._state_store_freshness_task: asyncio.Task[None] | None = None
         # Control handler event queues
         self._control_event_queues: set[BoundedQueue[dict[str, Any]]] = set()
+        # session_id -> that session's event queue, for targeted (non-broadcast)
+        # sends — e.g. a post-ack command-failure notification belongs only to
+        # the session that issued the command (MOR-1445/MOR-1422 doctrine).
+        self._session_queues: dict[str, BoundedQueue[dict[str, Any]]] = {}
         # State broadcast throttle
         self._last_state_broadcast: float = 0.0
         self._pending_state_broadcast_task: asyncio.Task[None] | None = None
@@ -1253,23 +1293,37 @@ class WebServer:
         return self._state_diagnostics
 
     def register_control_event_queue(
-        self, q: BoundedQueue[dict[str, Any]]
+        self,
+        q: BoundedQueue[dict[str, Any]],
+        *,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Register a client and return its shared-encoder full baseline."""
         existing_queues = set(self._control_event_queues)
         self._control_event_queues.add(q)
+        if session_id is not None:
+            self._session_queues[session_id] = q
         try:
             return self._publish_control_state_baseline(q, peers=existing_queues)
         except BaseException:
             # Registration is transactional: an unbased queue must never
             # survive a failed/cancelled baseline encode.
             self._control_event_queues.discard(q)
+            if session_id is not None:
+                self._session_queues.pop(session_id, None)
             raise
 
-    def unregister_control_event_queue(self, q: BoundedQueue[dict[str, Any]]) -> None:
+    def unregister_control_event_queue(
+        self,
+        q: BoundedQueue[dict[str, Any]],
+        *,
+        session_id: str | None = None,
+    ) -> None:
         """Unregister a ControlHandler event queue."""
         was_registered = q in self._control_event_queues
         self._control_event_queues.discard(q)
+        if session_id is not None and self._session_queues.get(session_id) is q:
+            self._session_queues.pop(session_id, None)
         if was_registered:
             self._broadcast_ws_client_state_update()
 
@@ -1889,16 +1943,9 @@ class WebServer:
 
         Existing clients that only read ``message`` continue to work unchanged.
         """
-        notification: dict[str, Any] = {
-            "type": "notification",
-            "level": level,
-            "message": message,
-            "category": category,
-        }
-        if code is not None:
-            notification["code"] = code
-        if params:
-            notification["params"] = dict(params)
+        notification = _notification_payload(
+            level, message, category, code=code, params=params
+        )
         for q in list(self._control_event_queues):
             try:
                 q.put_nowait(notification)
@@ -1906,6 +1953,96 @@ class WebServer:
                 logger.debug(
                     "broadcast_notification: queue full, dropping notification"
                 )
+
+    def send_notification_to_session(
+        self,
+        session_id: str,
+        level: str,
+        message: str,
+        category: str = "system",
+        *,
+        code: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> bool:
+        """Send a notification to exactly one session's WS connection.
+
+        Same wire schema as :meth:`broadcast_notification`, but delivered
+        only to the session that registered under *session_id* (see
+        :meth:`register_control_event_queue`). Used for feedback that
+        belongs to whoever acted, not to every connected client — e.g. a
+        post-ack command-failure notification (MOR-1445), matching the
+        MOR-1422 refusal-toast doctrine. Returns ``False`` (no-op) if the
+        session is not currently registered (already disconnected) or its
+        queue is full.
+        """
+        q = self._session_queues.get(session_id)
+        if q is None:
+            return False
+        notification = _notification_payload(
+            level, message, category, code=code, params=params
+        )
+        try:
+            q.put_nowait(notification)
+        except asyncio.QueueFull:
+            logger.debug(
+                "send_notification_to_session: queue full, dropping notification "
+                "(session=%s)",
+                session_id,
+            )
+            return False
+        return True
+
+    def _on_command_lifecycle_event(self, event: CommandLifecycleEvent) -> None:
+        """Surface a post-ack command execution failure to its issuing
+        session only (MOR-1445) — never a broadcast.
+
+        A synchronous enqueue-time rejection (e.g. an unsupported command)
+        fails before ever reaching "acknowledged" and is already returned to
+        the requesting client as a WS response, and refused-before-enqueue
+        commands already toast client-side (MOR-1422) — neither needs
+        anything sent here. The gap this closes is the queued command that
+        WAS acknowledged and only failed later, once RadioPoller actually
+        executed it against the radio (fail_command()/"failed"/"timed_out"),
+        which previously reached no one.
+
+        Unified with the MOR-1422 refusal-toast doctrine: error feedback
+        belongs to whoever acted. Other connected clients saw no state
+        change from this command and would get pure noise from a broadcast,
+        so this targets exactly the session recorded on the intent
+        (threaded through as "session_id" in lifecycle event details by
+        command_intent_from_request / fail_command) via
+        send_notification_to_session — never broadcast_notification.
+
+        Stateless by design: "was this command ever acknowledged" is derived
+        from CommandService's own recorded history on demand, not tracked in
+        a WebServer-owned dict. A command whose target has no FieldPath (e.g.
+        "set_tuner") never reaches a "reconciled" state, and a scoped
+        overlay can expire silently with no lifecycle event at all — either
+        would leak a hand-maintained "currently acknowledged" set forever.
+        Recomputing from history has no such failure mode: nothing to leak.
+        """
+        if event.state not in ("failed", "timed_out"):
+            return
+        was_acknowledged = any(
+            e.command_id == event.command_id and e.state == "acknowledged"
+            for e in self.command_service.lifecycle_events()
+        )
+        if not was_acknowledged:
+            return
+        session_id = event.details.get("session_id") if event.details else None
+        if not isinstance(session_id, str):
+            # No identifiable issuing session (e.g. a non-websocket source) —
+            # the issuer-only doctrine means there is no one left to notify.
+            return
+        reason = event.message or "unknown error"
+        self.send_notification_to_session(
+            session_id,
+            "error",
+            f"Command failed: {reason}",
+            "command",
+            code="commandExecutionFailed",
+            params={"reason": reason},
+        )
 
     def _broadcast_dx_spot(self, spot: Any) -> None:
         """Add DX spot to buffer and push dx_spot message to all control clients."""
@@ -2263,6 +2400,33 @@ class WebServer:
             while True:
                 await asyncio.sleep(interval)
                 dead_ws = self._conn_manager.reap_dead()
+                for ws in dead_ws:
+                    # MOR-1429: reap_dead() above only drops this server's
+                    # per-IP bookkeeping. The connection's owning task (a
+                    # control/scope/audio(-scope) handler, tracked in
+                    # _client_tasks) stays blocked in recv() forever on a
+                    # half-open peer unless the transport itself is closed.
+                    # ws.close() now does real teardown (MOR-1429), so the
+                    # blocked reader unblocks, the handler's own
+                    # finally/teardown path runs normally, and the owning
+                    # task then completes and self-discards from
+                    # _client_tasks via the existing done_callback
+                    # (see _accept_client).
+                    #
+                    # ws.close() awaits a drain() that can wedge for as
+                    # long as TCP RTO (~15 min) against a peer that has
+                    # stopped reading with a saturated write buffer — that
+                    # would stall this whole reaper loop, per-connection,
+                    # serially (review on PR #2378). Bound it and fall
+                    # back to a hard abort() (never blocks) so one stuck
+                    # peer can never wedge the reaper.
+                    try:
+                        await asyncio.wait_for(
+                            ws.close(1001, "reaped: stale connection"), timeout=1.0
+                        )
+                    except Exception:
+                        ws.abort()
+                        logger.warning("zombie-reaper: forced abort on stale ws")
 
                 # Reap dead scope handlers
                 dead_scope = [
@@ -2689,6 +2853,7 @@ class WebServer:
                     "preLabels": profile.pre_labels,
                     "agcModes": list(profile.agc_modes) if profile.agc_modes else None,
                     "agcLabels": profile.agc_labels,
+                    "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
                     "dataModeCount": profile.data_mode_count,
                     "dataModeLabels": profile.data_mode_labels,
@@ -3145,6 +3310,7 @@ class WebServer:
             "preLabels": profile.pre_labels if profile.pre_labels else {},
             "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
             "agcLabels": profile.agc_labels if profile.agc_labels else {},
+            "rfSqlControlModel": profile.rf_sql_control_model,
             "dataModeCount": profile.data_mode_count,
             "dataModeLabels": (
                 profile.data_mode_labels if profile.data_mode_labels else {}
@@ -5248,7 +5414,7 @@ class WebServer:
         # Prevent path traversal
         static_dir = self._config.static_dir.resolve()
         target = (static_dir / filename).resolve()
-        if not str(target).startswith(str(static_dir)):
+        if not target.is_relative_to(static_dir):
             await _send_response(writer, 403, "Forbidden", b"Forbidden", {})
             return
 
@@ -5266,6 +5432,14 @@ class WebServer:
 
         mime, _ = mimetypes.guess_type(str(target))
         ct = mime or "application/octet-stream"
+        # Vite emits content-hashed filenames under assets/, so those are
+        # safe to cache forever; everything else (index.html, favicon)
+        # keeps non-hashed names and must be revalidated on every load.
+        rel = target.relative_to(static_dir)
+        if rel.parts and rel.parts[0] == "assets":
+            cache = "public, max-age=31536000, immutable"
+        else:
+            cache = "no-cache, no-store, must-revalidate"
         await _send_response(
             writer,
             200,
@@ -5273,7 +5447,7 @@ class WebServer:
             body,
             {
                 "Content-Type": ct,
-                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Cache-Control": cache,
             },
         )
 

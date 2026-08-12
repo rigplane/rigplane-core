@@ -1,6 +1,6 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
-import { isLiveRadioAvailable, setWsConnected, setHttpConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
+import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
@@ -55,6 +55,30 @@ function calcBackoff(attempt: number): number {
   return base * (0.8 + Math.random() * 0.4);
 }
 
+function isTabHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+// ─── Close observability (MOR-1424) ─────────────────────────────────────────
+//
+// The client previously discarded the WS CloseEvent entirely (onerror just
+// called ws.close()), making reconnect-churn incidents impossible to
+// attribute. This records the most recent close across all channels
+// (control + named channels) for diagnostics.
+export interface WsCloseInfo {
+  code: number;
+  reason: string;
+  wasClean: boolean;
+  url: string;
+  timestamp: number;
+}
+
+let _lastCloseInfo: WsCloseInfo | null = null;
+
+export function getLastCloseInfo(): WsCloseInfo | null {
+  return _lastCloseInfo;
+}
+
 export class WsChannel {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,11 +101,40 @@ export class WsChannel {
   private _state: ConnectionState = 'disconnected';
   private url = '';
   private _subscribeMsg: Record<string, unknown> | null = null;
+  // MOR-1424: while the tab is hidden, the browser throttles/never-completes
+  // the WS handshake — retrying on a growing backoff just burns attempts
+  // against a connection that can't succeed yet. This flag remembers that a
+  // reconnect is owed once the tab becomes visible again.
+  private reconnectPendingVisibility = false;
+
+  constructor() {
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this._onVisibilityChange);
+    }
+  }
 
   /** Register a message to re-send automatically on every (re)connect. */
   setSubscribeMessage(msg: Record<string, unknown>) {
     this._subscribeMsg = msg;
   }
+
+  private _onVisibilityChange = () => {
+    if (isTabHidden()) {
+      // Pause the retry loop — cancel any already-scheduled reconnect, but
+      // never touch a healthy open (or in-flight connecting) socket.
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        this.reconnectPendingVisibility = true;
+      }
+      return;
+    }
+    if (this.reconnectPendingVisibility && !this.intentionalClose) {
+      this.reconnectPendingVisibility = false;
+      this.attempt = 0;
+      this._open();
+    }
+  };
 
   get state(): ConnectionState {
     return this._state;
@@ -115,6 +168,9 @@ export class WsChannel {
     if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return;
     this.url = url;
     this.intentionalClose = false;
+    // A fresh explicit connect supersedes any stale "reconnect once visible"
+    // debt from a previous, unrelated hidden episode.
+    this.reconnectPendingVisibility = false;
     this._open();
   }
 
@@ -184,14 +240,31 @@ export class WsChannel {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
+      _lastCloseInfo = {
+        code: event?.code ?? 0,
+        reason: event?.reason ?? '',
+        wasClean: event?.wasClean ?? false,
+        url: this.url,
+        timestamp: Date.now(),
+      };
+      console.info('[ws] closed', _lastCloseInfo);
       this._clearHeartbeat();
       this.trackedNonPttCommands.clear();
       this.ws = null;
       this.setState('disconnected');
       if (!this.intentionalClose) {
-        const delay = calcBackoff(this.attempt++);
-        this.reconnectTimer = setTimeout(() => this._open(), delay);
+        if (isTabHidden()) {
+          // Don't burn attempts against a throttled handshake — resume from
+          // the visibilitychange listener once the tab is visible again.
+          this.reconnectPendingVisibility = true;
+        } else {
+          const delay = calcBackoff(this.attempt++);
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this._open();
+          }, delay);
+        }
       }
     };
 
@@ -275,6 +348,19 @@ export class WsChannel {
   onMessage(handler: MessageHandler): () => void {
     this.messageHandlers.add(handler);
     return () => this.messageHandlers.delete(handler);
+  }
+
+  /**
+   * MOR-1422: a client-synthesized notification, delivered through the SAME
+   * bus a server `{"type":"notification"}` frame uses (the `errNote`
+   * pattern above) — so the one shipped toast surface (`components/shared/
+   * Toast.svelte`) renders it with no changes of its own. `code` is resolved
+   * to `core.toast.<code>` by `messageFromReasonCode`; `message` is the
+   * English fallback for a caller that never supplied one.
+   */
+  emitLocalNotification(level: 'info' | 'warning' | 'error', message: string, code: string): void {
+    const note: WsIncoming = { type: 'notification', level, message, code, category: 'command' };
+    this.messageHandlers.forEach((h) => h(note));
   }
 
   onBinary(handler: BinaryHandler): () => void {
@@ -706,7 +792,6 @@ _ctrl.onMessage((msg) => {
     const state = applyDeltaEnvelope(msg.data as Record<string, unknown>);
     if (state) {
       setRadioState(state as any);
-      setHttpConnected(true);
       markStateUpdated();
     }
   }
@@ -764,6 +849,17 @@ export function getControlSession(): ControlSessionTransition {
   return { state: _ctrl.state, epoch: _ctrl.sessionEpoch };
 }
 
+/**
+ * MOR-1422: the refusal below fires per COMMAND — a held control (a
+ * jog wheel, a repeated keypress) can call `sendCommand` many times a
+ * second, and a toast per call would bury the one useful signal ("your
+ * commands are not reaching the radio") under a flood. This is a burst
+ * debounce, not a rate limit on the refusal itself: `sendCommand` keeps
+ * returning `false` for every call, only the notice is throttled.
+ */
+const REFUSAL_NOTICE_DEBOUNCE_MS = 3_000;
+let lastRefusalNoticeAt = -Infinity;
+
 export function sendCommand(
   name: string,
   params: Record<string, unknown> = {},
@@ -774,6 +870,13 @@ export function sendCommand(
     console.warn('[cmd] blocked while radio health is degraded', name);
     if (pttIntent(name, params) === null) {
       _ctrl.rejectNonPtt(commandId, 'radio health is degraded');
+    }
+    const now = Date.now();
+    if (now - lastRefusalNoticeAt >= REFUSAL_NOTICE_DEBOUNCE_MS) {
+      lastRefusalNoticeAt = now;
+      _ctrl.emitLocalNotification(
+        'warning', 'Command not sent — link to the radio is degraded', 'commandRefusedLinkDegraded',
+      );
     }
     return false;
   }

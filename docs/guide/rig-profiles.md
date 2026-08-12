@@ -108,9 +108,19 @@ features = [
     "preamp",     # preamplifier
     # ... see _schema.md for full list
 ]
+rf_sql_control_model = "combined"  # optional; default "separate"
 ```
 
 The capability list controls Web UI guards — features not listed are hidden.
+
+`rf_sql_control_model` declares whether RF gain and squelch are two
+independent controls (`"separate"`, the default — most radios) or one
+physical concentric knob (`"combined"` — e.g. IC-7300: hard left = RF
+min/SQL min, center = RF max/SQL min, hard right = SQL max/RF max). The Web
+UI renders whichever model the profile declares; only set `"combined"` when
+the radio's manual or a CAT audit in `docs/validation/cat-audits/` confirms
+the physical layout — it is a hardware-layout fact, not something CI-V
+command support implies.
 
 ### `[controls]` — UI Control Styles (new)
 

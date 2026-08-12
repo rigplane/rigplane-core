@@ -391,3 +391,34 @@ def test_codec_keeps_already_framed_payload() -> None:
 def test_serial_civ_link_default_baudrate_is_115200() -> None:
     link = SerialCivLink(device="/dev/tty.usbmodem-IC7610")
     assert link._baudrate == 115200
+
+
+def test_set_device_rebinds_path_while_disconnected() -> None:
+    """MOR-1453: rediscovery rebinds the link to a renumbered device node."""
+    link = SerialCivLink(device="/dev/cu.usbserial-1420")
+    link.set_device("/dev/cu.usbserial-9931")
+    assert link._device == "/dev/cu.usbserial-9931"
+
+
+def test_set_device_rejects_empty_path() -> None:
+    link = SerialCivLink(device="/dev/cu.usbserial-1420")
+    with pytest.raises(ValueError, match="non-empty"):
+        link.set_device("   ")
+
+
+@pytest.mark.asyncio
+async def test_set_device_rejects_while_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = SerialCivLink(device="/dev/cu.usbserial-1420")
+
+    async def _open() -> tuple[_FakeReader, _FakeWriter]:
+        return _FakeReader(), _FakeWriter()
+
+    link._open_serial_connection = _open
+    await link.connect()
+    try:
+        with pytest.raises(RuntimeError, match="Cannot change device"):
+            link.set_device("/dev/cu.usbserial-9931")
+    finally:
+        await link.disconnect()

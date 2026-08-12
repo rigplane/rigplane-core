@@ -83,7 +83,6 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => 'connected'),
   getRadioPowerOn: vi.fn(() => null),
-  getHttpConnected: vi.fn(() => true),
   getWsConnected: vi.fn(() => true),
   isStale: vi.fn(() => false),
   isReconnecting: vi.fn(() => false),
@@ -202,10 +201,13 @@ describe('MobileRadioLayout canonical module surface (MOR-1409 A13a)', () => {
   // Kills: absorbing the display guards into `mobile-layout-logic.ts`, which is
   // a single-consumer helper module and therefore NOT an owner of this gate
   // (correction 5246842617 §8, applying the 5246487510 single-consumer test).
+  // Hash refreshed for the MOR-1451 follow-up that re-pointed the S-meter
+  // formatting at the shared `smeter-scale.ts` helpers — the module still
+  // carries no non-finite display guard.
   it('leaves mobile-layout-logic.ts byte-identical', () => {
     const bytes = readFileSync(`${LAYOUT_DIR}mobile-layout-logic.ts`);
     expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-      'db0062b97d7c33c3c12a91da5cf367e03343810d24957da0777941e226f1cd5a',
+      'edbfd96547b1a1ba3e8d4e24884fec0ccd0adb37d6515047a23969fdc2fe0bb6',
     );
   });
 });

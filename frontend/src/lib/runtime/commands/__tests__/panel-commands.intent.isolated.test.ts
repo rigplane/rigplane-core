@@ -1,4 +1,14 @@
-import { readFileSync } from 'node:fs';
+/**
+ * ISOLATED POOL (MOR-1272 naming convention): this file module-scope-mocks
+ * `$lib/state/field-status` (plus six store/transport modules). Under the
+ * `fast` project's `isolate: false`, the SUT's own import of
+ * `../props/panel-props` cached a `panel-props` instance bound to that mock
+ * in the shared worker module cache, and sibling files importing the real
+ * `panel-props` later in the same worker inherited it — the intermittent
+ * "No getFieldAvailability export is defined on the mock" failures in
+ * `panel-props.test.ts` / `rf-front-end-adapter.test.ts` (2026-08-10).
+ */
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
@@ -107,7 +117,6 @@ import {
   makeKeyboardHandlers,
   dispatchKeyboardRadioAction,
 } from '../panel-commands';
-import * as compatibilityBus from '$lib/../components-v2/wiring/command-bus';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { setPendingFocus } from '$lib/radio/pending-focus';
 
@@ -260,23 +269,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     resetCommandLifecycle();
     localStorage.clear();
     vi.useRealTimers();
-  });
-
-  it('exports every landed A03a and A03b1 canonical factory from the compatibility bus', () => {
-    expect(compatibilityBus.makeModeHandlers).toBe(makeModeHandlers);
-    expect(compatibilityBus.makeFilterHandlers).toBe(makeFilterHandlers);
-    expect(compatibilityBus.makeRfFrontEndHandlers).toBe(makeRfFrontEndHandlers);
-    expect(compatibilityBus.makeAgcHandlers).toBe(makeAgcHandlers);
-    expect(compatibilityBus.makeRitXitHandlers).toBe(makeRitXitHandlers);
-    expect(compatibilityBus.makeDspHandlers).toBe(makeDspHandlers);
-    expect(compatibilityBus.makeBandHandlers).toBe(makeBandHandlers);
-    expect(compatibilityBus.makePresetHandlers).toBe(makePresetHandlers);
-    expect(compatibilityBus.makeRxAudioHandlers).toBe(makeRxAudioHandlers);
-    expect(compatibilityBus.makeCwPanelHandlers).toBe(makeCwPanelHandlers);
-    expect(compatibilityBus.makeTxHandlers).toBe(makeTxHandlers);
-    expect(compatibilityBus.makeAntennaHandlers).toBe(makeAntennaHandlers);
-    expect(compatibilityBus.makeScanHandlers).toBe(makeScanHandlers);
-    expect(compatibilityBus.makeAudioRoutingHandlers).toBe(makeAudioRoutingHandlers);
   });
 
   it('keeps audio routing local with exact storage, finite-gain, and restore semantics', () => {
@@ -662,6 +654,105 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('routes mode/filter/RF-front-end/DSP/AF/band writes on a single-receiver radio although active is structurally unobservable (MOR-1418)', () => {
+    h.caps = {
+      capabilities: ['agc', 'rit', 'nr', 'nb', 'preamp', 'af_level', 'bsr'],
+      receivers: 1,
+      vfoScheme: 'ab',
+    };
+    h.state = oneReceiverAbState();
+    h.unavailable.add('active');
+
+    makeModeHandlers().onModeChange('CW');
+    makeFilterHandlers().onFilterChange(3);
+    makeRfFrontEndHandlers().onPreChange(1);
+    makeAgcHandlers().onAgcModeChange(2);
+    makeDspHandlers().onNbToggle(true);
+    makeRxAudioHandlers().onAfLevelChange(0.5);
+    makeBandHandlers().onBandSelect('20m', 14_225_000, 5);
+    makeRitXitHandlers().onRitToggle();
+
+    expect(exactCalls()).toEqual([
+      ['set_mode', { mode: 'CW', receiver: 0 }],
+      ['set_filter', { filter: 3, receiver: 0 }],
+      ['set_preamp', { level: 1, receiver: 0 }],
+      ['set_agc', { mode: 2, receiver: 0 }],
+      ['set_nb', { on: true, receiver: 0 }],
+      ['set_af_level', { level: 0.5, receiver: 0 }],
+      ['set_band', { band: 5 }],
+      ['set_rit_status', { on: true }],
+    ]);
+    expectIntentTransport();
+  });
+
+  it('still requires observed active on dual-receiver radios even after the single-RX bypass (no regression, MOR-1418)', () => {
+    h.caps = {
+      capabilities: ['agc', 'rit', 'nr', 'nb', 'preamp', 'af_level', 'bsr', 'dual_rx'],
+      receivers: 2,
+      vfoScheme: 'main_sub',
+    };
+    h.state = state();
+    h.unavailable.add('active');
+
+    makeModeHandlers().onModeChange('CW');
+    makeFilterHandlers().onFilterChange(3);
+    makeRfFrontEndHandlers().onPreChange(1);
+    makeAgcHandlers().onAgcModeChange(2);
+    makeDspHandlers().onNbToggle(true);
+    makeRxAudioHandlers().onAfLevelChange(0.5);
+    makeBandHandlers().onBandSelect('20m', 14_225_000, 5);
+    makeRitXitHandlers().onRitToggle();
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('routes VFO slot selection on a single-receiver radio although active is structurally unobservable (MOR-1423)', () => {
+    h.caps = {
+      capabilities: ['split', 'tx', 'vox'], receivers: 1, vfoScheme: 'ab',
+      stateContractVersion: 1, providerGeneration: 31,
+    };
+    h.state = oneReceiverAbState();
+    h.unavailable.add('active');
+
+    makeVfoHandlers().onVfoSelect('MAIN', 'B');
+
+    expect(exactCalls()).toEqual([['set_vfo', { vfo: 'B' }]]);
+    expectIntentTransport();
+  });
+
+  it('still requires observed active on dual-receiver radios for VFO slot selection (no regression, MOR-1423)', () => {
+    h.unavailable.add('active');
+
+    makeVfoHandlers().onVfoSelect('MAIN', 'B');
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('routes keyboard-delegated radio actions on a single-receiver radio although active is structurally unobservable (MOR-1423)', () => {
+    h.caps = {
+      capabilities: ['rit'], receivers: 1, vfoScheme: 'ab',
+      stateContractVersion: 1, providerGeneration: 31,
+    };
+    h.state = oneReceiverAbState();
+    h.unavailable.add('active');
+
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(true);
+
+    expect(exactCalls()).toEqual([['set_rit_status', { on: true }]]);
+    expectIntentTransport();
+  });
+
+  it('still requires observed active on dual-receiver radios for keyboard-delegated radio actions (no regression, MOR-1423)', () => {
+    h.unavailable.add('active');
+
+    expect(dispatchKeyboardRadioAction({ action: 'toggle_rit' })).toBe(true);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
   it('rejects pending physical SUB on one-RX A/B Selected/Unselected topology', () => {
     h.caps = { capabilities: ['pbt'], receivers: 1, vfoScheme: 'ab' };
     h.state = oneReceiverAbState();
@@ -851,11 +942,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
-  it('exports canonical VFO and VOX factories through the compatibility bus', () => {
-    expect(compatibilityBus.makeVfoHandlers).toBe(makeVfoHandlers);
-    expect(compatibilityBus.makeVoxHandlers).toBe(makeVoxHandlers);
-  });
-
   it('routes the complete VFO family through exact typed lifecycle without Store truth', () => {
     const vfo = makeVfoHandlers();
     vfo.onSwap();
@@ -866,6 +952,13 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onVfoSelect('SUB', 'B');
     vfo.onMainFreqChange(14_100_000);
     vfo.onSubFreqChange(7_100_000);
+    // MOR-1425 review B1: onMainFreqChange and this onFreqChange(_, 0) call
+    // both target receiver 0, mid-burst (no timer advance) — this
+    // onFreqChange call carries no `kind`, so it defaults to 'jump': an
+    // ABSOLUTE target that must land EXACTLY, immediately, and unpaced,
+    // clearing the still-hot onMainFreqChange burst rather than accumulating
+    // a delta onto it (the accumulator's own behavior is covered separately
+    // in `tuning-accumulator.test.ts` and the MOR-1425 tests below).
     vfo.onFreqChange(18_100_000, 0);
     vfo.onModeChange('CW', 1);
     vfo.onFilterChange(3, 0);
@@ -950,6 +1043,79 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(h.setAudioConfig).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('MOR-1425: a burst of rapid steps within one round trip accumulates onto the pending target, not the stale confirmed value', () => {
+    const vfo = makeVfoHandlers();
+    const confirmed = h.state!.main!.freqHz; // 14_074_000, unchanged for the whole burst
+    const step = 1_000;
+    // Every gesture computes its target off the STILL-CONFIRMED value, the
+    // exact MOR-1425 mechanism (the presentation layer's `freq` prop does
+    // not advance until the round trip completes).
+    for (let i = 1; i <= 5; i++) vfo.onMainFreqChange(confirmed + step);
+
+    // First step is an immediate, unpaced cold start.
+    expect(h.sendCommand).toHaveBeenCalledTimes(1);
+    expect(exactCalls()[0]).toEqual(['set_freq', { freq: confirmed + step, receiver: 0 }]);
+
+    // The remaining 4 steps accumulate and flush once, paced.
+    vi.advanceTimersByTime(60);
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: confirmed + 5 * step, receiver: 0 }]);
+    // MOR-1425 invariant: never an optimistic patch — the display stays
+    // last-confirmed radio truth throughout the whole burst.
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+  });
+
+  it('MOR-1425: a contradictory confirmed frequency mid-burst resets accumulation to the new truth', () => {
+    // Driven through the real wiring (not the low-level accumulator
+    // directly) so this fails if the accumulator is ever un-wired from
+    // `onMainFreqChange` — the previous version of this test asserted only
+    // the LAST emitted value, which a naive direct-dispatch (no burst
+    // logic at all) would also have produced, since every call here
+    // computes its own target off the freq it was given. The call COUNT
+    // below is what actually depends on the accumulator being live: the
+    // 2nd gesture must be paced (held, not sent) until the 3rd gesture's
+    // contradiction both resets AND cancels it.
+    const vfo = makeVfoHandlers();
+    const confirmed = h.state!.main!.freqHz;
+    vfo.onMainFreqChange(confirmed + 1_000); // cold, immediate: target C+1_000
+    vfo.onMainFreqChange(confirmed + 1_000); // hot, accumulates to C+2_000, paced (NOT sent yet)
+    expect(h.sendCommand).toHaveBeenCalledTimes(1);
+
+    // The operator turned the physical knob: a new confirmed frequency the
+    // accumulator's own pending sequence did not predict.
+    const physical = confirmed + 500_000;
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: physical } };
+    vfo.onMainFreqChange(physical + 1_000);
+
+    // The reset step is itself a cold start: immediate, carrying a target
+    // measured from the NEW physical truth — and it must be the ONLY
+    // second call: without the accumulator, the 2nd gesture above would
+    // already have been sent immediately, making this the THIRD call.
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: physical + 1_000, receiver: 0 }]);
+
+    // The pre-reset paced flush must never fire and emit a stray 3rd call.
+    vi.advanceTimersByTime(60);
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("MOR-1425 review B1: onFreqChange(freq, receiver, 'step') opts a relative gesture into the accumulate path instead of the 'jump' default", () => {
+    const vfo = makeVfoHandlers();
+    const confirmed = h.state!.main!.freqHz;
+    // Two 'step' gestures at the SAME receiver, mid-burst: the media-key /
+    // spectrum-wheel shape (fixed increment off confirmed truth), not an
+    // arbitrary absolute target.
+    vfo.onFreqChange(confirmed + 1_000, 0, 'step'); // cold, immediate
+    vfo.onFreqChange(confirmed + 1_000, 0, 'step'); // hot, accumulates, paced
+    expect(h.sendCommand).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(60);
+    expect(h.sendCommand).toHaveBeenCalledTimes(2);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: confirmed + 2_000, receiver: 0 }]);
   });
 
   it('shares one fail-closed VOX toggle and routes standalone VOX controls through lifecycle', () => {
@@ -1305,8 +1471,14 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
 
     const nullPrototype = Object.assign(Object.create(null) as Record<string, unknown>, { direction: 'up' });
+    // MOR-1425 review B5: 'tune' now shares ONE accumulator across calls
+    // (fixed from the pre-review bug where each call got independent
+    // state) — advance past the quiet window between calls so these three
+    // are independent cold starts, not one accumulating burst.
     expect(dispatchKeyboardRadioAction({ action: 'tune', params: { direction: 'up' } })).toBe(true);
+    vi.advanceTimersByTime(4_500);
     expect(dispatchKeyboardRadioAction({ action: 'tune', params: nullPrototype })).toBe(true);
+    vi.advanceTimersByTime(4_500);
     expect(dispatchKeyboardRadioAction({ action: 'tune', params: dataProxy })).toBe(true);
     expect(dataGet).not.toHaveBeenCalled();
     expect(exactCalls()).toEqual([
@@ -1337,9 +1509,17 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expectIntentTransport();
   });
 
+  // MOR-1409 A15: this file carried ~18 source-text assertions of the form
+  // "the compatibility bus declares no logic of its own", plus three
+  // identity-parity tests against its re-exports. The bus is deleted, so all
+  // of them are subsumed by the pin below — the terminal form of the same
+  // claim, and the only form a regrown shim cannot satisfy.
+  it('leaves no compatibility bus for canonical ownership to leak back into', () => {
+    expect(existsSync(resolve(process.cwd(), 'src/components-v2/wiring/command-bus.ts'))).toBe(false);
+  });
+
   it('keeps raw transport out of migrated blocks and Store writers out of their implementation', () => {
     const panelSource = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/panel-commands.ts'), 'utf8');
-    const busSource = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/command-bus.ts'), 'utf8');
     const assignedNames = [
       'makeAgcHandlers', 'makeBandHandlers', 'makeDspHandlers', 'makeFilterHandlers',
       'makeModeHandlers', 'makePresetHandlers', 'makeRfFrontEndHandlers',
@@ -1358,7 +1538,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       const end = Math.min(...[genericNext, ...nextStarts].filter((next) => next >= 0));
       const block = panelSource.slice(start, end);
       expect(block).not.toMatch(/\b(?:patchActiveReceiver|patchRadioState|patchReceiver|sendCommand)\s*\(/);
-      expect(busSource).not.toContain(`export function ${name}`);
     }
     const a03aNames = '';
     for (const name of [
@@ -1368,7 +1547,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       expect(a03aNames).not.toContain(`'${name}'`);
     }
     expect(panelSource).toContain('export function makeRfFrontEndHandlers');
-    expect(busSource).not.toContain('export function makeRfFrontEndHandlers');
     const rfStart = panelSource.indexOf('export function makeRfFrontEndHandlers');
     const rfEnd = panelSource.indexOf('\nexport function ', rfStart + 1);
     const rfBlock = panelSource.slice(rfStart, rfEnd);
@@ -1415,36 +1593,20 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     }
     expect(panelSource).not.toContain('onKeyerTypeChange');
     expect(panelSource).not.toContain('set_keyer_type');
-    expect(busSource).not.toContain('onKeyerTypeChange');
-    expect(busSource).not.toContain('set_keyer_type');
-    expect(busSource).not.toContain('export function makeVfoHandlers');
-    expect(busSource).not.toContain('export function makeVoxHandlers');
     expect(panelSource).toContain('export function makeVfoHandlers');
     expect(panelSource).toContain('export function makeVoxHandlers');
-    expect(busSource).not.toMatch(/function _activateReceiver\s*\(/);
-    expect(busSource).not.toContain('activeReceiverParam');
-    expect(busSource).not.toContain("case 'set_active_vfo'");
     for (const canonical of [
       'makeSystemHandlers', 'makeScopeControlsHandlers', 'makeKeyboardHandlers',
     ]) {
       expect(panelSource).toContain(`export function ${canonical}`);
-      expect(busSource).toContain(`${canonical},`);
-      expect(busSource).not.toContain(`export function ${canonical}`);
     }
     for (const action of [
       'toggle_dial_lock', 'scope_span_step', 'scope_ref_step', 'scope_toggle_hold',
       'scope_toggle_dual', 'scope_toggle_fst',
     ]) {
       expect(panelSource).toContain(`'${action}'`);
-      expect(busSource).not.toContain(`case '${action}'`);
     }
-    expect(busSource).not.toContain('patchRadioState');
-    expect(busSource).not.toContain('clampSpan');
-    expect(busSource).not.toContain('clampRef');
-    expect(busSource).not.toMatch(/^import /m);
-    expect(busSource).toMatch(/^export \{/m);
     expect(panelSource).not.toContain('export function makeMeterHandlers');
-    expect(busSource).not.toContain('export function makeMeterHandlers');
     expect(panelSource.match(/function toggleVox/g)).toHaveLength(1);
     expect(panelSource.match(/onVoxToggle:\s*toggleVox/g)).toHaveLength(2);
     expect(panelSource).not.toMatch(/dispatchRadioIntent\(\{\s*name:\s*['"]ptt(?:_on|_off)?['"]/);
@@ -1479,12 +1641,6 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
   });
 
   afterEach(() => resetCommandLifecycle());
-
-  it('owns all A03e factories canonically and identity-re-exports them from the compatibility bus', () => {
-    expect(compatibilityBus.makeSystemHandlers).toBe(makeSystemHandlers);
-    expect(compatibilityBus.makeScopeControlsHandlers).toBe(makeScopeControlsHandlers);
-    expect(compatibilityBus.makeKeyboardHandlers).toBe(makeKeyboardHandlers);
-  });
 
   it('emits the exact system and full scope vocabulary through one non-optimistic typed lifecycle each', () => {
     const system = makeSystemHandlers();
@@ -1668,6 +1824,30 @@ describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
     expect(h.sendCommand).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(exactCalls()).toEqual([['set_filter_width', { width: 1800, receiver: 0 }]]);
+  });
+
+  it('commits filter width on a single-receiver radio although active is structurally unobservable (MOR-1418)', () => {
+    h.caps = {
+      ...a06Caps(), receivers: 1, vfoScheme: 'ab', capabilities: ['filter_width', 'data_mode'],
+    } as unknown as Record<string, unknown>;
+    h.state = a06State();
+    h.unavailable.add('active');
+
+    makeFilterHandlers().onFilterWidthCommit(2400, 0, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 2400, receiver: 0 }]]);
+    expectIntentTransport();
+  });
+
+  it('still requires observed active on dual-receiver radios for filter-width commit (no regression, MOR-1418)', () => {
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    h.state = a06State();
+    h.unavailable.add('active');
+
+    makeFilterHandlers().onFilterWidthCommit(2400, 0, 31);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
   });
 
   it('rejects unsafe generations, mismatched epochs, stale identity, and target disagreement', () => {

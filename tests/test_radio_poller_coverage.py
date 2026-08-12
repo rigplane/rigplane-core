@@ -74,6 +74,9 @@ from rigplane.web.radio_poller import (
     SetRfGain,
     SetScopeEdge,
     SetScopeRbw,
+    SetScopeRef,
+    SetScopeSpan,
+    SetScopeSpeed,
     SetScopeVbw,
     SetSplit,
     SetSquelch,
@@ -1713,6 +1716,45 @@ async def test_run_backoff_and_query_error_paths() -> None:
         await poller2._run()  # noqa: SLF001
 
 
+@pytest.mark.asyncio
+async def test_run_backs_off_on_bare_timeout_when_radio_reports_disconnected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-1440: a dead serial link surfaces as a bare exception (the CI-V
+    transport recovery-wait gate raises ``TimeoutError``, not
+    ``ConnectionError``) once the radio's own state machine already knows
+    the link is down. The poller must back off instead of silently
+    retrying a doomed wire every cycle (previously logged at DEBUG only).
+    """
+    radio = _make_radio()
+    radio.connected = False
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    call_count = {"n": 0}
+
+    async def _send_query_side_effect(*_args: object, **_kwargs: object) -> None:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise TimeoutError("CI-V transport recovery timed out")
+        # Stop the loop after observing the backoff branch once — a plain
+        # CancelledError is a BaseException, so it isn't swallowed by the
+        # generic ``except Exception`` the backoff-retry probe also runs.
+        raise asyncio.CancelledError()
+
+    poller._send_query = AsyncMock(side_effect=_send_query_side_effect)  # noqa: SLF001
+    poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
+    with (
+        patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()),
+        caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"),
+    ):
+        await poller._run()  # noqa: SLF001
+
+    backoff_lines = [
+        r for r in caplog.records if "radio disconnected, backing off" in r.getMessage()
+    ]
+    assert backoff_lines, "expected a backoff log line when radio.connected is False"
+
+
 def test_start_stop_running_and_emit_helpers() -> None:
     radio = _make_radio()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
@@ -1876,6 +1918,77 @@ async def test_execute_set_scope_rbw_updates_state() -> None:
 
     radio.set_scope_rbw.assert_awaited_once_with(2)
     assert state.scope_controls.rbw == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_span_updates_state_and_reconfirms() -> None:
+    """MOR-1446: a span write must re-GET so the StateStore observation for
+    ``scope_controls.span`` refreshes — otherwise the stale pre-write
+    observation (last confirmed at ``EnableScope`` time) keeps overwriting
+    the fresh optimistic value on every subsequent state snapshot, and the
+    frontend readout desyncs from the radio's real span (MOR-1446 leg 1)."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeSpan(span=6))  # noqa: SLF001
+
+    radio.set_scope_span.assert_awaited_once_with(6)
+    assert state.scope_controls.span == 6
+    radio.get_scope_span.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_speed_updates_state_and_reconfirms() -> None:
+    """MOR-1446 leg 3: SPEED reads as inert without the reconfirm — the
+    dispatch reaches the radio, but the readout never advances past its
+    pre-write reading."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeSpeed(speed=2))  # noqa: SLF001
+
+    radio.set_scope_speed.assert_awaited_once_with(2)
+    assert state.scope_controls.speed == 2
+    radio.get_scope_speed.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_ref_updates_state_and_reconfirms() -> None:
+    """MOR-1446 leg 2: REF stays stuck at 0 without the reconfirm — the radio
+    applies the level (waterfall visibly changes) but the readout keeps
+    replaying the stale pre-write observation."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeRef(ref=5))  # noqa: SLF001
+
+    radio.set_scope_ref.assert_awaited_once_with(5)
+    assert state.scope_controls.ref_db == 5.0
+    radio.get_scope_ref.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise() -> None:
+    """A dropped confirm response (busy scope stream) must not fail the
+    command — `_reconfirm_scope_field` bounds and swallows it exactly like
+    `_fetch_scope_controls` already does for the same class of getter."""
+    radio = _make_radio()
+    state = RadioState()
+
+    async def _never_resolves() -> int:
+        await asyncio.sleep(10)
+        return 0
+
+    radio.get_scope_span = _never_resolves
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeSpan(span=6))  # noqa: SLF001
+
+    radio.set_scope_span.assert_awaited_once_with(6)
+    assert state.scope_controls.span == 6
 
 
 @pytest.mark.asyncio

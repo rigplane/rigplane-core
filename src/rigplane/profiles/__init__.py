@@ -173,6 +173,11 @@ class RadioProfile:
     pre_labels: dict[str, str] | None = None
     agc_modes: tuple[int, ...] | None = None
     agc_labels: dict[str, str] | None = None
+    # MOR-1447 leg 2: "separate" (default, two independent controls) or
+    # "combined" (Icom-style single RF/SQL knob). Data-driven from
+    # ``[capabilities].rf_sql_control_model`` in the rig TOML — never a
+    # vendor/model-name branch in code.
+    rf_sql_control_model: str = "separate"
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     # When True, MAIN set_mode routes through CI-V 0x26 0x00 (set selected

@@ -29,6 +29,8 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
+  import { formatKnownLevel } from './format-level';
+  import { disabledReasonText } from './disabled-reason';
 
   /** On/off controls, `[field, label]`. ATU's reading is a three-state enum,
    *  the rest are booleans; `pressedOf` normalises both to one aria state. */
@@ -58,10 +60,21 @@
   /** The MOR-977 `DisabledReasonCode` a present-but-unusable control carries. */
   const reasonOf = (f: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(f) ? undefined : 'field-not-observed';
+  /** MOR-1422: the SAME gate as `reasonOf`, rendered as operator-facing text
+   *  for `title` (hover) and the `aria-describedby` target below (screen
+   *  readers) — the `data-disabled-reason` attribute `reasonOf` feeds is a
+   *  test/CSS hook only, invisible to both. */
+  const reasonTextOf = (f: TxAuxField<unknown>): string | undefined => disabledReasonText(f.availability);
   const textOf = (f: TxAuxField<unknown>): string =>
     f.reading.status !== 'known' ? '?'
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
         : String(f.reading.value);
+  /** Same freshness discipline as `textOf`, but a KNOWN level reading is
+   *  formatted against its declared `[min, max]` domain (MOR-1447) instead of
+   *  `String()`-ing the raw wire fraction — e.g. RF power reading back as
+   *  the literal `0.5529411764705883` instead of "55%". */
+  const levelTextOf = (f: TxAuxField<number>, min: number, max: number): string =>
+    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, min, max) : '?';
   const numberOf = (f: TxAuxField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
 
@@ -83,6 +96,15 @@
   let { view, tx, onToggle, onLevelChange, onAtuTune }: Props = $props();
 
   const blockedId = `tx-aux-blocked-${++sequence}`;
+  /** MOR-1422: prefix for the per-field hidden reason text `aria-describedby`
+   *  targets below — shares `blockedId`'s instance number so several mounted
+   *  surfaces never collide, without incrementing `sequence` a second time. */
+  const reasonIdPrefix = `tx-aux-reason-${sequence}`;
+  /** `aria-describedby` needs an ID to point at; `aria-description` (no ID,
+   *  the string inline) is not yet in Svelte's own attribute typings —
+   *  `undefined` omits the attribute exactly when there is no reason. */
+  const reasonIdOf = (field: string, f: TxAuxField<unknown>): string | undefined =>
+    disabledReasonText(f.availability) !== undefined ? `${reasonIdPrefix}-${field}` : undefined;
   let txAux = $derived(view.txAux);
   let tuneBlocked = $derived(keyBlockedReasons(view, tx));
 
@@ -109,10 +131,14 @@
             type="button" class="tx-aux-toggle"
             data-testid={`tx-aux-${field}`} data-field={field}
             data-disabled-reason={reasonOf(txAux[field])}
+            title={reasonTextOf(txAux[field])} aria-describedby={reasonIdOf(field, txAux[field])}
             aria-pressed={pressedOf(txAux[field])}
             disabled={!usable(txAux[field])}
             onclick={() => toggle(field)}
           >{label}: {textOf(txAux[field])}</button>
+          {#if reasonTextOf(txAux[field]) !== undefined}
+            <span id={reasonIdOf(field, txAux[field])} class="sr-only">{reasonTextOf(txAux[field])}</span>
+          {/if}
         {/if}
       {/each}
       {#if txAux.atu.availability.structural}
@@ -136,10 +162,14 @@
           <input
             type="range" {min} {max} {step}
             value={numberOf(txAux[field], min)}
+            title={reasonTextOf(txAux[field])} aria-describedby={reasonIdOf(field, txAux[field])}
             disabled={!usable(txAux[field])}
             oninput={(event) => level(field, event.currentTarget.valueAsNumber)}
           />
-          <output>{textOf(txAux[field])}</output>
+          {#if reasonTextOf(txAux[field]) !== undefined}
+            <span id={reasonIdOf(field, txAux[field])} class="sr-only">{reasonTextOf(txAux[field])}</span>
+          {/if}
+          <output>{levelTextOf(txAux[field], min, max)}</output>
         </label>
       {/if}
     {/each}
@@ -161,6 +191,10 @@
   .tx-aux-name { min-width: 8ch; }
   .tx-aux-blocked { margin: 0; padding-inline-start: 1.2em; }
   .tx-aux-blocked:empty { display: none; }
+  /* MOR-1422: the `aria-describedby` target for a disabled control's reason
+     — present for screen readers, never painted (the `title` attribute
+     already carries the sighted-hover channel). */
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .tx-aux-toggle[aria-pressed='true'] { font-weight: 700; }
   .tx-aux-toggle:disabled, .tx-aux-tune:disabled { cursor: not-allowed; }
 </style>

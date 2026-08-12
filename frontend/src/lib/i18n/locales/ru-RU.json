@@ -136,6 +136,8 @@
   "core.toast.radioDisconnected": "Трансивер отключён",
   "core.toast.audioBridgeStarted": "Аудиомост запущен",
   "core.toast.audioBridgeStopped": "Аудиомост остановлен",
+  "core.toast.commandRefusedLinkDegraded": "Команда не отправлена — связь с трансивером деградировала",
+  "core.toast.commandExecutionFailed": "Команда не выполнена: {reason}",
   "core.toast.unknown": "Что-то пошло не так. Попробуйте позже.",
 
   "core.mobile.nav.label": "Навигация по трансиверу",
@@ -187,6 +189,9 @@
   "core.vfo.ops.quickDualWatch": "Быстрый двойной приём",
   "core.vfo.splitDigest.rx": "RX {frequency}",
   "core.vfo.splitDigest.tx": "TX {frequency}",
+
+  "core.disabledReason.missing": "Не поддерживается этим трансивером",
+  "core.disabledReason.unobserved": "Ещё не считано",
 
   "core.txGuard.modInputNotLan": "Вход MOD установлен в {source}, а не LAN — голос из веб-интерфейса не уйдёт в эфир (TX).",
   "core.txGuard.setLan": "Включить LAN",

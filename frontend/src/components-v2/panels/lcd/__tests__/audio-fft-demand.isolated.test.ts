@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
 
 type MockConnectionState = 'connecting' | 'connected' | 'disconnected';
 type DefaultScopeStatusProbe = {
@@ -145,17 +146,27 @@ const canonicalCapabilities: Capabilities = {
   providerGeneration: 0,
 };
 
-function radioState(revision: number) {
+// A COMPLETE ServerState: ``isValidServerState`` rejects any missing counter
+// or status field, and ``setRadioState`` then silently returns false — which
+// would make the churn loop below vacuous. Mirror the canonical ``makeState``
+// in ws-client-store.integration.test.ts.
+function radioState(revision: number): ServerState {
   const receiver = {
     freqHz: 14_074_000 + revision, mode: 'USB', filter: 1, filterWidth: 2400,
     dataMode: 0, sMeter: 0, att: 0, preamp: 0, nb: false, nr: false,
     afLevel: 128, rfGain: 255, squelch: 0, agc: 2,
   };
   return {
-    revision, stateRevision: revision, active: 'MAIN',
+    revision, stateRevision: revision,
+    freshnessRevision: revision, observationSeq: revision,
+    updatedAt: '2026-06-03T00:00:00Z',
+    active: 'MAIN',
+    ptt: false, split: false, dualWatch: false, tunerStatus: 0,
     stateContractVersion: 1, providerGeneration: 0,
     main: receiver, sub: { ...receiver },
-  } as never;
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    txTarget: { status: 'unknown', reason: 'not-observed' },
+  } as ServerState;
 }
 
 function hasDefaultScopeStatus(
@@ -253,7 +264,7 @@ describe('LCD audio-FFT demand ownership', () => {
       }
       expect(mocks.getChannel).not.toHaveBeenCalled();
 
-      setRadioState(radioState(1));
+      expect(setRadioState(radioState(1))).toBe(true);
       for (const target of targets) document.body.appendChild(target);
       cockpit = mount(AmberCockpit, { target: targets[0] });
       flushSync();
@@ -294,7 +305,9 @@ describe('LCD audio-FFT demand ownership', () => {
       if (hasDefaultScopeStatus(runtime)) expect(runtime.defaultScopeStatus.demand).toBe(0);
 
       for (let revision = 2; revision < 7; revision += 1) {
-        setRadioState(radioState(revision));
+        // Prove the churn stimulus actually enters the store — a rejected
+        // state would make the no-re-acquire assertions below vacuous.
+        expect(setRadioState(radioState(revision))).toBe(true);
         flushSync();
       }
       await Promise.resolve();

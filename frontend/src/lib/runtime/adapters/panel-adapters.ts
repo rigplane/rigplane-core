@@ -69,7 +69,36 @@ export function getAntennaHandlers() { return _antennaHandlers; }
 export function deriveRfFrontEndProps() {
   return toRfFrontEndProps(runtime.state, runtime.caps);
 }
-const _rfHandlers = makeRfFrontEndHandlers();
+/**
+ * `onRfGainChange`/`onSquelchChange` dispatch `set_rf_gain`/`set_squelch`
+ * over the wire as a raw 0-255 integer (`radio-intents.ts`'s `level:
+ * 'integer'`, matching `core.radio_protocol.set_rf_gain`'s "0-255 scale"
+ * contract) and refuse anything else (`Number.isSafeInteger` guard,
+ * `panel-commands.ts`). Every RF-gain/squelch slider in this codebase
+ * (`RfFrontEnd.svelte`'s `ValueControl`/`DualParamRenderer`,
+ * `RfFrontEndSurface.svelte`'s raw `<input type="range">`) instead reports
+ * the radio's own normalized 0..1 reading — so an intermediate drag (e.g.
+ * 0.34) silently failed the integer guard, and only the two endpoints (0 and
+ * 1, which happen to already be safe integers) ever dispatched. That is the
+ * MOR-1447 regression: dragging snapped to 0%/100% only.
+ *
+ * Applied here for `getRfFrontEndHandlers()` (the legacy `RfFrontEnd.svelte`
+ * panel's singleton seam) only — NOT inside `bindSemanticSurfaceHandlers()`,
+ * which is pinned to hand back each family's exact, unwrapped factory object
+ * (`semantic-surface-handler-binder.isolated.test.ts`).
+ * `SemanticRadioSurfaces.svelte` performs the equivalent conversion itself at
+ * its `RF_FRONT_END_LEVEL_INTENT` seam for that path.
+ */
+function withNormalizedRfLevels(
+  handlers: ReturnType<typeof makeRfFrontEndHandlers>,
+): ReturnType<typeof makeRfFrontEndHandlers> {
+  return {
+    ...handlers,
+    onRfGainChange: (level: number) => handlers.onRfGainChange(Math.round(level * 255)),
+    onSquelchChange: (level: number) => handlers.onSquelchChange(Math.round(level * 255)),
+  };
+}
+const _rfHandlers = withNormalizedRfLevels(makeRfFrontEndHandlers());
 export function getRfFrontEndHandlers() { return _rfHandlers; }
 
 // ── RIT/XIT ──
@@ -136,6 +165,13 @@ export function bindSemanticSurfaceHandlers() {
     dsp: makeDspHandlers(),
     filter: makeFilterHandlers(),
     mode: makeModeHandlers(),
+    // NOT wrapped with `withNormalizedRfLevels` here: `bindSemanticSurfaceHandlers()`
+    // is pinned (`semantic-surface-handler-binder.isolated.test.ts`) to hand
+    // back each family's EXACT factory object, unreshaped — the wrapping this
+    // module does for `getRfFrontEndHandlers()` below would break that
+    // identity contract. `SemanticRadioSurfaces.svelte` does the equivalent
+    // normalized-to-raw conversion itself, at its `RF_FRONT_END_LEVEL_INTENT`
+    // seam, for the same reason.
     rfFrontEnd: makeRfFrontEndHandlers(),
     ritXit: makeRitXitHandlers(),
     rxAudio: makeRxAudioHandlers(),
@@ -151,12 +187,28 @@ export function bindSemanticSurfaceHandlers() {
 // These two families had no sanctioned adapter-layer path: they are absent
 // from this module AND from `bindSemanticSurfaceHandlers()`'s frozen object,
 // so the three layouts could only reach them through the `wiring/command-bus`
-// shim A15 deletes. Singletons, like every other non-binder accessor here —
-// neither family holds per-instance state.
+// shim, which A15 deleted. Singletons, like every other non-binder accessor
+// here — neither family holds per-instance state.
 const _keyboardHandlers = makeKeyboardHandlers();
 export function getKeyboardHandlers() { return _keyboardHandlers; }
 const _systemHandlers = makeSystemHandlers();
 export function getSystemHandlers() { return _systemHandlers; }
+
+// ── Active frequency (MOR-1409 A15) ──
+/**
+ * The active VFO's observed frequency, or `null` when it has not been
+ * observed. Read-only and stateless: it derives from the same view model
+ * every other honest projection reads.
+ *
+ * Deliberately NOT `?? 0`. The store accessor this replaces for presentation
+ * (`getFrequency()`) returns `active?.freqHz ?? 0`, and a `0` here would be a
+ * radio-truth claim the radio never made — the exact fabrication A15 exists
+ * to remove. Callers must treat `null` as "unknown", not as "zero".
+ */
+export function getActiveFrequencyHz(): number | null {
+  const view = toRadioViewModel(runtime.state, runtime.caps);
+  return view?.vfos.find((candidate) => candidate.isActive)?.frequencyHz ?? null;
+}
 
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
