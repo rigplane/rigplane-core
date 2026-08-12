@@ -35,7 +35,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
-from rigplane.web.radio_poller import EnableScope
+from rigplane.web.radio_poller import CommandQueue, EnableScope, RadioPoller
 from rigplane.web.server import WebConfig, WebServer, _send_response, run_web_server
 
 
@@ -2837,6 +2837,47 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
 
     assert any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
     assert radio.radio_ready is False  # gate was bypassed, not flipped
+
+
+@pytest.mark.asyncio
+async def test_on_radio_reconnect_establishes_vfo_identity_after_readiness_gate() -> (
+    None
+):
+    """MOR-1443 review R3, finding F4: the F1 server-side fix — calling
+    ``RadioPoller.establish_vfo_identity()`` from
+    ``_refetch_and_reenable()``'s ``finally`` block — had zero test
+    coverage. Every other reconnect test above leaves ``srv._radio_poller``
+    as ``None``, so deleting the fix's ``server.py`` lines left the whole
+    suite green. Wire a real ``RadioPoller`` (IC-7300 profile, so
+    ``vfo_readback == "selected_unselected"``) onto the server, replace its
+    ``establish_vfo_identity`` with an ``AsyncMock`` that captures whether
+    the poller readiness gate was already re-set at call time, fire the
+    reconnect hook, and assert the establish call happened — and happened
+    after ``_initial_fetch_done.set()``, not before.
+    """
+    radio = _scope_radio(ready=False)
+    radio._fetch_initial_state = AsyncMock()
+    radio.profile = resolve_radio_profile(model="IC-7300")
+    radio.model = radio.profile.model
+    srv = WebServer(radio)
+
+    poller = RadioPoller(radio, CommandQueue(), state_store=StateStore())
+    gate_set_at_call_time: bool | None = None
+
+    async def _fake_establish() -> None:
+        nonlocal gate_set_at_call_time
+        gate_set_at_call_time = poller._initial_fetch_done.is_set()  # noqa: SLF001
+
+    poller.establish_vfo_identity = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_fake_establish
+    )
+    srv._radio_poller = poller  # noqa: SLF001
+
+    srv._on_radio_reconnect()  # noqa: SLF001
+    await asyncio.sleep(0.05)  # let the refetch task complete
+
+    poller.establish_vfo_identity.assert_awaited_once()  # type: ignore[attr-defined]
+    assert gate_set_at_call_time is True
 
 
 @pytest.mark.asyncio

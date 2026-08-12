@@ -2225,7 +2225,14 @@ class WebServer:
                 except Exception:
                     logger.warning("reconnect: refetch failed", exc_info=True)
             finally:
-                if self._radio_poller is not None:
+                # ``isinstance`` (not ``is not None``), matching the sibling
+                # guard at the top of ``_on_radio_reconnect``: a MagicMock
+                # poller in a test double that isn't a real ``RadioPoller``
+                # would otherwise reach ``establish_vfo_identity()`` below
+                # and raise inside the try/except, logging a spurious
+                # warning unrelated to this reconnect path (MOR-1443 review
+                # R3, N2).
+                if isinstance(self._radio_poller, RadioPoller):
                     self._radio_poller._initial_fetch_done.set()
                     # MOR-1443 review R2, finding 1: reset_vfo_session() above
                     # discarded active_slot for this new connection epoch, and
