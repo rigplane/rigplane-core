@@ -44,6 +44,27 @@
 
   const keyboardHandlers = getKeyboardHandlers();
 
+  // MOR-1486 (owner ruling, session 19): an earlier round of this PR
+  // removed this $effect on the premise that amber-lcd has "no STEP
+  // control anywhere". That premise was false. Neither AmberCockpit nor
+  // AmberScope render a visible STEP readout or an AUTO indicator — that
+  // part is true, and it's why this skin doesn't get the SpectrumToolbar
+  // AUTO toggle (that toggle only exists on skins that render
+  // SpectrumToolbar in the first place). But the shared tuning-step store
+  // is actively WRITTEN and READ on this skin regardless: the global
+  // ArrowUp/Down keyboard binding (`keyboard-map.ts`'s `step-up`/
+  // `step-down`, routed here through the `KeyboardHandler` mounted below)
+  // calls `adjustTuningStep()`, ArrowLeft/Right tuning
+  // (`panel-commands.ts`'s `tune` case, ~line 1389) reads
+  // `getTuningStep()` for the increment, and MediaSession volume-key
+  // tuning (`lib/media/media-session.ts`) reads it too. Silently freezing
+  // mode-follow here — while every other consumption path keeps working
+  // — would have changed arrow-key tuning granularity across mode changes
+  // on this skin with no explanation, which is worse than the missing
+  // on-screen indicator this ticket set out to fix. The owner accepted
+  // the indicator gap (tracked, not solved, by this ticket — see the PR
+  // body) rather than disabling the behavior that's actually consumed
+  // here. Restored.
   $effect(() => {
     if (activeMode) {
       applyModeDefault(activeMode);

@@ -407,6 +407,27 @@ describe('MobileRadioLayout structure', () => {
   });
 });
 
+// MOR-1486 ruling B (owner, session 19) — mobile has no `applyModeDefault()`
+// mode-follow driver (only RadioLayout and, per ruling A, LcdLayout have
+// one) and its own STEP picker is disconnected local state that can
+// disagree with the shared tuning-step store on the same screen (MOR-1509).
+// Both `<SpectrumPanel>` mounts (landscape + portrait) must pass
+// `hideAutoStepToggle` so the toolbar never shows a toggle promising
+// continuous mode-follow this layout can't provide. `hasSpectrum()` is a
+// module-level `vi.fn(() => false)` mock here (not wired to a per-test
+// harness), so this is proven at the source level rather than by mounting
+// the spectrum branch — same idiom LcdLayout's lifecycle suite uses for its
+// import-absence assertion.
+describe('MobileRadioLayout hides the AUTO toggle (MOR-1486 ruling B)', () => {
+  it('passes hideAutoStepToggle={true} on both SpectrumPanel mounts', () => {
+    const matches = mobileLayoutSource.match(/<SpectrumPanel\b[^/]*\/>/g) ?? [];
+    expect(matches.length).toBeGreaterThan(0);
+    for (const tag of matches) {
+      expect(tag).toContain('hideAutoStepToggle={true}');
+    }
+  });
+});
+
 describe('MOR-1409 local mobile meter selection', () => {
   it('changes only component-local presentation state', () => {
     tx.authority(true);

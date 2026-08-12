@@ -188,6 +188,9 @@
   "core.mobile.setupButton": "Setup",
   "core.mobile.closeStepPicker": "Close step picker",
 
+  "core.spectrum.autoStep.onTitle": "Auto step is on — the tuning step follows the operating mode. Click to lock the current step and stop following.",
+  "core.spectrum.autoStep.offTitle": "Auto step is off — the tuning step stays at your manual setting. Click to turn it back on and snap to the mode's default step.",
+
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Modulation input source",
 

@@ -48,7 +48,13 @@
   // layout's manifest declares a `scopeControls` zone (S6b-2). Landed INERT
   // — no manifest declares that zone yet, so `RadioLayout` always passes
   // `false` today and this prop is a pure pass-through, no logic of its own.
-  let { hideSourceControls = false, hideScopeControls = false } = $props();
+  //
+  // `hideAutoStepToggle` is forwarded the same way (MOR-1486 ruling B,
+  // owner session 19): it hides the toolbar's AUTO (mode-follow) toggle on
+  // layouts that have no `applyModeDefault()` driver for the shared
+  // tuning-step store. `MobileRadioLayout` passes `true`; `RadioLayout`
+  // omits it (defaults `false`, toggle shown) because it owns the driver.
+  let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false } = $props();
 
   const vfoHandlers = getVfoHandlers();
   const filterHandlers = getFilterHandlers();
@@ -474,7 +480,7 @@
 />
 
 <div class="spectrum-panel" class:fullscreen onwheel={handleWheel}>
-  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} />
+  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} />
   <div class="spectrum-with-scales">
     <div class="db-scale">
       {#each DB_TICKS as tick}

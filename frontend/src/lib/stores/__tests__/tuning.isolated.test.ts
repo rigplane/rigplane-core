@@ -32,6 +32,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { radio } from '../radio.svelte';
 
 let tuning: typeof import('../tuning.svelte');
 
@@ -96,5 +97,53 @@ describe('tuning step store — companion override vs. mode-driven auto-step (MO
     tuning.setTuningStepFromCompanion(1_000); // matches the beforeEach baseline exactly
     expect(tuning.getTuningStep()).toBe(1_000);
     expect(tuning.isAutoStep()).toBe(true);
+  });
+});
+
+/**
+ * MOR-1486 — the re-enable path itself was never unreachable from the
+ * store's point of view (`setAutoStep(true)` already reapplies the current
+ * mode's default step); the bug was that no UI control ever called it. This
+ * suite pins the store contract the new SpectrumToolbar toggle relies on:
+ * flip `_autoStep` back on and the step must snap to the live mode's
+ * default, exactly like a fresh browser profile would show.
+ */
+describe('tuning step store — setAutoStep(true) re-enable semantics (MOR-1486)', () => {
+  beforeEach(() => {
+    radio.current = null;
+    tuning.setTuningStep(1_000);
+  });
+
+  it('re-enabling auto-step with no active receiver leaves the step untouched', () => {
+    tuning.setAutoStep(true);
+    expect(tuning.isAutoStep()).toBe(true);
+    expect(tuning.getTuningStep()).toBe(1_000);
+  });
+
+  it('re-enabling auto-step snaps the step to the active receiver mode default', () => {
+    radio.current = { active: 'MAIN', main: { mode: 'CW' } } as any;
+    tuning.setAutoStep(true);
+    expect(tuning.isAutoStep()).toBe(true);
+    expect(tuning.getTuningStep()).toBe(10);
+  });
+
+  it('re-enabling auto-step reads the SUB receiver mode when SUB is active', () => {
+    radio.current = { active: 'SUB', main: { mode: 'USB' }, sub: { mode: 'FM' } } as any;
+    tuning.setAutoStep(true);
+    expect(tuning.getTuningStep()).toBe(25_000);
+  });
+
+  it('a manual step change followed by re-enable is a full round trip back to mode-follow', () => {
+    radio.current = { active: 'MAIN', main: { mode: 'AM' } } as any;
+    tuning.setAutoStep(true);
+    expect(tuning.getTuningStep()).toBe(1_000); // AM default
+
+    tuning.setTuningStep(50); // manual override — disables auto-step
+    expect(tuning.isAutoStep()).toBe(false);
+    expect(tuning.getTuningStep()).toBe(50);
+
+    tuning.setAutoStep(true); // the new toggle's "re-enable" path
+    expect(tuning.isAutoStep()).toBe(true);
+    expect(tuning.getTuningStep()).toBe(1_000); // back to AM's default
   });
 });

@@ -503,6 +503,20 @@ describe('SpectrumPanel hideScopeControls channel (MOR-1369 S6b-1, MOR-1370 S6b-
   });
 });
 
+// MOR-1486 ruling B (owner, session 19) — RadioLayout owns the
+// `applyModeDefault()` mode-follow driver (the `$effect` above), so it must
+// NOT hide the AUTO toggle: an operator here can re-enable mode-follow and
+// it will actually keep following. Contrast with MobileRadioLayout, which
+// has no driver and explicitly hides the toggle (see
+// `MobileRadioLayout.component.svelte.test.ts`).
+describe('SpectrumPanel hideAutoStepToggle channel (MOR-1486 ruling B)', () => {
+  it('never hides the AUTO toggle — RadioLayout owns the mode-follow driver', () => {
+    const t = mountLayout('desktop-v2');
+    const stub = t.querySelector('.spectrum-panel-stub');
+    expect(stub?.getAttribute('data-hide-auto-step-toggle')).toBe('false');
+  });
+});
+
 describe('App presentation selection', () => {
   it('owns the resolver inputs and passes the resolved skinId to RadioLayout', async () => {
     vi.mocked(resolveSkinId).mockReturnValue('sdr-test');
