@@ -31,6 +31,7 @@ import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
+import { getCommandLifecycles } from '$lib/stores/commands.svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 
@@ -208,6 +209,33 @@ export function getSystemHandlers() { return _systemHandlers; }
 export function getActiveFrequencyHz(): number | null {
   const view = toRadioViewModel(runtime.state, runtime.caps);
   return view?.vfos.find((candidate) => candidate.isActive)?.frequencyHz ?? null;
+}
+
+// ── Pending frequency target (MOR-1441) ──
+/**
+ * The freshest still-in-flight `set_freq` target for `receiver` (`0` =
+ * MAIN, `1` = SUB — the wire encoding `dispatchRadioIntent` uses), or
+ * `null` when no `set_freq` intent is currently pending for it.
+ *
+ * This is the pending target the MOR-1425 tuning accumulator races toward
+ * during a hot burst — read off the command-bus lifecycle list rather than
+ * a second, parallel path into the accumulator's own internal (non-
+ * reactive) map. `getCommandLifecycles()` is already the accumulator's own
+ * echo/expiry authority: an ack, failure, cancellation, or timeout are
+ * exactly the events that end a command's `'pending'` status, so a caller
+ * reading this inside `$derived()` gets the snap-back-to-confirmed behavior
+ * for free, with no separate polling or expiry timer to maintain.
+ */
+export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
+  let latest: { createdAt: number; freq: number } | null = null;
+  for (const command of getCommandLifecycles()) {
+    if (command.name !== 'set_freq' || command.status !== 'pending') continue;
+    if (command.params.receiver !== receiver) continue;
+    const freq = command.params.freq;
+    if (typeof freq !== 'number') continue;
+    if (!latest || command.createdAt > latest.createdAt) latest = { createdAt: command.createdAt, freq };
+  }
+  return latest?.freq ?? null;
 }
 
 const _audioRoutingHandlers = makeAudioRoutingHandlers();

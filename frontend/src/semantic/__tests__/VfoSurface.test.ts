@@ -1011,6 +1011,43 @@ describe('per-digit tuning (MOR-1322) — intents (R9: frequency, never TX)', ()
   });
 });
 
+// ── MOR-1441: pending-target affordance ─────────────────────────────────
+describe('pending-target affordance (MOR-1441)', () => {
+  // Kills: rendering the pending target with no distinguishing marker, or
+  // rendering the CONFIRMED digits while a pending target exists — either
+  // way the operator loses sight of where a hot burst is heading, or the
+  // pending value gets presented as confirmed truth.
+  it('renders the pending target, marked distinct from confirmed, on the receiver that has one', () => {
+    const t = mountSurface({
+      viewModel: tunableTile,
+      onTuneFrequency: vi.fn(),
+      pendingFrequencyHz: { MAIN: 14260000 },
+    });
+    const main = activeSlot(t); // MAIN's active tile (isActive: true)
+    const mainGroup = main.querySelector<HTMLElement>('.freq')!;
+    expect(mainGroup.dataset.freqStatus).toBe('pending');
+    const digitsText = [...main.querySelectorAll('.digit')].map((d) => d.textContent).join('');
+    expect(digitsText).toBe('14260000');
+    expect(digitsText).not.toBe(String(tunableTile.vfos[0].frequencyHz));
+
+    // SUB's active-slot tile has no pending entry — stays confirmed.
+    const sub = activeSlots(t).find((sl) => tileOf(sl).dataset.vfoReceiver === 'SUB')!;
+    const subGroup = sub.querySelector<HTMLElement>('.freq')!;
+    expect(subGroup.dataset.freqStatus).toBe('confirmed');
+  });
+
+  // Kills: leaving the marker "pending" (or the digits stuck on a stale
+  // target) once no in-flight `set_freq` exists for the receiver — the
+  // MOR-1441 snap-to-confirmed-on-echo/expiry rule.
+  it('renders confirmed digits when no pending target is supplied', () => {
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
+    const group = activeSlot(t).querySelector<HTMLElement>('.freq')!;
+    expect(group.dataset.freqStatus).toBe('confirmed');
+    const digitsText = [...activeSlot(t).querySelectorAll('.digit')].map((d) => d.textContent).join('');
+    expect(digitsText).toBe(String(tunableTile.vfos[0].frequencyHz));
+  });
+});
+
 describe('per-digit tuning (MOR-1322) — the operational guard, pinned independently', () => {
   const wheel = (el: Element) =>
     el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));

@@ -114,6 +114,16 @@
      */
     onTuneFrequency?: (receiver: ReceiverId, frequencyHz: number) => void;
     /**
+     * MOR-1441 — the pending (not-yet-confirmed) tuning target for a
+     * receiver, keyed by `ReceiverId`. The caller (`SemanticRadioSurfaces`,
+     * which already holds the command-bus for the MOR-1421 `hasDualReceiver`
+     * precedent) computes this from the in-flight `set_freq` intent; this
+     * surface stays command-bus-blind and only renders the plain value it is
+     * handed. Absent (or missing that receiver's key) renders the plain
+     * confirmed readout, exactly as before this prop existed.
+     */
+    pendingFrequencyHz?: Partial<Record<ReceiverId, number>>;
+    /**
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
      * (copy one VFO onto the other), swap, and the two composite "quick"
@@ -144,6 +154,7 @@
     disabled = false,
     hasDualReceiver = true,
     onTuneFrequency,
+    pendingFrequencyHz,
     onEqualizeVfos,
     onSwapVfos,
     onQuickSplit,
@@ -358,6 +369,7 @@
       {@const selectable = isSelectable(vfo)}
       {@const selectDisabled = selectable && (vfo.slot.kind === 'unknown' || disabled)}
       {@const freq = frequencyDisplay(vfo)}
+      {@const pendingHz = pendingFrequencyHz?.[vfo.receiver] ?? null}
       <div
         class="vfo-tile"
         class:is-active={vfo.isActive}
@@ -383,7 +395,8 @@
         >
           {#if hasTunableFrequency(vfo)}
             <FrequencyDisplayInteractive
-              freq={vfo.frequencyHz ?? 0}
+              freq={pendingHz ?? vfo.frequencyHz ?? 0}
+              pending={pendingHz !== null}
               compact
               active={vfo.isActive}
               receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}

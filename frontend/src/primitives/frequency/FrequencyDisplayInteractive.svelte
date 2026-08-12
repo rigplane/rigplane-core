@@ -9,6 +9,15 @@
     minFreq?: number;
     maxFreq?: number;
     onFreqChange?: (freq: number) => void;
+    /**
+     * MOR-1441 — `true` while `freq` is a pending (not-yet-confirmed)
+     * tuning target rather than confirmed radio truth. The digit readout
+     * still shows `freq` (so the operator sees where a hot burst is
+     * heading), but marks it `data-freq-status="pending"` instead of
+     * `"confirmed"` — a structural marker a caller can assert on, never a
+     * color-only distinction (MOR-977 forced-colors doctrine).
+     */
+    pending?: boolean;
   }
 
   let {
@@ -19,6 +28,7 @@
     minFreq = 0,
     maxFreq = 999_000_000,
     onFreqChange,
+    pending = false,
   }: Props = $props();
   
   // Receiver-aware CSS custom properties
@@ -87,7 +97,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div class="freq" class:compact class:inactive={!active} style={Object.entries(cssVars).map(([k, v]) => `${k}:${v}`).join(';')} tabindex="0" role="group" aria-label="Frequency display" onkeydown={handleKeyDown}>
+<div class="freq" class:compact class:inactive={!active} data-freq-status={pending ? 'pending' : 'confirmed'} style={Object.entries(cssVars).map(([k, v]) => `${k}:${v}`).join(';')} tabindex="0" role="group" aria-label="Frequency display" onkeydown={handleKeyDown}>
   {#each groups.mhz as digit}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -152,6 +162,14 @@
 
   .freq.inactive {
     color: var(--freq-inactive-color, var(--v2-text-muted));
+  }
+
+  /* MOR-1441 — a pending (unconfirmed) target never renders identically to
+     confirmed radio truth. Structural (italic + reduced opacity), never a
+     color-only tell, same doctrine as the `data-observed` convention. */
+  .freq[data-freq-status='pending'] {
+    font-style: italic;
+    opacity: 0.75;
   }
 
   .digit {

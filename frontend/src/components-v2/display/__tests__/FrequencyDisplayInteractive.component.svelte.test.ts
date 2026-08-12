@@ -130,3 +130,22 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
     expect(onFreqChange).toHaveBeenCalledWith(14075000);
   });
 });
+
+// ── MOR-1441: pending-target affordance ─────────────────────────────────
+describe('FrequencyDisplayInteractive pending-target marker (MOR-1441)', () => {
+  // Kills: rendering a pending target with no distinguishing marker — the
+  // readout would then present an unconfirmed value as confirmed truth.
+  it('marks the group data-freq-status="pending" when pending is true', () => {
+    const t = mountDisplay({ freq: 14260000, pending: true });
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    expect(group.dataset.freqStatus).toBe('pending');
+  });
+
+  // Kills: defaulting to "pending" — the plain confirmed readout (every
+  // existing caller, pre-MOR-1441) must stay marked "confirmed".
+  it('marks the group data-freq-status="confirmed" by default', () => {
+    const t = mountDisplay({ freq: 14074000 });
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    expect(group.dataset.freqStatus).toBe('confirmed');
+  });
+});

@@ -26,7 +26,7 @@
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
-  import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { bindSemanticSurfaceHandlers, getPendingFrequencyHz } from '$lib/runtime/adapters/panel-adapters';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
   import {
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
@@ -244,6 +244,22 @@
    * only this plain boolean.
    */
   let hasDualReceiver = $derived((runtime.caps?.receivers ?? 1) > 1);
+  /**
+   * MOR-1441 — the pending (not-yet-confirmed) frequency target per
+   * receiver, for `VfoSurface`'s digit control to render distinctly from
+   * confirmed radio truth while a hot tuning burst is in flight. Read at
+   * this seam (same "caps-echo display metadata" precedent as
+   * `hasDualReceiver` above) so `VfoSurface` stays command-bus-blind,
+   * receiving only the plain per-receiver value.
+   */
+  let pendingFrequencyHz = $derived((() => {
+    const result: Partial<Record<'MAIN' | 'SUB', number>> = {};
+    const main = getPendingFrequencyHz(0);
+    const sub = getPendingFrequencyHz(1);
+    if (main !== null) result.MAIN = main;
+    if (sub !== null) result.SUB = sub;
+    return result;
+  })());
   /**
    * MOR-1306. The RF-front-end intent vocabulary, composed from the SHIPPED
    * command bus rather than forked — same discipline as `rxAudioIntents`
@@ -556,6 +572,7 @@
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
               disabled={!isOperationalStrip(view, receiverId)}
+              {pendingFrequencyHz}
             />
           </div>
         {/each}
@@ -616,6 +633,7 @@
         onSwapVfos={vfo.onSwap}
         onQuickSplit={vfo.onQuickSplit}
         onQuickDualWatch={vfo.onQuickDw}
+        {pendingFrequencyHz}
       />
     {/if}
   {/snippet}
