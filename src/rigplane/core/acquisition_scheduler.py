@@ -595,12 +595,22 @@ class AcquisitionScheduler:
         )
 
     def due_requests(
-        self, *, now: float | None = None
+        self, *, now: float | None = None, tx_active: bool = False
     ) -> tuple[AcquisitionRequest, ...]:
-        """Queue and return policy-cadence poll requests that are due."""
+        """Queue and return policy-cadence poll requests that are due.
+
+        ``tx_active`` gates cadence groups whose policy carries ``tx_only``
+        (MOR-1485): while False, those groups are skipped entirely (not just
+        deduped) — no query is sent and their cadence clock is left
+        untouched, so the moment a caller passes ``tx_active=True`` a group
+        that has been due all along fires immediately rather than waiting a
+        fresh cadence interval from the TX-start moment. Callers derive
+        ``tx_active`` from their own observed PTT state; this method has no
+        opinion on where that comes from.
+        """
 
         timestamp = self._clock.now() if now is None else now
-        groups = self._due_poll_groups(timestamp)
+        groups = self._due_poll_groups(timestamp, tx_active=tx_active)
         queued: list[AcquisitionRequest] = []
         for key, grouped_paths in groups:
             policy = key.policy
@@ -1106,6 +1116,8 @@ class AcquisitionScheduler:
     def _due_poll_groups(
         self,
         now: float,
+        *,
+        tx_active: bool = False,
     ) -> tuple[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]], ...]:
         due: list[tuple[_AcquisitionRequestKey, FieldPath]] = []
         for key, paths in self._poll_cadence_groups().items():
@@ -1113,6 +1125,11 @@ class AcquisitionScheduler:
                 continue
             policy = key.policy
             if policy.cadence_seconds is None:
+                continue
+            if policy.tx_only and not tx_active:
+                # MOR-1485: skip entirely rather than dedupe/defer — no query
+                # sent, no cadence clock touched, so a group due since before
+                # TX started fires on the very next tx_active=True call.
                 continue
             state = self._cadence_state_for(key, policy, now=now)
             if state.next_due_monotonic <= now:

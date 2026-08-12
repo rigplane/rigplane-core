@@ -2882,7 +2882,15 @@ class RadioPoller:
         if scheduler is None:
             return
         now = time.monotonic()
-        scheduler.due_requests(now=now)
+        # MOR-1485: gate tx_only cadence membership (TX/PA meters) on observed
+        # PTT — same RadioState read _pick_high_meter already uses for the
+        # legacy LAN two-tier meter scheme.
+        tx_active = (
+            getattr(self._radio_state, "ptt", False)
+            if self._radio_state is not None
+            else False
+        )
+        scheduler.due_requests(now=now, tx_active=tx_active)
         pending = scheduler.pending_requests()
         pending_ids = {request.id for request in pending}
         for request_id in tuple(self._acquisition_in_flight):
