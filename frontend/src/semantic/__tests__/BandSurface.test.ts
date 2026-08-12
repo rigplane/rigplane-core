@@ -659,4 +659,25 @@ describe('keyboard entry commits on Enter and cancels on Escape (MOR-1444)', () 
     expect(r.input()!.value).toBe('');
     r.dispose();
   });
+
+  // Round-2 review, recorder item 3: leaving focus in the (now-emptied)
+  // entry input keeps it an "ignored tag" for KeyboardHandler's
+  // shouldIgnoreEvent, so band hotkeys would stay suppressed until the
+  // operator tabs away. Escape blurs the input so hotkeys work again
+  // immediately — it does not attempt to return focus to whatever
+  // originated the gesture (BandSurface has no reference to that; the
+  // gesture may not even have come through the keyboard seam), so the next
+  // Tab starts from the document's normal order rather than resuming where
+  // the operator was. That's a documented, honest trade-off, not a claim of
+  // full focus restoration.
+  it('blurs the entry input on Escape so band hotkeys are no longer suppressed by it', () => {
+    const r = render(withB(BOUNDS));
+    const input = r.input()!;
+    typeFrequency(input, '14250000');
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    keydown(input, 'Escape');
+    expect(document.activeElement).not.toBe(input);
+    r.dispose();
+  });
 });

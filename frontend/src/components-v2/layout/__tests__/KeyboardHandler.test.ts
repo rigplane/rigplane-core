@@ -230,16 +230,34 @@ describe('KeyboardHandler', () => {
           action: 'band_select',
           params: { index: 7 },
         },
+        {
+          id: 'focus-af',
+          section: 'Focus',
+          label: 'Go to AF',
+          sequence: ['g', 'a'],
+          action: 'focus_target',
+          params: { target: 'af' },
+        },
       ],
     };
 
-    function appendVfoFreqDisplay(): HTMLElement {
+    /**
+     * Mirrors VfoSurface.svelte's real DOM shape: a `[data-vfo-tile]` with
+     * the RECEIVER-wide `data-vfo-active` flag wrapping the `[data-vfo-freq]`
+     * span. `active` defaults to true so every pre-existing test below keeps
+     * exercising "the active receiver's display has focus".
+     */
+    function appendVfoFreqDisplay({ active = true }: { active?: boolean } = {}): HTMLElement {
+      const tile = document.createElement('div');
+      tile.setAttribute('data-vfo-tile', '');
+      tile.setAttribute('data-vfo-active', String(active));
       const wrapper = document.createElement('span');
       wrapper.setAttribute('data-vfo-freq', '');
       const focusTarget = document.createElement('div');
       focusTarget.tabIndex = 0;
       wrapper.appendChild(focusTarget);
-      document.body.appendChild(wrapper);
+      tile.appendChild(wrapper);
+      document.body.appendChild(tile);
       return focusTarget;
     }
 
@@ -323,5 +341,86 @@ describe('KeyboardHandler', () => {
       );
       expect(entryInput.value).toBe('');
     });
+
+    // MOR-1444 B1 (round-2 review) — REPRODUCED: on a dual-receiver cockpit
+    // (2/main_sub) both receivers mount a focusable [data-vfo-freq], since
+    // VfoSurface.svelte's hasTunableFrequency gates on isActiveSlot, not the
+    // radio-wide isActive. enterFrequency() always writes view.activeReceiver
+    // (SemanticRadioSurfaces.svelte), so routing a digit typed on the
+    // INACTIVE receiver's display would silently commit to the WRONG VFO —
+    // reopening the MOR-1322 B1 / MOR-1335 G4 cross-dispatch class. Digits
+    // must fall through to the band hotkey here exactly as if no VFO display
+    // were focused at all.
+    it('falls back to the band hotkey when the focused VFO tile is not the active receiver', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const vfoFocusTarget = appendVfoFreqDisplay({ active: false });
+      const entryInput = appendFreqEntryInput();
+      vfoFocusTarget.focus();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      );
+      expect(entryInput.value).toBe('');
+      expect(document.activeElement).toBe(vfoFocusTarget);
+    });
+
+    // MOR-1444 B2 (round-2 review) — REPRODUCED: the digit guard returned
+    // above the `if (pendingSequence)` block without disarming it, unlike
+    // the MOR-1449 Tab guard 12 lines below which explicitly does. Repro:
+    // "g" arms the leader pill, "7" (VFO focused) routes to the entry input
+    // and returns early — the pill must NOT still be armed afterward, or a
+    // later "a" within leaderTimeoutMs completes "g a" into an unintended
+    // focus_target once focus leaves the (ignored-tag) entry input.
+    it('disarms a pending leader sequence when a digit routes to the frequency-entry input', () => {
+      const onAction = vi.fn();
+      const target = mountHandler({ config: configWithDigitBinding, onAction });
+      const vfoFocusTarget = appendVfoFreqDisplay();
+      const entryInput = appendFreqEntryInput();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'g' }));
+      flushSync();
+      expect(target.querySelector('.keyboard-leader-pill')).not.toBeNull();
+
+      vfoFocusTarget.focus();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+      flushSync();
+      expect(target.querySelector('.keyboard-leader-pill')).toBeNull();
+
+      // The repro's "blur → next key within the timeout": had the leader
+      // stayed armed, this "a" would complete "g a" -> focus_target once
+      // focus leaves the entry input (an ignored tag while it holds focus).
+      entryInput.blur();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }));
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'focus_target' }),
+      );
+    });
+
+    // MOR-1444 B3 (round-2 review) — a Ctrl/Cmd/Alt-modified digit is a
+    // BROWSER OR OS shortcut (Cmd+1 switches tabs in most browsers), not a
+    // frequency-entry keystroke. Routing it would both hijack focus into the
+    // entry input AND swallow the browser's own shortcut via preventDefault.
+    it.each(['ctrlKey', 'metaKey', 'altKey'] as const)(
+      'does not route a %s-modified digit to the entry input',
+      (modifier) => {
+        const onAction = vi.fn();
+        mountHandler({ config: configWithDigitBinding, onAction });
+        const vfoFocusTarget = appendVfoFreqDisplay();
+        const entryInput = appendFreqEntryInput();
+        vfoFocusTarget.focus();
+
+        const event = new KeyboardEvent('keydown', {
+          key: '7', [modifier]: true, bubbles: true, cancelable: true,
+        });
+        window.dispatchEvent(event);
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(entryInput.value).toBe('');
+        expect(document.activeElement).toBe(vfoFocusTarget);
+      },
+    );
   });
 });

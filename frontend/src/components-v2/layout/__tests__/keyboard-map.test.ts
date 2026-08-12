@@ -140,26 +140,64 @@ describe('isDigitKey', () => {
 });
 
 describe('isFrequencyDisplayFocused', () => {
-  it('is true when the active element sits inside a [data-vfo-freq] ancestor', () => {
-    const wrapper = document.createElement('span');
-    wrapper.setAttribute('data-vfo-freq', '');
+  /**
+   * Mirrors VfoSurface.svelte's real DOM shape: a `[data-vfo-tile]` wrapping
+   * `data-vfo-active` (the RECEIVER-wide active flag) around a `[data-vfo-freq]`
+   * span. `active` defaults to true so the pre-existing tests below (written
+   * before the MOR-1444 B1 fix) keep exercising "the active tile's display".
+   */
+  function buildVfoTile(active = true): { tile: HTMLElement; freq: HTMLElement } {
+    const tile = document.createElement('div');
+    tile.setAttribute('data-vfo-tile', '');
+    tile.setAttribute('data-vfo-active', String(active));
+    const freq = document.createElement('span');
+    freq.setAttribute('data-vfo-freq', '');
+    tile.appendChild(freq);
+    document.body.appendChild(tile);
+    return { tile, freq };
+  }
+
+  it('is true when the active element sits inside the active tile\'s [data-vfo-freq]', () => {
+    const { tile, freq } = buildVfoTile(true);
     const freqRoot = document.createElement('div');
-    wrapper.appendChild(freqRoot);
-    document.body.appendChild(wrapper);
+    freq.appendChild(freqRoot);
 
     expect(isFrequencyDisplayFocused(freqRoot)).toBe(true);
 
-    wrapper.remove();
+    tile.remove();
   });
 
-  it('is true for the [data-vfo-freq] element itself', () => {
-    const wrapper = document.createElement('span');
-    wrapper.setAttribute('data-vfo-freq', '');
-    document.body.appendChild(wrapper);
+  it('is true for the [data-vfo-freq] element itself on the active tile', () => {
+    const { tile, freq } = buildVfoTile(true);
 
-    expect(isFrequencyDisplayFocused(wrapper)).toBe(true);
+    expect(isFrequencyDisplayFocused(freq)).toBe(true);
 
-    wrapper.remove();
+    tile.remove();
+  });
+
+  // MOR-1444 B1 — reproduced: on 2/main_sub both receivers mount a focusable
+  // [data-vfo-freq] (hasTunableFrequency gates on isActiveSlot, not isActive
+  // — VfoSurface.svelte:258-259), but only the ACTIVE RECEIVER's tile is the
+  // honest dispatch target for enterFrequency()'s view.activeReceiver write.
+  // Focusing the INACTIVE receiver's display must not qualify as "the VFO
+  // display is focused" for routing purposes — reopening the MOR-1322 B1 /
+  // MOR-1335 G4 cross-dispatch class this predicate exists to keep shut.
+  it('is false when the active element sits inside an INACTIVE tile\'s [data-vfo-freq]', () => {
+    const { tile, freq } = buildVfoTile(false);
+    const freqRoot = document.createElement('div');
+    freq.appendChild(freqRoot);
+
+    expect(isFrequencyDisplayFocused(freqRoot)).toBe(false);
+
+    tile.remove();
+  });
+
+  it('is false for the [data-vfo-freq] element itself on an inactive tile', () => {
+    const { tile, freq } = buildVfoTile(false);
+
+    expect(isFrequencyDisplayFocused(freq)).toBe(false);
+
+    tile.remove();
   });
 
   it('is false for an element outside any [data-vfo-freq] ancestor', () => {

@@ -95,8 +95,21 @@
     // hotkey — every rig profile's keyboard config binds "1".."9" to
     // band_select, and without this guard `resolveAction` below hops bands
     // on every typed digit. Band hotkeys are untouched everywhere else.
-    if (isDigitKey(event.key) && isFrequencyDisplayFocused(document.activeElement)) {
+    // MOR-1444 B3 (round-2 review): a Ctrl/Cmd/Alt-modified digit is a
+    // browser or OS shortcut (Cmd+1 switches tabs in most browsers), never a
+    // frequency-entry keystroke — it must reach neither the entry input nor
+    // preventDefault().
+    if (
+      isDigitKey(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey
+      && isFrequencyDisplayFocused(document.activeElement)
+    ) {
       if (routeDigitToFrequencyEntry(event.key)) {
+        // MOR-1444 B2 (round-2 review): mirrors the MOR-1449 Tab guard
+        // immediately below — an early return must still disarm a pending
+        // leader sequence, or the pill stays armed and a later keystroke
+        // (once focus leaves the now-focused, ignored-tag entry input) can
+        // complete an unintended leader sequence.
+        if (pendingSequence) clearLeaderState();
         event.preventDefault();
         return;
       }

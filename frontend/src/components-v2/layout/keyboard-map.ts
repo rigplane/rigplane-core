@@ -311,12 +311,26 @@ export function isDigitKey(key: string): boolean {
 }
 
 /**
- * MOR-1444: true when the active element is the VFO/frequency display or
- * sits inside it. `data-vfo-freq` is the existing production hook on the
- * wrapper `<span>` around `FrequencyDisplayInteractive` in `VfoSurface.svelte`
- * — present for every VFO tile with a tunable frequency, no new markup
- * needed.
+ * MOR-1444: true when the active element is the ACTIVE RECEIVER's
+ * VFO/frequency display, or sits inside it. `data-vfo-freq` is the existing
+ * production hook on the wrapper `<span>` around `FrequencyDisplayInteractive`
+ * in `VfoSurface.svelte` — present for every VFO tile with a tunable
+ * frequency, no new markup needed.
+ *
+ * MOR-1444 B1 (round-2 review, reproduced): `hasTunableFrequency` gates on
+ * `isActiveSlot`, not the radio-wide `isActive` (VfoSurface.svelte:258-259)
+ * — so on a dual-receiver cockpit BOTH receivers can mount a focusable
+ * `[data-vfo-freq]` at once. `enterFrequency()` always writes
+ * `view.activeReceiver` (SemanticRadioSurfaces.svelte), so qualifying on
+ * `[data-vfo-freq]` alone would let a digit typed on the INACTIVE receiver's
+ * display commit to the WRONG VFO — reopening the MOR-1322 B1 / MOR-1335 G4
+ * cross-dispatch class. The ancestor `[data-vfo-tile]`'s own
+ * `data-vfo-active` flag (VfoSurface.svelte:367) is the same fact
+ * `hasTunableFrequency`'s sibling `tuneFrequency` guard reads, so this stays
+ * a single source of truth rather than a second derivation.
  */
 export function isFrequencyDisplayFocused(activeElement: Element | null): boolean {
-  return activeElement?.closest('[data-vfo-freq]') != null;
+  const freq = activeElement?.closest('[data-vfo-freq]');
+  if (!freq) return false;
+  return freq.closest('[data-vfo-tile]')?.getAttribute('data-vfo-active') !== 'false';
 }

@@ -183,6 +183,14 @@
     } else if (event.key === 'Escape') {
       event.preventDefault();
       cancelEntry();
+      // Round-2 review, recorder item 3: leaving focus in the (now-empty)
+      // input keeps it an "ignored tag" for KeyboardHandler's
+      // shouldIgnoreEvent, silently suppressing band hotkeys until a Tab.
+      // Blurring un-suppresses them immediately. This does not attempt to
+      // return focus to wherever the gesture started (this file has no
+      // reference to that, and the entry may have been reached without one)
+      // — the next Tab resumes from the document's normal order.
+      if (event.currentTarget instanceof HTMLElement) event.currentTarget.blur();
     }
   }
 </script>
