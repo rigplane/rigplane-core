@@ -289,6 +289,11 @@ _OBSERVABLE_CMD14_FIELDS = {
     0x08: ("receiver", "operator_controls", "pbt_outer"),
     0x0A: ("global", "operator_controls", "power_level"),
     0x0B: ("global", "operator_controls", "mic_gain"),
+    # notch_filter (MOR-1492): documented BCD-pair 0x14 level, same decode
+    # as the other global level fields below; the legacy ``_handle_14``
+    # mirror write is suppressed for this sub via
+    # ``_CMD14_OBSERVATION_BACKED_SUBS``.
+    0x0D: ("global", "operator_controls", "notch_filter"),
     0x0E: ("global", "operator_controls", "compressor_level"),
     0x12: ("receiver", "operator_controls", "nb_level"),
     0x15: ("global", "operator_controls", "monitor_gain"),
@@ -322,6 +327,7 @@ _CMD14_OBSERVATION_BACKED_SUBS = frozenset(
         0x06,  # nr_level (receiver)
         0x12,  # nb_level (receiver)
         0x0B,  # mic_gain (global)
+        0x0D,  # notch_filter (global — MOR-1492)
         0x0E,  # compressor_level (global)
         0x15,  # monitor_gain (global)
         0x09,  # cw_pitch (global)
@@ -414,9 +420,12 @@ _OBSERVABLE_CMD16_VALUE_FIELDS = {
     0x02: (("receiver", "operator_controls", "preamp"), "raw"),
     0x12: (("receiver", "operator_controls", "agc"), "bcd_nibble"),
     0x32: (("receiver", "operator_controls", "audio_peak_filter"), "bcd_nibble"),
-    # filter_shape (MOR-1491): same BCD-nibble decode as agc/audio_peak_filter
-    # above.
+    # filter_shape (MOR-1491) / manual_notch_width (MOR-1492): same
+    # BCD-nibble decode as agc/audio_peak_filter above
+    # (``radio.get_manual_notch_width`` already reads this exact shape via
+    # ``_get_bcd_level(..., bcd_bytes=1)``).
     0x56: (("receiver", "operator_controls", "filter_shape"), "bcd_nibble"),
+    0x57: (("receiver", "operator_controls", "manual_notch_width"), "bcd_nibble"),
 }
 
 

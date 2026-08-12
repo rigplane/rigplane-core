@@ -219,6 +219,12 @@ polling_only = [
     # verification possible, so this rides the documented command table only.
     "receiver.main.operator_controls.filter_shape",
     "receiver.sub.operator_controls.filter_shape",
+    # MOR-1492 (field-policy membership wave, profile parity): notch_filter
+    # (14-0D) / manual_notch_width (16-57) — same rationale/sourcing as
+    # filter_shape above (documented S/R, already in [commands]/[notch]).
+    "global.operator_controls.notch_filter",
+    "receiver.main.operator_controls.manual_notch_width",
+    "receiver.sub.operator_controls.manual_notch_width",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -597,6 +603,24 @@ freshness_ttl_seconds = 3.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.sub.operator_controls.filter_shape"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+# MOR-1492 (field-policy membership wave, profile parity). notch_filter
+# matches nr_level/pbt_inner's 3.0s/5.0s 0x14-level tier; manual_notch_width
+# matches filter_shape's 1.5s/3.0s 0x16-family tier above.
+[state_acquisition.field_policies."global.operator_controls.notch_filter"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_width"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.manual_notch_width"]
 cadence_seconds = 1.5
 freshness_ttl_seconds = 3.0
 adaptive_decay = false

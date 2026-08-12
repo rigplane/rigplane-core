@@ -3011,7 +3011,6 @@ def test_update_radio_state_cmd14_receiver_dsp_levels_observation_backed(
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "raw", "field", "expected"),
     [
-        (0x0D, 102, "notch_filter", 102),
         (0x0F, 104, "break_in_delay", 104),
         (0x14, 105, "drive_gain", 105),
     ],
@@ -3042,6 +3041,9 @@ def test_update_radio_state_cmd14_global_dsp_levels(
         (0x17, 108, "anti_vox_gain", 108),
         # key_speed raw level 146 → 30 WPM via the linear key-speed map (MOR-493).
         (0x0C, 146, "key_speed", 30),
+        # notch_filter promoted to a neutral observation (MOR-1492
+        # field-policy membership wave); plain BCD-pair decode.
+        (0x0D, 102, "notch_filter", 102),
     ],
 )
 def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
@@ -3051,8 +3053,9 @@ def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
     field: str,
     expected: int,
 ) -> None:
-    """MOR-437/MOR-459: cw_pitch/mic_gain/compressor_level/monitor_gain and the
-    VOX gain pair (vox_gain/anti_vox_gain) are observation-backed; the legacy
+    """MOR-437/MOR-459/MOR-1492: cw_pitch/mic_gain/compressor_level/
+    monitor_gain, the VOX gain pair (vox_gain/anti_vox_gain), and
+    notch_filter are observation-backed; the legacy
     global RadioState mirror was removed.
 
     cw_pitch in particular asserts the exact non-linear raw→Hz mapping
@@ -3237,6 +3240,21 @@ def test_update_radio_state_cmd16_filter_shape_observation_backed(
         "receiver.1.operator_controls.filter_shape"
     )
     assert field.value == 1
+
+
+def test_update_radio_state_cmd16_manual_notch_width_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-1492: cmd 0x16/0x57 has no legacy mirror at all — this is the first
+    time it lands anywhere; ``_handle_16`` never wrote it before either.
+    """
+    frame = _make_frame(cmd=0x16, sub=0x57, data=b"\x02", receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # BCD-nibble decode of 0x02 == 2 (NAR).
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.1.operator_controls.manual_notch_width"
+    )
+    assert field.value == 2
 
 
 def test_update_radio_state_cmd16_twin_peak_filter_observation_backed(
