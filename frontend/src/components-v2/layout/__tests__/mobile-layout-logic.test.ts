@@ -1,8 +1,31 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+// MOR-1451 follow-up: the mobile skin's S-meter readouts must follow the
+// active radio's profile-declared calibration curve (via the shared
+// `smeter-scale.ts` helpers) instead of a third hardcoded IC-7610-shaped
+// copy of the math. An IC-7300-shaped fixture — the documented Icom
+// convention with its S9+60 top anchor (`rigs/ic7300.toml`) — is exactly
+// the curve the old hardcoded +40 clamp misrendered.
+const IC7300_LIKE_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 120, actual: 0, label: 'S9' },
+  { raw: 241, actual: 60, label: 'S9+60' },
+];
+
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getSmeterCalibration: vi.fn(() => null),
+  getSmeterRedline: vi.fn(() => null),
+}));
+
+import { getSmeterCalibration } from '$lib/stores/capabilities.svelte';
 import {
   SSB_STEPS, CW_STEPS, AM_STEPS, FM_STEPS, DEFAULT_STEPS,
   getStepsForMode, formatStep, formatSValue, formatDbm, formatPower,
 } from '../mobile-layout-logic';
+
+beforeEach(() => {
+  vi.mocked(getSmeterCalibration).mockReturnValue(IC7300_LIKE_CAL);
+});
 
 describe('getStepsForMode', () => {
   it('returns SSB_STEPS for USB', () => {
@@ -57,7 +80,7 @@ describe('formatStep', () => {
   });
 });
 
-describe('formatSValue', () => {
+describe('formatSValue (calibrated radio)', () => {
   it('returns S9 for a calibrated 0 dB-rel-S9 reading', () => {
     expect(formatSValue(0)).toBe('S9');
   });
@@ -70,37 +93,63 @@ describe('formatSValue', () => {
     expect(formatSValue(-24)).toBe('S5');
   });
 
-  it('returns S9+20 at +20 dB-rel-S9', () => {
-    expect(formatSValue(20)).toBe('S9+20');
+  it('returns S9+ for values above S9 but below the next anchor', () => {
+    expect(formatSValue(20)).toBe('S9+');
   });
 
-  it('clamps strong readings to the top of the mobile scale', () => {
-    expect(formatSValue(255)).toBe('S9+40');
+  // Kills: the old hardcoded +40 clamp — the documented Icom top anchor is
+  // S9+60, and the profile curve (not the mobile skin) decides the ceiling.
+  it('renders the profile-declared S9+60 top anchor', () => {
+    expect(formatSValue(60)).toBe('S9+60');
   });
 
-  it('returns S9+ for values above S9', () => {
-    const result = formatSValue(33);
-    expect(result).toMatch(/^S9\+/);
+  it('clamps beyond-scale readings to the profile top anchor, not +40', () => {
+    expect(formatSValue(255)).toBe('S9+60');
   });
 });
 
-describe('formatDbm', () => {
-  it('returns -73 dBm at S9 (0 dB-rel-S9)', () => {
-    expect(formatDbm(0)).toBe('-73 dBm');
+describe('formatSValue (uncalibrated radio)', () => {
+  beforeEach(() => {
+    vi.mocked(getSmeterCalibration).mockReturnValue(null);
+  });
+
+  // Kills: misreading a raw device-scale byte as calibrated dB-rel-S9 — the
+  // "S9+40 regardless of signal" class MOR-1451 removed everywhere else.
+  it('renders the plain raw number instead of a fabricated S-unit', () => {
+    expect(formatSValue(200)).toBe('200');
+  });
+
+  it('does not claim S9 for a raw zero', () => {
+    expect(formatSValue(0)).toBe('0');
+  });
+});
+
+describe('formatDbm (calibrated radio)', () => {
+  it('returns −73 dBm at S9 (0 dB-rel-S9)', () => {
+    expect(formatDbm(0)).toBe('−73 dBm');
   });
 
   it('returns lower dBm for weaker signals', () => {
-    const result = formatDbm(-54);
-    expect(result).toBe('-127 dBm');
+    expect(formatDbm(-54)).toBe('−127 dBm');
   });
 
   it('returns higher dBm for strong signals', () => {
-    const result = formatDbm(20);
-    expect(result).toBe('-53 dBm');
+    expect(formatDbm(20)).toBe('−53 dBm');
   });
 
-  it('clamps values above the top of the mobile scale', () => {
-    expect(formatDbm(255)).toBe('-33 dBm');
+  it('clamps to the profile-declared +60 ceiling, not +40', () => {
+    expect(formatDbm(255)).toBe('−13 dBm');
+  });
+});
+
+describe('formatDbm (uncalibrated radio)', () => {
+  beforeEach(() => {
+    vi.mocked(getSmeterCalibration).mockReturnValue(null);
+  });
+
+  // Kills: fabricating a physical dBm figure from a raw byte with no curve.
+  it('renders the explicit uncalibrated label', () => {
+    expect(formatDbm(200)).toBe('uncalibrated');
   });
 });
 

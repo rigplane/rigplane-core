@@ -1,5 +1,7 @@
 // Pure helper functions and constants extracted from MobileRadioLayout.svelte
 
+import { calibratedToSUnit, calibratedToDbm, formatDbm as formatDbmText } from '../meters/smeter-scale';
+
 // ── Tuning step presets (mode-aware) ──
 
 export const SSB_STEPS = [10, 50, 100, 500, 1000];
@@ -23,20 +25,17 @@ export function formatStep(hz: number): string {
 }
 
 // ── S-meter formatting ──
+// Thin delegates to the shared calibration-aware helpers (MOR-1451): the
+// mobile readouts follow the same profile-declared curve — and the same
+// honest-uncalibrated raw fallback — as every other S-meter surface,
+// instead of a third hardcoded copy of one radio's math.
 
 export function formatSValue(actual: number): string {
-  const v = Math.max(-54, Math.min(40, actual));
-  if (v >= 0) {
-    const over = Math.round(v);
-    return over > 0 ? `S9+${over}` : 'S9';
-  }
-  const s = Math.max(0, Math.min(9, Math.floor((v + 54) / 6)));
-  return `S${s}`;
+  return calibratedToSUnit(actual);
 }
 
 export function formatDbm(actual: number): string {
-  const v = Math.max(-54, Math.min(40, actual));
-  return `${Math.round(-73 + v)} dBm`;
+  return formatDbmText(calibratedToDbm(actual));
 }
 
 // ── RF Power display ──
