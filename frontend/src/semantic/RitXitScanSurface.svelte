@@ -38,9 +38,23 @@
   per-field "ever reported", so a partial reporter surfaces exactly the
   fields it has reported, no more — expected, not a bug. Scan TYPE and
   RESUME-MODE label tables are UI-only in v2 and are deliberately not
-  reproduced here (out of scope, not backed by any 8A fact): scan is
-  restarted with the last OBSERVED type, never a fabricated default, and
-  resume mode is cycled by its raw masked value.
+  reproduced here (out of scope, not backed by any 8A fact): resume mode
+  is cycled by its raw masked value.
+
+  SCAN TYPE OWNERSHIP (MOR-1495 review R2 — verifier-caught bootstrap
+  deadlock). CI-V 0x0E is SET-ONLY: `scanType` can never become "known"
+  before a scan has ever been started, so the original "restart with the
+  last OBSERVED type, never a fabricated default" design meant NOTHING
+  could ever be the first start — START was permanently disabled on a
+  fresh connect, forever, because the only thing that could ever make
+  `scanType` known was a scan_start command the disabled button could
+  never send. `selectedType` below breaks that cycle: it is local UI
+  state (v2 `ScanPanel`'s own `selectedType` shape/default — PROG, 0x01),
+  not a claimed-observed radio fact, so sending it never fabricates an
+  "observed" value — it is honestly what it is, an operator/default
+  selection. `scanType`'s OWN displayed reading (`scan-type-value`) is
+  untouched by this and still shows only the genuinely last-observed
+  value, `UNKNOWN_TEXT` until one exists.
 -->
 <script module lang="ts">
   import type { RitXitField, ScanField } from './radio-view-model';
@@ -51,6 +65,8 @@
   export const OFFSET_MIN = -9999;
   export const OFFSET_MAX = 9999;
   export const OFFSET_STEP = 50;
+  /** v2 `ScanPanel`'s own default scan type for the next START — PROG. */
+  export const DEFAULT_SCAN_TYPE = 0x01;
 
   export const usable = (f: RitXitField<unknown> | ScanField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
@@ -88,6 +104,10 @@
   let activeKnown = $derived(view.activeReceiver.status === 'known');
   let scanningOn = $derived(sc !== undefined && usable(sc.scanning)
     && sc.scanning.reading.status === 'known' && sc.scanning.reading.value === true);
+  /** Local UI selection for the NEXT scan START (MOR-1495 review R2 — see
+   *  file header). NOT an observed radio fact, so it needs no `usable()`
+   *  gate: it is honest about what it is from the moment it exists. */
+  let selectedType = $state(DEFAULT_SCAN_TYPE);
 
   // F2 (fix round, verify-MOR-1308): gated on the field's OWN observation,
   // not just the wrong-VFO guard — mirrors `TxAuxSurface.svelte`'s `toggle`.
@@ -110,7 +130,9 @@
   function toggleScan(): void {
     if (!sc || !usable(sc.scanning)) return;
     if (scanningOn) { onScanStop?.(); return; }
-    if (usable(sc.scanType) && sc.scanType.reading.status === 'known') onScanStart?.(sc.scanType.reading.value);
+    // MOR-1495 review R2: START no longer depends on an OBSERVED scanType
+    // (see file header) — it always sends the operator/default selection.
+    onScanStart?.(selectedType);
   }
   function cycleResume(): void {
     if (!sc || !usable(sc.scanResumeMode) || sc.scanResumeMode.reading.status !== 'known') return;
@@ -159,7 +181,7 @@
           <span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>
           <button
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
-            disabled={!usable(sc.scanning) || (!scanningOn && !usable(sc.scanType))}
+            disabled={!usable(sc.scanning)}
             onclick={toggleScan}
           >{scanningOn ? 'STOP' : 'START'}</button>
         {/if}

@@ -400,7 +400,7 @@ function knownScan<T>(value: T, availability: Availability = ON): ScanField<T> {
   return { reading: { status: 'known', value }, availability };
 }
 
-describe('scan start/stop: guarded on a KNOWN scanning state, start also on a known type', () => {
+describe('scan start/stop: guarded on a KNOWN scanning state only (MOR-1495 review R2)', () => {
   it('disables the toggle while scanning itself is unobserved', () => {
     const r = render(withSc({ scanning: unreadScan<boolean>() }));
     expect(r.el('scan-toggle')!.hasAttribute('disabled')).toBe(true);
@@ -418,35 +418,35 @@ describe('scan start/stop: guarded on a KNOWN scanning state, start also on a kn
     r.dispose();
   });
 
-  it('disables start while idle and scanType has never been reported (no type to resume)', () => {
+  // Review R2 (verifier-caught bootstrap deadlock): CI-V 0x0E is SET-ONLY,
+  // so `scanType` can never become "known" before a scan has ever been
+  // started — gating START on it made a cold start impossible, since
+  // nothing could ever send the first scan_start that would have made the
+  // field known. `scanning` alone is enough to enable START now; the type
+  // is owned locally (below), never observed.
+  it('does NOT disable start merely because scanType has never been reported', () => {
     const r = render(withSc({ scanning: knownScan(false), scanType: unreadScan<number>(OFF_AVAIL) }));
-    expect(r.el('scan-toggle')!.hasAttribute('disabled')).toBe(true);
+    expect(r.el('scan-toggle')!.hasAttribute('disabled')).toBe(false);
     r.dispose();
   });
 
-  it('starts the last-observed scan type, never a fabricated one', () => {
-    const onScanStart = vi.fn();
-    const r = render(withSc({ scanning: knownScan(false), scanType: knownScan(0x22) }), { onScanStart });
-    r.el('scan-toggle')!.click();
-    flushSync();
-    expect(onScanStart).toHaveBeenCalledExactlyOnceWith(0x22);
-    r.dispose();
-  });
-
-  // F3 (fix round, verify-MOR-1308 M10): `scanning` is KNOWN idle here (the
-  // button IS disabled in this state, since `!scanningOn && !usable(scanType)`
-  // — so the attribute alone would satisfy a naive assertion). The bypass
-  // dispatch is the only way to prove the handler itself never falls through
-  // to a fabricated `type: 0`, unlike the sibling test above which only
-  // covers the `scanning`-unobserved early-return path.
-  it('never fabricates type 0 via a bypassed click while idle and scanType is unobserved', () => {
+  it('starts with the surface\'s own default type (PROG, 0x01) via a normal click, from a cold start where scanType has never been reported', () => {
     const onScanStart = vi.fn();
     const r = render(
       withSc({ scanning: knownScan(false), scanType: unreadScan<number>(OFF_AVAIL) }), { onScanStart },
     );
-    bypassClick(r.el('scan-toggle')!);
+    r.el('scan-toggle')!.click();
     flushSync();
-    expect(onScanStart).not.toHaveBeenCalled();
+    expect(onScanStart).toHaveBeenCalledExactlyOnceWith(0x01);
+    r.dispose();
+  });
+
+  it('starts with the local default even when a DIFFERENT type happens to be the last-observed one — type is never read from the observed fact', () => {
+    const onScanStart = vi.fn();
+    const r = render(withSc({ scanning: knownScan(false), scanType: knownScan(0x22) }), { onScanStart });
+    r.el('scan-toggle')!.click();
+    flushSync();
+    expect(onScanStart).toHaveBeenCalledExactlyOnceWith(0x01);
     r.dispose();
   });
 

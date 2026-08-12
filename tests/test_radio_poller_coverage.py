@@ -53,6 +53,9 @@ from rigplane.web.radio_poller import (
     QuickDwTrigger,
     QuickSplitTrigger,
     RadioPoller,
+    ScanSetResume,
+    ScanStart,
+    ScanStop,
     SelectVfo,
     SendCiv,
     SetAfLevel,
@@ -236,6 +239,10 @@ def _make_radio(active: str = "MAIN", *, model: str = "IC-7610") -> MagicMock:
     radio.set_dual_watch = AsyncMock()
     radio.set_split = AsyncMock()
     radio.equalize_main_sub = AsyncMock()
+    radio.scan_start = AsyncMock()
+    radio.scan_stop = AsyncMock()
+    radio.scan_set_resume = AsyncMock()
+    radio.scan_set_df_span = AsyncMock()
     radio.swap_main_sub = AsyncMock()
 
     # Receiver-tier capabilities (issue #1170 / #1172).  ``select_receiver``
@@ -4619,3 +4626,225 @@ async def test_tx_target_stays_known_across_several_ttl_periods_on_healthy_radio
             assert payload["txTarget"]["status"] == "known", (
                 f"tx_target left known at t={elapsed:.2f}s: {payload['txTarget']}"
             )
+
+
+# ---------------------------------------------------------------------------
+# MOR-1495: scan START/RESUME command-echoed state.
+#
+# CI-V 0x0E (scan) is SET-ONLY on IC-7300 — the CAT audit confirms there is
+# no read command for scanning/scan type/resume mode, so the continuous
+# poller can never observe these fields the way it observes e.g. tuning_step
+# or cw_spot. Before this fix, ``ScanStart``/``ScanStop``/``ScanSetResume``
+# only mutated the legacy ``RadioState`` mirror — never applied a StateStore
+# observation — so ``global.slow_state.scanning``/``scan_type``/
+# ``scan_resume_mode`` stayed permanently ``missing`` in the public
+# ``fieldStatus`` projection (``runtime_helpers._build_snapshot_field_status``
+# seeds every ``_GLOBAL_SLOW_STATE_FIELDS`` entry ``missing`` until a real
+# observation lands). The frontend's ``usable()`` gate
+# (``RitXitScanSurface.svelte``) requires ``availability.operational`` —
+# i.e. ``fieldStatus[...].availability == 'available'`` — so the scan
+# START/RESUME controls stayed permanently disabled with "—" placeholders.
+#
+# Fix: apply a direct StateStore observation from the command itself (the
+# same "no confirming read, apply from the command's own known value" idiom
+# ``_read_mod_input``/``_apply_global_control_observation`` already use for
+# other global menu items the continuous poller cannot track), labelled
+# honestly as ``command_response`` (not ``poll_response``) since it is a
+# commanded value, not a radio readback. Owner ruling (MOR-1495): the UI
+# renders this plainly — no "commanded, not confirmed" marker — but the
+# SourceMetadata itself stays honest about provenance.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scan_start_echoes_state_store_observation_and_public_state() -> None:
+    """ScanStart applies scanning=True + scan_type observations, not just the mirror."""
+    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    state = RadioState()
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._execute(ScanStart(scan_type=0x01))  # noqa: SLF001
+
+    radio.scan_start.assert_awaited_once_with(mode=0x01)
+    snapshot = store.snapshot()
+    assert snapshot.field(FieldPath.global_("slow_state", "scanning")).value is True
+    assert snapshot.field(FieldPath.global_("slow_state", "scan_type")).value == 0x01
+    # Legacy RadioState mirror stays coherent for compatibility consumers.
+    assert state.scanning is True
+    assert state.scan_type == 0x01
+
+    payload = build_public_state_payload_from_snapshot(
+        snapshot, radio=None, receiver_count=1
+    )
+    assert payload["scanning"] is True
+    assert payload["scanType"] == 0x01
+    assert payload["fieldStatus"]["scanning"]["availability"] == "available"
+    assert payload["fieldStatus"]["scanType"]["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_scan_stop_echoes_state_store_observation_and_public_state() -> None:
+    """ScanStop applies scanning=False + scan_type=0 observations."""
+    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    state = RadioState()
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._execute(ScanStart(scan_type=0x01))  # noqa: SLF001
+    await poller._execute(ScanStop())  # noqa: SLF001
+
+    radio.scan_stop.assert_awaited_once_with()
+    snapshot = store.snapshot()
+    assert snapshot.field(FieldPath.global_("slow_state", "scanning")).value is False
+    assert snapshot.field(FieldPath.global_("slow_state", "scan_type")).value == 0
+    assert state.scanning is False
+    assert state.scan_type == 0
+
+    payload = build_public_state_payload_from_snapshot(
+        snapshot, radio=None, receiver_count=1
+    )
+    assert payload["scanning"] is False
+    assert payload["fieldStatus"]["scanning"]["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_scan_set_resume_echoes_masked_state_store_observation() -> None:
+    """ScanSetResume applies the ``& 0x0F``-masked value, matching the mirror."""
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    state = RadioState()
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._execute(ScanSetResume(mode=0xD2))  # noqa: SLF001
+
+    radio.scan_set_resume.assert_awaited_once_with(0xD2)
+    snapshot = store.snapshot()
+    field = snapshot.field(FieldPath.global_("slow_state", "scan_resume_mode"))
+    assert field.value == 0x02
+    assert state.scan_resume_mode == 0x02
+
+
+@pytest.mark.asyncio
+async def test_scan_command_echo_is_not_labelled_a_poll_readback() -> None:
+    """Provenance stays honest: a commanded echo is not a ``poll_response``.
+
+    Distinguishes the fix from a naive reuse of
+    ``_apply_global_control_observation``'s default ``poll_response``/
+    ``*_readback`` labelling, which would misrepresent an unconfirmable
+    SET-only command as a genuine radio readback.
+    """
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    poller = RadioPoller(
+        radio, CommandQueue(), radio_state=RadioState(), state_store=store
+    )
+
+    await poller._execute(ScanStart(scan_type=0x01))  # noqa: SLF001
+
+    field = store.snapshot().field(FieldPath.global_("slow_state", "scanning"))
+    assert field.source.source != "poll_response"
+    assert "readback" not in (field.source.native_id or "")
+
+
+# ---------------------------------------------------------------------------
+# MOR-1495 review R2: the round-1 fix above was necessary but not sufficient.
+#
+# The verifier caught a bootstrap deadlock: the command-echo observation is
+# the ONLY writer of scanning/scanType/scanResumeMode, but the only trigger
+# for a ScanStart/ScanStop/ScanSetResume command is the UI — and the UI's
+# ``usable()`` gate (``RitXitScanSurface.svelte``) requires those same
+# fields to already be "known" before it will enable the controls that
+# would issue the very first command. A fresh server (nothing ever
+# commanded) therefore stays grey forever: nothing can ever be the "first"
+# scan command, because nothing can enable the button that sends it.
+#
+# Fix: seed ``scanning=False`` and ``scan_resume_mode=<assumed default>``
+# ONCE at connect (poller startup) and again on soft-reconnect — the same
+# call-site pattern ``establish_vfo_identity`` already uses for the
+# analogous "some radios can never learn X passively" problem (MOR-1443).
+# This is a PURE LOCAL SEED: it never sends anything to the radio, so
+# (unlike ``establish_vfo_identity``, which writes VFO A over the wire) it
+# needs no external-CAT-session guard. "Not scanning until we command it"
+# is an ASSUMED-UNTIL-COMMANDED fact, the same accepted-dishonesty class as
+# the front-panel-scan-stop-is-invisible limitation this PR already
+# documents.
+#
+# ``scan_type`` is deliberately NOT seeded — an assumed type would let an
+# unconfirmed guess masquerade as an observed radio fact, which is exactly
+# what the surface's other honesty gates exist to prevent. Instead the
+# START flow now owns the type as local UI state (v2 ``ScanPanel``'s own
+# ``selectedType`` shape/default, PROG = 0x01), sent explicitly with every
+# ``scan_start`` — see the frontend changes in
+# ``frontend/src/semantic/RitXitScanSurface.svelte``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scan_facts_seeded_at_connect_break_the_bootstrap_deadlock() -> None:
+    """From an EMPTY store, no scan command EVER issued, poller startup
+    seeding alone must make scanning/scanResumeMode 'available' — otherwise
+    nothing else ever will, and the frontend's usable() gate can never open.
+    """
+    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    poller = RadioPoller(
+        radio, CommandQueue(), radio_state=RadioState(), state_store=store
+    )
+
+    # No ScanStart/ScanStop/ScanSetResume ever executed — pure startup seed,
+    # exactly what runs once from RadioPoller._run()'s one-time section.
+    poller._seed_scan_facts_at_connect()  # noqa: SLF001
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert payload["scanning"] is False
+    assert payload["fieldStatus"]["scanning"]["availability"] == "available"
+    assert payload["fieldStatus"]["scanResumeMode"]["availability"] == "available"
+    # scan_type stays unseeded — the surface owns it locally instead (below).
+    assert payload["fieldStatus"]["scanType"]["availability"] == "missing"
+    radio.scan_start.assert_not_awaited()
+    radio.scan_stop.assert_not_awaited()
+    radio.scan_set_resume.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_facts_seed_is_a_pure_local_seed_no_radio_write() -> None:
+    """The seed must never touch the wire — only ``establish_vfo_identity``
+    (which this call site sits beside) is a commanded radio write; this is
+    the opposite case by design (MOR-1495 review R2 point 5)."""
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    poller = RadioPoller(
+        radio, CommandQueue(), radio_state=RadioState(), state_store=store
+    )
+
+    poller._seed_scan_facts_at_connect()  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    assert radio.method_calls == []
+
+
+def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
+    """Provenance stays honest for the seed too, mirroring the command-echo
+    test above — a local assumption is not a genuine radio readback."""
+    store = StateStore()
+    poller = RadioPoller(
+        _make_radio(active="MAIN", model="IC-7300"),
+        CommandQueue(),
+        radio_state=RadioState(),
+        state_store=store,
+    )
+
+    poller._seed_scan_facts_at_connect()  # noqa: SLF001
+
+    for name in ("scanning", "scan_resume_mode"):
+        field = store.snapshot().field(FieldPath.global_("slow_state", name))
+        assert field.source.source != "poll_response"

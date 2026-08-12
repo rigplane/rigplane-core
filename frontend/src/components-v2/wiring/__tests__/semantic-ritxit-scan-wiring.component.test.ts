@@ -244,12 +244,26 @@ describe('the surface intents reach the shipped command vocabulary', () => {
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_frequency', { freq: 0 });
   });
 
-  it('starting a scan sends scan_start with the last-observed type', () => {
+  // MOR-1495 review R2: type ownership moved to the surface's own local UI
+  // state (`selectedType`, default PROG/0x01) — START no longer depends on
+  // an OBSERVED scanType at all, which is what let a cold-start radio (no
+  // scan command ever issued) enable the control in the first place. See
+  // `RitXitScanSurface.svelte`'s file header and
+  // `semantic/__tests__/RitXitScanSurface.test.ts` for the full story.
+  // Cold-start (scanType never reported at all) is covered at the pure
+  // surface layer — `semantic/__tests__/RitXitScanSurface.test.ts` — where
+  // the fixture builder can express an unobserved field directly; this
+  // file's shared `liveState()` fixture always seeds every path `fresh`
+  // (see its own doc comment), so it cannot express that case. This test
+  // proves the piece THIS layer owns instead: even when the store DOES
+  // carry an observed scanType, the real command bus receives the
+  // surface's own default, never the observed value.
+  it('starting a scan sends scan_start with the surface\'s own default type, not the observed one', () => {
     useState(liveState({ scanning: false, scanType: 0x22 } as Partial<ServerState>));
     render();
     el('scan-toggle')!.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_start', { type: 0x22 });
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_start', { type: 0x01 });
   });
 
   it('stopping a scan sends scan_stop', () => {
