@@ -109,6 +109,11 @@ describe.each(CASES)('$label (MOR-1441 leg 2)', ({ accessor, intentName, paramKe
   it('ignores commands for a different intent name', () => {
     state.commands = [cmd({ name: 'set_freq', params: { freq: 14100000, receiver: 0 } })];
     expect(accessor(0)).toBeNull();
+    // A foreign command that SHARES this accessor's paramKey — `set_rf_gain`/
+    // `set_nb_level`/… all carry `{ level, receiver }`, and seven intents carry
+    // `{ on, receiver }`. Only the intent-name check separates them.
+    state.commands = [cmd({ name: 'set_rf_gain', params: { [paramKey]: otherValue, receiver: 0 } })];
+    expect(accessor(0)).toBeNull();
   });
 
   // B3 (leg-1 review): on a same-millisecond `createdAt` tie, the LATER
