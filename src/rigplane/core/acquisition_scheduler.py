@@ -507,6 +507,7 @@ class AcquisitionScheduler:
         "_prime_cursor",
         "_profile",
         "_requests_by_key",
+        "_tx_active",
     )
 
     def __init__(
@@ -536,6 +537,14 @@ class AcquisitionScheduler:
         self._external_cat_paused = False
         self._external_cat_owner: str | None = None
         self._external_cat_reason = ""
+        # MOR-1531: last ``tx_active`` observed by ``due_requests`` (the
+        # poller's cadence-drain call). ``pending_requests`` reads this same
+        # cached value to gate RECONCILIATION-priority requests for
+        # ``tx_only``-policy fields -- see that method's docstring. Defaults
+        # to True (no gating) so a scheduler whose caller never calls
+        # ``due_requests`` at all (e.g. rigctld's own drain loop, MOR-1531)
+        # keeps its pre-existing, unfiltered reconciliation behavior.
+        self._tx_active = True
 
     @property
     def provider(self) -> str:
@@ -634,11 +643,42 @@ class AcquisitionScheduler:
         )
 
     def pending_requests(self) -> tuple[AcquisitionRequest, ...]:
-        """Return queued backend acquisition requests in execution order."""
+        """Return queued backend acquisition requests in execution order.
 
+        MOR-1531: while the last ``tx_active`` reported to ``due_requests``
+        is False, ``RECONCILIATION``-priority requests for ``tx_only``-
+        policy fields are withheld from the returned tuple (root cause of
+        the live SWR-flap, MOR-1525). ``StateStore.mark_stale_due`` has no
+        notion of ``tx_only`` and emits a "stale" reconciliation hint for
+        ANY field that ages past its ``freshness_ttl_seconds``, regardless
+        of TX state; ``ensure_fresh`` queues that hint just like any other
+        request. Filtering here -- at drain time, not enqueue time -- means
+        a hint queued while TX was active but drained after de-key does not
+        fire, while a de-key/re-key race can never permanently lose it: the
+        request stays in ``_requests_by_key`` (not deleted, just withheld)
+        until a drain observes ``tx_active=True`` again. This does not
+        touch freshness decay itself -- ``mark_stale_due`` has already
+        transitioned the field to STALE in the published state before the
+        scheduler is ever consulted, so decay/unobserve keeps working
+        exactly as before; only the resulting re-poll is suppressed.
+
+        Other priorities (e.g. an explicit USER-triggered read of a
+        ``tx_only`` field) are never gated here -- see
+        ``AcquisitionPolicy.tx_only``'s docstring: only the automatic
+        reconciliation-on-stale hint is in scope for this gate, not
+        caller-triggered acquisition.
+        """
+
+        eligible = (
+            request
+            for request in self._requests_by_key.values()
+            if self._tx_active
+            or request.priority is not AcquisitionPriority.RECONCILIATION
+            or not request.policy.tx_only
+        )
         return tuple(
             sorted(
-                self._requests_by_key.values(),
+                eligible,
                 key=lambda request: (
                     -_PRIORITY_RANK[request.priority],
                     request.deadline_monotonic,
@@ -663,6 +703,17 @@ class AcquisitionScheduler:
         opinion on where that comes from.
         """
 
+        # MOR-1531: remember the caller's tx_active for this drain cycle so
+        # pending_requests() -- called immediately afterward by the web
+        # radio_poller's drain loop, the one known caller of due_requests()
+        # -- can gate RECONCILIATION requests for tx_only fields using the
+        # exact same value, without a second tx_active source of truth.
+        # rigctld's own drain loop never calls due_requests() at all (it has
+        # no cadence-poll concept of its own), so its scheduler instance
+        # keeps the __init__ default (_tx_active=True, no gating) forever --
+        # unaffected by this change. See pending_requests()'s docstring for
+        # why filtering happens there and not at enqueue time.
+        self._tx_active = tx_active
         timestamp = self._clock.now() if now is None else now
         groups = self._due_poll_groups(timestamp, tx_active=tx_active)
         queued: list[AcquisitionRequest] = []
