@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -8 344 80" width="344" height="80">
+  
+  <rect x="6" y="37" width="52" height="6" fill="#F4F1EA"></rect>
+  <rect x="36" y="9" width="6" height="52" fill="#F4F1EA"></rect>
+  <rect x="22" y="23" width="10" height="10" fill="#4A82B0"></rect>
+  <g transform="translate(86,0)">
+    <text font-family="&#39;IBM Plex Sans&#39;,system-ui,sans-serif" font-weight="700" font-size="56" letter-spacing="-1.4" fill="#F4F1EA" x="0" y="56">R</text>
+    <rect x="38" y="5.6" width="6.72" height="28" fill="#F4F1EA"></rect>
+    <rect x="37" y="-4.08" width="8.96" height="8.96" fill="#4A82B0"></rect>
+    <text font-family="&#39;IBM Plex Sans&#39;,system-ui,sans-serif" font-weight="700" font-size="56" letter-spacing="-1.4" fill="#F4F1EA" x="48" y="56">g</text>
+    <text font-family="&#39;IBM Plex Sans&#39;,system-ui,sans-serif" font-weight="700" font-size="56" letter-spacing="-1.4" fill="#8A95A2" x="82" y="56">Plane</text>
+  </g>
+</svg>
