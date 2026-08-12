@@ -482,9 +482,11 @@ _MIN_RECONCILIATION_MAX_AGE = 1e-9
 # a single prime_unobserved() call will enqueue. Uncapped, a profile carrying
 # ~20 non-polling field_policies overrides would emit ~20 CI-V frames in one
 # drain cycle (~1s of serial time), starving BACKGROUND-priority meter/PTT
-# traffic that shares the same lane. StateFreshnessService's bounded 30s
-# re-derivation (see StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS)
-# picks up whatever this call didn't reach.
+# traffic that shares the same lane. StateFreshnessService's bounded,
+# adaptive re-derivation (see
+# StateFreshnessService.PRIME_ADAPTIVE_INTERVAL_SECONDS /
+# .PRIME_REDERIVE_INTERVAL_SECONDS) picks up whatever this call didn't
+# reach.
 _PRIME_UNOBSERVED_BURST_LIMIT = 5
 
 
@@ -502,6 +504,7 @@ class AcquisitionScheduler:
         "_failure_count_by_reason",
         "_next_id",
         "_pending_cadence_by_key",
+        "_prime_cursor",
         "_profile",
         "_requests_by_key",
     )
@@ -524,6 +527,12 @@ class AcquisitionScheduler:
         self._failed_request_count = 0
         self._failure_count_by_reason: dict[str, int] = {}
         self._next_id = 1
+        # Round-robin starting offset into field_policies for
+        # prime_unobserved (MOR-1501, A1 from #2415 review): see that
+        # method's docstring for why a fixed scan-from-zero starves any
+        # reachable field sitting behind >= `limit` permanently-unanswerable
+        # leaders in declaration order.
+        self._prime_cursor = 0
         self._external_cat_paused = False
         self._external_cat_owner: str | None = None
         self._external_cat_reason = ""
@@ -716,11 +725,12 @@ class AcquisitionScheduler:
         forever — no reconciliation hint is ever generated for it (MOR-1490).
 
         The caller (:class:`StateFreshnessService`) re-derives the never-
-        observed set at a bounded interval (see
-        :data:`StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS`) rather
-        than once per connect epoch — a dropped/unanswered prime must not
-        leave a field ``UNKNOWN`` for the life of the connection (MOR-1490
-        review R2, Finding 1). Every call runs at
+        observed set at a bounded, adaptive interval (see
+        :data:`StateFreshnessService.PRIME_ADAPTIVE_INTERVAL_SECONDS` and
+        :data:`StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS`)
+        rather than once per connect epoch — a dropped/unanswered prime must
+        not leave a field ``UNKNOWN`` for the life of the connection
+        (MOR-1490 review R2, Finding 1). Every call runs at
         :data:`AcquisitionPriority.BACKGROUND` so priming never competes with
         fast meters/PTT. Unsupported/hookless paths fall out through the
         normal :meth:`ensure_fresh` availability gate, and an unanswered
@@ -769,25 +779,30 @@ class AcquisitionScheduler:
           short of the burst cap below — reaching them only requires this
           method to be invoked again, not for the earlier paths to have
           been *answered*. In production, "invoked again" is gated by
+          :data:`StateFreshnessService.PRIME_ADAPTIVE_INTERVAL_SECONDS`
+          (~5s, while any policy field remains unobserved) or, once the
+          never-observed set has emptied,
           :data:`StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS`
-          (~30s), so that interval — not the leading paths' resolution — is
+          (~30s) — so that interval, not the leading paths' resolution, is
           the practical bound on how long a capped-out straggler waits.
         - **Burst cap** (``limit``, default
           :data:`_PRIME_UNOBSERVED_BURST_LIMIT`): at most ``limit`` *new*
           paths are queued per call, so a profile with many non-polling
           policy fields can't emit a burst of CI-V frames in one drain cycle
-          (MOR-1490 review R2, Finding 4). Fields are visited in
-          ``field_policies`` iteration order (profile-declaration order), so
-          the same leading fields are always favored over later ones; if a
-          future profile ever declared five or more *permanently*
-          unanswerable non-polling fields ahead of a reachable one in that
-          order, the reachable one would starve indefinitely rather than
-          merely waiting out one interval. A round-robin ``_prime_cursor``
-          (rotating the starting offset into ``field_policies`` each call)
-          is the planned fix for that head-of-line case, expected to land
-          alongside the MOR-1491/1492/1493 field-membership tickets that
-          would first make it reachable; no shipped profile has that shape
-          today.
+          (MOR-1490 review R2, Finding 4). Fields are visited starting from
+          ``_prime_cursor`` — a round-robin offset into ``field_policies``
+          (profile-declaration order) that this method advances past
+          whatever it scanned, wrapping at the end of the mapping (MOR-1501,
+          A1 from #2415 review) — rather than always restarting the scan at
+          index 0. A fixed scan-from-zero would let five or more
+          *permanently* unanswerable non-polling fields ahead of a reachable
+          one in declaration order starve that reachable one indefinitely:
+          each call would re-queue the same unanswerable leaders (freed back
+          to "not observed, not pending" the moment their request fails —
+          see :meth:`record_acquisition_failure`) and never reach past them.
+          Rotating the start point instead guarantees every field gets
+          scanned at least once every ``ceil(len(field_policies) / limit)``
+          calls regardless of how many leaders ahead of it are stuck.
 
         The returned tuple has at most one entry per distinct
         :class:`AcquisitionRequest` id — multiple primed paths that coalesce
@@ -800,11 +815,17 @@ class AcquisitionScheduler:
         pending = frozenset(
             path for request in self._requests_by_key.values() for path in request.paths
         )
+        items = tuple(self._profile.field_policies.items())
+        total = len(items)
         queued_by_id: dict[str, AcquisitionRequest] = {}
         queued_path_count = 0
-        for path, policy in self._profile.field_policies.items():
+        cursor = self._prime_cursor % total if total else 0
+        visited = 0
+        for offset in range(total):
             if queued_path_count >= limit:
                 break
+            visited = offset + 1
+            path, policy = items[(cursor + offset) % total]
             if path in observed or path in pending:
                 continue
             if (
@@ -831,7 +852,37 @@ class AcquisitionScheduler:
                 continue
             queued_path_count += 1
             queued_by_id[result.request.id] = result.request
+        if total:
+            self._prime_cursor = (cursor + visited) % total
         return tuple(queued_by_id.values())
+
+    def has_unobserved_policy_fields(
+        self,
+        observed_paths: Iterable[FieldPath],
+    ) -> bool:
+        """Return True if any explicit ``field_policies`` path is unobserved.
+
+        Shares :meth:`prime_unobserved`'s eligibility rules for *which*
+        fields it is responsible for (excludes cadence/poll-owned paths,
+        which are :meth:`due_requests`'s concern) but, unlike
+        ``prime_unobserved``, does NOT exclude already-pending paths: a path
+        with an outstanding, unanswered prime read is still unobserved, and
+        :class:`StateFreshnessService` uses this to decide whether to keep
+        re-deriving the prime sweep on its fast cadence or back off once the
+        never-observed set has genuinely emptied (MOR-1501).
+        """
+
+        observed = frozenset(observed_paths)
+        for path, policy in self._profile.field_policies.items():
+            if path in observed:
+                continue
+            if (
+                self._profile.capability_for(path).can_poll
+                and policy.cadence_seconds is not None
+            ):
+                continue
+            return True
+        return False
 
     def record_acquisition_result(
         self,
@@ -1577,15 +1628,31 @@ class StateFreshnessService:
     production delivery store.
     """
 
-    #: Minimum spacing between never-observed-field re-derivations (MOR-1490
-    #: review R2, Finding 1). A one-shot "prime once per connect epoch" flag
-    #: means a single dropped/unanswered prime read leaves the field
-    #: ``UNKNOWN`` until the process restarts — reconnects don't rebuild this
-    #: service, so nothing ever re-arms the flag. Re-deriving on a bounded
-    #: interval instead is self-extinguishing: once a field is observed it
-    #: drops out of the ``observed_paths`` gate in
-    #: :meth:`AcquisitionScheduler.prime_unobserved` and this loop stops doing
-    #: anything for it, without needing to track per-field completion here.
+    #: Fast re-derivation spacing used WHILE at least one explicit
+    #: ``field_policies`` field remains unobserved (MOR-1501, verifier-
+    #: prescribed on #2421's review). The flat 30s interval below left a
+    #: real IC-7300 connect with a ~120s populate tail for its 23 non-polling
+    #: policy fields: ``ceil(23 / _PRIME_UNOBSERVED_BURST_LIMIT) == 5`` waves
+    #: at 30s apart, even though each field's true CI-V round-trip cost is
+    #: ~1.1s. At 5s spacing the same 5 waves complete in ~20-25s — the burst
+    #: cap (unchanged, still the lane-protection knob) is what still bounds
+    #: each wave's size, this constant only bounds how long a capped-out
+    #: straggler waits between waves. See
+    #: :meth:`_reprime_unobserved_if_due` for the dead-link write-rate
+    #: consequence of shortening this interval.
+    PRIME_ADAPTIVE_INTERVAL_SECONDS: float = 5.0
+
+    #: Re-derivation spacing once the never-observed ``field_policies`` set
+    #: has genuinely emptied (MOR-1490 review R2, Finding 1; backoff target
+    #: added MOR-1501). A one-shot "prime once per connect epoch" flag means
+    #: a single dropped/unanswered prime read leaves the field ``UNKNOWN``
+    #: until the process restarts — reconnects don't rebuild this service,
+    #: so nothing ever re-arms the flag. Re-deriving on a bounded interval
+    #: instead is self-extinguishing: once every policy field is observed,
+    #: :meth:`AcquisitionScheduler.has_unobserved_policy_fields` goes False
+    #: and :meth:`_reprime_unobserved_if_due` backs off to this slower
+    #: interval so a fully-populated store isn't paying the fast (5s) check
+    #: forever.
     PRIME_REDERIVE_INTERVAL_SECONDS: float = 30.0
 
     __slots__ = (
@@ -1634,17 +1701,43 @@ class StateFreshnessService:
         return delta
 
     def _reprime_unobserved_if_due(self, *, now: float) -> None:
-        """Re-derive the never-observed-field prime at a bounded interval.
+        """Re-derive the never-observed-field prime at an adaptive interval.
 
         Replaces the earlier "once per connect epoch" latch (MOR-1490 review
         R2, Finding 1): that guard never reset on reconnect and permanently
         stranded a field at ``UNKNOWN`` if its one prime read was dropped.
-        Re-running this at most every
-        :data:`PRIME_REDERIVE_INTERVAL_SECONDS` costs one
-        ``store.snapshot()`` plus a loop over ``field_policies`` — cheap
-        relative to the 30s window, and it self-extinguishes per field the
-        moment that field is observed (see
-        :meth:`AcquisitionScheduler.prime_unobserved`).
+        The re-derivation spacing is itself adaptive (MOR-1501): it runs
+        every :data:`PRIME_ADAPTIVE_INTERVAL_SECONDS` while
+        :meth:`AcquisitionScheduler.has_unobserved_policy_fields` reports at
+        least one explicit ``field_policies`` path still unobserved, and
+        backs off to the slower :data:`PRIME_REDERIVE_INTERVAL_SECONDS` the
+        moment that set empties — cheap either way (one ``store.snapshot()``
+        plus a loop over ``field_policies``), so paying it more often while
+        fields are still missing is a fine trade against the ~120s populate
+        tail the flat 30s interval produced.
+
+        Dead-link write-rate honesty (R3 lesson from MOR-1490's own review,
+        applies again here): a capped-out straggler left short of the burst
+        cap costs nothing extra — it was skipped without being queued, so no
+        frame was sent for it. But a *leader* that WAS queued and then fails
+        (:meth:`AcquisitionScheduler.record_acquisition_failure`, e.g. an
+        unanswered field on a genuinely dead link) is freed back to "not
+        observed, not pending" and becomes eligible to be re-queued on the
+        very next re-derivation. Re-queueing is not free: every request
+        :meth:`AcquisitionScheduler.pending_requests` yields is later drained
+        by a real backend executor (e.g. ``IcomCivAcquisitionExecutor``)
+        that performs an actual ``send_query`` write to the wire — nothing
+        here is a no-op retry. Shortening the interval from 30s to 5s
+        therefore genuinely raises the worst-case re-attempt rate on a fully
+        dead link by ~6x: at most ``limit`` (the burst cap, unchanged)
+        frames per adaptive-interval window, i.e. <= 5 frames / 5s = 1
+        frame/s worst case, versus <= 5 frames / 30s ~= 0.167 frames/s
+        before. The count per window still cannot exceed the burst cap
+        (bounded, not growing) — the wire load stays a small, constant
+        fraction of the ~20 q/s serial ceiling
+        (``_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS``); it does not accumulate
+        across windows because record_acquisition_failure clears the
+        request rather than leaving it queued twice.
         """
 
         scheduler = self._scheduler
@@ -1652,9 +1745,15 @@ class StateFreshnessService:
             return
         if now < self._next_prime_monotonic:
             return
-        self._next_prime_monotonic = now + self.PRIME_REDERIVE_INTERVAL_SECONDS
-        observed = (field.path for field in self._store.snapshot().fields)
+        observed = tuple(field.path for field in self._store.snapshot().fields)
         scheduler.prime_unobserved(observed)
+        still_unobserved = scheduler.has_unobserved_policy_fields(observed)
+        interval = (
+            self.PRIME_ADAPTIVE_INTERVAL_SECONDS
+            if still_unobserved
+            else self.PRIME_REDERIVE_INTERVAL_SECONDS
+        )
+        self._next_prime_monotonic = now + interval
 
     async def run(self) -> None:
         """Run the periodic freshness loop until cancelled by the host."""

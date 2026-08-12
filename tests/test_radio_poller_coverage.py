@@ -4410,7 +4410,7 @@ async def test_tx_target_max_age_floors_fallback_for_profile_without_acquisition
     block, so the old bare ``4 * self._fast_interval`` fallback floored at
     0.1s on its LAN profile (25ms fast interval) — the verifier measured
     6.6 stale-transitions/s from that on an otherwise-idle radio. The
-    fallback must floor at ``_TX_TARGET_MIN_MAX_AGE`` instead."""
+    fallback must floor at ``_TX_TARGET_FALLBACK_MAX_AGE`` instead."""
 
     radio = _make_radio(model="IC-705")
     assert radio.profile.state_acquisition is None

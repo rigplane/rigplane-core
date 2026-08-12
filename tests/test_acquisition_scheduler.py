@@ -37,6 +37,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
+from rigplane.profiles import get_radio_profile
 from rigplane.profiles.rig_loader import load_rig
 
 
@@ -1612,22 +1613,33 @@ def test_state_freshness_service_primes_once_then_reconciliation_cadence_resumes
     assert reconciled[0].priority is AcquisitionPriority.RECONCILIATION
 
 
-def test_state_freshness_service_reprimes_unobserved_field_after_bounded_interval() -> (
+def test_state_freshness_service_reprimes_unobserved_field_on_adaptive_interval() -> (
     None
 ):
-    """MOR-1490 review R2, Finding 1: bounded re-derivation, not a one-shot latch.
+    """MOR-1490 review R2, Finding 1 + MOR-1501 adaptive pacing.
 
     Replaces the old "primes exactly once, ever" expectation. A boolean
     latch meant a single dropped prime read stranded the field at
     ``UNKNOWN`` until process restart — reconnects don't rebuild the
     scheduler/service, so nothing ever re-armed the flag. The fix re-derives
-    the never-observed set at a bounded interval
-    (:data:`StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS`):
+    the never-observed set at a bounded interval — and MOR-1501 makes that
+    interval adaptive: :data:`StateFreshnessService.
+    PRIME_ADAPTIVE_INTERVAL_SECONDS` (5s) while any explicit
+    ``field_policies`` field is still unobserved, backing off to
+    :data:`StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS` (30s) only
+    once the never-observed set has genuinely emptied (see the companion
+    backoff test below):
 
-    - no re-prime while inside the window;
-    - a re-prime once the window elapses, as long as the field is still
-      unobserved;
+    - no re-prime while inside the fast window;
+    - a re-prime once the fast window elapses, as long as the field is
+      still unobserved;
     - no re-prime once the field has been observed (self-extinguishing).
+
+    Ticks use a deliberately unaligned 1.3s spacing — not an exact divisor
+    of the 5.0s adaptive interval, per the #2422 review R3 lesson that a
+    tick cadence divisible into the window under test can mask off-by-one
+    boundary bugs — so the boundary crossing below is real arithmetic, not
+    a tick landing exactly on the edge by construction.
     """
 
     clock = FreshnessClock(start=320.0)
@@ -1648,7 +1660,8 @@ def test_state_freshness_service_reprimes_unobserved_field_after_bounded_interva
     service = StateFreshnessService(
         store=store, scheduler=scheduler, interval_seconds=1.0
     )
-    interval = StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS
+    fast_interval = StateFreshnessService.PRIME_ADAPTIVE_INTERVAL_SECONDS
+    assert fast_interval == 5.0
 
     service.tick(now=clock.now())
     primed = scheduler.pending_requests()
@@ -1671,14 +1684,20 @@ def test_state_freshness_service_reprimes_unobserved_field_after_bounded_interva
     )
     assert scheduler.pending_requests() == ()
 
-    # Inside the re-derivation window: no re-prime yet.
-    for _ in range(int(interval) - 1):
-        clock.advance(1.0)
+    # Inside the fast re-derivation window: no re-prime yet.
+    tick_step = 1.3
+    elapsed = 0.0
+    while elapsed + tick_step < fast_interval:
+        clock.advance(tick_step)
+        elapsed += tick_step
         service.tick(now=clock.now())
-    assert scheduler.pending_requests() == ()
+        assert scheduler.pending_requests() == (), (
+            f"re-primed early at elapsed={elapsed:.2f}s < {fast_interval}s"
+        )
 
-    # Window elapses: the still-unobserved field gets re-primed.
-    clock.advance(1.0)
+    # This tick crosses the fast-interval boundary: the still-unobserved
+    # field gets re-primed.
+    clock.advance(tick_step)
     service.tick(now=clock.now())
     reprimed = scheduler.pending_requests()
     assert len(reprimed) == 1
@@ -1689,15 +1708,268 @@ def test_state_freshness_service_reprimes_unobserved_field_after_bounded_interva
     scheduler.record_acquisition_result(reprimed[0], change)
     assert scheduler.pending_requests() == ()
 
-    # Advance past another full re-derivation window. The field is now
-    # observed, so prime_unobserved must self-extinguish for it — no
-    # "prime-unobserved" request should reappear (any ordinary stale-refresh
-    # reconciliation the freshness decay independently schedules is a
-    # separate, expected mechanism and is not asserted against here).
-    clock.advance(interval)
+    # Advance past another full fast window. The field is now observed, so
+    # prime_unobserved must self-extinguish for it — no "prime-unobserved"
+    # request should reappear (any ordinary stale-refresh reconciliation the
+    # freshness decay independently schedules is a separate, expected
+    # mechanism and is not asserted against here).
+    clock.advance(fast_interval)
     service.tick(now=clock.now())
     assert all(
         request.reason != "prime-unobserved" for request in scheduler.pending_requests()
+    )
+
+
+def test_state_freshness_service_backs_off_to_slow_interval_once_set_empties() -> None:
+    """MOR-1501: back off from the fast to the slow re-derivation interval.
+
+    Once every explicit ``field_policies`` field has been observed, the
+    never-observed set is empty and re-checking every
+    :data:`StateFreshnessService.PRIME_ADAPTIVE_INTERVAL_SECONDS` (5s) would
+    cost a ``store.snapshot()`` + ``field_policies`` scan forever for no
+    benefit. The service must schedule its NEXT re-derivation using
+    :data:`StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS` (30s)
+    instead. Observable behavior (no spurious "prime-unobserved" request)
+    is identical for either interval once the field is genuinely observed,
+    so the only way to actually distinguish "backed off" from "still on the
+    fast cadence" is the scheduled deadline itself — checked directly here.
+    """
+
+    clock = FreshnessClock(start=500.0)
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=mic_gain, command_response_observable=True),
+        ),
+        field_policies={
+            mic_gain: AcquisitionPolicy(
+                cadence_seconds=15.0, freshness_ttl_seconds=25.0
+            ),
+        },
+    )
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    service = StateFreshnessService(
+        store=store, scheduler=scheduler, interval_seconds=1.0
+    )
+    fast_interval = StateFreshnessService.PRIME_ADAPTIVE_INTERVAL_SECONDS
+    slow_interval = StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS
+    assert slow_interval > fast_interval
+
+    service.tick(now=clock.now())
+    primed = scheduler.pending_requests()
+    assert len(primed) == 1
+
+    # The radio answers immediately — the never-observed set empties.
+    change = store.apply(_observation(mic_gain, 40, at=clock.now(), max_age=25.0))
+    scheduler.record_acquisition_result(primed[0], change)
+    assert scheduler.pending_requests() == ()
+
+    # Unaligned advance past the fast interval only (see the companion
+    # adaptive-reprime test's docstring for why not an exact multiple).
+    clock.advance(fast_interval + 0.3)
+    service.tick(now=clock.now())
+    assert all(
+        request.reason != "prime-unobserved" for request in scheduler.pending_requests()
+    )
+    assert service._next_prime_monotonic == pytest.approx(  # noqa: SLF001
+        clock.now() + slow_interval
+    )
+
+
+def test_prime_unobserved_round_robin_cursor_reaches_fields_behind_dead_leaders() -> (
+    None
+):
+    """MOR-1501, A1 from #2415's review: round-robin ``_prime_cursor``.
+
+    Five PERMANENTLY unanswerable "leader" fields sit ahead of two healthy
+    fields in ``field_policies`` declaration order — exactly matching the
+    burst cap (``_PRIME_UNOBSERVED_BURST_LIMIT`` == 5). Without a
+    round-robin cursor, ``prime_unobserved`` always rescans from index 0:
+    each call re-queues the same 5 dead leaders (freed back to eligible by
+    ``record_acquisition_failure`` the instant they fail — the exact R3
+    re-drop cycle) and the loop never reaches the healthy fields behind
+    them — permanent starvation. With the cursor rotating past whatever it
+    scanned, the healthy fields must get primed within a small, bounded
+    number of invocations.
+    """
+
+    clock = FreshnessClock(start=700.0)
+    leaders = [
+        FieldPath.global_("operator_controls", f"dead_leader_{i}") for i in range(5)
+    ]
+    healthy = [FieldPath.global_("operator_controls", f"healthy_{i}") for i in range(2)]
+    all_paths = leaders + healthy
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=tuple(
+            FieldCapability(path=path, command_response_observable=True)
+            for path in all_paths
+        ),
+        field_policies={
+            # Distinct policy per path so none of these coalesce — keeps
+            # the per-call path accounting unambiguous.
+            path: AcquisitionPolicy(
+                cadence_seconds=15.0 + index, freshness_ttl_seconds=25.0
+            )
+            for index, path in enumerate(all_paths)
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    healthy_set = set(healthy)
+    leader_set = set(leaders)
+    seen_healthy: set[FieldPath] = set()
+    max_invocations = 3
+    for _ in range(max_invocations):
+        queued = scheduler.prime_unobserved(observed_paths=())
+        queued_paths = {path for request in queued for path in request.paths}
+        seen_healthy |= queued_paths & healthy_set
+        if seen_healthy == healthy_set:
+            break
+        for request in queued:
+            if set(request.paths) & leader_set:
+                scheduler.record_acquisition_failure(
+                    request,
+                    reason="acquisition_request_timeout",
+                    now=clock.now(),
+                    link_healthy=False,
+                )
+
+    assert seen_healthy == healthy_set, (
+        f"healthy fields never primed within {max_invocations} invocations "
+        "— round-robin cursor is not rotating past dead leaders"
+    )
+
+
+def test_state_freshness_service_dead_link_reprime_rate_stays_bounded() -> None:
+    """MOR-1501 R3 lesson: shortening the re-derivation interval from 30s to
+    5s makes a fully dead link get re-drop-cycled ~6x more often — a REAL
+    increase in wire-write attempts (every ``pending_requests()`` entry is
+    later drained by a real backend executor performing an actual
+    ``send_query`` write), not a free retry. This must stay BOUNDED — at
+    most the burst cap's worth of new attempts per adaptive-interval window
+    — not grow without bound across ticks.
+    """
+
+    clock = FreshnessClock(start=900.0)
+    dead_paths = [FieldPath.global_("operator_controls", f"dead_{i}") for i in range(5)]
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=tuple(
+            FieldCapability(path=path, command_response_observable=True)
+            for path in dead_paths
+        ),
+        field_policies={
+            path: AcquisitionPolicy(
+                cadence_seconds=15.0 + index, freshness_ttl_seconds=25.0
+            )
+            for index, path in enumerate(dead_paths)
+        },
+    )
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    service = StateFreshnessService(
+        store=store, scheduler=scheduler, interval_seconds=1.0
+    )
+    fast_interval = StateFreshnessService.PRIME_ADAPTIVE_INTERVAL_SECONDS
+
+    windows = 6
+    total_attempts = 0
+    for _ in range(windows):
+        service.tick(now=clock.now())
+        pending = scheduler.pending_requests()
+        # Never more outstanding than the burst cap — no unbounded growth.
+        assert len(pending) <= 5
+        total_attempts += len(pending)
+        for request in pending:
+            scheduler.record_acquisition_failure(
+                request,
+                reason="acquisition_request_timeout",
+                now=clock.now(),
+                link_healthy=False,
+            )
+        assert scheduler.pending_requests() == ()
+        clock.advance(fast_interval + 0.1)
+
+    # Every window on this fully-dead, always-failing link re-attempts
+    # exactly the burst cap's worth — 5 attempts * 6 windows here — not
+    # more (bounded rate), and not fewer (the mechanism keeps trying, which
+    # is the whole point of the fast adaptive interval).
+    assert total_attempts == 5 * windows
+
+
+def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25s() -> (
+    None
+):
+    """MOR-1501 acceptance criterion.
+
+    Simulates the real IC-7300 acquisition profile's 23 non-polling
+    ``field_policies`` fields populating from a cold connect (empty store).
+    Before adaptive pacing, the flat 30s re-derivation interval combined
+    with the unchanged 5-field burst cap gave this profile a ~120s tail
+    (``ceil(23 / 5) == 5`` waves, 30s apart), even though each field's true
+    CI-V round-trip cost is ~1.1s — the interval, not the serial link, was
+    the bottleneck. With the 5s adaptive interval the same 5 waves complete
+    in ~20-25s. This drives the scheduler/service pair directly (no real
+    transport), answering every primed request as soon as it is queued —
+    the "best case" the acceptance criterion is stated against; real serial
+    latency (~1.1s/field) is much smaller than the 5s window and does not
+    change which wave a field lands in.
+    """
+
+    acquisition_profile = get_radio_profile("IC-7300")
+    acquisition = acquisition_profile.state_acquisition
+    assert acquisition is not None
+
+    non_polling_paths = frozenset(
+        path
+        for path in acquisition.field_policies
+        if not acquisition.capability_for(path).can_poll
+    )
+    # Measured baseline this ticket's motivation is stated against
+    # (MOR-1501) — guards against silent membership drift changing the
+    # shape of this regression test without anyone noticing.
+    assert len(non_polling_paths) == 23
+
+    clock = FreshnessClock(start=2000.0)
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = StateFreshnessService(
+        store=store, scheduler=scheduler, interval_seconds=0.05
+    )
+
+    observed_at: dict[FieldPath, float] = {}
+    tick_step = 1.0
+    elapsed = 0.0
+    # Bound the simulation comfortably past the ~25s target so a real
+    # regression fails the assertion below instead of looping forever.
+    while elapsed <= 40.0 and len(observed_at) < len(non_polling_paths):
+        service.tick(now=clock.now())
+        for request in scheduler.pending_requests():
+            relevant = [path for path in request.paths if path in non_polling_paths]
+            if not relevant:
+                continue
+            last_change = None
+            for path in relevant:
+                last_change = store.apply(
+                    _observation(
+                        path, "primed", at=clock.now(), max_age=request.max_age
+                    )
+                )
+                observed_at.setdefault(path, elapsed)
+            assert last_change is not None
+            scheduler.record_acquisition_result(request, last_change)
+        clock.advance(tick_step)
+        elapsed += tick_step
+
+    missing = non_polling_paths - observed_at.keys()
+    assert not missing, (
+        f"never observed within simulation window: {sorted(str(p) for p in missing)}"
+    )
+    assert max(observed_at.values()) <= 25.0, (
+        f"slowest field observed at {max(observed_at.values())}s, target <=25s"
     )
 
 
