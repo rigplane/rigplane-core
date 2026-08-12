@@ -415,9 +415,9 @@ describe('level intents reach the caller with the field and the raw value', () =
   });
 });
 
-// ── 7. Readout formatting (MOR-1447) ────────────────────────────────────────
+// ── 7. Readout formatting (MOR-1452) ────────────────────────────────────────
 
-describe('the readout formats a 0..1 level as a percent, not the raw wire float', () => {
+describe('every TX-aux level slider reads back as a percent of its own domain', () => {
   // The mobile/narrow composition regression this pins: RF power read back
   // as the literal `0.5529411764705883` instead of a formatted percent.
   it('formats RF power as a rounded percent (fixture value 0.8 -> "80%")', () => {
@@ -427,13 +427,31 @@ describe('the readout formats a 0..1 level as a percent, not the raw wire float'
     });
   });
 
-  // Contrast: a raw 0..255 level and a small integer domain both keep
-  // reading as the plain number — only the declared 0..1 fraction is
-  // percent-formatted (`formatKnownLevel`'s domain-generic rule).
-  it('leaves a raw 0..255 level (mic gain) as the plain number', () => {
+  // MOR-1452: before this ticket, a raw 0..255 level (mic gain) rendered as
+  // the plain wire integer ("128") while RF power (0..1) already read as a
+  // percent — two conventions on the same panel. Both now read as a percent
+  // of their OWN declared domain: 128 of 0..255 is "50%", not "128".
+  it('formats a raw 0..255 level (mic gain) as a percent of its own domain, not the raw wire int', () => {
     withSurface(base(), snap(), (s) => {
       const output = s.control('micGain')!.querySelector('output')!;
-      expect(output.textContent).toBe('128');
+      expect(output.textContent).toBe('50%');
+    });
+  });
+
+  // Every other level field on the surface follows the same one convention —
+  // percent of its own declared [min, max], never a bare number regardless
+  // of whether the field's native range happens to be 0..255, 0..1, or 0..20.
+  it.each([
+    ['driveGain', '50%'],
+    ['voxGain', '20%'],
+    ['antiVoxGain', '12%'],
+    ['voxDelay', '100%'],
+    ['compressorLevel', '4%'],
+    ['monitorLevel', '50%'],
+  ])('formats %s as %s', (field, expected) => {
+    withSurface(base(), snap(), (s) => {
+      const output = s.control(field)!.querySelector('output')!;
+      expect(output.textContent).toBe(expected);
     });
   });
 });

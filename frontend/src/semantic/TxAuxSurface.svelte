@@ -29,7 +29,7 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
-  import { formatKnownLevel } from './format-level';
+  import { rawToPercentDisplay } from '../components-v2/controls/value-control/value-control-core';
   import { disabledReasonText } from './disabled-reason';
 
   /** On/off controls, `[field, label]`. ATU's reading is a three-state enum,
@@ -37,19 +37,27 @@
   export const TX_AUX_TOGGLES = [
     ['atu', 'ATU'], ['vox', 'VOX'], ['compressor', 'COMP'], ['monitor', 'MON'],
   ] as const;
-  /** `[field, label, min, max, step]` in RAW wire units — the MOR-1244
-   *  contract applies no normalisation, so these are exactly the ranges
-   *  `TxPanel`/`VoxPanel` have always used (RF power 0..1, VOX delay 0..20,
-   *  everything else 0..255). Rescaling here would silently move a level. */
+  /** `[field, label, min, max, step, format]` — the slider bound and step are
+   *  RAW wire units (the MOR-1244 contract applies no normalisation, so these
+   *  are exactly the ranges `TxPanel`/`VoxPanel` have always used: RF power
+   *  0..1, VOX delay 0..20, everything else 0..255 — rescaling the VALUE here
+   *  would silently move a level). `format` is the DISPLAY-only convention
+   *  (MOR-1452): every level slider on this surface reads back as a percent
+   *  of its own declared domain via `rawToPercentDisplay`, the same per-field
+   *  `displayFn` idiom `DspSurface` established — chosen over
+   *  `formatKnownLevel`'s hardcoded `[0,1]`-domain sniff (MOR-1447) because it
+   *  is domain-generic instead of special-casing one field shape, so RF power
+   *  (0..1), a raw 0..255 level, and VOX delay (0..20) all render as one
+   *  convention instead of three different ones. */
   export const TX_AUX_LEVELS = [
-    ['rfPower', 'RF power', 0, 1, 0.01],
-    ['micGain', 'Mic gain', 0, 255, 1],
-    ['driveGain', 'Drive gain', 0, 255, 1],
-    ['voxGain', 'VOX gain', 0, 255, 1],
-    ['antiVoxGain', 'Anti-VOX', 0, 255, 1],
-    ['voxDelay', 'VOX delay', 0, 20, 1],
-    ['compressorLevel', 'COMP level', 0, 255, 1],
-    ['monitorLevel', 'MON level', 0, 255, 1],
+    ['rfPower', 'RF power', 0, 1, 0.01, (v: number) => rawToPercentDisplay(v, 0, 1)],
+    ['micGain', 'Mic gain', 0, 255, 1, rawToPercentDisplay],
+    ['driveGain', 'Drive gain', 0, 255, 1, rawToPercentDisplay],
+    ['voxGain', 'VOX gain', 0, 255, 1, rawToPercentDisplay],
+    ['antiVoxGain', 'Anti-VOX', 0, 255, 1, rawToPercentDisplay],
+    ['voxDelay', 'VOX delay', 0, 20, 1, (v: number) => rawToPercentDisplay(v, 0, 20)],
+    ['compressorLevel', 'COMP level', 0, 255, 1, rawToPercentDisplay],
+    ['monitorLevel', 'MON level', 0, 255, 1, rawToPercentDisplay],
   ] as const;
   export type TxAuxToggleField = (typeof TX_AUX_TOGGLES)[number][0];
   export type TxAuxLevelField = (typeof TX_AUX_LEVELS)[number][0];
@@ -69,12 +77,12 @@
     f.reading.status !== 'known' ? '?'
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
         : String(f.reading.value);
-  /** Same freshness discipline as `textOf`, but a KNOWN level reading is
-   *  formatted against its declared `[min, max]` domain (MOR-1447) instead of
-   *  `String()`-ing the raw wire fraction — e.g. RF power reading back as
-   *  the literal `0.5529411764705883` instead of "55%". */
-  const levelTextOf = (f: TxAuxField<number>, min: number, max: number): string =>
-    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, min, max) : '?';
+  /** Same freshness discipline as `textOf`, but a KNOWN level reading is run
+   *  through its declared `format` (MOR-1452) instead of `String()`-ing the
+   *  raw wire value — e.g. RF power reading back as "80%" instead of the
+   *  literal `0.5529411764705883`, and mic gain as "50%" instead of `128`. */
+  const levelTextOf = (f: TxAuxField<number>, format: (v: number) => string): string =>
+    f.reading.status === 'known' ? format(f.reading.value) : '?';
   const numberOf = (f: TxAuxField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
 
@@ -152,7 +160,7 @@
       {/if}
     </div>
 
-    {#each TX_AUX_LEVELS as [field, label, min, max, step] (field)}
+    {#each TX_AUX_LEVELS as [field, label, min, max, step, format] (field)}
       {#if txAux[field].availability.structural}
         <label
           class="tx-aux-level" data-testid={`tx-aux-${field}`} data-field={field}
@@ -169,7 +177,7 @@
           {#if reasonTextOf(txAux[field]) !== undefined}
             <span id={reasonIdOf(field, txAux[field])} class="sr-only">{reasonTextOf(txAux[field])}</span>
           {/if}
-          <output>{levelTextOf(txAux[field], min, max)}</output>
+          <output>{levelTextOf(txAux[field], format)}</output>
         </label>
       {/if}
     {/each}
