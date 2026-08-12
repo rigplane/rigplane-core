@@ -110,9 +110,11 @@
   let spanHz = $derived(endFreq > startFreq ? endFreq - startFreq : 0);
   let spectrumAuthority = $derived(toSpectrumAuthority(runtime.state, runtime.caps));
   // MOR-1497: the grab cursor must not promise a drag the gate will refuse.
-  // Mirrors completeFrequencyAuthority's condition exactly.
+  // Mirrors the FULL drag-start gate: frequency authority AND usable sample
+  // geometry (before the first scope frame endFreq <= startFreq, so
+  // handleDragStart bails — the cursor must not claim otherwise).
   let canPan = $derived(
-    spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null,
+    spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null && spanHz > 0,
   );
   let scopeMode = $derived(frameScopeMode);
   // Tuning indicator: center for CTR/SCROLL-C, proportional for FIX/SCROLL-F

@@ -930,9 +930,9 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
   });
 
   // MOR-1497: the grab cursor is decorative CSS unless it reflects whether a
-  // drag is actually possible — withhold it exactly when the frequency-only
-  // gate (completeFrequencyAuthority) would refuse the gesture.
-  it('withholds the draggable cursor class when frequency authority is absent, grants it when present (MOR-1497)', () => {
+  // drag is actually possible — withhold it exactly when the drag-start gate
+  // (frequency authority AND usable sample geometry) would refuse the gesture.
+  it('withholds the draggable cursor class until both frequency authority and scope geometry exist (MOR-1497)', () => {
     authorityHarness.state.current = authority({ frequencyHz: null });
     const withoutFreq = mountPanel();
     expect(withoutFreq.querySelector('.spectrum-area')?.classList.contains('draggable')).toBe(false);
@@ -940,6 +940,13 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
 
     authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null });
     const withFreqOnly = mountPanel();
+    // Before the first scope frame the sample geometry is unusable
+    // (endFreq <= startFreq) and handleDragStart would bail — the cursor
+    // must not promise a drag that cannot happen.
+    expect(withFreqOnly.querySelector('.spectrum-area')?.classList.contains('draggable')).toBe(false);
+    expect(withFreqOnly.querySelector('.waterfall-content')?.classList.contains('draggable')).toBe(false);
+
+    emitFrame();
     expect(withFreqOnly.querySelector('.spectrum-area')?.classList.contains('draggable')).toBe(true);
     expect(withFreqOnly.querySelector('.waterfall-content')?.classList.contains('draggable')).toBe(true);
   });
