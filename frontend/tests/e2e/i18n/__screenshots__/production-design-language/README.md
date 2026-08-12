@@ -26,7 +26,7 @@ images downloaded from its `mor-1400-production-visual-diagnostics` artifact.
 The final head that commits these files must rerun this same suite green; CI
 never automatically accepts or commits a baseline.
 
-## Linux re-pin provenance (current — 2026-08-10 A09b honest cold-start StatusBar)
+## Linux re-pin provenance (superseded — 2026-08-10 A09b honest cold-start StatusBar)
 
 | Field | Value |
 | --- | --- |
