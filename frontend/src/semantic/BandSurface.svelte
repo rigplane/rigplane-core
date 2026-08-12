@@ -179,9 +179,24 @@
   function handleEntryKeydown(event: KeyboardEvent): void {
     if (event.key === 'Enter') {
       event.preventDefault();
+      // Round-3 review: preventDefault() alone never stops propagation —
+      // harmless here (Enter has no shipped window-level binding today),
+      // but this key is not itself the safety property, so it gets the
+      // same treatment as Escape rather than relying on that being true.
+      event.stopPropagation();
       commitFrequency();
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      // Round-3 review (REQUIRED FIX): preventDefault() does NOT stop
+      // propagation. Every rig profile ships "Escape -> clear_rit_xit"
+      // (rigs/_keyboard-default.toml) on KeyboardHandler's window-level
+      // listener. Without stopPropagation, this keydown — after the blur
+      // below already moved document.activeElement off the (ignored-tag)
+      // input — would bubble to that listener and fire a REAL radio write
+      // (makeRitXitHandlers().onClear()), silently clearing the operator's
+      // RIT/XIT offset on a frequency-entry cancel. The ticket's "Esc
+      // cancels entry without dispatch" means this dispatch too.
+      event.stopPropagation();
       cancelEntry();
       // Round-2 review, recorder item 3: leaving focus in the (now-empty)
       // input keeps it an "ignored tag" for KeyboardHandler's
