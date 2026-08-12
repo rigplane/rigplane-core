@@ -491,6 +491,13 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("tx_state", "ptt"),
         FieldPath.global_("operator_controls", "tuner_status"),
         FieldPath.global_("tx_state", "split"),
+        # MOR-1452: documented-readable 0x14 sub-commands (mic/monitor/VOX/
+        # anti-VOX gain, docs/validation/cat-audits/ic7300.md) added to the
+        # slow poll tier so the TX-aux panel stops showing a permanent "?".
+        FieldPath.global_("operator_controls", "mic_gain"),
+        FieldPath.global_("operator_controls", "monitor_gain"),
+        FieldPath.global_("operator_controls", "vox_gain"),
+        FieldPath.global_("operator_controls", "anti_vox_gain"),
     }
 
     assert set(acquisition.pollable_paths()) == expected_pollable
@@ -504,6 +511,25 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("operator_controls", "compressor_level"),
     ):
         assert acquisition.capability_for(path).command_response_observable is True
+
+    # MOR-1452: the 4 newly-polled fields sit at the SAME slow 3.0s/5.0s
+    # cadence IC-7610 already uses for these fields (rigs/ic7610.toml) — well
+    # below the fast freq/mode/keep-alive tier, and unchanged by this ticket.
+    for path in (
+        FieldPath.global_("operator_controls", "mic_gain"),
+        FieldPath.global_("operator_controls", "monitor_gain"),
+        FieldPath.global_("operator_controls", "vox_gain"),
+        FieldPath.global_("operator_controls", "anti_vox_gain"),
+    ):
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 5.0
+
+    fast_tier_ttl = acquisition.policy_for(
+        FieldPath.active("main", "freq_mode", "freq_hz")
+    ).freshness_ttl_seconds
+    assert fast_tier_ttl == acquisition.default_policy.freshness_ttl_seconds
+    assert fast_tier_ttl < 5.0
 
     assert (
         acquisition.capability_for(

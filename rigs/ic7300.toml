@@ -139,6 +139,16 @@ polling_only = [
     "global.tx_state.ptt",
     "global.operator_controls.tuner_status",
     "global.tx_state.split",
+    # MOR-1452: documented-readable §19 0x14 sub-commands (0x0B/0x15/0x16/0x17,
+    # see docs/validation/cat-audits/ic7300.md) that the poller never queried —
+    # the TX-aux panel showed them as an honest but permanent "?". Same
+    # provider-generic `_GLOBAL_LEVEL_QUERY_SUBS` mapping IC-7610 already
+    # polls these 4 fields through; slow field_policies below, not the
+    # freq/mode/keep-alive fast tier.
+    "global.operator_controls.mic_gain",
+    "global.operator_controls.monitor_gain",
+    "global.operator_controls.vox_gain",
+    "global.operator_controls.anti_vox_gain",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -191,6 +201,30 @@ meter_coalescing_window_seconds = 0.2
 [state_acquisition.field_policies."global.tx_state.ptt"]
 cadence_seconds = 0.3
 freshness_ttl_seconds = 1.0
+adaptive_decay = false
+
+# MOR-1452: mic/monitor/VOX/anti-VOX gain — same 3.0s/5.0s slow tier IC-7610
+# already uses for these 4 fields (rigs/ic7610.toml). Well below the ~500ms
+# keep-alive/freq/mode fast tier above; these are settings-panel levels, not
+# operating controls, so a 3s cadence is not a live-operation regression.
+[state_acquisition.field_policies."global.operator_controls.mic_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.monitor_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.vox_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
