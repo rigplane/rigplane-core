@@ -168,6 +168,9 @@
   "core.mobile.setupButton": "Setup",
   "core.mobile.closeStepPicker": "Закрыть выбор шага",
 
+  "core.spectrum.autoStep.onTitle": "Авто-шаг включён — шаг перестройки следует за режимом работы. Нажмите, чтобы зафиксировать текущий шаг и отключить слежение.",
+  "core.spectrum.autoStep.offTitle": "Авто-шаг выключен — шаг перестройки остаётся на ручном значении. Нажмите, чтобы снова включить и вернуться к шагу по умолчанию для текущего режима.",
+
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Источник входной модуляции",
 
