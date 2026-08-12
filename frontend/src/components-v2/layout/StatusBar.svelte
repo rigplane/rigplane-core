@@ -59,7 +59,7 @@
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
   import {
-    getRadioStatus,
+    getRadioLinkState,
     getConnectionStatus,
     isAudioConnected,
     getWsConnected,
@@ -128,8 +128,14 @@
         : t('core.statusbar.power.toggleUnknown')
   );
 
-  // When radio is powered off, override statuses that depend on the radio
-  let radioState = $derived(isPoweredOff ? 'disconnected' : getRadioStatus());
+  // When radio is powered off, override statuses that depend on the radio.
+  // MOR-1526: `radioState` is the "Radio ↔ Server" chip's steady state,
+  // derived from live per-field facts (rigConnected/radioReady/radioHealth),
+  // overlaid by the reconnect-edge event stream only while a reconnect is
+  // actively in flight — see `getRadioLinkState` in connection.svelte.ts for
+  // the precedence rationale. Fixes: a fresh, healthy, no-reconnect session
+  // used to read the event-only default ('disconnected') forever.
+  let radioState = $derived(isPoweredOff ? 'disconnected' : getRadioLinkState());
   let controlState = $derived(getConnectionStatus()); // server link — always real
   let scopeState = $derived(
     deriveScopeIndicatorState(runtime.defaultScopeStatus, isPoweredOff),
@@ -153,9 +159,11 @@
     if (radioHealth?.readiness === 'delayed' || radioHealth?.readiness === 'stalled') {
       return 'degraded';
     }
-    // MOR-620: a session that is connected but not radio-ready (CI-V link
-    // degraded) must be visibly degraded, not silently green.
-    return radioState === 'connected' && (!rigConnected || !radioReady) ? 'degraded' : radioState;
+    // MOR-620's "connected but not radio-ready" downgrade now lives in the
+    // store's own steady-state derivation (getRadioLinkState in
+    // connection.svelte.ts) — `radioState` already reads 'degraded' for
+    // that combination, so there is nothing left to downgrade here.
+    return radioState;
   });
   let radioHealthLabel = $derived.by(() => {
     switch (radioHealth?.likelyCause) {
@@ -170,10 +178,14 @@
       case 'server_unreachable':
         return t('core.statusbar.health.serverUnreachable');
       default:
-        if (!rigConnected && radioState === 'connected') {
+        // MOR-1526 F4: `radioState` now emits 'degraded' itself (not
+        // 'connected') for this exact combination — see `radioLinkSteady`
+        // in connection.svelte.ts — so these checks key off 'degraded' to
+        // keep both MOR-620 labels reachable instead of dead.
+        if (!rigConnected && radioState === 'degraded') {
           return t('core.statusbar.health.rigOffline');
         }
-        if (!radioReady && radioState === 'connected') {
+        if (!radioReady && radioState === 'degraded') {
           return t('core.statusbar.health.radioNotReady');
         }
         return '';

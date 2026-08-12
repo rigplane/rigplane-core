@@ -557,6 +557,27 @@ _ctrl.onStateChange((s) => {
     _capabilityRefreshGeneration = null;
     resetRadioState();
     clearCapabilities();
+    // MOR-1526 (F1 verifier finding): a WS drop that never gets a terminal
+    // `connection_status` event (server restart; reconnect_loop hitting
+    // asyncio.CancelledError on either exit path in radio_reconnect.py)
+    // used to leave `radioStatus` stuck at 'connecting'/'reconnecting'
+    // forever — the reconnect overlay then permanently suppressed the
+    // honest steady-state facts once the session reconnected to a server
+    // that (by the ticket's own premise) never emits `connection_status`
+    // on a healthy session. Reset it here so the overlay clears across
+    // every disconnect path, not just the ones that happen to emit a
+    // terminal event.
+    //
+    // R2 ruling: rigConnected/radioReady/radioHealth are deliberately NOT
+    // reset here (unlike an earlier revision of this fix) — those three
+    // also gate `isLiveRadioAvailable()`/`sendCommand()`'s offline
+    // queue-and-replay path (below, IDEMPOTENT_TYPES dedup, MAX_QUEUE_SIZE,
+    // sendQueue replay), and forcing them false for the whole offline
+    // window made that command-safety path unreachable in production — a
+    // side effect this display fix must not cause. The chip's up-edge
+    // honesty (F2) is instead handled by `factsObservedThisSession` in
+    // connection.svelte.ts, which does not touch these fields' values.
+    setRadioStatus('disconnected');
   }
 });
 // Delta state tracking for incremental updates
@@ -866,7 +887,24 @@ export function sendCommand(
   id?: string,
 ): boolean {
   const commandId = id ?? makeCommandId();
-  if (!isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
+  // This health gate only speaks for a LIVE transport. While the socket is
+  // open, rigConnected/radioReady/radioHealth are continuously refreshed by
+  // state_update, so `!isLiveRadioAvailable()` means the radio link is
+  // known-bad — refuse loudly rather than send into a black hole. While the
+  // socket is down, jurisdiction hands off entirely to WsChannel.send's own
+  // offline policy (idempotent keep-latest queue / non-idempotent reject /
+  // pendingPttRelease), which predates this gate and stays authoritative —
+  // a queued command ships (or doesn't) on the transport's terms, not a
+  // stale health snapshot from before the drop. (MOR-1526 R2: an earlier
+  // revision of the display fix in the 'disconnected' branch above reset
+  // rigConnected/radioReady/radioHealth on every disconnect, which would
+  // have made `!isLiveRadioAvailable()` unconditionally true for the whole
+  // offline window and this gate redundant with the transport's own
+  // policy; that reset was reverted, so these fields keep their real,
+  // request-driven values across a disconnect — this `_ctrl.isConnected()`
+  // guard is what keeps the two policies from double-judging the same
+  // command.)
+  if (_ctrl.isConnected() && !isLiveRadioAvailable() && pttIntent(name, params) !== 'off') {
     console.warn('[cmd] blocked while radio health is degraded', name);
     if (pttIntent(name, params) === null) {
       _ctrl.rejectNonPtt(commandId, 'radio health is degraded');

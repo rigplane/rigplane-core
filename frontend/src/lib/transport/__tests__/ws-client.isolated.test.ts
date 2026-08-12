@@ -71,7 +71,11 @@ vi.mock('../http-client', () => ({
   fetchCapabilities: vi.fn(() => new Promise(() => {})),
 }));
 
-import { isLiveRadioAvailable, setRadioStatus, setWsConnected } from '../../stores/connection.svelte';
+import {
+  isLiveRadioAvailable,
+  setRadioStatus,
+  setWsConnected,
+} from '../../stores/connection.svelte';
 import { resetRadioState, setRadioState } from '../../stores/radio.svelte';
 
 beforeEach(() => {
@@ -794,8 +798,14 @@ describe('control channel singleton', () => {
   });
 
   it('rejects degraded-health non-PTT dispatch with a truthful delivery error', async () => {
+    // The health gate is scoped to a LIVE transport (MOR-1526 R2): with the
+    // socket open, `!isLiveRadioAvailable()` reflects continuously refreshed
+    // facts, so the refusal is honest. (Offline dispatch is governed by the
+    // transport queue policy instead — see the queue-verdict cases.)
     vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
-    const { onCommandDelivery, sendCommand } = await import('../ws-client');
+    const { connect, onCommandDelivery, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
     const events: CommandDeliveryEvent[] = [];
     const unsubscribe = onCommandDelivery((event) => events.push(event));
 
@@ -804,11 +814,40 @@ describe('control channel singleton', () => {
     expect(events).toEqual([{
       commandId: 'degraded-freq',
       kind: 'error',
-      originalEpoch: 0,
-      eventEpoch: 0,
+      originalEpoch: 1,
+      eventEpoch: 1,
       error: 'radio health is degraded',
     }]);
+    expect(instances[0].sent.map((frame) => JSON.parse(frame))).toEqual([]);
     unsubscribe();
+  });
+
+  it('queues idempotent offline dispatch under the transport policy even while health facts are reset (MOR-1526 R2)', async () => {
+    // Transport-offline is NOT the health gate's jurisdiction: after a real
+    // disconnect the 'disconnected' transition resets rigConnected/radioReady/
+    // radioHealth (F1/F2), so `isLiveRadioAvailable()` is false — but the
+    // command must still ride WsChannel.send's offline policy (idempotent
+    // keep-latest queue), not be refused as "health degraded". This is what
+    // keeps the reconnect-dekey matrix's OFF-first ordering assertion
+    // non-vacuous and preserves queued tuning across brief WS blips.
+    vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
+    const { onCommandDelivery, onMessage, sendCommand, connect } = await import('../ws-client');
+    const events: CommandDeliveryEvent[] = [];
+    const notices: unknown[] = [];
+    onCommandDelivery((event) => events.push(event));
+    onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
+
+    expect(sendCommand('set_freq', { freq: 14_074_000 }, 'offline-freq')).toBe(false);
+
+    // No health refusal, no toast — the command is queued, not rejected.
+    expect(events).toEqual([]);
+    expect(notices).toEqual([]);
+
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    expect(instances[0].sent.map((frame) => JSON.parse(frame))).toMatchObject([
+      { type: 'cmd', name: 'set_freq', id: 'offline-freq' },
+    ]);
   });
 
   it('propagates the transport queue verdict for offline non-idempotent dispatch', async () => {
@@ -912,11 +951,14 @@ describe('control channel singleton', () => {
 
   it('sendCommand blocks live-radio commands while radio health is degraded', async () => {
     vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
-    const { sendCommand } = await import('../ws-client');
+    const { connect, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
 
     const result = sendCommand('set_freq', { freq: 14074000, receiver: 0 });
 
     expect(result).toBe(false);
+    expect(instances[0].sent.map((frame) => JSON.parse(frame))).toEqual([]);
   });
 
   it('allows open-socket PTT release aliases while radio health is degraded', async () => {
@@ -1271,6 +1313,40 @@ describe('control channel singleton', () => {
     expect(setRadioStatus).not.toHaveBeenCalled();
   });
 
+  it('resets radioStatus on every ws disconnect, even without a terminal connection_status event (MOR-1526 F1)', async () => {
+    vi.mocked(setRadioStatus).mockClear();
+    const { connect, disconnect } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    // A reconnect starts but the server just vanishes (no terminal event —
+    // radio_reconnect.py's reconnect_loop can exit via CancelledError on
+    // either its watchdog-triggered or attempt-loop path without ever
+    // emitting a final connection_status).
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'event',
+      name: 'connection_status',
+      data: { state: 'reconnecting', attempt: 1, next_retry_seconds: 1 },
+    }));
+    expect(setRadioStatus).toHaveBeenLastCalledWith('reconnecting');
+
+    instances[0].simulateClose();
+
+    expect(setRadioStatus).toHaveBeenLastCalledWith('disconnected');
+    // R2 ruling: rigConnected/radioReady/radioHealth are deliberately NOT
+    // reset by this handler — see the R2 comment in ws-client.ts. Resetting
+    // them would be visible to isLiveRadioAvailable()/sendCommand, a
+    // command-gate change this display fix must not make. Their isolation
+    // is pinned at the store level instead (connection.test.ts's F2 case).
+
+    // simulateClose() drives the singleton `_ctrl` into its own real-timer
+    // reconnect loop (this describe block runs with real timers). Without
+    // an explicit disconnect() here, that dangling backoff timer can fire
+    // mid-run and create a stray MockWebSocket instance that pollutes the
+    // shared `instances` registry for unrelated later tests in this file.
+    disconnect();
+  });
+
   it('rejects a same-session full snapshot that rolls revision truth backward', async () => {
     const { connect } = await import('../ws-client');
     connect('ws://test/api/v1/ws');
@@ -1317,7 +1393,9 @@ describe('sendCommand surfaces a refused command exactly once per burst (MOR-142
 
   it('emits exactly one notification for a burst of refused commands', async () => {
     vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
-    const { onMessage, sendCommand } = await import('../ws-client');
+    const { connect, onMessage, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
     const notices: unknown[] = [];
     onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
 
@@ -1333,7 +1411,9 @@ describe('sendCommand surfaces a refused command exactly once per burst (MOR-142
 
   it('emits a second notification once the debounce window has elapsed', async () => {
     vi.mocked(isLiveRadioAvailable).mockReturnValue(false);
-    const { onMessage, sendCommand } = await import('../ws-client');
+    const { connect, onMessage, sendCommand } = await import('../ws-client');
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
     const notices: unknown[] = [];
     onMessage((msg) => { if (msg.type === 'notification') notices.push(msg); });
 
