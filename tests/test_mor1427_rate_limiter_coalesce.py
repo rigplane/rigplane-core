@@ -74,9 +74,22 @@ def _messages_by_id(ws: SimpleNamespace) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _default_key(name: str) -> str:
+    """Coalescing key for a non-selector, receiver-less-in-params command.
+
+    MOR-1499: ``_cmd_pending``/``_cmd_flush_tasks``/``_cmd_coalesced`` are
+    keyed by ``ControlHandler._coalesce_key(name, params)``, not the bare
+    name. None of the commands this suite exercises (``set_freq``,
+    ``set_filter_width``) are selector-type or pass an explicit
+    ``receiver``, so their key is always ``f"{name}:0"`` (the same default
+    every receiver-scoped command already applies).
+    """
+    return f"{name}:0"
+
+
 async def _await_flush(handler: ControlHandler, name: str) -> None:
     """Wait for the deferred coalesced flush (if any) for *name* to complete."""
-    task = handler._cmd_flush_tasks.get(name)  # noqa: SLF001
+    task = handler._cmd_flush_tasks.get(_default_key(name))  # noqa: SLF001
     if task is not None:
         await task
 
@@ -252,14 +265,14 @@ async def test_coalesce_counter_is_accurate_and_logged(
 
         # 10 frames: 1 dispatched immediately, 9 coalesced-in, 8 of those
         # superseded before flush (the 9th survives to flush).
-        assert handler._cmd_coalesced.get("set_freq") == 8  # noqa: SLF001
+        assert handler._cmd_coalesced.get(_default_key("set_freq")) == 8  # noqa: SLF001
         assert any("set_freq" in rec.message for rec in caplog.records)
 
         await _await_flush(handler, "set_freq")
 
     # Counter resets once the burst actually flushes, so the next burst's
     # count is not inflated by a prior one.
-    assert handler._cmd_coalesced.get("set_freq", 0) == 0  # noqa: SLF001
+    assert handler._cmd_coalesced.get(_default_key("set_freq"), 0) == 0  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
@@ -295,8 +308,8 @@ async def test_late_flush_gate_diverts_to_coalescing_when_frame_pending() -> Non
     await handler._handle_command(
         {"id": "f2", "name": "set_freq", "params": {"freq": base_freq + 1}}
     )
-    assert "set_freq" in handler._cmd_pending  # noqa: SLF001
-    assert "set_freq" in handler._cmd_flush_tasks  # noqa: SLF001
+    assert _default_key("set_freq") in handler._cmd_pending  # noqa: SLF001
+    assert _default_key("set_freq") in handler._cmd_flush_tasks  # noqa: SLF001
 
     # Block the event loop SYNCHRONOUSLY past the flush deadline. Real
     # wall-clock time now exceeds _CMD_MIN_INTERVAL since F1, but the
@@ -416,7 +429,7 @@ async def _run_one_battery_iteration(rng: random.Random) -> None:
 
         # Occasionally tear down mid-burst instead of dispatching further.
         if rng.random() < 0.2:
-            pending = handler._cmd_pending.get(primary)  # noqa: SLF001
+            pending = handler._cmd_pending.get(_default_key(primary))  # noqa: SLF001
             if pending is not None:
                 cancelled_id = str(pending[0])
             queue.put(PttOff())
@@ -487,8 +500,8 @@ async def _run_one_battery_iteration(rng: random.Random) -> None:
     # i.e. it always eventually wins, never gets silently stuck as
     # "superseded" with nothing superseding it.
     if not teardown_fired:
-        assert primary not in handler._cmd_pending  # noqa: SLF001
-        assert primary not in handler._cmd_flush_tasks  # noqa: SLF001
+        assert _default_key(primary) not in handler._cmd_pending  # noqa: SLF001
+        assert _default_key(primary) not in handler._cmd_flush_tasks  # noqa: SLF001
         if dispatched:
             last_dispatched_id = dispatched[-1][0]
             assert by_id[last_dispatched_id].get("result") != {"superseded": True}

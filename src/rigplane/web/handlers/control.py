@@ -454,6 +454,23 @@ class ControlHandler:
         }
     )
 
+    # MOR-1499: SELECTOR commands — the param carries a discrete TARGET
+    # (which filter/VFO/band), not a continuous magnitude — so the
+    # coalescing key also includes the selected target (see
+    # ``_coalesce_key``). Two different targets inside the pacing window
+    # (e.g. the frontend filter-preset flow: switch filter -> write width
+    # -> switch back) must both reach the radio instead of the first
+    # switch being silently superseded by the second. Deliberately NOT
+    # applied to value-carrying commands (levels, offsets, gains, ...):
+    # last-value-wins across DIFFERENT values is the whole point of
+    # coalescing those (MOR-1427).
+    _COALESCE_TARGET_PARAM: dict[str, str] = {
+        "set_filter": "filter",
+        "set_vfo": "vfo",
+        "select_vfo": "vfo",
+        "set_band": "band",
+    }
+
     def __init__(
         self,
         ws: Connection,
@@ -481,20 +498,24 @@ class ControlHandler:
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
         )
-        # Per-command rate limiting: command_name -> last physical-enqueue time.
+        # Per-command rate limiting: coalesce_key -> last physical-enqueue
+        # time (MOR-1499: keyed by ``_coalesce_key``, not the bare name).
         self._cmd_last: dict[str, float] = {}
         # Minimum interval between same command (seconds).
         # Continuous slider/knob drag sends dozens of set_* per second.
         self._CMD_MIN_INTERVAL = 0.05  # 50ms = max 20 commands/sec per client
         # MOR-1427: last-value-wins coalescing for commands arriving inside
         # the pacing window above, instead of the old silent hard-drop.
-        # command_name -> (command_id, params) of the most recent frame
-        # still waiting for its paced flush.
-        self._cmd_pending: dict[str, tuple[Any, dict[str, Any]]] = {}
-        # command_name -> the single deferred-flush task scheduled for it
-        # (one handle per (session, command) — this session owns them all).
+        # MOR-1499: all four dicts below are keyed by the *coalescing key*
+        # from ``_coalesce_key`` (name + receiver + selector target), not
+        # the bare command name — see that method's docstring.
+        # coalesce_key -> (command_id, name, params) of the most recent
+        # frame still waiting for its paced flush.
+        self._cmd_pending: dict[str, tuple[Any, str, dict[str, Any]]] = {}
+        # coalesce_key -> the single deferred-flush task scheduled for it
+        # (one handle per (session, key) — this session owns them all).
         self._cmd_flush_tasks: dict[str, asyncio.Task[None]] = {}
-        # command_name -> count of frames coalesced (superseded before they
+        # coalesce_key -> count of frames coalesced (superseded before they
         # could flush) in the current burst — reset once that burst flushes.
         self._cmd_coalesced: dict[str, int] = {}
         shared_service = getattr(server, "command_service", None)
@@ -943,8 +964,9 @@ class ControlHandler:
         # of hard-dropped — see _coalesce_command / _flush_coalesced_command.
         if name.startswith("set_"):
             now = time.monotonic()
-            last = self._cmd_last.get(name, 0.0)
-            # MOR-1427 review B1: a pending frame for this name must always
+            key = self._coalesce_key(name, params)
+            last = self._cmd_last.get(key, 0.0)
+            # MOR-1427 review B1: a pending frame for this key must always
             # win the race, even if the deferred flush task is running late
             # (event loop briefly busy past its deadline). Consulting only
             # the elapsed time here lets a newer frame slip past the gate
@@ -953,15 +975,74 @@ class ControlHandler:
             # stale one. Checking `_cmd_pending` closes that window: as long
             # as a frame is still waiting to flush, every new frame joins the
             # coalesce path instead of racing it.
-            if now - last < self._CMD_MIN_INTERVAL or name in self._cmd_pending:
-                await self._coalesce_command(name, cmd_id, params, now, last)
+            if now - last < self._CMD_MIN_INTERVAL or key in self._cmd_pending:
+                await self._coalesce_command(key, name, cmd_id, params, now, last)
                 return
-            self._cmd_last[name] = now
+            self._cmd_last[key] = now
 
         await self._dispatch_command(cmd_id, name, params)
 
+    def _coalesce_key(self, name: str, params: dict[str, Any]) -> str:
+        """Coalescing-bucket key for a SET command (MOR-1499).
+
+        MOR-1427 originally coalesced purely by command NAME, so two
+        frames with the same name but different meaning could wrongly
+        supersede each other:
+
+        - cross-receiver: ``set_nb`` on MAIN then SUB inside the pacing
+          window superseded MAIN's frame with SUB's — MAIN's toggle never
+          reached the radio.
+        - cross-target selectors: the frontend filter-preset flow
+          dispatches ``set_filter(A)``, ``set_filter_width(W)``,
+          ``set_filter(B)`` in one tick; both ``set_filter`` frames shared
+          one key, so the first switch was superseded and never applied —
+          the width landed on whichever filter was still active.
+
+        Fix: the key always includes the receiver (defaulting to 0, same
+        default every receiver-scoped command already applies) so distinct
+        receivers never collide — this is safe for receiver-less commands
+        too, since they always resolve to the same default and behave
+        exactly as before. For the small set of discrete-target SELECTOR
+        commands in ``_COALESCE_TARGET_PARAM``, the selected target also
+        joins the key, so two different targets are tracked (and flushed)
+        independently while repeated selections of the SAME target still
+        coalesce exactly as before. Continuous value-carrying commands
+        (levels, offsets, gains, ...) are deliberately excluded from
+        target-keying — last-value-wins across DIFFERENT values remains
+        the point of coalescing them.
+
+        NOTE (review B2): target-keying trades away MOR-1427's total
+        order PER NAME -- a coalesced frame for target A can flush after
+        a later immediate frame for target B. No in-tree dispatch site
+        emits same-target twice then a different target inside one 50 ms
+        window, so this is latent; if such a flow appears, flush pending
+        sibling keys of the same (name, receiver) family first.
+
+        NOTE (review B5): the target is interpolated with !r (int 1 and
+        str "1" under-coalesce -- the safe direction; the frontend sends
+        integers consistently), while receiver is interpolated bare after
+        normalization below, so 0/"0"/absent share one key.
+        """
+        # Review B1: params comes straight off the wire and this runs
+        # BEFORE the _dispatch_command try/except -- a non-dict must not
+        # raise here (one malformed frame would otherwise tear down the
+        # whole control session); it just gets the default key.
+        if not isinstance(params, dict):
+            return f"{name}:0"
+        receiver_raw = params.get("receiver", 0)
+        # Review B3: normalize to the validated receiver domain so a
+        # hostile client cannot mint unbounded pacing buckets via
+        # receiver=0..N garbage; anything outside {0, 1} shares the
+        # default bucket (dispatch validation rejects it later anyway).
+        receiver = receiver_raw if receiver_raw in (0, 1) else 0
+        target_param = self._COALESCE_TARGET_PARAM.get(name)
+        if target_param is not None:
+            return f"{name}:{receiver}:{params.get(target_param)!r}"
+        return f"{name}:{receiver}"
+
     async def _coalesce_command(
         self,
+        key: str,
         name: str,
         cmd_id: Any,
         params: dict[str, Any],
@@ -970,23 +1051,25 @@ class ControlHandler:
     ) -> None:
         """Last-value-wins coalescing for a frame inside the pacing window (MOR-1427).
 
-        The most recent frame for *name* always survives to the next paced
+        The most recent frame for *key* always survives to the next paced
         flush. Any frame it replaces gets an honest ``superseded`` reply
         right away instead of the old silent-drop ``throttled`` ack — it
         never reaches the command queue, so it must not claim it did.
         Physical-enqueue pacing (``_CMD_MIN_INTERVAL``) is unchanged: this
         only decides *which* frame's value is the one flushed when the
-        window reopens, never how often the window opens.
+        window reopens, never how often the window opens. *key* is the
+        MOR-1499 coalescing key (``_coalesce_key``); *name* is the actual
+        command name, carried alongside it for dispatch/logging.
         """
-        previous = self._cmd_pending.get(name)
+        previous = self._cmd_pending.get(key)
         if previous is not None:
-            prev_cmd_id, _ = previous
-            count = self._cmd_coalesced.get(name, 0) + 1
-            self._cmd_coalesced[name] = count
+            prev_cmd_id, _, _ = previous
+            count = self._cmd_coalesced.get(key, 0) + 1
+            self._cmd_coalesced[key] = count
             if count == 1 or count % 50 == 0:
                 logger.warning(
                     "rate-limit: coalescing %s (%.0fms since last, coalesced=%d)",
-                    name,
+                    key,
                     (now - last) * 1000,
                     count,
                 )
@@ -1000,31 +1083,31 @@ class ControlHandler:
                     }
                 )
             )
-        self._cmd_pending[name] = (cmd_id, params)
-        if name not in self._cmd_flush_tasks:
+        self._cmd_pending[key] = (cmd_id, name, params)
+        if key not in self._cmd_flush_tasks:
             delay = max(self._CMD_MIN_INTERVAL - (now - last), 0.0)
-            self._cmd_flush_tasks[name] = asyncio.create_task(
-                self._flush_coalesced_command(name, delay)
+            self._cmd_flush_tasks[key] = asyncio.create_task(
+                self._flush_coalesced_command(key, delay)
             )
 
-    async def _flush_coalesced_command(self, name: str, delay: float) -> None:
+    async def _flush_coalesced_command(self, key: str, delay: float) -> None:
         """Deferred physical enqueue for a coalesced burst (MOR-1427).
 
         Fires once, at the pacing boundary, and dispatches whichever frame
-        is the most recently pending one for *name* at that moment — never
+        is the most recently pending one for *key* at that moment — never
         necessarily the frame that originally triggered the delay.
         """
         try:
             if delay > 0.0:
                 await asyncio.sleep(delay)
         finally:
-            self._cmd_flush_tasks.pop(name, None)
-        pending = self._cmd_pending.pop(name, None)
+            self._cmd_flush_tasks.pop(key, None)
+        pending = self._cmd_pending.pop(key, None)
         if pending is None:
             return
-        cmd_id, params = pending
-        self._cmd_last[name] = time.monotonic()
-        self._cmd_coalesced[name] = 0
+        cmd_id, name, params = pending
+        self._cmd_last[key] = time.monotonic()
+        self._cmd_coalesced[key] = 0
         try:
             await self._dispatch_command(cmd_id, name, params)
         except asyncio.CancelledError:
