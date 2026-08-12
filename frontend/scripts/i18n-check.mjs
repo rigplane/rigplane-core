@@ -155,6 +155,19 @@ const GLOSSARY_TOKENS = [
   // §2.B band-name and unit suffixes are protocol values and are not
   // typically embedded as substrings of UI prose, so we omit them from
   // the substring scan to avoid false positives ("dB" in "doubt" etc.).
+
+  // --- MOR-1450 additions -------------------------------------------------
+  // NOT sourced from the strategy glossary (§2.A/§2.B do not cover these) —
+  // these are rigplane-core-local faceplate terms per the MOR-1450 owner
+  // ruling (see docs/i18n/faceplate-locale-invariance.md). Two casings are
+  // listed for each because en-US uses the label casing standalone
+  // ("Split", "Dual watch") and a lowercase mid-sentence casing inside
+  // action-tooltip prose ("Quick split", "Quick dual watch"); this scan is
+  // case-sensitive substring matching, not case-folded.
+  'Split',
+  'split',
+  'Dual watch',
+  'dual watch',
 ];
 
 // ---------------------------------------------------------------------------

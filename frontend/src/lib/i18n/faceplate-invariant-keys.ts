@@ -14,6 +14,14 @@
  * Adding a new faceplate-domain key: add it here. Either mirror the en-US
  * value verbatim in every locale file, or omit it from non-English catalogs
  * so it falls back to en-US (which also satisfies the invariant).
+ *
+ * NOTE: this list covers CATALOG keys only. Most faceplate/instrument
+ * vocabulary (mode names like USB/CW, scope controls like SPAN/REF, DSP
+ * abbreviations, etc.) is hardcoded directly in Svelte components rather
+ * than routed through the i18n catalog (see `docs/i18n/core-string-inventory.md`
+ * P0-P2 batches — most panel-title extraction has not happened yet), so it
+ * needs no entry here; there is nothing to translate. This guard only
+ * protects the subset that already went through `t()`.
  */
 export const FACEPLATE_INVARIANT_KEYS = [
   // Power toggle button text (the literal printed state of the button).
@@ -24,14 +32,29 @@ export const FACEPLATE_INVARIANT_KEYS = [
   // Mobile nav tabs / section chips that ARE the bare control token.
   'core.mobile.nav.tab.vfo',
   'core.mobile.nav.tab.tx',
+  // "Meters" — owner-ruled invariant; Spectrum/Controls tabs were NOT
+  // ruled on and remain localized (see policy doc).
+  'core.mobile.nav.tab.meters',
   'core.mobile.chip.band',
   'core.mobile.chip.scan',
   'core.mobile.chip.rf',
   'core.mobile.chip.dsp',
   'core.mobile.chip.ritXit',
   'core.mobile.chip.tx',
+  // Owner-ruled invariant even though "ESSENTIALS" is plain English —
+  // supersedes the core-string-inventory.md P0.6 note that called it
+  // translatable.
+  'core.mobile.chip.essentials',
   'core.mobile.sheet.setup',
   'core.mobile.setupButton',
+  // Bottom-sheet titles — owner-ruled invariant (supersedes the
+  // "token inside translatable prose" reading applied to these five in
+  // MOR-1450 round 1; see policy doc "MOR-1450 audit, round 2").
+  'core.mobile.sheet.rfPower',
+  'core.mobile.sheet.txSettings',
+  'core.mobile.sheet.dataMode',
+  'core.mobile.sheet.allModes',
+  'core.mobile.sheet.filterSettings',
   // Mode-input control label rendered directly on the mode panel.
   'core.modePanel.modInputLabel',
   // VFO surface readouts: label + value-word pairs (e.g. "Split: off").
