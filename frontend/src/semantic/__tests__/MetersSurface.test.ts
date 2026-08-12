@@ -33,6 +33,42 @@ import type {
 } from '../radio-view-model';
 import { RF_LABEL, RF_MARK } from '../rx-tx-surface';
 import { isAlcFault, isSwrFault } from '../../components-v2/panels/meter-utils';
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+
+// MOR-1470: swr/alc tables for the fault-highlighting suite — fault
+// predicates only fire in the calibrated engineering domain.
+function makeFaultCaps(): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    meterCalibrations: {
+      swr: [
+        { raw: 0, actual: 1.0, label: '1.0' },
+        { raw: 48, actual: 1.5, label: '1.5' },
+        { raw: 80, actual: 2.0, label: '2.0' },
+        { raw: 120, actual: 3.0, label: '3.0' },
+      ],
+      alc: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 120, actual: 100, label: '100' },
+      ],
+    },
+  };
+}
 
 /** Source scans below run over the CODE, with comments stripped — the same
  *  instrument (and the same reason) as `TxAuxSurface.test.ts`: a behavioural
@@ -567,46 +603,59 @@ describe('raw sMeter renders honestly, never a fabricated S-unit (MOR-1451)', ()
 });
 
 describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
+  // MOR-1470: fault predicates are only claimable in the calibrated
+  // engineering domain (an uncalibrated raw byte never asserts a fault) —
+  // seed swr/alc tables so the values below are ratio / normalized ALC,
+  // exactly what the backend publishes for a rig with the tables.
+  beforeEach(() => {
+    setCapabilities(makeFaultCaps());
+  });
+
+  afterEach(() => {
+    clearCapabilities();
+  });
+
   // MUTATION KILLED: a locally-invented threshold instead of the shared
-  // predicate. Raw 80 is the dock's own "exactly SWR 2.0" boundary fixture
+  // predicate. Ratio 2.0 is the dock's own boundary fixture
   // (MetersDockPanel.isolated.test.ts) — not a fault.
-  it('does not fault SWR at exactly the 2.0 boundary (raw=80)', () => {
-    const view = withRaw(base('transmitting'), 'swr', 80);
+  it('does not fault SWR at exactly the 2.0 boundary', () => {
+    const view = withRaw(base('transmitting'), 'swr', 2.0);
     withSurface(view, (s) => {
       expect(s.tile('swr')!.dataset.fault).toBe('false');
     });
   });
 
-  it('faults SWR just above the boundary (raw=90 -> ratio 2.25)', () => {
-    const view = withRaw(base('transmitting'), 'swr', 90);
+  it('faults SWR just above the boundary (ratio 2.25)', () => {
+    const view = withRaw(base('transmitting'), 'swr', 2.25);
     withSurface(view, (s) => {
       expect(s.tile('swr')!.dataset.fault).toBe('true');
     });
   });
 
-  it('does not fault ALC at exactly the 90% boundary (raw=108)', () => {
-    const view = withRaw(base('transmitting'), 'alc', 108);
+  it('does not fault ALC at exactly the 90% boundary (0.9)', () => {
+    const view = withRaw(base('transmitting'), 'alc', 0.9);
     withSurface(view, (s) => {
       expect(s.tile('alc')!.dataset.fault).toBe('false');
     });
   });
 
-  it('faults ALC just above the boundary (raw=115 -> 95.8%)', () => {
-    const view = withRaw(base('transmitting'), 'alc', 115);
+  it('faults ALC just above the boundary (0.95)', () => {
+    const view = withRaw(base('transmitting'), 'alc', 0.95);
     withSurface(view, (s) => {
       expect(s.tile('alc')!.dataset.fault).toBe('true');
     });
   });
 
   // MUTATION KILLED (wrong channel): swapping which predicate gates which
-  // field. At raw=90 the two predicates DISAGREE (isSwrFault(90)=true,
-  // isAlcFault(90)=false), so a swapped FAULT_CHECKS map flips both
-  // assertions below.
-  it('never cross-applies the SWR predicate to ALC or vice-versa (raw=90 on both)', () => {
-    const view = withRaw(withRaw(base('transmitting'), 'swr', 90), 'alc', 90);
+  // field. The two fixtures below DISAGREE under a swapped FAULT_CHECKS
+  // map: isAlcFault(1.5) clamps to 1.0 -> true (vs the correct
+  // isSwrFault(1.5)=false), and isSwrFault(0.95)=false (vs the correct
+  // isAlcFault(0.95)=true) — a swap flips both assertions.
+  it('never cross-applies the SWR predicate to ALC or vice-versa', () => {
+    const view = withRaw(withRaw(base('transmitting'), 'swr', 1.5), 'alc', 0.95);
     withSurface(view, (s) => {
-      expect(s.tile('swr')!.dataset.fault).toBe('true');
-      expect(s.tile('alc')!.dataset.fault).toBe('false');
+      expect(s.tile('swr')!.dataset.fault).toBe('false');
+      expect(s.tile('alc')!.dataset.fault).toBe('true');
     });
   });
 
@@ -626,7 +675,7 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // reading that lingers while the fact layer says the meter is NOT relevant
   // (e.g. RX) must not highlight, exactly like the dock's own TX gate.
   it('does not fault an over-threshold reading the fact layer marks irrelevant', () => {
-    const view = withField(withRaw(base('transmitting'), 'swr', 120), 'swr', { relevant: false });
+    const view = withField(withRaw(base('transmitting'), 'swr', 3.0), 'swr', { relevant: false });
     withSurface(view, (s) => {
       expect(s.tile('swr')!.dataset.relevant).toBe('false');
       expect(s.tile('swr')!.dataset.fault).toBe('false');
@@ -674,12 +723,12 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // Threads the boolean through to the REAL BarGauge (no stub) — mirrors the
   // MOR-1282 peak-marker test's own "real component" discipline.
   it('threads the fault flag into the real BarGauge SVG', () => {
-    const view = withRaw(base('transmitting'), 'swr', 120);
+    const view = withRaw(base('transmitting'), 'swr', 3.0);
     withSurface(view, (s) => {
       const svg = s.tile('swr')!.querySelector('svg');
       expect(svg?.getAttribute('data-fault')).toBe('true');
     });
-    const clean = withRaw(base('transmitting'), 'swr', 20);
+    const clean = withRaw(base('transmitting'), 'swr', 1.1);
     withSurface(clean, (s) => {
       const svg = s.tile('swr')!.querySelector('svg');
       expect(svg?.getAttribute('data-fault')).toBe('false');

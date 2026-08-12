@@ -14,15 +14,51 @@ import { mount, unmount } from 'svelte';
 
 import { formatVolts, formatAmps } from '../../meter-utils';
 
-// Nominal IC-7610 supply: raw 184 → 13.8 V (calibrated), NOT ~11.5 V (raw/255*16).
-// 184 is the operator's live-confirmed anchor (real IC-7610, /api/v1/state
-// vdMeter:184 = 13.8 V bench supply); see VD_KNOTS in meter-utils.ts.
-const VD_RAW = 184;
-const ID_RAW = 151; // → 10.0 A calibrated
+// MOR-1470: with a declared vd/id table, the backend publishes VOLTS/AMPS
+// (engineering units) — 13.8 V is the operator's live-confirmed bench
+// supply anchor (real IC-7610, raw 184 → 13.8 V; the curve now lives in
+// the profile data, not in meter-utils).
+const VD_VOLTS = 13.8;
+const ID_AMPS = 10;
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
-  deriveAmberTelemetryProps: () => ({ vdRaw: VD_RAW, idRaw: ID_RAW }),
+  deriveAmberTelemetryProps: () => ({ vdRaw: VD_VOLTS, idRaw: ID_AMPS }),
 }));
+
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+
+function makeCaps(): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    meterCalibrations: {
+      vd: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 184, actual: 13.8, label: '13.8' },
+        { raw: 241, actual: 16, label: '16' },
+      ],
+      id: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 151, actual: 10, label: '10' },
+        { raw: 212, actual: 25, label: '25' },
+      ],
+    },
+  };
+}
 
 import AmberTelemetryStrip from '../AmberTelemetryStrip.svelte';
 
@@ -31,10 +67,12 @@ let target: HTMLDivElement;
 beforeEach(() => {
   target = document.createElement('div');
   document.body.appendChild(target);
+  setCapabilities(makeCaps());
 });
 
 afterEach(() => {
   document.body.removeChild(target);
+  clearCapabilities();
 });
 
 describe('AmberTelemetryStrip', () => {
@@ -51,8 +89,7 @@ describe('AmberTelemetryStrip', () => {
   it('formats the VD label with the calibrated formatVolts (≈13.8 V, not raw/255)', () => {
     const component = mount(AmberTelemetryStrip, { target, props: {} });
     const values = Array.from(target.querySelectorAll('.tile-value')).map((v) => v.textContent);
-    expect(values[0]).toBe(formatVolts(VD_RAW));
-    // Calibrated reading is ~13.8 V; the old raw/255*16 map gave ~9.8 V.
+    expect(values[0]).toBe(formatVolts(VD_VOLTS));
     expect(values[0]).toContain('13.8');
     unmount(component);
   });
@@ -60,7 +97,7 @@ describe('AmberTelemetryStrip', () => {
   it('formats the ID label with the calibrated formatAmps (10.0 A, not raw/255)', () => {
     const component = mount(AmberTelemetryStrip, { target, props: {} });
     const values = Array.from(target.querySelectorAll('.tile-value')).map((v) => v.textContent);
-    expect(values[1]).toBe(formatAmps(ID_RAW));
+    expect(values[1]).toBe(formatAmps(ID_AMPS));
     expect(values[1]).toContain('10.0');
     unmount(component);
   });
