@@ -170,6 +170,17 @@ command_response_observable = [
     "global.tx_state.ptt",
     "global.operator_controls.tuner_status",
     "global.tx_state.split",
+    # MOR-1483 (field-policy membership wave, leg 1): VOX/MON toggles.
+    # Non-polling (command_response only) — riding the MOR-1490
+    # prime_unobserved mechanism rather than a poll cadence; see the
+    # field_policies comment below. voxDelay (1A-05 ctl-mem 02-92) is NOT
+    # added here: its ingress decode already exists
+    # (``_CTL_MEM_VOX_DELAY_PREFIX``), but the scheduler's acquisition
+    # executor has no query builder for 2-byte ctl-mem sub-addressing
+    # (``AcquisitionQuerySender`` is a 3-tuple command/sub/receiver only) —
+    # that's new mechanism, not a table entry, so it's out of scope here.
+    "global.tx_state.vox_on",
+    "global.tx_state.monitor_on",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -234,6 +245,32 @@ adaptive_decay = false
 [state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
 cadence_seconds = 15.0
 freshness_ttl_seconds = 25.0
+adaptive_decay = false
+
+# MOR-1483/1491/1492/1493 (field-policy membership wave): non-polling
+# (command_response) membership riding the MOR-1490 priming mechanism
+# (AcquisitionScheduler.prime_unobserved). These fields are deliberately
+# NOT in [state_acquisition.capabilities].polling_only above, so
+# due_requests() never touches them; instead prime_unobserved() queues a
+# BACKGROUND read for each once it's never-observed, re-deriving the
+# never-observed set every ~30s
+# (StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS) until each field
+# lands its first observation — worst case a few re-derive windows if the
+# scheduler's 5-path-per-call burst cap (prime_unobserved's
+# _PRIME_UNOBSERVED_BURST_LIMIT) paces this whole group across multiple
+# calls. cadence_seconds is pinned equal to freshness_ttl_seconds purely so
+# diagnostics don't show a misleadingly fast number — it is otherwise inert
+# here because these capabilities carry polling=False.
+[state_acquisition.field_policies."global.tx_state.vox_on"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.monitor_on"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
