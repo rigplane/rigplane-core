@@ -1118,6 +1118,51 @@ class RadioPoller:
         else:
             self._state_store.apply(observation)
 
+    def _apply_global_command_echo_observation(
+        self,
+        name: str,
+        value: Any,
+        *,
+        family: str = "slow_state",
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+        provider_generation: int,
+    ) -> None:
+        """Apply a command-sourced (unconfirmable) value to the StateStore.
+
+        Sibling of :meth:`_apply_global_control_observation` for fields the
+        radio has NO read command for at all (e.g. IC-7300 scan, CI-V 0x0E —
+        CAT-audit confirmed SET-only, MOR-1495), so no follow-up GET can ever
+        turn this into a genuine readback the way NB depth/width or the
+        MOD-input sources do. Labelled ``command_response`` — never
+        ``poll_response`` — so the StateStore's own provenance stays honest
+        about the fact that this value was never confirmed by the radio, even
+        though the owner-ruled web presentation shows it plainly with no
+        "commanded, not confirmed" marker (MOR-1495 ruling). A front-panel
+        scan stop is invisible to the web until the operator presses STOP in
+        the web — accepted limitation, not fixable without a read command.
+        """
+        observation = Observation(
+            path=FieldPath.global_(family, name),
+            value=value,
+            source=SourceMetadata(
+                source="command_response",
+                provider="web_poller",
+                native_id=f"{name}_command_echo",
+                command_source=source,
+                session_id=session_id,
+            ),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id=f"{command_id}:{name}" if command_id else None,
+            provider_generation=provider_generation,
+        )
+        if command_service is not None:
+            command_service.apply_observation(observation)
+        else:
+            self._state_store.apply(observation)
+
     async def _fetch_nb_controls(self) -> None:
         """One-shot readback of NB depth/width into the StateStore (MOR-491-B).
 
@@ -2071,17 +2116,51 @@ class RadioPoller:
                 if self._radio_state:
                     self._radio_state.scanning = True
                     self._radio_state.scan_type = st
+                # CI-V 0x0E is SET-ONLY on IC-7300 (CAT audit: no read
+                # command) — a command-echoed observation is the only way
+                # this ever leaves "missing" in the public fieldStatus
+                # projection (MOR-1495).
+                for name, value in (("scanning", True), ("scan_type", st)):
+                    self._apply_global_command_echo_observation(
+                        name,
+                        value,
+                        command_id=command_id,
+                        source=command_source,
+                        session_id=session_id,
+                        command_service=command_service,
+                        provider_generation=provider_generation,
+                    )
             case ScanStop():
                 await _r.scan_stop()
                 if self._radio_state:
                     self._radio_state.scanning = False
                     self._radio_state.scan_type = 0
+                for name, value in (("scanning", False), ("scan_type", 0)):
+                    self._apply_global_command_echo_observation(
+                        name,
+                        value,
+                        command_id=command_id,
+                        source=command_source,
+                        session_id=session_id,
+                        command_service=command_service,
+                        provider_generation=provider_generation,
+                    )
             case ScanSetDfSpan(span=span):
                 await _r.scan_set_df_span(span)
             case ScanSetResume(mode=resume_mode):
                 await _r.scan_set_resume(resume_mode)
+                masked = resume_mode & 0x0F
                 if self._radio_state:
-                    self._radio_state.scan_resume_mode = resume_mode & 0x0F
+                    self._radio_state.scan_resume_mode = masked
+                self._apply_global_command_echo_observation(
+                    "scan_resume_mode",
+                    masked,
+                    command_id=command_id,
+                    source=command_source,
+                    session_id=session_id,
+                    command_service=command_service,
+                    provider_generation=provider_generation,
+                )
             case SetDataMode(mode=mode, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_data_mode")
                 if not 0 <= mode <= 3:
