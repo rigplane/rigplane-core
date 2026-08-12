@@ -1,15 +1,49 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
+
+// MOR-1451: `smeter-scale.ts` no longer ships a hardcoded per-radio fallback
+// curve — a radio with no declared `[meters.s_meter]` table is UNCALIBRATED,
+// and every text-producing function degrades to an honest raw-scale label
+// instead of borrowing a foreign radio's numbers. The tests below that
+// exercise "a" calibrated curve need one explicitly; this fixture — the
+// values `rigs/ic7610.toml` used to declare, moved here so they read as
+// what they are: one worked example, not a production default — stands in
+// for "some radio profile has published a curve", matching every existing
+// assertion's IC-7610-flavoured comments.
+const IC7610_LIKE_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 52, actual: -36, label: 'S3' },
+  { raw: 78, actual: -24, label: 'S5' },
+  { raw: 103, actual: -12, label: 'S7' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 165, actual: 10, label: 'S9+10' },
+  { raw: 200, actual: 20, label: 'S9+20' },
+  { raw: 240, actual: 40, label: 'S9+40' },
+];
+
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getSmeterCalibration: vi.fn(() => IC7610_LIKE_CAL),
+  getSmeterRedline: vi.fn(() => null),
+}));
+
+import { getSmeterCalibration } from '$lib/stores/capabilities.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
 import {
   rawToSegments,
   rawToSUnit,
   rawToDbm,
   formatDbm,
+  isSmeterCalibrated,
+  calibratedToSUnit,
 } from '../smeter-scale';
+
+beforeEach(() => {
+  vi.mocked(getSmeterCalibration).mockReturnValue(IC7610_LIKE_CAL);
+});
 
 let components: ReturnType<typeof mount>[] = [];
 let roots: HTMLElement[] = [];
@@ -226,5 +260,120 @@ describe('LinearSMeter calibrated S-meter domain', () => {
 
     expect(text).toContain('S9+20');
     expect(text).toContain('\u221253 dBm');
+  });
+});
+
+// ── MOR-1451: no hardcoded per-radio fallback curve ─────────────────────────
+// A radio whose profile declares no `[meters.s_meter]` table gets NO
+// calibration server-side either (`_civ_rx.py`'s `_calibrated_meter_value`
+// publishes the raw byte unchanged, flagged "uncalibrated" —
+// `interpolate_meter`'s own `(value, calibrated)` contract). `LinearSMeter`
+// therefore receives that raw byte directly as `value`, with no call-site
+// conversion of any kind — exactly production's real data flow. It must
+// never borrow another radio's numbers to interpret it.
+
+describe('uncalibrated fallback — no radio-specific curve is fabricated (MOR-1451)', () => {
+  beforeEach(() => {
+    vi.mocked(getSmeterCalibration).mockReturnValue(null);
+  });
+
+  it('isSmeterCalibrated() is false with no profile curve', () => {
+    expect(isSmeterCalibrated()).toBe(false);
+  });
+
+  it('rawToSUnit renders the plain raw number, never a fabricated S-unit', () => {
+    expect(rawToSUnit(53)).toBe('53');
+    expect(rawToSUnit(0)).toBe('0');
+    expect(rawToSUnit(255)).toBe('255');
+  });
+
+  it('rawToDbm passes the raw value straight through (not a claimed dBm reading)', () => {
+    expect(rawToDbm(53)).toBe(53);
+  });
+
+  it('formatDbm renders an explicit "uncalibrated" label, not a fabricated unit', () => {
+    expect(formatDbm(null)).toBe('uncalibrated');
+  });
+
+  it('LinearSMeter renders the raw number and "uncalibrated" — never S9+40 (the reported bug), fed the raw byte exactly as the backend publishes it (no call-site conversion)', () => {
+    const target = mountMeter({ value: 53 });
+    const text = target.textContent ?? '';
+
+    expect(text).not.toContain('S9+40');
+    expect(text).toContain('53');
+    expect(text).toContain('uncalibrated');
+  });
+});
+
+// ── MOR-1451 conformance case: the IC-7300's own curve ──────────────────────
+//
+// IMPORTANT — the BACKEND, not the frontend, does the raw->calibrated
+// conversion when a radio profile declares `[meters.s_meter]`
+// (`_civ_rx.py`'s `_calibrated_meter_value` -> `interpolate_meter`, over
+// `profile.meter_calibrations` — see `test_civ_rx_coverage.py`'s
+// pre-existing "raw 111 -> -8" pin for a worked example on a different
+// profile). `ServerState.main.sMeter` — and therefore `LinearSMeter`'s
+// `value` prop — is ALREADY the calibrated dB-rel-S9 reading for any radio
+// whose profile has a curve; it is raw device-scale ONLY for a radio with
+// no curve (the `isSmeterCalibrated()` suite above). rigs/ic7300.toml's new
+// `[meters.s_meter]` table (this PR) moves the IC-7300 from the second
+// bucket into the first — its wire byte 53 now arrives at the frontend as
+// -30 dB-rel-S9, calibrated, NOT raw. The assertions below exercise exactly
+// that domain (`calibratedToSUnit`, not `rawToSUnit` on the wire byte —
+// feeding the wire byte through a SECOND raw->calibrated conversion was an
+// earlier, reverted draft of this fix and is exactly the double-conversion
+// bug a PR reviewer caught). The reported "S9+40" symptom happened because,
+// before this PR, the IC-7300 profile had NO table: the backend published
+// raw 53 untouched (uncalibrated), and the frontend's since-removed
+// hardcoded IC-7610-shaped fallback curve misread that raw byte as if it
+// were already a calibrated dB-rel-S9 reading, clamping it to the fallback
+// curve's top anchor (+40 dB) — "S9+40" regardless of the actual signal.
+// Fixing that required BOTH halves: the profile table (so the backend
+// calibrates this radio at all) and the honest-uncalibrated-fallback
+// removal above (so a radio that still has no table never borrows a
+// foreign curve again).
+
+describe('IC-7300 profile conformance — calibrated dB-rel-S9 renders the correct S-unit, not S9+40 (MOR-1451)', () => {
+  const IC7300_S_METER_CAL = [
+    { raw: 0, actual: -54, label: 'S0' },
+    { raw: 120, actual: 0, label: 'S9' },
+    { raw: 241, actual: 60, label: 'S9+60' },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(getSmeterCalibration).mockReturnValue(IC7300_S_METER_CAL);
+  });
+
+  it('the anchor round-trips: raw axis 0/120/241 -> S0/S9/S9+60', () => {
+    // Pure interpolator correctness over the published table —
+    // independent of which domain a given caller feeds it (see the
+    // calibrated-domain assertions below for what LinearSMeter's `value`
+    // prop actually carries in production).
+    expect(rawToSUnit(0)).toBe('S0');
+    expect(rawToSUnit(120)).toBe('S9');
+    expect(rawToSUnit(241)).toBe('S9+60');
+  });
+
+  it('calibratedToSUnit(0) -> S9, calibratedToSUnit(60) -> S9+60 (the documented anchors)', () => {
+    expect(calibratedToSUnit(0)).toBe('S9');
+    expect(calibratedToSUnit(60)).toBe('S9+60');
+  });
+
+  it('the live-evidence backend value (-30, from raw 53) renders S4, not the reported S9+40', () => {
+    // -30 dB-rel-S9 is what the backend actually publishes for the
+    // IC-7300 live-fixture's raw sMeter=53 under this profile's curve
+    // (interpolate_meter(53, ...) == -30, pinned server-side in
+    // tests/test_rig_ic7300.py). This is the value LinearSMeter's `value`
+    // prop receives in production — never the raw byte itself.
+    expect(calibratedToSUnit(-30)).not.toBe('S9+40');
+    expect(calibratedToSUnit(-30)).toBe('S4');
+  });
+
+  it('LinearSMeter renders S4 for the calibrated live-evidence value end-to-end', () => {
+    const target = mountMeter({ value: -30 });
+    const text = target.textContent ?? '';
+
+    expect(text).not.toContain('S9+40');
+    expect(text).toContain('S4');
   });
 });

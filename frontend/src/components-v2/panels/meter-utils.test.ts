@@ -1,4 +1,34 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// MOR-1451: the s_meter path in `meter-utils.ts` no longer ships a hardcoded
+// per-radio fallback curve (power/swr/alc/vd/id/comp are unaffected — out of
+// this ticket's scope, still defaulting to their own IC-7610 knots). The
+// pre-existing `formatSMeter`/`sLevel`/`getNeedleMarks('S')` tests below
+// assumed the old default was always in effect; this fixture — the same
+// IC-7610 numbers, now explicit — stands in for "some radio profile
+// published a curve" instead of a silent adapter-level default.
+const IC7610_LIKE_S_METER_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 52, actual: -36, label: 'S3' },
+  { raw: 78, actual: -24, label: 'S5' },
+  { raw: 103, actual: -12, label: 'S7' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 165, actual: 10, label: 'S9+10' },
+  { raw: 200, actual: 20, label: 'S9+20' },
+  { raw: 240, actual: 40, label: 'S9+40' },
+];
+
+vi.mock('$lib/runtime/adapters/capabilities-adapter', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/adapters/capabilities-adapter')>();
+  return {
+    ...actual,
+    getMeterCalibration: vi.fn((meterType: string) =>
+      meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : actual.getMeterCalibration(meterType)),
+  };
+});
+
+import { getMeterCalibration } from '$lib/runtime/adapters/capabilities-adapter';
 import {
   normalize,
   formatPowerWatts,
@@ -18,6 +48,11 @@ import {
   peakHoldDisplay,
   type PeakHoldState,
 } from './meter-utils';
+
+beforeEach(() => {
+  vi.mocked(getMeterCalibration).mockImplementation((meterType: string) =>
+    meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : null);
+});
 
 describe('normalize', () => {
   it('returns 0 for raw=0', () => {
@@ -230,6 +265,59 @@ describe('sLevel (calibrated bar)', () => {
   });
   it('returns the +20 marker position for a calibrated +20 dB reading', () => {
     expect(sLevel(20)).toBeCloseTo(200 / 240);
+  });
+});
+
+// ── MOR-1451: no hardcoded per-radio fallback curve for s_meter ────────────
+// A radio whose profile declares no `[meters.s_meter]` table must never
+// borrow another radio's numbers.
+
+describe('formatSMeter / sLevel — uncalibrated fallback (MOR-1451)', () => {
+  beforeEach(() => {
+    vi.mocked(getMeterCalibration).mockImplementation((meterType: string) =>
+      meterType === 's_meter' ? null : IC7610_LIKE_S_METER_CAL);
+  });
+
+  it('formatSMeter renders the plain raw number, not a fabricated S-unit', () => {
+    expect(formatSMeter(53)).toBe('53');
+  });
+
+  it('does NOT render S9+40 for the live-evidence raw value that triggered MOR-1451', () => {
+    expect(formatSMeter(53)).not.toBe('S9+40');
+  });
+
+  it('sLevel degrades to a neutral raw-proportional bar position, not a fabricated calibrated one', () => {
+    expect(sLevel(53)).toBeCloseTo(53 / 255);
+  });
+});
+
+// ── MOR-1451 conformance case: the IC-7300's own curve ──────────────────────
+// `rigs/ic7300.toml` declares 0=S0, 120=S9, 241=S9+60 — distinct from the
+// IC-7610 fixture above (S9 at raw 130). This pins the exact live-evidence
+// regression against MetersDockPanel's "STATION METERS" formatter.
+
+describe('formatSMeter — IC-7300 profile conformance (MOR-1451)', () => {
+  const IC7300_S_METER_CAL = [
+    { raw: 0, actual: -54, label: 'S0' },
+    { raw: 120, actual: 0, label: 'S9' },
+    { raw: 241, actual: 60, label: 'S9+60' },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(getMeterCalibration).mockImplementation((meterType: string) =>
+      meterType === 's_meter' ? IC7300_S_METER_CAL : null);
+  });
+
+  it('0 dB-rel-S9 -> S9 (the documented anchor)', () => {
+    expect(formatSMeter(0)).toBe('S9');
+  });
+
+  it('the calibrated floor -> S0', () => {
+    expect(formatSMeter(-54)).toBe('S0');
+  });
+
+  it('the top anchor -> S9+60', () => {
+    expect(formatSMeter(60)).toBe('S9+60');
   });
 });
 

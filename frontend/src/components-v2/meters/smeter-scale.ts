@@ -1,8 +1,17 @@
 /**
  * S-meter scale mapping utilities.
  *
- * Calibration loaded from /api/v1/capabilities → meterCalibrations.s_meter.
- * Falls back to IC-7610 defaults if no calibration available.
+ * Calibration loaded from /api/v1/capabilities → meterCalibrations.s_meter,
+ * itself sourced from the active radio's `rigs/<rig>.toml` `[meters.s_meter]`
+ * table. Every function below is a GENERIC piecewise-linear reader over
+ * whatever anchor table the profile supplies — there is no vendor branch and
+ * no hardcoded per-radio curve here (MOR-1451).
+ *
+ * A radio whose profile has not declared a curve is UNCALIBRATED:
+ * `isSmeterCalibrated()` is false, and the S-unit/dBm text below degrades to
+ * an honest raw-scale label instead of borrowing another radio's numbers.
+ * Mirrors the backend's own `(value, calibrated)` convention
+ * (`runtime/meter_cal.py interpolate_meter`) on the display side.
  */
 
 import { getSmeterCalibration, getSmeterRedline } from '$lib/stores/capabilities.svelte';
@@ -20,31 +29,27 @@ export interface SmeterMark {
   color: string;
 }
 
-// IC-7610 fallback mirrors rigs/ic7610.toml.
-const DEFAULT_CAL: CalPoint[] = [
-  { raw: 0, actual: -54, label: 'S0' },
-  { raw: 26, actual: -48, label: 'S1' },
-  { raw: 52, actual: -36, label: 'S3' },
-  { raw: 78, actual: -24, label: 'S5' },
-  { raw: 103, actual: -12, label: 'S7' },
-  { raw: 130, actual: 0, label: 'S9' },
-  { raw: 165, actual: 10, label: 'S9+10' },
-  { raw: 200, actual: 20, label: 'S9+20' },
-  { raw: 240, actual: 40, label: 'S9+40' },
-];
-
 const MAX_RAW = 255;
 const S9_DBM = -73;
 
 function getCal(): CalPoint[] {
-  return getSmeterCalibration() ?? DEFAULT_CAL;
+  return getSmeterCalibration() ?? [];
 }
 
-/** Find S9 raw value from calibration. */
+/** True when the active radio profile declared a real s_meter calibration
+ *  table. False means the S-unit/dBm text below must fall back to an honest
+ *  raw-scale label instead of fabricating a reading against a borrowed
+ *  curve (MOR-1451). */
+export function isSmeterCalibrated(): boolean {
+  return getCal().length > 0;
+}
+
+/** Find S9 raw value from calibration; the raw-scale midpoint when
+ *  uncalibrated — a neutral bar-geometry anchor, not a claimed threshold. */
 export function getS9Raw(): number {
   const cal = getCal();
   const s9 = cal.find(p => p.label === 'S9');
-  return s9?.raw ?? 130;
+  return s9?.raw ?? MAX_RAW / 2;
 }
 
 /** Get redline raw value. */
@@ -132,11 +137,15 @@ export function rawToSegments(raw: number): number {
   return 11 + ((v - s9Raw) / (maxRaw - s9Raw)) * 9;
 }
 
-/** Map raw 0-255 to S-unit string, e.g. "S7", "S9+20". */
+/** Map raw 0-255 to S-unit string, e.g. "S7", "S9+20". Falls back to the
+ *  plain raw number (no "S" claim) when the radio has no calibration table
+ *  (MOR-1451) — never a reading borrowed from a different radio's curve. */
 export function rawToSUnit(raw: number): string {
+  const v = Math.max(0, Math.min(MAX_RAW, raw));
+  if (!isSmeterCalibrated()) return String(Math.round(v));
+
   const cal = getCal();
   const s9Raw = getS9Raw();
-  const v = Math.max(0, Math.min(MAX_RAW, raw));
 
   if (v <= s9Raw) {
     const s = Math.floor(rawToSFloat(v));
@@ -155,13 +164,19 @@ export function rawToSUnit(raw: number): string {
   return label;
 }
 
-/** Map raw 0-255 to dBm value (linear interpolation between calibration points). */
+/** Map raw 0-255 to dBm value (linear interpolation between calibration
+ *  points). Passes the raw value straight through when uncalibrated — the
+ *  honest-fallback text functions below detect that state themselves and
+ *  never present the passthrough as a real dBm reading (MOR-1451). */
 export function rawToDbm(raw: number): number {
+  if (!isSmeterCalibrated()) return Math.round(Math.max(0, Math.min(MAX_RAW, raw)));
   return Math.round(interpolate(raw, getCal(), 'actual'));
 }
 
-/** Map calibrated dB-rel-S9 from backend state to the raw axis used by the UI scale. */
+/** Map calibrated dB-rel-S9 from backend state to the raw axis used by the
+ *  UI scale. Identity passthrough when uncalibrated, matching `rawToDbm`. */
 export function calibratedToRaw(actual: number): number {
+  if (!isSmeterCalibrated()) return Math.max(0, Math.min(MAX_RAW, actual));
   return interpolateActual(actual, getCal());
 }
 
@@ -175,11 +190,15 @@ export function calibratedToSUnit(actual: number): string {
   return rawToSUnit(calibratedToRaw(actual));
 }
 
-/** Map calibrated dB-rel-S9 to user-facing dBm referenced to S9=-73 dBm. */
-export function calibratedToDbm(actual: number): number {
+/** Map calibrated dB-rel-S9 to user-facing dBm referenced to S9=-73 dBm.
+ *  `null` when uncalibrated — a dBm figure with no calibration behind it
+ *  would be a fabricated physical unit, not a passthrough (MOR-1451);
+ *  `formatDbm` renders this as an explicit "uncalibrated" label. */
+export function calibratedToDbm(actual: number): number | null {
+  if (!isSmeterCalibrated()) return null;
   const cal = getCal();
-  const minActual = cal[0]?.actual ?? -54;
-  const maxActual = cal[cal.length - 1]?.actual ?? 40;
+  const minActual = cal[0].actual;
+  const maxActual = cal[cal.length - 1].actual;
   const clamped = Math.max(minActual, Math.min(maxActual, actual));
   return Math.round(S9_DBM + clamped);
 }
@@ -209,7 +228,8 @@ export function getScaleMarks(): SmeterMark[] {
 }
 
 /** Format dBm value as display string, e.g. "−67 dBm". Uses Unicode minus. */
-export function formatDbm(dbm: number): string {
+export function formatDbm(dbm: number | null): string {
+  if (dbm === null) return 'uncalibrated';
   const sign = dbm < 0 ? '\u2212' : '+';
   return `${sign}${Math.abs(dbm)} dBm`;
 }
