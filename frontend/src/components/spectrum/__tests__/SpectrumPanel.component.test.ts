@@ -873,16 +873,6 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     ['provider generation', { providerGeneration: 18 }],
     ['physical receiver', { receiver: 1 as const }],
     ['frequency', { frequencyHz: 14_050_300 }],
-    ['mode', { mode: 'LSB' }],
-    ['filter', { filter: 'FIL2' }],
-    ['width', { filterWidthHz: 2_500 }],
-    ['IF shift', { ifShiftHz: 50 }],
-    ['PBT inner', { pbtInnerHz: 50 }],
-    ['PBT outer', { pbtOuterHz: 50 }],
-    ['filter shape', { filterShape: 2 }],
-    ['DATA', { dataMode: 1 }],
-    ['rule', { rule: Object.freeze({ kind: 'step' as const, minHz: 200, maxHz: 5_000, stepHz: 100 }) }],
-    ['scope controls in full digest', { scopeControls: Object.freeze({ mode: 3 }) }],
   ])('rejects final drag after %s drift', (_label, overrides) => {
     const target = mountPanel();
     emitFrame();
@@ -892,6 +882,73 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     authorityHarness.state.current = authority(overrides);
     pointer(spectrum, 'pointerup', 30, 120);
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  // MOR-1497: plain drag-to-pan only moves frequency, so drift in passband
+  // fields it never reads must NOT abort an otherwise-stable pan. Before the
+  // fix these all shared one full-digest recheck with passband-resize, which
+  // made irrelevant field churn spuriously cancel a completed drag.
+  it.each([
+    ['mode', { mode: 'LSB' }],
+    ['filter', { filter: 'FIL2' }],
+    ['width', { filterWidthHz: 2_500 }],
+    ['IF shift', { ifShiftHz: 50 }],
+    ['PBT inner', { pbtInnerHz: 50 }],
+    ['PBT outer', { pbtOuterHz: 50 }],
+    ['filter shape', { filterShape: 2 }],
+    ['DATA', { dataMode: 1 }],
+    ['rule', { rule: Object.freeze({ kind: 'step' as const, minHz: 200, maxHz: 5_000, stepHz: 100 }) }],
+    ['scope controls', { scopeControls: Object.freeze({ mode: 3 }) }],
+  ])('completes final drag despite %s drift, which plain panning does not depend on (MOR-1497)', (_label, overrides) => {
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 33, 100);
+    pointer(spectrum, 'pointermove', 33, 120);
+    authorityHarness.state.current = authority(overrides);
+    pointer(spectrum, 'pointerup', 33, 120);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
+  });
+
+  // MOR-1497 regression: drag-to-pan was gated on completeGestureAuthority(false),
+  // which required mode/filterWidthHz/ifShiftHz to all be non-null. On Icom
+  // radios ifShiftHz is structurally unobservable (PBT-only, no IF-shift
+  // command) so the gate returned null forever and every drag silently
+  // no-op'd behind a grab cursor that promised it would work.
+  it('completes a plain drag when filter width and IF shift are unobserved (MOR-1497)', () => {
+    authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null });
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 40, 100);
+    pointer(spectrum, 'pointermove', 40, 120);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    pointer(spectrum, 'pointerup', 40, 120);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
+  });
+
+  // MOR-1497: the grab cursor is decorative CSS unless it reflects whether a
+  // drag is actually possible — withhold it exactly when the drag-start gate
+  // (frequency authority AND usable sample geometry) would refuse the gesture.
+  it('withholds the draggable cursor class until both frequency authority and scope geometry exist (MOR-1497)', () => {
+    authorityHarness.state.current = authority({ frequencyHz: null });
+    const withoutFreq = mountPanel();
+    expect(withoutFreq.querySelector('.spectrum-area')?.classList.contains('draggable')).toBe(false);
+    expect(withoutFreq.querySelector('.waterfall-content')?.classList.contains('draggable')).toBe(false);
+
+    authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null });
+    const withFreqOnly = mountPanel();
+    // Before the first scope frame the sample geometry is unusable
+    // (endFreq <= startFreq) and handleDragStart would bail — the cursor
+    // must not promise a drag that cannot happen.
+    expect(withFreqOnly.querySelector('.spectrum-area')?.classList.contains('draggable')).toBe(false);
+    expect(withFreqOnly.querySelector('.waterfall-content')?.classList.contains('draggable')).toBe(false);
+
+    emitFrame();
+    expect(withFreqOnly.querySelector('.spectrum-area')?.classList.contains('draggable')).toBe(true);
+    expect(withFreqOnly.querySelector('.waterfall-content')?.classList.contains('draggable')).toBe(true);
   });
 
   it.each([
