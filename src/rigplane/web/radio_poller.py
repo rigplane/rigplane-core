@@ -94,8 +94,15 @@ from ..core.radio_protocol import (
     RelativeVfoReadbackCapable,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
-from ..core.state_store import StateStore
+from ..core.state_store import FreshnessState, StateSnapshot, StateStore
 from ..core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS, TxOutcome
+from ..core.tx_target import (
+    KnownTxTarget,
+    TxReceiver,
+    TxSlot,
+    TxTarget,
+    UnknownTxTarget,
+)
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
@@ -193,6 +200,18 @@ _DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
+
+# Floor for the derived tx_target field's own freshness TTL when a profile
+# has no [state_acquisition] block at all (MOR-1496 review R3, F1 follow-up).
+# ``4 * self._fast_interval`` alone is not a defensible TX-gate horizon: on a
+# LAN profile (``_FAST_INTERVAL`` = 25ms) that floors to 0.1s, which the
+# verifier measured causing 6.6 stale-transitions/s on an idle IC-705 (no
+# [state_acquisition] block). Matches the concrete 3.0s
+# ``freshness_ttl_seconds`` IC-7300's own ``[state_acquisition]`` block
+# already uses for this same field via ``policy_for`` — not the unrelated
+# generic ``AcquisitionPolicy`` dataclass default (15.0s, calibrated for
+# slower-changing fields, not a TX gate).
+_TX_TARGET_MIN_MAX_AGE: float = 3.0
 
 _KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease is ours
 
@@ -1369,6 +1388,22 @@ class RadioPoller:
                                 "radio-poller: unselected-slot poll error",
                                 exc_info=True,
                             )
+
+                # 3b. Re-derive tx_target from currently observed active-VFO
+                # identity/split/frequency facts (MOR-1496). State-store reads
+                # only, no wire I/O. NOT reached on every iteration — the
+                # external-CAT/backoff/dead-link branches above all `continue`
+                # past this — so the field carries its own TTL (F1,
+                # _tx_target_max_age) rather than relying on cadence to
+                # notice a stale input; _publish_tx_target itself skips the
+                # write when nothing changed and the stored entry is still
+                # fresh (F2).
+                try:
+                    self._publish_tx_target()
+                except Exception:
+                    logger.debug(
+                        "radio-poller: tx_target derivation error", exc_info=True
+                    )
 
                 # 4. Wait for next cycle
                 await self._queue.wait(timeout=self._fast_interval)
@@ -3206,6 +3241,204 @@ class RadioPoller:
 
     def _discard_vfo_identity(self, receiver: int) -> None:
         self._state_store.discard(self._vfo_identity_paths(receiver))
+
+    def _tx_target_receiver(self) -> tuple[int, TxReceiver]:
+        """Resolve the receiver index + MAIN/SUB label carrying TX.
+
+        Mirrors :meth:`establish_vfo_identity`'s own resolution (MOR-1443).
+        """
+        receiver = 1 if self._current_active().upper() == "SUB" else 0
+        label: TxReceiver = "SUB" if receiver == 1 else "MAIN"
+        return receiver, label
+
+    @staticmethod
+    def _tx_target_input(
+        snapshot: StateSnapshot, path: FieldPath
+    ) -> tuple[Any, UnknownTxTarget | None]:
+        """Look up one derivation input: ``(value, None)`` if FRESH, else
+        ``(None, UnknownTxTarget(...))`` explaining why it cannot be used."""
+        try:
+            field = snapshot.field(path)
+        except KeyError:
+            return None, UnknownTxTarget(reason="not-observed")
+        if field.freshness is FreshnessState.STALE:
+            return None, UnknownTxTarget(reason="stale")
+        if field.freshness is not FreshnessState.FRESH:
+            return None, UnknownTxTarget(reason="not-observed")
+        return field.value, None
+
+    def _compute_tx_target(self) -> TxTarget:
+        """Derive TX target identity from already-observed CI-V facts (MOR-1496).
+
+        Unlike Yaesu CAT's native ``get_tx_func`` (see
+        ``backends/yaesu_cat/observations.py``), Icom CI-V never reports a TX
+        target directly. The facts that determine it are already tracked
+        independently in the state store: active-VFO identity
+        (``receiver.<rx>.vfo.active_slot``, established once per connect by
+        :meth:`establish_vfo_identity`, MOR-1443, since this CI-V scheme can
+        never passively report which slot is active), split
+        (``global.tx_state.split``, cmd 0x0F), and the selected/unselected
+        frequencies (``receiver.<rx>.[active|unselected].freq_mode.freq_hz``,
+        cmd 0x25).
+
+        Split OFF transmits on the selected-slot frequency; split ON
+        transmits on the OTHER (unselected) slot's frequency — do not copy
+        Yaesu's MAIN/SUB ``get_tx_func`` toggle semantics here, it answers a
+        different question. Any input unobserved or stale fails this closed;
+        each input is re-checked on every call, so the result's freshness is
+        only ever as good as its weakest input.
+
+        Only radios that can never passively report VFO identity
+        (``vfo_readback == "selected_unselected"``, the exact gate
+        :meth:`establish_vfo_identity` uses) get a derivation; other CI-V VFO
+        schemes (absolute readback, MAIN/SUB-only radios like IC-9700/IC-7610)
+        stay ``unsupported`` rather than guess at unvalidated split semantics.
+        """
+        if self._profile.vfo_readback != "selected_unselected":
+            return UnknownTxTarget(reason="unsupported")
+
+        receiver, receiver_label = self._tx_target_receiver()
+        receiver_id = str(receiver)
+        snapshot = self._state_store.snapshot()
+
+        slot, unknown = self._tx_target_input(
+            snapshot, FieldPath.active_slot(receiver_id)
+        )
+        if unknown is not None:
+            return unknown
+        if slot not in ("A", "B"):
+            return UnknownTxTarget(reason="contradiction")
+
+        split_value, unknown = self._tx_target_input(
+            snapshot, FieldPath.global_("tx_state", "split")
+        )
+        if unknown is not None:
+            return unknown
+        split_on = bool(split_value)
+
+        if split_on:
+            freq_path = FieldPath.unselected(receiver_id, "freq_mode", "freq_hz")
+            target_slot: TxSlot = "B" if slot == "A" else "A"
+        else:
+            freq_path = FieldPath.active(receiver_id, "freq_mode", "freq_hz")
+            target_slot = cast(TxSlot, slot)
+
+        frequency, unknown = self._tx_target_input(snapshot, freq_path)
+        if unknown is not None:
+            return unknown
+        if type(frequency) is not int or isinstance(frequency, bool) or frequency <= 0:
+            return UnknownTxTarget(reason="contradiction")
+
+        return KnownTxTarget(
+            receiver=receiver_label,
+            slot=target_slot,
+            frequency_hz=frequency,
+        )
+
+    def _tx_target_max_age(self) -> float:
+        """TTL for the derived ``tx_target`` field itself (review R2, F1).
+
+        Without this, ``StateStore.mark_stale_due`` skips the field forever
+        (it only ages entries with ``max_age`` set — see its own docstring),
+        so a stale input would silently freeze ``tx_target`` at its last
+        FRESH value instead of degrading, a fail-open on a TX gate. Reuses
+        this profile's default acquisition TTL — ``policy_for`` falls back
+        to ``default_policy`` for any path with no declared capability (3.0s
+        on IC-7300) — which needs no capability declaration for
+        ``tx_target`` itself; see :meth:`_publish_tx_target` for why that
+        declaration must never exist. Falls back to ``_TX_TARGET_MIN_MAX_AGE``
+        (floored, not a bare multiple of the poll loop's own fast interval —
+        see that constant's comment) if a profile has no acquisition policy
+        at all.
+        """
+        acquisition = self._profile.state_acquisition
+        ttl = (
+            None
+            if acquisition is None
+            else acquisition.policy_for(
+                FieldPath.global_("tx_state", "tx_target")
+            ).freshness_ttl_seconds
+        )
+        return ttl if ttl is not None else _TX_TARGET_MIN_MAX_AGE
+
+    def _publish_tx_target(self) -> None:
+        """Recompute and, if changed or stale, republish tx_target (MOR-1496).
+
+        Reached only on poll-loop iterations that fall through to step 4 —
+        NOT "every tick": the external-CAT pause and the connection-backoff/
+        dead-link branches above all ``continue`` past this point, so the
+        weakest-input-tracking claim below depends on :meth:`_tx_target_max_age`
+        giving the field its own TTL (F1), not on this being called on a fixed
+        cadence.
+
+        Skips the store write when the recomputed value is unchanged AND the
+        currently stored entry is still comfortably FRESH — under HALF its
+        own TTL old (review R2, F2 + review R3 fix): re-applying an
+        identical value on every reachable tick was bumping the store's
+        global ``observation_seq`` for no semantic change, which busts
+        delivery-key no-op suppression and HTTP 304s for the WHOLE snapshot,
+        not just this field. The half-TTL renew margin is load-bearing, not
+        cosmetic: R2 skipped on value-equality alone with no age check, so on
+        a healthy radio the stored entry's ``last_observed_monotonic`` never
+        advanced between real changes — it aged out under its own TTL and
+        flapped known/unknown every TTL period purely from the skip itself
+        (verifier measured 12 transitions in 18s, each pushing a WS
+        broadcast). A value change, the stored entry crossing the half-TTL
+        mark, or it having aged fully past its own TTL, all still write —
+        the last of those is what lets a healthy-again re-derivation heal
+        the field back to FRESH after it actually went stale.
+
+        Never declare ``global.tx_state.tx_target`` in any profile's
+        polling_only/unsolicited_push capability metadata (rigs/*.toml or
+        ``RadioAcquisitionProfile.field_policies``): its absence from
+        capability metadata is exactly what lets the TTL-driven
+        reconciliation request this ``max_age`` generates drop cleanly
+        instead of looping — ``AcquisitionScheduler.query_for_path`` has no
+        CI-V wire mapping for this derived field, so a declared/pollable
+        capability here would retry forever as ``no_civ_query_mapping``.
+
+        Uses ``apply_current`` (not ``apply``): this runs synchronously off
+        the just-read snapshot with no ``await`` in between, so it always
+        stamps the store's current provider generation.
+        """
+        # IC-705 also has vfo_readback == "selected_unselected" but currently
+        # ships no [state_acquisition] block, so nothing ever actively polls
+        # split for it (AcquisitionScheduler.query_for_path's split mapping
+        # only fires through a scheduler built from that block) — tx_target
+        # is derived here regardless, but will sit at "not-observed" on that
+        # radio until split is ever observed. Tracked as a follow-up; not
+        # fixed here.
+        if self._profile.vfo_readback != "selected_unselected":
+            return
+
+        target = self._compute_tx_target()
+        path = FieldPath.global_("tx_state", "tx_target")
+        max_age = self._tx_target_max_age()
+        now = time.monotonic()
+        try:
+            current = self._state_store.snapshot().field(path)
+        except KeyError:
+            current = None
+        if (
+            current is not None
+            and current.freshness is FreshnessState.FRESH
+            and current.value == target
+            and now - current.last_observed_monotonic < max_age * 0.5
+        ):
+            return
+
+        observation = Observation(
+            path=path,
+            value=target,
+            source=SourceMetadata(
+                source="local_reconcile",
+                provider="icom_civ",
+                native_id="tx_target_derivation",
+            ),
+            timestamp_monotonic=now,
+            max_age=max_age,
+        )
+        self._state_store.apply_current(observation)
 
     async def _select_and_bind_vfo_slot(
         self,
