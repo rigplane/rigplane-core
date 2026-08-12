@@ -460,6 +460,13 @@
               MOR-1425 tuning accumulator's delta — a positive-feedback
               runaway reproduced by the verifier (10 ticks of +10 Hz intent
               measured out to +1910 Hz actual; 30 ticks to +15.7 MHz).
+
+              MOR-1480: this wrapper `<span>` is ALREADY the
+              `[data-vfo-tile]`-wrapped `[data-vfo-freq]` hook
+              `isFrequencyDisplayFocused()` reads (with `data-freq-tunable`
+              on this SAME element, per the tests above) — `vfoFreqHook={false}`
+              stops `FrequencyDisplayInteractive` from nesting a second,
+              redundant `[data-vfo-freq]` inside it.
             -->
             <FrequencyDisplayInteractive
               freq={vfo.frequencyHz ?? 0}
@@ -469,6 +476,7 @@
               active={vfo.isActive}
               receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}
               onFreqChange={(hz) => tuneFrequency(vfo, hz)}
+              vfoFreqHook={false}
             />
           {:else}
             {freq?.text ?? formatFrequency(vfo.frequencyHz)}

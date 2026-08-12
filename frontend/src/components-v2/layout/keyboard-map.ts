@@ -312,10 +312,30 @@ export function isDigitKey(key: string): boolean {
 
 /**
  * MOR-1444: true when the active element is the ACTIVE RECEIVER's
- * VFO/frequency display, or sits inside it. `data-vfo-freq` is the existing
- * production hook on the wrapper `<span>` around `FrequencyDisplayInteractive`
- * in `VfoSurface.svelte` — present for every VFO tile with a tunable
- * frequency, no new markup needed.
+ * VFO/frequency display, or sits inside it. `data-vfo-freq` is a production
+ * hook: `FrequencyDisplayInteractive.svelte` (MOR-1480) emits it — plus its
+ * own `data-vfo-active` mirroring the same `active` prop it already uses for
+ * styling — directly on its focusable root, so EVERY mount of that primitive
+ * self-qualifies with no bespoke wrapper markup required. `VfoSurface.svelte`
+ * additionally wraps it in a `<span data-vfo-freq>` inside a `[data-vfo-tile]`
+ * for its own layout/testing needs; that wrapper carries no `data-vfo-active`
+ * of its own; and other historical structures.
+ *
+ * MOR-1480 (verifier F1, CONFIRMED): the guard originally required an
+ * ANCESTOR `[data-vfo-tile]` to supply `data-vfo-active` — a shape only
+ * `VfoSurface.svelte` produces. That gap was first attributed to the
+ * desktop-v2 HEADER display (`VfoHeader.svelte` -> `VfoPanel.svelte`), which
+ * was WRONG: `VfoHeader` renders on NO shipping skin (`RadioLayout.svelte:83`
+ * `semanticDeck = declared.has('vfo')` is true for every registered manifest;
+ * the legacy else-branch at `RadioLayout.svelte:293-296` is pinned dead by
+ * `semantic-desktop-migration.component.test.ts`, "drops the legacy twin").
+ * Reading the matched `[data-vfo-freq]` element's OWN `data-vfo-active` first
+ * — falling back to the ancestor tile's only when absent — is kept purely as
+ * DEFENSE-IN-DEPTH so any future non-semantic mount is self-sufficient; NO
+ * current mount depends on it (`VfoSurface.svelte` opts out with
+ * `vfoFreqHook={false}`). The bench-observed uncommanded `set_band` + BSR
+ * hops came from the SEMANTIC tree — the `resolveAction()` fall-through now
+ * closed by the swallow-always guard in `KeyboardHandler.svelte`.
  *
  * MOR-1444 B1 (round-2 review, reproduced): `hasTunableFrequency` gates on
  * `isActiveSlot`, not the radio-wide `isActive` (VfoSurface.svelte:258-259)
@@ -324,13 +344,26 @@ export function isDigitKey(key: string): boolean {
  * `view.activeReceiver` (SemanticRadioSurfaces.svelte), so qualifying on
  * `[data-vfo-freq]` alone would let a digit typed on the INACTIVE receiver's
  * display commit to the WRONG VFO — reopening the MOR-1322 B1 / MOR-1335 G4
- * cross-dispatch class. The ancestor `[data-vfo-tile]`'s own
- * `data-vfo-active` flag (VfoSurface.svelte:367) is the same fact
- * `hasTunableFrequency`'s sibling `tuneFrequency` guard reads, so this stays
- * a single source of truth rather than a second derivation.
+ * cross-dispatch class. `data-vfo-active` (own or ancestor-tile) is the same
+ * fact `hasTunableFrequency`'s sibling `tuneFrequency` guard reads and the
+ * same fact `VfoPanel`'s/`VfoHeader`'s callers pass into
+ * `FrequencyDisplayInteractive`'s `active` prop (`extractVfoState`'s
+ * `isActive: activeReceiver === receiver`) — one source of truth, never a
+ * second derivation.
+ *
+ * MOR-1480 owner ruling A: `KeyboardHandler.svelte`'s caller no longer treats
+ * a `false` return here as "let the digit fall through to `resolveAction()`"
+ * — every digit typed on ANY `[data-vfo-freq]` display is swallowed
+ * regardless of this function's answer (see the swallow-always guard in
+ * `handleKeydown`). This function's OWN return value is unchanged: it still
+ * answers "is the ACTIVE receiver's display focused", and the caller still
+ * uses that answer to decide whether to ROUTE the digit into the
+ * frequency-entry input, just no longer whether to swallow it.
  */
 export function isFrequencyDisplayFocused(activeElement: Element | null): boolean {
   const freq = activeElement?.closest('[data-vfo-freq]');
   if (!freq) return false;
+  const ownActive = freq.getAttribute('data-vfo-active');
+  if (ownActive !== null) return ownActive !== 'false';
   return freq.closest('[data-vfo-tile]')?.getAttribute('data-vfo-active') !== 'false';
 }

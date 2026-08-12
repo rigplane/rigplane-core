@@ -40,6 +40,23 @@
      * as every other `primitives/` component.
      */
     pendingAnnouncement?: string;
+    /**
+     * MOR-1480 — when true (the default), this primitive emits its own
+     * `data-vfo-freq` + `data-vfo-active` (mirroring `active`) on its
+     * focusable root, so the MOR-1444 keyboard routing guard
+     * (`isFrequencyDisplayFocused` in `keyboard-map.ts`) recognizes ANY
+     * mount without a bespoke wrapper.
+     * DEFENSE-IN-DEPTH ONLY (verifier F1): no current mount depends on this
+     * — the `VfoPanel`/`VfoHeader` header path it originally targeted renders
+     * on no shipping skin, and `VfoSurface.svelte` (the one live mount) opts
+     * out with `vfoFreqHook={false}`. Kept so a future non-semantic mount of
+     * this primitive self-qualifies without bespoke wrapper markup.
+     * `VfoSurface.svelte` already supplies its own equivalent hook —
+     * on the SAME wrapper element its own tests key `data-freq-tunable` off
+     * of — so it opts out here with `vfoFreqHook={false}` to avoid a second,
+     * nested `[data-vfo-freq]` match for every tunable tile.
+     */
+    vfoFreqHook?: boolean;
   }
 
   let {
@@ -52,6 +69,7 @@
     onFreqChange,
     pendingDisplayHz = null,
     pendingAnnouncement,
+    vfoFreqHook = true,
   }: Props = $props();
 
   const pendingId = $props.id();
@@ -128,6 +146,8 @@
 <div
   class="freq" class:compact class:inactive={!active}
   data-freq-status={pending ? 'pending' : 'confirmed'}
+  data-vfo-freq={vfoFreqHook ? '' : undefined}
+  data-vfo-active={vfoFreqHook ? active : undefined}
   aria-describedby={pending && pendingAnnouncement ? pendingId : undefined}
   style={Object.entries(cssVars).map(([k, v]) => `${k}:${v}`).join(';')}
   tabindex="0" role="group" aria-label="Frequency display" onkeydown={handleKeyDown}
