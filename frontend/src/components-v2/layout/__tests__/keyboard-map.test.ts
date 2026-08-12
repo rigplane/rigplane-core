@@ -229,30 +229,59 @@ describe('isFrequencyDisplayFocused', () => {
       return freq;
     }
 
-    it('is true for the self-attributed [data-vfo-freq] element itself', () => {
-      const freq = buildBareFreqDisplay(true);
-
-      expect(isFrequencyDisplayFocused(freq)).toBe(true);
-
-      freq.remove();
-    });
-
-    it('is true when the active element sits inside a self-attributed active [data-vfo-freq]', () => {
-      const freq = buildBareFreqDisplay(true);
-      const inner = document.createElement('span');
-      freq.appendChild(inner);
-
-      expect(isFrequencyDisplayFocused(inner)).toBe(true);
-
-      freq.remove();
-    });
-
     it('is false when the self-attributed [data-vfo-freq] is marked inactive', () => {
       const freq = buildBareFreqDisplay(false);
 
       expect(isFrequencyDisplayFocused(freq)).toBe(false);
 
       freq.remove();
+    });
+
+    /**
+     * F2 (verifier, confirmed): the two tests this replaced —
+     * "is true for the self-attributed [data-vfo-freq] element itself" and
+     * "...when the active element sits inside a self-attributed active
+     * [data-vfo-freq]" — were VACUOUS pre-fix: with no `[data-vfo-tile]`
+     * ancestor at all, `freq.closest('[data-vfo-tile]')` is `null` on BOTH
+     * the pre-fix and post-fix implementations, so `null?.getAttribute(...)
+     * !== 'false'` evaluates `undefined !== 'false'` — true — regardless of
+     * whether the code reads the element's OWN `data-vfo-active` first. They
+     * passed identically before and after the fix and proved nothing about
+     * the "own attribute wins" behavior the fix actually added.
+     *
+     * These two tests below discriminate: they wrap a self-attributed
+     * `[data-vfo-freq]` in an ANCESTOR `[data-vfo-tile]` whose own
+     * `data-vfo-active` DISAGREES with the element's own attribute. The
+     * pre-fix implementation only ever reads the ancestor tile's flag, so it
+     * gets these backwards; only reading the element's own attribute FIRST
+     * (falling back to the ancestor only when absent) gets them right.
+     */
+    function buildConflictingAncestorTile(ownActive: boolean, tileActive: boolean): HTMLElement {
+      const tile = document.createElement('div');
+      tile.setAttribute('data-vfo-tile', '');
+      tile.setAttribute('data-vfo-active', String(tileActive));
+      const freq = document.createElement('div');
+      freq.setAttribute('data-vfo-freq', '');
+      freq.setAttribute('data-vfo-active', String(ownActive));
+      tile.appendChild(freq);
+      document.body.appendChild(tile);
+      return freq;
+    }
+
+    it('prefers its own data-vfo-active=true over an ancestor [data-vfo-tile] marked inactive', () => {
+      const freq = buildConflictingAncestorTile(true, false);
+
+      expect(isFrequencyDisplayFocused(freq)).toBe(true);
+
+      freq.closest('[data-vfo-tile]')?.remove();
+    });
+
+    it('prefers its own data-vfo-active=false over an ancestor [data-vfo-tile] marked active', () => {
+      const freq = buildConflictingAncestorTile(false, true);
+
+      expect(isFrequencyDisplayFocused(freq)).toBe(false);
+
+      freq.closest('[data-vfo-tile]')?.remove();
     });
   });
 });

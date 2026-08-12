@@ -348,6 +348,15 @@ export function isDigitKey(key: string): boolean {
  * `FrequencyDisplayInteractive`'s `active` prop (`extractVfoState`'s
  * `isActive: activeReceiver === receiver`) — one source of truth, never a
  * second derivation.
+ *
+ * MOR-1480 owner ruling A: `KeyboardHandler.svelte`'s caller no longer treats
+ * a `false` return here as "let the digit fall through to `resolveAction()`"
+ * — every digit typed on ANY `[data-vfo-freq]` display is swallowed
+ * regardless of this function's answer (see the swallow-always guard in
+ * `handleKeydown`). This function's OWN return value is unchanged: it still
+ * answers "is the ACTIVE receiver's display focused", and the caller still
+ * uses that answer to decide whether to ROUTE the digit into the
+ * frequency-entry input, just no longer whether to swallow it.
  */
 export function isFrequencyDisplayFocused(activeElement: Element | null): boolean {
   const freq = activeElement?.closest('[data-vfo-freq]');

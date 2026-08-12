@@ -71,11 +71,15 @@
    * shortcut resolution above — so only the FIRST digit of a typed-entry
    * gesture needs this routing; native typing takes it from there. Resets
    * (rather than appends to) any stale leftover value, since this is the
-   * start of a fresh gesture. Returns false — letting the caller fall
-   * through to normal band-hotkey resolution — when the entry surface isn't
+   * start of a fresh gesture. Returns false when the entry surface isn't
    * mounted or is disabled (no band group on this skin, or BandSurface's own
    * MOR-1322/rule-5 fail-closed gates: active receiver or tuning bounds not
    * yet known).
+   *
+   * MOR-1480 owner ruling A: a false return no longer sends the caller on to
+   * band-hotkey resolution — see the swallow-always guard in `handleKeydown`
+   * below. This function only ever decides whether the digit gets ROUTED,
+   * never whether it gets SWALLOWED.
    */
   function routeDigitToFrequencyEntry(digit: string): boolean {
     const input = document.querySelector<HTMLInputElement>('[data-freq-entry]');
@@ -99,20 +103,36 @@
     // browser or OS shortcut (Cmd+1 switches tabs in most browsers), never a
     // frequency-entry keystroke — it must reach neither the entry input nor
     // preventDefault().
+    //
+    // MOR-1480 owner ruling A (post-verifier BLOCKED, explicit): a digit
+    // typed while focus is on ANY VFO frequency display — active OR
+    // inactive receiver, entry input present/enabled or not — must NEVER
+    // resolve as a band hotkey. This deliberately REVERSES the MOR-1444 B1
+    // recorded behavior for the INACTIVE-receiver case, where a digit used
+    // to fall through to `resolveAction()` and band-hop; on the inactive
+    // display it now routes nothing AND band-hops nothing. The swallow
+    // decision below keys off `[data-vfo-freq]` alone — ANY VFO display,
+    // regardless of `data-vfo-active` — via a direct DOM probe rather than
+    // `isFrequencyDisplayFocused()`, which is still consulted but only to
+    // decide whether to actually ROUTE the digit into the frequency-entry
+    // input: an inactive-receiver digit is swallowed but never routed, so it
+    // can't commit to the wrong VFO (see that function's MOR-1444 B1 doc in
+    // keyboard-map.ts).
     if (
       isDigitKey(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey
-      && isFrequencyDisplayFocused(document.activeElement)
+      && document.activeElement?.closest('[data-vfo-freq]')
     ) {
-      if (routeDigitToFrequencyEntry(event.key)) {
-        // MOR-1444 B2 (round-2 review): mirrors the MOR-1449 Tab guard
-        // immediately below — an early return must still disarm a pending
-        // leader sequence, or the pill stays armed and a later keystroke
-        // (once focus leaves the now-focused, ignored-tag entry input) can
-        // complete an unintended leader sequence.
-        if (pendingSequence) clearLeaderState();
-        event.preventDefault();
-        return;
+      if (isFrequencyDisplayFocused(document.activeElement)) {
+        routeDigitToFrequencyEntry(event.key);
       }
+      // MOR-1444 B2 (round-2 review): mirrors the MOR-1449 Tab guard
+      // immediately below — an early return must still disarm a pending
+      // leader sequence, or the pill stays armed and a later keystroke
+      // (once focus leaves the now-focused, ignored-tag entry input) can
+      // complete an unintended leader sequence.
+      if (pendingSequence) clearLeaderState();
+      event.preventDefault();
+      return;
     }
 
     // MOR-1449: Tab is reserved for the browser's native focus traversal and

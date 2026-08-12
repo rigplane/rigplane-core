@@ -3,6 +3,8 @@ import { flushSync, mount, unmount } from 'svelte';
 
 import KeyboardHandler from '../KeyboardHandler.svelte';
 import type { KeyboardConfig, KeyboardActionConfig } from '../keyboard-map';
+import VfoSurface from '../../../semantic/VfoSurface.svelte';
+import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 
 describe('KeyboardHandler', () => {
   let components: ReturnType<typeof mount>[] = [];
@@ -313,20 +315,35 @@ describe('KeyboardHandler', () => {
       );
     });
 
-    it('falls back to the band hotkey when the VFO display is focused but no entry input exists', () => {
+    // MOR-1480 owner ruling A (post-verifier BLOCKED, explicit): reverses
+    // this test's pre-ruling expectation. A digit typed while the VFO
+    // display has focus must NEVER resolve as a band hotkey, even when the
+    // entry surface isn't mounted at all (no band group on this skin, or
+    // BandSurface not yet rendered) — it is swallowed instead.
+    it('swallows the digit — never the band hotkey — when the VFO display is focused but no entry input exists', () => {
       const onAction = vi.fn();
       mountHandler({ config: configWithDigitBinding, onAction });
       const vfoFocusTarget = appendVfoFreqDisplay();
       vfoFocusTarget.focus();
 
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
 
-      expect(onAction).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
       );
+      // Nothing to route into — focus stays put, exactly as routing would
+      // leave it when the entry input is absent.
+      expect(document.activeElement).toBe(vfoFocusTarget);
     });
 
-    it('falls back to the band hotkey when the entry input is disabled', () => {
+    // MOR-1480 owner ruling A: reverses this test's pre-ruling expectation.
+    // A digit typed while the VFO display has focus must NEVER resolve as a
+    // band hotkey, even when BandSurface's own MOR-1322/rule-5 fail-closed
+    // gates have disabled the entry input (active receiver or tuning bounds
+    // not yet known) — it is swallowed instead of falling through.
+    it('swallows the digit — never the band hotkey — when the entry input is disabled', () => {
       const onAction = vi.fn();
       mountHandler({ config: configWithDigitBinding, onAction });
       const vfoFocusTarget = appendVfoFreqDisplay();
@@ -334,10 +351,12 @@ describe('KeyboardHandler', () => {
       entryInput.disabled = true;
       vfoFocusTarget.focus();
 
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
 
-      expect(onAction).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
       );
       expect(entryInput.value).toBe('');
     });
@@ -348,20 +367,27 @@ describe('KeyboardHandler', () => {
     // radio-wide isActive. enterFrequency() always writes view.activeReceiver
     // (SemanticRadioSurfaces.svelte), so routing a digit typed on the
     // INACTIVE receiver's display would silently commit to the WRONG VFO —
-    // reopening the MOR-1322 B1 / MOR-1335 G4 cross-dispatch class. Digits
-    // must fall through to the band hotkey here exactly as if no VFO display
-    // were focused at all.
-    it('falls back to the band hotkey when the focused VFO tile is not the active receiver', () => {
+    // reopening the MOR-1322 B1 / MOR-1335 G4 cross-dispatch class.
+    //
+    // MOR-1480 owner ruling A (post-verifier BLOCKED, explicit): REVERSES
+    // this test's original "falls back to the band hotkey" expectation.
+    // Owner ruled that a digit typed while focus is on ANY VFO display —
+    // including the INACTIVE receiver's — must never band-hop either. The
+    // digit is now swallowed: no routing (still protects against the
+    // wrong-VFO commit above) AND no band hotkey.
+    it('swallows the digit — routing nothing and band-hopping nothing — when the focused VFO tile is not the active receiver', () => {
       const onAction = vi.fn();
       mountHandler({ config: configWithDigitBinding, onAction });
       const vfoFocusTarget = appendVfoFreqDisplay({ active: false });
       const entryInput = appendFreqEntryInput();
       vfoFocusTarget.focus();
 
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
 
-      expect(onAction).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
       );
       expect(entryInput.value).toBe('');
       expect(document.activeElement).toBe(vfoFocusTarget);
@@ -424,18 +450,24 @@ describe('KeyboardHandler', () => {
     );
   });
 
-  // MOR-1480 — reproduced: the MOR-1444 guard above only recognized
-  // VfoSurface.svelte's `[data-vfo-tile]`-wrapped `[data-vfo-freq]` shape.
-  // desktop-v2's HEADER VFO display (VfoHeader.svelte -> VfoPanel.svelte)
-  // mounts `FrequencyDisplayInteractive` directly, with no `[data-vfo-tile]`
-  // ancestor — so a digit typed while it had focus fell through to
-  // `resolveAction()` and fired a real `band_select` hotkey (bench log
-  // pattern: typed digits produced uncommanded `set_band` + BSR band-recall
-  // traffic on the radio). This mounts the REAL `FrequencyDisplayInteractive`
-  // primitive standalone — the same shape `VfoPanel.svelte` renders it in —
-  // to prove the routing guard now recognizes it without any
-  // `[data-vfo-tile]` wrapper.
-  describe('digit routing from a bare FrequencyDisplayInteractive mount, no [data-vfo-tile] ancestor (MOR-1480)', () => {
+  // MOR-1480 verifier finding F1 (confirmed): `VfoHeader.svelte`/
+  // `VfoPanel.svelte` — the desktop-v2 HEADER VFO display this block
+  // originally targeted — never actually renders on any shipping skin
+  // (`RadioLayout.svelte:83` `semanticDeck` is true for every registered
+  // manifest; `VfoHeader` is the dead else-branch, pinned by
+  // `semantic-desktop-migration.component.test.ts` "drops the legacy twin").
+  // The live bug lives in the SEMANTIC tree instead — see the
+  // "digit routing against the real semantic VfoSurface tree" describe block
+  // below, which is the actual mechanism reproduction and fix verification.
+  //
+  // This block is kept as DEFENSE-IN-DEPTH coverage for
+  // `FrequencyDisplayInteractive`'s own `vfoFreqHook` self-attribution
+  // (`data-vfo-freq` + `data-vfo-active` on its own focusable root): it
+  // makes the primitive self-sufficient for any FUTURE non-semantic mount
+  // (e.g. a revived header), even though no current mount depends on it —
+  // `VfoSurface.svelte` opts out via `vfoFreqHook={false}` and supplies its
+  // own equivalent `[data-vfo-tile]`-wrapped `[data-vfo-freq]` hook instead.
+  describe('digit routing from a bare FrequencyDisplayInteractive mount, no [data-vfo-tile] ancestor — defense-in-depth for the primitive-level self-hook, not the live bug (MOR-1480)', () => {
     const configWithDigitBinding: KeyboardConfig = {
       ...config,
       bindings: [
@@ -492,20 +524,166 @@ describe('KeyboardHandler', () => {
       expect(entryInput.value).toBe('7');
     });
 
-    // Mirrors the MOR-1444 B1 dual-receiver protection: a standalone mount
-    // marked inactive (the non-active receiver's header tile) must still
-    // fall through to the band hotkey, not commit to the wrong VFO.
-    it('still falls through to the band hotkey when the standalone display is marked inactive', async () => {
+    // MOR-1480 owner ruling A: REVERSES this test's original "falls through
+    // to the band hotkey" expectation for the inactive-receiver case — a
+    // standalone mount marked inactive must swallow the digit (routing
+    // nothing, to avoid committing to the wrong VFO) AND never band-hop.
+    it('swallows the digit — routing nothing and band-hopping nothing — when the standalone display is marked inactive', async () => {
       const onAction = vi.fn();
       mountHandler({ config: configWithDigitBinding, onAction });
       const freqDisplay = await mountBareFrequencyDisplay(false);
       const entryInput = appendFreqEntryInput();
       freqDisplay.focus();
 
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
 
-      expect(onAction).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
+      );
+      expect(entryInput.value).toBe('');
+      expect(document.activeElement).toBe(freqDisplay);
+    });
+  });
+
+  // MOR-1480 — the ACTUAL live mechanism (verifier F1a) and owner ruling A,
+  // reproduced and verified against the REAL semantic tree instead of
+  // hand-rolled DOM or the dead header path: `VfoSurface.svelte`, mounted
+  // for real via the `2/main_sub` topology fixture. `hasTunableFrequency`
+  // gates on `isActiveSlot`, not radio-wide `isActive`
+  // (`VfoSurface.svelte:269`), so the fixture's SUB-A tile
+  // (`isActiveSlot: true`, `isActive: false`) mounts a focusable, tunable
+  // `[data-vfo-freq]` display while MAIN-A is the radio's active receiver —
+  // exactly the dual-receiver shape `BandSurface.svelte` and
+  // `SemanticRadioSurfaces.svelte` produce on the bench.
+  describe('digit routing against the real semantic VfoSurface tree (MOR-1480 mechanism + owner ruling A)', () => {
+    const configWithDigitBinding: KeyboardConfig = {
+      ...config,
+      bindings: [
+        ...config.bindings,
+        {
+          id: 'band-7',
+          section: 'Band',
+          label: 'Select band 7',
+          sequence: ['7'],
+          action: 'band_select',
+          params: { index: 7 },
+        },
+      ],
+    };
+
+    function mountRealVfoSurface(): HTMLElement {
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      const component = mount(VfoSurface, {
+        target,
+        props: { viewModel: topologyFixtures['2/main_sub'], onTuneFrequency: vi.fn() },
+      });
+      flushSync();
+      components.push(component);
+      return target;
+    }
+
+    function appendFreqEntryInput(): HTMLInputElement {
+      const input = document.createElement('input');
+      input.setAttribute('data-freq-entry', '');
+      document.body.appendChild(input);
+      return input;
+    }
+
+    /** The focusable root FrequencyDisplayInteractive mounts for a given receiver's active-slot tile. */
+    function focusTargetFor(surface: HTMLElement, receiver: 'MAIN' | 'SUB'): HTMLElement {
+      const el = surface.querySelector<HTMLElement>(
+        `[data-vfo-tile][data-vfo-receiver="${receiver}"] .freq`,
+      );
+      if (!el) throw new Error(`no tunable .freq found for receiver ${receiver}`);
+      return el;
+    }
+
+    // Verifier F1a mechanism, reproduced against the real tree: BandSurface
+    // disables/removes `[data-freq-entry]` when the active receiver or
+    // tuning bounds aren't yet known (`BandSurface.svelte:367-368`).
+    // `routeDigitToFrequencyEntry` returns `false` in both cases — pre-fix,
+    // the caller fell through to `resolveAction()` and fired `band_select`.
+    it('swallows the digit — no band_select — when the entry input is absent, focus on the real ACTIVE tile', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const surface = mountRealVfoSurface();
+      const freqDisplay = focusTargetFor(surface, 'MAIN');
+      freqDisplay.focus();
+      expect(document.activeElement).toBe(freqDisplay);
+
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
+      );
+    });
+
+    it('swallows the digit — no band_select, no routing — when the entry input is disabled, focus on the real ACTIVE tile', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const surface = mountRealVfoSurface();
+      const entryInput = appendFreqEntryInput();
+      entryInput.disabled = true;
+      const freqDisplay = focusTargetFor(surface, 'MAIN');
+      freqDisplay.focus();
+
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
+      );
+      expect(entryInput.value).toBe('');
+    });
+
+    // Repairs/keeps the "active display routes into the entry" case against
+    // the real tree (not just the hand-rolled MOR-1444 block above).
+    it('routes the digit into the frequency-entry input when the real ACTIVE tile is focused and the entry is enabled', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const surface = mountRealVfoSurface();
+      const entryInput = appendFreqEntryInput();
+      const freqDisplay = focusTargetFor(surface, 'MAIN');
+      freqDisplay.focus();
+
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
+      );
+      expect(document.activeElement).toBe(entryInput);
+      expect(entryInput.value).toBe('7');
+    });
+
+    // MOR-1480 owner ruling A, reproduced against the real tree: SUB-A is
+    // tunable (`isActiveSlot: true`) but NOT the active receiver
+    // (`isActive: false`, MAIN is active in this fixture). Pre-rework code
+    // (isFrequencyDisplayFocused gating the swallow decision) fell through
+    // to resolveAction() and fired band_select here — this test must FAIL
+    // on that pre-rework code (see red-phase verification).
+    it('swallows the digit — no routing, no band_select — when the real INACTIVE-receiver tile is focused', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const surface = mountRealVfoSurface();
+      const entryInput = appendFreqEntryInput();
+      const freqDisplay = focusTargetFor(surface, 'SUB');
+      freqDisplay.focus();
+      expect(document.activeElement).toBe(freqDisplay);
+
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
       );
       expect(entryInput.value).toBe('');
       expect(document.activeElement).toBe(freqDisplay);
