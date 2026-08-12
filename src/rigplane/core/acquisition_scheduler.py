@@ -48,12 +48,38 @@ __all__ = [
     "RadioStateModelService",
     "StateFreshnessService",
     "civ_acquisition_executor_for_provider",
+    "split_ctl_mem_sub",
 ]
 
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
-AcquisitionQuerySender = Callable[[int, int | None, int | None], Awaitable[None]]
+# ``sub`` is normally a single CI-V sub-command byte (or ``None`` for a
+# no-sub-byte read). It is ``bytes`` only for multi-byte ctl-mem
+# sub-addressing (0x1A/0x05 "quick set" reads, e.g. voxDelay's 2-byte control
+# number, MOR-1483): the first byte is the CI-V sub-command byte and any
+# remaining bytes are additional payload data that must follow it in the
+# frame. Both ``AcquisitionQuerySender`` implementations (web radio_poller,
+# rigctld) must split it via ``split_ctl_mem_sub`` before building the frame.
+AcquisitionQuerySender = Callable[
+    [int, int | bytes | None, int | None], Awaitable[None]
+]
 CivCmd29Support = Callable[[int, int | None], bool]
+
+
+def split_ctl_mem_sub(sub: int | bytes | None) -> tuple[int | None, bytes]:
+    """Split an ``AcquisitionQuerySender`` ``sub`` element into CI-V parts.
+
+    Returns ``(civ_sub, extra_data)`` where ``civ_sub`` is the single byte to
+    pass as the CI-V frame's sub-command field and ``extra_data`` is any
+    additional payload bytes that must follow it (empty for the common
+    single-byte-or-none case). Shared by both backend executors so the
+    multi-byte ctl-mem representation (see ``AcquisitionQuerySender``) is
+    decoded identically everywhere.
+    """
+
+    if isinstance(sub, (bytes, bytearray)):
+        return (sub[0] if sub else None), bytes(sub[1:])
+    return sub, b""
 
 
 class AcquisitionPriority(StrEnum):
@@ -284,6 +310,21 @@ _GLOBAL_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
     # 3-valued rather than a plain toggle.
     "break_in": (0x16, 0x47),
 }
+# Global operator-control reads that need the 0x1A ctl-mem ("quick set")
+# multi-byte sub-address (MOR-1483): the CI-V sub-command byte (0x05)
+# followed by a 2-byte per-model control number, packed together as
+# ``bytes`` (see ``AcquisitionQuerySender``'s docstring for the split
+# convention). Pinned to IC-7300's control number -- the live reference
+# profile (``rigs/ic7300.toml``'s ``get_vox_delay`` = ``1A 05 01 91``). This
+# mapping is shared across every icom_civ/xiegu_civ profile and has no
+# per-instance radio-model injection, so it cannot vary the control number
+# per model; IC-7610 is retired hardware
+# (docs/validation/cat-audits/ic7610.md: ``1A 05 0292``) and unverifiable on
+# real hardware, so a primed voxDelay read routed through this mapping on an
+# IC-7610 profile would address the wrong ctl-mem register.
+_GLOBAL_CTL_MEM_QUERIES: dict[str, bytes] = {
+    "vox_delay": b"\x05\x01\x91",
+}
 _GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
     "power": 0x11,
     "swr": 0x12,
@@ -331,6 +372,7 @@ class IcomCivAcquisitionExecutor:
                 receiver is not None
                 and command not in (0x25, 0x26)
                 and self._supports_cmd29 is not None
+                and not isinstance(sub, (bytes, bytearray))
                 and not self._supports_cmd29(command, sub)
             ):
                 if receiver != 0:
@@ -349,7 +391,7 @@ class IcomCivAcquisitionExecutor:
     def query_for_path(
         self,
         path: FieldPath,
-    ) -> tuple[int, int | None, int | None] | None:
+    ) -> tuple[int, int | bytes | None, int | None] | None:
         receiver = _RECEIVER_IDS.get(path.receiver_id or "")
         if path.scope.value == "receiver" and receiver is None:
             return None
@@ -401,6 +443,9 @@ class IcomCivAcquisitionExecutor:
         if path.scope.value == "global" and path.family.value == "operator_controls":
             if path.name == "rit_freq":
                 return (0x21, 0x00, None)
+            ctl_mem = _GLOBAL_CTL_MEM_QUERIES.get(path.name)
+            if ctl_mem is not None:
+                return (0x1A, ctl_mem, None)
             nonlevel = _GLOBAL_NONLEVEL_QUERIES.get(path.name)
             if nonlevel is not None:
                 return (nonlevel[0], nonlevel[1], None)

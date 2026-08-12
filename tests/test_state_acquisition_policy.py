@@ -678,7 +678,9 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
     acquisition = profile.state_acquisition
     assert acquisition is not None
 
-    async def _noop_send(command: int, sub: int | None, receiver: int | None) -> None:
+    async def _noop_send(
+        command: int, sub: int | bytes | None, receiver: int | None
+    ) -> None:
         return None
 
     executor = IcomCivAcquisitionExecutor(_noop_send)
@@ -699,6 +701,11 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
         ("receiver", "freq_mode", "filter_width"),
         ("global", "operator_controls", "cw_pitch"),
         ("global", "operator_controls", "key_speed"),
+        # MOR-1483 (leg 2): voxDelay's ctl-mem (0x1A/0x05) ingress decode is a
+        # hardcoded branch keyed by a 2-byte control-number prefix, not a
+        # dict entry keyed by a plain sub byte -- same shape as the other
+        # entries in this set.
+        ("global", "operator_controls", "vox_delay"),
     }
     table_observable = set(_civ_rx._OBSERVABLE_CMD14_FIELDS.values())
     table_observable |= set(_civ_rx._OBSERVABLE_CMD15_FIELDS.values())

@@ -193,14 +193,17 @@ command_response_observable = [
     # MOR-1483 (field-policy membership wave, leg 1): VOX/MON toggles.
     # Non-polling (command_response only) — riding the MOR-1490
     # prime_unobserved mechanism rather than a poll cadence; see the
-    # field_policies comment below. voxDelay (1A-05 ctl-mem 02-92) is NOT
-    # added here: its ingress decode already exists
-    # (``_CTL_MEM_VOX_DELAY_PREFIX``), but the scheduler's acquisition
-    # executor has no query builder for 2-byte ctl-mem sub-addressing
-    # (``AcquisitionQuerySender`` is a 3-tuple command/sub/receiver only) —
-    # that's new mechanism, not a table entry, so it's out of scope here.
+    # field_policies comment below.
     "global.tx_state.vox_on",
     "global.tx_state.monitor_on",
+    # MOR-1483 (leg 2): voxDelay (1A-05 ctl-mem 01-91, this radio's control
+    # number — see docs/validation/cat-audits/ic7300.md) is now addable:
+    # AcquisitionQuerySender's ``sub`` element can carry the CI-V sub-command
+    # byte plus the 2-byte ctl-mem control number as ``bytes``
+    # (IcomCivAcquisitionExecutor._GLOBAL_CTL_MEM_QUERIES), and the ingress
+    # decode already matches this prefix too. Non-polling, same
+    # prime_unobserved mechanism as the toggles above.
+    "global.operator_controls.vox_delay",
     # MOR-1491 (field-policy membership wave, leg 2): filter/PBT facts.
     "receiver.main.active.freq_mode.filter_width",
     "receiver.main.operator_controls.filter_shape",
@@ -370,6 +373,14 @@ reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.monitor_on"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+# MOR-1483 (leg 2): voxDelay joins the same non-polling membership as the
+# VOX/MON toggles above.
+[state_acquisition.field_policies."global.operator_controls.vox_delay"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"

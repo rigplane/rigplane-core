@@ -82,6 +82,7 @@ from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
     civ_acquisition_executor_for_provider,
+    split_ctl_mem_sub,
 )
 from ..core.state_pipeline_contracts import (
     CommandSource,
@@ -918,7 +919,7 @@ class RadioPoller:
     async def _send_one_state_query(
         self,
         cmd_byte: int,
-        sub_byte: int | None,
+        sub_byte: int | bytes | None,
         receiver: int | None,
         *,
         priority: Priority = Priority.BACKGROUND,
@@ -931,6 +932,11 @@ class RadioPoller:
         here are fire-and-forget (``wait_dispatch=False``) so the poll burst
         does not park the poll loop on the commander future (MOR-497ii); the
         response still arrives via the CI-V RX path.
+
+        ``sub_byte`` is ``bytes`` only for multi-byte ctl-mem sub-addressing
+        (0x1A/0x05 "quick set" reads, e.g. voxDelay, MOR-1483) — always a
+        global (``receiver is None``) read today, so only the final
+        non-receiver, non-scope branch below needs to split it.
         """
         if (
             receiver is None
@@ -945,6 +951,9 @@ class RadioPoller:
                 wait_dispatch=False,
             )
         elif receiver is not None:
+            assert not isinstance(sub_byte, (bytes, bytearray)), (
+                "multi-byte ctl-mem sub-addressing is global-only (receiver=None)"
+            )
             if cmd_byte in (0x25, 0x26):
                 await self._civ(
                     cmd_byte,
@@ -964,6 +973,7 @@ class RadioPoller:
             scope_rx = 0
             if self._radio_state:
                 scope_rx = self._radio_state.scope_controls.receiver
+            assert isinstance(sub_byte, int)
             await self._civ(
                 cmd_byte,
                 sub=sub_byte,
@@ -972,10 +982,11 @@ class RadioPoller:
                 wait_dispatch=False,
             )
         else:
+            civ_sub, extra_data = split_ctl_mem_sub(sub_byte)
             await self._civ(
                 cmd_byte,
-                sub=sub_byte,
-                data=b"",
+                sub=civ_sub,
+                data=extra_data,
                 priority=priority,
                 wait_dispatch=False,
             )
