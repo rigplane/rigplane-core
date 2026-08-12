@@ -161,6 +161,47 @@ export function getRadioHealth(): RadioHealth | null {
   return radioHealth;
 }
 
+// MOR-1526: "Radio ↔ Server" chip honesty. `radioStatus` above is an
+// event-only field — its ONLY writer is the reconnect-edge `connection_status`
+// WS event (ws-client.ts), which the backend emits solely on reconnect edges
+// (watchdog-timeout / attempt / success / permanent-failure — see
+// runtime/radio_reconnect.py). A session that never reconnects never
+// receives that event, so `radioStatus` sits at its default 'disconnected'
+// forever — red on a perfectly healthy link. This is the same class of bug
+// MOR-1419 fixed for the neighboring `httpState` chip by switching it to a
+// live, continuously-synced fact instead of an edge-triggered one; applied
+// here to the radio-link chip, additively — `radioStatus`/`setRadioStatus`/
+// `getRadioStatus` are unchanged and still drive the reconnect overlay.
+//
+// Precedence: while a reconnect is actively in flight, the event stream is
+// the only source that knows it ("still trying", attempt N) — overlay it.
+// Otherwise (including first render, before any reconnect has ever fired)
+// the steady state comes from live per-field facts synced on every
+// state_update (rigConnected/radioReady/radioHealth — radio.svelte.ts),
+// never from an event that may simply never arrive. `wsConnected` gates the
+// whole thing because rigConnected/radioReady/radioHealth are themselves
+// only refreshed by state_update messages and go stale (not reset) the
+// instant the transport drops — without this gate a real disconnect would
+// keep showing the last-known-good facts, reproducing the same class of lie
+// this fix removes.
+let radioLinkSteady = $derived<'connected' | 'disconnected'>(
+  wsConnected
+    && rigConnected
+    && radioReady
+    && radioHealth?.serverReachable !== false
+    && (radioHealth == null || radioHealth.radioLink === 'connected')
+    ? 'connected'
+    : 'disconnected',
+);
+
+let radioLinkState = $derived<'connected' | 'connecting' | 'reconnecting' | 'disconnected'>(
+  radioStatus === 'connecting' || radioStatus === 'reconnecting' ? radioStatus : radioLinkSteady,
+);
+
+export function getRadioLinkState(): 'connected' | 'connecting' | 'reconnecting' | 'disconnected' {
+  return radioLinkState;
+}
+
 export function isLiveRadioAvailable(): boolean {
   if (!radioHealth) {
     return radioReady;

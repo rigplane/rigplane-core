@@ -59,7 +59,7 @@
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
   import {
-    getRadioStatus,
+    getRadioLinkState,
     getConnectionStatus,
     isAudioConnected,
     getWsConnected,
@@ -128,8 +128,14 @@
         : t('core.statusbar.power.toggleUnknown')
   );
 
-  // When radio is powered off, override statuses that depend on the radio
-  let radioState = $derived(isPoweredOff ? 'disconnected' : getRadioStatus());
+  // When radio is powered off, override statuses that depend on the radio.
+  // MOR-1526: `radioState` is the "Radio ↔ Server" chip's steady state,
+  // derived from live per-field facts (rigConnected/radioReady/radioHealth),
+  // overlaid by the reconnect-edge event stream only while a reconnect is
+  // actively in flight — see `getRadioLinkState` in connection.svelte.ts for
+  // the precedence rationale. Fixes: a fresh, healthy, no-reconnect session
+  // used to read the event-only default ('disconnected') forever.
+  let radioState = $derived(isPoweredOff ? 'disconnected' : getRadioLinkState());
   let controlState = $derived(getConnectionStatus()); // server link — always real
   let scopeState = $derived(
     deriveScopeIndicatorState(runtime.defaultScopeStatus, isPoweredOff),
