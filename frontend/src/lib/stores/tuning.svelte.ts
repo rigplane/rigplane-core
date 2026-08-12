@@ -82,7 +82,19 @@ export function setTuningStep(hz: number): void {
   _persistState();
 }
 
-/** Update step from companion (RC-28) without affecting auto-step preference. */
+/**
+ * Update step from a companion device (RC-28).
+ *
+ * MOR-1442: a companion step change is a real operator action on a
+ * step-labeled control — just a physical one, external to the browser —
+ * so it must disable auto-step exactly like the browser's own STEP
+ * control (`setTuningStep`) does. Previously this left `_autoStep` on,
+ * so the very next radio-reported mode change (e.g. the radio's own
+ * band-stack-register mode recall while jump-tuning across the
+ * waterfall) replayed `applyModeDefault()` and silently discarded the
+ * companion-set step back to the per-mode default, with no action on
+ * any control in the browser session at all.
+ */
 export function setTuningStepFromCompanion(hz: number): void {
   if (!(TUNING_STEPS as readonly number[]).includes(hz)) {
     return;
@@ -91,6 +103,7 @@ export function setTuningStepFromCompanion(hz: number): void {
     return; // no change — avoid redundant PUT back
   }
   _step = hz;
+  _autoStep = false; // manual override (via companion) disables auto, same as setTuningStep
   _persistState();
 }
 
