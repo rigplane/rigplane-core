@@ -23,6 +23,12 @@
 
   let toasts = $state<ToastItem[]>([]);
 
+  /**
+   * Auto-dismiss delay for non-error toasts (info/warning), ms. One knob —
+   * do not hardcode per-toast timeouts elsewhere.
+   */
+  const AUTO_DISMISS_MS = 5_000;
+
   function dismiss(id: string) {
     toasts = toasts.filter((t) => t.id !== id);
   }
@@ -35,7 +41,17 @@
   ) {
     const id = makeCommandId();
     toasts = [...toasts, { id, level, message, code, params }];
-    setTimeout(() => dismiss(id), 5_000);
+    // MOR-1489: error toasts stay on screen until the operator dismisses
+    // them (click anywhere on the toast — the existing close affordance).
+    // WCAG 2.2.1 (Timing Adjustable) recommends that time-limited messages
+    // conveying important information — errors in particular — either not
+    // time out or let the user extend/disable the limit; operators on the
+    // bench reported error toasts (e.g. a command-failure notification)
+    // disappearing before they could read them. Info/warning toasts are
+    // transient status updates and keep the timed auto-dismiss.
+    if (level !== 'error') {
+      setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
+    }
   }
 
   /**

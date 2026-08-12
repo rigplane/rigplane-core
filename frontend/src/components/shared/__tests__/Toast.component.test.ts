@@ -41,17 +41,41 @@ let host: HTMLDivElement;
 let app: ReturnType<typeof mount> | null = null;
 
 // jsdom lacks Web Animations API; Svelte's `fly` transition calls
-// `element.animate(...)`. Stub with a noop animation so the toast mounts.
+// `element.animate(...)` and then assigns `animation.onfinish` itself to
+// know when the outro transition has completed and the element can be
+// removed from the DOM (see svelte/internal/client/dom/elements/transitions).
+// A stub that never invokes `onfinish` leaves dismissed toasts stuck in the
+// DOM forever, which would falsely fail every dismissal assertion below.
+// Schedule the completion via `setTimeout` (honoring the animation's own
+// `duration`) so it plays nicely with `vi.useFakeTimers()`.
 if (typeof (Element.prototype as any).animate !== 'function') {
-  (Element.prototype as any).animate = function animate(): Animation {
-    return {
-      cancel() {},
-      finish() {},
-      onfinish: null,
+  (Element.prototype as any).animate = function animate(
+    _keyframes: unknown,
+    options?: number | { duration?: number },
+  ): Animation {
+    const duration = typeof options === 'number' ? options : (options?.duration ?? 0);
+    const fake = {
+      playState: 'running' as AnimationPlayState,
+      currentTime: 0,
+      onfinish: null as (() => void) | null,
       oncancel: null,
+      cancel() {
+        fake.playState = 'idle';
+      },
+      finish() {
+        fake.playState = 'finished';
+        fake.onfinish?.();
+      },
       addEventListener() {},
       removeEventListener() {},
-    } as unknown as Animation;
+    };
+    setTimeout(() => {
+      if (fake.playState === 'running') {
+        fake.playState = 'finished';
+        fake.onfinish?.();
+      }
+    }, duration);
+    return fake as unknown as Animation;
   };
 }
 
@@ -167,5 +191,106 @@ describe('Toast — reason-code resolution', () => {
     const txt = getToastText();
     expect(txt.startsWith('⟦')).toBe(true);
     expect(txt.endsWith('⟧')).toBe(true);
+  });
+});
+
+describe('Toast — dismissal timing (MOR-1489)', () => {
+  // Operators reported error toasts (e.g. the command-failure toast from a
+  // mode-error bench case) auto-dismissing before they could be read. Error
+  // toasts must now stay on screen until the operator dismisses them; only
+  // info/warning toasts keep the old timed auto-dismiss.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function countToasts(): number {
+    return host.querySelectorAll('.toast').length;
+  }
+
+  /**
+   * Advances the fake clock by `ms` and flushes Svelte's effect queue, then
+   * advances a bit further and flushes again so the outro (`fly`)
+   * transition's own (polyfilled) animation timer — only *scheduled* once
+   * the dismiss effect runs, which itself only happens on the flush after
+   * the dismiss timer fires — gets a chance to complete too. A single
+   * advance+flush stops short of detaching the node from the DOM.
+   */
+  function settle(ms: number): void {
+    vi.advanceTimersByTime(ms);
+    flushSync();
+    vi.advanceTimersByTime(200);
+    flushSync();
+  }
+
+  it('does not auto-dismiss an error toast, even long after the old 5s timeout', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'error',
+      message: 'Command failed: invalid mode for this band',
+    });
+    flushSync();
+
+    expect(countToasts()).toBe(1);
+
+    settle(60_000);
+
+    expect(countToasts()).toBe(1);
+  });
+
+  it('dismisses an error toast when the operator clicks it (existing close affordance)', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'error',
+      message: 'Command failed: invalid mode for this band',
+    });
+    flushSync();
+    expect(countToasts()).toBe(1);
+
+    const toastEl = host.querySelector<HTMLButtonElement>('.toast.error');
+    toastEl?.click();
+    settle(0);
+
+    expect(countToasts()).toBe(0);
+  });
+
+  it('still auto-dismisses a warning toast after the default timeout', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'warning',
+      message: 'Link to the radio is degraded',
+    });
+    flushSync();
+    expect(countToasts()).toBe(1);
+
+    settle(5_000);
+
+    expect(countToasts()).toBe(0);
+  });
+
+  it('still auto-dismisses an info toast after the default timeout', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'info',
+      message: 'Radio connected',
+      code: 'radioConnected',
+    });
+    flushSync();
+    expect(countToasts()).toBe(1);
+
+    settle(5_000);
+
+    expect(countToasts()).toBe(0);
   });
 });
