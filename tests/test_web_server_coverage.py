@@ -1759,6 +1759,25 @@ async def test_serve_static_assets_immutable_others_no_cache(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_serve_static_rejects_name_prefix_sibling_dir(tmp_path) -> None:
+    """A sibling dir whose name starts with the static dir's name (e.g.
+    static.old next to static) must get 403, not file contents or a
+    connection-killing exception."""
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    sibling = tmp_path / "static.old"
+    sibling.mkdir()
+    (sibling / "secret.html").write_text("<html>secret</html>", encoding="utf-8")
+
+    srv = WebServer(None, WebConfig(static_dir=static_dir))
+    writer = _FakeWriter()
+    await srv._serve_static(writer, "../static.old/secret.html")  # noqa: SLF001
+    text = writer.buffer.decode("ascii", errors="replace")
+    assert "403 Forbidden" in text
+    assert "secret" not in text
+
+
+@pytest.mark.asyncio
 async def test_handle_websocket_missing_key_unknown_channel_and_control_handler() -> (
     None
 ):

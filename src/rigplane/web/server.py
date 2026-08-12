@@ -5277,7 +5277,7 @@ class WebServer:
         # Prevent path traversal
         static_dir = self._config.static_dir.resolve()
         target = (static_dir / filename).resolve()
-        if not str(target).startswith(str(static_dir)):
+        if not target.is_relative_to(static_dir):
             await _send_response(writer, 403, "Forbidden", b"Forbidden", {})
             return
 
