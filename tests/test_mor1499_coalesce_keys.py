@@ -88,16 +88,26 @@ async def test_set_filter_distinct_targets_both_reach_radio() -> None:
     ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
-        ws=ws, radio=SimpleNamespace(connected=True), server=SimpleNamespace(command_queue=queue)
+        ws=ws,
+        radio=SimpleNamespace(connected=True),
+        server=SimpleNamespace(command_queue=queue),
     )
 
     # Mirrors onFilterPresetChange: switch to FIL1, then switch back to FIL2,
     # dispatched back-to-back in the same pacing window.
     await handler._handle_command(
-        {"id": "switch-to-1", "name": "set_filter", "params": {"filter": "FIL1", "receiver": 0}}
+        {
+            "id": "switch-to-1",
+            "name": "set_filter",
+            "params": {"filter": "FIL1", "receiver": 0},
+        }
     )
     await handler._handle_command(
-        {"id": "switch-to-2", "name": "set_filter", "params": {"filter": "FIL2", "receiver": 0}}
+        {
+            "id": "switch-to-2",
+            "name": "set_filter",
+            "params": {"filter": "FIL2", "receiver": 0},
+        }
     )
 
     # Distinct targets -> distinct coalescing keys -> both dispatch
@@ -125,7 +135,9 @@ async def test_set_filter_same_target_still_coalesces() -> None:
     ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
-        ws=ws, radio=SimpleNamespace(connected=True), server=SimpleNamespace(command_queue=queue)
+        ws=ws,
+        radio=SimpleNamespace(connected=True),
+        server=SimpleNamespace(command_queue=queue),
     )
 
     for i in range(3):
