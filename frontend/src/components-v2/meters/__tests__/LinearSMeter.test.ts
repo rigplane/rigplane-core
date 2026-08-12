@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
 // MOR-1451: `smeter-scale.ts` no longer ships a hardcoded per-radio fallback
 // curve — a radio with no declared `[meters.s_meter]` table is UNCALIBRATED,
@@ -25,12 +27,34 @@ const IC7610_LIKE_CAL = [
   { raw: 240, actual: 40, label: 'S9+40' },
 ];
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getSmeterCalibration: vi.fn(() => IC7610_LIKE_CAL),
-  getSmeterRedline: vi.fn(() => null),
-}));
+// The curve is seeded into the REAL capabilities store, not vi.mock'd:
+// this file runs in the `fast` pool (`isolate: false`), where a module-scope
+// mock races the shared module cache — a sibling file can leave
+// `smeter-scale.ts` bound to a different module instance than the one the
+// mock (and its `beforeEach` reconfiguration) applies to, and the tests flip
+// red with no production change. Seeding real store state is deterministic
+// under any cache order.
+function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    ...overrides,
+  };
+}
 
-import { getSmeterCalibration } from '$lib/stores/capabilities.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
 import {
   rawToSegments,
@@ -42,7 +66,9 @@ import {
 } from '../smeter-scale';
 
 beforeEach(() => {
-  vi.mocked(getSmeterCalibration).mockReturnValue(IC7610_LIKE_CAL);
+  setCapabilities(makeCaps({
+    meterCalibrations: { s_meter: IC7610_LIKE_CAL },
+  }));
 });
 
 let components: ReturnType<typeof mount>[] = [];
@@ -63,6 +89,7 @@ afterEach(() => {
   roots.forEach((root) => root.remove());
   components = [];
   roots = [];
+  clearCapabilities();
 });
 
 // ── rawToSegments ──────────────────────────────────────────────────────────
@@ -274,7 +301,8 @@ describe('LinearSMeter calibrated S-meter domain', () => {
 
 describe('uncalibrated fallback — no radio-specific curve is fabricated (MOR-1451)', () => {
   beforeEach(() => {
-    vi.mocked(getSmeterCalibration).mockReturnValue(null);
+    // A profile that declares no meter calibration at all.
+    setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
   it('isSmeterCalibrated() is false with no profile curve', () => {
@@ -341,7 +369,10 @@ describe('IC-7300 profile conformance — calibrated dB-rel-S9 renders the corre
   ];
 
   beforeEach(() => {
-    vi.mocked(getSmeterCalibration).mockReturnValue(IC7300_S_METER_CAL);
+    setCapabilities(makeCaps({
+      model: 'IC-7300',
+      meterCalibrations: { s_meter: IC7300_S_METER_CAL },
+    }));
   });
 
   it('the anchor round-trips: raw axis 0/120/241 -> S0/S9/S9+60', () => {

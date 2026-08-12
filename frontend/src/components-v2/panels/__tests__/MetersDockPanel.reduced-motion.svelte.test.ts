@@ -18,13 +18,34 @@ import MetersDockPanel from '../MetersDockPanel.svelte';
 // matching the established per-file convention in this codebase (no shared
 // test util) — this is test-only code, not production LOC.
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  hasTx: vi.fn(() => true),
-}));
-vi.mock('$lib/runtime/adapters/capabilities-adapter', () => ({
-  getMeterCalibration: vi.fn(() => null),
-  getMeterRedline: vi.fn(() => null),
-}));
+// Capability state is seeded into the REAL store, not vi.mock'd: this file
+// runs in the `fast` pool (`isolate: false`), where a module-scope mock races
+// the shared module cache — a sibling file can leave the panel's dependency
+// chain bound to a different module instance than the one the mock applies
+// to. A `tx: true` payload with no `meterCalibrations` reproduces exactly
+// what the old mocks declared (hasTx() → true, getMeterCalibration → null).
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+
+function makeCaps(): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+  };
+}
 
 interface MatchMediaMock {
   mql: MediaQueryList;
@@ -69,6 +90,7 @@ let clearIntervalSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   components = [];
   roots = [];
+  setCapabilities(makeCaps());
   vi.useFakeTimers();
   // Anchor wall-clock time; stepAllPeaks() reads Date.now() for latch/decay.
   vi.setSystemTime(0);
@@ -89,6 +111,7 @@ afterEach(() => {
   components = [];
   roots = [];
   vi.useRealTimers();
+  clearCapabilities();
 });
 
 // Net live intervals created by MetersDockPanel's own code: every

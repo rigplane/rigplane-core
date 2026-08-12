@@ -1,4 +1,10 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import {
+  SSB_STEPS, CW_STEPS, AM_STEPS, FM_STEPS, DEFAULT_STEPS,
+  getStepsForMode, formatStep, formatSValue, formatDbm, formatPower,
+} from '../mobile-layout-logic';
 
 // MOR-1451 follow-up: the mobile skin's S-meter readouts must follow the
 // active radio's profile-declared calibration curve (via the shared
@@ -6,25 +12,49 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 // copy of the math. An IC-7300-shaped fixture — the documented Icom
 // convention with its S9+60 top anchor (`rigs/ic7300.toml`) — is exactly
 // the curve the old hardcoded +40 clamp misrendered.
+//
+// The curve is seeded into the REAL capabilities store, not vi.mock'd:
+// this file runs in the `fast` pool (`isolate: false`), where a
+// module-scope mock races the shared module cache — a sibling file can
+// leave `mobile-layout-logic` → `smeter-scale` bound to a different module
+// instance than the one the mock (and its `beforeEach` reconfiguration)
+// applies to, and the tests flip red with no production change. Seeding
+// real store state is deterministic under any cache order.
 const IC7300_LIKE_CAL = [
   { raw: 0, actual: -54, label: 'S0' },
   { raw: 120, actual: 0, label: 'S9' },
   { raw: 241, actual: 60, label: 'S9+60' },
 ];
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getSmeterCalibration: vi.fn(() => null),
-  getSmeterRedline: vi.fn(() => null),
-}));
-
-import { getSmeterCalibration } from '$lib/stores/capabilities.svelte';
-import {
-  SSB_STEPS, CW_STEPS, AM_STEPS, FM_STEPS, DEFAULT_STEPS,
-  getStepsForMode, formatStep, formatSValue, formatDbm, formatPower,
-} from '../mobile-layout-logic';
+function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
+  return {
+    model: 'IC-7300',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 1,
+    vfoScheme: 'ab',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
-  vi.mocked(getSmeterCalibration).mockReturnValue(IC7300_LIKE_CAL);
+  setCapabilities(makeCaps({
+    meterCalibrations: { s_meter: IC7300_LIKE_CAL },
+  }));
+});
+
+afterEach(() => {
+  clearCapabilities();
 });
 
 describe('getStepsForMode', () => {
@@ -110,7 +140,8 @@ describe('formatSValue (calibrated radio)', () => {
 
 describe('formatSValue (uncalibrated radio)', () => {
   beforeEach(() => {
-    vi.mocked(getSmeterCalibration).mockReturnValue(null);
+    // A profile that declares no s_meter calibration table.
+    setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
   // Kills: misreading a raw device-scale byte as calibrated dB-rel-S9 — the
@@ -144,7 +175,7 @@ describe('formatDbm (calibrated radio)', () => {
 
 describe('formatDbm (uncalibrated radio)', () => {
   beforeEach(() => {
-    vi.mocked(getSmeterCalibration).mockReturnValue(null);
+    setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
   // Kills: fabricating a physical dBm figure from a raw byte with no curve.
