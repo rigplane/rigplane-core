@@ -1316,7 +1316,7 @@ def test_due_polling_tx_only_group_fires_immediately_when_tx_starts() -> None:
     for offset in range(10):
         assert scheduler.due_requests(now=402.0 + offset, tx_active=False) == ()
 
-    requests = scheduler.due_requests(now=412.0, tx_active=True)
+    requests = scheduler.due_requests(now=411.5, tx_active=True)
 
     assert len(requests) == 1
     assert requests[0].paths == (power,)

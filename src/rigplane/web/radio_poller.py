@@ -2883,8 +2883,13 @@ class RadioPoller:
             return
         now = time.monotonic()
         # MOR-1485: gate tx_only cadence membership (TX/PA meters) on observed
-        # PTT — same RadioState read _pick_high_meter already uses for the
-        # legacy LAN two-tier meter scheme.
+        # PTT via the RadioState mirror. That mirror is LIVE on the scheduler
+        # path: _civ_rx._handle_1c deliberately keeps writing RadioState.ptt
+        # (its siblings migrated to observations; PTT is dual-written), and
+        # global.tx_state.ptt is cadence-polled at 0.3s by this very
+        # scheduler — so the mirror refreshes from the scheduler's own
+        # traffic. (_pick_high_meter reads the same field, but only on the
+        # legacy non-scheduler branch — not a precedent for this path.)
         tx_active = (
             getattr(self._radio_state, "ptt", False)
             if self._radio_state is not None
