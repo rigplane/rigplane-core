@@ -238,6 +238,26 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW", "9" = "PHANTOM" }
         with pytest.raises(RigLoadError, match=r"\[agc\]\.labels.*9"):
             load_rig(p)
 
+    def test_agc_labels_rejects_declared_without_modes(self, tmp_path):
+        """MOR-1522 R1 (B2): [agc].labels with no [agc].modes must not load
+        silently — that would yield a capability-present radio with an
+        empty domain, short-circuiting both runtime validation seats
+        (``agc_modes is not None`` in ``IcomRadio.set_agc`` /
+        ``YaesuCatRadio.set_agc``)."""
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
+""",
+        )
+        with pytest.raises(
+            RigLoadError, match=r"\[agc\]\.labels declared without \[agc\]\.modes"
+        ):
+            load_rig(p)
+
     def test_agc_capability_absent_declares_no_domain(self, tmp_path):
         """A radio that never mentions AGC at all — no capability, no
         [agc] section — is valid: capability-absent hides the selector

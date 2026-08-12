@@ -1221,6 +1221,8 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [agc].modes must be a non-empty list of integers"
         )
     agc_labels = dict(agc_section["labels"]) if "labels" in agc_section else None
+    if agc_labels is not None and agc_modes is None:
+        raise RigLoadError(f"{filename}: [agc].labels declared without [agc].modes")
     if agc_labels is not None and agc_modes is not None:
         declared = {str(m) for m in agc_modes}
         orphan_labels = sorted(set(agc_labels) - declared)
