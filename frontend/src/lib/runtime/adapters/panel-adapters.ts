@@ -211,34 +211,36 @@ export function getActiveFrequencyHz(): number | null {
   return view?.vfos.find((candidate) => candidate.isActive)?.frequencyHz ?? null;
 }
 
-// ── Pending frequency target (MOR-1441) ──
+// ── Pending frequency target (MOR-1441, MOR-1478) ──
 /**
  * The freshest still-in-flight `set_freq` target for `receiver` (`0` =
  * MAIN, `1` = SUB — the wire encoding `dispatchRadioIntent` uses), or
- * `null` when no `set_freq` intent is currently pending for it.
+ * `null` when no `set_freq` intent is currently pending — or acknowledged
+ * but not yet confirmed by the radio's own observed state — for it.
  *
  * This is the pending target the MOR-1425 tuning accumulator races toward
  * during a hot burst — read off the command-bus lifecycle list rather than
  * a second, parallel path into the accumulator's own internal (non-
- * reactive) map. `getCommandLifecycles()` is already the accumulator's own
- * echo/expiry authority: an ack, failure, cancellation, or timeout are
- * exactly the events that end a command's `'pending'` status, so a caller
- * reading this inside `$derived()` gets the snap-back-to-confirmed behavior
- * for free, with no separate polling or expiry timer to maintain.
+ * reactive) map.
+ *
+ * MOR-1478 (live-bench finding, same root cause as MOR-1488's leg-2 fix):
+ * a transport ack is not a confirming observation. During a long web-
+ * driven tuning spin the MOR-1425 accumulator emits a steady stream of
+ * `set_freq` commands; each one's WS ack lands within milliseconds, well
+ * before the next confirming poll echoes `main.freqHz`/`sub.freqHz` back
+ * (~500ms keep-alive, CLAUDE.md). Releasing pending as soon as a command
+ * acked (the pre-fix behavior, `command.status !== 'pending'`) let the
+ * readout crawl through the burst and then, on the LAST command's ack,
+ * briefly present the STALE pre-spin confirmed value as though it were
+ * current for the ~500ms until the next poll actually caught up — the
+ * reported symptom. Routed through `latestPendingParam` (below) — the same
+ * decision table leg 2's four discrete accessors use — so a command now
+ * stays pending through ack until the radio's own observed state confirms
+ * `freqHz`, or the shared `ACK_CONFIRM_GRACE_MS` backstop elapses.
  */
 export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
-  let latest: { createdAt: number; freq: number } | null = null;
-  for (const command of getCommandLifecycles()) {
-    if (command.name !== 'set_freq' || command.status !== 'pending') continue;
-    if (command.params.receiver !== receiver) continue;
-    const freq = command.params.freq;
-    if (typeof freq !== 'number') continue;
-    // `>=`, not `>`: `getCommandLifecycles()` is in dispatch (array) order, so
-    // on a same-millisecond `createdAt` tie the LATER entry in that order is
-    // the actually-freshest one — `>` would freeze on the earlier of the two.
-    if (!latest || command.createdAt >= latest.createdAt) latest = { createdAt: command.createdAt, freq };
-  }
-  return latest?.freq ?? null;
+  const value = latestPendingParam('set_freq', 'freq', receiver, 'freqHz');
+  return typeof value === 'number' ? value : null;
 }
 
 // ── Pending discrete-control targets (MOR-1441 leg 2) ──
@@ -285,11 +287,12 @@ function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefine
 const ACK_CONFIRM_GRACE_MS = 2_000;
 
 /**
- * Shared by the four accessors below: the freshest command matching
+ * Shared by `getPendingFrequencyHz` above (leg 1, MOR-1478) and the four
+ * discrete accessors below (leg 2, MOR-1488): the freshest command matching
  * `intentName`/`receiver` that has not reached a terminal failure/expiry
- * status, or `undefined`. Same authority and `>=` freshest-wins tie-break
- * as `getPendingFrequencyHz` above (leg 1, review B3) — no second, parallel
- * pending-state path.
+ * status, or `undefined`. Same `>=` freshest-wins tie-break as leg 1's
+ * original implementation (review B3) — no second, parallel pending-state
+ * path, and now one decision table for both legs instead of two.
  *
  * MOR-1488 (live-bench finding): a transport `'acknowledged'` (the WS ack)
  * is NOT a confirming observation — it only proves the radio received the

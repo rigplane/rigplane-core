@@ -168,6 +168,34 @@ function nbReobservedState(): ServerState {
   } as unknown as ServerState;
 }
 
+/**
+ * A confirming observation for `set_freq` (leg 1, MOR-1478 — same wiring
+ * seam and doctrine as `nbConfirmedState` above): `liveState()` with
+ * `main.freqHz` moved to the burst's target and every revision counter
+ * bumped past the initial fixture's.
+ */
+function freqConfirmedState(freqHz: number): ServerState {
+  const base = liveState();
+  return {
+    ...base,
+    revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+    main: { ...base.main, freqHz },
+  } as unknown as ServerState;
+}
+
+/**
+ * Leg-1 sibling of `nbReobservedState`: a post-ack push that advances
+ * `observationSeq` (an unrelated meter poll) without confirming `freqHz` —
+ * `main.freqHz` stays at the ORIGINAL `liveState()` value.
+ */
+function freqReobservedState(): ServerState {
+  const base = liveState();
+  return {
+    ...base,
+    observationSeq: 2, freshnessRevision: 2,
+  } as unknown as ServerState;
+}
+
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -261,6 +289,110 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     flushSync();
 
     expect(freqEl()?.dataset.freqStatus).toBe('pending');
+  });
+
+  /**
+   * MOR-1478 (the reported bench symptom): after a long web-initiated
+   * tuning spin, the readout crawls, then FLASHES the stale pre-spin
+   * value for ~500ms, then updates from `RadioState`. Same root cause as
+   * the leg-2 MOR-1488 finding above: the WS ack for `set_freq` lands
+   * within milliseconds, long before the next state poll (~500ms
+   * keep-alive) echoes `main.freqHz` back — a marker that clears on ack
+   * alone briefly presents the OLD confirmed value as current. This drives
+   * the command to 'acknowledged' directly, without changing `main.freqHz`,
+   * and requires the marker to survive that ack.
+   */
+  it('keeps the VFO frequency marker pending across a transport ack until a confirming state observation arrives (MOR-1478)', () => {
+    render();
+    const freqEl = () => target.querySelector('[data-vfo-receiver="MAIN"] [data-freq-status]') as HTMLElement | null;
+
+    dispatchRadioIntent({ name: 'set_freq', params: { freq: 14260000, receiver: 0 } });
+    flushSync();
+    expect(freqEl()?.dataset.freqStatus).toBe('pending');
+
+    const command = getCommandLifecycles().find(
+      (candidate) => candidate.name === 'set_freq' && candidate.status === 'pending',
+    );
+    expect(command).toBeDefined();
+    acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+    flushSync();
+
+    // The ack alone must NOT confirm the marker — `main.freqHz` is still
+    // the pre-spin value in the store, so the operator has no honest
+    // evidence the radio applied the change yet.
+    expect(freqEl()?.dataset.freqStatus).toBe('pending');
+
+    // The confirming observation: the radio's own state now echoes the
+    // commanded frequency back.
+    expect(setRadioState(freqConfirmedState(14260000))).toBe(true);
+    flushSync();
+
+    expect(freqEl()?.dataset.freqStatus).toBe('confirmed');
+  });
+
+  /**
+   * MOR-1478 (leg-1 parity with the leg-2 R3 finding above): a post-ack
+   * push that advances `observationSeq` without confirming `freqHz` (an
+   * unrelated meter poll landing before the commanded field's own
+   * round-robin slot) must not clear the marker — that would collapse the
+   * pending window right back to the reported symptom.
+   */
+  it('does not clear the VFO frequency marker on a post-ack push that advances observationSeq without confirming the target (MOR-1478)', () => {
+    render();
+    const freqEl = () => target.querySelector('[data-vfo-receiver="MAIN"] [data-freq-status]') as HTMLElement | null;
+
+    dispatchRadioIntent({ name: 'set_freq', params: { freq: 14260000, receiver: 0 } });
+    flushSync();
+    const command = getCommandLifecycles().find(
+      (candidate) => candidate.name === 'set_freq' && candidate.status === 'pending',
+    );
+    expect(command).toBeDefined();
+    acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+    flushSync();
+    expect(freqEl()?.dataset.freqStatus).toBe('pending');
+
+    // A post-ack push arrives (observationSeq advances) but `main.freqHz`
+    // is still the pre-spin value — NOT the commanded target.
+    expect(setRadioState(freqReobservedState())).toBe(true);
+    flushSync();
+
+    expect(freqEl()?.dataset.freqStatus).toBe('pending');
+  });
+
+  /**
+   * MOR-1478 grace backstop parity: once `ACK_CONFIRM_GRACE_MS` (2000ms,
+   * shared with leg 2) has elapsed since ack, the marker retires even in
+   * the presence of a post-ack push that still does not confirm — bounding
+   * the classes of dropped confirming observation (MOR-1445 post-ack
+   * failure, MOR-1427 coalescing, link death) leg 2's own grace test
+   * documents.
+   */
+  it('retires the VFO frequency marker via the 2000ms grace backstop once it has elapsed, even with a non-confirming push (MOR-1478)', () => {
+    vi.useFakeTimers();
+    try {
+      render();
+      const freqEl = () => target.querySelector('[data-vfo-receiver="MAIN"] [data-freq-status]') as HTMLElement | null;
+
+      dispatchRadioIntent({ name: 'set_freq', params: { freq: 14260000, receiver: 0 } });
+      flushSync();
+      const command = getCommandLifecycles().find(
+        (candidate) => candidate.name === 'set_freq' && candidate.status === 'pending',
+      );
+      expect(command).toBeDefined();
+      acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+      flushSync();
+      expect(freqEl()?.dataset.freqStatus).toBe('pending');
+
+      vi.advanceTimersByTime(2_001);
+      // Still non-confirming (`main.freqHz` stays at the pre-spin value) —
+      // only the elapsed grace window retires it.
+      expect(setRadioState(freqReobservedState())).toBe(true);
+      flushSync();
+
+      expect(freqEl()?.dataset.freqStatus).toBe('confirmed');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('clears the pending marker once the command resolves (acknowledged), for all four discrete controls', () => {
