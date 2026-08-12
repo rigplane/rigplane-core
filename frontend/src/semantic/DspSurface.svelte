@@ -32,6 +32,14 @@
   Two-level availability (MOR-977/1256): `structural: false` renders NOTHING;
   a present-but-unusable control stays visible and disabled rather than
   guessing a value.
+
+  PENDING AFFORDANCE (MOR-1441 leg 2). `pendingNb`/`pendingNr` are plain,
+  command-bus-blind display props, same "read at the wiring seam" precedent
+  as leg 1's `pendingFrequencyHz`. `toggle()` keeps computing the flipped
+  value from `dsp[field].reading.value` — the CONFIRMED reading — exclusively
+  (see below); pending never becomes the arithmetic base, the same class of
+  defect leg 1's `FrequencyDisplayInteractive` fix closed for the frequency
+  digits.
 -->
 <script module lang="ts">
   import type { DspField } from './radio-view-model';
@@ -74,6 +82,7 @@
 </script>
 
 <script lang="ts">
+  import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -81,6 +90,11 @@
     agcLabels?: Record<string, string>;
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
+    /** MOR-1441 leg 2 — the freshest in-flight `set_nb`/`set_nr` target for
+     *  the active receiver, DISPLAY ONLY (see the file header). `null` when
+     *  nothing is pending. */
+    pendingNb?: boolean | null;
+    pendingNr?: boolean | null;
     onToggle?: (field: DspToggleField, next: boolean) => void;
     onLevelChange?: (field: DspLevelField, value: number) => void;
     onNotchModeChange?: (mode: 'off' | 'auto' | 'manual') => void;
@@ -88,8 +102,16 @@
   }
   let {
     view, agcLabels = {}, nbLevelMax = 255, nbLevelPercent = false,
+    pendingNb = null, pendingNr = null,
     onToggle, onLevelChange, onNotchModeChange, onAgcModeChange,
   }: Props = $props();
+
+  const pendingToggleIdBase = $props.id();
+  /** `nbActive`/`nrActive` are the only two toggles with a pending source;
+   *  every other `DSP_TOGGLES` entry (there are none today, but the shape
+   *  stays open for a future one) simply has no pending marker. */
+  const pendingOf = (field: DspToggleField): boolean | null =>
+    field === 'nrActive' ? pendingNr : field === 'nbActive' ? pendingNb : null;
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let dsp = $derived(view.dsp);
@@ -118,11 +140,18 @@
     <div class="dsp-row">
       {#each DSP_TOGGLES as [field, label] (field)}
         {#if dsp[field].availability.structural}
+          {@const pending = pendingOf(field)}
+          {@const pendingId = `${pendingToggleIdBase}-${field}`}
           <button
             type="button" class="dsp-toggle" data-testid={`dsp-${field}`} data-field={field}
             data-disabled-reason={reasonOf(dsp[field])} aria-pressed={pressedOf(dsp[field])}
+            data-pending-status={pending !== null ? 'pending' : 'confirmed'}
+            aria-describedby={pending !== null ? pendingId : undefined}
             disabled={!usable(dsp[field])} onclick={() => toggle(field)}
           >{label}: {fmt(dsp[field])}</button>
+          {#if pending !== null}
+            <span id={pendingId} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>
+          {/if}
         {/if}
       {/each}
     </div>
@@ -191,4 +220,12 @@
   .dsp-name { min-width: 8ch; }
   .dsp-toggle[aria-pressed='true'], .dsp-choice[aria-pressed='true'] { font-weight: 700; }
   .dsp-toggle:disabled, .dsp-choice:disabled { cursor: not-allowed; }
+  /* MOR-1441 leg 2 — same pending doctrine as `FilterSurface`'s
+     `.filter-choice[data-pending='true']`: structural marker, never
+     color-only. */
+  .dsp-toggle[data-pending-status='pending'] { font-style: italic; opacity: 0.75; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
 </style>

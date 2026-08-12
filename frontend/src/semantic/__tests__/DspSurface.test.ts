@@ -64,7 +64,10 @@ type Handlers = {
   onNotchModeChange?: (mode: 'off' | 'auto' | 'manual') => void;
   onAgcModeChange?: (mode: number) => void;
 };
-type Props = Handlers & { agcLabels?: Record<string, string>; nbLevelMax?: number; nbLevelPercent?: boolean };
+type Props = Handlers & {
+  agcLabels?: Record<string, string>; nbLevelMax?: number; nbLevelPercent?: boolean;
+  pendingNb?: boolean | null; pendingNr?: boolean | null;
+};
 
 function render(view: RadioViewModel, props: Props = {}) {
   const component = mount(DspSurface, { target, props: { view, ...props } });
@@ -396,6 +399,63 @@ describe('agcMode renders the capability-derived choice set with caps-echoed lab
       flushSync();
       expect(onAgcModeChange).not.toHaveBeenCalled();
     }, { onAgcModeChange });
+  });
+});
+
+// ── 7b. Pending-target affordance (MOR-1441 leg 2) ──────────────────────────
+
+describe('pending-target affordance (MOR-1441 leg 2)', () => {
+  // base(): nrActive known(true), nbActive known(false).
+  it('marks the pending toggle distinctly, leaves aria-pressed reading CONFIRMED', () => {
+    withSurface(base(), (s) => {
+      expect(s.control('nrActive')!.dataset.pendingStatus).toBe('pending');
+      expect(s.control('nrActive')!.getAttribute('aria-pressed')).toBe('true'); // confirmed, unchanged
+      expect(s.control('nbActive')!.dataset.pendingStatus).toBe('confirmed');
+      expect(s.control('nbActive')!.getAttribute('aria-pressed')).toBe('false'); // confirmed, unchanged
+    }, { pendingNr: false });
+  });
+
+  it('renders confirmed status and no announcement for both toggles when nothing is pending', () => {
+    withSurface(base(), (s) => {
+      expect(s.control('nrActive')!.dataset.pendingStatus).toBe('confirmed');
+      expect(s.control('nbActive')!.dataset.pendingStatus).toBe('confirmed');
+      expect(target.querySelector('.sr-only')).toBeNull();
+    });
+  });
+
+  it('renders a screen-reader announcement only for the field that is pending', () => {
+    withSurface(base(), (s) => {
+      expect(s.control('nbActive')!.parentElement!.querySelector('.sr-only')).not.toBeNull();
+      expect(target.querySelectorAll('.sr-only')).toHaveLength(1);
+    }, { pendingNb: true });
+  });
+
+  // THE seam test — the exact class of defect leg 1's runaway bug belonged
+  // to, applied to a toggle: `toggle()` computes the NEXT boolean from
+  // `dsp[field].reading.value` (CONFIRMED), never from the pending prop. If
+  // it instead read pending, an in-flight "turn NR on" (confirmed still
+  // false, pending true) would compute `!true = false` and dispatch a
+  // cancelling `set_nr(false)` the instant the operator clicks again —
+  // silently reversing their own in-flight command instead of repeating it.
+  it('SEAM: toggling while pending computes the next value from CONFIRMED, never from pending', () => {
+    const onToggle = vi.fn();
+    // Confirmed nrActive=true, but an in-flight "turn OFF" is pending
+    // (pendingNr=false) — reading pending would compute `!false=true`
+    // (re-affirming ON); reading confirmed correctly computes `!true=false`.
+    withSurface(base(), (s) => {
+      s.control('nrActive')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(onToggle).toHaveBeenCalledExactlyOnceWith('nrActive', false);
+    }, { onToggle, pendingNr: false });
+  });
+
+  it('SEAM: the mirror case — confirmed nbActive=false, pending "turn ON" (true), still flips from confirmed', () => {
+    const onToggle = vi.fn();
+    withSurface(base(), (s) => {
+      s.control('nbActive')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(onToggle).toHaveBeenCalledExactlyOnceWith('nbActive', true);
+    }, { onToggle, pendingNb: true });
   });
 });
 

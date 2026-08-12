@@ -28,3 +28,23 @@ export function bindSemanticSurfaceHandlers() {
 export function getPendingFrequencyHz(_receiver: 0 | 1): number | null {
   return null;
 }
+
+/**
+ * MOR-1441 leg 2 — same MOR-1271/MOR-1320 lesson as `getPendingFrequencyHz`
+ * above, for the discrete-control pending accessors `SemanticRadioSurfaces.
+ * svelte` now also imports (filter select, preamp, NB/NR). `null` is the
+ * correct and only honest answer for the same reason: the deterministic
+ * offline harness never has a real in-flight command to report.
+ */
+export function getPendingFilterSelection(_receiver: 0 | 1): number | null {
+  return null;
+}
+export function getPendingPreampLevel(_receiver: 0 | 1): number | null {
+  return null;
+}
+export function getPendingNbOn(_receiver: 0 | 1): boolean | null {
+  return null;
+}
+export function getPendingNrOn(_receiver: 0 | 1): boolean | null {
+  return null;
+}

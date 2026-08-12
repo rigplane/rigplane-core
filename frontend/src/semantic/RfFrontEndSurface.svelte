@@ -38,6 +38,15 @@
   `structural: false` renders NOTHING for that field — "this radio has no
   squelch" is a different claim from "squelch was never observed", which
   renders present-and-disabled.
+
+  PENDING AFFORDANCE (MOR-1441 leg 2). `pendingPreamp` is a plain, command-
+  bus-blind display prop, same "read at the wiring seam" precedent as leg
+  1's `pendingFrequencyHz`. It never touches the MOR-1447 combined-knob/
+  change-guard machinery above (`combinedNormX`/`changeCombined` read only
+  confirmed `rf.rfGain`/`rf.squelch`) — preamp is a disjoint field. Marks the
+  targeted preamp CHOICE distinctly; `isValue`/`aria-checked` keep reading
+  `rf.preamp`'s CONFIRMED reading exclusively, so a click while pending still
+  dispatches the CLICKED (explicit) value.
 -->
 <script module lang="ts">
   import type { DisabledReasonCode, RfFrontEndField } from './radio-view-model';
@@ -97,6 +106,7 @@
 </script>
 
 <script lang="ts">
+  import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
   import {
     dualParamValuesFromNormX,
@@ -108,6 +118,10 @@
     /** Icom-style single-knob RF/SQL (MOR-1447 leg 2). Defaults to
      *  `'separate'` — the two independent sliders leg 1 fixed. */
     controlModel?: RfSqlControlModel;
+    /** MOR-1441 leg 2 — the freshest in-flight `set_preamp` target for the
+     *  active receiver, DISPLAY ONLY (see the file header). `null` when
+     *  nothing is pending. */
+    pendingPreamp?: number | null;
     onPreampChange?: (level: number) => void;
     onAttenuatorChange?: (db: number) => void;
     onLevelChange?: (field: RfFrontEndLevelField, value: number) => void;
@@ -119,9 +133,11 @@
     onToggle?: (field: RfFrontEndToggleField, next: boolean) => void;
   }
   let {
-    view, controlModel = 'separate', onPreampChange, onAttenuatorChange, onLevelChange, onToggle,
+    view, controlModel = 'separate', pendingPreamp = null,
+    onPreampChange, onAttenuatorChange, onLevelChange, onToggle,
   }: Props = $props();
 
+  const pendingPreampId = $props.id();
   let rf = $derived(view.rfFrontEnd);
   /** Carry-forwards 2/3: matched on the DOTTED field path, never re-derived
    *  from a raw DIGI-SEL read — the fact layer already decided this. */
@@ -209,12 +225,15 @@
         data-testid="rf-front-end-preamp"
         data-observed={usable(rf.preamp)}
         data-disabled-reason={preMutex?.code}
+        data-preamp-status={pendingPreamp !== null ? 'pending' : 'confirmed'}
+        aria-describedby={pendingPreamp !== null ? pendingPreampId : undefined}
       >
         {#each rf.preValues as value (value)}
           <button
             type="button" role="radio" class="rf-front-end-choice"
             data-testid={`rf-front-end-preamp-${value}`}
             aria-checked={isValue(rf.preamp, value)}
+            data-pending={pendingPreamp === value}
             disabled={!usable(rf.preamp) || preMutex !== null}
             onclick={() => changePreamp(value)}
           >{value}</button>
@@ -222,6 +241,9 @@
         <output data-testid="rf-front-end-preamp-value">{textOf(rf.preamp)}</output>
         {#if preMutex}
           <p data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
+        {/if}
+        {#if pendingPreamp !== null}
+          <span id={pendingPreampId} class="sr-only">{t('core.rfFrontEnd.preamp.pendingAnnouncement')}</span>
         {/if}
       </div>
     {/if}
@@ -304,4 +326,12 @@
   .rf-front-end-choice[aria-checked='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled, input:disabled { cursor: not-allowed; }
+  /* MOR-1441 leg 2 — same pending doctrine as `FilterSurface`'s
+     `.filter-choice[data-pending='true']`: structural marker, never
+     color-only. */
+  .rf-front-end-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
 </style>

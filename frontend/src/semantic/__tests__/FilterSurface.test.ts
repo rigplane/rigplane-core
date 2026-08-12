@@ -75,8 +75,8 @@ type Handlers = {
   onPbtOuterChange?: (value: number) => void;
 };
 
-function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(FilterSurface, { target, props: { view, ...handlers } });
+function render(view: RadioViewModel, handlers: Handlers = {}, extra: { pendingFilter?: number | null } = {}) {
+  const component = mount(FilterSurface, { target, props: { view, ...extra, ...handlers } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -93,8 +93,9 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
 
 function withSurface(
   view: RadioViewModel, fn: (s: ReturnType<typeof render>) => void, handlers: Handlers = {},
+  extra: { pendingFilter?: number | null } = {},
 ): void {
-  const s = render(view, handlers);
+  const s = render(view, handlers, extra);
   try { fn(s); } finally { s.dispose(); }
 }
 
@@ -445,6 +446,65 @@ describe('dataMode renders as a readout', () => {
       expect(readout.querySelector('button')).toBeNull();
       expect(readout.querySelector('input')).toBeNull();
     });
+  });
+});
+
+// ── 8b. Pending-target affordance (MOR-1441 leg 2) ──────────────────────────
+
+describe('pending-target affordance (MOR-1441 leg 2)', () => {
+  // base(): currentFilter known(1) — 'FIL1'.
+  it('marks only the pending choice, leaves the CONFIRMED choice aria-pressed, and marks the group', () => {
+    withSurface(base(), (s) => {
+      const group = s.group('filter-select')!;
+      expect(group.dataset.filterStatus).toBe('pending');
+      expect(s.button('filter-select', 1)!.getAttribute('aria-pressed')).toBe('true');
+      expect(s.button('filter-select', 1)!.dataset.pending).toBe('false');
+      expect(s.button('filter-select', 3)!.getAttribute('aria-pressed')).toBe('false');
+      expect(s.button('filter-select', 3)!.dataset.pending).toBe('true');
+    }, {}, { pendingFilter: 3 });
+  });
+
+  it('renders confirmed status and no pending marker when nothing is pending', () => {
+    withSurface(base(), (s) => {
+      const group = s.group('filter-select')!;
+      expect(group.dataset.filterStatus).toBe('confirmed');
+      for (const value of [1, 2, 3]) expect(s.button('filter-select', value)!.dataset.pending).toBe('false');
+    });
+  });
+
+  it('renders a screen-reader announcement only while pending', () => {
+    withSurface(base(), (s) => {
+      expect(s.group('filter-select')!.querySelector('.sr-only')).not.toBeNull();
+    }, {}, { pendingFilter: 3 });
+    withSurface(base(), (s) => {
+      expect(s.group('filter-select')!.querySelector('.sr-only')).toBeNull();
+    });
+  });
+
+  // THE seam test (MOR-1441 leg-1 lesson applied to a discrete control): a
+  // click while a DIFFERENT choice is pending must still dispatch the
+  // CLICKED value verbatim — never something read off the pending display.
+  // Unlike the frequency digits' arithmetic base, a choice button's value is
+  // always the literal clicked value, so this pins that clicking anywhere
+  // OTHER than the pending choice is unaffected by it, and clicking the
+  // pending choice itself dispatches THAT explicit value too (never
+  // suppressed, never silently reinterpreted).
+  it('SEAM: clicking a choice while a DIFFERENT value is pending dispatches the CLICKED value, unaffected by pending', () => {
+    const onFilterChange = vi.fn();
+    withSurface(base(), (s) => {
+      s.button('filter-select', 2)!.click();
+      flushSync();
+      expect(onFilterChange).toHaveBeenCalledExactlyOnceWith(2);
+    }, { onFilterChange }, { pendingFilter: 3 });
+  });
+
+  it('SEAM: clicking the PENDING choice itself still dispatches it explicitly, never suppressed', () => {
+    const onFilterChange = vi.fn();
+    withSurface(base(), (s) => {
+      s.button('filter-select', 3)!.click();
+      flushSync();
+      expect(onFilterChange).toHaveBeenCalledExactlyOnceWith(3);
+    }, { onFilterChange }, { pendingFilter: 3 });
   });
 });
 

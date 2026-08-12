@@ -241,6 +241,54 @@ export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
   return latest?.freq ?? null;
 }
 
+// ── Pending discrete-control targets (MOR-1441 leg 2) ──
+/**
+ * Shared by the four accessors below: the freshest still-`'pending'`
+ * command matching `intentName`/`receiver`, or `undefined`. Same authority
+ * and `>=` freshest-wins tie-break as `getPendingFrequencyHz` above (leg 1,
+ * review B3) — no second, parallel pending-state path.
+ */
+function latestPendingParam(intentName: string, paramKey: string, receiver: 0 | 1): unknown {
+  let latest: { createdAt: number; value: unknown } | null = null;
+  for (const command of getCommandLifecycles()) {
+    if (command.name !== intentName || command.status !== 'pending') continue;
+    if (command.params.receiver !== receiver) continue;
+    const value = command.params[paramKey];
+    if (value === undefined) continue;
+    if (!latest || command.createdAt >= latest.createdAt) latest = { createdAt: command.createdAt, value };
+  }
+  return latest?.value;
+}
+
+/** Freshest in-flight `set_filter` target for `receiver`, or `null`.
+ *  `FilterSurface` renders this as a marker on the targeted choice only —
+ *  the confirmed reading stays the group's sole selection source (leg-1
+ *  lesson: pending is display-only). */
+export function getPendingFilterSelection(receiver: 0 | 1): number | null {
+  const value = latestPendingParam('set_filter', 'filter', receiver);
+  return typeof value === 'number' ? value : null;
+}
+
+/** Freshest in-flight `set_preamp` target for `receiver`, or `null`. Never
+ *  touches the MOR-1447 combined-knob/change-guard machinery, which reads
+ *  only confirmed fields. */
+export function getPendingPreampLevel(receiver: 0 | 1): number | null {
+  const value = latestPendingParam('set_preamp', 'level', receiver);
+  return typeof value === 'number' ? value : null;
+}
+
+/** Freshest in-flight `set_nb` target for `receiver`, or `null`. */
+export function getPendingNbOn(receiver: 0 | 1): boolean | null {
+  const value = latestPendingParam('set_nb', 'on', receiver);
+  return typeof value === 'boolean' ? value : null;
+}
+
+/** Freshest in-flight `set_nr` target for `receiver`, or `null`. */
+export function getPendingNrOn(receiver: 0 | 1): boolean | null {
+  const value = latestPendingParam('set_nr', 'on', receiver);
+  return typeof value === 'boolean' ? value : null;
+}
+
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
 const _vfoHandlers = makeVfoHandlers();
