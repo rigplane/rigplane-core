@@ -8,9 +8,12 @@ serial-backed radios (IC-705, IC-7300, IC-9700, IC-7610).
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import logging
 import os
+import re
 import time
+from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 from .._connection_state import RadioConnectionState
@@ -22,6 +25,7 @@ from ..radio import CoreRadio
 from ..types import AudioCodec, ScopeCompletionPolicy, get_audio_capabilities
 
 if TYPE_CHECKING:
+    from .discovery import SerialPortCandidate
     from .icom7610.drivers.serial_civ_link import SerialCivLink
     from .icom7610.drivers.serial_session import SerialSessionDriver
     from ..profiles import RadioProfile
@@ -45,6 +49,28 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# MOR-1453: trailing device-node suffix that encodes the physical USB port
+# (macOS ``/dev/cu.usbserial-1420``) or enumeration order (Linux
+# ``/dev/ttyUSB0``). Stripped to derive a glob pattern that matches sibling
+# nodes of the same USB-serial family after a replug renumbers the node.
+# NOTE: the separator itself is eaten by the match, e.g.
+# ``/dev/cu.usbserial-1420`` -> ``/dev/cu.usbserial*`` (no trailing ``-``),
+# which also matches unhyphenated siblings like ``/dev/cu.usbserial9931``.
+_TRAILING_NODE_SUFFIX_RE = re.compile(r"(-[0-9A-Za-z]+|[0-9]+)$")
+
+
+def _derive_reconnect_glob(device: str) -> str:
+    """Best-effort glob pattern matching sibling device nodes of *device*.
+
+    ``/dev/cu.usbserial-1420`` -> ``/dev/cu.usbserial*``;
+    ``/dev/ttyUSB0`` -> ``/dev/ttyUSB*``.
+    """
+    stripped = _TRAILING_NODE_SUFFIX_RE.sub("", device)
+    if not stripped or stripped == device:
+        return device + "*"
+    return stripped + "*"
 
 
 class _SerialAudioDriver(Protocol):
@@ -73,6 +99,8 @@ class _SerialAudioDriver(Protocol):
 
     @property
     def tx_running(self) -> bool: ...
+
+    def set_serial_port(self, serial_port: str | None) -> None: ...
 
 
 class _IcomSerialRadioBase(CoreRadio):
@@ -117,6 +145,10 @@ class _IcomSerialRadioBase(CoreRadio):
         civ_link: SerialCivLink | None = None,
         session_driver: SerialSessionDriver | None = None,
         audio_driver: _SerialAudioDriver | None = None,
+        reconnect_glob: str | None = None,
+        _civ_identity_probe: Callable[[str], Awaitable[int | None]] | None = None,
+        _enumerate_serial_ports_fn: Callable[[], "list[SerialPortCandidate]"]
+        | None = None,
     ) -> None:
         from .icom7610.drivers.serial_civ_link import SerialCivLink
         from .icom7610.drivers.serial_session import SerialSessionDriver
@@ -140,6 +172,19 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_baudrate = baudrate
         self._serial_rx_device_override = rx_device
         self._serial_tx_device_override = tx_device
+        # MOR-1453: rediscovery seams for a renumbered device node. Glob is
+        # auto-derived unless overridden; identity is captured fresh after
+        # each successful connect (see ``_capture_serial_identity``).
+        self._serial_reconnect_glob = reconnect_glob or _derive_reconnect_glob(device)
+        self._civ_identity_probe = (
+            _civ_identity_probe or self._default_civ_identity_probe
+        )
+        self._enumerate_serial_ports_fn = (
+            _enumerate_serial_ports_fn or self._default_enumerate_serial_ports
+        )
+        self._serial_hw_identity: tuple[str | None, int | None, int | None] | None = (
+            None
+        )
         if ptt_mode != "civ":
             raise ValueError(
                 "Unsupported serial PTT mode. Only 'civ' is currently supported."
@@ -161,6 +206,10 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_min_interval = serial_min_interval_ms / 1000.0
         serial_link = civ_link or SerialCivLink(device=device, baudrate=baudrate)
         self._serial_session = session_driver or SerialSessionDriver(serial_link)
+        # MOR-1453: raw link ref for rediscovery's set_device rebind. None
+        # when a bespoke session_driver was supplied (its link is then
+        # unreachable here -- currently unused in practice).
+        self._serial_civ_link = serial_link if session_driver is None else None
         self._serial_audio_driver = audio_driver or UsbAudioDriver(
             AudioDeviceConfig(
                 rx_device=rx_device,
@@ -314,6 +363,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._conn_state = RadioConnectionState.CONNECTED
         self._civ_stream_ready = self._serial_session.ready
         self._civ_recovering = not self._civ_stream_ready
+        self._capture_serial_identity()
         logger.info(
             "Connected to %s over serial (%s @ %d baud)",
             self.model,
@@ -361,6 +411,7 @@ class _IcomSerialRadioBase(CoreRadio):
         await self._stop_civ_worker()
         await self._stop_civ_rx_pump()
         await self._serial_session.disconnect()
+        await self._maybe_rediscover_serial_device()
 
         try:
             await self._serial_session.connect()
@@ -383,6 +434,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._conn_state = RadioConnectionState.CONNECTED
         self._civ_stream_ready = self._serial_session.ready
         self._civ_recovering = not self._civ_stream_ready
+        self._capture_serial_identity()
         # MOR-1440 review round 2 (B1 item 2): this is the RECONNECTING ->
         # CONNECTED transition. Re-baseline the link-death detector here,
         # explicitly, rather than waiting for the next watchdog tick's
@@ -399,6 +451,154 @@ class _IcomSerialRadioBase(CoreRadio):
                     "serial soft_reconnect: _on_reconnect callback failed",
                     exc_info=True,
                 )
+
+    # ------------------------------------------------------------------
+    # Renumbered-node rediscovery (MOR-1453)
+    # ------------------------------------------------------------------
+
+    def _default_enumerate_serial_ports(self) -> "list[SerialPortCandidate]":
+        """Real OS port enumeration -- read-only, never opens a device."""
+        from .discovery import enumerate_serial_ports
+
+        return enumerate_serial_ports()
+
+    def _capture_serial_identity(self) -> None:
+        """Snapshot the connected adapter's hw identity for rediscovery.
+
+        Called after every successful connect/soft_reconnect so a
+        fingerprint (USB ``serial_number``, else vid/pid) is always fresh
+        for the *current* adapter, not assumed stable across the very
+        first connect (itself possibly post-replug). Resets to ``None``
+        when enumeration fails or the path isn't found (synthetic paths
+        in tests), rather than keeping a stale value.
+        """
+        self._serial_hw_identity = None
+        try:
+            enumerated = self._enumerate_serial_ports_fn()
+        except Exception:
+            logger.debug("serial identity capture failed", exc_info=True)
+            return
+        for candidate in enumerated:
+            if candidate.device == self._serial_device:
+                self._serial_hw_identity = (
+                    candidate.serial_number,
+                    candidate.vid,
+                    candidate.pid,
+                )
+                return
+
+    async def _maybe_rediscover_serial_device(self) -> None:
+        """Rediscover a renumbered device node before retrying connect.
+
+        macOS encodes the physical USB port in the device path
+        (``/dev/cu.usbserial-1420``), so a replug renames the node and
+        leaves ``soft_reconnect`` retrying a vanished path forever
+        (follow-up from MOR-1440). No-op while the configured path exists.
+
+        Identity model (review round 2 design ruling): a CI-V address
+        probe as *primary* signal was rejected -- a different radio can
+        answer it (the documented IC-705/X6200 shared 0xA4 collision),
+        hijacking a neighbor's port and repeatedly writing CI-V frames
+        into that neighbor's live link. Instead:
+
+        - PRIMARY: match candidates (OS-enumerated, filtered by
+          ``_serial_reconnect_glob``) against our own USB ``serial_number``
+          captured at the last connect -- no port is ever opened for this.
+          An empty string (pyserial surfaces ``""``, not ``None``, for a
+          stripped-descriptor adapter on some Linux/Windows hosts) is
+          treated as "no fingerprint", not a wildcard -- falls through to
+          FALLBACK instead of matching any other empty-serial candidate.
+          A candidate is also rejected when its enumerated vid/pid is
+          *known* to differ from ours, closing coincidental cross-vendor
+          serial-string collisions.
+        - FALLBACK (adapter exposed no usable serial_number): the CI-V
+          probe, but skip -- never open -- a candidate whose vid/pid is
+          *known* to differ from ours. When our own identity is entirely
+          unknown (enumeration failed or never found our path), FALLBACK
+          runs with zero vid/pid filtering. Narrows, does not eliminate,
+          the collision risk when neither side exposes a serial number
+          and both share (or lack) vid/pid -- documented residual gap.
+          Ports rejected by ``discovery._is_candidate`` (e.g. non-USB or
+          virtual ports) are never enumerated and so never rediscoverable
+          -- silent by design, matching initial discovery's own filter.
+        """
+        if os.path.exists(self._serial_device):
+            return
+        try:
+            enumerated = self._enumerate_serial_ports_fn()
+        except Exception:
+            logger.debug("serial rediscovery: port enumeration failed", exc_info=True)
+            return
+        candidates = sorted(
+            (
+                c
+                for c in enumerated
+                if c.device != self._serial_device
+                and fnmatch.fnmatch(c.device, self._serial_reconnect_glob)
+            ),
+            key=lambda c: c.device,
+        )
+        if not candidates:
+            return
+
+        target_serial, target_vid, target_pid = self._serial_hw_identity or (
+            None,
+            None,
+            None,
+        )
+        adopted: str | None = None
+        if target_serial:
+            for candidate in candidates:
+                if candidate.serial_number != target_serial:
+                    continue
+                if target_vid is not None and candidate.vid not in (None, target_vid):
+                    continue
+                if target_pid is not None and candidate.pid not in (None, target_pid):
+                    continue
+                adopted = candidate.device
+                break
+        else:
+            for candidate in candidates:
+                if target_vid is not None and candidate.vid not in (None, target_vid):
+                    continue
+                if target_pid is not None and candidate.pid not in (None, target_pid):
+                    continue
+                try:
+                    address = await self._civ_identity_probe(candidate.device)
+                except Exception:
+                    logger.debug(
+                        "serial rediscovery: identity probe failed for %s",
+                        candidate.device,
+                        exc_info=True,
+                    )
+                    continue
+                if address is not None and address == self._radio_addr:
+                    adopted = candidate.device
+                    break
+
+        if adopted is None:
+            return
+        logger.warning(
+            "rigplane (%s): serial node %s vanished; rediscovered radio at %s",
+            self.model,
+            self._serial_device,
+            adopted,
+        )
+        self._serial_device = adopted
+        if self._serial_civ_link is not None:
+            self._serial_civ_link.set_device(adopted)
+        self._serial_audio_driver.set_serial_port(adopted)
+
+    async def _default_civ_identity_probe(self, port: str) -> int | None:
+        """Probe *port* for a CI-V radio and return its address, or ``None``.
+
+        FALLBACK only (see ``_maybe_rediscover_serial_device``) -- opens
+        the port and writes a real CI-V frame.
+        """
+        from .discovery import probe_serial_civ
+
+        result = await probe_serial_civ(port, baud_rates=[self._serial_baudrate])
+        return result.address if result is not None else None
 
     # ------------------------------------------------------------------
     # Scope

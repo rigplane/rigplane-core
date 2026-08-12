@@ -8,6 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from rigplane import IcomRadio, RadioConnectionState
+from rigplane.backends._icom_serial_base import (
+    _IcomSerialRadioBase,
+    _derive_reconnect_glob,
+)
+from rigplane.backends.discovery import SerialPortCandidate
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane import IC_7610_ADDR
@@ -21,6 +26,39 @@ from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.types import AudioCodec
 from rigplane.types import bcd_encode
+
+
+@pytest.fixture(autouse=True)
+def _no_real_serial_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MOR-1453 test hermeticity (review round 2, B1).
+
+    Every construction in this module uses a synthetic device path with
+    no real backing hardware, but rediscovery's *default* enumeration/
+    identity-probe seams are the real OS-level ones unless a test
+    explicitly overrides them. On a host with a real USB-serial adapter
+    physically attached (the live bench, or a self-hosted CI runner),
+    the synthetic path can fail ``os.path.exists`` while a real sibling
+    node still matches the derived glob pattern -- reaching the FALLBACK
+    CI-V probe, which opens the real port and writes a real frame.
+    Patching the class-level defaults to safe no-ops for every test in
+    this module (tests that explicitly pass their own
+    ``_civ_identity_probe``/``_enumerate_serial_ports_fn`` are unaffected,
+    since an explicit constructor argument always wins over the default)
+    makes that impossible regardless of what hardware is attached.
+    """
+    monkeypatch.setattr(
+        _IcomSerialRadioBase,
+        "_default_enumerate_serial_ports",
+        lambda self: [],
+    )
+
+    async def _no_probe(self: object, port: str) -> int | None:
+        raise AssertionError(
+            f"unexpected real CI-V identity probe attempted on {port!r} "
+            "-- this test module must never perform real serial I/O"
+        )
+
+    monkeypatch.setattr(_IcomSerialRadioBase, "_default_civ_identity_probe", _no_probe)
 
 
 def _freq_response_frame(freq_hz: int) -> bytes:
@@ -103,6 +141,10 @@ class _FakeSerialCivLink:
         self.sent_frames: list[bytes] = []
         self._responses: asyncio.Queue[bytes] = asyncio.Queue()
         self._responses_by_send: dict[int, list[bytes]] = {}
+        self.device_history: list[str] = []
+
+    def set_device(self, device: str) -> None:
+        self.device_history.append(device)
 
     async def connect(self) -> None:
         self.connect_calls += 1
@@ -155,6 +197,10 @@ class _FakeUsbAudioDriver:
         self.tx_frames: list[bytes] = []
         self.rx_starts = 0
         self.tx_starts = 0
+        self.serial_port_history: list[str | None] = []
+
+    def set_serial_port(self, serial_port: str | None) -> None:
+        self.serial_port_history.append(serial_port)
 
     async def start_rx(self, callback, **kwargs) -> None:  # type: ignore[no-untyped-def]
         _ = kwargs
@@ -703,6 +749,628 @@ async def test_serial_link_down_settles_after_successful_reconnect_same_node(
     assert radio.radio_ready is True
 
     await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_rediscovers_renumbered_node(tmp_path) -> None:
+    """MOR-1453 review round 2 design ruling: PRIMARY identity is the USB
+    adapter's own hardware ``serial_number``, captured via OS enumeration
+    at the last successful connect -- no candidate port is ever opened to
+    confirm it, closing the IC-705/X6200 shared CI-V address 0xA4
+    collision entirely for adapters that expose one.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    new_path = tmp_path / "cu.usbserial-9931"
+
+    topology = {
+        "candidates": [
+            SerialPortCandidate(
+                device=str(old_path),
+                description="",
+                hwid=None,
+                vid=0x0403,
+                pid=0x6001,
+                serial_number="FT-ABC123",
+            ),
+        ],
+    }
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        return list(topology["candidates"])
+
+    async def _probe_forbidden(port: str) -> int | None:
+        raise AssertionError(
+            f"CI-V probe must never run when PRIMARY serial_number "
+            f"identity is known (attempted on {port!r})"
+        )
+
+    link = _FakeSerialCivLink()
+    audio = _FakeUsbAudioDriver()
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        audio_driver=audio,
+        reconnect_glob=str(tmp_path / "cu.usbserial*"),
+        _enumerate_serial_ports_fn=_enumerate,
+        _civ_identity_probe=_probe_forbidden,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()  # deterministic: no background tick races.
+    assert radio._serial_hw_identity == ("FT-ABC123", 0x0403, 0x6001)
+
+    # Simulate the replug: link health drops (as the watchdog would
+    # observe), the old node vanishes from the OS's enumeration, and a
+    # new node with the SAME hardware serial_number (same physical
+    # adapter) appears.
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    new_path.write_text("")
+    topology["candidates"] = [
+        SerialPortCandidate(
+            device=str(new_path),
+            description="",
+            hwid=None,
+            vid=0x0403,
+            pid=0x6001,
+            serial_number="FT-ABC123",
+        ),
+    ]
+
+    await radio.soft_reconnect()
+
+    assert radio._serial_device == str(new_path)
+    assert link.device_history == [str(new_path)]
+    assert audio.serial_port_history == [str(new_path)]
+    assert radio.conn_state == RadioConnectionState.CONNECTED
+    assert radio.radio_ready is True
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_recaptures_identity_after_adoption(
+    tmp_path,
+) -> None:
+    """MOR-1453 review round 3 (M7 gap): ``_capture_serial_identity()``
+    must run again after a successful adoption -- not just at the
+    original connect -- otherwise ``_serial_hw_identity`` keeps
+    describing the OLD node forever. ``pid`` is left unknown (``None``)
+    at the first capture (so it never gates the PRIMARY match) and only
+    becomes known post-replug, so the post-adoption value can only be
+    correct if the second capture actually ran.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    new_path = tmp_path / "cu.usbserial-9931"
+
+    topology = {
+        "candidates": [
+            SerialPortCandidate(
+                device=str(old_path),
+                description="",
+                hwid=None,
+                vid=0x0403,
+                pid=None,
+                serial_number="ADAPTER-SN",
+            ),
+        ],
+    }
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        return list(topology["candidates"])
+
+    link = _FakeSerialCivLink()
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        reconnect_glob=str(tmp_path / "cu.usbserial*"),
+        _enumerate_serial_ports_fn=_enumerate,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    assert radio._serial_hw_identity == ("ADAPTER-SN", 0x0403, None)
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    new_path.write_text("")
+    # Same adapter (same serial_number, matched by PRIMARY), but the OS
+    # now also surfaces a pid it didn't report before the replug.
+    topology["candidates"] = [
+        SerialPortCandidate(
+            device=str(new_path),
+            description="",
+            hwid=None,
+            vid=0x0403,
+            pid=0x1234,
+            serial_number="ADAPTER-SN",
+        ),
+    ]
+
+    await radio.soft_reconnect()
+
+    assert radio._serial_device == str(new_path)
+    # Only true if the post-adoption capture ran against the NEW path --
+    # a stale value from the original connect would still show pid=None.
+    assert radio._serial_hw_identity == ("ADAPTER-SN", 0x0403, 0x1234)
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_primary_ignores_empty_string_serial(
+    tmp_path,
+) -> None:
+    """MOR-1453 review round 3 (reproduced defect): pyserial surfaces an
+    empty string, not ``None``, for a stripped-descriptor adapter on some
+    Linux/Windows hosts. An empty ``serial_number`` must never be treated
+    as a fingerprint -- ``'' == ''`` must not let a candidate get adopted
+    on the strength of PRIMARY matching alone.
+
+    The candidate's vid/pid are deliberately IDENTICAL to ours (two cheap
+    adapters of the same model, both with stripped descriptors) so the
+    PRIMARY vid/pid cross-check (fix item 2) cannot independently save
+    this test -- only treating ``""`` as "no fingerprint" (falling
+    through to FALLBACK) can. The FALLBACK probe is wired to return
+    ``None`` (unconfirmed), so a correct implementation must not adopt --
+    but it MUST have reached the probe at all, proving PRIMARY was
+    correctly bypassed rather than short-circuiting on the empty match.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    neighbor_path = tmp_path / "cu.usbserial-4471"  # a DIFFERENT, unrelated radio
+
+    topology = {
+        "candidates": [
+            SerialPortCandidate(
+                device=str(old_path),
+                description="",
+                hwid=None,
+                vid=0x10C4,  # CP210x
+                pid=0xEA60,
+                serial_number="",  # degenerate descriptor
+            ),
+        ],
+    }
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        return list(topology["candidates"])
+
+    probed: list[str] = []
+
+    async def _identity_probe(port: str) -> int | None:
+        probed.append(port)
+        return None  # unconfirmed -- FALLBACK must not adopt on this alone
+
+    link = _FakeSerialCivLink()
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        reconnect_glob=str(tmp_path / "cu.usbserial*"),
+        _enumerate_serial_ports_fn=_enumerate,
+        _civ_identity_probe=_identity_probe,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    assert radio._serial_hw_identity == ("", 0x10C4, 0xEA60)
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    neighbor_path.write_text("")
+    topology["candidates"] = [
+        SerialPortCandidate(
+            device=str(neighbor_path),
+            description="",
+            hwid=None,
+            vid=0x10C4,  # SAME vid/pid as ours -- does not gate FALLBACK
+            pid=0xEA60,
+            serial_number="",  # ALSO empty -- must not match on that alone
+        ),
+    ]
+
+    await radio.soft_reconnect()
+
+    # Empty serial must fall through to FALLBACK -- the probe must have
+    # run (proving PRIMARY did not short-circuit on '' == '') -- and,
+    # since it returned unconfirmed, nothing was adopted.
+    assert probed == [str(neighbor_path)]
+    assert radio._serial_device == str(old_path)  # unchanged -- never adopted
+    assert link.device_history == []
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_primary_rejects_matching_serial_wrong_adapter(
+    tmp_path,
+) -> None:
+    """MOR-1453 review round 3 fix item 2: a candidate whose
+    ``serial_number`` coincidentally matches ours but whose vid/pid is
+    KNOWN to differ (a cross-vendor serial-string collision) must not be
+    adopted via PRIMARY -- and, since PRIMARY never opens a port, must
+    never be probed either.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    wrong_vendor_path = tmp_path / "cu.usbserial-4471"
+
+    topology = {
+        "candidates": [
+            SerialPortCandidate(
+                device=str(old_path),
+                description="",
+                hwid=None,
+                vid=0x10C4,
+                pid=0xEA60,
+                serial_number="SN-1234",
+            ),
+        ],
+    }
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        return list(topology["candidates"])
+
+    async def _probe_forbidden(port: str) -> int | None:
+        raise AssertionError(
+            f"PRIMARY must never open a port, even to reject it ({port!r})"
+        )
+
+    link = _FakeSerialCivLink()
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        reconnect_glob=str(tmp_path / "cu.usbserial*"),
+        _enumerate_serial_ports_fn=_enumerate,
+        _civ_identity_probe=_probe_forbidden,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    assert radio._serial_hw_identity == ("SN-1234", 0x10C4, 0xEA60)
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    wrong_vendor_path.write_text("")
+    topology["candidates"] = [
+        SerialPortCandidate(
+            device=str(wrong_vendor_path),
+            description="",
+            hwid=None,
+            vid=0x0403,  # KNOWN different vendor despite the serial match
+            pid=0x6001,
+            serial_number="SN-1234",  # coincidental collision
+        ),
+    ]
+
+    await radio.soft_reconnect()
+
+    assert radio._serial_device == str(old_path)  # unchanged -- never adopted
+    assert link.device_history == []
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_fallback_skips_known_different_adapter(
+    tmp_path,
+) -> None:
+    """MOR-1453 review round 2 design ruling (port-hijack / 0xA4 collision
+    reproduction): FALLBACK (adapter exposes no serial_number) must never
+    probe -- never open -- a candidate whose enumerated vid/pid is a
+    KNOWN different adapter, even though it would answer at our CI-V
+    address if asked. The correct-vid/pid candidate is still probed and
+    adopted, proving the exclusion is scoped, not a blanket FALLBACK
+    disablement.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    our_new_path = tmp_path / "cu.usbserial-9931"  # same adapter, no serial_number
+    neighbor_path = tmp_path / "cu.usbserial-4471"  # a DIFFERENT radio
+
+    topology = {
+        "candidates": [
+            SerialPortCandidate(
+                device=str(old_path),
+                description="",
+                hwid=None,
+                vid=0x10C4,
+                pid=0xEA60,
+                serial_number=None,
+            ),
+        ],
+    }
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        return list(topology["candidates"])
+
+    probed: list[str] = []
+
+    async def _identity_probe(port: str) -> int | None:
+        probed.append(port)
+        # Both would answer at our configured CI-V address if asked --
+        # the neighbor must never even be probed.
+        return IC_7610_ADDR
+
+    link = _FakeSerialCivLink()
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        reconnect_glob=str(tmp_path / "cu.usbserial*"),
+        _enumerate_serial_ports_fn=_enumerate,
+        _civ_identity_probe=_identity_probe,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    assert radio._serial_hw_identity == (None, 0x10C4, 0xEA60)
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    our_new_path.write_text("")
+    neighbor_path.write_text("")
+    topology["candidates"] = [
+        SerialPortCandidate(
+            device=str(neighbor_path),
+            description="",
+            hwid=None,
+            vid=0x0403,  # KNOWN different adapter -- must never be opened
+            pid=0x6001,
+            serial_number=None,
+        ),
+        SerialPortCandidate(
+            device=str(our_new_path),
+            description="",
+            hwid=None,
+            vid=0x10C4,  # matches our own captured vid/pid
+            pid=0xEA60,
+            serial_number=None,
+        ),
+    ]
+
+    await radio.soft_reconnect()
+
+    assert probed == [str(our_new_path)]  # neighbor never probed/opened
+    assert radio._serial_device == str(our_new_path)
+    assert link.device_history == [str(our_new_path)]
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_fallback_vid_and_pid_guards_are_independent(
+    tmp_path,
+) -> None:
+    """MOR-1453 review round 3 (M3b/M3c): the FALLBACK vid guard and pid
+    guard must each be independently load-bearing. One candidate differs
+    ONLY in vid, another ONLY in pid -- both must be skipped without ever
+    being probed; only the fully-matching candidate is probed and
+    adopted. A mutant that drops either individual guard (but not the
+    other) is caught by this test alone.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    vid_only_diff_path = tmp_path / "cu.usbserial-1111"
+    pid_only_diff_path = tmp_path / "cu.usbserial-2222"
+    match_path = tmp_path / "cu.usbserial-3333"
+
+    topology = {
+        "candidates": [
+            SerialPortCandidate(
+                device=str(old_path),
+                description="",
+                hwid=None,
+                vid=0x10C4,
+                pid=0xEA60,
+                serial_number=None,
+            ),
+        ],
+    }
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        return list(topology["candidates"])
+
+    probed: list[str] = []
+
+    async def _identity_probe(port: str) -> int | None:
+        probed.append(port)
+        return IC_7610_ADDR
+
+    link = _FakeSerialCivLink()
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        reconnect_glob=str(tmp_path / "cu.usbserial*"),
+        _enumerate_serial_ports_fn=_enumerate,
+        _civ_identity_probe=_identity_probe,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    assert radio._serial_hw_identity == (None, 0x10C4, 0xEA60)
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    for p in (vid_only_diff_path, pid_only_diff_path, match_path):
+        p.write_text("")
+    topology["candidates"] = [
+        SerialPortCandidate(
+            device=str(vid_only_diff_path),
+            description="",
+            hwid=None,
+            vid=0x0403,  # differs -- pid still matches
+            pid=0xEA60,
+            serial_number=None,
+        ),
+        SerialPortCandidate(
+            device=str(pid_only_diff_path),
+            description="",
+            hwid=None,
+            vid=0x10C4,  # matches -- pid differs
+            pid=0x6001,
+            serial_number=None,
+        ),
+        SerialPortCandidate(
+            device=str(match_path),
+            description="",
+            hwid=None,
+            vid=0x10C4,
+            pid=0xEA60,
+            serial_number=None,
+        ),
+    ]
+
+    await radio.soft_reconnect()
+
+    assert probed == [str(match_path)]
+    assert radio._serial_device == str(match_path)
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_fallback_rejects_wrong_civ_address(
+    tmp_path,
+) -> None:
+    """FALLBACK safety: with identity fully unknown (no serial_number, no
+    vid/pid captured), a candidate that answers with the WRONG CI-V
+    address must never be adopted.
+    """
+    old_path = tmp_path / "cu.usbserial-1420"
+    old_path.write_text("")
+    other_radio_path = tmp_path / "cu.usbserial-4471"
+
+    topology: dict[str, list[SerialPortCandidate]] = {"candidates": []}
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        return list(topology["candidates"])
+
+    probed: list[str] = []
+
+    async def _identity_probe(port: str) -> int | None:
+        probed.append(port)
+        return 0x94  # a different radio's CI-V address -- never ours
+
+    link = _FakeSerialCivLink()
+
+    radio = Icom7610SerialRadio(
+        device=str(old_path),
+        civ_link=link,
+        reconnect_glob=str(tmp_path / "cu.usbserial*"),
+        _enumerate_serial_ports_fn=_enumerate,
+        _civ_identity_probe=_identity_probe,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    assert radio._serial_hw_identity is None
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+    old_path.unlink()
+    other_radio_path.write_text("")
+    topology["candidates"] = [
+        SerialPortCandidate(device=str(other_radio_path), description="", hwid=None),
+    ]
+
+    await radio.soft_reconnect()
+
+    assert probed == [str(other_radio_path)]
+    assert radio._serial_device == str(old_path)  # unchanged -- never adopted
+    assert link.device_history == []
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_skips_rediscovery_when_path_still_present(
+    tmp_path,
+) -> None:
+    """Regression guard (MOR-1453 review round 2, B3): rediscovery must
+    never even enumerate while the configured device node is still
+    present -- the ordinary same-node reconnect path (MOR-1440's
+    lifecycle pins) sees zero behavior change. A real sibling candidate
+    (that would be adopted by serial_number if reached) is deliberately
+    present so a mutant that removes the ``os.path.exists`` guard is
+    caught instead of surviving on an empty candidate list.
+    """
+    device_path = tmp_path / "cu.usbserial-1420"
+    device_path.write_text("")
+    sibling_path = tmp_path / "cu.usbserial-9931"
+    sibling_path.write_text("")
+
+    enumerate_calls: list[None] = []
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        enumerate_calls.append(None)
+        return [
+            SerialPortCandidate(
+                device=str(sibling_path),
+                description="",
+                hwid=None,
+                serial_number="WOULD-BE-ADOPTED-IF-REACHED",
+            ),
+        ]
+
+    link = _FakeSerialCivLink(fail_connect_calls={2})
+
+    radio = Icom7610SerialRadio(
+        device=str(device_path),
+        civ_link=link,
+        reconnect_glob=str(tmp_path / "cu.usbserial*"),
+        _enumerate_serial_ports_fn=_enumerate,
+    )
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    calls_after_connect = len(enumerate_calls)
+
+    link.connected = False
+    link.ready = False
+    link.healthy = False
+
+    with pytest.raises(ConnectionError, match="Failed to reconnect"):
+        await radio.soft_reconnect()
+
+    # Rediscovery must never enumerate again while the configured path
+    # is still present -- the only enumeration is the one already
+    # counted from connect()'s identity capture.
+    assert len(enumerate_calls) == calls_after_connect
+    assert radio._serial_device == str(device_path)
+
+    await radio.disconnect()
+
+
+@pytest.mark.parametrize(
+    ("device", "expected"),
+    [
+        ("/dev/cu.usbserial-1420", "/dev/cu.usbserial*"),
+        ("/dev/cu.usbmodem-IC7610", "/dev/cu.usbmodem*"),
+        ("/dev/cu.SLAB_USBtoUART2", "/dev/cu.SLAB_USBtoUART*"),
+        ("/dev/ttyS0", "/dev/ttyS*"),
+        ("/dev/customdevice", "/dev/customdevice*"),
+    ],
+)
+def test_derive_reconnect_glob_table(device: str, expected: str) -> None:
+    """MOR-1453 review round 2 (B4): the derived pattern eats the
+    separator -- ``cu.usbserial-1420`` -> ``cu.usbserial*``, not
+    ``cu.usbserial-*`` -- and a path with no trailing digit/suffix run
+    falls back to appending ``*`` unchanged.
+    """
+    assert _derive_reconnect_glob(device) == expected
 
 
 @pytest.mark.asyncio
