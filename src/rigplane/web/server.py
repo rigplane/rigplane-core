@@ -2252,6 +2252,25 @@ class WebServer:
                             "reconnect: auto VFO identity establish failed",
                             exc_info=True,
                         )
+                    # MOR-1495 review R2: RadioPoller._run()'s one-time
+                    # startup section (same reasoning as
+                    # establish_vfo_identity above) never re-fires after a
+                    # soft-reconnect either, so re-seed scanning/
+                    # scan_resume_mode here too — otherwise a reconnect after
+                    # any scan command would leave the web trusting a
+                    # possibly-stale pre-reconnect value forever. Pure local
+                    # seed, unlike the VFO-identity call above — never writes
+                    # to the radio, so it needs no external-CAT-session guard
+                    # and cannot itself fail against the wire; the try/except
+                    # here only guards the StateStore call for consistency
+                    # with its sibling.
+                    try:
+                        self._radio_poller._seed_scan_facts_at_connect()
+                    except Exception:
+                        logger.warning(
+                            "reconnect: scan facts seed failed",
+                            exc_info=True,
+                        )
             # Re-enable scope after refetch completes.
             # Do NOT gate on self._radio_ready(): that property waits for
             # CI-V broadcast data, but on IC-7610 in the "deaf" firmware

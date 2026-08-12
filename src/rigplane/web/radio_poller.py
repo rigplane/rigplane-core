@@ -260,6 +260,29 @@ _MOD_INPUT_FIELDS: tuple[str, ...] = (
     "data3_mod_input",
 )
 
+# MOR-1495 review R2: the assumed scan-resume-mode default seeded at
+# connect (masked, i.e. already ``& 0x0F`` — matches how ``ScanSetResume``
+# stores it). No ``rigs/*.toml`` declares a scan-resume default, and CI-V
+# 0x0E has no read command to observe the radio's own power-on value, so
+# this can only ever be an ASSUMPTION, never a confirmed fact.
+#
+# A secondary source (Icom IC-7300 Full Manual, "Scan Set Mode" section, as
+# indexed by manualslib.com) describes SCAN RESUME as ON/OFF and states a
+# factory default of ON — but this was NOT independently cross-checked
+# against Icom's own primary PDF (this environment's fetch tooling could
+# not retrieve it: it exceeds the 10 MB single-fetch limit), and that
+# secondary source does not pin which CI-V sub-byte (0xD1/0xD2/0xD3)
+# corresponds to "ON" with the confidence this constant would need.
+# Seeding 0xD0 (OFF, masked 0x00) is the CONSERVATIVE choice instead: it is
+# the same "nothing is happening until commanded" assumption already made
+# for ``scanning=False`` immediately below, and being wrong about it is
+# low-stakes — it only affects a cosmetic default shown before the operator
+# ever cycles resume mode via the surface's own RESUME control.
+# TODO(MOR-1495 follow-up): confirm the true factory default against a
+# bench IC-7300 after a full/master reset (or Icom's own CI-V reference,
+# not just the operating manual) and correct this seed if it differs.
+_SCAN_RESUME_MODE_DEFAULT_MASKED = 0x00  # assumed 0xD0 (OFF) & 0x0F
+
 
 def _audio_tx_codec_and_rate(radio: Any) -> tuple[AudioCodec | None, int]:
     """Legacy TX-format resolution for radios WITHOUT the neutral
@@ -1163,6 +1186,57 @@ class RadioPoller:
         else:
             self._state_store.apply(observation)
 
+    def _seed_scan_facts_at_connect(self) -> None:
+        """Seed ``scanning``/``scan_resume_mode`` once at connect (and again
+        on soft-reconnect) so the scan START control can ever leave the
+        "missing" ``fieldStatus`` gate that keeps it disabled (MOR-1495
+        review R2 — verifier-caught bootstrap deadlock).
+
+        The round-1 fix (:meth:`_apply_global_command_echo_observation`,
+        called from the ``ScanStart``/``ScanStop``/``ScanSetResume`` command
+        handlers) is the ONLY writer of these fields — but the ONLY trigger
+        for those commands is the UI, and the UI's own ``usable()`` gate
+        (``RitXitScanSurface.svelte``) requires the fields to already be
+        known before it will enable the button that would send the very
+        first command. Nothing breaks that cycle without an explicit seed.
+
+        PURE LOCAL SEED — never sends anything to the radio. Unlike
+        :meth:`establish_vfo_identity` (its sibling call site in
+        :meth:`_run`'s startup section and in the server's reconnect path),
+        which commands VFO A over the wire and therefore pauses while an
+        external CAT session owns it, this seed touches only the local
+        StateStore and needs no such guard.
+
+        "Not scanning until we command it" is an ASSUMED-UNTIL-COMMANDED
+        fact — the same accepted-dishonesty class as this PR's documented
+        front-panel-scan-stop-is-invisible limitation, not a claim about
+        anything actually observed on the radio. A soft-reconnect reseeds
+        it unconditionally rather than trusting a pre-reconnect commanded
+        value, mirroring ``reset_vfo_session()``'s unconditional discard of
+        ``active_slot`` on every reconnect (MOR-1443) — the true state is
+        unknown again after any link drop.
+
+        ``scan_type`` is deliberately NOT seeded here: an assumed type
+        would let an unconfirmed guess masquerade as an observed radio
+        fact, which is exactly what the surface's other honesty gates
+        exist to prevent. The START flow instead owns the type as local UI
+        state (``RitXitScanSurface.svelte``'s own ``selectedType``,
+        mirroring v2 ``ScanPanel``'s shape/default), sent explicitly with
+        every ``scan_start`` command — so START no longer depends on an
+        observed type at all.
+        """
+        provider_generation = self._provider_generation()
+        self._apply_global_command_echo_observation(
+            "scanning",
+            False,
+            provider_generation=provider_generation,
+        )
+        self._apply_global_command_echo_observation(
+            "scan_resume_mode",
+            _SCAN_RESUME_MODE_DEFAULT_MASKED,
+            provider_generation=provider_generation,
+        )
+
     async def _fetch_nb_controls(self) -> None:
         """One-shot readback of NB depth/width into the StateStore (MOR-491-B).
 
@@ -1309,6 +1383,19 @@ class RadioPoller:
             # happening is worth surfacing above debug (review R2).
             logger.warning(
                 "radio-poller: auto VFO identity establish failed", exc_info=True
+            )
+
+        # MOR-1495 review R2: scan (CI-V 0x0E) is SET-ONLY, so nothing else
+        # ever seeds scanning/scan_resume_mode — without this, the web UI's
+        # scan controls stay disabled forever (bootstrap deadlock: the only
+        # writer of these fields is a scan command, and the only trigger for
+        # a scan command is a UI control gated on these fields already being
+        # known). Pure local seed — never touches the radio.
+        try:
+            self._seed_scan_facts_at_connect()
+        except Exception:
+            logger.warning(
+                "radio-poller: scan facts seed failed", exc_info=True
             )
 
         try:

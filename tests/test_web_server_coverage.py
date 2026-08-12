@@ -2881,6 +2881,45 @@ async def test_on_radio_reconnect_establishes_vfo_identity_after_readiness_gate(
 
 
 @pytest.mark.asyncio
+async def test_on_radio_reconnect_reseeds_scan_facts() -> None:
+    """MOR-1495 review R2: the scan-facts seed must re-run on every
+    soft-reconnect too, sitting right beside ``establish_vfo_identity`` in
+    the same ``finally`` block. ``RadioPoller._run()``'s one-time startup
+    section never fires again after a soft-reconnect (same reasoning as the
+    VFO-identity call above), so without this the scan controls would only
+    ever unlock once, at process start, and a reconnect would leave the web
+    trusting whatever pre-reconnect value happened to survive forever.
+    """
+    radio = _scope_radio(ready=False)
+    radio._fetch_initial_state = AsyncMock()
+    radio.profile = resolve_radio_profile(model="IC-7300")
+    radio.model = radio.profile.model
+    srv = WebServer(radio)
+
+    store = StateStore()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    poller.establish_vfo_identity = AsyncMock()  # type: ignore[method-assign]
+    seed_call_count = 0
+    real_seed = poller._seed_scan_facts_at_connect  # noqa: SLF001
+
+    def _tracking_seed() -> None:
+        nonlocal seed_call_count
+        seed_call_count += 1
+        real_seed()
+
+    poller._seed_scan_facts_at_connect = _tracking_seed  # type: ignore[method-assign]  # noqa: SLF001
+    srv._radio_poller = poller  # noqa: SLF001
+
+    srv._on_radio_reconnect()  # noqa: SLF001
+    await asyncio.sleep(0.05)  # let the refetch task complete
+
+    assert seed_call_count == 1
+    field = store.snapshot().field(FieldPath.global_("slow_state", "scanning"))
+    assert field.value is False
+    assert field.source.source != "poll_response"
+
+
+@pytest.mark.asyncio
 async def test_ensure_scope_enabled_defers_enable_when_radio_not_ready() -> None:
     radio = _scope_radio(ready=False)
     srv = WebServer(radio)
