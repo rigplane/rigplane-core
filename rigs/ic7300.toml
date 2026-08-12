@@ -181,6 +181,11 @@ command_response_observable = [
     # that's new mechanism, not a table entry, so it's out of scope here.
     "global.tx_state.vox_on",
     "global.tx_state.monitor_on",
+    # MOR-1491 (field-policy membership wave, leg 2): filter/PBT facts.
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.main.operator_controls.filter_shape",
+    "receiver.main.operator_controls.pbt_inner",
+    "receiver.main.operator_controls.pbt_outer",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -268,6 +273,30 @@ reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.monitor_on"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_outer"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"

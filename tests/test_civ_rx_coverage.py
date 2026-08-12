@@ -3167,12 +3167,12 @@ def test_update_radio_state_cmd16_ipplus(radio_with_state: IcomRadio) -> None:
         # 0x15/0x01 + 0x15/0x05 s_meter_sql_open promoted to the neutral ``dcd``
         # receiver toggle (MOR-466); 0x41 auto_notch, 0x44 compressor_on,
         # 0x45 monitor_on, 0x46 vox_on, 0x48 manual_notch (MOR-437); 0x12 agc +
-        # 0x1A/0x04 agc_time_constant (BE-2); and 0x32 audio_peak_filter +
-        # 0x4F twin_peak_filter (MOR-452) are now observation-backed — the legacy
-        # RadioState mirror was removed, so they no longer belong here.
+        # 0x1A/0x04 agc_time_constant (BE-2); 0x32 audio_peak_filter +
+        # 0x4F twin_peak_filter (MOR-452); and 0x56 filter_shape (MOR-1491
+        # field-policy membership wave) are now observation-backed — the
+        # legacy RadioState mirror was removed, so they no longer belong here.
         (0x16, 0x47, b"\x02", None, "radio", "break_in", 2),
         (0x16, 0x50, b"\x01", None, "radio", "dial_lock", True),
-        (0x16, 0x56, b"\x01", 0x01, "sub", "filter_shape", 1),
         (0x16, 0x58, b"\x02", None, "radio", "ssb_tx_bandwidth", 2),
     ],
 )
@@ -3222,6 +3222,21 @@ def test_update_radio_state_cmd16_audio_peak_filter_observation_backed(
         "receiver.1.operator_controls.audio_peak_filter"
     )
     assert field.value == 2
+
+
+def test_update_radio_state_cmd16_filter_shape_observation_backed(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-1491: cmd 0x16/0x56 mirror removed; StateStore is source of truth."""
+    rs = radio_with_state._radio_state
+    frame = _make_frame(cmd=0x16, sub=0x56, data=b"\x01", receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # BCD-nibble decode of 0x01 == 1 (SOFT), matching the removed legacy mirror.
+    assert rs.sub.filter_shape == 0
+    field = radio_with_state._state_store.snapshot().field(
+        "receiver.1.operator_controls.filter_shape"
+    )
+    assert field.value == 1
 
 
 def test_update_radio_state_cmd16_twin_peak_filter_observation_backed(

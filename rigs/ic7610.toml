@@ -208,6 +208,17 @@ polling_only = [
     "global.tx_state.split",
     "global.tx_state.dual_watch",
     "global.operator_controls.tuner_status",
+    # MOR-1491 (field-policy membership wave, profile parity): filter_shape
+    # (CI-V 0x16 0x56). docs/validation/cat-audits/ic7610.md documents this
+    # as S/R (``filter_shape.presence`` ✅), and rigs/ic7610.toml's own
+    # [commands] table already carries get/set_filter_shape — this only adds
+    # state_acquisition membership. Added to polling_only (not the new
+    # IC-7300 command_response/priming shape) to match every sibling 0x16
+    # DSP field already established on this profile above (e.g.
+    # audio_peak_filter). IC-7610 hardware retired 2026-08-04 — no live
+    # verification possible, so this rides the documented command table only.
+    "receiver.main.operator_controls.filter_shape",
+    "receiver.sub.operator_controls.filter_shape",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -573,6 +584,19 @@ freshness_ttl_seconds = 3.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.tuner_status"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+# MOR-1491 (field-policy membership wave, profile parity). Cadence tier
+# matches the closest existing sibling: filter_shape shares the 0x16-family
+# tier with audio_peak_filter/auto_notch (1.5s/3.0s).
+[state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
+cadence_seconds = 1.5
+freshness_ttl_seconds = 3.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.filter_shape"]
 cadence_seconds = 1.5
 freshness_ttl_seconds = 3.0
 adaptive_decay = false

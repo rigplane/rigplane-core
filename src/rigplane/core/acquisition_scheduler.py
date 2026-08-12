@@ -233,6 +233,9 @@ _RECEIVER_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
     "preamp": (0x16, 0x02),
     "agc": (0x16, 0x12),
     "audio_peak_filter": (0x16, 0x32),
+    # filter_shape (MOR-1491): documented BCD-nibble 0x16 value read, same
+    # query shape as audio_peak_filter/agc above.
+    "filter_shape": (0x16, 0x56),
     "agc_time_constant": (0x1A, 0x04),
     "tone_freq": (0x1B, 0x00),
     "tsql_freq": (0x1B, 0x01),

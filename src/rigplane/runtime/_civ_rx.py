@@ -340,6 +340,7 @@ _CMD16_OBSERVATION_BACKED_VALUE_SUBS = frozenset(
         0x02,  # preamp (receiver, raw byte)
         0x12,  # agc (receiver, BCD nibble)
         0x32,  # audio_peak_filter (receiver, BCD nibble — MOR-452)
+        0x56,  # filter_shape (receiver, BCD nibble — MOR-1491)
     }
 )
 
@@ -413,6 +414,9 @@ _OBSERVABLE_CMD16_VALUE_FIELDS = {
     0x02: (("receiver", "operator_controls", "preamp"), "raw"),
     0x12: (("receiver", "operator_controls", "agc"), "bcd_nibble"),
     0x32: (("receiver", "operator_controls", "audio_peak_filter"), "bcd_nibble"),
+    # filter_shape (MOR-1491): same BCD-nibble decode as agc/audio_peak_filter
+    # above.
+    0x56: (("receiver", "operator_controls", "filter_shape"), "bcd_nibble"),
 }
 
 
