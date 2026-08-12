@@ -172,6 +172,27 @@ def test_schema_from_dict_rejects_unknown_and_coerced_values() -> None:
     with pytest.raises(ValueError, match="provider must be a string"):
         RadioAcquisitionProfile.from_dict({"provider": 123})
 
+    with pytest.raises(ValueError, match="tx_only must be a bool"):
+        AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=2.0, tx_only="yes")  # type: ignore[arg-type]
+
+
+def test_acquisition_policy_tx_only_defaults_false_and_round_trips() -> None:
+    """MOR-1485: ``tx_only`` defaults false and survives a to_dict/from_dict trip."""
+
+    default_policy = AcquisitionPolicy()
+    assert default_policy.tx_only is False
+
+    tx_only_policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=2.0,
+        tx_only=True,
+    )
+    payload = json.loads(json.dumps(tx_only_policy.to_dict()))
+    assert payload["txOnly"] is True
+    restored = AcquisitionPolicy.from_dict(payload)
+    assert restored == tx_only_policy
+    assert restored.tx_only is True
+
 
 def test_field_capability_direct_construction_rejects_coerced_controls() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
@@ -286,6 +307,37 @@ def test_loader_parses_x6200_like_tuning_policy_without_delivery_branches(
     assert policy.capability_for(mode).command_response_observable is True
     assert policy.policy_for(mode).reconciliation_priority == "command_response"
     assert profile.set_mode_via_selected is True
+
+
+def test_loader_parses_tx_only_field_policy_flag(tmp_path: Path) -> None:
+    """MOR-1485: ``tx_only = true`` in a field_policies table parses through."""
+
+    toml = _minimal_state_acquisition_toml(
+        """
+        [state_acquisition]
+        provider = "icom_civ"
+        default_cadence_seconds = 2.0
+        default_freshness_ttl_seconds = 8.0
+
+        [state_acquisition.capabilities]
+        polling_only = ["global.meters.power"]
+
+        [state_acquisition.field_policies."global.meters.power"]
+        cadence_seconds = 1.0
+        freshness_ttl_seconds = 2.0
+        tx_only = true
+        """
+    )
+
+    profile = load_rig(_write_toml(tmp_path, toml)).to_profile()
+    policy = profile.state_acquisition
+    power = FieldPath.global_("meters", "power")
+
+    assert policy is not None
+    assert policy.policy_for(power).tx_only is True
+    # A path with no field_policies override must not silently inherit
+    # tx_only=True from some other field's override.
+    assert policy.default_policy.tx_only is False
 
 
 def test_loader_rejects_polling_unsupported_fields(tmp_path: Path) -> None:
@@ -498,6 +550,16 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("operator_controls", "monitor_gain"),
         FieldPath.global_("operator_controls", "vox_gain"),
         FieldPath.global_("operator_controls", "anti_vox_gain"),
+        # MOR-1485: TX/PA meters. Statically pollable (the capability layer
+        # doesn't know about runtime TX/RX gating) even though power/swr/alc/
+        # comp only actually fire while ``tx_only`` reads true at runtime —
+        # see the dedicated tx_only-partitioned demand assertion below.
+        FieldPath.global_("meters", "power"),
+        FieldPath.global_("meters", "swr"),
+        FieldPath.global_("meters", "alc"),
+        FieldPath.global_("meters", "comp"),
+        FieldPath.global_("meters", "vd"),
+        FieldPath.global_("meters", "id"),
     }
 
     assert set(acquisition.pollable_paths()) == expected_pollable
@@ -547,12 +609,40 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
 
     serial_ceiling_hz = 1000.0 / _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS
     assert serial_ceiling_hz == 20.0
-    total_poll_demand_hz = sum(
+
+    # MOR-1485: TX/PA meters split the pollable set into an always-on
+    # (RX-state) share and a tx_only share that AcquisitionScheduler.
+    # due_requests only ever queries while PTT reads true (see
+    # test_acquisition_scheduler.py's due_polling_*tx_only* coverage for the
+    # gating behavior itself). The RX-state share is what MOR-1484's live
+    # medians (s_meter/ptt/freq) were measured against, so THAT figure is the
+    # one that must stay near the pre-existing ~19.933 q/s baseline -- not
+    # the transient TX-window total.
+    rx_state_demand_hz = sum(
         1.0 / acquisition.policy_for(path).cadence_seconds
         for path in acquisition.pollable_paths()
+        if not acquisition.policy_for(path).tx_only
     )
-    assert total_poll_demand_hz == pytest.approx(19.933, abs=0.001)
-    assert total_poll_demand_hz < serial_ceiling_hz
+    tx_only_demand_hz = sum(
+        1.0 / acquisition.policy_for(path).cadence_seconds
+        for path in acquisition.pollable_paths()
+        if acquisition.policy_for(path).tx_only
+    )
+    # Pre-existing baseline (MOR-1452) was 19.933 q/s, already only 0.067 q/s
+    # below the 20 q/s ceiling. MOR-1485 adds only Vd/Id (2 fields / 60.0s =
+    # 0.033 q/s) to the always-on RX-state total, spending under half of that
+    # remaining headroom (19.933 -> 19.967 q/s) and staying BELOW the
+    # ceiling — required, not just desirable, since exceeding it would
+    # necessarily slow every other polled field's real throughput and risk
+    # regressing the MOR-1484 medians this profile is measured against.
+    assert rx_state_demand_hz == pytest.approx(19.967, abs=0.001)
+    assert rx_state_demand_hz < serial_ceiling_hz
+    # Po/SWR/ALC/COMP: 4 fields / 1.0s = 4.0 q/s, ONLY while tx_only gating
+    # lets them through (PTT observed true) — a transient TX-window cost, not
+    # a steady-state one.
+    assert tx_only_demand_hz == pytest.approx(4.0, abs=0.001)
+    total_during_tx_hz = rx_state_demand_hz + tx_only_demand_hz
+    assert total_during_tx_hz == pytest.approx(23.967, abs=0.001)
 
     assert (
         acquisition.capability_for(

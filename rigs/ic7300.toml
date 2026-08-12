@@ -149,6 +149,26 @@ polling_only = [
     "global.operator_controls.monitor_gain",
     "global.operator_controls.vox_gain",
     "global.operator_controls.anti_vox_gain",
+    # MOR-1485: TX/PA meters (0x15 0x11-0x16). ``[commands]`` already declares
+    # get_power_meter/get_swr/get_alc/get_comp_meter/get_vd_meter/get_id_meter
+    # below and the scheduler's query mapping
+    # (``_GLOBAL_METER_QUERY_SUBS``/``IcomCivAcquisitionExecutor``) already
+    # handles the whole "global.meters.*" family generically — nothing there
+    # was IC-7300-specific or missing. The gap was purely acquisition
+    # membership: no field_policies entry meant due_requests() never touched
+    # these paths, so rigctld's own one-shot reads (proven healthy —
+    # ``_OBSERVABLE_CMD15_FIELDS``, ``_civ_rx.py``) were the only thing that
+    # ever populated them, and the always-polling web panel never saw a live
+    # value. Not stream_like_meters (that class is pinned to <=0.25s/<=2.0s
+    # by test_known_profiles_stream_like_meters_use_fast_non_decaying_policies
+    # for every profile including this one) — plain polling_only instead,
+    # with cadence chosen for THIS profile's serial budget below.
+    "global.meters.power",
+    "global.meters.swr",
+    "global.meters.alc",
+    "global.meters.comp",
+    "global.meters.vd",
+    "global.meters.id",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -269,6 +289,64 @@ adaptive_decay = false
 [state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
 cadence_seconds = 15.0
 freshness_ttl_seconds = 25.0
+adaptive_decay = false
+
+# MOR-1485 (TX/PA meters dead on serial): owner ruling splits the six 0x15
+# meters into two gating shapes.
+#
+# Po/SWR/ALC/COMP are meaningful only while transmitting (`tx_only = true`),
+# so AcquisitionScheduler.due_requests skips their cadence group entirely
+# while PTT reads false -- ZERO steady-state (RX) serial cost. 1.0s cadence
+# is chosen for TX-window responsiveness, matching this profile's own
+# 1.5s-or-faster tier for everything else that matters live; it only ever
+# fires during a TX segment, transiently adding 4 fields / 1.0s = 4.0 q/s on
+# top of this profile's ~19.967 q/s RX-state demand (see vd/id below) for as
+# long as the key is down -- an accepted, TX-scoped tradeoff, not a
+# steady-state regression of the MOR-1484 serial medians.
+[state_acquisition.field_policies."global.meters.power"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+
+[state_acquisition.field_policies."global.meters.swr"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+
+[state_acquisition.field_policies."global.meters.alc"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+
+[state_acquisition.field_policies."global.meters.comp"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+
+# Vd/Id are supply telemetry, not TX readings -- the radio answers them in RX
+# too (proven: rigctld's ``_OBSERVABLE_CMD15_FIELDS`` one-shots already flip
+# these to observed outside TX), so they poll unconditionally (``tx_only``
+# defaults false). The pre-existing RX-state demand (19.933 q/s) already
+# sits only 0.067 q/s below the 20 q/s serial ceiling (see the serial-budget
+# assertion in tests/test_state_acquisition_policy.py) -- there is no room
+# for anything faster than a very slow cadence here without regressing every
+# OTHER field's actual throughput, which is exactly what MOR-1485 must not do
+# to the MOR-1484 medians. 60.0s spends under half of that remaining headroom
+# (2 fields / 60.0s = 0.033 q/s, 19.933 -> 19.967 q/s) while still refreshing
+# a slowly-varying supply rail/current reading roughly once a minute --
+# "live", just not fast.
+[state_acquisition.field_policies."global.meters.vd"]
+cadence_seconds = 60.0
+freshness_ttl_seconds = 90.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.meters.id"]
+cadence_seconds = 60.0
+freshness_ttl_seconds = 90.0
 adaptive_decay = false
 
 # MOR-1483/1491/1492/1493 (field-policy membership wave): non-polling

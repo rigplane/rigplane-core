@@ -610,6 +610,7 @@ _ACQUISITION_POLICY_KEYS = frozenset(
         "adaptive_decay_max_cadence_seconds",
         "external_cat_pause",
         "meter_coalescing_window_seconds",
+        "tx_only",
     }
 )
 
@@ -757,6 +758,15 @@ def _parse_acquisition_policy(
                 )
                 if "meter_coalescing_window_seconds" in raw
                 else None
+            ),
+            tx_only=_strict_policy_bool(
+                filename,
+                prefix,
+                labels.get("tx_only", "tx_only"),
+                raw.get(
+                    "tx_only",
+                    defaults.tx_only if defaults is not None else False,
+                ),
             ),
         )
     except (TypeError, ValueError) as exc:

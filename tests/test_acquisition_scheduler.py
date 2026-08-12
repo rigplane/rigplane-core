@@ -1243,6 +1243,113 @@ def test_due_polling_skips_unsupported_unhooked_and_unsolicited_only_fields() ->
     assert requests[0].paths == (supported,)
 
 
+def test_due_polling_skips_tx_only_cadence_group_while_not_tx_active() -> None:
+    """MOR-1485: a ``tx_only`` policy must not be queried outside TX."""
+
+    clock = FreshnessClock(start=400.0)
+    power = FieldPath.global_("meters", "power")
+    profile = _profile(
+        [power],
+        field_policies={
+            power: AcquisitionPolicy(
+                cadence_seconds=1.0,
+                freshness_ttl_seconds=2.0,
+                tx_only=True,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    requests = scheduler.due_requests(now=clock.now(), tx_active=False)
+
+    assert requests == ()
+    assert scheduler.pending_requests() == ()
+
+
+def test_due_polling_emits_tx_only_cadence_group_once_tx_active() -> None:
+    """MOR-1485: the same ``tx_only`` group fires once PTT is observed true."""
+
+    clock = FreshnessClock(start=401.0)
+    power = FieldPath.global_("meters", "power")
+    profile = _profile(
+        [power],
+        field_policies={
+            power: AcquisitionPolicy(
+                cadence_seconds=1.0,
+                freshness_ttl_seconds=2.0,
+                tx_only=True,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    requests = scheduler.due_requests(now=clock.now(), tx_active=True)
+
+    assert len(requests) == 1
+    assert requests[0].paths == (power,)
+    assert requests[0].reason == "policy-cadence"
+
+
+def test_due_polling_tx_only_group_fires_immediately_when_tx_starts() -> None:
+    """MOR-1485: skipping while RX must not delay a group once TX starts.
+
+    Repeated RX-state ``due_requests`` calls must leave the ``tx_only``
+    group's cadence clock untouched (not just deduped) -- so the very first
+    call with ``tx_active=True`` fires it immediately, rather than waiting a
+    fresh cadence interval measured from the TX-start timestamp.
+    """
+
+    clock = FreshnessClock(start=402.0)
+    power = FieldPath.global_("meters", "power")
+    profile = _profile(
+        [power],
+        field_policies={
+            power: AcquisitionPolicy(
+                cadence_seconds=1.0,
+                freshness_ttl_seconds=2.0,
+                tx_only=True,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    for offset in range(10):
+        assert scheduler.due_requests(now=402.0 + offset, tx_active=False) == ()
+
+    requests = scheduler.due_requests(now=411.5, tx_active=True)
+
+    assert len(requests) == 1
+    assert requests[0].paths == (power,)
+
+
+def test_due_polling_tx_only_does_not_gate_non_tx_only_meter_in_same_call() -> None:
+    """MOR-1485: ``tx_active=False`` only skips groups that opt into gating."""
+
+    clock = FreshnessClock(start=403.0)
+    power = FieldPath.global_("meters", "power")
+    vd = FieldPath.global_("meters", "vd")
+    profile = _profile(
+        [power, vd],
+        field_policies={
+            power: AcquisitionPolicy(
+                cadence_seconds=1.0,
+                freshness_ttl_seconds=2.0,
+                tx_only=True,
+            ),
+            vd: AcquisitionPolicy(
+                cadence_seconds=5.0,
+                freshness_ttl_seconds=10.0,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    requests = scheduler.due_requests(now=clock.now(), tx_active=False)
+
+    assert len(requests) == 1
+    assert requests[0].paths == (vd,)
+
+
 def test_prime_unobserved_queues_background_read_for_never_observed_policy_field() -> (
     None
 ):

@@ -228,6 +228,13 @@ class AcquisitionPolicy:
         ExternalCatPauseBehavior.PAUSE_POLLING
     )
     meter_coalescing: MeterCoalescingPolicy | None = None
+    #: MOR-1485: cadence-poll membership that only fires while the backend
+    #: has observed PTT true (e.g. TX/PA meters that read meaningfully only
+    #: during transmit). Honored by ``AcquisitionScheduler.due_requests``'s
+    #: ``tx_active`` gate, not by ``ensure_fresh`` (an explicit caller-
+    #: triggered read is never blocked by this flag). Inert when
+    #: ``cadence_seconds`` is ``None`` (nothing left for it to gate).
+    tx_only: bool = False
 
     def __post_init__(self) -> None:
         cadence = _optional_positive_float(
@@ -252,6 +259,11 @@ class AcquisitionPolicy:
             "external_cat_pause",
             ExternalCatPauseBehavior(str(self.external_cat_pause)),
         )
+        object.__setattr__(
+            self,
+            "tx_only",
+            _strict_bool(self.tx_only, label="tx_only"),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -269,6 +281,7 @@ class AcquisitionPolicy:
                 if self.meter_coalescing is None
                 else self.meter_coalescing.to_dict()
             ),
+            "txOnly": self.tx_only,
         }
 
     @classmethod
@@ -283,6 +296,7 @@ class AcquisitionPolicy:
                     "adaptiveDecay",
                     "externalCatPause",
                     "meterCoalescing",
+                    "txOnly",
                 }
             ),
             label="acquisition policy",
@@ -318,6 +332,7 @@ class AcquisitionPolicy:
             meter_coalescing=MeterCoalescingPolicy.from_dict(
                 value.get("meterCoalescing")
             ),
+            tx_only=bool(value.get("txOnly", False)),
         )
 
 
