@@ -312,10 +312,28 @@ export function isDigitKey(key: string): boolean {
 
 /**
  * MOR-1444: true when the active element is the ACTIVE RECEIVER's
- * VFO/frequency display, or sits inside it. `data-vfo-freq` is the existing
- * production hook on the wrapper `<span>` around `FrequencyDisplayInteractive`
- * in `VfoSurface.svelte` — present for every VFO tile with a tunable
- * frequency, no new markup needed.
+ * VFO/frequency display, or sits inside it. `data-vfo-freq` is a production
+ * hook: `FrequencyDisplayInteractive.svelte` (MOR-1480) emits it — plus its
+ * own `data-vfo-active` mirroring the same `active` prop it already uses for
+ * styling — directly on its focusable root, so EVERY mount of that primitive
+ * self-qualifies with no bespoke wrapper markup required. `VfoSurface.svelte`
+ * additionally wraps it in a `<span data-vfo-freq>` inside a `[data-vfo-tile]`
+ * for its own layout/testing needs; that wrapper carries no `data-vfo-active`
+ * of its own; and other historical structures.
+ *
+ * MOR-1480 (header/VfoPanel escape, reproduced): before this fix the guard
+ * required an ANCESTOR `[data-vfo-tile]` to supply `data-vfo-active` — a
+ * shape only `VfoSurface.svelte` produces. `VfoPanel.svelte` (mounted by the
+ * desktop-v2 header via `VfoHeader.svelte`/`DualVfoDisplay.svelte`) renders
+ * `FrequencyDisplayInteractive` directly, with no `[data-vfo-tile]` ancestor
+ * — so the guard silently failed there and a digit typed on the HEADER VFO
+ * display fell through to `resolveAction()` and fired real `band_select`
+ * hotkeys (bench-observed: typed digits produced uncommanded `set_band` +
+ * BSR band hops). Reading the matched `[data-vfo-freq]` element's OWN
+ * `data-vfo-active` first — falling back to the ancestor tile's only when the
+ * matched element doesn't carry the attribute itself — makes every current
+ * and future mount of the primitive self-sufficient instead of relying on a
+ * specific parent shape.
  *
  * MOR-1444 B1 (round-2 review, reproduced): `hasTunableFrequency` gates on
  * `isActiveSlot`, not the radio-wide `isActive` (VfoSurface.svelte:258-259)
@@ -324,13 +342,17 @@ export function isDigitKey(key: string): boolean {
  * `view.activeReceiver` (SemanticRadioSurfaces.svelte), so qualifying on
  * `[data-vfo-freq]` alone would let a digit typed on the INACTIVE receiver's
  * display commit to the WRONG VFO — reopening the MOR-1322 B1 / MOR-1335 G4
- * cross-dispatch class. The ancestor `[data-vfo-tile]`'s own
- * `data-vfo-active` flag (VfoSurface.svelte:367) is the same fact
- * `hasTunableFrequency`'s sibling `tuneFrequency` guard reads, so this stays
- * a single source of truth rather than a second derivation.
+ * cross-dispatch class. `data-vfo-active` (own or ancestor-tile) is the same
+ * fact `hasTunableFrequency`'s sibling `tuneFrequency` guard reads and the
+ * same fact `VfoPanel`'s/`VfoHeader`'s callers pass into
+ * `FrequencyDisplayInteractive`'s `active` prop (`extractVfoState`'s
+ * `isActive: activeReceiver === receiver`) — one source of truth, never a
+ * second derivation.
  */
 export function isFrequencyDisplayFocused(activeElement: Element | null): boolean {
   const freq = activeElement?.closest('[data-vfo-freq]');
   if (!freq) return false;
+  const ownActive = freq.getAttribute('data-vfo-active');
+  if (ownActive !== null) return ownActive !== 'false';
   return freq.closest('[data-vfo-tile]')?.getAttribute('data-vfo-active') !== 'false';
 }

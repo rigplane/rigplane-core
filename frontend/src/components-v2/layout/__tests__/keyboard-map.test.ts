@@ -212,4 +212,47 @@ describe('isFrequencyDisplayFocused', () => {
   it('is false for null', () => {
     expect(isFrequencyDisplayFocused(null)).toBe(false);
   });
+
+  // MOR-1480 — reproduced: VfoPanel.svelte (mounted directly by the
+  // desktop-v2 header via VfoHeader.svelte/DualVfoDisplay.svelte, with NO
+  // [data-vfo-tile] ancestor) renders FrequencyDisplayInteractive, which now
+  // (per MOR-1480) emits `data-vfo-freq` + its own `data-vfo-active` directly
+  // on its focusable root. This block mirrors that self-attributed shape —
+  // no `[data-vfo-tile]` wrapper anywhere in the tree — the shape the
+  // pre-fix guard (ancestor-tile-only) silently failed to recognize.
+  describe('self-attributed [data-vfo-freq] with no [data-vfo-tile] ancestor (MOR-1480)', () => {
+    function buildBareFreqDisplay(active = true): HTMLElement {
+      const freq = document.createElement('div');
+      freq.setAttribute('data-vfo-freq', '');
+      freq.setAttribute('data-vfo-active', String(active));
+      document.body.appendChild(freq);
+      return freq;
+    }
+
+    it('is true for the self-attributed [data-vfo-freq] element itself', () => {
+      const freq = buildBareFreqDisplay(true);
+
+      expect(isFrequencyDisplayFocused(freq)).toBe(true);
+
+      freq.remove();
+    });
+
+    it('is true when the active element sits inside a self-attributed active [data-vfo-freq]', () => {
+      const freq = buildBareFreqDisplay(true);
+      const inner = document.createElement('span');
+      freq.appendChild(inner);
+
+      expect(isFrequencyDisplayFocused(inner)).toBe(true);
+
+      freq.remove();
+    });
+
+    it('is false when the self-attributed [data-vfo-freq] is marked inactive', () => {
+      const freq = buildBareFreqDisplay(false);
+
+      expect(isFrequencyDisplayFocused(freq)).toBe(false);
+
+      freq.remove();
+    });
+  });
 });

@@ -423,4 +423,92 @@ describe('KeyboardHandler', () => {
       },
     );
   });
+
+  // MOR-1480 — reproduced: the MOR-1444 guard above only recognized
+  // VfoSurface.svelte's `[data-vfo-tile]`-wrapped `[data-vfo-freq]` shape.
+  // desktop-v2's HEADER VFO display (VfoHeader.svelte -> VfoPanel.svelte)
+  // mounts `FrequencyDisplayInteractive` directly, with no `[data-vfo-tile]`
+  // ancestor — so a digit typed while it had focus fell through to
+  // `resolveAction()` and fired a real `band_select` hotkey (bench log
+  // pattern: typed digits produced uncommanded `set_band` + BSR band-recall
+  // traffic on the radio). This mounts the REAL `FrequencyDisplayInteractive`
+  // primitive standalone — the same shape `VfoPanel.svelte` renders it in —
+  // to prove the routing guard now recognizes it without any
+  // `[data-vfo-tile]` wrapper.
+  describe('digit routing from a bare FrequencyDisplayInteractive mount, no [data-vfo-tile] ancestor (MOR-1480)', () => {
+    const configWithDigitBinding: KeyboardConfig = {
+      ...config,
+      bindings: [
+        ...config.bindings,
+        {
+          id: 'band-7',
+          section: 'Band',
+          label: 'Select band 7',
+          sequence: ['7'],
+          action: 'band_select',
+          params: { index: 7 },
+        },
+      ],
+    };
+
+    function appendFreqEntryInput(): HTMLInputElement {
+      const input = document.createElement('input');
+      input.setAttribute('data-freq-entry', '');
+      document.body.appendChild(input);
+      return input;
+    }
+
+    async function mountBareFrequencyDisplay(active = true) {
+      const { default: FrequencyDisplayInteractive } = await import(
+        '../../../primitives/frequency/FrequencyDisplayInteractive.svelte'
+      );
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      const component = mount(FrequencyDisplayInteractive, {
+        target,
+        props: { freq: 14074000, active },
+      });
+      flushSync();
+      components.push(component);
+      return target.querySelector<HTMLElement>('.freq')!;
+    }
+
+    it('routes a digit typed on a standalone active FrequencyDisplayInteractive to the frequency-entry input, not the band hotkey', async () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const freqDisplay = await mountBareFrequencyDisplay(true);
+      const entryInput = appendFreqEntryInput();
+      freqDisplay.focus();
+      expect(document.activeElement).toBe(freqDisplay);
+
+      const event = new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select' }),
+      );
+      expect(document.activeElement).toBe(entryInput);
+      expect(entryInput.value).toBe('7');
+    });
+
+    // Mirrors the MOR-1444 B1 dual-receiver protection: a standalone mount
+    // marked inactive (the non-active receiver's header tile) must still
+    // fall through to the band hotkey, not commit to the wrong VFO.
+    it('still falls through to the band hotkey when the standalone display is marked inactive', async () => {
+      const onAction = vi.fn();
+      mountHandler({ config: configWithDigitBinding, onAction });
+      const freqDisplay = await mountBareFrequencyDisplay(false);
+      const entryInput = appendFreqEntryInput();
+      freqDisplay.focus();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      );
+      expect(entryInput.value).toBe('');
+      expect(document.activeElement).toBe(freqDisplay);
+    });
+  });
 });
