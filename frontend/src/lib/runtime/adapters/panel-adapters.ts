@@ -243,49 +243,81 @@ export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
 
 // ── Pending discrete-control targets (MOR-1441 leg 2) ──
 /**
- * Shared by the four accessors below: the freshest still-`'pending'`
- * command matching `intentName`/`receiver`, or `undefined`. Same authority
- * and `>=` freshest-wins tie-break as `getPendingFrequencyHz` above (leg 1,
- * review B3) — no second, parallel pending-state path.
+ * The receiver's confirmed (radio-observed) state slice, or `undefined`
+ * while unobserved — `runtime.state.main`/`.sub`, the same per-receiver
+ * split `getPendingFrequencyHz`'s sibling accessors read.
  */
-function latestPendingParam(intentName: string, paramKey: string, receiver: 0 | 1): unknown {
-  let latest: { createdAt: number; value: unknown } | null = null;
+function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefined {
+  const state = runtime.state;
+  if (!state) return undefined;
+  return receiver === 0 ? state.main : state.sub;
+}
+
+/**
+ * Shared by the four accessors below: the freshest command matching
+ * `intentName`/`receiver` that has not reached a terminal failure/expiry
+ * status, or `undefined`. Same authority and `>=` freshest-wins tie-break
+ * as `getPendingFrequencyHz` above (leg 1, review B3) — no second, parallel
+ * pending-state path.
+ *
+ * MOR-1488 (live-bench finding): a transport `'acknowledged'` (the WS ack)
+ * is NOT a confirming observation — it only proves the radio received the
+ * command, typically within milliseconds, well before the next state poll
+ * echoes the new value back (~500ms keep-alive, CLAUDE.md). Treating ack as
+ * "no longer pending" (the pre-fix behavior) collapsed the italic pending
+ * window to something imperceptible live, presenting an unconfirmed value
+ * as confirmed. An acknowledged command whose target does not yet match
+ * `confirmedField` on the receiver's observed state therefore still counts
+ * as pending here; once the radio's own state confirms the target, the
+ * command is excluded, matching the "pending is display-only, confirmed
+ * reading stays the group's sole selection source" leg-1 doctrine.
+ */
+function latestPendingParam(
+  intentName: string, paramKey: string, receiver: 0 | 1, confirmedField: keyof ServerState['main'],
+): unknown {
+  let latest: { createdAt: number; value: unknown; status: string } | null = null;
   for (const command of getCommandLifecycles()) {
-    if (command.name !== intentName || command.status !== 'pending') continue;
+    if (command.name !== intentName) continue;
+    if (command.status !== 'pending' && command.status !== 'acknowledged') continue;
     if (command.params.receiver !== receiver) continue;
     const value = command.params[paramKey];
     if (value === undefined) continue;
-    if (!latest || command.createdAt >= latest.createdAt) latest = { createdAt: command.createdAt, value };
+    if (!latest || command.createdAt >= latest.createdAt) {
+      latest = { createdAt: command.createdAt, value, status: command.status };
+    }
   }
-  return latest?.value;
+  if (!latest) return undefined;
+  if (latest.status === 'acknowledged'
+    && confirmedReceiverState(receiver)?.[confirmedField] === latest.value) return undefined;
+  return latest.value;
 }
 
-/** Freshest in-flight `set_filter` target for `receiver`, or `null`.
+/** Freshest unconfirmed `set_filter` target for `receiver`, or `null`.
  *  `FilterSurface` renders this as a marker on the targeted choice only —
  *  the confirmed reading stays the group's sole selection source (leg-1
  *  lesson: pending is display-only). */
 export function getPendingFilterSelection(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_filter', 'filter', receiver);
+  const value = latestPendingParam('set_filter', 'filter', receiver, 'filter');
   return typeof value === 'number' ? value : null;
 }
 
-/** Freshest in-flight `set_preamp` target for `receiver`, or `null`. Never
+/** Freshest unconfirmed `set_preamp` target for `receiver`, or `null`. Never
  *  touches the MOR-1447 combined-knob/change-guard machinery, which reads
  *  only confirmed fields. */
 export function getPendingPreampLevel(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_preamp', 'level', receiver);
+  const value = latestPendingParam('set_preamp', 'level', receiver, 'preamp');
   return typeof value === 'number' ? value : null;
 }
 
-/** Freshest in-flight `set_nb` target for `receiver`, or `null`. */
+/** Freshest unconfirmed `set_nb` target for `receiver`, or `null`. */
 export function getPendingNbOn(receiver: 0 | 1): boolean | null {
-  const value = latestPendingParam('set_nb', 'on', receiver);
+  const value = latestPendingParam('set_nb', 'on', receiver, 'nb');
   return typeof value === 'boolean' ? value : null;
 }
 
-/** Freshest in-flight `set_nr` target for `receiver`, or `null`. */
+/** Freshest unconfirmed `set_nr` target for `receiver`, or `null`. */
 export function getPendingNrOn(receiver: 0 | 1): boolean | null {
-  const value = latestPendingParam('set_nr', 'on', receiver);
+  const value = latestPendingParam('set_nr', 'on', receiver, 'nr');
   return typeof value === 'boolean' ? value : null;
 }
 
