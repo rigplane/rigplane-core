@@ -188,11 +188,11 @@ function freqConfirmedState(freqHz: number): ServerState {
  * `observationSeq` (an unrelated meter poll) without confirming `freqHz` —
  * `main.freqHz` stays at the ORIGINAL `liveState()` value.
  */
-function freqReobservedState(): ServerState {
+function freqReobservedState(seq = 2): ServerState {
   const base = liveState();
   return {
     ...base,
-    observationSeq: 2, freshnessRevision: 2,
+    observationSeq: seq, freshnessRevision: seq,
   } as unknown as ServerState;
 }
 
@@ -360,7 +360,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
   });
 
   /**
-   * MOR-1478 grace backstop parity: once `ACK_CONFIRM_GRACE_MS` (2000ms,
+   * MOR-1478 grace backstop parity: once `ACK_CONFIRM_GRACE_MS` (3000ms,
    * shared with leg 2) has elapsed since ack, the marker retires even in
    * the presence of a post-ack push that still does not confirm — bounding
    * the classes of dropped confirming observation (MOR-1445 post-ack
@@ -383,10 +383,19 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
       flushSync();
       expect(freqEl()?.dataset.freqStatus).toBe('pending');
 
-      vi.advanceTimersByTime(3_001);
-      // Still non-confirming (`main.freqHz` stays at the pre-spin value) —
-      // only the elapsed grace window retires it.
+      vi.advanceTimersByTime(2_500); // past the OLD 2000ms budget, inside the new one
       expect(setRadioState(freqReobservedState())).toBe(true);
+      flushSync();
+      // Pins ACK_CONFIRM_GRACE_MS from below: at 2000ms this would already
+      // have retired, dropping the readout to the stale pre-spin value —
+      // the MOR-1478 symptom (tuning-accumulator.ts:6,44, 0.5-2s confirm).
+      expect(freqEl()?.dataset.freqStatus).toBe('pending');
+
+      vi.advanceTimersByTime(501); // now past 3000ms
+      // Still non-confirming (`main.freqHz` stays at the pre-spin value) —
+      // only the elapsed grace window retires it. (seq advances again so the
+      // second push is accepted by the store.)
+      expect(setRadioState(freqReobservedState(3))).toBe(true);
       flushSync();
 
       expect(freqEl()?.dataset.freqStatus).toBe('confirmed');
@@ -541,7 +550,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
   /**
    * MOR-1488 review R3: the grace backstop, not the sequence guard, is what
    * bounds an acknowledged command whose field is never actually observed
-   * to confirm. `ACK_CONFIRM_GRACE_MS` (2000ms, R3) budgets a full poll
+   * to confirm. `ACK_CONFIRM_GRACE_MS` (3000ms; raised for leg 1's 0.5-2s confirm round trip, MOR-1478) budgets a full poll
    * round-robin (~1.3s, `radio_poller.py:529-531`) plus headroom, so it
    * retires the marker once that much time has passed since ack — even in
    * the presence of a post-ack push that still does not confirm.
