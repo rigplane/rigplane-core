@@ -76,7 +76,12 @@ from rigplane.web.radio_poller import (
     SetPower,
     SetPreamp,
     SetRfGain,
+    SetScopeCenterType,
+    SetScopeDual,
+    SetScopeDuringTx,
     SetScopeEdge,
+    SetScopeHold,
+    SetScopeMode,
     SetScopeRbw,
     SetScopeRef,
     SetScopeSpan,
@@ -2001,6 +2006,206 @@ async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise() -> None
 
 
 @pytest.mark.asyncio
+async def test_execute_set_scope_mode_updates_state_and_reconfirms() -> None:
+    """MOR-1524: SetScopeMode must reconfirm exactly like SPAN/SPEED/REF
+    (MOR-1446) — without the GET the StateStore keeps replaying the stale
+    pre-write mode observation."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeMode(mode=1))  # noqa: SLF001
+
+    radio.set_scope_mode.assert_awaited_once_with(1)
+    assert state.scope_controls.mode == 1
+    radio.get_scope_mode.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_edge_updates_state_and_reconfirms() -> None:
+    """MOR-1524: SetScopeEdge must reconfirm — same MOR-1446 desync class."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeEdge(edge=3))  # noqa: SLF001
+
+    radio.set_scope_edge.assert_awaited_once_with(3)
+    assert state.scope_controls.edge == 3
+    radio.get_scope_edge.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_hold_updates_state_and_reconfirms() -> None:
+    """MOR-1524: SetScopeHold must reconfirm — same MOR-1446 desync class."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeHold(on=True))  # noqa: SLF001
+
+    radio.set_scope_hold.assert_awaited_once_with(True)
+    assert state.scope_controls.hold is True
+    radio.get_scope_hold.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_dual_updates_state_and_reconfirms() -> None:
+    """MOR-1524: SetScopeDual must reconfirm — same MOR-1446 desync class."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeDual(dual=True))  # noqa: SLF001
+
+    radio.set_scope_dual.assert_awaited_once_with(True)
+    assert state.scope_controls.dual is True
+    radio.get_scope_dual.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_during_tx_updates_state_and_reconfirms() -> None:
+    """MOR-1524: SetScopeDuringTx must reconfirm — same MOR-1446 desync class."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeDuringTx(on=True))  # noqa: SLF001
+
+    radio.set_scope_during_tx.assert_awaited_once_with(True)
+    assert state.scope_controls.during_tx is True
+    radio.get_scope_during_tx.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_center_type_updates_state_and_reconfirms() -> None:
+    """MOR-1524: SetScopeCenterType must reconfirm — same MOR-1446 desync
+    class."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeCenterType(center_type=2))  # noqa: SLF001
+
+    radio.set_scope_center_type.assert_awaited_once_with(2)
+    assert state.scope_controls.center_type == 2
+    radio.get_scope_center_type.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_vbw_updates_state_and_reconfirms() -> None:
+    """MOR-1524: SetScopeVbw must reconfirm — same MOR-1446 desync class."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeVbw(narrow=True))  # noqa: SLF001
+
+    radio.set_scope_vbw.assert_awaited_once_with(True)
+    assert state.scope_controls.vbw_narrow is True
+    radio.get_scope_vbw.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_rbw_updates_state_and_reconfirms() -> None:
+    """MOR-1524: SetScopeRbw must reconfirm — same MOR-1446 desync class."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeRbw(rbw=2))  # noqa: SLF001
+
+    radio.set_scope_rbw.assert_awaited_once_with(2)
+    assert state.scope_controls.rbw == 2
+    radio.get_scope_rbw.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_switch_scope_receiver_mirrors_state_and_reconfirms() -> None:
+    """MOR-1524: SwitchScopeReceiver previously only sent the fire-and-forget
+    0x27 0x12 CI-V frame — it never mirrored ``scope_controls.receiver``
+    optimistically nor reconfirmed it, so the receiver readout desynced the
+    same way span/speed/ref did before MOR-1446."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SwitchScopeReceiver(1))  # noqa: SLF001
+
+    scope_calls = [c for c in radio.send_civ.call_args_list if c.args[0] == 0x27]
+    assert any(
+        c.kwargs.get("sub") == 0x12 and c.kwargs.get("data") == bytes([1])
+        for c in scope_calls
+    ), "Expected CI-V 0x27/0x12/0x01 for SUB scope"
+    assert state.scope_controls.receiver == 1
+    radio.get_scope_receiver.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise_for_other_leaves() -> (
+    None
+):
+    """A dropped confirm response on any of the newly-wired leaves must not
+    fail the command, same guarantee as span/speed/ref."""
+    radio = _make_radio()
+    state = RadioState()
+
+    async def _never_resolves() -> int:
+        await asyncio.sleep(10)
+        return 0
+
+    radio.get_scope_mode = _never_resolves
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SetScopeMode(mode=1))  # noqa: SLF001
+
+    radio.set_scope_mode.assert_awaited_once_with(1)
+    assert state.scope_controls.mode == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_scope_controls_rbw_retries_once_on_dropped_response() -> None:
+    """MOR-1524: the live stand observed ``get_scope_rbw`` fieldStatus as
+    "missing" on the first response of an otherwise-healthy fetch. A single
+    bounded retry (still within ``_SCOPE_GETTER_TIMEOUT`` per attempt)
+    recovers the value without a retry loop or extending the overall fetch
+    budget for the other 11 getters."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    calls = 0
+
+    async def _rbw_first_drop() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("simulated dropped fieldStatus")
+        return 4
+
+    radio.get_scope_rbw = AsyncMock(side_effect=_rbw_first_drop)
+
+    await poller._fetch_scope_controls()  # noqa: SLF001
+
+    assert calls == 2
+    assert radio.get_scope_rbw.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_scope_controls_rbw_no_retry_when_first_get_succeeds() -> None:
+    """The retry must only fire on a dropped/failed first attempt — a
+    healthy rbw response is fetched exactly once, same as every other
+    scope-control leaf."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._fetch_scope_controls()  # noqa: SLF001
+
+    radio.get_scope_rbw.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_enable_scope_deferred_during_initial_fetch() -> None:
     """EnableScope must be re-queued (not block) when initial fetch is in progress.
 
@@ -3031,14 +3236,18 @@ async def test_fetch_scope_controls_bounds_latency_on_dropped_response() -> None
     await poller._fetch_scope_controls()  # noqa: SLF001
     elapsed = asyncio.get_event_loop().time() - start
 
-    # 12 getters * (0.02 s timeout + ~0 s gap) ≈ 0.24 s.  Allow generous
-    # slack so the test is not flaky on slow CI; the important property
-    # is that we are NOT blocked for 12 * 2.0 s = 24 s.
+    # 13 attempts (11 single-shot getters + rbw's 2, MOR-1524) * (0.02 s
+    # timeout + ~0 s gap) ≈ 0.26 s.  Allow generous slack so the test is not
+    # flaky on slow CI; the important property is that we are NOT blocked
+    # for 12 * 2.0 s = 24 s.
     assert elapsed < 2.0, f"poller stalled for {elapsed:.2f}s on dropped responses"
 
-    # Every getter was attempted exactly once even though they all hung.
+    # Every getter was attempted exactly once even though they all hung,
+    # except rbw which gets one bounded retry on a dropped response
+    # (MOR-1524 — the live stand observed rbw fieldStatus intermittently
+    # missing).
     radio.get_scope_receiver.assert_awaited_once()
-    radio.get_scope_rbw.assert_awaited_once()
+    assert radio.get_scope_rbw.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -3111,14 +3320,16 @@ async def test_fetch_scope_controls_repeated_timeouts_do_not_accumulate() -> Non
         await poller._fetch_scope_controls()  # noqa: SLF001
     elapsed = loop.time() - start
 
-    # 3 calls * 12 getters * 0.01 s = 0.36 s nominal.  Generous upper
-    # bound so the test is robust on slow CI but still rejects the
-    # 3 * 24 s = 72 s blowup.
+    # 3 calls * 13 attempts (11 single-shot getters + rbw's 2, MOR-1524) *
+    # 0.01 s = 0.39 s nominal.  Generous upper bound so the test is robust
+    # on slow CI but still rejects the 3 * 24 s = 72 s blowup.
     assert elapsed < 3.0, f"3 successive calls took {elapsed:.2f}s — accumulated"
 
-    # Each getter was attempted exactly 3 times (no early exit).
+    # Each getter was attempted exactly 3 times (no early exit), except rbw
+    # which gets one bounded retry per call on a dropped response
+    # (MOR-1524), so 3 calls * 2 attempts = 6.
     assert radio.get_scope_receiver.await_count == 3
-    assert radio.get_scope_rbw.await_count == 3
+    assert radio.get_scope_rbw.await_count == 6
 
 
 @pytest.mark.asyncio
