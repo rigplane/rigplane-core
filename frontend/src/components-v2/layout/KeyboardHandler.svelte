@@ -6,6 +6,8 @@
     resolveSequenceContinuation,
     resolveSequenceStart,
     shouldIgnoreEvent,
+    isDigitKey,
+    isFrequencyDisplayFocused,
     formatShortcut,
     type KeyboardActionConfig,
     type KeyboardBindingConfig,
@@ -60,9 +62,73 @@
     onAction(action);
   }
 
+  /**
+   * MOR-1444: seeds BandSurface's frequency-entry input with a digit typed
+   * while the VFO/frequency display has focus, and moves focus into it.
+   * `[data-freq-entry]` is a production hook on that input (BandSurface.svelte)
+   * distinct from its test id. Every following keystroke targets the
+   * now-focused INPUT, which `shouldIgnoreEvent` already excludes from
+   * shortcut resolution above — so only the FIRST digit of a typed-entry
+   * gesture needs this routing; native typing takes it from there. Resets
+   * (rather than appends to) any stale leftover value, since this is the
+   * start of a fresh gesture. Returns false — letting the caller fall
+   * through to normal band-hotkey resolution — when the entry surface isn't
+   * mounted or is disabled (no band group on this skin, or BandSurface's own
+   * MOR-1322/rule-5 fail-closed gates: active receiver or tuning bounds not
+   * yet known).
+   */
+  function routeDigitToFrequencyEntry(digit: string): boolean {
+    const input = document.querySelector<HTMLInputElement>('[data-freq-entry]');
+    if (!input || input.disabled) return false;
+    input.focus();
+    input.value = digit;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }
+
   function handleKeydown(event: KeyboardEvent): void {
     if (!enabled) return;
     if (shouldIgnoreEvent(document.activeElement)) return;
+
+    // MOR-1444: with the VFO/frequency display focused, a digit keystroke
+    // must feed the frequency-entry box instead of resolving as a band
+    // hotkey — every rig profile's keyboard config binds "1".."9" to
+    // band_select, and without this guard `resolveAction` below hops bands
+    // on every typed digit. Band hotkeys are untouched everywhere else.
+    // MOR-1444 B3 (round-2 review): a Ctrl/Cmd/Alt-modified digit is a
+    // browser or OS shortcut (Cmd+1 switches tabs in most browsers), never a
+    // frequency-entry keystroke — it must reach neither the entry input nor
+    // preventDefault().
+    if (
+      isDigitKey(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey
+      && isFrequencyDisplayFocused(document.activeElement)
+    ) {
+      if (routeDigitToFrequencyEntry(event.key)) {
+        // MOR-1444 B2 (round-2 review): mirrors the MOR-1449 Tab guard
+        // immediately below — an early return must still disarm a pending
+        // leader sequence, or the pill stays armed and a later keystroke
+        // (once focus leaves the now-focused, ignored-tag entry input) can
+        // complete an unintended leader sequence.
+        if (pendingSequence) clearLeaderState();
+        event.preventDefault();
+        return;
+      }
+    }
+
+    // MOR-1449: Tab is reserved for the browser's native focus traversal and
+    // must never be assignable to a shortcut — a rig profile's keyboard
+    // config is not trusted to keep it free (rigs/_keyboard-default.toml
+    // used to bind it to "swap-vfo"; every rig profile inherits that shared
+    // default via rig_loader.py's merge). Bail out before any sequence/
+    // binding resolution can call preventDefault() on it. A pending leader
+    // sequence must still be disarmed — Tab already didn't preventDefault
+    // there pre-fix (resolveSequenceContinuation only matches the recorded
+    // second key), but skipping clearLeaderState() would leave the leader
+    // pill armed and swallow the NEXT keystroke for up to leaderTimeoutMs.
+    if (event.key === 'Tab') {
+      if (pendingSequence) clearLeaderState();
+      return;
+    }
 
     if (event.key === 'Alt' && keyboardConfig.altHints) {
       document.body.dataset.shortcutHints = 'true';

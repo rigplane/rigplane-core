@@ -157,6 +157,7 @@
   "core.toast.audioBridgeStarted": "Audio bridge started",
   "core.toast.audioBridgeStopped": "Audio bridge stopped",
   "core.toast.commandRefusedLinkDegraded": "Command not sent — link to the radio is degraded",
+  "core.toast.commandExecutionFailed": "Command failed: {reason}",
   "core.toast.unknown": "Something went wrong. Try again later.",
 
   "core.mobile.nav.label": "Radio navigation",

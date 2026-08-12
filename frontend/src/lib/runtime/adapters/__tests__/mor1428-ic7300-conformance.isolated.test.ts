@@ -130,6 +130,7 @@ import {
   makeRfFrontEndHandlers,
   makeRitXitHandlers,
   makeRxAudioHandlers,
+  makeScopeControlsHandlers,
   makeTxHandlers,
   makeVfoHandlers,
   dispatchKeyboardRadioAction,
@@ -139,6 +140,10 @@ import { isFieldAvailable } from '$lib/state/field-status';
 import { validateRadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import { toSpectrumAuthority } from '../scope-adapter';
+import { getRfFrontEndHandlers } from '../panel-adapters';
+import {
+  dualParamNormXFromValues, dualParamValuesFromNormX,
+} from '../../../../components-v2/controls/value-control/value-control-core';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
 
 /** Deep clone so a test that mutates `h.state`/`h.caps` never leaks into a sibling. */
@@ -258,16 +263,85 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
     expectIntentTransport();
   });
 
-  it('RF front end: dispatches set_attenuator / set_preamp / set_rf_gain on receiver 0', () => {
+  it('RF front end: dispatches set_attenuator / set_preamp / set_rf_gain / set_squelch on receiver 0', () => {
     makeRfFrontEndHandlers().onAttChange(0);
     makeRfFrontEndHandlers().onPreChange(1);
     makeRfFrontEndHandlers().onRfGainChange(200);
+    makeRfFrontEndHandlers().onSquelchChange(51);
     expect(exactCalls()).toEqual([
       ['set_attenuator', { db: 0, receiver: 0 }],
       ['set_preamp', { level: 1, receiver: 0 }],
       ['set_rf_gain', { level: 200, receiver: 0 }],
+      ['set_squelch', { level: 51, receiver: 0 }],
     ]);
     expectIntentTransport();
+  });
+
+  // MOR-1447 regression: the live stand's captured `main.rfGain` reading
+  // (`fixtures/ic7300-state.json`) is the exact normalized float
+  // `0.8196078431372549` a slider drag reports — the walkthrough that found
+  // dragging RF gain/squelch snapping to 0%/100% only. `getRfFrontEndHandlers`
+  // (unlike the raw-int `makeRfFrontEndHandlers` exercised above) is the
+  // adapter seam every slider actually calls, and must convert that
+  // normalized reading to the raw wire integer `set_rf_gain` requires instead
+  // of failing the real handler's integer guard.
+  it('RF gain/squelch sliders: getRfFrontEndHandlers converts a normalized drag to the raw wire level (MOR-1447)', () => {
+    expect(IC7300_STATE.main!.rfGain).toBeCloseTo(0.8196078431372549);
+
+    getRfFrontEndHandlers().onRfGainChange(IC7300_STATE.main!.rfGain!);
+    getRfFrontEndHandlers().onSquelchChange(0.2);
+
+    expect(exactCalls()).toEqual([
+      ['set_rf_gain', { level: 209, receiver: 0 }],
+      ['set_squelch', { level: 51, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+  });
+
+  // MOR-1447 leg 2: IC-7300 is the live gate radio for
+  // `rf_sql_control_model = "combined"` (`rigs/ic7300.toml`). The captured
+  // fixture predates the declaration (a byte-faithful capture, never
+  // hand-edited — see the file header), so `IC7300_CAPABILITIES` itself
+  // still reads the default `rfSqlControlModel: undefined` -> "separate".
+  // These cases prove the DATA the combined knob would actually move,
+  // against the real captured `main.rfGain`/`main.squelch` readings, through
+  // the exact SAME `dualParamValuesFromNormX`/raw-0-255 rescale seam
+  // `RfFrontEndSurface.svelte`/`SemanticRadioSurfaces.svelte` use — ported
+  // from `DualParamRenderer`/`value-control-core.ts`, not re-derived here.
+  describe('combined RF/SQL knob (MOR-1447 leg 2) — dispatch/value cases against the real fixture', () => {
+    it('the live capture is squelch-at-min / RF-mid — the left leg of the combined knob', () => {
+      expect(IC7300_STATE.main!.rfGain).toBeCloseTo(0.8196078431372549);
+      expect(IC7300_STATE.main!.squelch).toBe(0);
+    });
+
+    it('readback projection places the knob on the left leg for the real captured reading', () => {
+      const normX = dualParamNormXFromValues(
+        IC7300_STATE.main!.rfGain!, IC7300_STATE.main!.squelch!, 0, 1,
+      );
+      expect(normX).toBeCloseTo(0.377, 3);
+    });
+
+    it('a hard-right drag from the captured position dispatches SQL max / RF max, raw 255/255', () => {
+      const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(1, 0, 1, 0.01);
+      getRfFrontEndHandlers().onRfGainChange(nextRf);
+      getRfFrontEndHandlers().onSquelchChange(nextSql);
+      expect(exactCalls()).toEqual([
+        ['set_rf_gain', { level: 255, receiver: 0 }],
+        ['set_squelch', { level: 255, receiver: 0 }],
+      ]);
+      expectIntentTransport();
+    });
+
+    it('a left-of-center drag (normX 0.23) dispatches RF 128 / SQL 0, raw wire integers', () => {
+      const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(0.23, 0, 1, 0.01);
+      getRfFrontEndHandlers().onRfGainChange(nextRf);
+      getRfFrontEndHandlers().onSquelchChange(nextSql);
+      expect(exactCalls()).toEqual([
+        ['set_rf_gain', { level: 128, receiver: 0 }],
+        ['set_squelch', { level: 0, receiver: 0 }],
+      ]);
+      expectIntentTransport();
+    });
   });
 
   it('AGC: dispatches set_agc on receiver 0', () => {
@@ -356,6 +430,36 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  // MOR-1446: the live IC-7300 walkthrough found SPAN/SPEED/REF desynced —
+  // the radio applied the change (visible on the waterfall) but the
+  // `scopeControls.*` readout never advanced past its pre-write reading.
+  // The frontend dispatch leg was never the broken one (these three pin
+  // that): `scopeControls.span`/`speed`/`refDb` are all observed:true on
+  // this live fixture (see `ic7300-state.json`), so `acceptsScopeValue`
+  // passes and the real command factory sends the exact WS frame. The
+  // actual defect was the backend never re-confirming the leaf after a
+  // write (`radio_poller.py`'s `_reconfirm_scope_field`, MOR-1446 fix).
+  it('scope span: dispatches set_scope_span for the confirmed span leaf', () => {
+    expect(IC7300_STATE.fieldStatus?.['scopeControls.span']?.observed).toBe(true);
+    makeScopeControlsHandlers().onSpanChange(6);
+    expect(exactCalls()).toEqual([['set_scope_span', { span: 6 }]]);
+    expectIntentTransport();
+  });
+
+  it('scope speed: dispatches set_scope_speed for the confirmed speed leaf', () => {
+    expect(IC7300_STATE.fieldStatus?.['scopeControls.speed']?.observed).toBe(true);
+    makeScopeControlsHandlers().onSpeedChange(1);
+    expect(exactCalls()).toEqual([['set_scope_speed', { speed: 1 }]]);
+    expectIntentTransport();
+  });
+
+  it('scope ref: dispatches set_scope_ref for the confirmed refDb leaf', () => {
+    expect(IC7300_STATE.fieldStatus?.['scopeControls.refDb']?.observed).toBe(true);
+    makeScopeControlsHandlers().onRefChange(10);
+    expect(exactCalls()).toEqual([['set_scope_ref', { ref: 10 }]]);
+    expectIntentTransport();
   });
 });
 

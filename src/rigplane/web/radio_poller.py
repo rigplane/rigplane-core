@@ -1031,6 +1031,34 @@ class RadioPoller:
             await asyncio.sleep(self._adaptive_gap())
         logger.info("radio-poller: scope controls fetched (receiver=%d)", scope_rx)
 
+    async def _reconfirm_scope_field(self, label: str, getter: Any) -> None:
+        """Force a fresh confirmed observation for one scope-control leaf.
+
+        Scope-control fields are fetched once, at ``EnableScope`` time
+        (``_fetch_scope_controls`` above) and never touched again by the main
+        poll loop — by design, to avoid interfering with the high-rate scope
+        waveform stream. A ``Set*`` write only mutates the optimistic
+        ``RadioState.scope_controls`` mirror below; without a follow-up GET,
+        the StateStore's confirmed observation for that leaf is never
+        refreshed, so the public snapshot keeps re-applying the STALE
+        pre-write observation over the fresh optimistic value on every poll —
+        the ``scopeControls.<leaf>`` readout desync MOR-1446 reported (span
+        stuck at its pre-change reading, ref stuck at 0). Bounded by
+        ``_SCOPE_GETTER_TIMEOUT`` for the same reason as
+        ``_fetch_scope_controls``: a dropped response on a busy scope stream
+        must not stall the command queue.
+        """
+        try:
+            await asyncio.wait_for(getter(), timeout=self._SCOPE_GETTER_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.debug(
+                "radio-poller: %s reconfirm timed out after %.0f ms (response dropped)",
+                label,
+                self._SCOPE_GETTER_TIMEOUT * 1000,
+            )
+        except Exception:
+            logger.debug("radio-poller: %s reconfirm failed", label, exc_info=True)
+
     def _apply_global_control_observation(
         self,
         name: str,
@@ -2368,16 +2396,25 @@ class RadioPoller:
                     await radio.set_scope_span(span)
                     if self._radio_state:
                         self._radio_state.scope_controls.span = span
+                    await self._reconfirm_scope_field(
+                        "get_scope_span", radio.get_scope_span
+                    )
             case SetScopeSpeed(speed=speed):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_speed(speed)
                     if self._radio_state:
                         self._radio_state.scope_controls.speed = speed
+                    await self._reconfirm_scope_field(
+                        "get_scope_speed", radio.get_scope_speed
+                    )
             case SetScopeRef(ref=ref):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_ref(ref)
                     if self._radio_state:
                         self._radio_state.scope_controls.ref_db = float(ref)
+                    await self._reconfirm_scope_field(
+                        "get_scope_ref", radio.get_scope_ref
+                    )
             case SetScopeHold(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_hold(on)

@@ -250,10 +250,34 @@
    * above. `RF_FRONT_END_LEVEL_INTENT` maps the surface's field-addressed
    * `onLevelChange` onto the two real level handlers, mirroring
    * `TX_AUX_LEVEL_INTENT`.
+   *
+   * MOR-1447: `RfFrontEndSurface`'s `onLevelChange` reports the radio's own
+   * normalized 0..1 reading verbatim (its own "RAW wire units, no rescale"
+   * contract — `RfFrontEndSurface.svelte`'s file header) but the REAL
+   * `onRfGainChange`/`onSquelchChange` dispatch a raw 0-255 wire integer and
+   * refuse anything else (`Number.isSafeInteger` guard, `panel-commands.ts`).
+   * Converting at THIS seam, not inside `semanticHandlers` itself, keeps
+   * `bindSemanticSurfaceHandlers()`'s pinned "exact factory object, unreshaped"
+   * contract (`semantic-surface-handler-binder.isolated.test.ts`) intact.
+   * Unconverted, this was the MOR-1447 regression: an intermediate slider
+   * drag (e.g. 0.34) silently failed the integer guard, so dragging only ever
+   * landed on 0%/100% (the two values that already happen to be safe
+   * integers).
    */
   const rfFrontEndIntents = semanticHandlers.rfFrontEnd;
+  /**
+   * MOR-1447 leg 2. The profile-declared RF/SQL control model — data-driven
+   * from `[capabilities].rf_sql_control_model` in the rig TOML, read at this
+   * seam straight off `runtime.caps`, same "caps-echo display metadata"
+   * precedent as `hasDualReceiver`/`agcLabels` above. `RfFrontEndSurface`
+   * itself renders whichever model this resolves to and stays otherwise
+   * capability-blind; there is no vendor/model-name branch anywhere in this
+   * file or in the surface.
+   */
+  let rfSqlControlModel = $derived(runtime.caps?.rfSqlControlModel ?? 'separate');
   const RF_FRONT_END_LEVEL_INTENT: Record<RfFrontEndLevelField, (value: number) => void> = {
-    rfGain: rfFrontEndIntents.onRfGainChange, squelch: rfFrontEndIntents.onSquelchChange,
+    rfGain: (value) => rfFrontEndIntents.onRfGainChange(Math.round(value * 255)),
+    squelch: (value) => rfFrontEndIntents.onSquelchChange(Math.round(value * 255)),
   };
   const RF_FRONT_END_TOGGLE_INTENT: Record<RfFrontEndToggleField, (next: boolean) => void> = {
     digiSel: rfFrontEndIntents.onDigiSelToggle, ipPlus: rfFrontEndIntents.onIpPlusToggle,
@@ -874,6 +898,7 @@
     {#if view?.rfFrontEnd}
       <RfFrontEndSurface
         {view}
+        controlModel={rfSqlControlModel}
         onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
         onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}
         onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}

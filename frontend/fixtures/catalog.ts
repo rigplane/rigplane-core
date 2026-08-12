@@ -251,6 +251,17 @@ const S_METER_CAL: MeterCalPoint[] = [
 
 const baseCaps = (): Capabilities => ({
   model: 'fixture', scope: true, audio: true, tx: true,
+  // MOR-1451: `meterCalibrations` only reaches `smeter-scale.ts`'s
+  // `getSmeterCalibration()` through the REAL, generation-gated
+  // `$lib/stores/capabilities.svelte` singleton (`setCapabilities()`,
+  // production's only caller: `ws-client.ts`'s full-state handler) — a
+  // SEPARATE channel from the stubbed `runtime.caps` this object also
+  // feeds. `hasCurrentEpoch()` (capabilities.svelte.ts) rejects anything
+  // without a matching `stateContractVersion`/`providerGeneration` pair,
+  // so both are required here for `fixtures/main.ts`'s `setCapabilities`
+  // call (added alongside this) to actually accept the object instead of
+  // silently resetting the singleton to `null`.
+  stateContractVersion: 1, providerGeneration: 1,
   meterCalibrations: { s_meter: S_METER_CAL },
   capabilities: [
     'audio', 'tx', 'dual_rx', 'tuner', 'dual_watch', 'lan_dual_rx_audio_routing',

@@ -29,6 +29,7 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
+  import { formatKnownLevel } from './format-level';
   import { disabledReasonText } from './disabled-reason';
 
   /** On/off controls, `[field, label]`. ATU's reading is a three-state enum,
@@ -68,6 +69,12 @@
     f.reading.status !== 'known' ? '?'
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
         : String(f.reading.value);
+  /** Same freshness discipline as `textOf`, but a KNOWN level reading is
+   *  formatted against its declared `[min, max]` domain (MOR-1447) instead of
+   *  `String()`-ing the raw wire fraction — e.g. RF power reading back as
+   *  the literal `0.5529411764705883` instead of "55%". */
+  const levelTextOf = (f: TxAuxField<number>, min: number, max: number): string =>
+    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, min, max) : '?';
   const numberOf = (f: TxAuxField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
 
@@ -162,7 +169,7 @@
           {#if reasonTextOf(txAux[field]) !== undefined}
             <span id={reasonIdOf(field, txAux[field])} class="sr-only">{reasonTextOf(txAux[field])}</span>
           {/if}
-          <output>{textOf(txAux[field])}</output>
+          <output>{levelTextOf(txAux[field], min, max)}</output>
         </label>
       {/if}
     {/each}

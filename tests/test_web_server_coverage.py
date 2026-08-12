@@ -14,6 +14,8 @@ import pytest
 
 from rigplane._bounded_queue import BoundedQueue
 from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
     command_intent_from_request,
     command_response_observation,
 )
@@ -23,6 +25,7 @@ from rigplane.core.acquisition_scheduler import (
     StateFreshnessService,
 )
 from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -1726,6 +1729,58 @@ async def test_serve_static_forbidden_missing_read_error_and_success(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_serve_static_assets_immutable_others_no_cache(tmp_path) -> None:
+    """Content-hashed files under assets/ get long-lived immutable caching;
+    non-hashed entries (index.html, top-level files) keep no-cache."""
+    static_dir = tmp_path / "static"
+    assets = static_dir / "assets"
+    assets.mkdir(parents=True)
+    (static_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+    (static_dir / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    (assets / "index-BvQ0Yc9H.js").write_text("console.log(1)", encoding="utf-8")
+    (assets / "Orbitron-D3ZWvfzD.woff2").write_bytes(b"\x00font")
+
+    srv = WebServer(None, WebConfig(static_dir=static_dir))
+    immutable = "Cache-Control: public, max-age=31536000, immutable"
+    no_cache = "Cache-Control: no-cache, no-store, must-revalidate"
+
+    for asset in ("assets/index-BvQ0Yc9H.js", "assets/Orbitron-D3ZWvfzD.woff2"):
+        writer = _FakeWriter()
+        await srv._serve_static(writer, asset)  # noqa: SLF001
+        text = writer.buffer.decode("ascii", errors="replace")
+        assert "200 OK" in text
+        assert immutable in text, f"{asset}: expected immutable caching"
+        assert no_cache not in text
+
+    for plain in ("index.html", "favicon.svg"):
+        writer = _FakeWriter()
+        await srv._serve_static(writer, plain)  # noqa: SLF001
+        text = writer.buffer.decode("ascii", errors="replace")
+        assert "200 OK" in text
+        assert no_cache in text, f"{plain}: expected no-cache"
+        assert immutable not in text
+
+
+@pytest.mark.asyncio
+async def test_serve_static_rejects_name_prefix_sibling_dir(tmp_path) -> None:
+    """A sibling dir whose name starts with the static dir's name (e.g.
+    static.old next to static) must get 403, not file contents or a
+    connection-killing exception."""
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    sibling = tmp_path / "static.old"
+    sibling.mkdir()
+    (sibling / "secret.html").write_text("<html>secret</html>", encoding="utf-8")
+
+    srv = WebServer(None, WebConfig(static_dir=static_dir))
+    writer = _FakeWriter()
+    await srv._serve_static(writer, "../static.old/secret.html")  # noqa: SLF001
+    text = writer.buffer.decode("ascii", errors="replace")
+    assert "403 Forbidden" in text
+    assert "secret" not in text
+
+
+@pytest.mark.asyncio
 async def test_handle_websocket_missing_key_unknown_channel_and_control_handler() -> (
     None
 ):
@@ -2406,6 +2461,38 @@ async def test_http_and_capabilities_share_the_current_store_generation() -> Non
 
 
 @pytest.mark.asyncio
+async def test_capabilities_reports_combined_rf_sql_control_model_for_ic7300() -> None:
+    """MOR-1447 leg 2: IC-7300's declared combined RF/SQL knob reaches the wire."""
+
+    class _Ic7300Radio:
+        model = "IC-7300"
+        capabilities: set[str] = set()
+
+    srv = WebServer(_Ic7300Radio())
+    writer = _FakeWriter()
+    await srv._serve_capabilities(writer)  # noqa: SLF001
+    _, payload = _response_json(writer)
+
+    assert payload["rfSqlControlModel"] == "combined"
+
+
+@pytest.mark.asyncio
+async def test_capabilities_defaults_to_separate_rf_sql_control_model() -> None:
+    """A profile that doesn't declare the combined knob stays "separate"."""
+
+    class _Ic7610Radio:
+        model = "IC-7610"
+        capabilities: set[str] = set()
+
+    srv = WebServer(_Ic7610Radio())
+    writer = _FakeWriter()
+    await srv._serve_capabilities(writer)  # noqa: SLF001
+    _, payload = _response_json(writer)
+
+    assert payload["rfSqlControlModel"] == "separate"
+
+
+@pytest.mark.asyncio
 async def test_generation_transition_changes_state_etag() -> None:
     srv = WebServer(None)
     first_writer = _FakeWriter()
@@ -2951,6 +3038,225 @@ async def test_broadcast_notification_omits_code_for_legacy_path() -> None:
     assert "code" not in n
     assert "params" not in n
     assert n["message"] == "Legacy notification"
+
+
+# ---------------------------------------------------------------------------
+# Post-ack command execution failure -> issuer-only notification (MOR-1445)
+#
+# A websocket-queued command (e.g. set_attenuator) is acknowledged at
+# enqueue time and only actually fails later, once RadioPoller executes it
+# against the radio. CommandService already has NAK semantics for this via
+# fail_command()/lifecycle "failed"/"timed_out", but nothing was subscribed
+# to it, so the operator never learned the command silently failed.
+#
+# Per owner ruling, delivery is scoped to the session that issued the
+# command only — never a broadcast to every connected client — unifying
+# with the MOR-1422 refusal-toast doctrine (error feedback belongs to
+# whoever acted; other clients saw no state change and would get noise).
+#
+# These tests drive the real CommandService.execute() round trip (accepted
+# -> queued -> sent -> acknowledged is production code, not hand-emitted
+# states) through a stub executor, with WebServer's actual subscriber
+# (_on_command_lifecycle_event) wired the same way __init__ wires it. Only
+# the later, separate fail_command() call — the real entry point
+# RadioPoller._mark_queued_command_failed() uses — stands in for the poller
+# discovering the failure after the fact.
+# ---------------------------------------------------------------------------
+
+
+class _StubCommandExecutor:
+    """Executor test double: succeeds, or raises synchronously like a
+    real executor rejecting a command before it ever reaches the queue."""
+
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self._raises = raises
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        if self._raises is not None:
+            raise self._raises
+        return CommandExecutionResult()
+
+
+def _wire_stub_command_service(
+    srv: WebServer, executor: _StubCommandExecutor
+) -> CommandService:
+    """Swap in a stub executor, keeping the production notification wiring
+    under test (same subscribe_lifecycle call WebServer.__init__ makes)."""
+    service = CommandService(executor=executor, state_store=srv.command_state_store)
+    service.subscribe_lifecycle(srv._on_command_lifecycle_event)  # noqa: SLF001
+    srv.command_service = service
+    return service
+
+
+def _register_two_sessions(
+    srv: WebServer,
+) -> tuple[BoundedQueue[dict[str, object]], BoundedQueue[dict[str, object]]]:
+    """Register an issuing session's queue and a bystander session's queue.
+
+    Drains both afterwards: registering the second queue pushes a baseline
+    state_update to existing peers, which would otherwise be the first
+    (unrelated) message a test reads back out.
+    """
+    issuer_q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    bystander_q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    srv.register_control_event_queue(issuer_q, session_id="session-issuer")
+    srv.register_control_event_queue(bystander_q, session_id="session-bystander")
+    _drain_queue(issuer_q)
+    _drain_queue(bystander_q)
+    return issuer_q, bystander_q
+
+
+@pytest.mark.asyncio
+async def test_post_ack_command_failure_notifies_issuer_only() -> None:
+    """A command that fails AFTER being acknowledged reaches the session
+    that issued it, and only that session — a second connected client
+    (bystander) gets nothing.
+
+    Keeps the __init__-created ``srv.command_service`` (with its real
+    ``subscribe_lifecycle`` wiring) and swaps only its executor, instead of
+    replacing the service via ``_wire_stub_command_service``. Deleting the
+    production ``subscribe_lifecycle`` call in ``WebServer.__init__`` must
+    turn this test red; a test-side redundant subscribe would mask that.
+    """
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
+    service = srv.command_service
+
+    intent = command_intent_from_request(
+        "set_attenuator",
+        {"db": 20, "receiver": 0},
+        source="websocket",
+        command_id="cmd-att-1",
+        session_id="session-issuer",
+    )
+    await service.execute(intent)  # real accepted/queued/sent/acknowledged path
+
+    fired = service.fail_command(
+        "cmd-att-1",
+        message="Attenuator level must be one of [0, 20] dB for IC-7300, got 18",
+    )
+
+    assert fired is True
+    n = issuer_q.get_nowait()
+    assert n["type"] == "notification"
+    assert n["level"] == "error"
+    assert n["category"] == "command"
+    assert n["code"] == "commandExecutionFailed"
+    assert "Attenuator level" in n["params"]["reason"]
+    assert issuer_q.empty()  # exactly one notification, not more
+    assert bystander_q.empty()  # zero — never broadcast
+
+
+@pytest.mark.asyncio
+async def test_command_failure_before_ack_notifies_no_one() -> None:
+    """A command rejected before enqueue/ack must not notify anyone here.
+
+    That synchronous rejection is already returned to the requesting client
+    as a WS response (and, client-side, as a refusal toast per MOR-1422) —
+    a second notification from this seam would be a duplicate.
+    """
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    service = _wire_stub_command_service(
+        srv, _StubCommandExecutor(raises=ValueError("bad db value"))
+    )
+
+    intent = command_intent_from_request(
+        "set_attenuator",
+        {"db": 999, "receiver": 0},
+        source="websocket",
+        command_id="cmd-att-2",
+        session_id="session-issuer",
+    )
+    with pytest.raises(ValueError, match="bad db value"):
+        await service.execute(intent)  # mirrors a synchronous executor rejection
+
+    assert issuer_q.empty()
+    assert bystander_q.empty()
+
+
+@pytest.mark.asyncio
+async def test_command_timed_out_after_ack_notifies_issuer_only() -> None:
+    """timed_out is a terminal failure too and must also reach only the
+    issuing session, not a broadcast.
+
+    Also keeps the __init__-created ``srv.command_service`` (see the
+    docstring on test_post_ack_command_failure_notifies_issuer_only above)
+    so the session_id threading exercised through
+    handlers/control.py's register_control_event_queue(session_id=...)
+    call sites runs against production wiring in more than one test.
+    """
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
+    service = srv.command_service
+
+    intent = command_intent_from_request(
+        "set_attenuator",
+        {"db": 20, "receiver": 0},
+        source="websocket",
+        command_id="cmd-att-3",
+        session_id="session-issuer",
+    )
+    await service.execute(intent)
+
+    service.fail_command("cmd-att-3", message="radio did not respond", timed_out=True)
+
+    n = issuer_q.get_nowait()
+    assert n["level"] == "error"
+    assert n["code"] == "commandExecutionFailed"
+    assert n["params"]["reason"] == "radio did not respond"
+    assert bystander_q.empty()
+
+
+@pytest.mark.asyncio
+async def test_send_notification_to_session_unknown_session_is_a_noop() -> None:
+    """A session that already disconnected (or never existed) is not an
+    error — the send is just dropped, matching the queue-full drop pattern
+    used elsewhere on this class."""
+    srv = WebServer()
+    assert srv.send_notification_to_session("nonexistent", "error", "x") is False
+
+
+@pytest.mark.asyncio
+async def test_target_none_and_scoped_commands_do_not_leak_state_on_success() -> None:
+    """Repro from code review: a command whose _command_target() is None
+    (e.g. set_tuner) gets pending_policy="none" and never reaches a
+    "reconciled" state; a scoped command's overlay can also expire with no
+    terminal lifecycle event at all. A hand-maintained "currently
+    acknowledged" id set would leak forever in both cases. The fix removed
+    that dict entirely — _on_command_lifecycle_event recomputes "was this
+    acknowledged" from CommandService's own history on demand, so there is
+    no WebServer-owned per-command state to leak in the first place.
+    """
+    srv = WebServer()
+    q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
+    srv.register_control_event_queue(q)
+    service = _wire_stub_command_service(srv, _StubCommandExecutor())
+
+    # set_tuner: unmapped by _command_target() -> target=None -> pending_policy="none".
+    tuner_intent = command_intent_from_request(
+        "set_tuner", {"on": True}, source="websocket", command_id="cmd-tuner-1"
+    )
+    assert tuner_intent.target is None
+    await service.execute(tuner_intent)
+
+    # set_attenuator: scoped (target is not None) but still just acknowledged,
+    # never explicitly reconciled/confirmed in this test.
+    att_intent = command_intent_from_request(
+        "set_attenuator",
+        {"db": 20, "receiver": 0},
+        source="websocket",
+        command_id="cmd-att-5",
+    )
+    assert att_intent.target is not None
+    await service.execute(att_intent)
+
+    # No notification for either — both succeeded — and no per-command
+    # bookkeeping attribute exists on WebServer to have accumulated entries.
+    assert q.empty()
+    assert not hasattr(srv, "_acked_command_ids")
 
 
 # ---------------------------------------------------------------------------

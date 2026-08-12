@@ -16,8 +16,17 @@
  *       unobserved (the MOR-1322 B1 wrong-VFO class).
  *
  * Fast-pool-safe by construction (MOR-1272): no `vi.mock`, no `vi.stubGlobal`,
- * no global spy. The composed-tree pins live in the isolated-pool wiring file
+ * no global spy. The composed-tree pins for BandSurface's PROP wiring (how
+ * SemanticRadioSurfaces feeds it a view model and callbacks) live in the
+ * isolated-pool wiring file
  * `components-v2/wiring/__tests__/semantic-band-wiring.component.test.ts`.
+ *
+ * One deliberate exception (MOR-1444 round-3 review): the last describe
+ * block below mounts the real `KeyboardHandler` alongside the real
+ * `BandSurface` to pin a DOM EVENT-BUBBLING contract between them (Escape
+ * must not propagate past this component into the window keyboard seam).
+ * That is not prop wiring — no store, no transport, no `vi.mock` — so it
+ * stays fast-pool-safe and belongs with the Escape behavior it guards.
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,6 +40,8 @@ import type { FrequencyPermit } from '$lib/utils/tx-permit';
 import type {
   BandChoice, BandViewModel, DisabledReason, RadioViewModel,
 } from '../radio-view-model';
+import KeyboardHandler from '../../components-v2/layout/KeyboardHandler.svelte';
+import type { KeyboardConfig } from '../../components-v2/layout/keyboard-map';
 
 const SOURCE = readFileSync('src/semantic/BandSurface.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
@@ -616,5 +627,141 @@ describe('unknown is rendered as unknown (and F2 gets no local workaround)', () 
     expect(r.el('choices')).toBeNull();
     expect(r.el('tx')).not.toBeNull();
     r.dispose();
+  });
+});
+
+/* ── keyboard entry: Enter commits via the same path as Set, Escape
+   cancels without dispatch (MOR-1444) ──────────────────────────── */
+
+describe('keyboard entry commits on Enter and cancels on Escape (MOR-1444)', () => {
+  const BOUNDS = { tuneMinHz: 30000, tuneMaxHz: 60000000 } as const;
+
+  function keydown(el: HTMLElement, key: string): void {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    flushSync();
+  }
+
+  it('commits the typed frequency on Enter, exactly like clicking Set', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '14250000');
+    keydown(r.input()!, 'Enter');
+    expect(onEnterFrequency).toHaveBeenCalledExactlyOnceWith(14250000);
+    r.dispose();
+  });
+
+  // Kills: an Enter-commit path that bypasses the entryReady guard the Set
+  // button already goes through (carry-forward 5 / rule 5).
+  it('refuses to commit an out-of-range entry on Enter', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '29999');
+    keydown(r.input()!, 'Enter');
+    expect(onEnterFrequency).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('clears the entry on Escape without dispatching', () => {
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    typeFrequency(r.input()!, '14250000');
+    keydown(r.input()!, 'Escape');
+    expect(onEnterFrequency).not.toHaveBeenCalled();
+    expect(r.input()!.value).toBe('');
+    r.dispose();
+  });
+
+  // Round-2 review, recorder item 3: leaving focus in the (now-emptied)
+  // entry input keeps it an "ignored tag" for KeyboardHandler's
+  // shouldIgnoreEvent, so band hotkeys would stay suppressed until the
+  // operator tabs away. Escape blurs the input so hotkeys work again
+  // immediately — it does not attempt to return focus to whatever
+  // originated the gesture (BandSurface has no reference to that; the
+  // gesture may not even have come through the keyboard seam), so the next
+  // Tab starts from the document's normal order rather than resuming where
+  // the operator was. That's a documented, honest trade-off, not a claim of
+  // full focus restoration.
+  it('blurs the entry input on Escape so band hotkeys are no longer suppressed by it', () => {
+    const r = render(withB(BOUNDS));
+    const input = r.input()!;
+    typeFrequency(input, '14250000');
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    keydown(input, 'Escape');
+    expect(document.activeElement).not.toBe(input);
+    r.dispose();
+  });
+});
+
+/**
+ * Round-3 review — REQUIRED PIN. preventDefault() never stops propagation:
+ * before this fix, Escape in the entry input blurred it (moving
+ * document.activeElement to <body>, an un-ignored tag) and then kept
+ * bubbling — reaching KeyboardHandler's window-level listener with nothing
+ * left to suppress it. Every rig profile SHIPS "Escape -> clear_rit_xit"
+ * (rigs/_keyboard-default.toml), a REAL radio write
+ * (makeRitXitHandlers().onClear()) — so cancelling a frequency entry could
+ * silently clear the operator's RIT/XIT offset. The fixture below carries
+ * that exact shipped binding: without it, a passing test would prove
+ * nothing about whether Escape leaks past this component, since there'd be
+ * nothing on the other end to (not) fire.
+ *
+ * This mounts the REAL KeyboardHandler alongside the REAL BandSurface (not
+ * a hand-simulated stand-in for either), so a future change that drops
+ * `stopPropagation()` from BandSurface's Escape branch — or reorders it
+ * after the blur — fails this test via actual DOM event bubbling, the same
+ * mechanism that carries the bug in production.
+ */
+describe('Escape does not leak past BandSurface into the window keyboard seam (MOR-1444, round-3 review)', () => {
+  const BOUNDS = { tuneMinHz: 30000, tuneMaxHz: 60000000 } as const;
+
+  const configWithClearRitXit: KeyboardConfig = {
+    leaderKey: 'g',
+    leaderTimeoutMs: 1000,
+    altHints: true,
+    helpTitle: 'Test Keyboard Help',
+    bindings: [
+      {
+        id: 'clear-rit-xit',
+        section: 'RIT/XIT',
+        label: 'Clear offset',
+        sequence: ['Escape'],
+        action: 'clear_rit_xit',
+      },
+    ],
+  };
+
+  it('fires zero window-level actions and stays blurred when Escape cancels the entry', () => {
+    const onAction = vi.fn();
+    const khTarget = document.createElement('div');
+    document.body.appendChild(khTarget);
+    const kh = mount(KeyboardHandler, {
+      target: khTarget,
+      props: { config: configWithClearRitXit, onAction },
+    });
+    flushSync();
+
+    const onEnterFrequency = vi.fn();
+    const r = render(withB(BOUNDS), { onEnterFrequency });
+    const input = r.input()!;
+    typeFrequency(input, '14250000');
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    flushSync();
+
+    // THE REGRESSION PIN: the shipped Escape -> clear_rit_xit binding must
+    // never fire from a frequency-entry cancel.
+    expect(onAction).not.toHaveBeenCalled();
+    // The ticket's own words: "Esc cancels entry without dispatch."
+    expect(onEnterFrequency).not.toHaveBeenCalled();
+    // Blur is retained (round-2 fix) — Escape still un-suppresses band
+    // hotkeys for whatever the operator does next.
+    expect(document.activeElement).not.toBe(input);
+
+    r.dispose();
+    unmount(kh);
+    khTarget.remove();
   });
 });
