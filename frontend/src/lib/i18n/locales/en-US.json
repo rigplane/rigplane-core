@@ -198,6 +198,7 @@
   "core.vfo.activeReceiver.unknown": "Active receiver: unknown",
   "core.vfo.selectAction": "Select {label}",
   "core.vfo.txTarget.label": "TX target",
+  "core.vfo.freq.pendingAnnouncement": "Pending, not yet confirmed",
   "core.vfo.split.label": "Split",
   "core.vfo.dualWatch.label": "Dual watch",
   "core.vfo.state.on": "on",

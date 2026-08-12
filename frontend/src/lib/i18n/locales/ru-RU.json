@@ -178,6 +178,7 @@
   "core.vfo.activeReceiver.unknown": "Активный приёмник: неизвестно",
   "core.vfo.selectAction": "Выбрать {label}",
   "core.vfo.txTarget.label": "Цель TX",
+  "core.vfo.freq.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.vfo.split.label": "Сплит",
   "core.vfo.dualWatch.label": "Двойной приём",
   "core.vfo.state.on": "включено",

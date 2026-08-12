@@ -177,3 +177,109 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
     expect(onFreqChange).toHaveBeenCalledWith(14075000);
   });
 });
+
+// ── MOR-1441: pending-target affordance ─────────────────────────────────
+describe('FrequencyDisplayInteractive pending-target marker (MOR-1441)', () => {
+  // Kills: rendering a pending target with no distinguishing marker — the
+  // readout would then present an unconfirmed value as confirmed truth.
+  it('marks the group data-freq-status="pending" when pendingDisplayHz is set', () => {
+    const t = mountDisplay({ freq: 14250000, pendingDisplayHz: 14260000 });
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    expect(group.dataset.freqStatus).toBe('pending');
+  });
+
+  // Kills: defaulting to "pending" — the plain confirmed readout (every
+  // existing caller, pre-MOR-1441) must stay marked "confirmed".
+  it('marks the group data-freq-status="confirmed" by default', () => {
+    const t = mountDisplay({ freq: 14074000 });
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    expect(group.dataset.freqStatus).toBe('confirmed');
+  });
+
+  // B2 (screen-reader honesty): the italic/opacity marker is a VISUAL-only
+  // channel. Kills: a pending frequency read aloud by a screen reader as
+  // though it were confirmed, with no distinguishing word at all.
+  it('exposes the pending state to assistive tech via a rendered, linked word', () => {
+    const t = mountDisplay({
+      freq: 14250000,
+      pendingDisplayHz: 14260000,
+      pendingAnnouncement: 'Pending, not yet confirmed',
+    });
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    const describedById = group.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    const description = t.querySelector<HTMLElement>(`#${describedById}`)!;
+    expect(description).toBeTruthy();
+    expect(description.textContent).toBe('Pending, not yet confirmed');
+    expect(description.classList.contains('sr-only')).toBe(true);
+  });
+
+  // Kills: rendering the marker attribute/DOM but skipping the aria link
+  // when the confirmed (non-pending) readout is shown — no phantom
+  // describedby pointing at nothing.
+  it('carries no aria-describedby when confirmed', () => {
+    const t = mountDisplay({ freq: 14074000 });
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    expect(group.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  // ── MOR-1441 REVIEW FIX: the display→gesture→accumulator seam ──────────
+  // Reproduced defect: an earlier revision fed the PENDING display value
+  // into the SAME `freq` prop the gesture handlers use for arithmetic, so
+  // `adjustFreqByDigit` computed off an already-drifted base and every hot
+  // tick fed a growing excess back into the MOR-1425 tuning accumulator
+  // (positive feedback — 10 ticks of +10 Hz intent measured out to
+  // +1910 Hz actual against the real accumulator). THE kill: a wheel tick
+  // must request `confirmed + step`, never `pendingDisplayHz + step`.
+  it('MUTATION KILL: a wheel tick on a pending display computes from CONFIRMED, not the pending value', () => {
+    const CONFIRMED = 14250000;
+    const PENDING = 14260000; // already 10 kHz ahead of confirmed
+    const onFreqChange = vi.fn();
+    const t = mountDisplay({ freq: CONFIRMED, pendingDisplayHz: PENDING, onFreqChange });
+
+    // Digits render the PENDING value (14260000): confirm the fixture is
+    // genuinely showing a pending target, not accidentally testing the
+    // confirmed-only path.
+    const digitsText = Array.from(t.querySelectorAll<HTMLElement>('.digit')).map((d) => d.textContent).join('');
+    expect(digitsText).toBe('14260000');
+
+    // The 1 kHz digit — same DOM position/multiplier convention as the
+    // MOR-475 test above.
+    const oneKhzDigit = t.querySelectorAll<HTMLElement>('.digit')[4];
+    oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    flushSync();
+
+    expect(onFreqChange).toHaveBeenCalledTimes(1);
+    // THE assertion: confirmed + 1kHz step. The pre-fix code would have
+    // requested 14261000 (pending + step) here instead.
+    expect(onFreqChange).toHaveBeenCalledWith(CONFIRMED + 1000);
+    expect(onFreqChange).not.toHaveBeenCalledWith(PENDING + 1000);
+  });
+
+  // MOR-1441 round-2 review: the wheel pin above does not cover the
+  // click-to-select + ArrowUp/ArrowDown path, a separate reachable gesture
+  // (`handleKeyDown`, lines ~100/104) with its OWN `adjustFreqByDigit(freq, ...)`
+  // call sites — a keyboard-only regression of the same bug (sourcing from
+  // `pendingDisplayHz` instead of `freq`) would reproduce the identical
+  // runaway on this path alone and slip past the wheel-only pin.
+  it('MUTATION KILL: arrow keys on a pending display compute from CONFIRMED, not the pending value', () => {
+    const CONFIRMED = 14250000;
+    const PENDING = 14260000; // already 10 kHz ahead of confirmed
+    const onFreqChange = vi.fn();
+    const t = mountDisplay({ freq: CONFIRMED, pendingDisplayHz: PENDING, onFreqChange });
+
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1].click(); // select the 1 Hz digit
+    const group = t.querySelector<HTMLElement>('.freq')!;
+    group.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    group.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    flushSync();
+
+    expect(onFreqChange).toHaveBeenCalledTimes(2);
+    // THE assertion: confirmed ± 1 Hz. The pre-fix code would have computed
+    // from PENDING (14260001/14259999) here instead.
+    expect(onFreqChange.mock.calls[0][0]).toBe(CONFIRMED + 1);
+    expect(onFreqChange.mock.calls[1][0]).toBe(CONFIRMED - 1);
+    expect(onFreqChange).not.toHaveBeenCalledWith(PENDING + 1);
+  });
+});
