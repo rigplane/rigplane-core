@@ -335,6 +335,26 @@ export type FilterPassbandField<T> = TxAuxField<T>;
  */
 export interface FilterPassbandViewModel {
   filterShape: FilterPassbandField<number>;
+  /**
+   * MOR-1502 review round. `filterShape.availability.structural` above is a
+   * fact-derivation gate — `hasFilters` (part of the same filter subsystem
+   * `modeFilter.filterWidth` is), true for ANY radio with a declared filter
+   * catalog. A radio with filters but no `filter_shape` COMMAND (the FTX-1)
+   * still gets an honest derived `filterShape` READING for consumers of the
+   * raw fact (e.g. `scope-adapter.ts`). This is a SEPARATE, presentation-only
+   * gate: whether the radio has a REAL `filter_shape` command of its own.
+   * The FTX-1 has none — showing its SHARP/SOFT shape CONTROL permanently
+   * disabled is a dead control (same class of defect `ifShiftControlStructural`
+   * fixed, MOR-1494 ruling: hide capability-absent controls, don't show them
+   * dead). `FilterSurface.svelte` gates the filter-shape ROW on this flag,
+   * and ONLY this flag — never on `filterShape.availability.structural`,
+   * which stays reserved for consumers of the derived fact itself (see
+   * `deriveFilterPassband`'s doc comment). A plain boolean, not
+   * `FilterPassbandField`-wrapped, for the same reason `ifShiftControlStructural`
+   * isn't: a structural fact about the radio MODEL, not a live reading that
+   * can itself go stale.
+   */
+  filterShapeControlStructural: boolean;
   ifShift: FilterPassbandField<number>;
   /**
    * MOR-1494 review round. `ifShift.availability.structural` above is a
@@ -1407,11 +1427,15 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
   const v = record(value, path);
   exactKeys(
     v,
-    ['filterShape', 'ifShift', 'ifShiftControlStructural', 'pbtInner', 'pbtOuter', 'dataMode'],
+    [
+      'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
+      'pbtInner', 'pbtOuter', 'dataMode',
+    ],
     path,
   );
   return {
     filterShape: validateTxAuxField(v.filterShape, `${path}.filterShape`, num),
+    filterShapeControlStructural: bool(v.filterShapeControlStructural, `${path}.filterShapeControlStructural`),
     ifShift: validateTxAuxField(v.ifShift, `${path}.ifShift`, num),
     ifShiftControlStructural: bool(v.ifShiftControlStructural, `${path}.ifShiftControlStructural`),
     pbtInner: validateTxAuxField(v.pbtInner, `${path}.pbtInner`, num),

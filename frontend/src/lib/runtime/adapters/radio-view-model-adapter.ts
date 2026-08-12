@@ -396,9 +396,13 @@ function deriveModeFilter(
  *    always present) — same story as 4A's `mode`/`filter`: structural is
  *    `hasCap(caps, 'data_mode')` (`toModeProps`'s own `hasDataMode` gate),
  *    never "was it observed".
- *  - `filterShape` is OPTIONAL and undeclared by any capability tag of its
- *    own; it is part of the same filter subsystem 4A's `filterWidth` is, so
- *    its structural gate is the SAME `hasFilters` signal that field uses.
+ *  - `filterShape` the FACT is part of the same filter subsystem 4A's
+ *    `filterWidth` is, so its structural gate is the SAME `hasFilters`
+ *    signal that field uses — it is NOT re-gated on the `filter_shape`
+ *    capability tag. `filterShapeControlStructural` (MOR-1502) is the
+ *    separate, presentation-only flag that IS gated on `hasCap(caps,
+ *    'filter_shape')` — see its doc comment on `FilterPassbandViewModel`
+ *    for the ifShiftControlStructural-mirroring split.
  *  - `pbtInner`/`pbtOuter` are OPTIONAL, gated on `hasCap(caps, 'pbt')` AND a
  *    usable `pbt_inner` range declared by THIS `caps` argument itself
  *    (`pbtRangeFromCaps`, MOR-1291) — `toFilterProps`'s own `hasPbt`
@@ -431,6 +435,7 @@ function deriveFilterPassband(
   const hasPbtCap = hasCap(caps, 'pbt');
   const hasIfShiftCap = hasCap(caps, 'if_shift');
   const hasDataModeCap = hasCap(caps, 'data_mode');
+  const hasFilterShapeCap = hasCap(caps, 'filter_shape');
   if (!hasFilters && !hasPbtCap && !hasIfShiftCap && !hasDataModeCap) return undefined;
 
   const onSub = state?.active === 'SUB';
@@ -495,6 +500,22 @@ function deriveFilterPassband(
 
   return {
     filterShape: txAuxField(hasFilters, filterShapeObserved, numOrUndef(rx?.filterShape)),
+    // MOR-1502 review round. Deliberately NOT `hasFilters` above.
+    // `filterShape`'s own structural/operational/value stay exactly as they
+    // were — a radio with filters but no `filter_shape` command still gets
+    // an honest derived `filterShape` READING for any consumer of the raw
+    // fact (`scope-adapter.ts` reads `filterPassband.filterShape` directly).
+    // This flag answers a DIFFERENT question — does the radio have a REAL
+    // `filter_shape` COMMAND of its own — for `FilterSurface.svelte` to
+    // decide whether to show the SHARP/SOFT shape CONTROL at all. The FTX-1
+    // (filters, no filter_shape) has no such command; showing the control
+    // permanently disabled is a dead control, not a usable one (the owner's
+    // MOR-1494 ruling, applied here per MOR-1502: hide capability-absent
+    // controls, don't show them dead). See
+    // `FilterPassbandViewModel.filterShapeControlStructural`'s doc comment
+    // (`radio-view-model.ts`) for the full split. Mirrors
+    // `ifShiftControlStructural` immediately below, byte-for-byte doctrine.
+    filterShapeControlStructural: hasFilterShapeCap,
     ifShift: txAuxField(ifShiftStructural, ifShiftOperational, ifShiftValue),
     // MOR-1494 review round. Deliberately NOT `ifShiftStructural` above.
     // `ifShiftStructural`/`ifShiftOperational`/`ifShiftValue` stay exactly as

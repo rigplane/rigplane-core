@@ -24,7 +24,7 @@
       never substitutes one field's gate for another's.
 
   CAPABILITY-ABSENT CONTROLS ARE HIDDEN, NOT SHOWN DEAD (MOR-1494 review
-  round). The `ifShift` ROW is the ONE exception to rule (2) above: it gates
+  round). The `ifShift` ROW is an exception to rule (2) above: it gates
   on `filterPassband.ifShiftControlStructural`, NOT on
   `filterPassband.ifShift.availability.structural`. The latter stays `true`
   for any radio with EITHER `if_shift` OR `pbt` (a PBT-only radio like
@@ -34,6 +34,15 @@
   MOR-1494 fixed. `ifShiftControlStructural` answers the narrower question
   this row needs: does the radio have a REAL `if_shift` command. See
   `radio-view-model.ts`'s `FilterPassbandViewModel` doc comment.
+
+  MOR-1502 applies the SAME split to the `filter-shape` ROW: it gates on
+  `filterPassband.filterShapeControlStructural`, NOT on
+  `filterPassband.filterShape.availability.structural`. The latter stays
+  `true` for any radio with a declared filter catalog at all (the FTX-1 has
+  filters but no `filter_shape` command — showing SHARP/SOFT permanently
+  disabled is the same "shown dead" defect). `filterShapeControlStructural`
+  answers whether the radio has a REAL `filter_shape` command; see
+  `FilterPassbandViewModel.filterShapeControlStructural`'s doc comment.
 
   PENDING AFFORDANCE (MOR-1441 leg 2). `pendingFilter` is a plain, command-
   bus-blind display prop — same "read at the wiring seam, hand down a plain
@@ -184,7 +193,7 @@
     {/if}
 
     {#if filterPassband}
-      {#if filterPassband.filterShape.availability.structural}
+      {#if filterPassband.filterShapeControlStructural}
         <div
           class="filter-choice-group" data-testid="filter-shape"
           data-disabled-reason={reasonOf(filterPassband.filterShape)}

@@ -76,6 +76,19 @@ function withIfShiftControlStructural(view: RadioViewModel, value: boolean): Rad
   };
 }
 
+/**
+ * MOR-1502 review round. `filterShapeControlStructural` is a plain boolean
+ * SIBLING of `filterShape` on `filterPassband` (same idiom as
+ * `withIfShiftControlStructural` above, for the same reason
+ * `withPassbandField` cannot set it).
+ */
+function withFilterShapeControlStructural(view: RadioViewModel, value: boolean): RadioViewModel {
+  return {
+    ...view,
+    filterPassband: { ...view.filterPassband!, filterShapeControlStructural: value } as FilterPassbandViewModel,
+  };
+}
+
 let target: HTMLDivElement;
 beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target); });
 afterEach(() => { target.remove(); });
@@ -156,10 +169,12 @@ describe('structural availability decides whether a control EXISTS', () => {
     withSurface(view, (s) => expect(s.group('filter-width')).toBeNull());
   });
 
-  it('renders no shape control when filterShape is structurally absent', () => {
-    const view = withPassbandField(base(), 'filterShape', { availability: ABSENT });
-    withSurface(view, (s) => expect(s.group('filter-shape')).toBeNull());
-  });
+  // `filterShape` is deliberately excluded from this generic sweep (MOR-1502
+  // review round) — its ROW gates on the separate
+  // `filterShapeControlStructural` flag, not on its OWN field's
+  // `availability.structural`, so setting that to ABSENT here would no
+  // longer hide it. See the dedicated "filter-shape control gate is
+  // separate from the derived fact" block below.
 
   it('renders no dataMode readout when dataMode is structurally absent', () => {
     const view = withPassbandField(base(), 'dataMode', { availability: ABSENT });
@@ -235,6 +250,65 @@ describe('IF-shift control gate is separate from the derived fact (MOR-1494)', (
       expect(s.group('filter-ifShift')).not.toBeNull();
       expect(s.input('filter-ifShift')!.disabled).toBe(true);
       expect(s.group('filter-ifShift')!.dataset.disabledReason).toBe('field-not-observed');
+    });
+  });
+});
+
+// ── 2c. filter-shape control gate is separate from the derived fact (MOR-1502) ─
+
+/**
+ * MOR-1502. The FTX-1 (no `filter_shape` command) rendered the SHARP/SOFT
+ * shape row permanently disabled — a dead control shown instead of hidden,
+ * same class of defect MOR-1494 fixed for the IF-shift row. The fix splits
+ * the presentation gate (`filterShapeControlStructural`, this block) from
+ * the derived-fact gate (`filterShape.availability.structural`, UNCHANGED —
+ * pinned untouched by the second test below, which is the trap a naive fix
+ * would have missed: `scope-adapter.ts` reads `filterPassband.filterShape`
+ * directly and must keep getting the reading for any radio whose capability
+ * set declares filters at all, filter_shape-capable or not).
+ */
+describe('filter-shape control gate is separate from the derived fact (MOR-1502)', () => {
+  it('FTX-1-shaped (filters, no filter_shape): hides the filter-shape row', () => {
+    const view = withFilterShapeControlStructural(base(), false);
+    withSurface(view, (s) => expect(s.group('filter-shape')).toBeNull());
+  });
+
+  it('FTX-1-shaped (filters, no filter_shape): the underlying derived filterShape FACT stays structural and known — scope-adapter.ts still gets it', () => {
+    const view = withFilterShapeControlStructural(base(), false);
+    // `filterShapeControlStructural: false` here mirrors what the adapter
+    // would compute for an FTX-1-shaped radio; `filterShape`'s OWN field is
+    // UNTOUCHED by this override and stays exactly what `base()` (a "fully
+    // observed" fixture) gives it — the row-hiding change above must never
+    // reach into this field.
+    expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
+    expect(view.filterPassband!.filterShape.reading).toEqual({ status: 'known', value: 1 });
+  });
+
+  it('IC-7300-shaped (filter_shape): renders the filter-shape row, enabled, bound to the real value', () => {
+    // base() defaults filterShapeControlStructural to true (see fixtures/
+    // topologies.ts) — the IC-7300-shaped case, no override needed.
+    withSurface(base(), (s) => {
+      expect(s.group('filter-shape')).not.toBeNull();
+      expect(s.button('filter-shape', 1)!.disabled).toBe(false);
+    });
+  });
+
+  it('no filters at all: hides the filter-shape row, no crash', () => {
+    let view = withFilterShapeControlStructural(base(), false);
+    view = withPassbandField(view, 'filterShape', {
+      availability: { structural: false, operational: false },
+    });
+    withSurface(view, (s) => expect(s.group('filter-shape')).toBeNull());
+  });
+
+  it('still applies operational gating (disabled + reason) to a structurally-shown filter-shape row', () => {
+    const view = withPassbandField(base(), 'filterShape', {
+      availability: { structural: true, operational: false },
+    });
+    withSurface(view, (s) => {
+      expect(s.group('filter-shape')).not.toBeNull();
+      expect(s.button('filter-shape', 1)!.disabled).toBe(true);
+      expect(s.group('filter-shape')!.dataset.disabledReason).toBe('field-not-observed');
     });
   });
 });
