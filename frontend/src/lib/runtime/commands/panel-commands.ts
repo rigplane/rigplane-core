@@ -19,7 +19,6 @@ import {
 import {
   capabilitiesMatchGeneration,
   getCapabilities,
-  getControlRange,
 } from '$lib/stores/capabilities.svelte';
 import { getFieldStatus, isFieldAvailable } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
@@ -28,7 +27,9 @@ import { getModeFilter } from '$lib/radio/mode-filter-memory';
 import { relativeVfoIdentityUnknown, resolveFilterModeConfig } from '../props/panel-props';
 import type { FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
-import { nbDepthDisplayToRaw, nrDisplayToRaw } from '$lib/radio/filter-controls';
+import {
+  mapIfShiftToPbt, nbDepthDisplayToRaw, nrDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
+} from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { currentControlSessionEpoch, dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
@@ -125,61 +126,18 @@ function toggleVox(): void {
   dispatchRadioIntent({ name: 'set_vox', params: { on: !current } });
 }
 
-/* ── Inlined PBT / IF-shift helpers (from filter-controls.ts) ────── */
-// TODO: replace with `$lib/radio/filter-controls` once #996 lands.
-
-const FILTER_BIPOLAR_MIN = -1200;
-const FILTER_BIPOLAR_MAX = 1200;
-
-const PBT_DEFAULTS = { rawCenter: 128, displayMin: -1200, displayMax: 1200 } as const;
-
-function pbtRange() {
-  try {
-    const ctrl = getControlRange('pbt_inner');
-    if (
-      ctrl &&
-      ctrl.raw_center !== undefined &&
-      ctrl.display_min !== undefined &&
-      ctrl.display_max !== undefined
-    ) {
-      return {
-        rawCenter: ctrl.raw_center,
-        displayMin: ctrl.display_min,
-        displayMax: ctrl.display_max,
-      };
-    }
-  } catch {
-    // capabilities store not available (e.g. in tests)
-  }
-  return PBT_DEFAULTS;
-}
-
-function pbtHzToRaw(hz: number): number {
-  const { rawCenter, displayMax } = pbtRange();
-  const raw = Math.round(hz * (rawCenter / displayMax) + rawCenter);
-  return Math.max(0, Math.min(255, raw));
-}
-
-function clampToBipolarRange(value: number): number {
-  return Math.max(FILTER_BIPOLAR_MIN, Math.min(FILTER_BIPOLAR_MAX, Math.round(value)));
-}
-
-function deriveIfShift(pbtInner: number, pbtOuter: number): number {
-  return clampToBipolarRange((pbtInner + pbtOuter) / 2);
-}
-
-function mapIfShiftToPbt(
-  targetIfShift: number,
-  currentPbtInner: number,
-  currentPbtOuter: number,
-): { pbtInner: number; pbtOuter: number } {
-  const currentIfShift = deriveIfShift(currentPbtInner, currentPbtOuter);
-  const delta = clampToBipolarRange(targetIfShift) - currentIfShift;
-  return {
-    pbtInner: clampToBipolarRange(currentPbtInner + delta),
-    pbtOuter: clampToBipolarRange(currentPbtOuter + delta),
-  };
-}
+/* ── PBT / IF-shift helpers ──────────────────────────────────────── */
+// MOR-1291: the local re-implementations that used to live here (`pbtRange`,
+// `pbtHzToRaw`, `clampToBipolarRange`, `deriveIfShift`, `mapIfShiftToPbt`)
+// are gone — this module now imports the ONE shipped versions from
+// `$lib/radio/filter-controls` (the neutral module #996 introduced). The
+// duplicate `pbtRange()` silently fell back to an IC-7610-shaped default
+// (rawCenter 128, ±1200 Hz) via the capabilities STORE whenever a radio's
+// caps omitted `controls.pbt_inner` — exactly the fabricated-command class
+// this ticket closes. `pbtRangeFromCaps(getCapabilities())` below is called
+// at each PBT command site instead, and the handler bails (emits nothing)
+// when it comes back `undefined`, rather than ever falling through to
+// `pbtHzToRaw`'s own store-fallback branch.
 
 /* ── Memory Handlers ─────────────────────────────────────────────── */
 
@@ -881,6 +839,14 @@ export function makeFilterHandlers() {
         const receiver = knownActiveReceiver('ifShift');
         if (receiver !== null) dispatchRadioIntent({ name: 'set_if_shift', params: { offset: value, receiver } });
       } else if (caps.capabilities.includes('pbt')) {
+        // MOR-1291: a radio can declare the `pbt` capability tag without
+        // (yet, or ever) declaring a usable `controls.pbt_inner` range — no
+        // fabricated IC-7610-shaped scale (rawCenter 128, ±1200 Hz) stands in
+        // for a range this radio's OWN capabilities never provided. Missing
+        // or malformed range ⇒ no command, same fail-closed shape every
+        // other guard below already uses.
+        const pbtRange = pbtRangeFromCaps(caps);
+        if (!pbtRange) return;
         const receiver = knownActiveReceiver('pbtInner');
         const state = getRadioState();
         const activeRx = getActiveReceiver();
@@ -897,26 +863,34 @@ export function makeFilterHandlers() {
           activeRx.pbtInner,
           activeRx.pbtOuter,
         );
-        dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: pbtHzToRaw(pbtInner), receiver } });
-        dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: pbtHzToRaw(pbtOuter), receiver } });
+        dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: pbtHzToRaw(pbtInner, pbtRange), receiver } });
+        dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: pbtHzToRaw(pbtOuter, pbtRange), receiver } });
       }
     },
     onPbtInnerChange: (value: number) => {
+      // MOR-1291: see `onIfShiftChange`'s pbt branch above — no command
+      // without a caps-declared PBT range.
+      const pbtRange = pbtRangeFromCaps(getCapabilities());
+      if (!pbtRange) return;
       const receiver = knownActiveReceiver('pbtInner');
       if (receiver === null) return;
-      dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: pbtHzToRaw(value), receiver } });
+      dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: pbtHzToRaw(value, pbtRange), receiver } });
     },
     onPbtOuterChange: (value: number) => {
+      const pbtRange = pbtRangeFromCaps(getCapabilities());
+      if (!pbtRange) return;
       const receiver = knownActiveReceiver('pbtOuter');
       if (receiver === null) return;
-      dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: pbtHzToRaw(value), receiver } });
+      dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: pbtHzToRaw(value, pbtRange), receiver } });
     },
     onPbtReset: () => {
+      const pbtRange = pbtRangeFromCaps(getCapabilities());
+      if (!pbtRange) return;
       const receiver = knownActiveReceiver('pbtInner');
       const state = getRadioState();
       const prefix = receiver === 1 ? 'sub' : 'main';
       if (receiver === null || !state || !isFieldAvailable(state, `${prefix}.pbtOuter`)) return;
-      const center = pbtHzToRaw(0);
+      const center = pbtHzToRaw(0, pbtRange);
       dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: center, receiver } });
       dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: center, receiver } });
     },

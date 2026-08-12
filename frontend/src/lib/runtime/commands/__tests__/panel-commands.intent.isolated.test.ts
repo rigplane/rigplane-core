@@ -923,6 +923,48 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.patchActiveReceiver).not.toHaveBeenCalled();
   });
 
+  /**
+   * MOR-1291 (handler-level no-command assertion). A radio can declare the
+   * `pbt` capability tag without declaring a usable `controls.pbt_inner`
+   * range (or with a malformed one). Before this fix, `makeFilterHandlers`'s
+   * PBT/IF-shift handlers inlined their own `pbtHzToRaw`/`pbtRange`
+   * duplicate, which silently fell back to an IC-7610-shaped default
+   * (rawCenter 128, ±1200 Hz) and dispatched a plausible-looking
+   * `set_pbt_inner`/`set_pbt_outer` command regardless. An unavailable
+   * control must never emit a backend command — every PBT-touching handler
+   * must instead produce NO command at all.
+   */
+  it('emits no command from any PBT/IF-shift handler when caps declares pbt but carries no usable pbt_inner range', () => {
+    h.caps = { ...h.caps, controls: {} } as Record<string, unknown>;
+    const filter = makeFilterHandlers();
+
+    filter.onPbtInnerChange(100);
+    filter.onPbtOuterChange(-100);
+    filter.onPbtReset();
+    filter.onIfShiftChange(300);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('emits no command from any PBT/IF-shift handler when the declared pbt_inner range is malformed (division-by-zero guard)', () => {
+    h.caps = {
+      ...h.caps,
+      controls: {
+        pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 0 },
+      },
+    } as Record<string, unknown>;
+    const filter = makeFilterHandlers();
+
+    filter.onPbtInnerChange(100);
+    filter.onPbtOuterChange(-100);
+    filter.onPbtReset();
+    filter.onIfShiftChange(300);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
   it('fails closed when receiver identity or required observed values are unavailable', () => {
     h.state = null;
     makeModeHandlers().onModeChange('AM');
