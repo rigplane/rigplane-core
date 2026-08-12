@@ -201,6 +201,12 @@ export function toSpectrumAuthority(
   return immutableClone({ ...core, digest: JSON.stringify(core) });
 }
 
+// Tie prefers the LOWER grid point. MOR-1518: tie-break must stay aligned
+// with `$lib/radio/filter-controls`'s `snapWithinSegment` /
+// `quantizeFilterWidthToRule` — the slider/preset command-emission path —
+// so a width value equidistant from two legal Hz values snaps the same way
+// regardless of whether the operator dragged the spectrum passband edge
+// (this file) or the Filter Width slider (the other file).
 function snapStep(raw: number, minHz: number, maxHz: number, stepHz: number): number {
   const bounded = Math.max(minHz, Math.min(maxHz, raw));
   const lower = minHz + Math.floor((bounded - minHz) / stepHz) * stepHz;

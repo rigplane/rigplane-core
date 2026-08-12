@@ -2019,12 +2019,14 @@ describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
 
 /**
  * MOR-1518 (live IC-7300 bench): dragging the Filter Width slider mid-drag
- * emitted raw, unaligned values (1050/2150/3150 Hz — legal in the 50 Hz
- * segment below 500 Hz, illegal once the drag crosses into the 100 Hz
- * segment above it, `A06_SEGMENTS`/`rigs/ic7300.toml`) straight onto the
- * wire, which the backend's `filter_hz_to_index`
- * (`src/rigplane/commands/_codec.py`) rejected with "Filter width N is not
- * aligned to N Hz steps" — three sticky error toasts per drag.
+ * emitted raw, unaligned values (1050/2150/3150 Hz) straight onto the wire.
+ * Each is a multiple of the WRONG segment's step — the slider's own fixed
+ * step assumption (50 Hz, `A06_SEGMENTS`'s lower segment) rather than the
+ * 100 Hz step that actually governs 600-3600 Hz where these values fall
+ * (`rigs/ic7300.toml`) — so the backend's `filter_hz_to_index`
+ * (`src/rigplane/commands/_codec.py`) correctly rejected them with "Filter
+ * width N is not aligned to N Hz steps" — three sticky error toasts per
+ * drag.
  *
  * `onFilterWidthChange` (the slider's own debounced handler,
  * `FilterSurface.svelte`'s raw `<input type="range">` and `FilterPanel`'s
@@ -2050,10 +2052,15 @@ describe('MOR-1518 client-side filter-width quantization at command emission', (
     vi.useRealTimers();
   });
 
+  // 1050/2150/3150 are each an EXACT midpoint between two legal 100 Hz-step
+  // values (e.g. 1050 sits exactly between 1000 and 1100) — tie-break
+  // prefers the LOWER value, aligned with `scope-adapter.ts`'s
+  // `snapSpectrumFilterWidth` (see `filter-controls.ts`'s
+  // `snapWithinSegment` doc comment).
   it.each([
-    [1050, 1100],
-    [2150, 2200],
-    [3150, 3200],
+    [1050, 1000],
+    [2150, 2100],
+    [3150, 3100],
   ])('quantizes onFilterWidthChange(%i) to the nearest legal segment value (%i)', (raw, expected) => {
     makeFilterHandlers().onFilterWidthChange(raw);
     vi.advanceTimersByTime(200);
@@ -2084,14 +2091,15 @@ describe('MOR-1518 client-side filter-width quantization at command emission', (
     // Active filter is 2 (`a06State`'s fixture); targeting preset slot 1
     // makes the handler's own pre-existing filter-switch dance (select 1,
     // write its width, restore 2) fire around the width write — the MOR-1518
-    // assertion is that the WIDTH itself is quantized (1100, not the raw
-    // 1050), not the unrelated filter-switch sequencing.
+    // assertion is that the WIDTH itself is quantized (1000, not the raw
+    // 1050 — an exact tie between 1000/1100, tie-break prefers lower), not
+    // the unrelated filter-switch sequencing.
     makeFilterHandlers().onFilterPresetChange(1, 1050);
     vi.advanceTimersByTime(200);
 
     expect(exactCalls()).toEqual([
       ['set_filter', { filter: 1, receiver: 0 }],
-      ['set_filter_width', { width: 1100, receiver: 0 }],
+      ['set_filter_width', { width: 1000, receiver: 0 }],
       ['set_filter', { filter: 2, receiver: 0 }],
     ]);
   });
@@ -2101,13 +2109,14 @@ describe('MOR-1518 client-side filter-width quantization at command emission', (
     // deliberately-misaligned "defaults" array proves `onFilterDefaults` is
     // not exempt just because real profile defaults are pre-validated; the
     // trailing `set_filter` restore is `onFilterDefaults`'s own pre-existing
-    // behavior, unrelated to this fix.
+    // behavior, unrelated to this fix. 1050 is an exact tie between 1000 and
+    // 1100 — tie-break prefers lower.
     const withFilter1 = a06State();
     h.state = { ...withFilter1, main: { ...withFilter1.main, filter: 1 } } as ServerState;
     makeFilterHandlers().onFilterDefaults([1050]);
 
     expect(exactCalls()).toEqual([
-      ['set_filter_width', { width: 1100, receiver: 0 }],
+      ['set_filter_width', { width: 1000, receiver: 0 }],
       ['set_filter', { filter: 1, receiver: 0 }],
     ]);
   });
@@ -2119,16 +2128,22 @@ describe('MOR-1518 client-side filter-width quantization at command emission', (
     makeFilterHandlers().onFilterWidthChange(1836);
     vi.advanceTimersByTime(200);
 
-    // Anchored at minHz=250: round((1836-250)/100)=16 -> 250+1600=1850.
+    // Anchored at minHz=250, not a tie: floor((1836-250)/100)=15 -> lower
+    // 1750, upper 1850; 1836 is closer to 1850 (bounded-lower=86 >
+    // upper-bounded=14) -> 1850.
     expect(exactCalls()).toEqual([['set_filter_width', { width: 1850, receiver: 0 }]]);
   });
 
-  it('falls back to the pre-MOR-1518 default 50 Hz clamp when the mode has no declared width rule at all', () => {
+  it('passes the value through UNCHANGED (no fabricated ceiling) when the mode has no declared width rule at all', () => {
+    // F1 (verify round 1): pre-MOR-1518 the dispatch path applied NO clamp
+    // when a mode had no declared filterConfig entry — raw value straight to
+    // the wire. `quantizeFilterWidthToRule` must keep that exact behavior
+    // rather than imposing this module's own IC-7610-shaped 50 Hz default
+    // grid on a radio/mode that declared nothing.
     h.caps = { ...a06Caps(), filterConfig: {} } as unknown as Record<string, unknown>;
     makeFilterHandlers().onFilterWidthChange(1055);
     vi.advanceTimersByTime(200);
 
-    // clampFilterWidth's own pre-existing default: round(1055/50)*50 = 1050.
-    expect(exactCalls()).toEqual([['set_filter_width', { width: 1050, receiver: 0 }]]);
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 1055, receiver: 0 }]]);
   });
 });

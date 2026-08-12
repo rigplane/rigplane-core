@@ -134,20 +134,19 @@ describe('quantizeFilterWidthToRule (MOR-1518)', () => {
     ],
   };
 
-  it('reproduces the live-bench alignment error path: raw drag values are illegal for the upper (100 Hz) segment', () => {
-    // This is the RED-first assertion: without quantization, these exact
-    // mid-drag values (reported on the live IC-7300 bench) are NOT aligned
-    // to the 100 Hz step that governs 600-3600 Hz — dispatching them raw
-    // is what trips the backend's alignment guard.
-    for (const raw of [1050, 2150, 3150]) {
-      expect(raw % 100).not.toBe(0);
-    }
-  });
-
+  // Real red-first coverage for the live-bench values lives here and in the
+  // sibling `panel-commands.intent.isolated.test.ts` suite (both call the
+  // actual SUT). 1050/2150/3150 Hz are each an EXACT midpoint between two
+  // legal 100 Hz-segment values (e.g. 1050 sits exactly between 1000 and
+  // 1100) — precisely because the pre-fix bug always added a stray 50 Hz
+  // (the wrong, lower segment's step) onto an otherwise-legal 100 Hz value.
+  // Tie-break prefers the LOWER candidate (see `snapWithinSegment`'s doc
+  // comment, aligned with `scope-adapter.ts`'s `snapStep`/
+  // `snapSpectrumFilterWidth`).
   it('snaps illegal mid-drag values in the upper (100 Hz) segment to the nearest legal width', () => {
-    expect(quantizeFilterWidthToRule(1050, IC7300_USB_SEGMENTS)).toBe(1100);
-    expect(quantizeFilterWidthToRule(2150, IC7300_USB_SEGMENTS)).toBe(2200);
-    expect(quantizeFilterWidthToRule(3150, IC7300_USB_SEGMENTS)).toBe(3200);
+    expect(quantizeFilterWidthToRule(1050, IC7300_USB_SEGMENTS)).toBe(1000);
+    expect(quantizeFilterWidthToRule(2150, IC7300_USB_SEGMENTS)).toBe(2100);
+    expect(quantizeFilterWidthToRule(3150, IC7300_USB_SEGMENTS)).toBe(3100);
   });
 
   it('leaves already-legal values in either segment untouched', () => {
@@ -160,9 +159,11 @@ describe('quantizeFilterWidthToRule (MOR-1518)', () => {
   it('snaps a value inside the segment GAP (500-600 Hz, IC-7300 has no filter index there) to the nearer edge', () => {
     expect(quantizeFilterWidthToRule(520, IC7300_USB_SEGMENTS)).toBe(500);
     expect(quantizeFilterWidthToRule(580, IC7300_USB_SEGMENTS)).toBe(600);
-    // Exact midpoint of the gap: a tie prefers the upper segment, the same
-    // round-half-up convention `Math.round` itself uses for in-segment snapping.
-    expect(quantizeFilterWidthToRule(550, IC7300_USB_SEGMENTS)).toBe(600);
+    // Exact midpoint of the gap: a tie prefers the LOWER segment's edge —
+    // aligned with `scope-adapter.ts`'s `snapSpectrumFilterWidth` (the
+    // spectrum-panel passband-drag path), which resolves the identical
+    // 550 Hz tie to 500 Hz too.
+    expect(quantizeFilterWidthToRule(550, IC7300_USB_SEGMENTS)).toBe(500);
   });
 
   it('clamps out-of-range values to the rule\'s own overall bounds', () => {
@@ -177,7 +178,8 @@ describe('quantizeFilterWidthToRule (MOR-1518)', () => {
     const AM_STYLE_STEP: FilterModeConfig = {
       defaults: [9000, 6000, 3000], fixed: false, minHz: 200, maxHz: 10_000, stepHz: 200,
     };
-    expect(quantizeFilterWidthToRule(9100, AM_STYLE_STEP)).toBe(9200);
+    // 9100 is an exact tie between 9000 and 9200 — tie prefers lower.
+    expect(quantizeFilterWidthToRule(9100, AM_STYLE_STEP)).toBe(9000);
     expect(quantizeFilterWidthToRule(9000, AM_STYLE_STEP)).toBe(9000);
 
     // A third, still-different step (25 Hz) to further pin "data-driven,
@@ -188,9 +190,17 @@ describe('quantizeFilterWidthToRule (MOR-1518)', () => {
     expect(quantizeFilterWidthToRule(212, NARROW_STEP)).toBe(200);
   });
 
-  it('falls back to the plain clamp/50 Hz step when capabilities declare no width rule (unchanged pre-MOR-1518 behavior)', () => {
+  it('passes the value through UNCHANGED when capabilities declare no width rule (no fabricated ceiling, unchanged pre-MOR-1518 behavior)', () => {
+    // Pre-MOR-1518 the dispatch path applied NO clamp at all when a mode had
+    // no declared filterConfig entry — raw value straight to the wire. This
+    // function must keep that exact behavior rather than imposing this
+    // module's own IC-7610-shaped 50/3600/50 default grid (`clampFilterWidth`'s
+    // fallback) on a radio/mode that declared nothing: a value ABOVE that
+    // default's 3600 Hz ceiling (e.g. an FTX-1 table/step mode with a wider
+    // declared `filterWidthMax`) must still reach the wire unmodified.
     expect(quantizeFilterWidthToRule(1050, null)).toBe(1050);
     expect(quantizeFilterWidthToRule(1050, undefined)).toBe(1050);
+    expect(quantizeFilterWidthToRule(9999, null)).toBe(9999);
   });
 
   it('passes fixed-width and table-mode rules through UNCHANGED (no synthesized step, no wrong-bounds clamp)', () => {
@@ -208,12 +218,13 @@ describe('quantizeFilterWidthToRule (MOR-1518)', () => {
     expect(quantizeFilterWidthToRule(650, tableRule)).toBe(650);
   });
 
-  it('never throws and never returns a fabricated step for malformed segment data', () => {
+  it('never throws and passes the value through unchanged for malformed segment data (no fabricated step)', () => {
     const malformed: FilterModeConfig = {
       defaults: [], fixed: false, minHz: 50, maxHz: 3600,
       segments: [{ hzMin: 500, hzMax: 50, stepHz: 0, indexMin: 0 }],
     };
     expect(() => quantizeFilterWidthToRule(1050, malformed)).not.toThrow();
+    expect(quantizeFilterWidthToRule(1050, malformed)).toBe(1050);
   });
 
   it('passes non-finite input through unchanged rather than fabricating a value', () => {
