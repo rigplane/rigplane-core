@@ -17,8 +17,7 @@ import MetersDockPanel from '../MetersDockPanel.svelte';
 // runs in the `fast` pool (`isolate: false`), where a module-scope mock races
 // the shared module cache — a sibling file can leave the panel's dependency
 // chain bound to a different module instance than the one the mock applies
-// to. A `tx: true` payload with no `meterCalibrations` reproduces exactly
-// what the old mocks declared (hasTx() → true, getMeterCalibration → null).
+// to (see #2408/#2409).
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
@@ -39,6 +38,26 @@ function makeCaps(): Capabilities {
     txBands: null,
     stateContractVersion: 1,
     providerGeneration: 0,
+    // MOR-1470: declared tables put the panel in the engineering domain —
+    // props below are watts / amps / volts, exactly what the backend
+    // publishes for a rig with these tables (MOR-469).
+    meterCalibrations: {
+      power: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 143, actual: 50, label: '50' },
+        { raw: 212, actual: 100, label: '100' },
+      ],
+      id: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 151, actual: 10, label: '10' },
+        { raw: 212, actual: 25, label: '25' },
+      ],
+      vd: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 184, actual: 13.8, label: '13.8' },
+        { raw: 241, actual: 16, label: '16' },
+      ],
+    },
   };
 }
 
@@ -82,8 +101,9 @@ function poNumber(t: HTMLElement): string | null | undefined {
 
 describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
   it('holds the Po NUMBER near a prior peak through the inter-syllable gap', () => {
-    // raw 212 -> 100W (a voice peak); raw 5 -> ~2W (an inter-syllable trough).
-    const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+    // 100 W (a voice peak); 2 W (an inter-syllable trough) — engineering
+    // domain, the backend already interpolated (MOR-1470).
+    const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
     // Latch the peak on the first tick.
     vi.advanceTimersByTime(100);
     flushSync();
@@ -92,23 +112,23 @@ describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
     // Signal drops into a gap. Without peak-hold the number would immediately
     // read the trough (~2W); with peak-hold it must still read close to peak
     // shortly after the drop (well within the ~1.5 s decay window).
-    state.powerMeter = 5;
+    state.powerMeter = 2;
     vi.advanceTimersByTime(100); // t=200ms, ~133ms into decay of a 1500ms window
     flushSync();
     const held = parseInt(poNumber(t) ?? '0', 10);
-    // The instantaneous trough is ~2W; the held value is still near the 100W
-    // peak. The exact figure tracks the linear raw decay (~80W here), so we
-    // assert it is far above the trough rather than pinning the boundary.
+    // The instantaneous trough is 2 W; the held value is still near the
+    // 100 W peak. The exact figure tracks the linear decay (~91 W here), so
+    // we assert it is far above the trough rather than pinning the boundary.
     expect(held).toBeGreaterThan(70);
   });
 
   it('decays the held Po NUMBER back to the live trough after ~1.5 s', () => {
-    const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+    const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
     vi.advanceTimersByTime(100); // latch peak at t=100
     flushSync();
     expect(poNumber(t)).toBe('100W');
 
-    state.powerMeter = 5; // drop to trough
+    state.powerMeter = 2; // drop to trough
     // Advance past the 1.5 s decay window (relative to the latch at t=100).
     vi.advanceTimersByTime(1600); // t=1700ms
     flushSync();
@@ -118,7 +138,7 @@ describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
   });
 
   it('stays at 0W on RX (no stale TX peak bleed)', () => {
-    // Idle/RX: raw stays 0 -> 0W held value never rises.
+    // Idle/RX: the value stays 0 -> 0W held value never rises.
     const { t } = mountReactive({ powerMeter: 0, txActive: false });
     vi.advanceTimersByTime(300);
     flushSync();
@@ -126,10 +146,10 @@ describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
   });
 
   it('holds the Id NUMBER near a prior peak through a gap', () => {
-    // raw 212 -> 25.0 A peak; raw 0 -> 0.0 A trough.
+    // 25 A peak; 0 A trough.
     const { t, state } = mountReactive({
       powerMeter: 0,
-      idMeter: 212,
+      idMeter: 25,
       txActive: true,
     });
     vi.advanceTimersByTime(100);
@@ -143,15 +163,15 @@ describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
       t.querySelector('[data-meter="id"] .tile-value')?.textContent ?? '0',
     );
     // Live trough is 0.0 A; the held value stays well above it during the
-    // hold window (the Id calibration curve is compressed near the top, so the
-    // held raw maps to ~14 A here — still far above the 0 A trough).
+    // hold window (~23 A shortly into the linear decay — still far above
+    // the 0 A trough).
     expect(amps).toBeGreaterThan(10);
   });
 
   it('leaves the Vd NUMBER instantaneous (no peak-hold on the supply rail)', () => {
     const { t, state } = mountReactive({
       powerMeter: 0,
-      vdMeter: 241, // 16.0 V
+      vdMeter: 16, // 16.0 V
       txActive: false,
     });
     vi.advanceTimersByTime(100);
@@ -159,7 +179,7 @@ describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
     expect(t.querySelector('[data-meter="vd"] .tile-value')?.textContent).toBe('16.0 V');
 
     // A drop in supply voltage must be reflected immediately, not held.
-    state.vdMeter = 184; // 13.8 V
+    state.vdMeter = 13.8;
     vi.advanceTimersByTime(100);
     flushSync();
     expect(t.querySelector('[data-meter="vd"] .tile-value')?.textContent).toBe('13.8 V');

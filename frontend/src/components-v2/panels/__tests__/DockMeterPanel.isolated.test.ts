@@ -1,13 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import DockMeterPanel from '../DockMeterPanel.svelte';
 
-// Calibration/redline come from the runtime adapter; return null so the
-// hardcoded IC-7610 knot fallbacks in meter-utils are exercised (matches the
-// MetersDockPanel test setup). s_meter is the one exception (MOR-1451): it
-// has no such fallback anymore, so the "calibrated" S-bar tests below need
-// an explicit profile fixture instead.
+// MOR-1470: no meter has a hardcoded fallback curve — the REAL capabilities
+// store is seeded with an IC-7610-shaped profile and the props below carry
+// engineering units (watts / ratio / normalized ALC / dB-rel-S9), exactly
+// what the backend publishes for a rig with these tables (MOR-469).
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+
 const IC7610_LIKE_S_METER_CAL = [
   { raw: 0, actual: -54, label: 'S0' },
   { raw: 26, actual: -48, label: 'S1' },
@@ -19,11 +21,43 @@ const IC7610_LIKE_S_METER_CAL = [
   { raw: 200, actual: 20, label: 'S9+20' },
   { raw: 240, actual: 40, label: 'S9+40' },
 ];
-vi.mock('$lib/runtime/adapters/capabilities-adapter', () => ({
-  getMeterCalibration: vi.fn((meterType: string) =>
-    meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : null),
-  getMeterRedline: vi.fn(() => null),
-}));
+function makeCaps(): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    meterCalibrations: {
+      s_meter: IC7610_LIKE_S_METER_CAL,
+      power: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 143, actual: 50, label: '50' },
+        { raw: 212, actual: 100, label: '100' },
+      ],
+      swr: [
+        { raw: 0, actual: 1.0, label: '1.0' },
+        { raw: 48, actual: 1.5, label: '1.5' },
+        { raw: 80, actual: 2.0, label: '2.0' },
+        { raw: 120, actual: 3.0, label: '3.0' },
+      ],
+      alc: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 120, actual: 100, label: '100' },
+      ],
+    },
+  };
+}
 
 let components: ReturnType<typeof mount>[] = [];
 let roots: HTMLElement[] = [];
@@ -41,6 +75,7 @@ function mountPanel(props: ComponentProps<typeof DockMeterPanel>) {
 beforeEach(() => {
   components = [];
   roots = [];
+  setCapabilities(makeCaps());
 });
 
 afterEach(() => {
@@ -48,6 +83,7 @@ afterEach(() => {
   roots.forEach((r) => r.remove());
   components = [];
   roots = [];
+  clearCapabilities();
 });
 
 const baseProps: ComponentProps<typeof DockMeterPanel> = {
@@ -81,15 +117,14 @@ describe('DockMeterPanel structure', () => {
 
 describe('DockMeterPanel calibrated bar fill (MOR-482)', () => {
   // The bar fill must agree with the calibrated readout, not raw/255.
-  it('fills the SWR bar to ~100% at SWR 3.0 (raw=120), not ~47%', () => {
-    // raw/255 would give 120/255 = ~47%; the 3.0 full-scale knot gives ~100%.
-    const t = mountPanel({ ...baseProps, swr: 120, txActive: true });
+  it('fills the SWR bar to ~100% at the 3.0 full-scale knot', () => {
+    // Ratio 3.0 over a table topping at 3.0 -> full bar.
+    const t = mountPanel({ ...baseProps, swr: 3.0, txActive: true });
     expect(fillPctForLabel(t, 'SWR')).toBeGreaterThan(95);
   });
 
-  it('fills the SWR bar to ~50% at SWR 2.0 (raw=80), not ~31%', () => {
-    // raw/255 = 80/255 = ~31%; calibrated 2.0/3.0 = ~67%.
-    const t = mountPanel({ ...baseProps, swr: 80, txActive: true });
+  it('fills the SWR bar to ~67% at ratio 2.0 (2.0/3.0)', () => {
+    const t = mountPanel({ ...baseProps, swr: 2.0, txActive: true });
     const pct = fillPctForLabel(t, 'SWR');
     expect(pct).toBeGreaterThan(60);
     expect(pct).toBeLessThan(70);
@@ -107,15 +142,14 @@ describe('DockMeterPanel calibrated bar fill (MOR-482)', () => {
     expect(fillPctForLabel(t, 'S')).toBeGreaterThan(99);
   });
 
-  it('fills the Po bar to ~100% at the full-scale power knot (raw=212), not ~83%', () => {
-    // raw/255 = 212/255 = ~83%; calibrated 100W/100W = 100%.
-    const t = mountPanel({ ...baseProps, rfPower: 212, txActive: true });
+  it('fills the Po bar to ~100% at full-scale watts', () => {
+    // 100 W of the 100 W top knot -> full bar.
+    const t = mountPanel({ ...baseProps, rfPower: 100, txActive: true });
     expect(fillPctForLabel(t, 'Po')).toBeGreaterThan(99);
   });
 
-  it('fills the ALC bar to ~100% at the redline (raw=120), not ~47%', () => {
-    // raw/255 = 120/255 = ~47%; calibrated 120/120 redline = 100%.
-    const t = mountPanel({ ...baseProps, alc: 120, txActive: true });
+  it('fills the ALC bar to ~100% at the redline (normalized 1.0)', () => {
+    const t = mountPanel({ ...baseProps, alc: 1.0, txActive: true });
     expect(fillPctForLabel(t, 'ALC')).toBeGreaterThan(99);
   });
 });

@@ -22,8 +22,7 @@ import MetersDockPanel from '../MetersDockPanel.svelte';
 // runs in the `fast` pool (`isolate: false`), where a module-scope mock races
 // the shared module cache — a sibling file can leave the panel's dependency
 // chain bound to a different module instance than the one the mock applies
-// to. A `tx: true` payload with no `meterCalibrations` reproduces exactly
-// what the old mocks declared (hasTx() → true, getMeterCalibration → null).
+// to (see #2408/#2409).
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
@@ -44,6 +43,16 @@ function makeCaps(): Capabilities {
     txBands: null,
     stateContractVersion: 1,
     providerGeneration: 0,
+    // MOR-1470: a declared power table puts the panel in the engineering
+    // domain — powerMeter props below are watts, exactly what the backend
+    // publishes for a rig with this table (MOR-469).
+    meterCalibrations: {
+      power: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 143, actual: 50, label: '50' },
+        { raw: 212, actual: 100, label: '100' },
+      ],
+    },
   };
 }
 
@@ -159,7 +168,7 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
   it('schedules no decay interval when reduced motion is preferred at mount', () => {
     const { restore } = mockReducedMotion(true);
     try {
-      mountReactive({ powerMeter: 212, txActive: true });
+      mountReactive({ powerMeter: 100, txActive: true });
       expect(setIntervalSpy).not.toHaveBeenCalled();
       expect(netActiveIntervals()).toBe(0);
     } finally {
@@ -170,7 +179,7 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
   it('still schedules the decay interval when reduced motion is NOT preferred (baseline)', () => {
     const { restore } = mockReducedMotion(false);
     try {
-      mountReactive({ powerMeter: 212, txActive: true });
+      mountReactive({ powerMeter: 100, txActive: true });
       expect(setIntervalSpy).toHaveBeenCalledTimes(1);
       expect(netActiveIntervals()).toBe(1);
     } finally {
@@ -181,14 +190,14 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
   it('snaps the Po NUMBER directly to the live raw sample when reduced motion is preferred (no glide)', () => {
     const { restore } = mockReducedMotion(true);
     try {
-      // raw 212 -> 100W; raw 5 -> ~2W (see MetersDockPanel.peakhold test).
-      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      // 100 W peak; 2 W trough — engineering domain (MOR-1470).
+      const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
       expect(poNumber(t)).toBe(100);
 
       // A drop must be reflected IMMEDIATELY (no held peak decaying toward
       // it over PEAK_DECAY_MS) — proving there is no gliding animation, and
       // proving it without advancing any timers (none are scheduled).
-      state.powerMeter = 5;
+      state.powerMeter = 2;
       flushSync();
       expect(poNumber(t)).toBeLessThan(10);
     } finally {
@@ -205,14 +214,14 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
   it('KILL: renders and holds the peak marker under reduced motion, decoupled from the live NUMBER (MOR-1252 static hold)', () => {
     const { restore } = mockReducedMotion(true);
     try {
-      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
       expect(peakMarkerCount(t)).toBe(1);
 
       // A drop must NOT move or remove the held marker — only the NUMBER
       // (already pinned live above) reflects the new sample. A mutant that
       // reverts to clearing `peaks[key]` under reduce (the old removal
       // fix) makes the marker vanish here.
-      state.powerMeter = 5;
+      state.powerMeter = 2;
       flushSync();
       expect(peakMarkerCount(t)).toBe(1);
       expect(poNumber(t)).toBeLessThan(10); // number stays live, not frozen
@@ -224,11 +233,11 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
   it('KILL: does not move the held peak marker when fed a further-lower value (true static hold)', () => {
     const { restore } = mockReducedMotion(true);
     try {
-      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
       const leftAfterMount = peakMarkerLeft(t);
       expect(leftAfterMount).toBeTruthy();
 
-      state.powerMeter = 5;
+      state.powerMeter = 2;
       flushSync();
       expect(peakMarkerLeft(t)).toBe(leftAfterMount); // unchanged — latch held
 
@@ -243,11 +252,11 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
   it('KILL: resets the held peak instantly (no glide) once the hold window elapses, with no interval ever scheduled', () => {
     const { restore } = mockReducedMotion(true);
     try {
-      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
       const highLeft = peakMarkerLeft(t);
       expect(highLeft).toBeTruthy();
 
-      state.powerMeter = 5;
+      state.powerMeter = 2;
       flushSync();
       expect(peakMarkerLeft(t)).toBe(highLeft); // held
 
@@ -277,7 +286,7 @@ describe('MetersDockPanel — runtime prefers-reduced-motion flips (MOR-1249, mi
   it('KILL F1: stops the live decay interval and snaps the peak to current when reduced motion turns ON mid-session', () => {
     const { setMatches, restore } = mockReducedMotion(false);
     try {
-      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
       // Latch a peak, then let it partially decay so the marker is live.
       vi.advanceTimersByTime(100);
       flushSync();
@@ -291,7 +300,7 @@ describe('MetersDockPanel — runtime prefers-reduced-motion flips (MOR-1249, mi
       // Drop the raw signal; without any timer advancing, the number must
       // reflect the live trough immediately — proving the held peak was
       // cleared (snapped), not merely paused mid-decay (frozen).
-      state.powerMeter = 5;
+      state.powerMeter = 2;
       flushSync();
       expect(poNumber(t)).toBeLessThan(10);
 
@@ -306,7 +315,7 @@ describe('MetersDockPanel — runtime prefers-reduced-motion flips (MOR-1249, mi
   it('KILL F2: resumes the live decay interval and peak-hold behavior when reduced motion turns OFF mid-session', () => {
     const { setMatches, restore } = mockReducedMotion(true);
     try {
-      const { t, state } = mountReactive({ powerMeter: 212, txActive: true });
+      const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
       expect(poNumber(t)).toBe(100); // snapped at mount (reduce was ON)
       expect(netActiveIntervals()).toBe(0); // no interval yet
 
@@ -318,7 +327,7 @@ describe('MetersDockPanel — runtime prefers-reduced-motion flips (MOR-1249, mi
       // Drop the raw signal shortly after the flip and advance one tick:
       // with peak-hold active again, the NUMBER must hold near the peak
       // rather than tracking the trough instantaneously.
-      state.powerMeter = 5;
+      state.powerMeter = 2;
       vi.advanceTimersByTime(100);
       flushSync();
       expect(poNumber(t)).toBeGreaterThan(70);
@@ -330,7 +339,7 @@ describe('MetersDockPanel — runtime prefers-reduced-motion flips (MOR-1249, mi
   it('multiple flips leave exactly one or zero intervals scheduled, never more', () => {
     const { setMatches, restore } = mockReducedMotion(false);
     try {
-      mountReactive({ powerMeter: 212, txActive: true });
+      mountReactive({ powerMeter: 100, txActive: true });
       expect(netActiveIntervals()).toBe(1);
 
       setMatches(true);
@@ -355,7 +364,7 @@ describe('MetersDockPanel — runtime prefers-reduced-motion flips (MOR-1249, mi
   it('detaches the reduced-motion change listener and clears the interval on unmount — no leak', () => {
     const { listenerCount, restore } = mockReducedMotion(false);
     try {
-      const { component } = mountReactive({ powerMeter: 212, txActive: true });
+      const { component } = mountReactive({ powerMeter: 100, txActive: true });
       expect(listenerCount()).toBeGreaterThan(0);
       expect(netActiveIntervals()).toBe(1);
 

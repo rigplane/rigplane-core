@@ -1,15 +1,29 @@
+// Meter formatting and normalization for the six TX/PA meters + s_meter.
+//
+// Domain contract (MOR-1470, finishing ADR level-meter-calibrated-domain
+// Phase 3; mirrors the s_meter cutover from MOR-1451):
+//
+// - A meter whose active radio profile declares a
+//   `[[meters.<key>.calibration]]` table arrives here ALREADY in
+//   engineering units — the backend interpolates raw→actual at the
+//   observation boundary (MOR-469): power=W, swr=ratio, alc=normalized
+//   0–1, comp=dB, vd=V, id=A. Formatters render that value directly and
+//   level fns normalize it against the table's top knot. Re-running the
+//   value through the curve would be a double conversion.
+// - A meter with NO declared table arrives as the raw device byte,
+//   flagged uncalibrated server-side. Every function here degrades to an
+//   honest raw-scale reading (plain number, neutral raw/255 bar, no fault
+//   claims) — never a unit claim through a borrowed radio's curve. There
+//   are NO hardcoded per-radio fallback curves in this module.
+//
 // Capability-derived calibration and redline data is routed through the
-// runtime adapter (Tier 2 batch 2) so this helper no longer reaches into
-// `$lib/stores/*` directly. The adapter returns `null` when capabilities
-// haven't loaded — power/swr/alc/vd/id/comp formatters fall back to the
-// hardcoded IC-7610 knots defined below. The s_meter path is the one
-// exception (MOR-1451): it has NO hardcoded per-radio fallback curve —
-// `formatSMeter`/`sLevel` degrade to an honest raw-scale reading instead of
-// borrowing a foreign radio's calibration.
+// runtime adapter (Tier 2 batch 2) so this helper does not reach into
+// `$lib/stores/*` directly.
 import {
   getMeterCalibration,
   getMeterRedline,
 } from '$lib/runtime/adapters/capabilities-adapter';
+import type { MeterCalPoint } from '$lib/runtime/adapters/capabilities-adapter';
 
 export type MeterSource = 'S' | 'SWR' | 'POWER' | 'po';
 
@@ -19,116 +33,170 @@ export interface Mark {
   color?: string;
 }
 
-/**
- * Clamps and normalizes a raw BCD meter value to 0-1.
- * IC-7610 CI-V meters use 0-255 BCD range (00 00 to 02 55).
- */
-export function normalize(raw: number): number {
-  return Math.max(0, Math.min(255, raw)) / 255;
-}
-
-/**
- * Piecewise linear interpolation over knot points.
- */
-function piecewise(raw: number, knots: [number, number][]): number {
-  const clamped = Math.max(knots[0][0], Math.min(knots[knots.length - 1][0], raw));
-  for (let i = 0; i < knots.length - 1; i++) {
-    const [r0, v0] = knots[i];
-    const [r1, v1] = knots[i + 1];
-    if (clamped <= r1) {
-      const t = r1 === r0 ? 0 : (clamped - r0) / (r1 - r0);
-      return v0 + t * (v1 - v0);
-    }
-  }
-  return knots[knots.length - 1][1];
-}
-
-/**
- * Converts a capabilities MeterCalPoint[] to piecewise knots [raw, actual][].
- * Returns null if calibration data is unavailable.
- */
-function calToKnots(meterType: string): [number, number][] | null {
-  const cal = getMeterCalibration(meterType);
-  if (!cal || cal.length < 2) return null;
-  return cal.map((p) => [p.raw, p.actual] as [number, number]);
-}
-
-/**
- * Returns knots from capabilities, falling back to hardcoded defaults.
- */
-function getKnots(meterType: string, fallback: [number, number][]): [number, number][] {
-  return calToKnots(meterType) ?? fallback;
-}
-
-// ---- Hardcoded IC-7610 fallback constants ----
-
-/**
- * IC-7610 CI-V Reference p.4: 00 00=0%, 01 43=50%, 02 12=100%
- */
-const PO_KNOTS: [number, number][] = [
-  [0, 0],
-  [143, 50],
-  [212, 100],
-];
-
-/**
- * IC-7610 CI-V Reference p.4: 00 00=1.0, 00 48=1.5, 00 80=2.0, 01 20=3.0
- */
-const SWR_KNOTS: [number, number][] = [
-  [0, 1.0],
-  [48, 1.5],
-  [80, 2.0],
-  [120, 3.0],
-];
-
-/** IC-7610 ALC max raw value */
-const ALC_MAX_DEFAULT = 120;
-
-/** Raw scale ceiling (CI-V meter byte range), used only as the neutral
- *  bar-geometry edge when a radio has no s_meter calibration table — never
- *  a claimed reading (MOR-1451). */
+/** Raw device-scale ceiling (CI-V meter byte range). Used only as the
+ *  neutral bar-geometry edge for uncalibrated meters — never a claimed
+ *  reading. */
 const RAW_SCALE_MAX = 255;
 
-// ---- Public formatters ----
-
 /**
- * Formats raw RF power (BCD 0-255) as watts string.
+ * Clamps and normalizes a raw device-scale value to 0-1.
  */
-export function formatPowerWatts(raw: number): string {
-  const knots = getKnots('power', PO_KNOTS);
-  const watts = Math.round(piecewise(raw, knots));
-  return `${watts}W`;
+export function normalize(raw: number): number {
+  return Math.max(0, Math.min(RAW_SCALE_MAX, raw)) / RAW_SCALE_MAX;
 }
 
-/**
- * Normalizes RF power for bar gauge (0-1 scale).
- */
-export function normalizePower(raw: number): number {
-  const knots = getKnots('power', PO_KNOTS);
-  const maxWatts = knots[knots.length - 1][1];
-  return maxWatts > 0 ? piecewise(raw, knots) / maxWatts : 0;
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
-/**
- * Formats raw SWR value (BCD 0-255) as SWR ratio string.
- */
-export function formatSwr(raw: number): string {
-  if (raw >= 255) return '∞';
-  const knots = getKnots('swr', SWR_KNOTS);
-  return piecewise(raw, knots).toFixed(1);
+/** The declared calibration table for a meter, or null when the radio's
+ *  profile does not declare one (the honest-raw domain). */
+function getCal(meterType: string): MeterCalPoint[] | null {
+  const cal = getMeterCalibration(meterType);
+  return cal && cal.length >= 2 ? cal : null;
 }
 
-/**
- * Formats raw ALC value (BCD 0-255) as percentage string.
- */
-export function formatAlc(raw: number): string {
-  const alcMax = getMeterRedline('alc') ?? ALC_MAX_DEFAULT;
-  const pct = Math.round((Math.max(0, Math.min(alcMax, raw)) / alcMax) * 100);
-  return `${pct}%`;
+function topActual(cal: MeterCalPoint[]): number {
+  return cal[cal.length - 1].actual;
 }
+
+/** Plain raw readout for an uncalibrated meter — a number, not a unit
+ *  claim. */
+function formatRaw(value: number): string {
+  return String(Math.round(Math.max(0, Math.min(RAW_SCALE_MAX, value))));
+}
+
+// ---- RF power (W when calibrated) ----
+
+export function formatPowerWatts(value: number): string {
+  const cal = getCal('power');
+  if (!cal) return formatRaw(value);
+  const watts = Math.max(0, Math.min(topActual(cal), value));
+  return `${Math.round(watts)}W`;
+}
+
+export function normalizePower(value: number): number {
+  const cal = getCal('power');
+  if (!cal) return normalize(value);
+  const max = topActual(cal);
+  return max > 0 ? clamp01(value / max) : 0;
+}
+
+// ---- SWR (ratio when calibrated) ----
+
+/**
+ * The SWR ratio, or NaN when the radio declares no swr table — an
+ * uncalibrated raw byte has no honest ratio interpretation.
+ */
+export function swrRatio(value: number): number {
+  return getCal('swr') ? value : NaN;
+}
+
+export function formatSwr(value: number): string {
+  const cal = getCal('swr');
+  if (!cal) return formatRaw(value);
+  const top = topActual(cal);
+  // At/beyond the table top the true ratio is off-scale — render the
+  // profile's own top label (e.g. "6.0+") instead of a fake exact value.
+  if (value >= top) return cal[cal.length - 1].label;
+  return Math.max(cal[0].actual, value).toFixed(1);
+}
+
+/** Bar level for SWR: ratio relative to the table's top knot. */
+export function swrLevel(value: number): number {
+  const cal = getCal('swr');
+  if (!cal) return normalize(value);
+  const max = topActual(cal);
+  return max > 0 ? clamp01(value / max) : 0;
+}
+
+/** True when SWR exceeds 2.0 — only claimable in the calibrated ratio
+ *  domain; an uncalibrated radio never asserts a fault it cannot
+ *  measure. */
+export function isSwrFault(value: number): boolean {
+  const ratio = swrRatio(value);
+  return Number.isFinite(ratio) && ratio > 2.0;
+}
+
+// ---- ALC (normalized 0-1 when calibrated; redline-relative raw
+//      otherwise; plain raw with no data at all) ----
+
+export function formatAlc(value: number): string {
+  if (getCal('alc')) {
+    return `${Math.round(clamp01(value) * 100)}%`;
+  }
+  const redline = getMeterRedline('alc');
+  if (redline !== null && redline > 0) {
+    return `${Math.round((Math.max(0, Math.min(redline, value)) / redline) * 100)}%`;
+  }
+  return formatRaw(value);
+}
+
+/** Redline-relative ALC level (0-1). The calibrated domain is already
+ *  redline-relative (the table's top knot is the redline). */
+export function alcLevel(value: number): number {
+  if (getCal('alc')) return clamp01(value);
+  const redline = getMeterRedline('alc');
+  if (redline !== null && redline > 0) {
+    return Math.max(0, Math.min(redline, value)) / redline;
+  }
+  return normalize(value);
+}
+
+/** True when ALC is driven past 90% of the redline — only claimable when
+ *  the profile declared a table or a redline. */
+export function isAlcFault(value: number): boolean {
+  if (!getCal('alc') && getMeterRedline('alc') === null) return false;
+  return alcLevel(value) > 0.9;
+}
+
+// ---- Vd / Id / COMP (V / A / dB when calibrated) ----
+
+export function formatVolts(value: number): string {
+  const cal = getCal('vd');
+  if (!cal) return formatRaw(value);
+  return `${Math.max(0, Math.min(topActual(cal), value)).toFixed(1)} V`;
+}
+
+export function vdLevel(value: number): number {
+  const cal = getCal('vd');
+  if (!cal) return normalize(value);
+  const max = topActual(cal);
+  return max > 0 ? clamp01(value / max) : 0;
+}
+
+export function formatAmps(value: number): string {
+  const cal = getCal('id');
+  if (!cal) return formatRaw(value);
+  return `${Math.max(0, Math.min(topActual(cal), value)).toFixed(1)} A`;
+}
+
+export function idLevel(value: number): number {
+  const cal = getCal('id');
+  if (!cal) return normalize(value);
+  const max = topActual(cal);
+  return max > 0 ? clamp01(value / max) : 0;
+}
+
+export function formatCompDb(value: number): string {
+  const cal = getCal('comp');
+  if (!cal) return formatRaw(value);
+  return `${Math.round(Math.max(0, Math.min(topActual(cal), value)))} dB`;
+}
+
+export function compLevel(value: number): number {
+  const cal = getCal('comp');
+  if (!cal) return normalize(value);
+  const max = topActual(cal);
+  return max > 0 ? clamp01(value / max) : 0;
+}
+
+// ---- S-meter (dB-rel-S9 when calibrated; MOR-1451) ----
 
 function getSmeterKnots(): [number, number][] {
-  return calToKnots('s_meter') ?? [];
+  const cal = getMeterCalibration('s_meter');
+  if (!cal || cal.length < 2) return [];
+  return cal.map((p) => [p.raw, p.actual] as [number, number]);
 }
 
 /** True when the active radio profile declared a real s_meter calibration
@@ -190,128 +258,6 @@ export function formatSMeter(actual: number): string {
   return `S${s}`;
 }
 
-/**
- * Returns needle gauge mark positions and labels for the given meter source.
- * Uses capabilities calibration data when available, IC-7610 defaults otherwise.
- */
-/**
- * Formats raw Id (drain current) value as amps string.
- * IC-7610 CI-V Reference p.4: 00 00=0 A, 00 97=10 A, 01 43=15 A, 02 12=25 A.
- * Falls back to capabilities calibration when present.
- */
-const ID_KNOTS: [number, number][] = [
-  [0, 0],
-  [151, 10],
-  [195, 15],
-  [212, 25],
-];
-
-export function formatAmps(raw: number): string {
-  const knots = getKnots('id', ID_KNOTS);
-  const amps = piecewise(raw, knots);
-  return `${amps.toFixed(1)} A`;
-}
-
-/**
- * Formats raw Vd (drain voltage) value as volts string.
- * IC-7610 CI-V Reference p.4 lists 00 00=0 V, 00 13=10 V, 02 41=16 V, but the
- * manual's raw-13=10 V point is anomalous: interpolating it against the 16 V
- * top knot reads 14.5 V at raw 184, whereas the operator's bench supply is
- * exactly 13.8 V at that same raw value (live-confirmed on a real IC-7610 via
- * /api/v1/state vdMeter:184). The empirical anchor (raw 184 = 13.8 V) corrects
- * the curve while preserving the origin, the documented top, and monotonicity.
- */
-const VD_KNOTS: [number, number][] = [
-  [0, 0],
-  [13, 10],
-  [184, 13.8], // operator-measured: raw 184 = 13.8 V supply (the manual's
-  // raw-13=10 V point gave a wrong 14.5 V at this reading)
-  [241, 16],
-];
-
-export function formatVolts(raw: number): string {
-  const knots = getKnots('vd', VD_KNOTS);
-  const volts = piecewise(raw, knots);
-  return `${volts.toFixed(1)} V`;
-}
-
-/**
- * Formats raw COMP (speech compressor) value as dB string.
- * IC-7610 CI-V Reference p.4: 00 00=0 dB, 00 75=15 dB, 01 50=30 dB.
- */
-const COMP_KNOTS: [number, number][] = [
-  [0, 0],
-  [75, 15],
-  [150, 30],
-];
-
-export function formatCompDb(raw: number): string {
-  const knots = getKnots('comp', COMP_KNOTS);
-  const db = Math.round(piecewise(raw, knots));
-  return `${db} dB`;
-}
-
-/**
- * Returns the interpolated SWR ratio for a raw BCD value. Pure numeric
- * companion to `formatSwr` — used for threshold comparisons.
- */
-export function swrRatio(raw: number): number {
-  if (raw >= 255) return Infinity;
-  const knots = getKnots('swr', SWR_KNOTS);
-  return piecewise(raw, knots);
-}
-
-/**
- * Returns the normalized ALC level (0-1) for a raw BCD value, relative to
- * the ALC redline from capabilities (fallback: IC-7610 default 120).
- */
-export function alcLevel(raw: number): number {
-  const alcMax = getMeterRedline('alc') ?? ALC_MAX_DEFAULT;
-  return Math.max(0, Math.min(alcMax, raw)) / alcMax;
-}
-
-/**
- * Bar-fill level normalizers (0-1) in the CALIBRATED domain (MOR-482).
- *
- * The numeric readouts (`formatSwr`/`formatAmps`/…) are already calibrated via
- * the piecewise knots, but the bar fill historically used `normalize(raw)` =
- * raw/255, so the bar disagreed with the number (e.g. Vd 13.8 V → ~5% bar,
- * SWR 3.0 → 47% bar). These helpers convert the raw value to its engineering
- * quantity, then normalize against that meter's full-scale / redline knot so
- * the bar matches the number. Written in the calibrated domain so the Phase-2
- * cutover (backend emitting engineering units) is a one-line change per meter.
- */
-
-/** Bar level for SWR: ratio relative to the 3.0 full-scale knot. ∞ → 1.0. */
-export function swrLevel(raw: number): number {
-  const ratio = swrRatio(raw);
-  if (!Number.isFinite(ratio)) return 1;
-  const knots = getKnots('swr', SWR_KNOTS);
-  const maxRatio = knots[knots.length - 1][1];
-  return maxRatio > 0 ? Math.max(0, Math.min(1, ratio / maxRatio)) : 0;
-}
-
-/** Bar level for Id: amps relative to the 25 A full-scale knot. */
-export function idLevel(raw: number): number {
-  const knots = getKnots('id', ID_KNOTS);
-  const maxAmps = knots[knots.length - 1][1];
-  return maxAmps > 0 ? Math.max(0, Math.min(1, piecewise(raw, knots) / maxAmps)) : 0;
-}
-
-/** Bar level for Vd: volts relative to the 16 V full-scale knot. */
-export function vdLevel(raw: number): number {
-  const knots = getKnots('vd', VD_KNOTS);
-  const maxVolts = knots[knots.length - 1][1];
-  return maxVolts > 0 ? Math.max(0, Math.min(1, piecewise(raw, knots) / maxVolts)) : 0;
-}
-
-/** Bar level for COMP: dB relative to the 30 dB full-scale knot. */
-export function compLevel(raw: number): number {
-  const knots = getKnots('comp', COMP_KNOTS);
-  const maxDb = knots[knots.length - 1][1];
-  return maxDb > 0 ? Math.max(0, Math.min(1, piecewise(raw, knots) / maxDb)) : 0;
-}
-
 /** Bar level for calibrated S-meter values relative to the UI scale full-scale. */
 export function sLevel(actual: number): number {
   const scaleMaxRaw = getSmeterMaxRaw();
@@ -319,15 +265,7 @@ export function sLevel(actual: number): number {
   return scaleMaxRaw > 0 ? Math.max(0, Math.min(1, scaled / scaleMaxRaw)) : 0;
 }
 
-/** True when SWR exceeds the 2.0 TX-safety threshold. */
-export function isSwrFault(raw: number): boolean {
-  return swrRatio(raw) > 2.0;
-}
-
-/** True when ALC is driven past 90% of the redline. */
-export function isAlcFault(raw: number): boolean {
-  return alcLevel(raw) > 0.9;
-}
+// ---- Peak hold ----
 
 /**
  * Peak-hold state tracker (#823).
@@ -338,7 +276,8 @@ export function isAlcFault(raw: number): boolean {
  * pre-decayed value and repeatedly decaying it would produce exponential
  * (compounding) decay instead.
  *
- * Pure function over state — callers schedule the tick.
+ * Pure function over state — callers schedule the tick. Domain-agnostic:
+ * it latches/decays whatever quantity (engineering or raw) flows through.
  */
 export interface PeakHoldState {
   latchedPeak: number;
@@ -394,6 +333,13 @@ export function peakHoldDisplay(
   return Math.max(current, decayed);
 }
 
+/**
+ * Needle gauge marks. Positions live in the same domain as the matching
+ * level fn (`sLevel` / `swrLevel` / `normalizePower`) so the needle and
+ * its scale always agree. Labels come from the profile's own calibration
+ * table; a radio with no declared curve gets no marks — there is nothing
+ * honest to draw.
+ */
 export function getNeedleMarks(source: MeterSource): Mark[] {
   switch (source) {
     case 'S': {
@@ -406,21 +352,23 @@ export function getNeedleMarks(source: MeterSource): Mark[] {
         }));
     }
     case 'SWR': {
-      const knots = getKnots('swr', SWR_KNOTS);
-      return knots.map(([rawVal, swrVal]) => ({
-        pos: rawVal / 255,
-        label: swrVal.toFixed(1),
+      const cal = getCal('swr');
+      if (!cal) return [];
+      const max = topActual(cal);
+      return cal.map((p) => ({
+        pos: max > 0 ? clamp01(p.actual / max) : 0,
+        label: p.label,
       }));
     }
     case 'POWER':
     case 'po': {
-      return [
-        { pos: 0.0, label: '0' },
-        { pos: 0.25, label: '25' },
-        { pos: 0.5, label: '50' },
-        { pos: 0.75, label: '75' },
-        { pos: 1.0, label: '100' },
-      ];
+      const cal = getCal('power');
+      if (!cal) return [];
+      const max = topActual(cal);
+      return cal.map((p) => ({
+        pos: max > 0 ? clamp01(p.actual / max) : 0,
+        label: p.label,
+      }));
     }
   }
 }

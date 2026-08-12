@@ -40,20 +40,20 @@ describe('normalize', () => {
 // formatPowerWatts
 // ---------------------------------------------------------------------------
 
-describe('formatPowerWatts (IC-7610 CI-V p.4: 00=0%, 143=50%, 212=100%)', () => {
-  it('returns 0W for raw 0', () => {
+describe('formatPowerWatts (calibrated: input is watts, MOR-1470)', () => {
+  it('returns 0W for 0 W', () => {
     expect(formatPowerWatts(0)).toBe('0W');
   });
 
-  it('returns 50W for raw 143', () => {
-    expect(formatPowerWatts(143)).toBe('50W');
+  it('returns 50W as-is, no re-interpolation', () => {
+    expect(formatPowerWatts(50)).toBe('50W');
   });
 
-  it('returns 100W for raw 212', () => {
-    expect(formatPowerWatts(212)).toBe('100W');
+  it('returns 100W at full scale', () => {
+    expect(formatPowerWatts(100)).toBe('100W');
   });
 
-  it('clamps negative raw to 0W', () => {
+  it('clamps negative values to 0W', () => {
     expect(formatPowerWatts(-50)).toBe('0W');
   });
 });
@@ -62,25 +62,25 @@ describe('formatPowerWatts (IC-7610 CI-V p.4: 00=0%, 143=50%, 212=100%)', () => 
 // formatSwr
 // ---------------------------------------------------------------------------
 
-describe('formatSwr (IC-7610 CI-V p.4: 0=1.0, 48=1.5, 80=2.0, 120=3.0)', () => {
-  it('returns 1.0 for raw 0', () => {
-    expect(formatSwr(0)).toBe('1.0');
+describe('formatSwr (calibrated: input is the ratio, MOR-1470)', () => {
+  it('returns 1.0 for a perfect match', () => {
+    expect(formatSwr(1.0)).toBe('1.0');
   });
 
-  it('returns 1.5 for raw 48', () => {
-    expect(formatSwr(48)).toBe('1.5');
+  it('returns 1.5', () => {
+    expect(formatSwr(1.5)).toBe('1.5');
   });
 
-  it('returns 2.0 for raw 80', () => {
-    expect(formatSwr(80)).toBe('2.0');
+  it('returns 2.0', () => {
+    expect(formatSwr(2.0)).toBe('2.0');
   });
 
-  it('returns 3.0 for raw 120', () => {
-    expect(formatSwr(120)).toBe('3.0');
+  it('returns 3.0', () => {
+    expect(formatSwr(3.0)).toBe('3.0');
   });
 
-  it('returns ∞ for raw 255', () => {
-    expect(formatSwr(255)).toBe('∞');
+  it('returns the profile top label at the off-scale top knot', () => {
+    expect(formatSwr(6.0)).toBe('6.0+');
   });
 });
 
@@ -88,17 +88,17 @@ describe('formatSwr (IC-7610 CI-V p.4: 0=1.0, 48=1.5, 80=2.0, 120=3.0)', () => {
 // formatAlc
 // ---------------------------------------------------------------------------
 
-describe('formatAlc (IC-7610 CI-V p.4: 0=Min, 120=Max)', () => {
-  it('returns 0% for raw 0', () => {
+describe('formatAlc (calibrated: input is normalized 0-1, MOR-1470)', () => {
+  it('returns 0% for 0', () => {
     expect(formatAlc(0)).toBe('0%');
   });
 
-  it('returns 100% for raw 120', () => {
-    expect(formatAlc(120)).toBe('100%');
+  it('returns 100% at the redline (1.0)', () => {
+    expect(formatAlc(1.0)).toBe('100%');
   });
 
-  it('returns 50% for raw 60', () => {
-    expect(formatAlc(60)).toBe('50%');
+  it('returns 50% for 0.5', () => {
+    expect(formatAlc(0.5)).toBe('50%');
   });
 });
 
@@ -124,31 +124,35 @@ describe('getNeedleMarks S-meter (IC-7610 profile: 130=S9, 240=S9+40)', () => {
   });
 });
 
-describe('getNeedleMarks SWR (IC-7610: 0=1.0, 48=1.5, 80=2.0, 120=3.0)', () => {
-  it('returns 4 marks for SWR source', () => {
-    expect(getNeedleMarks('SWR')).toHaveLength(4);
+describe('getNeedleMarks SWR (profile table, ratio/top-knot domain)', () => {
+  it('returns one mark per declared knot', () => {
+    expect(getNeedleMarks('SWR')).toHaveLength(5);
   });
 
-  it('first mark is 1.0 at 0', () => {
+  it('first mark carries the profile label at ratio/top position', () => {
     const marks = getNeedleMarks('SWR');
-    expect(marks[0]).toEqual({ pos: 0, label: '1.0' });
+    expect(marks[0].label).toBe('1.0');
+    expect(marks[0].pos).toBeCloseTo(1.0 / 6.0, 3);
   });
 
-  it('last mark is 3.0 at 120/255', () => {
+  it('3.0 sits at half scale; the top label closes the scale', () => {
     const marks = getNeedleMarks('SWR');
     expect(marks[3].label).toBe('3.0');
-    expect(marks[3].pos).toBeCloseTo(120 / 255, 3);
+    expect(marks[3].pos).toBeCloseTo(0.5, 3);
+    expect(marks[4].label).toBe('6.0+');
+    expect(marks[4].pos).toBeCloseTo(1.0, 3);
   });
 });
 
-describe('getNeedleMarks POWER', () => {
-  it('returns 5 marks for POWER source', () => {
-    expect(getNeedleMarks('POWER')).toHaveLength(5);
+describe('getNeedleMarks POWER (profile table)', () => {
+  it('returns one mark per declared knot', () => {
+    expect(getNeedleMarks('POWER')).toHaveLength(3);
   });
 
-  it('marks are 0, 25, 50, 75, 100', () => {
-    const labels = getNeedleMarks('POWER').map((m) => m.label);
-    expect(labels).toEqual(['0', '25', '50', '75', '100']);
+  it('marks carry the profile labels at watts/top positions', () => {
+    const marks = getNeedleMarks('POWER');
+    expect(marks.map((m) => m.label)).toEqual(['0', '50', '100']);
+    expect(marks[1].pos).toBeCloseTo(0.5, 3);
   });
 });
 
@@ -156,11 +160,14 @@ describe('getNeedleMarks POWER', () => {
 // MeterPanel component
 // ---------------------------------------------------------------------------
 
-// s_meter has no hardcoded fallback curve in meter-utils.ts (MOR-1451) — the
-// `getNeedleMarks('S')` / calibrated-domain tests above and below need an
-// explicit profile fixture (the numbers `rigs/ic7610.toml` declares, hence
-// this describe block's own "IC-7610 profile" title) rather than a silent
-// adapter-level default. Every other meter type keeps returning `null`.
+// MOR-1470: no meter has a hardcoded fallback curve in meter-utils.ts — the
+// formatter/marks tests above and the component tests below seed the REAL
+// capabilities store with an IC-7610-shaped profile (all seven tables) and
+// exercise the engineering-domain contract (backend interpolates raw→actual
+// at the observation boundary, MOR-469).
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+
 const IC7610_LIKE_S_METER_CAL = [
   { raw: 0, actual: -54, label: 'S0' },
   { raw: 26, actual: -48, label: 'S1' },
@@ -172,11 +179,45 @@ const IC7610_LIKE_S_METER_CAL = [
   { raw: 200, actual: 20, label: 'S9+20' },
   { raw: 240, actual: 40, label: 'S9+40' },
 ];
-vi.mock('$lib/runtime/adapters/capabilities-adapter', () => ({
-  getMeterCalibration: vi.fn((meterType: string) =>
-    meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : null),
-  getMeterRedline: vi.fn(() => null),
-}));
+
+function makeCaps(): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    meterCalibrations: {
+      s_meter: IC7610_LIKE_S_METER_CAL,
+      power: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 143, actual: 50, label: '50' },
+        { raw: 212, actual: 100, label: '100' },
+      ],
+      swr: [
+        { raw: 0, actual: 1.0, label: '1.0' },
+        { raw: 48, actual: 1.5, label: '1.5' },
+        { raw: 80, actual: 2.0, label: '2.0' },
+        { raw: 120, actual: 3.0, label: '3.0' },
+        { raw: 240, actual: 6.0, label: '6.0+' },
+      ],
+      alc: [
+        { raw: 0, actual: 0, label: '0' },
+        { raw: 120, actual: 100, label: '100' },
+      ],
+    },
+  };
+}
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -191,18 +232,21 @@ function mountPanel(props: ComponentProps<typeof MeterPanel>) {
 
 beforeEach(() => {
   components = [];
+  setCapabilities(makeCaps());
 });
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
   document.body.innerHTML = '';
+  clearCapabilities();
 });
 
+// Engineering-domain props: +12 dB-rel-S9, 100 W, SWR 1.2, ALC at 50%.
 const baseProps: ComponentProps<typeof MeterPanel> = {
-  sValue: 120,
+  sValue: 12,
   rfPower: 100,
-  swr: 50,
-  alc: 64,
+  swr: 1.2,
+  alc: 0.5,
   txActive: false,
   meterSource: 'S',
   hasTx: true,

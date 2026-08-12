@@ -3,7 +3,9 @@
   import BarGauge from '../meters/BarGauge.svelte';
   import NeedleGauge from '../meters/NeedleGauge.svelte';
   import {
-    normalize,
+    normalizePower,
+    swrLevel,
+    alcLevel,
     formatPowerWatts,
     formatSwr,
     formatAlc,
@@ -35,12 +37,15 @@
     onMeterSourceChange,
   }: Props = $props();
 
+  // Needle position lives in the same domain as getNeedleMarks() — the
+  // meter's own level fn handles calibrated (engineering) vs uncalibrated
+  // (raw/255) inputs, so needle and scale always agree (MOR-1470).
   let needleValue = $derived(
     meterSource === 'S'
       ? sLevel(sValue)
       : meterSource === 'SWR'
-        ? normalize(swr)
-        : normalize(rfPower),
+        ? swrLevel(swr)
+        : normalizePower(rfPower),
   );
 
   let needleDisplayValue = $derived(
@@ -103,17 +108,17 @@
     {#if txActive}
       <div class="tx-meters">
         <BarGauge
-          value={normalize(rfPower)}
+          value={normalizePower(rfPower)}
           label="Po"
           displayValue={formatPowerWatts(rfPower)}
         />
         <BarGauge
-          value={normalize(swr)}
+          value={swrLevel(swr)}
           label="SWR"
           displayValue={formatSwr(swr)}
         />
         <BarGauge
-          value={normalize(alc)}
+          value={alcLevel(alc)}
           label="ALC"
           displayValue={formatAlc(alc)}
         />

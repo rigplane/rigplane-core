@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import MetersDockPanel from '../MetersDockPanel.svelte';
@@ -13,15 +13,15 @@ import {
   updatePeakHold,
 } from '../meter-utils';
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  hasTx: vi.fn(() => true),
-}));
-// MOR-1451: s_meter has no hardcoded fallback curve in meter-utils.ts
-// anymore — the "calibrated bar fill" / "S-unit" tests below need an
-// explicit profile fixture (the numbers `rigs/ic7610.toml` declares) rather
-// than relying on a silent adapter-level default. Every other meter type
-// keeps returning `null` (unaffected — still falls back to its own
-// hardcoded knots, out of this ticket's scope).
+// MOR-1470: every meter with a profile-declared calibration table arrives
+// in engineering units (backend interpolates at the observation boundary,
+// MOR-469); the panel and the meter-utils helpers render that value
+// directly. This file seeds the REAL capabilities store with an
+// IC-7610-shaped profile (all seven tables) and feeds engineering-domain
+// props; `hasTx` derives from the seeded `tx: true`.
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+
 const IC7610_LIKE_S_METER_CAL = [
   { raw: 0, actual: -54, label: 'S0' },
   { raw: 26, actual: -48, label: 'S1' },
@@ -33,79 +33,142 @@ const IC7610_LIKE_S_METER_CAL = [
   { raw: 200, actual: 20, label: 'S9+20' },
   { raw: 240, actual: 40, label: 'S9+40' },
 ];
-vi.mock('$lib/runtime/adapters/capabilities-adapter', () => ({
-  getMeterCalibration: vi.fn((meterType: string) =>
-    meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : null),
-  getMeterRedline: vi.fn(() => null),
-}));
+
+const IC7610_LIKE_TX_METER_CALS = {
+  power: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 143, actual: 50, label: '50' },
+    { raw: 212, actual: 100, label: '100' },
+  ],
+  swr: [
+    { raw: 0, actual: 1.0, label: '1.0' },
+    { raw: 48, actual: 1.5, label: '1.5' },
+    { raw: 80, actual: 2.0, label: '2.0' },
+    { raw: 120, actual: 3.0, label: '3.0' },
+    { raw: 240, actual: 6.0, label: '6.0+' },
+  ],
+  alc: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 120, actual: 100, label: '100' },
+  ],
+  vd: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 13, actual: 10, label: '10' },
+    { raw: 184, actual: 13.8, label: '13.8' },
+    { raw: 241, actual: 16, label: '16' },
+  ],
+  id: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 151, actual: 10, label: '10' },
+    { raw: 195, actual: 15, label: '15' },
+    { raw: 212, actual: 25, label: '25' },
+  ],
+  comp: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 75, actual: 15, label: '15' },
+    { raw: 150, actual: 30, label: '30' },
+  ],
+};
+
+function makeCaps(): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    meterCalibrations: {
+      s_meter: IC7610_LIKE_S_METER_CAL,
+      ...IC7610_LIKE_TX_METER_CALS,
+    },
+  };
+}
+
+beforeEach(() => {
+  setCapabilities(makeCaps());
+});
+
+afterEach(() => {
+  clearCapabilities();
+});
 
 // ---------------------------------------------------------------------------
 // New formatters
 // ---------------------------------------------------------------------------
 
-describe('formatAmps', () => {
-  it('returns 0.0 A for raw 0', () => {
+describe('formatAmps (calibrated: input is amps)', () => {
+  it('returns 0.0 A for 0 A', () => {
     expect(formatAmps(0)).toBe('0.0 A');
   });
-  it('returns 10.0 A at knot raw=151', () => {
-    expect(formatAmps(151)).toBe('10.0 A');
+  it('returns 10.0 A', () => {
+    expect(formatAmps(10)).toBe('10.0 A');
   });
-  it('returns 15.0 A at knot raw=195', () => {
-    expect(formatAmps(195)).toBe('15.0 A');
+  it('returns 15.0 A', () => {
+    expect(formatAmps(15)).toBe('15.0 A');
   });
-  it('clamps raw 300 to last knot (25.0 A)', () => {
+  it('clamps beyond-scale readings to the 25 A top knot', () => {
     expect(formatAmps(300)).toBe('25.0 A');
   });
 });
 
-describe('formatVolts', () => {
-  it('returns 0.0 V for raw 0', () => {
+describe('formatVolts (calibrated: input is volts)', () => {
+  it('returns 0.0 V for 0 V', () => {
     expect(formatVolts(0)).toBe('0.0 V');
   });
-  it('returns 10.0 V at knot raw=13', () => {
-    expect(formatVolts(13)).toBe('10.0 V');
+  it('returns 10.0 V', () => {
+    expect(formatVolts(10)).toBe('10.0 V');
   });
-  it('returns 16.0 V at knot raw=241', () => {
-    expect(formatVolts(241)).toBe('16.0 V');
+  it('returns 16.0 V at the top knot', () => {
+    expect(formatVolts(16)).toBe('16.0 V');
   });
 });
 
-describe('formatCompDb', () => {
-  it('returns 0 dB for raw 0', () => {
+describe('formatCompDb (calibrated: input is dB)', () => {
+  it('returns 0 dB for 0', () => {
     expect(formatCompDb(0)).toBe('0 dB');
   });
-  it('returns 15 dB at knot raw=75', () => {
-    expect(formatCompDb(75)).toBe('15 dB');
+  it('returns 15 dB', () => {
+    expect(formatCompDb(15)).toBe('15 dB');
   });
-  it('returns 30 dB at knot raw=150', () => {
-    expect(formatCompDb(150)).toBe('30 dB');
-  });
-});
-
-describe('isSwrFault', () => {
-  it('is false at SWR 1.0 (raw=0)', () => {
-    expect(isSwrFault(0)).toBe(false);
-  });
-  it('is false at SWR exactly 2.0 (raw=80)', () => {
-    expect(isSwrFault(80)).toBe(false);
-  });
-  it('is true above 2.0 (raw=120 -> 3.0)', () => {
-    expect(isSwrFault(120)).toBe(true);
-  });
-  it('is true at raw=255 (infinity)', () => {
-    expect(isSwrFault(255)).toBe(true);
+  it('returns 30 dB at the top knot', () => {
+    expect(formatCompDb(30)).toBe('30 dB');
   });
 });
 
-describe('isAlcFault', () => {
+describe('isSwrFault (calibrated: input is the ratio)', () => {
+  it('is false at SWR 1.0', () => {
+    expect(isSwrFault(1.0)).toBe(false);
+  });
+  it('is false at SWR exactly 2.0', () => {
+    expect(isSwrFault(2.0)).toBe(false);
+  });
+  it('is true above 2.0', () => {
+    expect(isSwrFault(3.0)).toBe(true);
+  });
+  it('is true at the off-scale top', () => {
+    expect(isSwrFault(6.0)).toBe(true);
+  });
+});
+
+describe('isAlcFault (calibrated: input is normalized 0-1)', () => {
   it('is false at 0% ALC', () => {
     expect(isAlcFault(0)).toBe(false);
   });
-  it('is false at 90% ALC (raw=108, redline 120)', () => {
-    expect(isAlcFault(108)).toBe(false);
+  it('is false at 90% ALC', () => {
+    expect(isAlcFault(0.9)).toBe(false);
   });
-  it('is true above 90% ALC (raw=115)', () => {
-    expect(isAlcFault(115)).toBe(true);
+  it('is true above 90% ALC', () => {
+    expect(isAlcFault(0.95)).toBe(true);
   });
 });
 
@@ -193,11 +256,14 @@ afterEach(() => {
   roots = [];
 });
 
+// Engineering-domain props (what the backend publishes for a rig whose
+// profile declares the tables): 50 W, SWR 1.5, ALC at 50% of redline,
+// 0 dB-rel-S9 (= S9).
 const fullProps: ComponentProps<typeof MetersDockPanel> = {
   sValue: 0,
-  powerMeter: 143,
-  swrMeter: 48,
-  alcMeter: 60,
+  powerMeter: 50,
+  swrMeter: 1.5,
+  alcMeter: 0.5,
   txActive: false,
 };
 
@@ -280,7 +346,7 @@ describe('MetersDockPanel capability gating', () => {
   });
 
   it('renders Id tile when idMeter is defined', () => {
-    const t = mountPanel({ ...fullProps, idMeter: 151 });
+    const t = mountPanel({ ...fullProps, idMeter: 10 });
     const tile = t.querySelector('[data-meter="id"]');
     expect(tile).not.toBeNull();
     expect(tile?.querySelector('.tile-value')?.textContent).toBe('10.0 A');
@@ -292,7 +358,7 @@ describe('MetersDockPanel capability gating', () => {
   });
 
   it('renders Vd tile when vdMeter is defined', () => {
-    const t = mountPanel({ ...fullProps, vdMeter: 13 });
+    const t = mountPanel({ ...fullProps, vdMeter: 10 });
     const tile = t.querySelector('[data-meter="vd"]');
     expect(tile).not.toBeNull();
     expect(tile?.querySelector('.tile-value')?.textContent).toBe('10.0 V');
@@ -304,19 +370,19 @@ describe('MetersDockPanel capability gating', () => {
   });
 
   it('renders COMP tile when compMeter is defined and compressorOn=true', () => {
-    const t = mountPanel({ ...fullProps, compMeter: 75, compressorOn: true });
+    const t = mountPanel({ ...fullProps, compMeter: 15, compressorOn: true });
     const tile = t.querySelector('[data-meter="comp"]');
     expect(tile).not.toBeNull();
     expect(tile?.querySelector('.tile-value')?.textContent).toBe('15 dB');
   });
 
   it('hides COMP tile when compressorOn is false', () => {
-    const t = mountPanel({ ...fullProps, compMeter: 75, compressorOn: false });
+    const t = mountPanel({ ...fullProps, compMeter: 15, compressorOn: false });
     expect(t.querySelector('[data-meter="comp"]')).toBeNull();
   });
 
   it('hides COMP tile when compressorOn is undefined (gating)', () => {
-    const t = mountPanel({ ...fullProps, compMeter: 75 });
+    const t = mountPanel({ ...fullProps, compMeter: 15 });
     expect(t.querySelector('[data-meter="comp"]')).toBeNull();
   });
 
@@ -328,9 +394,9 @@ describe('MetersDockPanel capability gating', () => {
   it('renders all seven tiles when all state fields are defined', () => {
     const t = mountPanel({
       ...fullProps,
-      idMeter: 100,
-      vdMeter: 13,
-      compMeter: 75,
+      idMeter: 10,
+      vdMeter: 13.8,
+      compMeter: 15,
       compressorOn: true,
     });
     expect(t.querySelectorAll('.dock-tile')).toHaveLength(7);
@@ -350,8 +416,8 @@ describe('MetersDockPanel relevance dimming (MOR-485 revert of MOR-483 p1)', () 
     const t = mountPanel({
       ...fullProps,
       txActive: true,
-      idMeter: 100,
-      compMeter: 75,
+      idMeter: 10,
+      compMeter: 15,
       compressorOn: true,
     });
     expect(t.querySelector('[data-meter="po"]')?.getAttribute('data-relevant')).toBe('true');
@@ -367,8 +433,8 @@ describe('MetersDockPanel relevance dimming (MOR-485 revert of MOR-483 p1)', () 
     const t = mountPanel({
       ...fullProps,
       txActive: false,
-      idMeter: 100,
-      compMeter: 75,
+      idMeter: 10,
+      compMeter: 15,
       compressorOn: true,
     });
     // Tiles stay in the layout (no reflow) but are dimmed via data-relevant.
@@ -392,10 +458,10 @@ describe('MetersDockPanel relevance dimming (MOR-485 revert of MOR-483 p1)', () 
   });
 
   it('keeps Vd tile relevant in both RX and TX (supply rail always readable)', () => {
-    const rx = mountPanel({ ...fullProps, vdMeter: 180, txActive: false });
+    const rx = mountPanel({ ...fullProps, vdMeter: 13.8, txActive: false });
     expect(rx.querySelector('[data-meter="vd"]')).not.toBeNull();
     expect(rx.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
-    const tx = mountPanel({ ...fullProps, vdMeter: 180, txActive: true });
+    const tx = mountPanel({ ...fullProps, vdMeter: 13.8, txActive: true });
     expect(tx.querySelector('[data-meter="vd"]')).not.toBeNull();
     expect(tx.querySelector('[data-meter="vd"]')?.getAttribute('data-relevant')).toBe('true');
   });
@@ -403,9 +469,9 @@ describe('MetersDockPanel relevance dimming (MOR-485 revert of MOR-483 p1)', () 
   it('renders the same tile set on RX and TX (no reflow on transition)', () => {
     const props = {
       ...fullProps,
-      idMeter: 100,
-      vdMeter: 13,
-      compMeter: 75,
+      idMeter: 10,
+      vdMeter: 13.8,
+      compMeter: 15,
       compressorOn: true,
     };
     const rxKeys = Array.from(
@@ -420,15 +486,23 @@ describe('MetersDockPanel relevance dimming (MOR-485 revert of MOR-483 p1)', () 
 });
 
 describe('MetersDockPanel calibrated bar fill (MOR-482)', () => {
-  it('fills the SWR bar to ~100% at SWR 3.0 (raw=120), not ~47%', () => {
-    // The bar must agree with the calibrated number, not raw/255.
-    const t = mountPanel({ ...fullProps, txActive: true, swrMeter: 120 });
+  it('fills the SWR bar to half scale at ratio 3.0 (top knot 6.0)', () => {
+    // The bar must agree with the calibrated number: ratio / top knot.
+    const t = mountPanel({ ...fullProps, txActive: true, swrMeter: 3.0 });
+    const fill = t.querySelector('[data-meter="swr"] .tile-bar-fill') as HTMLElement;
+    const pct = parseFloat(fill.style.width);
+    expect(pct).toBeGreaterThan(45);
+    expect(pct).toBeLessThan(55);
+  });
+
+  it('fills the SWR bar to ~100% at the off-scale top knot', () => {
+    const t = mountPanel({ ...fullProps, txActive: true, swrMeter: 6.0 });
     const fill = t.querySelector('[data-meter="swr"] .tile-bar-fill') as HTMLElement;
     expect(parseFloat(fill.style.width)).toBeGreaterThan(95);
   });
 
-  it('fills the Vd bar near full at the 16 V knot (raw=241), not ~5%', () => {
-    const t = mountPanel({ ...fullProps, vdMeter: 241, txActive: false });
+  it('fills the Vd bar near full at the 16 V top knot', () => {
+    const t = mountPanel({ ...fullProps, vdMeter: 16, txActive: false });
     const fill = t.querySelector('[data-meter="vd"] .tile-bar-fill') as HTMLElement;
     expect(parseFloat(fill.style.width)).toBeGreaterThan(95);
   });
@@ -449,29 +523,29 @@ describe('MetersDockPanel calibrated bar fill (MOR-482)', () => {
 });
 
 describe('MetersDockPanel fault highlighting', () => {
-  it('flags SWR tile as fault when raw > 2.0 during TX', () => {
-    const t = mountPanel({ ...fullProps, swrMeter: 120, txActive: true });
+  it('flags SWR tile as fault above ratio 2.0 during TX', () => {
+    const t = mountPanel({ ...fullProps, swrMeter: 3.0, txActive: true });
     expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-fault')).toBe('true');
   });
 
   it('does not flag SWR fault during RX (tile dimmed, no fault)', () => {
     // SWR is TX-only; on RX the tile is DIMMED (present) and never faulted.
-    const t = mountPanel({ ...fullProps, swrMeter: 120, txActive: false });
+    const t = mountPanel({ ...fullProps, swrMeter: 3.0, txActive: false });
     expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-fault')).toBe('false');
   });
 
-  it('flags ALC tile as fault when raw above 90% of redline during TX', () => {
-    const t = mountPanel({ ...fullProps, alcMeter: 115, txActive: true });
+  it('flags ALC tile as fault above 90% of the redline during TX', () => {
+    const t = mountPanel({ ...fullProps, alcMeter: 0.95, txActive: true });
     expect(t.querySelector('[data-meter="alc"]')?.getAttribute('data-fault')).toBe('true');
   });
 
   it('does not flag ALC fault at exactly 90%', () => {
-    const t = mountPanel({ ...fullProps, alcMeter: 108, txActive: true });
+    const t = mountPanel({ ...fullProps, alcMeter: 0.9, txActive: true });
     expect(t.querySelector('[data-meter="alc"]')?.getAttribute('data-fault')).toBe('false');
   });
 
   it('does not flag SWR fault at exactly 2.0', () => {
-    const t = mountPanel({ ...fullProps, swrMeter: 80, txActive: true });
+    const t = mountPanel({ ...fullProps, swrMeter: 2.0, txActive: true });
     expect(t.querySelector('[data-meter="swr"]')?.getAttribute('data-fault')).toBe('false');
   });
 });
@@ -543,16 +617,15 @@ describe('createSmoother initial value (issue #938)', () => {
 });
 
 describe('MetersDockPanel bar-fill smoothing', () => {
-  it('starts the Po bar-fill at the raw target on the first synchronous render', () => {
-    // powerMeter=128 -> raw fillPct ~50%. With the v2 seed the smoother is
-    // initialized at the current target, so the bar-fill width must equal
-    // the raw fillPct on first paint (no flash to 0). This asserts the seed
-    // wires correctly through getSmoother(key, initial).
-    const t = mountPanel({ ...fullProps, powerMeter: 128, txActive: true });
+  it('starts the Po bar-fill at the live target on the first synchronous render', () => {
+    // powerMeter=50 W of 100 W full scale -> fillPct ~50%. With the v2 seed
+    // the smoother is initialized at the current target, so the bar-fill
+    // width must equal the live fillPct on first paint (no flash to 0).
+    // This asserts the seed wires correctly through getSmoother(key, initial).
+    const t = mountPanel({ ...fullProps, powerMeter: 50, txActive: true });
     const fill = t.querySelector('[data-meter="po"] .tile-bar-fill') as HTMLElement;
     expect(fill).not.toBeNull();
     const fillPct = parseFloat(fill.style.width);
-    // 128/255 * 100 ≈ 50.2%. Allow a small tolerance for floating-point.
     expect(fillPct).toBeGreaterThan(40);
     expect(fillPct).toBeLessThan(60);
   });
