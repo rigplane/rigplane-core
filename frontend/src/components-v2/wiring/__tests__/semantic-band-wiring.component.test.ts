@@ -24,6 +24,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { t } from '$lib/i18n';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 
@@ -475,6 +476,16 @@ describe('a split TX target surfaces the caveat, end to end (fix-round F1)', () 
     render();
     expect(el('tx-value')!.textContent!.trim()).toBe('allowed');
     expect(el('tx-caveat')).not.toBeNull();
-    expect(el('tx-caveat')!.textContent).toContain('denied');
+    // MOR-1448 review F2/F4: pinned to the FULL rendered caveat text, end to
+    // end through the real adapter, not a loose substring. The old
+    // `.toContain('denied')` check would have kept passing even if the
+    // sentence itself regressed to contract-speak or a raw-enum interpolation
+    // — the composed text below is the actual honest-wording contract:
+    // `out-of-band` names the TRANSMIT frequency (SUB's 7.250, not the
+    // displayed MAIN/20m frequency) as the thing that's out of range, and
+    // the caveat states plainly that transmitting there is not allowed.
+    expect(el('tx-caveat')!.textContent).toBe(t('core.band.tx.caveat.denied', {
+      reason: t('core.band.tx.reason.outOfBand'),
+    }));
   });
 });
