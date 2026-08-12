@@ -262,6 +262,8 @@ def get_apf_type_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read APF Type Level command."""
     return _build_level_get(
@@ -269,7 +271,7 @@ def get_apf_type_level(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_apf_type_level",
     )
@@ -281,6 +283,8 @@ def set_apf_type_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set APF Type Level command."""
     return _build_level_set(
@@ -289,7 +293,7 @@ def set_apf_type_level(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_apf_type_level",
     )
@@ -300,6 +304,8 @@ def get_nr_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read NR Level command."""
     return _build_level_get(
@@ -307,7 +313,7 @@ def get_nr_level(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_nr_level",
     )
@@ -319,6 +325,8 @@ def set_nr_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set NR Level command."""
     return _build_level_set(
@@ -327,7 +335,7 @@ def set_nr_level(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_nr_level",
     )
@@ -338,6 +346,8 @@ def get_pbt_inner(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read PBT Inner command."""
     return _build_level_get(
@@ -345,7 +355,7 @@ def get_pbt_inner(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_pbt_inner",
     )
@@ -357,6 +367,8 @@ def set_pbt_inner(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set PBT Inner command."""
     return _build_level_set(
@@ -365,7 +377,7 @@ def set_pbt_inner(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_pbt_inner",
     )
@@ -376,6 +388,8 @@ def get_pbt_outer(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read PBT Outer command."""
     return _build_level_get(
@@ -383,7 +397,7 @@ def get_pbt_outer(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_pbt_outer",
     )
@@ -395,6 +409,8 @@ def set_pbt_outer(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set PBT Outer command."""
     return _build_level_set(
@@ -403,7 +419,7 @@ def set_pbt_outer(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_pbt_outer",
     )
@@ -612,6 +628,8 @@ def get_nb_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read NB Level command."""
     return _build_level_get(
@@ -619,7 +637,7 @@ def get_nb_level(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_nb_level",
     )
@@ -631,6 +649,8 @@ def set_nb_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set NB Level command."""
     return _build_level_set(
@@ -639,7 +659,7 @@ def set_nb_level(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_nb_level",
     )
@@ -650,6 +670,8 @@ def get_digisel_shift(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read DIGI-SEL Shift command."""
     return _build_level_get(
@@ -657,7 +679,7 @@ def get_digisel_shift(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_digisel_shift",
     )
@@ -669,6 +691,8 @@ def set_digisel_shift(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set DIGI-SEL Shift command."""
     return _build_level_set(
@@ -677,7 +701,7 @@ def set_digisel_shift(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=True,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_digisel_shift",
     )
