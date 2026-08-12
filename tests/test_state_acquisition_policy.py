@@ -512,9 +512,12 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     ):
         assert acquisition.capability_for(path).command_response_observable is True
 
-    # MOR-1452: the 4 newly-polled fields sit at the SAME slow 3.0s/5.0s
-    # cadence IC-7610 already uses for these fields (rigs/ic7610.toml) — well
-    # below the fast freq/mode/keep-alive tier, and unchanged by this ticket.
+    # MOR-1452 (review fix): the 4 newly-polled fields sit at 15.0s/25.0s, NOT
+    # IC-7610's 3.0s/5.0s for the same fields (rigs/ic7610.toml) — IC-7610 is
+    # LAN, IC-7300 is serial and shares one ~20 q/s software floor across
+    # every poll, operator command, and keep-alive on the same lane (see the
+    # serial-budget assertion below for the exact arithmetic that rules out
+    # 3.0s here).
     for path in (
         FieldPath.global_("operator_controls", "mic_gain"),
         FieldPath.global_("operator_controls", "monitor_gain"),
@@ -522,14 +525,34 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("operator_controls", "anti_vox_gain"),
     ):
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 3.0
-        assert policy.freshness_ttl_seconds == 5.0
+        assert policy.cadence_seconds == 15.0
+        assert policy.freshness_ttl_seconds == 25.0
 
     fast_tier_ttl = acquisition.policy_for(
         FieldPath.active("main", "freq_mode", "freq_hz")
     ).freshness_ttl_seconds
     assert fast_tier_ttl == acquisition.default_policy.freshness_ttl_seconds
-    assert fast_tier_ttl < 5.0
+    assert fast_tier_ttl < 25.0
+
+    # MOR-1452 (review fix): pin the actual serial-lane arithmetic, not just
+    # the cadence numbers, so a future "just speed this field up a bit" edit
+    # cannot silently blow the shared IC-7300 serial budget again. The
+    # software floor is one CI-V frame per _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS
+    # (50ms => 20 transactions/s), shared by every poll, every operator
+    # command, AND the keep-alive — polling demand alone must leave headroom
+    # under that ceiling, not just avoid exceeding it exactly.
+    from rigplane.backends._icom_serial_base import (
+        _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS,
+    )
+
+    serial_ceiling_hz = 1000.0 / _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS
+    assert serial_ceiling_hz == 20.0
+    total_poll_demand_hz = sum(
+        1.0 / acquisition.policy_for(path).cadence_seconds
+        for path in acquisition.pollable_paths()
+    )
+    assert total_poll_demand_hz == pytest.approx(19.933, abs=0.001)
+    assert total_poll_demand_hz < serial_ceiling_hz
 
     assert (
         acquisition.capability_for(

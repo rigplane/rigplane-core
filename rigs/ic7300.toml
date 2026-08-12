@@ -203,28 +203,37 @@ cadence_seconds = 0.3
 freshness_ttl_seconds = 1.0
 adaptive_decay = false
 
-# MOR-1452: mic/monitor/VOX/anti-VOX gain — same 3.0s/5.0s slow tier IC-7610
-# already uses for these 4 fields (rigs/ic7610.toml). Well below the ~500ms
-# keep-alive/freq/mode fast tier above; these are settings-panel levels, not
-# operating controls, so a 3s cadence is not a live-operation regression.
+# MOR-1452 (review fix): mic/monitor/VOX/anti-VOX gain. IC-7610 polls these
+# same 4 fields at 3.0s/5.0s (rigs/ic7610.toml), but IC-7610 is LAN — IC-7300
+# is SERIAL, sharing one ~20 transactions/s software floor
+# (_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS, 50ms/frame) across every poll,
+# operator command, AND the keep-alive on this same lane. Copying 3.0s
+# verbatim would add 4 fields / 3.0s = 1.333 q/s on top of this profile's
+# pre-existing ~19.667 q/s demand (freq/mode/keep-alive/af/rf/squelch/
+# att/preamp/agc/nb/nr/power/compressor/ptt/tuner/split, each 1/cadence) —
+# 21.0 q/s, structurally over the 20 q/s ceiling, degrading cadence on EVERY
+# polled field including PTT (0.3s) and freq/mode (1.5s). 15.0s/25.0s instead
+# adds only 4/15.0 = 0.267 q/s -> 19.933 q/s, leaving real headroom rather
+# than sitting exactly on the boundary. A live bench measurement at the gate
+# may justify tightening this later (tracked as a bench follow-up item).
 [state_acquisition.field_policies."global.operator_controls.mic_gain"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
+cadence_seconds = 15.0
+freshness_ttl_seconds = 25.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.monitor_gain"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
+cadence_seconds = 15.0
+freshness_ttl_seconds = 25.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.vox_gain"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
+cadence_seconds = 15.0
+freshness_ttl_seconds = 25.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
+cadence_seconds = 15.0
+freshness_ttl_seconds = 25.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
