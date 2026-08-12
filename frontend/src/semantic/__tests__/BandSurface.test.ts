@@ -535,6 +535,14 @@ describe('smart kHz/MHz/Hz interpretation of a typed entry (MOR-1462, owner ruli
     ['another bare kHz-scale integer', '14074', 14074000],
     ['MHz decimal, one fractional digit', '7.1', 7100000],
     ['MHz decimal, exact to the Hz (no float round-trip)', '14.0741', 14074100],
+    // Verifier-flagged: `14.0741` alone does NOT distinguish digit-scaling
+    // from `Math.trunc(Number(text) * 1_000_000)` — `Number('14.0741') *
+    // 1e6 === 14074100` exactly in IEEE-754. `8.000001`/`1.000001` are
+    // witnesses where the float product genuinely lands a fraction below
+    // the integer (e.g. 8000000.999999999), so a truncating float
+    // round-trip is off by exactly 1 Hz. THESE are the exactness pin.
+    ['MHz decimal where float*1e6 truncates 1 Hz low', '8.000001', 8000001],
+    ['MHz decimal where float*1e6 truncates 1 Hz low (2)', '1.000001', 1000001],
     ['already-Hz integer, out of kHz range', '7100000', 7100000],
   ])('interprets %s (%s) as %i Hz and dispatches it exactly', (_label, typed, expectedHz) => {
     const onEnterFrequency = vi.fn();
@@ -597,6 +605,18 @@ describe('smart kHz/MHz/Hz interpretation of a typed entry (MOR-1462, owner ruli
   it('shows no hint while the entry cannot be resolved', () => {
     const r = render(withB(BOUNDS));
     typeFrequency(r.input()!, 'abc');
+    expect(r.el('entry-hint')).toBeNull();
+    r.dispose();
+  });
+
+  // Review hardening: the hint must not render a target next to a Set
+  // button the MOR-1322 receiver-known gate has disabled — an interpretable
+  // entry alone is not enough, `entryReady` (the SAME gate Set/Enter use)
+  // decides the hint too.
+  it('hides the hint when the entry parses but the active receiver is unknown', () => {
+    const r = render({ ...withB(BOUNDS), activeReceiver: { status: 'unknown' } });
+    typeFrequency(r.input()!, '7100');
+    expect(r.btn('entry-set')!.disabled).toBe(true);
     expect(r.el('entry-hint')).toBeNull();
     r.dispose();
   });

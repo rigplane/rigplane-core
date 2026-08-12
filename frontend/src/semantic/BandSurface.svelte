@@ -203,8 +203,13 @@
   let entryReady = $derived(receiverKnown && boundsKnown && interpretedHz !== null);
   /** The operator-visible confirmation of what their keystrokes resolved to
    *  — shown before commit so a kHz/MHz/Hz misread is caught before it
-   *  tunes, per the ticket's own "→ 7.100 MHz" example. */
-  let entryHint = $derived(interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '');
+   *  tunes, per the ticket's own "→ 7.100 MHz" example. Gated on
+   *  `entryReady` (review hardening), not just a resolvable `interpretedHz`
+   *  — otherwise a valid-looking target could render next to a Set button
+   *  the receiver-unknown gate has permanently disabled. */
+  let entryHint = $derived(
+    entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '',
+  );
 
   function selectBand(choice: BandChoice): void {
     if (!receiverKnown) return;
