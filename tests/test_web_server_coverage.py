@@ -3026,10 +3026,18 @@ def _register_two_sessions(
 async def test_post_ack_command_failure_notifies_issuer_only() -> None:
     """A command that fails AFTER being acknowledged reaches the session
     that issued it, and only that session — a second connected client
-    (bystander) gets nothing."""
+    (bystander) gets nothing.
+
+    Keeps the __init__-created ``srv.command_service`` (with its real
+    ``subscribe_lifecycle`` wiring) and swaps only its executor, instead of
+    replacing the service via ``_wire_stub_command_service``. Deleting the
+    production ``subscribe_lifecycle`` call in ``WebServer.__init__`` must
+    turn this test red; a test-side redundant subscribe would mask that.
+    """
     srv = WebServer()
     issuer_q, bystander_q = _register_two_sessions(srv)
-    service = _wire_stub_command_service(srv, _StubCommandExecutor())
+    srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
+    service = srv.command_service
 
     intent = command_intent_from_request(
         "set_attenuator",
@@ -3087,10 +3095,18 @@ async def test_command_failure_before_ack_notifies_no_one() -> None:
 @pytest.mark.asyncio
 async def test_command_timed_out_after_ack_notifies_issuer_only() -> None:
     """timed_out is a terminal failure too and must also reach only the
-    issuing session, not a broadcast."""
+    issuing session, not a broadcast.
+
+    Also keeps the __init__-created ``srv.command_service`` (see the
+    docstring on test_post_ack_command_failure_notifies_issuer_only above)
+    so the session_id threading exercised through
+    handlers/control.py's register_control_event_queue(session_id=...)
+    call sites runs against production wiring in more than one test.
+    """
     srv = WebServer()
     issuer_q, bystander_q = _register_two_sessions(srv)
-    service = _wire_stub_command_service(srv, _StubCommandExecutor())
+    srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
+    service = srv.command_service
 
     intent = command_intent_from_request(
         "set_attenuator",

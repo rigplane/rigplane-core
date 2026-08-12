@@ -141,9 +141,10 @@ describe('messageFromReasonCode()', () => {
   });
 
   // MOR-1445: a command accepted at enqueue can still fail once the poller
-  // actually executes it against the radio. The server broadcasts this
-  // reason code (with the backend exception text threaded as `reason`) so
-  // the operator sees a localized toast instead of a raw English string.
+  // actually executes it against the radio. The server sends this reason
+  // code to the issuing session only, never a broadcast (with the backend
+  // exception text threaded as `reason`) so the operator sees a localized
+  // toast instead of a raw English string.
   // ja-JP is a known, separately-tracked backlog gap for this code (same
   // status as commandRefusedLinkDegraded above) — not asserted here.
   it('resolves the MOR-1445 post-ack command-failure reason code in en-US, threading the reason', () => {
