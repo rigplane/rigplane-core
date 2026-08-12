@@ -27,6 +27,8 @@ Companion docs:
   where every translatable string lives across the codebase.
 - [Locale preference contract](../../../../docs/i18n/locale-contract.md) —
   how Core and embedded Pro coordinate the active locale.
+- [Faceplate locale-invariance policy](../../../../docs/i18n/faceplate-locale-invariance.md) —
+  which instrument/faceplate terms never translate, and why.
 
 Open an issue at <https://github.com/rigplane/rigplane-core/issues> with the
 `i18n` label if anything is unclear.

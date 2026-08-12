@@ -111,6 +111,7 @@ nav:
       - Translator guide: i18n/translating.md
       - Core string inventory: i18n/core-string-inventory.md
       - Locale preference contract: i18n/locale-contract.md
+      - Faceplate locale-invariance policy: i18n/faceplate-locale-invariance.md
   - API Reference:
       - Public API Surface: api/public-api-surface.md
       - IcomRadio: api/radio.md
