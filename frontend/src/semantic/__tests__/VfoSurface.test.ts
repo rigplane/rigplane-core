@@ -844,6 +844,10 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
       expect(button.title, op).not.toBe(falseResolverLiteral);
       expect(describedText(target, button), op).toBe(expected);
     }
+    // R3: the ops-row CONTAINER's hover title must carry the same honest
+    // catalog text, not the resolver literal (its gaps are hoverable).
+    const opsRow = target.querySelector('[data-testid="vfo-ops"]')!;
+    expect(opsRow.getAttribute('title')).toBe(expected);
   });
 
   // MOR-1481 rework (R2): the catalog key resolves per-locale, not just an
@@ -882,6 +886,8 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     expect(describedText(target, button)).toBe('The radio has not confirmed the split state yet.');
     // Neither equalize nor swap depends on split — neither carries this reason.
     expect(target.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!.title).toBe('');
+    // R3: identity is known here — the ops-row container carries no title.
+    expect(target.querySelector('[data-testid="vfo-ops"]')!.getAttribute('title')).toBeNull();
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.title).toBe('The radio has not confirmed the split state yet.');
     expect(describedText(target, toggle)).toBe('The radio has not confirmed the split state yet.');

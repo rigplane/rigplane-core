@@ -586,7 +586,7 @@
       <div
         class="vfo-ops" data-testid="vfo-ops"
         data-disabled-reason={relativeIdentityUnknown ? 'vfo-identity-unknown' : undefined}
-        title={relativeIdentityUnknown ? relativeSelectionHelp : undefined}
+        title={identityOnlyReasonText()}
       >
         <button type="button" class="vfo-op" data-vfo-equalize
           title={equalizeReason} aria-describedby={reasonId('equalize', equalizeReason)}
