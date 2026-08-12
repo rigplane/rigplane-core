@@ -431,6 +431,75 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
+// ── Generic armed/pending signal (MOR-1519) ──
+/**
+ * ARMED-SIGNAL CONTRACT — owner ruling MOR-1519: any control that does not
+ * switch in real time but is instead confirmed by polling (the radio's own
+ * observed state, same as every accessor above) needs a generic "in flight"
+ * marker, so an operator gets feedback the instant they act instead of the
+ * multi-second silent lag the ticket was filed against (MODE buttons: click
+ * → nothing visible → the poll eventually confirms). `ArmedFact`/`armedFact`
+ * below are a GENERIC READ over `latestPendingParam`'s decision table above
+ * — not a second source of truth, not a reimplementation. Every honesty rule
+ * documented on `latestPendingParam` and `ACK_CONFIRM_GRACE_MS` applies
+ * unchanged:
+ *  - `armed` goes true the instant a command dispatches (`status ===
+ *    'pending'`) and stays true through the transport ack (`'acknowledged'`)
+ *    until a confirming post-ack observation of the target value arrives, or
+ *    `ACK_CONFIRM_GRACE_MS` elapses since ack with no confirmation.
+ *  - A re-click while armed re-arms at the new target: `latestPendingParam`'s
+ *    freshest-`createdAt`-wins tie-break already handles this, no separate
+ *    "already armed" state to fight.
+ *  - `armed` NEVER survives a terminal failure. A command that reaches
+ *    `'failed'`/`'cancelled'`/`'timed-out'` fails `latestPendingParam`'s own
+ *    `status !== 'pending' && status !== 'acknowledged'` scan guard and is
+ *    excluded from consideration the instant it transitions — `armed` clears
+ *    immediately, it must never present a failed command as still in flight.
+ *
+ * Contract for skins consuming this signal:
+ *  - MAY style `armed` however fits: desktop-v2 renders it italic (see
+ *    `ModePanel.svelte`'s `data-armed` marker, parity with the NB/NR
+ *    `data-pending-status` precedent in `DspSurface.svelte`); an LCD skin
+ *    may prefer a glow or blink — that is a presentation choice, not part of
+ *    this contract.
+ *  - MUST NOT suppress the confirmed-vs-armed distinction, and MUST NOT ever
+ *    present an armed (unconfirmed) value as confirmed — same doctrine as
+ *    `data-freq-status='pending'` (`FrequencyDisplayInteractive.svelte`) and
+ *    `data-pending-status='pending'` (`DspSurface.svelte`): a structural
+ *    marker (an attribute a screen reader or a test can key off), never a
+ *    color-only tell.
+ */
+export interface ArmedFact<T> {
+  /** True from command dispatch until a confirming observation (or grace
+   *  expiry) clears the pending record — see the contract above. */
+  armed: boolean;
+  /** The in-flight target while `armed`; `null` otherwise. Pending is
+   *  display-only (leg-1 doctrine) — never read this as an arithmetic base
+   *  for a "toggle from pending" computation. */
+  value: T | null;
+}
+
+function armedFact<T>(
+  intentName: string, paramKey: string, receiver: 0 | 1, confirmedField: keyof ServerState['main'],
+): ArmedFact<T> {
+  const value = latestPendingParam(intentName, paramKey, receiver, confirmedField);
+  return value === undefined ? { armed: false, value: null } : { armed: true, value: value as T };
+}
+
+/**
+ * MODE buttons' armed fact (MOR-1519, first consumer of the generic signal
+ * above). No `receiver` param: `ModePanel` renders a single mode grid for
+ * the ACTIVE receiver only, the same single-receiver read `toModeProps`'s
+ * `activeRx(state)` already performs (`panel-props.ts`) — `state.active`
+ * mirrors that helper's `'SUB' ? sub : main` split.
+ */
+export function getModeArmed(): ArmedFact<string> {
+  const state = runtime.state;
+  if (!state) return { armed: false, value: null };
+  const receiver: 0 | 1 = state.active === 'SUB' ? 1 : 0;
+  return armedFact<string>('set_mode', 'mode', receiver, 'mode');
+}
+
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
 const _vfoHandlers = makeVfoHandlers();

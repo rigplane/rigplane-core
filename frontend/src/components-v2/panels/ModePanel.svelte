@@ -1,12 +1,17 @@
 <script lang="ts">
   import { HardwareButton } from '$lib/Button';
   import { getShortcutHint } from '../layout/shortcut-hints';
-  import { deriveModeProps, getModeHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { deriveModeProps, getModeHandlers, getModeArmed } from '$lib/runtime/adapters/panel-adapters';
   import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
   import { t } from '$lib/i18n';
 
   const handlers = getModeHandlers();
   let p = $derived(deriveModeProps());
+  // MOR-1519: the freshest in-flight `set_mode` target, DISPLAY ONLY (see
+  // `panel-adapters.ts`'s ARMED-SIGNAL CONTRACT). `active` above stays the
+  // sole selection source — armed only marks the button the pending command
+  // is racing toward, it never substitutes for the confirmed reading.
+  let armed = $derived(getModeArmed());
 
   // Destructure for template readability
   let currentMode = $derived(p.currentMode);
@@ -53,16 +58,25 @@
 <div class="panel-body" data-mode-panel="true" data-highlight={undefined}>
     <div class="mode-grid">
       {#each visibleModes as mode}
-        <HardwareButton
-          active={currentMode === mode}
-          indicator="edge-left"
-          color="cyan"
-          title={modeShortcut(mode)}
-          shortcutHint={modeShortcut(mode)}
-          onclick={() => onModeChange(mode)}
-        >
-          {mode}
-        </HardwareButton>
+        <!-- MOR-1519: `data-armed` is the structural marker of the generic
+             armed signal (`panel-adapters.ts`'s ARMED-SIGNAL CONTRACT) —
+             `display: contents` keeps the grid layout untouched while still
+             giving the target button an italic tell, parity with
+             `DspSurface.svelte`'s `data-pending-status` precedent. Never
+             presented as confirmed: `active` below reads ONLY `currentMode`
+             (the confirmed reading), independent of `armed`. -->
+        <span class="mode-button-wrap" data-armed={armed.armed && armed.value === mode ? 'true' : undefined}>
+          <HardwareButton
+            active={currentMode === mode}
+            indicator="edge-left"
+            color="cyan"
+            title={modeShortcut(mode)}
+            shortcutHint={modeShortcut(mode)}
+            onclick={() => onModeChange(mode)}
+          >
+            {mode}
+          </HardwareButton>
+        </span>
       {/each}
     </div>
 
@@ -135,6 +149,19 @@
     gap: 4px;
   }
 
+  /* MOR-1519: `display: contents` so the wrapper never becomes its own grid
+     cell — the button inside stays the actual grid item, sized identically
+     to an un-armed sibling. Italic is desktop-v2's chosen affordance for
+     this signal; other skins may render `[data-armed='true']` differently
+     (see the ARMED-SIGNAL CONTRACT in `panel-adapters.ts`). */
+  .mode-button-wrap {
+    display: contents;
+  }
+
+  .mode-button-wrap[data-armed='true'] {
+    font-style: italic;
+  }
+
   .section-label {
     color: var(--v2-text-dim);
     font-family: 'Roboto Mono', monospace;
@@ -143,7 +170,9 @@
     letter-spacing: 0.08em;
   }
 
-  .mode-grid > :global(button),
+  /* `.mode-grid` buttons are wrapped in `.mode-button-wrap` (MOR-1519,
+     `display: contents` above) — descendant, not direct-child, selector. */
+  .mode-grid :global(button),
   .data-grid > :global(button) {
     min-width: 0;
   }

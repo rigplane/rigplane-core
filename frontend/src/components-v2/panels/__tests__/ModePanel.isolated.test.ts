@@ -18,17 +18,23 @@ const mockHandlers = {
   onModInputChange: vi.fn(),
 };
 
+// MOR-1519: the generic armed signal, default unarmed (matches
+// `getModeArmed`'s real shape, `panel-adapters.ts`).
+const mockArmed: { armed: boolean; value: string | null } = { armed: false, value: null };
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveModeProps: () => mockProps,
   getModeHandlers: () => mockHandlers,
+  getModeArmed: () => mockArmed,
 }));
 
 import ModePanel from '../ModePanel.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(overrides?: Partial<typeof mockProps>) {
+function mountPanel(overrides?: Partial<typeof mockProps>, armedOverride?: typeof mockArmed) {
   if (overrides) Object.assign(mockProps, overrides);
+  if (armedOverride) Object.assign(mockArmed, armedOverride);
   const target = document.createElement('div');
   document.body.appendChild(target);
   const component = mount(ModePanel, { target });
@@ -50,6 +56,8 @@ beforeEach(() => {
   mockHandlers.onModeChange = vi.fn();
   mockHandlers.onDataModeChange = vi.fn();
   mockHandlers.onModInputChange = vi.fn();
+  mockArmed.armed = false;
+  mockArmed.value = null;
 });
 
 afterEach(() => {
@@ -69,6 +77,39 @@ describe('ModePanel', () => {
     const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.mode-grid .v2-control-button'));
     const button = buttons.find((b) => b.textContent?.trim() === 'CW');
     expect(button?.dataset.active).toBe('true');
+  });
+
+  // ── MOR-1519: generic armed signal, structural marker on the mode grid ──
+  describe('armed signal (MOR-1519)', () => {
+    function wrapOf(target: HTMLElement, label: string): HTMLElement | null {
+      const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.mode-grid .v2-control-button'));
+      const button = buttons.find((b) => b.textContent?.trim() === label);
+      return button?.closest<HTMLElement>('.mode-button-wrap') ?? null;
+    }
+
+    it('marks only the armed target button with the structural data-armed attribute', () => {
+      const target = mountPanel(undefined, { armed: true, value: 'CW' });
+      expect(wrapOf(target, 'CW')?.dataset.armed).toBe('true');
+      expect(wrapOf(target, 'USB')?.dataset.armed).toBeUndefined();
+      expect(wrapOf(target, 'LSB')?.dataset.armed).toBeUndefined();
+    });
+
+    it('marks no button when nothing is armed', () => {
+      const target = mountPanel(undefined, { armed: false, value: null });
+      const marked = target.querySelectorAll('.mode-button-wrap[data-armed]');
+      expect(marked).toHaveLength(0);
+    });
+
+    it('never presents the armed target as confirmed: active tracks currentMode only', () => {
+      // currentMode stays USB (confirmed) while CW is armed (in flight) —
+      // the armed button must NOT also read data-active='true'.
+      const target = mountPanel({ currentMode: 'USB' }, { armed: true, value: 'CW' });
+      const cwButton = wrapOf(target, 'CW')?.querySelector<HTMLButtonElement>('.v2-control-button');
+      const usbButton = wrapOf(target, 'USB')?.querySelector<HTMLButtonElement>('.v2-control-button');
+      expect(cwButton?.dataset.active).toBe('false');
+      expect(usbButton?.dataset.active).toBe('true');
+      expect(wrapOf(target, 'CW')?.dataset.armed).toBe('true');
+    });
   });
 
   it('calls onModeChange when a mode button is clicked', () => {
