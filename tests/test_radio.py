@@ -2695,6 +2695,71 @@ class TestAgcDomainValidation:
         radio._connected = False
 
 
+class TestPreampDomainValidation:
+    """MOR-1523: the preamp level domain is profile data, not a universal
+    3-state enum.
+
+    IC-7300 declares OFF/P.AMP1/P.AMP2 (0/1/2); the X6200 only declares
+    OFF/P.AMP1 (0/1) — it has no second preamp stage. ``set_preamp`` must
+    accept exactly what the profile declares for that radio and reject
+    anything else with a visible error, not a silent write of an illegal
+    byte (mirrors MOR-1522's ``set_agc`` fix).
+    """
+
+    @pytest.mark.asyncio
+    async def test_ic7300_rejects_value_outside_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7300")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"Preamp level must be one of"):
+            await radio.set_preamp(3)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7300_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7300")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1, 2):
+            await radio.set_preamp(legal)
+        assert len(mock_transport.sent_packets) == 3
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_preamp(1)
+        assert mock_transport.sent_packets[-1].endswith(b"\x16\x02\x01\xfd")
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_rejects_second_preamp_stage_that_ic7300_has(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """The X6200 has no P.AMP2 hardware stage — its declared domain is
+        [0, 1], unlike IC-7300's [0, 1, 2]. Level 2 must be rejected."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"Preamp level must be one of"):
+            await radio.set_preamp(2)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+
 class TestBreakInModeRoundTrip:
     """Issue #1100 — CwControlCapable.get_break_in/set_break_in type contract.
 

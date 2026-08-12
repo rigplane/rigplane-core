@@ -1200,3 +1200,82 @@ class TestAgcDomainDeclaredOrCapabilityAbsent:
             rig = load_rig(RIGS_DIR / f"{name}.toml")
             assert "agc" not in rig.capabilities
             assert rig.agc_modes is None
+
+
+# ── Preamp domain declaration, table-driven over every shipped profile ───
+# (MOR-1523, mirrors MOR-1522's AGC table above). Reuses _SHIPPED_RIG_TOMLS.
+
+
+class TestPreampDomainDeclaredOrCapabilityAbsent:
+    """Every shipped profile must land on one of exactly two sides:
+
+    (a) it does not declare the ``preamp`` capability at all — the
+        capability-absent selector-hiding pattern (MOR-1494) — or
+    (b) it declares ``preamp`` AND a non-empty ``[preamp] values`` domain
+        that every declared value can be encoded into a legal wire command.
+
+    No profile may declare the capability without a domain, or a domain
+    without the capability.
+    """
+
+    @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+    def test_preamp_capability_and_domain_agree(self, toml_path):
+        rig = load_rig(toml_path)
+        has_preamp_capability = "preamp" in rig.capabilities
+
+        if not has_preamp_capability:
+            assert rig.pre_values is None, (
+                f"{toml_path.name}: declares [preamp] values without the "
+                f"'preamp' capability feature"
+            )
+            return
+
+        assert rig.pre_values, (
+            f"{toml_path.name}: declares the 'preamp' capability but no "
+            f"(or an empty) [preamp] values domain"
+        )
+
+    @pytest.mark.parametrize(
+        "toml_path",
+        [p for p in _SHIPPED_RIG_TOMLS if load_rig(p).protocol_type == "civ"],
+        ids=lambda p: p.stem,
+    )
+    def test_civ_preamp_values_encode_to_a_legal_command(self, toml_path):
+        """Every declared level for a CI-V family radio must round-trip
+        through the real wire-command builder without raising — the
+        profile's domain must map to a legal command, not just a legal
+        Python int (MOR-1523)."""
+        from rigplane.commands.dsp import set_preamp
+
+        rig = load_rig(toml_path)
+        if rig.pre_values is None:
+            pytest.skip(f"{toml_path.name}: no preamp capability")
+        for level in rig.pre_values:
+            civ = set_preamp(level, to_addr=rig.civ_addr)
+            # All shipped preamp domains are single-digit (0-9), so the BCD
+            # byte equals the raw level value.
+            assert civ.endswith(bytes([0x16, 0x02, level, 0xFD])), (
+                f"{toml_path.name}: level {level} did not encode to the "
+                f"expected 0x16 0x02 {level:#04x} wire command"
+            )
+
+    def test_ic7300_declares_off_amp1_amp2(self):
+        """IC-7300 P.AMP: 0=OFF, 1=P.AMP1, 2=P.AMP2 (CI-V 0x16 0x02, per
+        rigs/ic7300.toml's [preamp] comment)."""
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        assert rig.pre_values == (0, 1, 2)
+
+    def test_x6200_has_no_second_preamp_stage(self):
+        """The X6200 declares only [0, 1] — it has no P.AMP2 hardware stage,
+        unlike the IC-7300 family's [0, 1, 2]. Domain-shape difference the
+        validation seat must honor, not flatten to a universal 3-state
+        enum."""
+        rig = load_rig(RIGS_DIR / "x6200.toml")
+        assert rig.pre_values == (0, 1)
+
+    def test_ftx1_declares_ipo_amp1_amp2_with_labels(self):
+        """FTX-1 (live bench hardware) declares [preamp] values = [0, 1, 2]
+        with IPO/AMP1/AMP2 labels (rigs/ftx1.toml:430-436)."""
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+        assert rig.pre_values == (0, 1, 2)
+        assert rig.pre_labels == {"0": "IPO", "1": "AMP1", "2": "AMP2"}

@@ -1270,10 +1270,21 @@ class YaesuCatRadio:
         """Set preamp setting.
 
         Args:
-            level: Preamp level (0–2).
+            level: Preamp level, must be one of the profile's declared
+                ``[preamp] values`` (e.g. FTX-1 declares 0/1/2 = IPO/AMP1/AMP2).
             receiver: Ignored (FTX-1 single preamp path). Present for protocol compat.
             band: 0 = HF/50 MHz, 1 = VHF, 2 = UHF.
+
+        Raises:
+            CommandError: If ``level`` is not in the profile's declared
+                preamp domain (MOR-1523, mirrors MOR-1522's AGC fix).
         """
+        pre_values = self._config.pre_values
+        if pre_values is not None and level not in pre_values:
+            raise CommandError(
+                f"Preamp level must be one of {sorted(pre_values)} for "
+                f"{self._config.model!r}, got {level}"
+            )
         await self._write("set_preamp", band=str(band), value=str(level))
 
     # -- D3: DSP (NB/NR/Notch) ----------------------------------------------
