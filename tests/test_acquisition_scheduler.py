@@ -1423,6 +1423,40 @@ def test_prime_unobserved_caps_new_paths_and_next_call_queues_the_rest() -> None
     assert first_paths | second_paths == set(paths)
 
 
+def test_prime_unobserved_skips_pollable_cadence_owned_fields() -> None:
+    """MOR-1490 review R3: don't compete with due_requests() for the same key.
+
+    A field_policies override doesn't mean the field is unpolled. If the
+    capability is pollable and the resolved policy carries a
+    cadence_seconds, due_requests() already owns this path through its
+    normal cadence group. Priming it here queues a request under the same
+    _AcquisitionRequestKey that _due_poll_groups() checks — and that method
+    skips the WHOLE group, not just this path, the instant the key is
+    already pending. On the real IC-7300 profile this measurably delayed
+    anti_vox_gain's first observation from t=0 to t=+15s, because it shares
+    a cadence key with three other primed gain fields. prime_unobserved()
+    must leave polling-owned fields alone entirely.
+    """
+
+    clock = FreshnessClock(start=306.0)
+    mic_gain = FieldPath.global_("operator_controls", "mic_gain")
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(FieldCapability(path=mic_gain, polling=True),),
+        field_policies={
+            mic_gain: AcquisitionPolicy(
+                cadence_seconds=15.0, freshness_ttl_seconds=25.0
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+
+    queued = scheduler.prime_unobserved(observed_paths=())
+
+    assert queued == ()
+    assert scheduler.pending_requests() == ()
+
+
 def test_state_freshness_service_primes_once_then_reconciliation_cadence_resumes() -> (
     None
 ):

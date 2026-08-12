@@ -669,20 +669,59 @@ class AcquisitionScheduler:
         ``observed_paths`` gate here and the ``field_policies`` sweep never
         matters again for it.
 
-        Two guards keep one call from flooding the transport:
+        **Cadence-owned paths are skipped entirely**, not just deduped
+        against an in-flight request (MOR-1490 review R3): a
+        ``field_policies`` override doesn't imply the field is
+        *unpolled* — on the shipped IC-7300 profile all six overrides
+        (``s_meter``, ``ptt``, and the four 15s-cadence gain fields) sit on
+        capabilities with ``polling=True``. Priming one of those anyway
+        queues a request under the exact same
+        ``_AcquisitionRequestKey`` that :meth:`due_requests`'s
+        ``_due_poll_groups`` groups by, and that method skips a whole
+        cadence *group* — not just the one path — the instant its key is
+        already present in the pending-request table. Concretely: priming
+        one of the four gain fields sharing one cadence key silently starved
+        the group's ordinary t0 poll for the other three (measured live on
+        IC-7300: ``anti_vox_gain``'s first observation moved from t=0 to
+        t=+15s). A path whose capability is pollable and whose resolved
+        policy carries a ``cadence_seconds`` is therefore left to
+        :meth:`due_requests` entirely; this method never touches it,
+        regardless of whether it happens to also carry a ``field_policies``
+        entry. On the shipped IC-7300 profile this means
+        ``prime_unobserved`` queues nothing today — its effect is still
+        purely mechanism-only until a future non-polling field is added
+        (MOR-1491/1492/1493).
 
-        - **Already-pending skip**: a path with an outstanding, unanswered
-          request (still present in the internal pending-request table) is
+        Two further guards keep one call from flooding the transport:
+
+        - **Already-pending skip**: a (non-cadence-owned) path with an
+          outstanding, unanswered request from a previous prime call is
           skipped — re-submitting it would just coalesce into the same
           request without sending an additional frame, so it doesn't need to
-          consume this call's budget.
+          consume this call's budget. Because it doesn't consume budget,
+          the very next call to this method reaches paths a prior call left
+          short of the burst cap below — reaching them only requires this
+          method to be invoked again, not for the earlier paths to have
+          been *answered*. In production, "invoked again" is gated by
+          :data:`StateFreshnessService.PRIME_REDERIVE_INTERVAL_SECONDS`
+          (~30s), so that interval — not the leading paths' resolution — is
+          the practical bound on how long a capped-out straggler waits.
         - **Burst cap** (``limit``, default
           :data:`_PRIME_UNOBSERVED_BURST_LIMIT`): at most ``limit`` *new*
           paths are queued per call, so a profile with many non-polling
           policy fields can't emit a burst of CI-V frames in one drain cycle
-          (MOR-1490 review R2, Finding 4). Paths beyond the cap are simply
-          not reached this call; the next bounded re-derivation picks them
-          up.
+          (MOR-1490 review R2, Finding 4). Fields are visited in
+          ``field_policies`` iteration order (profile-declaration order), so
+          the same leading fields are always favored over later ones; if a
+          future profile ever declared five or more *permanently*
+          unanswerable non-polling fields ahead of a reachable one in that
+          order, the reachable one would starve indefinitely rather than
+          merely waiting out one interval. A round-robin ``_prime_cursor``
+          (rotating the starting offset into ``field_policies`` each call)
+          is the planned fix for that head-of-line case, expected to land
+          alongside the MOR-1491/1492/1493 field-membership tickets that
+          would first make it reachable; no shipped profile has that shape
+          today.
 
         The returned tuple has at most one entry per distinct
         :class:`AcquisitionRequest` id — multiple primed paths that coalesce
@@ -701,6 +740,15 @@ class AcquisitionScheduler:
             if queued_path_count >= limit:
                 break
             if path in observed or path in pending:
+                continue
+            if (
+                self._profile.capability_for(path).can_poll
+                and policy.cadence_seconds is not None
+            ):
+                # due_requests() already owns this path via its cadence
+                # group; priming it here would collide with that group's
+                # request key and starve due_requests()'s t0 poll for every
+                # other path sharing the group (MOR-1490 review R3).
                 continue
             max_age = policy.freshness_ttl_seconds
             if max_age is None or max_age <= 0:
@@ -1493,7 +1541,15 @@ class StateFreshnessService:
         self._next_prime_monotonic = float("-inf")
 
     def tick(self, *, now: float | None = None) -> SnapshotDelta:
-        """Advance stale fields once and queue reconciliation through scheduler."""
+        """Advance stale fields once and queue reconciliation through scheduler.
+
+        Invariant: ``now`` (explicit or defaulted) must come from the same
+        monotonic domain as ``self._next_prime_monotonic`` — callers that
+        pass a manually-seeded :class:`FreshnessClock` value must do so on
+        every call, since the default fallback is real ``time.monotonic()``
+        and mixing the two domains within one service instance would make
+        the bounded re-derivation interval comparison meaningless.
+        """
 
         timestamp = time.monotonic() if now is None else now
         self._reprime_unobserved_if_due(now=timestamp)
