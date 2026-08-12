@@ -180,6 +180,18 @@
   });
 
   // ── Tuning strip ──
+  // MOR-1486 ruling B / MOR-1509: `tuningStep` here is local `$state`,
+  // disconnected from the shared `$lib/stores/tuning.svelte` store that
+  // SpectrumPanel's SpectrumToolbar reads (also mounted on this layout,
+  // below) — the two can show contradictory STEP values on one screen.
+  // This layout also never drives the store's mode-follow via
+  // `applyModeDefault()` (only `RadioLayout.svelte` and, per ruling A,
+  // `LcdLayout.svelte` do). Both SpectrumPanel mounts below pass
+  // `hideAutoStepToggle` so the AUTO toggle doesn't appear here promising
+  // continuous mode-follow behavior this layout can't provide. Unifying
+  // mobile onto the shared store and deciding whether it gets the driver
+  // is tracked separately (MOR-1509, owner-commissioned design-research
+  // ticket for the right mobile step UX) — not solved by this ticket.
   let availableSteps = $derived(getStepsForMode(mode.currentMode));
   let tuningStep = $state(1000); // Hz
   let stepPickerOpen = $state(false);
@@ -502,7 +514,7 @@
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
   {#if hasSpectrum()}
     <div class="m-ls-spectrum">
-      <SpectrumPanel />
+      <SpectrumPanel hideAutoStepToggle={true} />
     </div>
   {:else}
     <div class="m-ls-spectrum">
@@ -645,7 +657,7 @@
     <!-- Spectrum / Waterfall / LCD -->
     {#if hasSpectrum()}
       <section class="m-spectrum">
-        <SpectrumPanel />
+        <SpectrumPanel hideAutoStepToggle={true} />
       </section>
     {:else}
       <section class="m-spectrum">

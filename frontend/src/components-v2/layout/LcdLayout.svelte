@@ -13,7 +13,9 @@
     }
   }
 
+  import { runtime } from '$lib/runtime';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
+  import { applyModeDefault } from '$lib/stores/tuning.svelte';
   import AmberCockpit from '../panels/lcd/AmberCockpit.svelte';
   import AmberScope from '../panels/lcd/AmberScope.svelte';
   import LcdContrastControl from '../panels/lcd/LcdContrastControl.svelte';
@@ -33,26 +35,41 @@
   // a dedicated AmberScope component.
   let { variant = 'cockpit' }: { variant?: 'cockpit' | 'scope' } = $props();
 
+  let radioState = $derived(runtime.state);
   let keyboardConfig = $derived(getKeyboardConfig());
   // Reactive Display Mode (#838) — the class is applied to .lcd-frame
   // so CSS effects in lcd-vintage.css can layer on top of the base render.
   let displayMode = $derived(getLcdDisplayMode());
+  let activeMode = $derived(radioState?.active === 'SUB' ? radioState?.sub?.mode : radioState?.main?.mode);
 
   const keyboardHandlers = getKeyboardHandlers();
 
-  // MOR-1486: amber-lcd (this skin) has no tuning-STEP control anywhere —
-  // neither AmberCockpit nor AmberScope render one — so an operator here
-  // has no way to see the shared tuning-step store change, and no way to
-  // discover or restore auto-step's state at all. Silently mutating that
-  // shared store from mode changes on a skin that cannot show the result
-  // is exactly the invisible-state-change dishonesty MOR-1486 was opened
-  // to close (see the PR body for the ruling). Building a step affordance
-  // into this skin's hardware-mimicking chrome is out of scope here, so
-  // the minimal honest fix is: this layout does not drive the tuning-step
-  // store's mode-follow behavior at all. Mode-follow still works normally
-  // on skins that do have a STEP control (RadioLayout.svelte); amber-lcd
-  // just doesn't participate, and the shared step state is left exactly
-  // as set elsewhere.
+  // MOR-1486 (owner ruling, session 19): an earlier round of this PR
+  // removed this $effect on the premise that amber-lcd has "no STEP
+  // control anywhere". That premise was false. Neither AmberCockpit nor
+  // AmberScope render a visible STEP readout or an AUTO indicator — that
+  // part is true, and it's why this skin doesn't get the SpectrumToolbar
+  // AUTO toggle (that toggle only exists on skins that render
+  // SpectrumToolbar in the first place). But the shared tuning-step store
+  // is actively WRITTEN and READ on this skin regardless: the global
+  // ArrowUp/Down keyboard binding (`keyboard-map.ts`'s `step-up`/
+  // `step-down`, routed here through the `KeyboardHandler` mounted below)
+  // calls `adjustTuningStep()`, ArrowLeft/Right tuning
+  // (`panel-commands.ts`'s `tune` case, ~line 1389) reads
+  // `getTuningStep()` for the increment, and MediaSession volume-key
+  // tuning (`lib/media/media-session.ts`) reads it too. Silently freezing
+  // mode-follow here — while every other consumption path keeps working
+  // — would have changed arrow-key tuning granularity across mode changes
+  // on this skin with no explanation, which is worse than the missing
+  // on-screen indicator this ticket set out to fix. The owner accepted
+  // the indicator gap (tracked, not solved, by this ticket — see the PR
+  // body) rather than disabling the behavior that's actually consumed
+  // here. Restored.
+  $effect(() => {
+    if (activeMode) {
+      applyModeDefault(activeMode);
+    }
+  });
 </script>
 
 <div class="lcd-layout">

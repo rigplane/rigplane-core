@@ -67,6 +67,23 @@
      * `SemanticRadioSurfaces.svelte`, not here).
      */
     hideScopeControls = false,
+    /**
+     * MOR-1486 ruling B (owner, session 19): the AUTO toggle re-enables
+     * mode-follow, which only does anything ongoing when the active layout
+     * actually drives `applyModeDefault()` on mode changes (currently only
+     * `RadioLayout.svelte` — see its `$effect` — and, per ruling A,
+     * `LcdLayout.svelte`). `MobileRadioLayout.svelte` has no such driver
+     * AND its own STEP picker is disconnected local state that can
+     * disagree with this shared store on the same screen (MOR-1509,
+     * design-research ticket owner-commissioned for the right mobile step
+     * UX). Showing a toggle that silently does nothing on subsequent mode
+     * changes would be exactly the invisible-state-change dishonesty this
+     * ticket exists to close, so the gate is structural — a prop the
+     * owning layout passes — NOT a skin-name string check. Defaults
+     * `false` (toggle shown) so `RadioLayout`, which does have the driver,
+     * needs no change; `MobileRadioLayout` passes `true` explicitly.
+     */
+    hideAutoStepToggle = false,
   } = $props();
 
   const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
@@ -252,13 +269,15 @@
       onclick={cycleStep}
       title="Increase tuning step"
     >▶</button>
-    <button
-      class="toolbar-btn small auto-step-toggle"
-      class:active={autoStep}
-      aria-pressed={autoStep}
-      onclick={toggleAutoStep}
-      title={autoStep ? t('core.spectrum.autoStep.onTitle') : t('core.spectrum.autoStep.offTitle')}
-    >AUTO</button>
+    {#if !hideAutoStepToggle}
+      <button
+        class="toolbar-btn small auto-step-toggle"
+        class:active={autoStep}
+        aria-pressed={autoStep}
+        onclick={toggleAutoStep}
+        title={autoStep ? t('core.spectrum.autoStep.onTitle') : t('core.spectrum.autoStep.offTitle')}
+      >AUTO</button>
+    {/if}
   </div>
   {#if hasCapability('scope')}
     <div class="toolbar-separator"></div>

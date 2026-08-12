@@ -626,6 +626,48 @@ describe('auto-step toggle (MOR-1486)', () => {
   });
 });
 
+// ── AUTO toggle gate: hideAutoStepToggle (MOR-1486 ruling B) ────────────────
+//
+// The toggle re-enables mode-follow, which only keeps doing anything once
+// the active layout drives `applyModeDefault()` on subsequent mode changes.
+// `MobileRadioLayout` has no such driver (see MOR-1509) and passes
+// `hideAutoStepToggle={true}`; `RadioLayout` owns the driver and omits the
+// prop. This is deliberately a structural prop, not a skin-name check — the
+// toolbar itself has no idea which layout mounted it.
+describe('hideAutoStepToggle gate (MOR-1486 ruling B)', () => {
+  function autoToggle(root: HTMLElement) {
+    return button(root, 'AUTO');
+  }
+
+  it('shows the toggle by default (prop omitted)', () => {
+    const target = mountToolbar();
+    expect(autoToggle(target)).toBeDefined();
+  });
+
+  it('shows the toggle when hideAutoStepToggle is explicitly false', () => {
+    const target = mountToolbar({ hideAutoStepToggle: false });
+    expect(autoToggle(target)).toBeDefined();
+  });
+
+  it('hides the toggle when hideAutoStepToggle is true, regardless of store state', () => {
+    tuningHarness.state.autoStep = true;
+    const onTarget = mountToolbar({ hideAutoStepToggle: true });
+    expect(autoToggle(onTarget)).toBeUndefined();
+
+    tuningHarness.state.autoStep = false;
+    const offTarget = mountToolbar({ hideAutoStepToggle: true });
+    expect(autoToggle(offTarget)).toBeUndefined();
+  });
+
+  it('does not affect the manual STEP control when hidden', () => {
+    const target = mountToolbar({ hideAutoStepToggle: true });
+    const stepControl = buttons(target).find(
+      (item) => item.title === 'Click to step up, right-click to step down'
+    );
+    expect(stepControl).toBeDefined();
+  });
+});
+
 // ── Static boundary and freeze proof ───────────────────────────────────────
 
 describe('source and enforcement boundary', () => {

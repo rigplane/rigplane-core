@@ -1,26 +1,34 @@
 /**
- * MOR-1486 — amber-lcd auto-step honesty decision.
+ * MOR-1486 — amber-lcd mode-follow, restored (owner ruling, session 19).
  *
- * `LcdLayout.svelte` (the amber-lcd skin, both `cockpit` and `scope`
- * variants) used to run `applyModeDefault(activeMode)` in a `$effect` on
- * every mode change, unconditionally — exactly like RadioLayout.svelte.
- * But amber-lcd has NO tuning-STEP control anywhere: `AmberCockpit.svelte`
- * and `AmberScope.svelte` never render a STEP UI, so an operator on this
- * skin has no way to see that the shared tuning-step store just changed
- * underneath them, and no way to know auto-step's state at all.
+ * An earlier round of this PR removed `LcdLayout.svelte`'s
+ * `applyModeDefault(activeMode)` `$effect` on the premise that amber-lcd
+ * (both `cockpit` and `scope` variants) has "no tuning-STEP control
+ * anywhere". That premise was false: neither `AmberCockpit.svelte` nor
+ * `AmberScope.svelte` render a visible STEP readout or an AUTO indicator —
+ * that part is true — but the shared tuning-step store is actively WRITTEN
+ * and READ on this skin regardless. The global ArrowUp/Down keyboard
+ * binding (`keyboard-map.ts`'s `step-up`/`step-down`, routed through the
+ * `KeyboardHandler` this layout mounts) calls `adjustTuningStep()`,
+ * ArrowLeft/Right tuning (`panel-commands.ts`'s `tune` case, ~line 1389)
+ * reads `getTuningStep()` for the increment, and MediaSession volume-key
+ * tuning (`lib/media/media-session.ts`) reads it too. Freezing mode-follow
+ * here while every other consumption path keeps working would silently
+ * change arrow-tuning granularity across mode changes with no operator
+ * feedback — worse than the missing on-screen indicator this ticket set
+ * out to fix. The owner restored the `$effect` and accepted the indicator
+ * gap as a tracked, separate concern (see the PR body).
  *
- * Per the MOR-1486 ruling (documented in the PR body): a skin that cannot
- * show the step affordance must not silently mutate the shared step store
- * either. Building a step indicator into amber-lcd's hardware-mimicking
- * LCD chrome is out of scope for this ticket (no existing grid slot for it
- * — see docs/plans/2026-04-19-lcd-layout-redesign-v2.md), so the minimal
- * honest fix is: LcdLayout no longer calls `applyModeDefault` at all. The
- * shared `_autoStep`/`_step` state (set from whichever skin does have a
- * STEP control) is left untouched while viewing amber-lcd.
- *
- * This suite proves the mode-follow effect is gone: mounting LcdLayout and
- * driving `activeMode` through several distinct mode changes must never
- * call `applyModeDefault`.
+ * The previous version of this suite asserted `applyModeDefault` was NEVER
+ * called, driving "mode changes" by reassigning `rt.state` after mount and
+ * calling `flushSync()`. That was vacuous: `runtime.state` in the mock
+ * below is a plain JS getter over a module-level variable, not a Svelte
+ * reactive source, so mutating `rt.state` post-mount never actually
+ * re-triggers `$derived`/`$effect` — the assertions passed regardless of
+ * whether the effect existed at all. This version uses the discriminating
+ * pattern instead: mount a FRESH component per mode, with `rt.state` set
+ * BEFORE mount, so each case exercises a genuine one-time read of a
+ * different value at initialization and the assertions can actually fail.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
@@ -138,11 +146,19 @@ vi.stubGlobal('ResizeObserver', class {
 });
 
 import LcdLayout from '../LcdLayout.svelte';
-import lcdLayoutSource from '../LcdLayout.svelte?raw';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountLayout(variant: 'cockpit' | 'scope' = 'cockpit') {
+/**
+ * Mounts a FRESH LcdLayout instance. `rt.state` must be set before calling
+ * this — the discriminating pattern the verifier prescribed. Unlike
+ * reassigning `rt.state` on an already-mounted instance (which the old,
+ * vacuous version of this suite did), a fresh mount forces a genuine
+ * initial read of the current `rt.state` value through `$derived`, so
+ * different inputs across separate mounts produce genuinely different,
+ * assertable behavior.
+ */
+function mountFresh(variant: 'cockpit' | 'scope' = 'cockpit') {
   const t = document.createElement('div');
   document.body.appendChild(t);
   const component = mount(LcdLayout, { target: t, props: { variant } });
@@ -163,43 +179,42 @@ afterEach(() => {
   rt.state = null;
 });
 
-describe('LcdLayout auto-step honesty (MOR-1486): no step UI => no silent step mutation', () => {
-  it('never calls applyModeDefault on initial mount with a known mode', () => {
+describe('LcdLayout mode-follow, restored (MOR-1486 ruling A)', () => {
+  it('calls applyModeDefault with the MAIN mode on initial mount (cockpit)', () => {
     rt.state = { active: 'MAIN', main: { mode: 'USB' }, sub: null };
-    mountLayout('cockpit');
-    expect(tuningHarness.applyModeDefault).not.toHaveBeenCalled();
+    mountFresh('cockpit');
+    expect(tuningHarness.applyModeDefault).toHaveBeenCalledWith('USB');
   });
 
-  it('never calls applyModeDefault as the active mode changes (MAIN)', () => {
-    rt.state = { active: 'MAIN', main: { mode: 'USB' }, sub: null };
-    mountLayout('cockpit');
-    tuningHarness.applyModeDefault.mockClear();
-
+  it('calls applyModeDefault with a different MAIN mode on a fresh mount — proving the effect actually reads current state, not a stale capture', () => {
     rt.state = { active: 'MAIN', main: { mode: 'CW' }, sub: null };
-    flushSync();
-    rt.state = { active: 'MAIN', main: { mode: 'FM' }, sub: null };
-    flushSync();
-
-    expect(tuningHarness.applyModeDefault).not.toHaveBeenCalled();
+    mountFresh('cockpit');
+    expect(tuningHarness.applyModeDefault).toHaveBeenCalledWith('CW');
+    expect(tuningHarness.applyModeDefault).not.toHaveBeenCalledWith('USB');
   });
 
-  it('never calls applyModeDefault when the SUB receiver is active and its mode changes', () => {
-    rt.state = { active: 'SUB', main: { mode: 'USB' }, sub: { mode: 'AM' } };
-    mountLayout('scope');
-    tuningHarness.applyModeDefault.mockClear();
-
+  it('calls applyModeDefault with the SUB mode when SUB is the active receiver (scope variant)', () => {
     rt.state = { active: 'SUB', main: { mode: 'USB' }, sub: { mode: 'RTTY' } };
-    flushSync();
+    mountFresh('scope');
+    expect(tuningHarness.applyModeDefault).toHaveBeenCalledWith('RTTY');
+    expect(tuningHarness.applyModeDefault).not.toHaveBeenCalledWith('USB');
+  });
 
+  it('does not call applyModeDefault when there is no known active mode yet', () => {
+    rt.state = { active: 'MAIN', main: {}, sub: null };
+    mountFresh('cockpit');
     expect(tuningHarness.applyModeDefault).not.toHaveBeenCalled();
   });
 
-  it('does not import the tuning store at all', () => {
-    expect(lcdLayoutSource).not.toContain("from '$lib/stores/tuning.svelte'");
-    expect(lcdLayoutSource).not.toMatch(/applyModeDefault\(/);
+  it('does not call applyModeDefault when runtime state is entirely unset', () => {
+    rt.state = null;
+    mountFresh('cockpit');
+    expect(tuningHarness.applyModeDefault).not.toHaveBeenCalled();
   });
 
   it('still renders .lcd-layout for both variants without throwing', () => {
-    expect(mountLayout('cockpit').querySelector('.lcd-layout')).not.toBeNull();
+    rt.state = { active: 'MAIN', main: { mode: 'USB' }, sub: null };
+    expect(mountFresh('cockpit').querySelector('.lcd-layout')).not.toBeNull();
+    expect(mountFresh('scope').querySelector('.lcd-layout')).not.toBeNull();
   });
 });
