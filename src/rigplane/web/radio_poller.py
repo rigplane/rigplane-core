@@ -201,6 +201,18 @@ _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 
+# Floor for the derived tx_target field's own freshness TTL when a profile
+# has no [state_acquisition] block at all (MOR-1496 review R3, F1 follow-up).
+# ``4 * self._fast_interval`` alone is not a defensible TX-gate horizon: on a
+# LAN profile (``_FAST_INTERVAL`` = 25ms) that floors to 0.1s, which the
+# verifier measured causing 6.6 stale-transitions/s on an idle IC-705 (no
+# [state_acquisition] block). Matches the concrete 3.0s
+# ``freshness_ttl_seconds`` IC-7300's own ``[state_acquisition]`` block
+# already uses for this same field via ``policy_for`` — not the unrelated
+# generic ``AcquisitionPolicy`` dataclass default (15.0s, calibrated for
+# slower-changing fields, not a TX gate).
+_TX_TARGET_MIN_MAX_AGE: float = 3.0
+
 _KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease is ours
 
 # MOR-1181: how long the shutdown TX-safety drain may hold teardown open.
@@ -3334,8 +3346,9 @@ class RadioPoller:
         to ``default_policy`` for any path with no declared capability (3.0s
         on IC-7300) — which needs no capability declaration for
         ``tx_target`` itself; see :meth:`_publish_tx_target` for why that
-        declaration must never exist. Falls back to a small multiple of the
-        poll loop's own fast interval if a profile has no acquisition policy
+        declaration must never exist. Falls back to ``_TX_TARGET_MIN_MAX_AGE``
+        (floored, not a bare multiple of the poll loop's own fast interval —
+        see that constant's comment) if a profile has no acquisition policy
         at all.
         """
         acquisition = self._profile.state_acquisition
@@ -3346,7 +3359,7 @@ class RadioPoller:
                 FieldPath.global_("tx_state", "tx_target")
             ).freshness_ttl_seconds
         )
-        return ttl if ttl is not None else self._fast_interval * 4
+        return ttl if ttl is not None else _TX_TARGET_MIN_MAX_AGE
 
     def _publish_tx_target(self) -> None:
         """Recompute and, if changed or stale, republish tx_target (MOR-1496).
@@ -3359,14 +3372,21 @@ class RadioPoller:
         cadence.
 
         Skips the store write when the recomputed value is unchanged AND the
-        currently stored entry is still FRESH (review R2, F2): re-applying an
+        currently stored entry is still comfortably FRESH — under HALF its
+        own TTL old (review R2, F2 + review R3 fix): re-applying an
         identical value on every reachable tick was bumping the store's
         global ``observation_seq`` for no semantic change, which busts
         delivery-key no-op suppression and HTTP 304s for the WHOLE snapshot,
-        not just this field. A value change, or the stored entry having aged
-        past its own TTL, both still write — the latter is what lets a
-        healthy-again re-derivation heal the field back to FRESH after it
-        went stale.
+        not just this field. The half-TTL renew margin is load-bearing, not
+        cosmetic: R2 skipped on value-equality alone with no age check, so on
+        a healthy radio the stored entry's ``last_observed_monotonic`` never
+        advanced between real changes — it aged out under its own TTL and
+        flapped known/unknown every TTL period purely from the skip itself
+        (verifier measured 12 transitions in 18s, each pushing a WS
+        broadcast). A value change, the stored entry crossing the half-TTL
+        mark, or it having aged fully past its own TTL, all still write —
+        the last of those is what lets a healthy-again re-derivation heal
+        the field back to FRESH after it actually went stale.
 
         Never declare ``global.tx_state.tx_target`` in any profile's
         polling_only/unsolicited_push capability metadata (rigs/*.toml or
@@ -3381,11 +3401,20 @@ class RadioPoller:
         the just-read snapshot with no ``await`` in between, so it always
         stamps the store's current provider generation.
         """
+        # IC-705 also has vfo_readback == "selected_unselected" but currently
+        # ships no [state_acquisition] block, so nothing ever actively polls
+        # split for it (AcquisitionScheduler.query_for_path's split mapping
+        # only fires through a scheduler built from that block) — tx_target
+        # is derived here regardless, but will sit at "not-observed" on that
+        # radio until split is ever observed. Tracked as a follow-up; not
+        # fixed here.
         if self._profile.vfo_readback != "selected_unselected":
             return
 
         target = self._compute_tx_target()
         path = FieldPath.global_("tx_state", "tx_target")
+        max_age = self._tx_target_max_age()
+        now = time.monotonic()
         try:
             current = self._state_store.snapshot().field(path)
         except KeyError:
@@ -3394,6 +3423,7 @@ class RadioPoller:
             current is not None
             and current.freshness is FreshnessState.FRESH
             and current.value == target
+            and now - current.last_observed_monotonic < max_age * 0.5
         ):
             return
 
@@ -3405,8 +3435,8 @@ class RadioPoller:
                 provider="icom_civ",
                 native_id="tx_target_derivation",
             ),
-            timestamp_monotonic=time.monotonic(),
-            max_age=self._tx_target_max_age(),
+            timestamp_monotonic=now,
+            max_age=max_age,
         )
         self._state_store.apply_current(observation)
 

@@ -4395,6 +4395,25 @@ async def test_tx_target_unsupported_for_non_selected_unselected_profile() -> No
 
 
 @pytest.mark.asyncio
+async def test_tx_target_max_age_floors_fallback_for_profile_without_acquisition() -> (
+    None
+):
+    """Review R3: IC-705 has ``vfo_readback == "selected_unselected"`` (so
+    it DOES get a derivation) but currently ships no ``[state_acquisition]``
+    block, so the old bare ``4 * self._fast_interval`` fallback floored at
+    0.1s on its LAN profile (25ms fast interval) — the verifier measured
+    6.6 stale-transitions/s from that on an otherwise-idle radio. The
+    fallback must floor at ``_TX_TARGET_MIN_MAX_AGE`` instead."""
+
+    radio = _make_radio(model="IC-705")
+    assert radio.profile.state_acquisition is None
+    assert radio.profile.vfo_readback == "selected_unselected"
+    poller = RadioPoller(radio, CommandQueue(), state_store=StateStore())
+
+    assert poller._tx_target_max_age() == 3.0  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_run_publishes_tx_target_on_first_cycle() -> None:
     """Integration proof: the main poll loop's step 3b actually reaches
     ``_publish_tx_target`` (not just the pure ``_compute_tx_target`` helper
@@ -4522,3 +4541,81 @@ async def test_tx_target_projection_degrades_to_stale_without_republish() -> Non
         store.snapshot(), radio=None, receiver_count=1
     )
     assert stale_payload["txTarget"] == {"status": "unknown", "reason": "stale"}
+
+
+@pytest.mark.asyncio
+async def test_tx_target_stays_known_across_several_ttl_periods_on_healthy_radio() -> (
+    None
+):
+    """Review R3: the R2 no-op skip compared value+freshness only, with no
+    age check, so on a HEALTHY radio (every input fresh, nothing ever
+    changing) it never re-stamped ``last_observed_monotonic`` — the stored
+    entry aged out under its own TTL and flapped known/unknown every TTL
+    period from the skip itself (verifier measured 12 transitions in 18s,
+    each pushing a WS broadcast; the CW keyer strip would blink "TX not
+    permitted" every ~3s). The renew-before-expiry margin (half the TTL)
+    must prevent that.
+
+    ``StateFreshnessService.tick()`` (which calls ``mark_stale_due``) and
+    step 3b (``_publish_tx_target``) are two INDEPENDENT asyncio tasks in
+    production — mark_stale_due's real 0.05s cadence is not synchronized
+    1:1 with publish, so this deliberately decouples them: publish runs
+    every 13 ticks (0.65s), a value with no common-multiple alignment to
+    the TTL's 60-tick (3.0s) boundary. A 1:1 or evenly-aligned cadence (e.g.
+    every 2 or every 20 ticks) would coincidentally re-heal the field within
+    the very iteration it goes stale often enough to mask the R2 bug
+    entirely — confirmed by hand against the un-fixed code: 13/17/21-tick
+    spacing reproduces dozens of stale ticks per run, while an aligned
+    spacing reproduces none. Runs across several tx_target TTL periods with
+    every input kept genuinely fresh throughout — the public projection,
+    read after EVERY mark_stale_due (whether or not that tick also
+    published), must never leave "known"."""
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    generation = store.begin_provider_generation()
+    radio = _make_radio(model="IC-7300")
+    _seed_tx_target_ready(
+        store,
+        generation=generation,
+        slot="A",
+        split=False,
+        active_freq=14_250_000,
+        now=10.0,
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    max_age = poller._tx_target_max_age()  # noqa: SLF001 — 3.0s on IC-7300
+    tick = 0.05  # StateFreshnessService's production tick interval
+    publish_every_ticks = 13  # deliberately unaligned with max_age / tick
+    total = max_age * 4  # several TTL periods
+
+    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=clock.now):
+        poller._publish_tx_target()  # noqa: SLF001 — establish the first value
+        elapsed = 0.0
+        tick_count = 0
+        while elapsed < total:
+            clock.advance(tick)
+            elapsed += tick
+            tick_count += 1
+            # Re-observe every input periodically (well under the freq
+            # inputs' own 5.0s relative-VFO retention TTL and its coherence
+            # window) — models a healthy radio's continuous freq/split
+            # polling rather than relying on a TTL race between inputs.
+            if round(elapsed * 100) % 200 == 0:
+                _seed_tx_target_ready(
+                    store,
+                    generation=generation,
+                    slot="A",
+                    split=False,
+                    active_freq=14_250_000,
+                    now=clock.now(),
+                )
+            store.mark_stale_due()
+            if tick_count % publish_every_ticks == 0:
+                poller._publish_tx_target()  # noqa: SLF001
+            payload = build_public_state_payload_from_snapshot(
+                store.snapshot(), radio=None, receiver_count=1
+            )
+            assert payload["txTarget"]["status"] == "known", (
+                f"tx_target left known at t={elapsed:.2f}s: {payload['txTarget']}"
+            )
