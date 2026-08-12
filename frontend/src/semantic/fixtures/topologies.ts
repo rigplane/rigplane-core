@@ -284,6 +284,12 @@ export function withFilterPassband(fixture: RadioViewModel): RadioViewModel {
     ({ reading: { status: 'known', value }, availability: avail });
   const filterPassband: FilterPassbandViewModel = {
     filterShape: known(1),
+    // MOR-1502 review round: "fully observed" means a radio with a REAL
+    // filter_shape command (e.g. IC-7300), so this base fixture defaults
+    // the control-presentation gate to true — tests exercising the FTX-1-
+    // shaped (no filter_shape) case override it explicitly via
+    // `withFilterShapeControlStructural` in the consuming test file.
+    filterShapeControlStructural: true,
     ifShift: known(0),
     // MOR-1494 review round: "fully observed" means a radio with a REAL
     // if_shift command (e.g. FTX-1), so this base fixture defaults the

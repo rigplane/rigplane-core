@@ -523,6 +523,44 @@ describe('ifShiftControlStructural — the presentation-only IF-shift control ga
 });
 
 /**
+ * `filterShapeControlStructural` (MOR-1502) — a SEPARATE, presentation-only
+ * flag `FilterSurface.svelte` uses to decide whether to show the SHARP/SOFT
+ * shape ROW, deliberately independent of `filterShape.availability.
+ * structural` above (which is `hasFilters` alone — see the "per-field
+ * structural gates" block — because `scope-adapter.ts` still needs the
+ * derived reading for ANY radio with a declared filter catalog, filter_shape-
+ * capable or not). `filterShapeControlStructural` answers the narrower
+ * question: does the radio have a REAL `filter_shape` command
+ * (`hasCap(caps, 'filter_shape')`).
+ */
+describe('filterShapeControlStructural — the presentation-only filter-shape control gate (MOR-1502)', () => {
+  it('FTX-1-shaped (filters, no filter_shape): false, even though the derived fact stays structural', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, filterShape: 1 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.filterShape': fresh },
+    }), caps({ filters: ['FIL1', 'FIL2', 'FIL3'] }));
+    expect(view.filterPassband!.filterShapeControlStructural).toBe(false);
+    // The trap: a naive fix that reused `hasFilters` for this flag too
+    // would silently break `scope-adapter.ts`'s derived reading for exactly
+    // this radio shape (the FTX-1). It must stay untouched.
+    expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
+    expect(view.filterPassband!.filterShape.reading).toEqual({ status: 'known', value: 1 });
+  });
+
+  it('IC-7300-shaped (filters + filter_shape): true', () => {
+    const view = model(bareState(), caps({
+      filters: ['FIL1', 'FIL2', 'FIL3'], capabilities: ['filter_shape'],
+    }));
+    expect(view.filterPassband!.filterShapeControlStructural).toBe(true);
+  });
+
+  it('neither filters nor filter_shape: false', () => {
+    const view = model(bareState(), caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } }));
+    expect(view.filterPassband!.filterShapeControlStructural).toBe(false);
+  });
+});
+
+/**
  * HONESTY GATE (MOR-1284, following the 4A F2 lesson). `ifShift`'s derived
  * branch must never fabricate a reading from ONE observed PBT field and the
  * other's silently-defaulted value — the same "never emit a known value
