@@ -1439,6 +1439,18 @@ async def test_set_agc_auto_modes_map_to_gt04(connected_radio, mode):
     connected_radio._transport.write.assert_called_once_with("GT04;")
 
 
+@pytest.mark.parametrize("mode", [-1, 7, 99])
+@pytest.mark.asyncio
+async def test_set_agc_rejects_out_of_domain_value(connected_radio, mode):
+    """MOR-1522: FTX-1 declares AGC modes 0-6 in ``[agc] modes``; a value
+    outside that domain must raise instead of being written to the radio
+    unchecked (the pre-fix behavior sent any int through verbatim/collapsed)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(CommandError):
+        await connected_radio.set_agc(mode)
+    connected_radio._transport.write.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Profile property (issue #392)
 # ---------------------------------------------------------------------------

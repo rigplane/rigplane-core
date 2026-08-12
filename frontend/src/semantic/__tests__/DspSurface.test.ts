@@ -357,10 +357,11 @@ describe('notchMode renders as a three-way choice', () => {
 // ── 7. agcMode: dynamic choice set from the fact group + caps-echoed labels ──
 
 describe('agcMode renders the capability-derived choice set with caps-echoed labels', () => {
-  it('renders one button per agcModes entry plus OFF, labelled from agcLabels', () => {
-    // withDsp(): agcModes [1, 2, 3], agcMode known(2).
+  it('renders exactly the declared agcModes entries, labelled from agcLabels — no invented OFF', () => {
+    // MOR-1522: withDsp()'s agcModes [1, 2, 3] is the IC-7300/IC-7610 domain
+    // (FAST/MID/SLOW, no OFF at all) — the surface must not synthesize one.
     withSurface(base(), (s) => {
-      expect(s.agcButton(0)!.textContent).toBe('OFF');
+      expect(s.agcButton(0)).toBeNull();
       expect(s.agcButton(1)!.textContent).toBe('FAST');
       expect(s.agcButton(2)!.textContent).toBe('MID');
       expect(s.agcButton(3)!.textContent).toBe('SLOW');

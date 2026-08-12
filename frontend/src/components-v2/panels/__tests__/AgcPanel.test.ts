@@ -3,39 +3,53 @@ import { buildAgcOptions } from '../agc-utils';
 
 // ---------------------------------------------------------------------------
 // buildAgcOptions
+//
+// MOR-1522: the AGC option set is radio-specific profile data. This function
+// must render ONLY the declared `modes` — never invent an option the profile
+// did not declare (the bug: IC-7300 has no AGC OFF, but the UI showed one).
 // ---------------------------------------------------------------------------
 
 describe('buildAgcOptions', () => {
-  // --- OFF prepending ---
+  // --- No synthetic options ---
 
-  it('prepends OFF (value 0) when 0 is not in modes', () => {
+  it('does not invent an OFF option for a domain that has none (IC-7300/IC-7610 FAST/MID/SLOW)', () => {
     const options = buildAgcOptions([1, 2, 3], { '1': 'FAST', '2': 'MID', '3': 'SLOW' });
-    expect(options[0]).toEqual({ value: 0, label: 'OFF' });
+    expect(options).toEqual([
+      { value: 1, label: 'FAST' },
+      { value: 2, label: 'MID' },
+      { value: 3, label: 'SLOW' },
+    ]);
+    expect(options.some((o) => o.value === 0)).toBe(false);
   });
 
-  it('does not duplicate OFF when 0 is already in modes', () => {
-    const options = buildAgcOptions([0, 1, 2], { '0': 'OFF', '1': 'FAST', '2': 'MID' });
-    const offOptions = options.filter((o) => o.value === 0);
-    expect(offOptions).toHaveLength(1);
-  });
-
-  it('uses the label from modes list when 0 is already present', () => {
-    const options = buildAgcOptions([0, 1], { '0': 'OFF', '1': 'FAST' });
-    expect(options[0]).toEqual({ value: 0, label: 'OFF' });
-  });
-
-  it('returns only OFF for empty modes list', () => {
+  it('returns an empty list for an empty modes list (no invented fallback)', () => {
     const options = buildAgcOptions([], {});
-    expect(options).toEqual([{ value: 0, label: 'OFF' }]);
+    expect(options).toEqual([]);
+  });
+
+  it('keeps a declared OFF option for a domain that has one (X6200 OFF/FAST/SLOW/AUTO)', () => {
+    const options = buildAgcOptions(
+      [0, 1, 2, 3],
+      { '0': 'OFF', '1': 'FAST', '2': 'SLOW', '3': 'AUTO' },
+    );
+    expect(options).toEqual([
+      { value: 0, label: 'OFF' },
+      { value: 1, label: 'FAST' },
+      { value: 2, label: 'SLOW' },
+      { value: 3, label: 'AUTO' },
+    ]);
+  });
+
+  it('renders exactly the declared set, nothing more, nothing less', () => {
+    const options = buildAgcOptions([2], { '2': 'MID' });
+    expect(options).toEqual([{ value: 2, label: 'MID' }]);
   });
 
   // --- Labels ---
 
   it('maps mode values to labels from the labels record', () => {
     const options = buildAgcOptions([1, 2, 3], { '1': 'FAST', '2': 'MID', '3': 'SLOW' });
-    expect(options.map((o) => o.label)).toContain('FAST');
-    expect(options.map((o) => o.label)).toContain('MID');
-    expect(options.map((o) => o.label)).toContain('SLOW');
+    expect(options.map((o) => o.label)).toEqual(['FAST', 'MID', 'SLOW']);
   });
 
   it('falls back to String(mode) when label is missing', () => {
@@ -46,9 +60,7 @@ describe('buildAgcOptions', () => {
 
   it('falls back to String(mode) for all modes when labels is empty', () => {
     const options = buildAgcOptions([1, 2], {});
-    // OFF is prepended, then 1 → '1', 2 → '2'
     expect(options).toEqual([
-      { value: 0, label: 'OFF' },
       { value: 1, label: '1' },
       { value: 2, label: '2' },
     ]);
@@ -56,22 +68,14 @@ describe('buildAgcOptions', () => {
 
   // --- Order preservation ---
 
-  it('preserves the order of modes', () => {
+  it('preserves the declared order of modes', () => {
     const options = buildAgcOptions([3, 1, 2], { '1': 'FAST', '2': 'MID', '3': 'SLOW' });
-    // OFF first, then modes in given order
-    expect(options.map((o) => o.value)).toEqual([0, 3, 1, 2]);
+    expect(options.map((o) => o.value)).toEqual([3, 1, 2]);
   });
 
-  it('returns correct total length: modes.length + 1 when 0 absent', () => {
+  it('returns a total length equal to modes.length', () => {
     const options = buildAgcOptions([1, 2, 3], { '1': 'FAST', '2': 'MID', '3': 'SLOW' });
-    expect(options).toHaveLength(4);
-  });
-
-  it('returns correct total length: modes.length when 0 is present', () => {
-    const options = buildAgcOptions([0, 1, 2, 3], {
-      '0': 'OFF', '1': 'FAST', '2': 'MID', '3': 'SLOW',
-    });
-    expect(options).toHaveLength(4);
+    expect(options).toHaveLength(3);
   });
 
   // --- Value types ---
@@ -81,31 +85,35 @@ describe('buildAgcOptions', () => {
     options.forEach((o) => expect(typeof o.value).toBe('number'));
   });
 
-  it('handles a single mode without 0', () => {
-    const options = buildAgcOptions([2], { '2': 'MID' });
-    expect(options).toEqual([
-      { value: 0, label: 'OFF' },
-      { value: 2, label: 'MID' },
-    ]);
+  // --- Per-profile domains (MOR-1522 domain table) ---
+
+  it('IC-7300/IC-7610/IC-705/IC-9700: exactly FAST/MID/SLOW, no OFF', () => {
+    const options = buildAgcOptions([1, 2, 3], { '1': 'FAST', '2': 'MID', '3': 'SLOW' });
+    expect(options.map((o) => o.value)).toEqual([1, 2, 3]);
   });
 
-  it('handles a single mode equal to 0', () => {
-    const options = buildAgcOptions([0], { '0': 'OFF' });
-    expect(options).toEqual([{ value: 0, label: 'OFF' }]);
-  });
-
-  // --- Standard IC-7610 AGC modes ---
-
-  it('produces expected options for standard IC-7610 AGC [1,2,3]', () => {
+  it('X6200: OFF/FAST/SLOW/AUTO (PDF page 8 domain, not the Icom FAST/MID/SLOW shape)', () => {
     const options = buildAgcOptions(
-      [1, 2, 3],
-      { '1': 'FAST', '2': 'MID', '3': 'SLOW' },
+      [0, 1, 2, 3],
+      { '0': 'OFF', '1': 'FAST', '2': 'SLOW', '3': 'AUTO' },
     );
-    expect(options).toEqual([
-      { value: 0, label: 'OFF' },
-      { value: 1, label: 'FAST' },
-      { value: 2, label: 'MID' },
-      { value: 3, label: 'SLOW' },
-    ]);
+    expect(options.map((o) => o.label)).toEqual(['OFF', 'FAST', 'SLOW', 'AUTO']);
+  });
+
+  it('FTX-1: full 7-value domain including manual OFF/FAST/MID/SLOW and auto variants', () => {
+    const options = buildAgcOptions(
+      [0, 1, 2, 3, 4, 5, 6],
+      {
+        '0': 'OFF',
+        '1': 'FAST',
+        '2': 'MID',
+        '3': 'SLOW',
+        '4': 'A-FAST',
+        '5': 'A-MID',
+        '6': 'A-SLOW',
+      },
+    );
+    expect(options).toHaveLength(7);
+    expect(options[0]).toEqual({ value: 0, label: 'OFF' });
   });
 });

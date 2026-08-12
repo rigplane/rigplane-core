@@ -3053,15 +3053,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return AgcMode(value)
 
     async def set_agc(self, mode: AgcMode | int, receiver: int = RECEIVER_MAIN) -> None:
-        """Set AGC mode."""
+        """Set AGC mode.
+
+        Valid values are declared per radio by the profile's ``[agc] modes``
+        (e.g. IC-7300/IC-7610 offer FAST/MID/SLOW only; the X6200
+        additionally declares OFF/AUTO). ``AgcMode`` is the IC-7610/generic
+        Icom FAST/MID/SLOW enum and is no longer used to gate the value —
+        a profile-declared value outside that enum (e.g. X6200's OFF=0)
+        must not be rejected just because it isn't an IC-7610 mode (MOR-1522).
+        """
         self._require_receiver(receiver, operation="set_agc")
         if receiver != RECEIVER_MAIN:
             self._require_cmd29_route(
                 0x16, 0x12, receiver=receiver, operation="set_agc"
             )
-        agc = AgcMode(mode)
+        mode_int = int(mode)
+        agc_modes = self._profile.agc_modes
+        if agc_modes is not None and mode_int not in agc_modes:
+            raise ValueError(
+                f"AGC mode must be one of {sorted(agc_modes)} for "
+                f"{self._profile.model}, got {mode_int}"
+            )
         await self._send_fire_and_forget(
-            set_agc(agc, to_addr=self._radio_addr, receiver=receiver)
+            set_agc(mode_int, to_addr=self._radio_addr, receiver=receiver)
         )
 
     async def get_audio_peak_filter(

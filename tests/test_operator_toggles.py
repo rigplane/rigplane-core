@@ -125,15 +125,20 @@ class TestAGCStatus:
     def test_set_agc_accepts_int(self) -> None:
         assert commands.set_agc(1) == commands.set_agc(AgcMode.FAST)
 
-    def test_set_agc_rejects_value_below_minimum(self) -> None:
-        with pytest.raises(ValueError):
-            commands.set_agc(0)
+    def test_set_agc_builder_accepts_values_outside_the_ic7610_enum(self) -> None:
+        """MOR-1522: the raw wire-command builder no longer polices the
+        IC-7610 FAST/MID/SLOW enum's range — which AGC values are legal is
+        a per-profile domain (e.g. the X6200 legitimately sends 0=OFF and
+        3=AUTO), enforced one layer up in ``IcomRadio.set_agc`` /
+        ``YaesuCatRadio.set_agc`` against the profile's declared
+        ``[agc] modes`` (see ``TestAgcDomainValidation`` in
+        ``tests/test_radio.py``). This builder only encodes the raw
+        single-BCD-byte value.
+        """
+        assert commands.set_agc(0) == _simple_set(_SUB_AGC, 0x00)
+        assert commands.set_agc(4) == _simple_set(_SUB_AGC, 0x04)
 
-    def test_set_agc_rejects_value_above_maximum(self) -> None:
-        with pytest.raises(ValueError):
-            commands.set_agc(4)
-
-    def test_set_agc_rejects_invalid_enum_int(self) -> None:
+    def test_set_agc_rejects_value_outside_single_bcd_byte_range(self) -> None:
         with pytest.raises(ValueError):
             commands.set_agc(999)
 

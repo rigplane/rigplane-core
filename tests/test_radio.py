@@ -2632,6 +2632,69 @@ class TestTransceiverStatusParity:
         assert mock_transport.sent_packets[-1].endswith(expected_tail)
 
 
+class TestAgcDomainValidation:
+    """MOR-1522: the AGC mode domain is profile data, not a universal enum.
+
+    IC-7300/IC-7610 declare FAST/MID/SLOW only (no OFF); the X6200 declares
+    OFF/FAST/SLOW/AUTO. ``set_agc`` must accept exactly what the profile
+    declares for that radio and reject anything else with a visible error,
+    not a silent write of an illegal byte.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ic7300_rejects_off_not_in_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7300")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"AGC mode must be one of"):
+            await radio.set_agc(0)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7300_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7300")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (1, 2, 3):
+            await radio.set_agc(legal)
+        assert len(mock_transport.sent_packets) == 3
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_accepts_declared_off_that_ic7300_lacks(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """The X6200's declared OFF=0 must not be rejected just because it
+        falls outside the IC-7610 ``AgcMode`` enum (FAST=1/MID=2/SLOW=3)."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_agc(0)
+        assert mock_transport.sent_packets[-1].endswith(b"\x16\x12\x00\xfd")
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_rejects_value_outside_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"AGC mode must be one of"):
+            await radio.set_agc(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+
 class TestBreakInModeRoundTrip:
     """Issue #1100 — CwControlCapable.get_break_in/set_break_in type contract.
 

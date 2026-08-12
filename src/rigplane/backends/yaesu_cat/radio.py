@@ -2320,7 +2320,17 @@ class YaesuCatRadio:
         rejected and the value sticks at the prior setting. Manual modes
         (0–3) are sent verbatim; any AUTO request (4, 5, or 6) is collapsed
         to ``GT04;`` (AUTO), letting the radio re-derive the auto speed.
+
+        ``mode`` must be one of the profile's declared ``[agc] modes``
+        (MOR-1522) — an out-of-domain value raises instead of being sent
+        to the radio unchecked.
         """
+        agc_modes = self._config.agc_modes
+        if agc_modes is not None and mode not in agc_modes:
+            raise CommandError(
+                f"AGC mode must be one of {sorted(agc_modes)} for "
+                f"{self._config.model!r}, got {mode}"
+            )
         wire_mode = 4 if mode >= 4 else mode
         await self._write("set_agc", mode=str(wire_mode))
 
