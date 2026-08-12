@@ -51,6 +51,7 @@
   unread fact renders `UNKNOWN_TEXT`, never a fabricated 14.074 MHz.
 -->
 <script module lang="ts">
+  import { t } from '$lib/i18n';
   import type {
     BandChoice, BandField, DisabledReasonCode, RadioViewModel,
   } from './radio-view-model';
@@ -64,25 +65,37 @@
   export const TX_REASON_CODES: readonly DisabledReasonCode[] = [
     'out-of-band', 'tx-target-unknown', 'capability-unavailable',
   ];
-  export const REASON_LABEL: Record<string, string> = {
-    'out-of-band': 'live frequency is outside the configured TX ranges',
-    'tx-target-unknown': 'TX target frequency was never observed',
-    'capability-unavailable': 'TX ranges are not configured',
+  /** MOR-1448: catalog keys behind each denial-explaining code — the
+   *  operator-legible sentence, not the internal code. Kept as a lookup
+   *  table (not the rendered text itself) so `reasonLabel` resolves through
+   *  `t()` fresh on every call, staying correct across a live locale
+   *  switch instead of freezing the string at module-load time. */
+  const REASON_KEY: Record<string, string> = {
+    'out-of-band': 'core.band.tx.reason.outOfBand',
+    'tx-target-unknown': 'core.band.tx.reason.targetUnknown',
+    'capability-unavailable': 'core.band.tx.reason.rangesNotConfigured',
   };
+  /** Resolves a `TX_REASON_CODES` entry to its operator-legible sentence in
+   *  the active locale. An unrecognised code (should not happen —
+   *  `TX_REASON_CODES` is the only caller) fails closed to `UNKNOWN_TEXT`
+   *  rather than surfacing the raw code. */
+  export const reasonLabel = (code: DisabledReasonCode | string): string =>
+    code in REASON_KEY ? t(REASON_KEY[code]) : UNKNOWN_TEXT;
   /** The denial's words when no code explains it: `txPermit` says the TX
    *  TARGET may key, so what is missing is the band-scoped resolution itself
    *  (unobserved live frequency, or a frequency in no band of the plan). */
-  export const UNRESOLVED_REASON = 'current band could not be resolved';
+  export const unresolvedReason = (): string => t('core.band.tx.reason.bandUnresolved');
   /** MOR-1389: the denial's words when `deriveBand`'s MOR-1356
    *  `activeConfirmed` gate is what forced 'denied', with the current band
-   *  ITSELF resolved and rendered. `UNRESOLVED_REASON` is false in that
+   *  ITSELF resolved and rendered. `unresolvedReason` is false in that
    *  state — the band is not unresolved, the receiver serving it is
    *  unconfirmed — so it needs its own, equally honest, sentence. Named for
    *  exactly what `activeReceiver.status === 'unknown'` carries (rule (4)'s
    *  own gate): identity is unconfirmed, not "stale" or "never observed" —
    *  `seen()`'s three-part AND collapses those into one signal upstream, so
    *  claiming more than this would be a fact this file does not have. */
-  export const ACTIVE_RECEIVER_UNCONFIRMED_REASON = 'active receiver identity was not confirmed';
+  export const activeReceiverUnconfirmedReason = (): string =>
+    t('core.band.tx.reason.receiverUnconfirmed');
 
   export const usable = (f: BandField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
@@ -166,10 +179,26 @@
     const hit = TX_REASON_CODES.find(
       (c) => view.disabledReasons.some((r) => r.code === c && r.field === 'txPermit'),
     );
-    if (hit !== undefined) return REASON_LABEL[hit];
+    if (hit !== undefined) return reasonLabel(hit);
     if (view.txPermit.status !== 'allowed') return UNKNOWN_TEXT;
-    if (view.activeReceiver.status === 'unknown') return ACTIVE_RECEIVER_UNCONFIRMED_REASON;
-    return UNRESOLVED_REASON;
+    if (view.activeReceiver.status === 'unknown') return activeReceiverUnconfirmedReason();
+    return unresolvedReason();
+  }
+
+  /**
+   * MOR-1448: the fix-round F1 caveat as ONE operator-legible sentence,
+   * replacing the old `TX target {status}: {reason}` contract-vocabulary
+   * concatenation (raw field/code words leaking straight into the operator
+   * UI). Still states the true tri-state `status` word verbatim (rule 1 —
+   * the verdict is never softened or hidden) and the SAME `txDeniedReason`
+   * explanation; only the sentence it is assembled into changed. Pure
+   * string assembly — no gating, dispatch, or state-machine logic touched.
+   */
+  export function txCaveatMessage(view: RadioViewModel): string {
+    return t('core.band.tx.caveat', {
+      status: view.txPermit.status,
+      reason: txDeniedReason(view),
+    });
   }
 </script>
 
@@ -289,7 +318,7 @@
              e.g. under split, or while the TX target is simply unobserved.
              That disagreement must never live only in `data-tx-permit-status`
              — a data attribute is invisible to an operator. -->
-        <span data-testid="band-tx-caveat">TX target {view.txPermit.status}: {txDeniedReason(view)}</span>
+        <span data-testid="band-tx-caveat">{txCaveatMessage(view)}</span>
       {/if}
     </p>
 

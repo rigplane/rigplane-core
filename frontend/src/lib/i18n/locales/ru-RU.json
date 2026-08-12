@@ -194,6 +194,13 @@
   "core.vfo.splitDigest.rx": "RX {frequency}",
   "core.vfo.splitDigest.tx": "TX {frequency}",
 
+  "core.band.tx.reason.outOfBand": "эта частота вне ваших настроенных диапазонов передачи — перейдите на частоту внутри разрешённого диапазона, чтобы передавать здесь",
+  "core.band.tx.reason.targetUnknown": "частота передатчика ещё не считана с радио — нажмите PTT или выберите VFO, чтобы она установилась",
+  "core.band.tx.reason.rangesNotConfigured": "для этого радио не настроены диапазоны передачи, поэтому проверить разрешение здесь нельзя",
+  "core.band.tx.reason.bandUnresolved": "текущий диапазон не удалось определить по частоте, считанной с радио",
+  "core.band.tx.reason.receiverUnconfirmed": "активный приёмник ещё не подтверждён — выберите приёмник, чтобы продолжить",
+  "core.band.tx.caveat": "TX разрешён на этой частоте, но ваша фактическая частота передачи — {status}: {reason}",
+
   "core.disabledReason.missing": "Не поддерживается этим трансивером",
   "core.disabledReason.unobserved": "Ещё не считано",
 

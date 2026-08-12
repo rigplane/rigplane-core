@@ -32,9 +32,10 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import BandSurface, {
-  ACTIVE_RECEIVER_UNCONFIRMED_REASON, REASON_LABEL, UNKNOWN_TEXT, UNRESOLVED_REASON,
+  activeReceiverUnconfirmedReason, reasonLabel, UNKNOWN_TEXT, unresolvedReason,
   defaultPermitLabel, mhz,
 } from '../BandSurface.svelte';
+import { t } from '$lib/i18n';
 import { topologyFixtures, withBand } from '../fixtures/topologies';
 import type { FrequencyPermit } from '$lib/utils/tx-permit';
 import type {
@@ -105,19 +106,32 @@ function typeFrequency(input: HTMLInputElement, value: string): void {
 describe('the band surface derives nothing (7B carry-forward 1)', () => {
   // Kills: importing the permit function, the band plan, capabilities or the
   // command bus — any of which would let a second permit derivation exist.
-  it('imports nothing but the fact contract', () => {
+  // MOR-1448: `$lib/i18n` joined the fact contract as the ONE permitted
+  // import beyond `./radio-view-model` — pure operator-wording lookup
+  // (`t()`), never a second fact derivation. See the two tests below for
+  // the narrowed guard this replaces.
+  it('imports nothing but the fact contract, plus the i18n wording lookup', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)]).toEqual(['./radio-view-model']);
+    expect([...new Set(specifiers)]).toEqual(['$lib/i18n', './radio-view-model']);
   });
 
   it('never mentions the permit derivation, the band plan or a capability read', () => {
     for (const forbidden of [
       'getFrequencyPermit', 'getTxPermit', 'txBands', 'freqRanges', 'flattenBands',
-      'findActiveBand', 'capabilities', 'hasCap', '$lib/', 'sendCommand',
+      'findActiveBand', 'capabilities', 'hasCap', 'sendCommand',
     ]) {
       expect(CODE).not.toContain(forbidden);
     }
+  });
+
+  // MOR-1448: the blanket `$lib/` ban above narrowed to name its one
+  // exception explicitly, rather than silently dropping the guard. Any
+  // OTHER `$lib/*` import (transport, capabilities, tx-permit, command
+  // bus, ...) still fails this test.
+  it('imports no $lib module except the i18n catalog lookup', () => {
+    const libSpecifiers = [...CODE.matchAll(/from\s+'(\$lib\/[^']+)'/g)].map((m) => m[1]);
+    expect(new Set(libSpecifiers)).toEqual(new Set(['$lib/i18n']));
   });
 
   it('declares no lifecycle hook and no effect', () => {
@@ -179,9 +193,9 @@ describe('currentBandTx is the live-frequency answer (carry-forwards 1 + 2)', ()
   // Carry-forward 2: the tri-state nuance the binary collapse cannot carry is
   // taken from the TOP-LEVEL txPermit + disabledReasons, not re-derived.
   it.each([
-    ['out-of-band', REASON_LABEL['out-of-band']],
-    ['tx-target-unknown', REASON_LABEL['tx-target-unknown']],
-    ['capability-unavailable', REASON_LABEL['capability-unavailable']],
+    ['out-of-band', reasonLabel('out-of-band')],
+    ['tx-target-unknown', reasonLabel('tx-target-unknown')],
+    ['capability-unavailable', reasonLabel('capability-unavailable')],
   ])('explains a denial with the recorded %s reason', (code, label) => {
     const view = withB({ currentBandTx: 'denied' });
     const r = render({
@@ -226,7 +240,7 @@ describe('the TX-target permit caveat (fix-round F1)', () => {
     });
     expect(r.text('tx-value')).toBe('allowed');
     expect(r.el('tx-caveat')).not.toBeNull();
-    expect(r.text('tx-caveat')).toContain(REASON_LABEL['out-of-band']);
+    expect(r.text('tx-caveat')).toContain(reasonLabel('out-of-band'));
     r.dispose();
   });
 
@@ -243,7 +257,7 @@ describe('the TX-target permit caveat (fix-round F1)', () => {
     });
     expect(r.text('tx-value')).toBe('allowed');
     expect(r.el('tx-caveat')).not.toBeNull();
-    expect(r.text('tx-caveat')).toContain(REASON_LABEL['tx-target-unknown']);
+    expect(r.text('tx-caveat')).toContain(reasonLabel('tx-target-unknown'));
     r.dispose();
   });
 
@@ -258,6 +272,64 @@ describe('the TX-target permit caveat (fix-round F1)', () => {
   });
 });
 
+/* ── MOR-1448: operator-legible wording, pinned against a contract-speak
+   regression. The old strip read "TX target unknown: TX target frequency
+   was never observed" — internal field/code vocabulary leaked straight
+   into the operator UI. These tests pin (a) each readiness reason to its
+   catalog key, so the mapping — not just today's rendered text — is what
+   future edits must keep honest, and (b) that none of the old jargon
+   phrases can silently return. ──────────────────────────────────────── */
+
+describe('MOR-1448 — every TX readiness reason resolves to operator-legible copy', () => {
+  const CONTRACT_SPEAK = [
+    'was never observed', 'TX target unknown', 'TX target allowed', 'TX target denied',
+    'field:', 'fieldStatus',
+  ];
+
+  it.each([
+    ['out-of-band', 'core.band.tx.reason.outOfBand'],
+    ['tx-target-unknown', 'core.band.tx.reason.targetUnknown'],
+    ['capability-unavailable', 'core.band.tx.reason.rangesNotConfigured'],
+  ] as const)('maps disabledReasons code %s to catalog key %s', (code, key) => {
+    expect(reasonLabel(code)).toBe(t(key));
+  });
+
+  it('maps the band-unresolved fallback to its catalog key', () => {
+    expect(unresolvedReason()).toBe(t('core.band.tx.reason.bandUnresolved'));
+  });
+
+  it('maps the unconfirmed-receiver fallback to its catalog key', () => {
+    expect(activeReceiverUnconfirmedReason()).toBe(t('core.band.tx.reason.receiverUnconfirmed'));
+  });
+
+  it('assembles the rendered caveat through the core.band.tx.caveat catalog key', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'allowed' });
+    const r = render({
+      ...view,
+      txPermit: { status: 'unknown', reason: 'tx-target-unknown' },
+      disabledReasons: [{ field: 'txPermit', code: 'tx-target-unknown' }] as readonly DisabledReason[],
+    });
+    expect(r.text('tx-caveat')).toBe(t('core.band.tx.caveat', {
+      status: 'unknown',
+      reason: t('core.band.tx.reason.targetUnknown'),
+    }));
+    r.dispose();
+  });
+
+  it('never leaks the old field/code contract-speak into any reason or caveat string', () => {
+    const rendered = [
+      reasonLabel('out-of-band'), reasonLabel('tx-target-unknown'),
+      reasonLabel('capability-unavailable'), unresolvedReason(),
+      activeReceiverUnconfirmedReason(),
+      t('core.band.tx.caveat', { status: 'unknown', reason: reasonLabel('tx-target-unknown') }),
+      t('core.band.tx.caveat', { status: 'denied', reason: reasonLabel('out-of-band') }),
+    ];
+    for (const text of rendered) {
+      for (const phrase of CONTRACT_SPEAK) expect(text).not.toContain(phrase);
+    }
+  });
+});
+
 /* ── (c) no band-scoped disabledReason exists, by design ────────── */
 
 describe('the denial signal is the field value itself (carry-forward 3)', () => {
@@ -268,7 +340,7 @@ describe('the denial signal is the field value itself (carry-forward 3)', () => 
     const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'denied' });
     const r = render({ ...view, txPermit: ALLOWED, disabledReasons: [] });
     expect(r.text('tx-value')).toBe('denied');
-    expect(r.text('tx-reason')).toBe(UNRESOLVED_REASON);
+    expect(r.text('tx-reason')).toBe(unresolvedReason());
     r.dispose();
   });
 
@@ -291,7 +363,7 @@ describe('the denial signal is the field value itself (carry-forward 3)', () => 
         { field: 'scope.audioFftScope', code: 'capability-unavailable' },
       ] as readonly DisabledReason[],
     });
-    expect(r.text('tx-reason')).toBe(UNRESOLVED_REASON);
+    expect(r.text('tx-reason')).toBe(unresolvedReason());
     r.dispose();
   });
 });
@@ -317,7 +389,7 @@ describe('the three-way denial reason distinguishes an unconfirmed receiver (MOR
       disabledReasons: [{ field: 'txPermit', code: 'out-of-band' }] as readonly DisabledReason[],
     });
     expect(r.text('current-value')).toBe('20m');
-    expect(r.text('tx-reason')).toBe(REASON_LABEL['out-of-band']);
+    expect(r.text('tx-reason')).toBe(reasonLabel('out-of-band'));
     r.dispose();
   });
 
@@ -338,8 +410,8 @@ describe('the three-way denial reason distinguishes an unconfirmed receiver (MOR
       ] as readonly DisabledReason[],
     });
     expect(r.text('current-value')).toBe('20m');
-    expect(r.text('tx-reason')).toBe(ACTIVE_RECEIVER_UNCONFIRMED_REASON);
-    expect(r.text('tx-reason')).not.toBe(UNRESOLVED_REASON);
+    expect(r.text('tx-reason')).toBe(activeReceiverUnconfirmedReason());
+    expect(r.text('tx-reason')).not.toBe(unresolvedReason());
     r.dispose();
   });
 
@@ -350,7 +422,7 @@ describe('the three-way denial reason distinguishes an unconfirmed receiver (MOR
     const view = withB({ currentBand: unreadBand(), currentBandTx: 'denied' });
     const r = render({ ...view, txPermit: ALLOWED, disabledReasons: [] });
     expect(r.text('current-value')).toBe(UNKNOWN_TEXT);
-    expect(r.text('tx-reason')).toBe(UNRESOLVED_REASON);
+    expect(r.text('tx-reason')).toBe(unresolvedReason());
     r.dispose();
   });
 
@@ -373,8 +445,8 @@ describe('the three-way denial reason distinguishes an unconfirmed receiver (MOR
       ] as readonly DisabledReason[],
     });
     expect(r.text('current-value')).toBe('MW');
-    expect(r.text('tx-reason')).toBe(REASON_LABEL['out-of-band']);
-    expect(r.text('tx-reason')).not.toBe(ACTIVE_RECEIVER_UNCONFIRMED_REASON);
+    expect(r.text('tx-reason')).toBe(reasonLabel('out-of-band'));
+    expect(r.text('tx-reason')).not.toBe(activeReceiverUnconfirmedReason());
     r.dispose();
   });
 
