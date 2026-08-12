@@ -23,7 +23,7 @@ import TxAuxSurface, {
 } from '../TxAuxSurface.svelte';
 import { topologyFixtures, withTxAux } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, TxAuxViewModel } from '../radio-view-model';
-import { keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
+import { BLOCKED_LABEL, keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
 
 const IDLE_RX: TxAuthoritySnapshot = {
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
@@ -207,6 +207,32 @@ describe('the disabled reason is exposed on hover and to screen readers (MOR-142
       expect(control.hasAttribute('aria-describedby')).toBe(false);
     });
   });
+
+  // MOR-1481 rework (R2). The gap this witness closes: `reasonTextOf` used to
+  // be a bare `disabledReasonText(f.availability)` call, which only reads
+  // `availability` (structural/operational) and has no view of
+  // `reading.status` — while `disabled` on every control gates on `usable(f)`,
+  // which DOES include `reading.status`. A field with availability fully
+  // declared but an unobserved reading was therefore rendered disabled with
+  // NO title and NO aria-describedby, for EVERY ONE of the twelve fields on
+  // this surface (TUNE was merely the first instance caught on the live
+  // bench; the fix had to move into the shared `reasonTextOf`/`reasonIdOf`
+  // helpers so all twelve stop sharing the defect, not just ATU).
+  it.each(ALL_FIELDS)(
+    'puts "Not yet observed" on title and aria-describedby for "%s" when only its READING is unobserved',
+    (field) => {
+      const view = withField(base(), field, { unknown: true });
+      withSurface(view, snap(), (s) => {
+        // Toggles carry title/aria-describedby on the <button> itself; level
+        // fields carry it on the <input> inside the <label> (same split
+        // `isDisabled` above already draws).
+        const control = s.control(field)!;
+        const el = control instanceof HTMLButtonElement ? control : s.input(field)!;
+        expect(el.title, field).toBe('Not yet observed');
+        expect(describedText(el), field).toBe('Not yet observed');
+      });
+    },
+  );
 });
 
 // ── 3. VOX — safety note (ii), arming voice keying ─────────────────────────
@@ -339,6 +365,96 @@ describe('ATU TUNE is gated by the App TX authority, exactly like the key intent
   it('disables TUNE while the ATU status itself is unobserved', () => {
     const view = withField(base(), 'atu', { unknown: true });
     withSurface(view, snap(), (s) => expect(s.tune()!.disabled).toBe(true));
+  });
+});
+
+// ── 4b. MOR-1481: TUNE's own disabled reason ────────────────────────────────
+
+describe('TUNE carries its own disabled reason (MOR-1481)', () => {
+  /** Resolves EVERY `aria-describedby` target (the attribute may hold more
+   *  than one id — the ATU reason and the visible TX-authority list can
+   *  both apply, though never in the same test here) and returns the
+   *  concatenated text — the id alone would only prove wiring, not that a
+   *  screen reader has something to actually read. */
+  function describedText(el: HTMLElement): string | null {
+    const ids = el.getAttribute('aria-describedby')?.split(' ').filter(Boolean) ?? [];
+    if (ids.length === 0) return null;
+    return ids.map((id) => target.querySelector(`#${id}`)?.textContent ?? '').join(' ');
+  }
+
+  it('carries no reason text on hover or for screen readers once TUNE is usable', () => {
+    withSurface(base(), snap(), (s) => {
+      const tune = s.tune()!;
+      expect(tune.title).toBe('');
+      expect(tune.hasAttribute('aria-describedby')).toBe(false);
+    });
+  });
+
+  // The live-bench MOR-1481 report: ATU showed as observed ("ATU: on"), so
+  // this is the TX-authority block, not the ATU-unusable one — and TUNE's
+  // `title` was `null` regardless of which reason applied.
+  it.each(BLOCKING)('puts the TX-authority block reason on TUNE\'s title and aria-describedby while %s', (_label, over) => {
+    const view = base();
+    const tx = snap(over);
+    withSurface(view, tx, (s) => {
+      const tune = s.tune()!;
+      const expected = keyBlockedReasons(view, tx).map((code) => BLOCKED_LABEL[code]).join('; ');
+      expect(tune.title).toBe(expected);
+      expect(describedText(tune)).toBe(expected);
+    });
+  });
+
+  // MUTATION KILL: joining only the FIRST reason (or dropping the join
+  // entirely) instead of every code `keyBlockedReasons` returns.
+  it('joins multiple simultaneous TX-authority reasons on TUNE\'s title', () => {
+    const view = base();
+    const tx = snap({ fault: 'on-timeout', radioTx: 'on' });
+    const reasons = keyBlockedReasons(view, tx);
+    expect(reasons.length).toBeGreaterThan(1);
+    withSurface(view, tx, (s) => {
+      expect(s.tune()!.title).toBe(reasons.map((code) => BLOCKED_LABEL[code]).join('; '));
+    });
+  });
+
+  // The gap this ticket exists to close: `disabledReasonText` (used
+  // elsewhere in this file) only reads `availability`, so a fully-available
+  // ATU whose READING just has not arrived yet would otherwise leave
+  // `title` empty despite `disabled` being true.
+  it('puts "Not yet observed" on TUNE\'s title and aria-describedby when the ATU reading itself is unobserved, even with availability fully declared', () => {
+    const view = withField(base(), 'atu', { unknown: true });
+    withSurface(view, snap(), (s) => {
+      const tune = s.tune()!;
+      expect(tune.title).toBe('Not yet observed');
+      expect(describedText(tune)).toBe('Not yet observed');
+    });
+  });
+
+  // Never both: an unusable ATU reading makes the TX-authority question
+  // moot, so its reason wins even while a TX-authority block also applies.
+  it('prefers the ATU-unobserved reason over a TX-authority block when both apply', () => {
+    const view = withField(base(), 'atu', { unknown: true });
+    const tx = snap({ fault: 'on-timeout' });
+    withSurface(view, tx, (s) => {
+      expect(s.tune()!.title).toBe('Not yet observed');
+    });
+  });
+
+  // MOR-1481 rework (R2, finding 4): `aria-describedby` must agree with
+  // `title` about how many reasons apply — a screen reader reading a second,
+  // TX-authority-block reason the visible title never mentions would
+  // contradict the "never both" doctrine above. Both `keyBlockedReasons`
+  // (fault latched) AND the ATU-unobserved gate apply simultaneously here,
+  // so this is the actual "both" case, not a vacuous one.
+  it('points aria-describedby at exactly the ATU reason, never both, when a TX-authority block also applies', () => {
+    const view = withField(base(), 'atu', { unknown: true });
+    const tx = snap({ fault: 'on-timeout' });
+    expect(keyBlockedReasons(view, tx).length).toBeGreaterThan(0);
+    withSurface(view, tx, (s) => {
+      const tune = s.tune()!;
+      const ids = tune.getAttribute('aria-describedby')?.split(' ').filter(Boolean) ?? [];
+      expect(ids).toHaveLength(1);
+      expect(describedText(tune)).toBe('Not yet observed');
+    });
   });
 });
 

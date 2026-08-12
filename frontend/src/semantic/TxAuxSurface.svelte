@@ -78,11 +78,25 @@
   /** The MOR-977 `DisabledReasonCode` a present-but-unusable control carries. */
   const reasonOf = (f: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(f) ? undefined : 'field-not-observed';
-  /** MOR-1422: the SAME gate as `reasonOf`, rendered as operator-facing text
-   *  for `title` (hover) and the `aria-describedby` target below (screen
-   *  readers) — the `data-disabled-reason` attribute `reasonOf` feeds is a
-   *  test/CSS hook only, invisible to both. */
-  const reasonTextOf = (f: TxAuxField<unknown>): string | undefined => disabledReasonText(f.availability);
+  /** MOR-1481 rework (R2): widened from a bare `disabledReasonText(f.availability)`
+   *  call. That original only read `availability` (structural/operational)
+   *  and had no view of `reading.status`, while `disabled` on every control
+   *  below gates on `usable(f)` — structural AND operational AND
+   *  `reading.status === 'known'`. The gap between the two predicates left
+   *  ALL TWELVE fields (not just TUNE, which was the first one caught on the
+   *  live bench) present-and-disabled with NO `title`/`aria-describedby`
+   *  whenever availability was fully declared but the reading itself had
+   *  not arrived yet. The predicate now matches what `disabled` actually
+   *  gates on — usable(), i.e. including reading.status — so reasonOf's
+   *  data hook and the operator-facing text can no longer disagree. Draws
+   *  from the SAME two catalog keys `disabledReasonText` resolves — a
+   *  synthetic `{ structural: true, operational: false }` reaches its
+   *  "not yet observed" branch — so this is not a new vocabulary, just the
+   *  predicate widened to match `disabled`. */
+  const reasonTextOf = (f: TxAuxField<unknown>): string | undefined =>
+    (!f.availability.structural
+      ? disabledReasonText(f.availability)
+      : usable(f) ? undefined : disabledReasonText({ structural: true, operational: false }));
   const textOf = (f: TxAuxField<unknown>): string =>
     f.reading.status !== 'known' ? '?'
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
@@ -130,11 +144,45 @@
   const reasonIdPrefix = `tx-aux-reason-${sequence}`;
   /** `aria-describedby` needs an ID to point at; `aria-description` (no ID,
    *  the string inline) is not yet in Svelte's own attribute typings —
-   *  `undefined` omits the attribute exactly when there is no reason. */
+   *  `undefined` omits the attribute exactly when there is no reason. Gates
+   *  on `reasonTextOf` itself (MOR-1481 rework R2), not a separate
+   *  `disabledReasonText(f.availability)` check — a second predicate here
+   *  could disagree with the text it is supposed to point at. */
   const reasonIdOf = (field: string, f: TxAuxField<unknown>): string | undefined =>
-    disabledReasonText(f.availability) !== undefined ? `${reasonIdPrefix}-${field}` : undefined;
+    reasonTextOf(f) !== undefined ? `${reasonIdPrefix}-${field}` : undefined;
   let txAux = $derived(view.txAux);
   let tuneBlocked = $derived(keyBlockedReasons(view, tx));
+  /** MOR-1481: shares `reasonIdPrefix`'s instance number, same convention as
+   *  `reasonIdOf` above — a DEDICATED target for TUNE's own reason span,
+   *  distinct from the ATU toggle's `reasonIdOf('atu', …)` span even though
+   *  both now read the same `reasonTextOf` (MOR-1481 rework R2: TUNE and the
+   *  ATU toggle are two different controls and must not share one
+   *  `aria-describedby` element). */
+  const tuneAtuReasonId = `${reasonIdPrefix}-tune-atu`;
+  let tuneAtuReason = $derived(txAux ? reasonTextOf(txAux.atu) : undefined);
+  /** MOR-1481: TUNE's own disabled reason — the ATU reading's unusability
+   *  when THAT is what blocks it, else the TX-authority `tuneBlocked`
+   *  reasons (rule (1) — same predicate, same import, as the key button),
+   *  joined the same way the visible `.tx-aux-blocked` list below already
+   *  states them. Never both: an unusable ATU reading makes the
+   *  TX-authority question moot. */
+  let tuneReasonText = $derived(
+    tuneAtuReason
+    ?? (tuneBlocked.length > 0 ? tuneBlocked.map((code) => BLOCKED_LABEL[code]).join('; ') : undefined),
+  );
+  /** MOR-1481 rework (R2): mirrors `tuneReasonText`'s own `??` exclusivity —
+   *  it must, since `title` and `aria-describedby` describe the SAME
+   *  control and cannot disagree about how many reasons apply. The prior
+   *  shape concatenated `tuneAtuReasonId` and `blockedId` whenever BOTH
+   *  conditions were independently true, even though `tuneReasonText` above
+   *  shows only the ATU reason in that case (an unusable ATU reading makes
+   *  the TX-authority question moot) — a screen reader would then read a
+   *  second, TX-authority reason the visible `title` never mentioned. */
+  let tuneDescribedBy = $derived(
+    tuneAtuReason !== undefined
+      ? tuneAtuReasonId
+      : (tuneBlocked.length > 0 ? blockedId : undefined),
+  );
 
   function toggle(field: TxAuxToggleField): void {
     if (txAux && usable(txAux[field])) onToggle?.(field);
@@ -173,10 +221,13 @@
         <!-- Transmit-causing. See the file header, rule (1). -->
         <button
           type="button" class="tx-aux-tune"
-          data-testid="tx-aux-atu-tune" aria-describedby={blockedId}
+          data-testid="tx-aux-atu-tune" title={tuneReasonText} aria-describedby={tuneDescribedBy}
           disabled={tuneBlocked.length > 0 || !usable(txAux.atu)}
           onclick={requestTune}
         >TUNE</button>
+        {#if tuneAtuReason !== undefined}
+          <span id={tuneAtuReasonId} class="sr-only">{tuneAtuReason}</span>
+        {/if}
       {/if}
     </div>
 

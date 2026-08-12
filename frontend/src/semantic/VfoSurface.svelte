@@ -28,6 +28,11 @@
     receiver: ReceiverId;
     slot: VfoSlot;
   }
+
+  /** MOR-1481: per-instance counter for disabled-reason `aria-describedby`
+   *  targets, same convention as `TxAuxSurface`'s own `sequence` — several
+   *  mounted surfaces (dual-receiver cockpit) must not collide. */
+  let sequence = 0;
 </script>
 
 <script lang="ts">
@@ -177,6 +182,57 @@
   );
   let relativeSelectionPending = $state(false);
   const relativeSelectionHelp = 'Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.';
+
+  /** MOR-1481: this instance's id prefix for disabled-reason
+   *  `aria-describedby` targets (mirrors `TxAuxSurface`'s `reasonIdPrefix`). */
+  const reasonIdPrefix = `vfo-reason-${++sequence}`;
+  /** `aria-describedby` needs an id to point at; `undefined` omits the
+   *  attribute exactly when there is no reason — same convention as
+   *  `TxAuxSurface`'s `reasonIdOf`. */
+  function reasonId(suffix: string, text: string | undefined): string | undefined {
+    return text !== undefined ? `${reasonIdPrefix}-${suffix}` : undefined;
+  }
+
+  /**
+   * MOR-1481 — the operator-facing reason a per-tile select control is
+   * disabled. `selectDisabled` (computed per-tile below) combines two
+   * independent gates, and this mirrors them in the same priority: THIS
+   * VFO's own slot identity never resolved (the more specific claim — the
+   * A/B resolver buttons only apply while every VFO reads `relative`, not
+   * this case) beats the MOR-1256 strip-level `disabled` prop (the receiver
+   * itself is operationally unavailable).
+   */
+  function selectReasonText(vfo: VfoViewModel): string | undefined {
+    if (vfo.slot.kind === 'unknown') return t('core.vfo.select.unknownSlotReason');
+    if (disabled) return t('core.vfo.select.receiverUnavailableReason');
+    return undefined;
+  }
+
+  /** MOR-1481 rework (R2): this is the OPS ROW's own reason — no button here
+   *  "selects a VFO" (that is what `relativeSelectionHelp` describes, and it
+   *  is correct on the Select VFO A/B resolver buttons below, which DO). On
+   *  equalize/swap/quick-split/quick-dual-watch the operator has not
+   *  selected anything; the honest claim is that identity itself is
+   *  unresolved, so this draws from its own catalog key instead of
+   *  reusing the resolver buttons' English-only literal. */
+  function identityOnlyReasonText(): string | undefined {
+    return relativeIdentityUnknown ? t('core.vfo.ops.identityUnknownReason') : undefined;
+  }
+  /** MOR-1481: quick-split's own operational gate
+   *  (`viewModel.split.status === 'unknown'`) is the SAME condition
+   *  `toggleSplit`'s fact-toggle carries below, so the two share one
+   *  catalog key rather than a parallel vocabulary. Identity wins when both
+   *  apply — it is the more actionable claim (the A/B resolver exists for
+   *  it), while nothing on this surface resolves an unread split state. */
+  function quickSplitReasonText(): string | undefined {
+    if (relativeIdentityUnknown) return t('core.vfo.ops.identityUnknownReason');
+    return viewModel.split.status === 'unknown' ? t('core.vfo.split.unknownReason') : undefined;
+  }
+  /** Mirrors `quickSplitReasonText` for dual watch. */
+  function quickDualWatchReasonText(): string | undefined {
+    if (relativeIdentityUnknown) return t('core.vfo.ops.identityUnknownReason');
+    return viewModel.dualWatch.status === 'unknown' ? t('core.vfo.dualWatch.unknownReason') : undefined;
+  }
 
   function slotKey(slot: VfoSlot): string {
     if (slot.kind === 'slotted') return slot.id;
@@ -423,16 +479,22 @@
           <span class="vfo-badge" data-vfo-tx-badge>{t('core.vfo.txTarget.label')}</span>
         {/if}
         {#if selectable}
+          {@const selectReason = selectReasonText(vfo)}
           <button
             type="button"
             class="vfo-select"
             data-vfo-select
             disabled={selectDisabled}
+            title={selectReason}
+            aria-describedby={reasonId(`select-${i}`, selectReason)}
             aria-label={t('core.vfo.selectAction', { label: vfo.label })}
             onclick={() => selectVfo(vfo)}
           >
             {vfo.label}
           </button>
+          {#if selectReason !== undefined}
+            <span id={reasonId(`select-${i}`, selectReason)} class="sr-only">{selectReason}</span>
+          {/if}
         {:else}
           <span class="vfo-label" data-vfo-label>{vfo.label}</span>
         {/if}
@@ -440,24 +502,37 @@
     {/each}
   </div>
   {#if relativeIdentityUnknown && relativeReceiver !== null}
+    {@const absoluteReason = disabled
+      ? t('core.vfo.select.receiverUnavailableReason')
+      : relativeSelectionPending
+        ? t('core.vfo.select.pendingReason')
+        : undefined}
+    {@const absoluteReasonId = reasonId('select-absolute', absoluteReason)}
     <div class="vfo-identity-selectors" data-testid="vfo-identity-selectors">
       <button
         type="button" class="vfo-select" data-vfo-select-absolute="A"
-        title={relativeSelectionHelp} aria-label="Select VFO A"
+        title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO A"
+        aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('A')}
       >Select VFO A</button>
       <button
         type="button" class="vfo-select" data-vfo-select-absolute="B"
-        title={relativeSelectionHelp} aria-label="Select VFO B"
+        title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO B"
+        aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('B')}
       >Select VFO B</button>
+      {#if absoluteReason !== undefined}
+        <span id={absoluteReasonId} class="sr-only">{absoluteReason}</span>
+      {/if}
     </div>
   {/if}
   {/if}
 
   {#if showRadioWideFacts}
+    {@const splitReason = viewModel.split.status === 'unknown' ? t('core.vfo.split.unknownReason') : undefined}
+    {@const dualWatchReason = viewModel.dualWatch.status === 'unknown' ? t('core.vfo.dualWatch.unknownReason') : undefined}
     <div class="fact-toggles">
       <button
         type="button"
@@ -466,11 +541,16 @@
         role="switch"
         aria-checked={triState(viewModel.split)}
         aria-label={t('core.vfo.split.label')}
+        title={splitReason}
+        aria-describedby={reasonId('split', splitReason)}
         disabled={viewModel.split.status === 'unknown'}
         onclick={toggleSplit}
       >
         {t('core.vfo.split.label')}: {stateWord(viewModel.split)}
       </button>
+      {#if splitReason !== undefined}
+        <span id={reasonId('split', splitReason)} class="sr-only">{splitReason}</span>
+      {/if}
       {#if hasDualReceiver}
         <button
           type="button"
@@ -479,11 +559,16 @@
           role="switch"
           aria-checked={triState(viewModel.dualWatch)}
           aria-label={t('core.vfo.dualWatch.label')}
+          title={dualWatchReason}
+          aria-describedby={reasonId('dual-watch', dualWatchReason)}
           disabled={viewModel.dualWatch.status === 'unknown'}
           onclick={toggleDualWatch}
         >
           {t('core.vfo.dualWatch.label')}: {stateWord(viewModel.dualWatch)}
         </button>
+        {#if dualWatchReason !== undefined}
+          <span id={reasonId('dual-watch', dualWatchReason)} class="sr-only">{dualWatchReason}</span>
+        {/if}
       {/if}
     </div>
 
@@ -494,21 +579,28 @@
       Button text is the accessible name; no `aria-label` duplicates it.
     -->
     {#if hasVfoPair}
+      {@const equalizeReason = identityOnlyReasonText()}
+      {@const swapReason = identityOnlyReasonText()}
+      {@const quickSplitReason = quickSplitReasonText()}
+      {@const quickDualWatchReason = quickDualWatchReasonText()}
       <div
         class="vfo-ops" data-testid="vfo-ops"
         data-disabled-reason={relativeIdentityUnknown ? 'vfo-identity-unknown' : undefined}
-        title={relativeIdentityUnknown ? relativeSelectionHelp : undefined}
+        title={identityOnlyReasonText()}
       >
         <button type="button" class="vfo-op" data-vfo-equalize
+          title={equalizeReason} aria-describedby={reasonId('equalize', equalizeReason)}
           disabled={relativeIdentityUnknown} onclick={() => { if (!relativeIdentityUnknown) onEqualizeVfos?.(); }}>
           {t('core.vfo.ops.equalize')}
         </button>
         <button type="button" class="vfo-op" data-vfo-swap
+          title={swapReason} aria-describedby={reasonId('swap', swapReason)}
           disabled={relativeIdentityUnknown} onclick={() => { if (!relativeIdentityUnknown) onSwapVfos?.(); }}>
           {t('core.vfo.ops.swap')}
         </button>
         <button
           type="button" class="vfo-op" data-vfo-quick-split
+          title={quickSplitReason} aria-describedby={reasonId('quick-split', quickSplitReason)}
           disabled={relativeIdentityUnknown || viewModel.split.status === 'unknown'}
           onclick={quickSplit}
         >
@@ -516,11 +608,24 @@
         </button>
         <button
           type="button" class="vfo-op" data-vfo-quick-dual-watch
+          title={quickDualWatchReason} aria-describedby={reasonId('quick-dual-watch', quickDualWatchReason)}
           disabled={relativeIdentityUnknown || viewModel.dualWatch.status === 'unknown'}
           onclick={quickDualWatch}
         >
           {t('core.vfo.ops.quickDualWatch')}
         </button>
+        {#if equalizeReason !== undefined}
+          <span id={reasonId('equalize', equalizeReason)} class="sr-only">{equalizeReason}</span>
+        {/if}
+        {#if swapReason !== undefined}
+          <span id={reasonId('swap', swapReason)} class="sr-only">{swapReason}</span>
+        {/if}
+        {#if quickSplitReason !== undefined}
+          <span id={reasonId('quick-split', quickSplitReason)} class="sr-only">{quickSplitReason}</span>
+        {/if}
+        {#if quickDualWatchReason !== undefined}
+          <span id={reasonId('quick-dual-watch', quickDualWatchReason)} class="sr-only">{quickDualWatchReason}</span>
+        {/if}
       </div>
 
       <!--
@@ -549,4 +654,8 @@
   .fact-toggles, .vfo-ops, .vfo-identity-selectors { display: flex; gap: 6px; flex-wrap: wrap; }
   .split-digest { display: flex; gap: 8px; margin: 0; font-size: 11px; color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   .split-digest[data-split-active='false'] { opacity: 0.64; }
+  /* MOR-1481: the `aria-describedby` target for a disabled control's reason
+     — present for screen readers, never painted (the `title` attribute
+     already carries the sighted-hover channel). Mirrors `TxAuxSurface`. */
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>
