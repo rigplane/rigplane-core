@@ -501,6 +501,18 @@ async def test_set_preamp(connected_radio):
     connected_radio._transport.write.assert_called_once_with("PA02;")
 
 
+@pytest.mark.parametrize("level", [-1, 3, 99])
+@pytest.mark.asyncio
+async def test_set_preamp_rejects_out_of_domain_value(connected_radio, level):
+    """MOR-1523: FTX-1 declares preamp levels 0-2 (IPO/AMP1/AMP2) in
+    ``[preamp] values``; a value outside that domain must raise instead of
+    being written to the radio unchecked (mirrors MOR-1522's AGC fix)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(CommandError):
+        await connected_radio.set_preamp(level)
+    connected_radio._transport.write.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # D3: DSP (NB/NR/Notch)
 # ---------------------------------------------------------------------------

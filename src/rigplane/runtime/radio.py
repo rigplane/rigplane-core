@@ -3971,13 +3971,20 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         raise CommandError("Radio returned empty preamp response")
 
     async def set_preamp(self, level: int = 1, receiver: int = RECEIVER_MAIN) -> None:
-        """Set preamp level (0=off, 1=PREAMP1, 2=PREAMP2) (Command29-aware).
+        """Set preamp level (Command29-aware).
+
+        Valid values are declared per radio by the profile's ``[preamp]
+        values`` (e.g. IC-7300 offers OFF/P.AMP1/P.AMP2 = 0/1/2; the X6200
+        only declares OFF/P.AMP1 = 0/1 — it has no second preamp stage).
 
         Args:
-            level: 0=off, 1=PREAMP1, 2=PREAMP2.
+            level: preamp level, must be one of the profile's declared
+                ``[preamp] values``.
             receiver: RECEIVER_MAIN (0) or RECEIVER_SUB (1).
 
         Raises:
+            ValueError: If ``level`` is not in the profile's declared
+                preamp domain.
             CommandError: If DIGI-SEL (IP+) is enabled. On IC-7610, PREAMP and
                 DIGI-SEL are mutually exclusive — disable DIGI-SEL first.
         """
@@ -3990,6 +3997,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_preamp",
         )
+        pre_values = self._profile.pre_values
+        if pre_values is not None and level not in pre_values:
+            raise ValueError(
+                f"Preamp level must be one of {sorted(pre_values)} for "
+                f"{self._profile.model}, got {level}"
+            )
 
         # Pre-flight: check DIGI-SEL / PREAMP mutual exclusion
         if level > 0 and "digisel" in self.capabilities:

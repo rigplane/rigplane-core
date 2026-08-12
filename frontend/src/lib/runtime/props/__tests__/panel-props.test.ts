@@ -732,6 +732,33 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
       expect(props.antennaCount).toBe(2);
     });
   });
+
+  describe('toRfFrontEndProps — preOptions (MOR-1523 R1)', () => {
+    it('does not invent a 3-level [0,1,2] preamp catalog without a declared preValues domain', () => {
+      // Last un-converted twin of A11's `toAgcProps` fix: pre-fix this
+      // fabricated an IC-7300-shaped [0,1,2] PRE button group even for a
+      // profile (or an entirely absent capabilities payload) that never
+      // declared it — an X6200 (declared [0,1], no P.AMP2 stage) would get
+      // an option it can't honor.
+      const props = toRfFrontEndProps(makeState(), {
+        capabilities: ['preamp'],
+      } as any);
+      expect(props.preValues).toEqual([]);
+      expect(props.preOptions).toEqual([]);
+    });
+
+    it('still reports the real declared preamp option set', () => {
+      const props = toRfFrontEndProps(makeState(), {
+        capabilities: ['preamp'],
+        preValues: [0, 1],
+      } as any);
+      expect(props.preValues).toEqual([0, 1]);
+      expect(props.preOptions).toEqual([
+        { value: 0, label: 'OFF' },
+        { value: 1, label: 'P1' },
+      ]);
+    });
+  });
 });
 
 /**
