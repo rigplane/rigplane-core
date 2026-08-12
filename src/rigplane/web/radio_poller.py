@@ -202,17 +202,21 @@ _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 
-# Floor for the derived tx_target field's own freshness TTL when a profile
-# has no [state_acquisition] block at all (MOR-1496 review R3, F1 follow-up).
-# ``4 * self._fast_interval`` alone is not a defensible TX-gate horizon: on a
-# LAN profile (``_FAST_INTERVAL`` = 25ms) that floors to 0.1s, which the
-# verifier measured causing 6.6 stale-transitions/s on an idle IC-705 (no
-# [state_acquisition] block). Matches the concrete 3.0s
-# ``freshness_ttl_seconds`` IC-7300's own ``[state_acquisition]`` block
-# already uses for this same field via ``policy_for`` — not the unrelated
-# generic ``AcquisitionPolicy`` dataclass default (15.0s, calibrated for
-# slower-changing fields, not a TX gate).
-_TX_TARGET_MIN_MAX_AGE: float = 3.0
+# Fallback for the derived tx_target field's own freshness TTL when a
+# profile has no [state_acquisition] block at all (MOR-1496 review R3, F1
+# follow-up). Renamed from ``_TX_TARGET_MIN_MAX_AGE`` (MOR-1501, #2422
+# review) — despite the "MIN" naming this is a straight substitute, not a
+# ``max()``-clamped floor: when a profile has no acquisition policy at all
+# there is no computed TTL to clamp against, so ``_tx_target_max_age`` swaps
+# this value in outright. ``4 * self._fast_interval`` alone is not a
+# defensible TX-gate horizon: on a LAN profile (``_FAST_INTERVAL`` = 25ms)
+# that floors to 0.1s, which the verifier measured causing 6.6
+# stale-transitions/s on an idle IC-705 (no [state_acquisition] block).
+# Matches the concrete 3.0s ``freshness_ttl_seconds`` IC-7300's own
+# ``[state_acquisition]`` block already uses for this same field via
+# ``policy_for`` — not the unrelated generic ``AcquisitionPolicy`` dataclass
+# default (15.0s, calibrated for slower-changing fields, not a TX gate).
+_TX_TARGET_FALLBACK_MAX_AGE: float = 3.0
 
 _KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease is ours
 
@@ -3534,10 +3538,10 @@ class RadioPoller:
         to ``default_policy`` for any path with no declared capability (3.0s
         on IC-7300) — which needs no capability declaration for
         ``tx_target`` itself; see :meth:`_publish_tx_target` for why that
-        declaration must never exist. Falls back to ``_TX_TARGET_MIN_MAX_AGE``
-        (floored, not a bare multiple of the poll loop's own fast interval —
-        see that constant's comment) if a profile has no acquisition policy
-        at all.
+        declaration must never exist. Falls back to
+        ``_TX_TARGET_FALLBACK_MAX_AGE`` (a fixed default, not a bare multiple
+        of the poll loop's own fast interval — see that constant's comment)
+        if a profile has no acquisition policy at all.
         """
         acquisition = self._profile.state_acquisition
         ttl = (
@@ -3547,7 +3551,7 @@ class RadioPoller:
                 FieldPath.global_("tx_state", "tx_target")
             ).freshness_ttl_seconds
         )
-        return ttl if ttl is not None else _TX_TARGET_MIN_MAX_AGE
+        return ttl if ttl is not None else _TX_TARGET_FALLBACK_MAX_AGE
 
     def _publish_tx_target(self) -> None:
         """Recompute and, if changed or stale, republish tx_target (MOR-1496).

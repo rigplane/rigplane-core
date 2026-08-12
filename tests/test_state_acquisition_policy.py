@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import textwrap
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -653,6 +653,129 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     assert profile.cmd29_routes == frozenset()
 
 
+# Ingress mappings that live as hardcoded command/sub branches in
+# ``_observations_from_frame`` rather than one of its lookup dicts: rit_freq/
+# rit_on/rit_tx (cmd 0x21), agc_time_constant (cmd 0x1A sub 0x04),
+# filter_width (cmd 0x1A sub 0x03, profile-dependent decode), cw_pitch/
+# key_speed (cmd 0x14, non-linear decode helpers), and vox_delay (cmd 0x1A
+# sub 0x05, 2-byte ctl-mem prefix rather than a plain sub byte). Kept as an
+# explicit set -- not derivable from a dict import -- because the production
+# code itself is branch-shaped there, not table-shaped; extend this set if a
+# future field adds another such branch.
+_HARDCODED_OBSERVABLE_FIELDS = {
+    ("global", "operator_controls", "rit_freq"),
+    ("global", "tx_state", "rit_on"),
+    ("global", "tx_state", "rit_tx"),
+    ("receiver", "operator_controls", "agc_time_constant"),
+    ("receiver", "freq_mode", "filter_width"),
+    ("global", "operator_controls", "cw_pitch"),
+    ("global", "operator_controls", "key_speed"),
+    ("global", "operator_controls", "vox_delay"),
+}
+
+# Minimal, per-field synthetic response payload for the round-trip probe
+# below. For vox_delay this is APPENDED after the 2-byte ctl-mem prefix the
+# query itself supplies (see ``_round_trip_observes``); for every other
+# field it is the frame's entire ``data``. Values are chosen only to satisfy
+# each branch's own length/shape checks (e.g. "at least 3 bytes", "at least
+# 2 bytes") -- the decoded VALUE is never asserted, only that a matching
+# observation is produced at all.
+_HARDCODED_SYNTHETIC_PAYLOAD: dict[str, bytes] = {
+    "rit_freq": b"\x00\x00\x00",
+    "rit_on": b"\x01",
+    "rit_tx": b"\x01",
+    "agc_time_constant": b"\x00",
+    "filter_width": b"\x01",
+    "cw_pitch": b"\x00\x00",
+    "key_speed": b"\x00\x00",
+    "vox_delay": b"\x00",
+}
+
+
+def _table_backed_ingress_spec(command: int, sub: int) -> tuple[str, str, str] | None:
+    """Resolve the ingress table entry AT this exact (command, sub) key.
+
+    Mirrors ``_civ_rx._observations_from_frame``'s own table selection --
+    looked up by the SAME sub key the query uses, not scanned out of a union
+    of every table's values. That distinction matters: a transposed ingress
+    key (e.g. filter_shape accidentally keyed under 0x55 instead of the real
+    0x56) still leaves the correct spec present *somewhere* in a
+    ``set(table.values())`` union, so a plain membership check against that
+    union cannot catch it. A keyed ``.get(sub)`` lookup can: it fails (or
+    resolves to the WRONG spec) the moment the query's sub and the ingress
+    table's key disagree.
+    """
+
+    from rigplane.runtime import _civ_rx
+
+    if command == 0x14:
+        return _civ_rx._OBSERVABLE_CMD14_FIELDS.get(sub)
+    if command == 0x15:
+        return _civ_rx._OBSERVABLE_CMD15_FIELDS.get(sub)
+    if command == 0x16:
+        bool_spec = _civ_rx._OBSERVABLE_CMD16_FIELDS.get(sub)
+        if bool_spec is not None:
+            return bool_spec
+        value_entry = _civ_rx._OBSERVABLE_CMD16_VALUE_FIELDS.get(sub)
+        return None if value_entry is None else value_entry[0]
+    if command == 0x1B:
+        return _civ_rx._OBSERVABLE_CMD1B_FIELDS.get(sub)
+    return None
+
+
+def _round_trip_observes(
+    radio: Any,
+    path: FieldPath,
+    query: tuple[int, int | bytes | None, int | None],
+) -> None:
+    """Push a synthetic response for ``query`` through the REAL ingress
+    decode and assert ``path`` comes out the other side.
+
+    Unlike a static table/set lookup, this exercises the actual branch in
+    ``_observations_from_frame`` end to end: it fails just as loudly whether
+    the bug is a wrong sub byte, a wrong ctl-mem prefix (vox_delay), or a
+    branch condition that silently doesn't match the exact bytes
+    ``IcomCivAcquisitionExecutor.query_for_path`` sends -- there is no
+    static structure left to reason about that a value-set membership check
+    could paper over.
+    """
+
+    from rigplane.core.acquisition_scheduler import split_ctl_mem_sub
+    from rigplane.commands import CONTROLLER_ADDR
+    from rigplane.types import CivFrame
+
+    command, sub_raw, receiver = query
+    civ_sub, prefix = split_ctl_mem_sub(sub_raw)
+    payload = _HARDCODED_SYNTHETIC_PAYLOAD[path.name]
+    frame = CivFrame(
+        to_addr=CONTROLLER_ADDR,
+        from_addr=0x94,  # IC-7300's civ_addr (rigs/ic7300.toml)
+        command=command,
+        sub=civ_sub,
+        data=prefix + payload,
+        receiver=receiver,
+    )
+
+    observations = radio._civ_runtime._observations_from_frame(frame)  # noqa: SLF001
+    expected = (path.scope.value, path.family.value, path.name)
+    matched = [
+        observation
+        for observation in observations
+        if (
+            observation.path.scope.value,
+            observation.path.family.value,
+            observation.path.name,
+        )
+        == expected
+    ]
+    assert matched, (
+        f"{path}: synthetic response (command=0x{command:02x}, sub={civ_sub!r}, "
+        f"data={(prefix + payload).hex()}) produced no matching observation -- "
+        "either the ingress branch doesn't match what query_for_path actually "
+        "sends, or a primed read for this path would never leave UNKNOWN"
+    )
+
+
 def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None:
     """MOR-1483/1491/1492/1493 (field-policy membership wave) guard.
 
@@ -669,10 +792,24 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
     a structural property, not a hardcoded list of field names -- so any
     future membership addition of this shape is caught by this same test
     without editing it.
+
+    MOR-1501 (#2430 note) hardened the ingress check itself: the previous
+    version only asserted the query's (scope, family, name) triple appeared
+    SOMEWHERE in the union of every ingress table's values, which cannot
+    catch a query-sub / ingress-key mismatch (e.g. a transposed 0x56 -> 0x55)
+    as long as the triple is still present at some OTHER key. Table-backed
+    fields are now checked by keyed lookup at the query's own sub byte;
+    branch-shaped fields (rit_freq/rit_on/rit_tx, agc_time_constant,
+    filter_width, cw_pitch, key_speed, vox_delay) are checked with an actual
+    round trip through ``_observations_from_frame`` using a synthetic
+    response built from the query's own command/sub/prefix bytes -- a
+    transposed sub or a wrong ctl-mem prefix both make the corresponding
+    branch condition fail to match, producing zero observations and a red
+    test either way.
     """
 
     from rigplane.core.acquisition_scheduler import IcomCivAcquisitionExecutor
-    from rigplane.runtime import _civ_rx
+    from rigplane.radio import IcomRadio
 
     profile = get_radio_profile("IC-7300")
     acquisition = profile.state_acquisition
@@ -684,37 +821,7 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
         return None
 
     executor = IcomCivAcquisitionExecutor(_noop_send)
-
-    # Ingress mappings that live as hardcoded command/sub branches in
-    # ``_observations_from_frame`` rather than one of its lookup dicts:
-    # rit_freq/rit_on/rit_tx (cmd 0x21), agc_time_constant (cmd 0x1A sub
-    # 0x04), filter_width (cmd 0x1A sub 0x03, profile-dependent decode), and
-    # cw_pitch/key_speed (cmd 0x14, non-linear decode helpers). Kept as an
-    # explicit set -- not derivable from a dict import -- because the
-    # production code itself is branch-shaped there, not table-shaped;
-    # extend this set if a future field adds another such branch.
-    hardcoded_observable = {
-        ("global", "operator_controls", "rit_freq"),
-        ("global", "tx_state", "rit_on"),
-        ("global", "tx_state", "rit_tx"),
-        ("receiver", "operator_controls", "agc_time_constant"),
-        ("receiver", "freq_mode", "filter_width"),
-        ("global", "operator_controls", "cw_pitch"),
-        ("global", "operator_controls", "key_speed"),
-        # MOR-1483 (leg 2): voxDelay's ctl-mem (0x1A/0x05) ingress decode is a
-        # hardcoded branch keyed by a 2-byte control-number prefix, not a
-        # dict entry keyed by a plain sub byte -- same shape as the other
-        # entries in this set.
-        ("global", "operator_controls", "vox_delay"),
-    }
-    table_observable = set(_civ_rx._OBSERVABLE_CMD14_FIELDS.values())
-    table_observable |= set(_civ_rx._OBSERVABLE_CMD15_FIELDS.values())
-    table_observable |= set(_civ_rx._OBSERVABLE_CMD16_FIELDS.values())
-    table_observable |= {
-        spec for spec, _decode_mode in _civ_rx._OBSERVABLE_CMD16_VALUE_FIELDS.values()
-    }
-    table_observable |= set(_civ_rx._OBSERVABLE_CMD1B_FIELDS.values())
-    known_observable = table_observable | hardcoded_observable
+    radio = IcomRadio(host="192.168.1.100", model="IC-7300")
 
     non_polling_paths = [
         path
@@ -740,9 +847,22 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
         )
 
         key = (path.scope.value, path.family.value, path.name)
-        assert key in known_observable, (
-            f"{path}: no ingress observation mapping -- a primed read for "
-            "this path would never leave UNKNOWN"
+        if key in _HARDCODED_OBSERVABLE_FIELDS:
+            _round_trip_observes(radio, path, query)
+            continue
+
+        command, sub = query[0], query[1]
+        assert isinstance(sub, int), (
+            f"{path}: table-backed field must query with a plain int sub, "
+            f"got {sub!r} -- extend _HARDCODED_OBSERVABLE_FIELDS if this is "
+            "actually a new branch-shaped ingress mapping"
+        )
+        resolved = _table_backed_ingress_spec(command, sub)
+        assert resolved == key, (
+            f"{path}: query sends command=0x{command:02x} sub=0x{sub:02x}, "
+            f"but the ingress table at that exact key resolves to {resolved} "
+            f"instead of {key} -- a primed read for this path would never "
+            "leave UNKNOWN"
         )
 
 
