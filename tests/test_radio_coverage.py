@@ -2063,12 +2063,14 @@ async def test_get_rf_gain_returns_level(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """get_rf_gain() returns parsed level on success (line 1210)."""
-    # Build RF gain response: cmd 0x14 sub 0x02, value BCD
+    # Build RF gain response: cmd 0x14 sub 0x02, value BCD.
+    # IC-7610 declares a cmd29 route for 0x14/0x02, so MAIN is now
+    # cmd29-wrapped (MOR-1543) — the response must match.
     d = f"{200:04d}"
     b0 = (int(d[0]) << 4) | int(d[1])
     b1 = (int(d[2]) << 4) | int(d[3])
-    civ = build_civ_frame(
-        CONTROLLER_ADDR, IC_7610_ADDR, 0x14, sub=0x02, data=bytes([b0, b1])
+    civ = build_cmd29_frame(
+        CONTROLLER_ADDR, IC_7610_ADDR, 0x14, sub=0x02, data=bytes([b0, b1]), receiver=0
     )
     mock_transport.queue_response(_wrap_civ_in_udp(civ))
     result = await radio.get_rf_gain()
@@ -2078,12 +2080,16 @@ async def test_get_rf_gain_returns_level(
 async def test_get_af_level_returns_level(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """get_af_level() returns parsed level on success (line 1228)."""
+    """get_af_level() returns parsed level on success (line 1228).
+
+    IC-7610 declares a cmd29 route for 0x14/0x01, so MAIN is now
+    cmd29-wrapped (MOR-1543) — the response must match.
+    """
     d = f"{150:04d}"
     b0 = (int(d[0]) << 4) | int(d[1])
     b1 = (int(d[2]) << 4) | int(d[3])
-    civ = build_civ_frame(
-        CONTROLLER_ADDR, IC_7610_ADDR, 0x14, sub=0x01, data=bytes([b0, b1])
+    civ = build_cmd29_frame(
+        CONTROLLER_ADDR, IC_7610_ADDR, 0x14, sub=0x01, data=bytes([b0, b1]), receiver=0
     )
     mock_transport.queue_response(_wrap_civ_in_udp(civ))
     result = await radio.get_af_level()

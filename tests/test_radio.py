@@ -713,8 +713,12 @@ class TestSquelch:
     async def test_levels_get_squelch_icom(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """get_squelch on MAIN parses a non-cmd29 0x14 0x03 BCD response."""
-        mock_transport.queue_response(_level_response(0x03, 200))
+        """get_squelch on MAIN parses a cmd29-wrapped 0x14 0x03 BCD response.
+
+        IC-7610 declares a cmd29 route for 0x14/0x03, so MAIN is now
+        cmd29-wrapped too (MOR-1543) — previously only SUB wrapped.
+        """
+        mock_transport.queue_response(_level_response(0x03, 200, receiver=0))
         assert await radio.get_squelch() == 200
 
     @pytest.mark.asyncio
@@ -2133,6 +2137,7 @@ class TestDspLevelParity:
             ("get_pbt_inner", 0x07, 92, 1),
             ("get_pbt_outer", 0x08, 93, 1),
             ("get_notch_filter", 0x0D, 96, 1),
+            ("get_notch_filter", 0x0D, 97, 0),
             ("get_nb_level", 0x12, 94, 1),
             ("get_digisel_shift", 0x13, 95, 1),
         ],
@@ -2156,7 +2161,6 @@ class TestDspLevelParity:
         ("method_name", "sub", "value"),
         [
             ("get_mic_gain", 0x0B, 101),
-            ("get_notch_filter", 0x0D, 102),
             ("get_compressor_level", 0x0E, 103),
             ("get_break_in_delay", 0x0F, 104),
             ("get_drive_gain", 0x14, 105),
