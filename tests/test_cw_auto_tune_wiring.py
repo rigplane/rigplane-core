@@ -13,11 +13,14 @@ from rigplane.dsp.tap_registry import TapRegistry
 from rigplane.radio_state import RadioState, ReceiverState
 from rigplane.web.handlers.control import ControlHandler
 
+_DEFAULT_RADIO = object()
+
 
 def _make_handler(
     *,
     radio_state: RadioState | None = None,
-    radio: Any = None,
+    radio: Any = _DEFAULT_RADIO,
+    audio_fft_available: bool = True,
 ) -> ControlHandler:
     """Build a ControlHandler with a fake server and WebSocket."""
     ws = MagicMock()
@@ -39,12 +42,16 @@ def _make_handler(
     server = SimpleNamespace(
         _audio_broadcaster=broadcaster,
         _radio_state=radio_state,
+        _audio_fft_scope=object() if audio_fft_available else None,
         command_queue=command_queue,
     )
 
+    if radio is _DEFAULT_RADIO:
+        radio = SimpleNamespace(capabilities={"cw", "audio"}, has_usb_audio=True)
+
     handler = ControlHandler(
         ws=ws,
-        radio=radio if radio is not None else MagicMock(),
+        radio=radio,
         server_version="test",
         radio_model="IC-7610",
         server=server,
@@ -56,8 +63,41 @@ class TestCwAutoTuneWiring:
     """Test cw_auto_tune command dispatch in ControlHandler."""
 
     async def test_cw_auto_tune_in_commands_set(self) -> None:
-        """cw_auto_tune is listed in _COMMANDS."""
+        """cw_auto_tune is an RX correction, not a TX-class command."""
         assert "cw_auto_tune" in ControlHandler._COMMANDS
+        assert "cw_auto_tune" not in ControlHandler._TX_COMMANDS
+
+    @pytest.mark.parametrize(
+        ("radio", "audio_fft_available"),
+        [
+            (None, True),
+            (SimpleNamespace(capabilities={"audio"}, has_usb_audio=True), True),
+            (SimpleNamespace(capabilities={"cw"}, has_usb_audio=True), True),
+            (SimpleNamespace(capabilities={"cw", "audio"}, has_usb_audio=True), False),
+        ],
+        ids=("missing-radio", "missing-cw", "missing-audio", "missing-fft"),
+    )
+    async def test_missing_rx_analysis_prerequisite_rejects_before_side_effects(
+        self, radio: Any, audio_fft_available: bool
+    ) -> None:
+        """CW auto-tune needs CW, RX audio, and an active server FFT source."""
+        handler = _make_handler(
+            radio=radio,
+            audio_fft_available=audio_fft_available,
+        )
+        registry = MagicMock()
+        handler._server._audio_broadcaster._tap_registry = registry
+
+        with (
+            patch("rigplane.cw_auto_tuner.CwAutoTuner") as tuner,
+            pytest.raises(RuntimeError, match="CW auto-tune requires RX audio FFT"),
+        ):
+            await handler._cw_auto_tune()
+
+        tuner.return_value.start_collection.assert_not_called()
+        registry.register.assert_not_called()
+        handler._server._audio_broadcaster.ensure_relay.assert_not_awaited()
+        handler._server.command_queue.put.assert_not_called()
 
     async def test_timeout_returns_not_detected(self) -> None:
         """If no audio arrives within 3s, return detected=None."""

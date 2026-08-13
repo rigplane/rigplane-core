@@ -158,6 +158,7 @@ if TYPE_CHECKING:
 from ...capabilities import (
     CAP_AF_LEVEL,
     CAP_ANTENNA,
+    CAP_AUDIO,
     CAP_BAND_EDGE,
     CAP_BREAK_IN,
     CAP_CW,
@@ -1773,6 +1774,11 @@ class ControlHandler:
 
         if self._server is None:
             raise RuntimeError("server not available")
+        if (
+            not {CAP_CW, CAP_AUDIO}.issubset(runtime_capabilities(self._radio))
+            or getattr(self._server, "_audio_fft_scope", None) is None
+        ):
+            raise RuntimeError("CW auto-tune requires RX audio FFT")
 
         broadcaster = self._server._audio_broadcaster
         tuner = CwAutoTuner()
