@@ -21,6 +21,20 @@
  * loaders, and three assertion primitives (`expectFrames`, `expectRefusal`,
  * `expectIntentTransport`). No profile-specific literal belongs here — see
  * `profiles.ts` for per-radio fixture data.
+ *
+ * MOR-1562 (C8) extension: `panel-adapters.ts`'s `derive*Props` seams read
+ * `runtime.state`/`runtime.caps` (the `FrontendRuntime` singleton,
+ * `../frontend-runtime`), not the `getRadioState()`/`getCapabilities()`
+ * store accessors the six mocks above already cover — the pre-C8 harness
+ * stubbed only `rxEnabled`/`setMuted`/`setRxLive`/`setRxVolume`/`setVolume`
+ * on that mock (audio-panel seam needs), so `deriveXxxProps()` calls would
+ * have thrown on `undefined.state`. `get state()`/`get caps()` are added
+ * below, mirroring the real `FrontendRuntime` getters
+ * (`radio.current`/`getCapabilities()`) exactly but sourced from `h.state`/
+ * `h.caps` like every other mock here. Also adds `getMeterCalibration`/
+ * `getMeterRedline` to the capabilities-store mock — `capabilities-adapter.ts`
+ * imports both alongside the already-mocked `getControlRange`, and omitting
+ * them would leave two of that adapter's four exports uncallable.
  */
 import { expect, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -78,6 +92,14 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
     && h.caps?.providerGeneration === providerGeneration),
   getControlRange: vi.fn((name: string) =>
     (h.caps?.controls as Record<string, unknown> | undefined)?.[name] ?? null),
+  // MOR-1562: mirrors the real `capabilities.svelte.ts` implementations
+  // (`capabilities?.meterCalibrations?.[x] ?? null` / `...meterRedlines...`)
+  // exactly — `capabilities-adapter.ts`'s `getMeterCalibration`/
+  // `getMeterRedline` are thin passthroughs to these two.
+  getMeterCalibration: vi.fn((meterType: string) =>
+    (h.caps?.meterCalibrations as Record<string, unknown> | undefined)?.[meterType] ?? null),
+  getMeterRedline: vi.fn((meterType: string) =>
+    (h.caps?.meterRedlines as Record<string, unknown> | undefined)?.[meterType] ?? null),
 }));
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
@@ -87,6 +109,13 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     setRxLive: h.setRxLive,
     setRxVolume: h.setRxVolume,
     setVolume: h.setVolume,
+    // MOR-1562: `panel-adapters.ts`'s `derive*Props` seams read these two
+    // directly off the runtime singleton — sourced from the same `h.state`/
+    // `h.caps` every other seam in this harness reads, so a test setting
+    // `h.state`/`h.caps` (the existing `fixtureState`/`fixtureCaps` pattern)
+    // covers this seam with no separate setup.
+    get state() { return h.state; },
+    get caps() { return h.caps; },
   },
 }));
 
