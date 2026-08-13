@@ -3028,7 +3028,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x1A, 0x09, receiver=receiver, operation="get_af_mute"
         )
-        civ = get_af_mute(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x1A, 0x09)
+        civ = get_af_mute(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         return await self._get_bool_value(
             civ, key=f"get_af_mute:{receiver}", command=0x1A, sub=0x09
         )
@@ -3039,8 +3040,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x1A, 0x09, receiver=receiver, operation="set_af_mute"
         )
+        cmd29 = self._profile.supports_cmd29(0x1A, 0x09)
         await self._send_fire_and_forget(
-            set_af_mute(on, to_addr=self._radio_addr, receiver=receiver)
+            set_af_mute(
+                on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            )
         )
 
     async def get_s_meter_sql_status(self, receiver: int = RECEIVER_MAIN) -> bool:
@@ -3073,13 +3077,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_agc(self, receiver: int = RECEIVER_MAIN) -> AgcMode:
         """Read AGC mode."""
         self._require_receiver(receiver, operation="get_agc")
-        command29 = receiver != RECEIVER_MAIN
-        if command29:
-            self._require_cmd29_route(
-                0x16, 0x12, receiver=receiver, operation="get_agc"
-            )
+        self._require_cmd29_route(0x16, 0x12, receiver=receiver, operation="get_agc")
+        cmd29 = self._profile.supports_cmd29(0x16, 0x12)
         value = await self._get_bcd_level(
-            get_agc(to_addr=self._radio_addr, receiver=receiver),
+            get_agc(to_addr=self._radio_addr, receiver=receiver, command29=cmd29),
             key=f"get_agc:{receiver}",
             command=0x16,
             sub=0x12,
@@ -3098,10 +3099,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         must not be rejected just because it isn't an IC-7610 mode (MOR-1522).
         """
         self._require_receiver(receiver, operation="set_agc")
-        if receiver != RECEIVER_MAIN:
-            self._require_cmd29_route(
-                0x16, 0x12, receiver=receiver, operation="set_agc"
-            )
+        self._require_cmd29_route(0x16, 0x12, receiver=receiver, operation="set_agc")
+        cmd29 = self._profile.supports_cmd29(0x16, 0x12)
         mode_int = int(mode)
         agc_modes = self._profile.agc_modes
         if agc_modes is not None and mode_int not in agc_modes:
@@ -3110,7 +3109,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 f"{self._profile.model}, got {mode_int}"
             )
         await self._send_fire_and_forget(
-            set_agc(mode_int, to_addr=self._radio_addr, receiver=receiver)
+            set_agc(
+                mode_int, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            )
         )
 
     async def get_audio_peak_filter(
@@ -4028,7 +4029,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._preamp_level = level
 
     async def get_digisel(self, receiver: int = RECEIVER_MAIN) -> bool:
-        """Read DIGI-SEL status (IC-7610 frontend selector)."""
+        """Read DIGI-SEL status (IC-7610 frontend selector).
+
+        Wrapping is gated purely on ``self._profile.supports_cmd29(0x16,
+        0x4E)`` via ``_require_cmd29_route`` (a no-op for receiver=MAIN,
+        which raises for receiver!=MAIN without a route) — matching every
+        other command in this family. Previously this also hard-raised
+        ``CommandError`` for receiver=MAIN when the profile lacked the
+        route, instead of unwrapping like the rest of the family (MOR-1537).
+        """
         self._check_connected()
         self._require_capability("digisel", operation="get_digisel")
         self._require_receiver(receiver, operation="get_digisel")
@@ -4038,12 +4047,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="get_digisel",
         )
-        if not self._profile.supports_cmd29(0x16, 0x4E):
-            raise CommandError(
-                f"get_digisel is unsupported by profile {self._profile.model}: "
-                "no cmd29 route for command 0x16/0x4E"
-            )
-        civ = get_digisel(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x4E)
+        civ = get_digisel(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         resp = await self._send_civ_expect(civ, label="get_digisel")
         if not resp.data:
             raise CommandError("Radio returned empty DIGI-SEL response")
@@ -4062,7 +4067,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_digisel",
         )
-        civ = set_digisel(on, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x4E)
+        civ = set_digisel(
+            on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         resp = await self._send_civ_expect(civ, label="set_digisel")
         ack = parse_ack_nak(resp)
         if ack is False:

@@ -896,7 +896,7 @@ class RadioPoller:
         sub = wire[1] if len(wire) > 1 else None
         extra = bytes(wire[2:]) if len(wire) > 2 else b""
         payload = extra + data
-        if receiver != 0 and self._profile.supports_cmd29(cmd, sub):
+        if self._profile.supports_cmd29(cmd, sub):
             inner = bytes([receiver, cmd])
             if sub is not None:
                 inner += bytes([sub])

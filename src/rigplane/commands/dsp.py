@@ -181,6 +181,8 @@ def get_digisel(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build CI-V command to read DIGI-SEL status (Command29-aware)."""
     if cmd_map is not None:
@@ -192,9 +194,15 @@ def get_digisel(
             receiver=receiver,
             command29=True,
         )
-    return build_cmd29_frame(
-        to_addr, from_addr, _CMD_PREAMP, sub=_SUB_DIGISEL_STATUS, receiver=receiver
-    )
+    if command29:
+        return build_cmd29_frame(
+            to_addr,
+            from_addr,
+            _CMD_PREAMP,
+            sub=_SUB_DIGISEL_STATUS,
+            receiver=receiver,
+        )
+    return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=_SUB_DIGISEL_STATUS)
 
 
 def set_digisel(
@@ -203,6 +211,8 @@ def set_digisel(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Set DIGI-SEL status (Command29-aware)."""
     if cmd_map is not None:
@@ -215,13 +225,21 @@ def set_digisel(
             receiver=receiver,
             command29=True,
         )
-    return build_cmd29_frame(
+    if command29:
+        return build_cmd29_frame(
+            to_addr,
+            from_addr,
+            _CMD_PREAMP,
+            sub=_SUB_DIGISEL_STATUS,
+            data=bytes([_bcd_byte(1 if on else 0)]),
+            receiver=receiver,
+        )
+    return build_civ_frame(
         to_addr,
         from_addr,
         _CMD_PREAMP,
         sub=_SUB_DIGISEL_STATUS,
         data=bytes([_bcd_byte(1 if on else 0)]),
-        receiver=receiver,
     )
 
 
@@ -342,6 +360,8 @@ def get_af_mute(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read AF Mute command."""
     if cmd_map is not None:
@@ -353,9 +373,11 @@ def get_af_mute(
             receiver=receiver,
             command29=True,
         )
-    return build_cmd29_frame(
-        to_addr, from_addr, _CMD_CTL_MEM, sub=_SUB_AF_MUTE, receiver=receiver
-    )
+    if command29:
+        return build_cmd29_frame(
+            to_addr, from_addr, _CMD_CTL_MEM, sub=_SUB_AF_MUTE, receiver=receiver
+        )
+    return build_civ_frame(to_addr, from_addr, _CMD_CTL_MEM, sub=_SUB_AF_MUTE)
 
 
 def set_af_mute(
@@ -364,6 +386,8 @@ def set_af_mute(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set AF Mute command."""
     if cmd_map is not None:
@@ -376,13 +400,21 @@ def set_af_mute(
             receiver=receiver,
             command29=True,
         )
-    return build_cmd29_frame(
+    if command29:
+        return build_cmd29_frame(
+            to_addr,
+            from_addr,
+            _CMD_CTL_MEM,
+            sub=_SUB_AF_MUTE,
+            data=b"\x01" if on else b"\x00",
+            receiver=receiver,
+        )
+    return build_civ_frame(
         to_addr,
         from_addr,
         _CMD_CTL_MEM,
         sub=_SUB_AF_MUTE,
         data=b"\x01" if on else b"\x00",
-        receiver=receiver,
     )
 
 
@@ -391,6 +423,8 @@ def get_agc(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read AGC mode command."""
     return _build_function_get(
@@ -398,7 +432,7 @@ def get_agc(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=receiver != RECEIVER_MAIN,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_agc",
     )
@@ -410,6 +444,8 @@ def set_agc(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set AGC mode command.
 
@@ -427,7 +463,7 @@ def set_agc(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=receiver != RECEIVER_MAIN,
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_agc",
     )
