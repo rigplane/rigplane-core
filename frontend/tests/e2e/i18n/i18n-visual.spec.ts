@@ -319,7 +319,28 @@ async function captureBaseline(
   await page.screenshot({ path: dest, fullPage: false });
 }
 
-test.describe.configure({ mode: 'serial' });
+// MOR-1549: this file used to force `mode: 'serial'` here, which made the
+// first failing screenshot-diff case (see the `MOR-1400 production
+// design-language contract` describe below) abort every later case in the
+// file as SKIPPED. Serial's SKIPPED cascade burned one CI round per
+// still-unmeasured scene on past re-pins — MOR-1486 needed four rounds;
+// MOR-1474 needed three, with rounds 1-2 establishing nothing about the
+// FieldLine pair serial fail-fast never reached (see the production-root
+// README's re-pin history) — leaving unmeasured scenes reportable as if
+// they were reassuring.
+//
+// Investigation: no case in this file depends on another. Every test
+// builds its own page/context from scratch via `preparePage`/`gotoApp`,
+// and any workspace/localStorage state a case needs is stamped fresh on
+// that page's own init script — there is no shared mutable fixture to
+// protect with serial ordering. `playwright.i18n.config.ts` already pins
+// `fullyParallel: false` and `workers: 1` for this project, so
+// declaration order is preserved regardless of `mode`. Explicit
+// `mode: 'default'` keeps that order without serial's fail-fast/SKIPPED
+// cascade — every case now runs to completion on every run, including the
+// four screenshot-diff comparisons below, which are no longer skipped
+// after an earlier one fails.
+test.describe.configure({ mode: 'default' });
 
 test.describe('i18n visual smoke (RP-ML-006)', () => {
   test.beforeAll(async () => {
