@@ -62,6 +62,12 @@ features = [
     "attenuator",
     "preamp",
     "digisel",
+    # DIGI-SEL Shift (0x14 0x13 cmd29 level) is a distinct CI-V command from
+    # the 0x16 0x4E toggle above — IC-7610 has both (see get_digisel_shift/
+    # set_digisel_shift in [commands] below). Declared separately so the
+    # control handler can gate set_digisel_shift on its own tag instead of
+    # the shared "digisel" one (MOR-1544).
+    "digisel_shift",
     "ip_plus",
     # Antenna
     "antenna",

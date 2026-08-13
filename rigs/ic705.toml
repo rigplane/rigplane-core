@@ -55,6 +55,13 @@ features = [
     # hamlib-doc-sourced (repo's ic705-research.md is no longer vendored
     # here) — IC-705 is NOT on the live bench, so this is doc-level
     # confidence, not live-validated.
+    # "digisel_shift" IS real on IC-705 (0x14 0x13 cmd29 level — see
+    # get_digisel_shift/set_digisel_shift in [commands] below) and is a
+    # distinct CI-V command from the 0x16 0x4E toggle above. Web/API
+    # callers were rejected at the control-handler layer because it gated
+    # set_digisel_shift on the shared "digisel" tag, which IC-705
+    # deliberately omits (MOR-1544).
+    "digisel_shift",
     # Antenna
     "antenna",
     "rx_antenna",    # wfview: RX Antenna 0x16 0x53 (IC-7300.rig omits this command)
