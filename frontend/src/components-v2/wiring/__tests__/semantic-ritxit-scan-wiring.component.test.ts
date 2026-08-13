@@ -138,9 +138,9 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   stateContractVersion: 1, providerGeneration: 0,
 } as unknown as Capabilities);
 
-/** `rit`/`xit` capability tags are what makes the ritXit group present;
- *  scan needs no tag at all — its raw fields above are the whole gate. */
-const RIT_XIT_TAGS = ['tx', 'rit', 'xit'] as const;
+/** `rit`/`xit` capability tags make the ritXit group present; the explicit
+ *  scan commands additionally require the declared `scan` capability. */
+const RIT_XIT_TAGS = ['tx', 'rit', 'xit', 'scan'] as const;
 const SILENT_TAGS = ['tx'] as const;
 
 let target: HTMLDivElement;
