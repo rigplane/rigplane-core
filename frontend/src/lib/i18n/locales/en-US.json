@@ -193,6 +193,7 @@
 
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Modulation input source",
+  "core.modePanel.pendingAnnouncement": "Pending, not yet confirmed",
 
   "core.vfo.groupLabel": "VFOs",
   "core.vfo.receiverGroupLabel": "Receiver {receiver}",

@@ -457,17 +457,33 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
  *    immediately, it must never present a failed command as still in flight.
  *
  * Contract for skins consuming this signal:
- *  - MAY style `armed` however fits: desktop-v2 renders it italic (see
- *    `ModePanel.svelte`'s `data-armed` marker, parity with the NB/NR
- *    `data-pending-status` precedent in `DspSurface.svelte`); an LCD skin
- *    may prefer a glow or blink — that is a presentation choice, not part of
- *    this contract.
+ *  - MAY style `armed` however fits: desktop-v2 renders it as a `data-armed`
+ *    attribute on the actual `<button>` element (`ControlButton.svelte`,
+ *    parity with `DspSurface.svelte`'s `data-pending-status` marker for
+ *    NB/NR) with `opacity: 0.75` as the primary, font-independent visual
+ *    channel plus an underline structural backstop (`ModePanel.svelte`); an
+ *    LCD skin may prefer a glow or blink — that is a presentation choice,
+ *    not part of this contract. NOTE (review F1/F2): the marker MUST sit on
+ *    the actual interactive element, never a wrapper — a wrapper is not
+ *    reachable by an attribute selector, and relying on CSS inheritance
+ *    (e.g. `font-style`) is unsafe: the UA `<button>` stylesheet supplies
+ *    its own `font-style: normal` that beats an inherited value, and this
+ *    codebase's vendored font + `font-synthesis: none` (`app.css`) means an
+ *    italic-only affordance can compute without ever rendering — verify any
+ *    font-dependent channel AS RENDERED, not just as computed.
  *  - MUST NOT suppress the confirmed-vs-armed distinction, and MUST NOT ever
  *    present an armed (unconfirmed) value as confirmed — same doctrine as
  *    `data-freq-status='pending'` (`FrequencyDisplayInteractive.svelte`) and
  *    `data-pending-status='pending'` (`DspSurface.svelte`): a structural
- *    marker (an attribute a screen reader or a test can key off), never a
- *    color-only tell.
+ *    marker on the element, never a color-only tell.
+ *  - `data-*` carries NO accessibility semantics on its own (review F3) — it
+ *    is a hook for CSS and tests, not for assistive tech. A skin exposing
+ *    `armed` MUST also pair the marked control with an `aria-describedby`
+ *    announcement (a `.sr-only` element, same pattern as
+ *    `DspSurface.svelte`'s pending-toggle announcement) so AT users get the
+ *    same "still in flight" information sighted users get from the visual
+ *    channel. `ModePanel.svelte` does this via `HardwareButton`'s
+ *    `describedBy` prop.
  */
 export interface ArmedFact<T> {
   /** True from command dispatch until a confirming observation (or grace
@@ -492,6 +508,12 @@ function armedFact<T>(
  * the ACTIVE receiver only, the same single-receiver read `toModeProps`'s
  * `activeRx(state)` already performs (`panel-props.ts`) — `state.active`
  * mirrors that helper's `'SUB' ? sub : main` split.
+ *
+ * KNOWN BOUND: `onModeChange` (`panel-commands.ts`) can target a DIFFERENT
+ * receiver than `state.active` currently reports during the focus-echo
+ * window (`consumePendingFocus()`) — armed degrades to no-feedback for that
+ * click. Same staleness class `currentMode`/`toModeProps` already carries
+ * (both read `state.active`); not addressed by this accessor.
  */
 export function getModeArmed(): ArmedFact<string> {
   const state = runtime.state;

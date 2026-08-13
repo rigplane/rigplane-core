@@ -11,7 +11,18 @@
   // `panel-adapters.ts`'s ARMED-SIGNAL CONTRACT). `active` above stays the
   // sole selection source — armed only marks the button the pending command
   // is racing toward, it never substitutes for the confirmed reading.
+  //
+  // KNOWN BOUND: this reads `runtime.state.active` (via `getModeArmed`), the
+  // same receiver split `deriveModeProps`'s `activeRx(state)` uses. During
+  // the focus-echo window `onModeChange`'s `knownActiveReceiver('mode',
+  // consumePendingFocus() ?? undefined)` (`panel-commands.ts`) can dispatch
+  // to a DIFFERENT receiver than `state.active` currently reports — the
+  // command lands against a receiver `getModeArmed` isn't watching, so armed
+  // degrades to no-feedback for that click. Same staleness class
+  // `currentMode` above already has (both read the stale `state.active`
+  // split); not fixed here.
   let armed = $derived(getModeArmed());
+  const pendingModeIdBase = $props.id();
 
   // Destructure for template readability
   let currentMode = $derived(p.currentMode);
@@ -58,25 +69,31 @@
 <div class="panel-body" data-mode-panel="true" data-highlight={undefined}>
     <div class="mode-grid">
       {#each visibleModes as mode}
+        {@const isArmed = armed.armed && armed.value === mode}
+        {@const armedId = `${pendingModeIdBase}-${mode}`}
         <!-- MOR-1519: `data-armed` is the structural marker of the generic
-             armed signal (`panel-adapters.ts`'s ARMED-SIGNAL CONTRACT) —
-             `display: contents` keeps the grid layout untouched while still
-             giving the target button an italic tell, parity with
-             `DspSurface.svelte`'s `data-pending-status` precedent. Never
-             presented as confirmed: `active` below reads ONLY `currentMode`
-             (the confirmed reading), independent of `armed`. -->
-        <span class="mode-button-wrap" data-armed={armed.armed && armed.value === mode ? 'true' : undefined}>
-          <HardwareButton
-            active={currentMode === mode}
-            indicator="edge-left"
-            color="cyan"
-            title={modeShortcut(mode)}
-            shortcutHint={modeShortcut(mode)}
-            onclick={() => onModeChange(mode)}
-          >
-            {mode}
-          </HardwareButton>
-        </span>
+             armed signal (`panel-adapters.ts`'s ARMED-SIGNAL CONTRACT),
+             rendered by `ControlButton` ON the `<button>` itself (never a
+             wrapper — a wrapper can't be targeted by an attribute selector
+             and inherited `font-style` is beaten by the UA button
+             stylesheet). Never presented as confirmed: `active` below reads
+             ONLY `currentMode` (the confirmed reading), independent of
+             `armed`. -->
+        <HardwareButton
+          active={currentMode === mode}
+          indicator="edge-left"
+          color="cyan"
+          title={modeShortcut(mode)}
+          shortcutHint={modeShortcut(mode)}
+          armed={isArmed}
+          describedBy={isArmed ? armedId : undefined}
+          onclick={() => onModeChange(mode)}
+        >
+          {mode}
+        </HardwareButton>
+        {#if isArmed}
+          <span id={armedId} class="sr-only">{t('core.modePanel.pendingAnnouncement')}</span>
+        {/if}
       {/each}
     </div>
 
@@ -149,17 +166,20 @@
     gap: 4px;
   }
 
-  /* MOR-1519: `display: contents` so the wrapper never becomes its own grid
-     cell — the button inside stays the actual grid item, sized identically
-     to an un-armed sibling. Italic is desktop-v2's chosen affordance for
-     this signal; other skins may render `[data-armed='true']` differently
-     (see the ARMED-SIGNAL CONTRACT in `panel-adapters.ts`). */
-  .mode-button-wrap {
-    display: contents;
-  }
-
-  .mode-button-wrap[data-armed='true'] {
-    font-style: italic;
+  /* MOR-1519: rule sits ON the button itself (`data-armed`, rendered by
+     `ControlButton`), not a wrapper — a wrapper can't be matched by an
+     attribute selector, and inherited `font-style` is silently beaten by
+     the UA button stylesheet (review F1). `opacity` is the PRIMARY channel:
+     it is font-independent and always renders. `text-decoration: underline`
+     is the structural backstop that survives even without an italic face
+     (review F2 — this build's vendored Roboto Mono has none, and
+     `app.css`'s `font-synthesis: none` blocks the synthetic fallback, so
+     italic alone would compute but render pixel-identical to upright).
+     `:global(...)` because `ControlButton`'s own template — not this
+     file's — owns the element the attribute lands on. */
+  :global(.v2-control-button[data-armed='true']) {
+    opacity: 0.75;
+    text-decoration: underline;
   }
 
   .section-label {
@@ -170,11 +190,17 @@
     letter-spacing: 0.08em;
   }
 
-  /* `.mode-grid` buttons are wrapped in `.mode-button-wrap` (MOR-1519,
-     `display: contents` above) — descendant, not direct-child, selector. */
-  .mode-grid :global(button),
+  .mode-grid > :global(button),
   .data-grid > :global(button) {
     min-width: 0;
+  }
+
+  /* MOR-1519 — same convention as `DspSurface.svelte`'s `.sr-only`: visually
+     hidden, `position: absolute` removes it from the `.mode-grid` flow so it
+     never consumes a grid cell. */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 
   .mod-input-row {
