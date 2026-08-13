@@ -392,18 +392,19 @@ export function makeRitXitHandlers() {
 export function makeScanHandlers() {
   return {
     onScanStart: (type: number) => {
-      if (!Number.isSafeInteger(type)) return;
+      if (!hasCapability('scan') || !Number.isSafeInteger(type)) return;
       dispatchRadioIntent({ name: 'scan_start', params: { type } });
     },
     onScanStop: () => {
+      if (!hasCapability('scan')) return;
       dispatchRadioIntent({ name: 'scan_stop', params: {} });
     },
     onDfSpanChange: (span: number) => {
-      if (!Number.isSafeInteger(span)) return;
+      if (!hasCapability('scan') || !Number.isSafeInteger(span)) return;
       dispatchRadioIntent({ name: 'scan_set_df_span', params: { span } });
     },
     onResumeChange: (mode: number) => {
-      if (!Number.isSafeInteger(mode)) return;
+      if (!hasCapability('scan') || !Number.isSafeInteger(mode)) return;
       dispatchRadioIntent({ name: 'scan_set_resume', params: { mode } });
     },
   };
