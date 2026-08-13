@@ -230,8 +230,12 @@
    * straight off `runtime.caps` here, at the one seam that already holds it
    * for the `toRadioViewModel` call below, verbatim `toDspProps`'s own
    * fallbacks (`lib/runtime/props/panel-props.ts`).
+   *
+   * MOR-1547: no fabricated IC-7610-shaped FAST/MID/SLOW dict when the
+   * profile declares no agcLabels — `{}` lets `buildAgcOptions`
+   * (agc-utils.ts) fall back to the honest raw mode number per-entry.
    */
-  let agcLabels = $derived(runtime.caps?.agcLabels ?? { '1': 'FAST', '2': 'MID', '3': 'SLOW' });
+  let agcLabels = $derived(runtime.caps?.agcLabels ?? {});
   let nbLevelRange = $derived(runtime.caps?.controls?.nb_level ?? null);
   let nbLevelMax = $derived(nbLevelRange?.raw_max ?? 10);
   let nbLevelPercent = $derived(nbLevelRange !== null);

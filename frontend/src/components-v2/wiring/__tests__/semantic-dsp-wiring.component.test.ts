@@ -396,6 +396,18 @@ describe('carry-forward (1): caps-echo display metadata is read at this seam', (
     const input = q<HTMLInputElement>('[data-testid="dsp-nbLevel"] input')!;
     expect(input.max).toBe('10');
   });
+
+  it('does not fabricate FAST/MID/SLOW labels when caps declares no agcLabels (MOR-1547 follow-up)', () => {
+    // Mirror of the toAgcProps fix in lib/runtime/props/panel-props.ts
+    // (MOR-1547): this seam carried the same hardcoded IC-7610-shaped
+    // `{ '1': 'FAST', '2': 'MID', '3': 'SLOW' }` fallback, fabricating
+    // plausible-looking labels for radios whose numeric AGC modes mean
+    // something different. With no declared `agcLabels`, `buildAgcOptions`
+    // (agc-utils.ts) must fall back to the honest raw mode number instead.
+    h.caps = { ...liveCaps(true), agcLabels: undefined } as unknown as Capabilities;
+    render();
+    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent).toBe('1');
+  });
 });
 
 describe('desktop-v2 declares a real dsp zone; the cockpit does not (MOR-1368, S9, F1)', () => {
