@@ -10,10 +10,22 @@ pin the failure branches.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.exceptions import TimeoutError
 from rigplane.radio import IcomRadio
+
+from test_radio import MockTransport, _wrap_civ_in_udp
+
+_IC9700_ADDR = 0xA2
+
+
+@pytest.fixture
+def mock_transport() -> MockTransport:
+    return MockTransport()
 
 
 @pytest.fixture
@@ -163,3 +175,55 @@ class TestSelectBackFailureSemantics:
         original_action_failure = first_restore_failure.__context__
         assert isinstance(original_action_failure, ValueError)
         assert str(original_action_failure) == "original action failure"
+
+
+class TestVfoFallbackReadDedupeKeyReceiverScoped:
+    """MOR-1545 F1: the receiver-scoped dedupe-key fix also covers the
+    VFO-fallback read call sites (radio.py ~4341/4419), not just the direct
+    cmd29 path (test_radio.py::TestRepeaterToneDedupeKeyReceiverScoped). On
+    IC-9700 (no cmd29 route) a MAIN direct read and a SUB fallback read
+    build byte-identical request frames -- only the dedupe key can tell
+    them apart. ``_set_vfo_wire`` is stubbed to an instant no-op so the SUB
+    fallback path reaches its own dedupe check before the single-worker
+    commander finishes dispatching MAIN's read, reproducing the coalescing
+    race deterministically (pre-fix: SUB sends zero read frames of its own
+    and returns MAIN's stale answer)."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_main_direct_and_sub_fallback_reads_do_not_coalesce(
+        self, ic9700_radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        ic9700_radio._civ_transport = mock_transport
+        ic9700_radio._ctrl_transport = mock_transport
+
+        async def instant_select(vfo: str) -> None:
+            return None
+
+        ic9700_radio._set_vfo_wire = instant_select  # type: ignore[method-assign]
+        ic9700_radio._civ_runtime.start_worker()
+        try:
+            mock_transport.queue_response_on_send(
+                1,
+                _wrap_civ_in_udp(
+                    build_civ_frame(
+                        CONTROLLER_ADDR, _IC9700_ADDR, 0x16, sub=0x42, data=b"\x01"
+                    )
+                ),
+            )
+            mock_transport.queue_response_on_send(
+                2,
+                _wrap_civ_in_udp(
+                    build_civ_frame(
+                        CONTROLLER_ADDR, _IC9700_ADDR, 0x16, sub=0x42, data=b"\x00"
+                    )
+                ),
+            )
+            main_result, sub_result = await asyncio.gather(
+                ic9700_radio.get_repeater_tone(receiver=0),
+                ic9700_radio.get_repeater_tone(receiver=1),
+            )
+            assert main_result is True
+            assert sub_result is False
+            assert len(mock_transport.sent_packets) == 2
+        finally:
+            await ic9700_radio._civ_runtime.stop_worker()
