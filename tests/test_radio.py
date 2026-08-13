@@ -3327,6 +3327,123 @@ class TestToneTsqlDualRxCmd29Guard:
         assert mock_transport.sent_packets[-1].endswith(b"\x16\x42\xfd")
 
 
+class TestRepeaterToneDedupeKeyReceiverScoped:
+    """MOR-1545 (PR #2458 follow-up 1): get_repeater_tone/get_repeater_tsql
+    deduped GETs on a bare ``key="get_repeater_tone"`` shared across
+    MAIN/SUB (``IcomCommander._pending_by_key`` in
+    ``commands/commander.py``, see ``send()`` lines ~151-156). A concurrent
+    in-flight MAIN read could coalesce a SUB caller onto MAIN's answer.
+    Fixed to receiver-scope the key (``key=f"get_repeater_tone:{receiver}"``),
+    mirroring ``get_filter_width``'s precedent (MOR-1538/#2458).
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "sub"),
+        [("get_repeater_tone", 0x42), ("get_repeater_tsql", 0x43)],
+    )
+    async def test_concurrent_main_and_sub_reads_do_not_coalesce(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        sub: int,
+    ) -> None:
+        """Two receivers in flight at once must each get their own wire
+        read and their own answer -- not one coalesced onto the other."""
+        radio._civ_runtime.start_worker()
+        try:
+            mock_transport.queue_response_on_send(
+                1, _function_response(sub, b"\x01", receiver=0)
+            )
+            mock_transport.queue_response_on_send(
+                2, _function_response(sub, b"\x00", receiver=1)
+            )
+            method = getattr(radio, method_name)
+            main_result, sub_result = await asyncio.gather(
+                method(receiver=0), method(receiver=1)
+            )
+            assert main_result is True
+            assert sub_result is False
+            assert len(mock_transport.sent_packets) == 2
+        finally:
+            await radio._civ_runtime.stop_worker()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_receiver_reads_still_dedupe(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """Two concurrent reads for the SAME receiver must still coalesce
+        onto a single wire read (the dedupe mechanism itself is not being
+        removed, only receiver-scoped)."""
+        radio._civ_runtime.start_worker()
+        try:
+            mock_transport.queue_response_on_send(
+                1, _function_response(0x42, b"\x01", receiver=0)
+            )
+            first, second = await asyncio.gather(
+                radio.get_repeater_tone(receiver=0),
+                radio.get_repeater_tone(receiver=0),
+            )
+            assert first is True
+            assert second is True
+            assert len(mock_transport.sent_packets) == 1
+        finally:
+            await radio._civ_runtime.stop_worker()
+
+
+class TestRequireReceiverToneMethodsPin:
+    """MOR-1545 (PR #2458 follow-up 3): pin ``_require_receiver``'s accurate
+    ``receivers=1`` message across all 8 tone/TSQL methods (get/set x
+    repeater_tone, repeater_tsql, tone_freq, tsql_freq) on a single-RX
+    profile. MOR-1538 added the ``_require_receiver`` call to these 8
+    methods but only ``TestToneTsqlDualRxCmd29Guard`` (dual-RX, cmd29-less)
+    exercises the follow-on cmd29/VFO-fallback branches -- no test pins the
+    single-RX rejection message itself.
+    """
+
+    @pytest.fixture
+    def single_rx_radio(self, mock_transport: MockTransport):
+        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        yield r
+        r._connected = False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "args"),
+        [
+            ("get_repeater_tone", ()),
+            ("set_repeater_tone", (True,)),
+            ("get_repeater_tsql", ()),
+            ("set_repeater_tsql", (True,)),
+            ("get_tone_freq", ()),
+            ("set_tone_freq", (88.5,)),
+            ("get_tsql_freq", ()),
+            ("set_tsql_freq", (110.9,)),
+        ],
+    )
+    async def test_single_rx_receiver_1_reports_accurate_receiver_count(
+        self,
+        single_rx_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        args: tuple,
+    ) -> None:
+        method = getattr(single_rx_radio, method_name)
+        with pytest.raises(
+            CommandError,
+            match=(
+                rf"{method_name} does not support receiver=1 for profile "
+                r"IC-7300 \(receivers=1\)"
+            ),
+        ):
+            await method(*args, receiver=1)
+        assert mock_transport.sent_packets == []
+
+
 class TestCodecProfileOverride:
     """Per-profile codec_preference overrides the global default (#797)."""
 
