@@ -716,11 +716,19 @@ def _power_level_expectation_from_param(value: Any) -> int:
     readbacks normalize to that same fraction ``v`` regardless of unit —
     Icom CI-V as ``raw / 255``, Yaesu CAT as ``watts / max_watts`` (see
     ``backends/yaesu_cat/observations.py``'s ``_normalize_power_level``).
-    So for a float input the coherent expectation is always
-    ``round(v * 255)``, independent of ``native_power_unit`` — no radio
-    object needed here (unlike ``control.py``'s ``_level_for_power``,
-    which *does* need ``profile.max_watts`` to compute the correct
-    *actuation* value for a watts radio).
+    So for a float input the coherent expectation is ``round(v * 255)``,
+    independent of ``native_power_unit`` — no radio object needed here
+    (unlike ``control.py``'s ``_level_for_power``, which *does* need
+    ``profile.max_watts`` to compute the correct *actuation* value for a
+    watts radio). This is exact for ``raw_255`` radios; for a ``watts``
+    radio it is accurate to within 1/255 of full scale, since
+    ``round(v * max_watts) / max_watts`` (the real readback's
+    quantization) and ``round(v * 255) / 255`` (this expectation's
+    quantization) are different roundings of the same ``v`` and don't
+    always land on the same value — in practice most float positions on
+    a watts radio simply expire by TTL instead of confirming
+    ``reconciled``, rather than snapping to a visibly wrong overlay (the
+    residual error is bounded at <=0.2% of full scale).
 
     A bare int is the documented raw/watts wire value (unchanged from
     before this fix) — dividing it by 255 to form the expectation is only
