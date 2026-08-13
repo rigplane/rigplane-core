@@ -60,6 +60,26 @@
  * (`scope_toggle_hold` keyboard case). Removed from the MOR-1566/MOR-1567
  * waiver tags in `./waived.ts` — those family walks extend coverage on
  * these four (more call sites, more profiles), they do not initiate it.
+ *
+ * Plus MOR-1564's (C10) TX-chain family walk
+ * (`../mor1564-tx-family-conformance.isolated.test.ts`) — 8 intents:
+ * `set_rf_power`, `set_mic_gain`, `set_compressor`, `set_compressor_level`,
+ * `set_monitor`, `set_monitor_gain`, `set_drive_gain`, `set_tuner_status`.
+ * NOT uniform: `set_rf_power`/`set_compressor`/`set_compressor_level`/
+ * `set_tuner_status` genuinely DISPATCH on the real IC-7300 fixture
+ * (`powerLevel`/`compressorOn`/`compressorLevel`/`tunerStatus` are all
+ * observed); `set_mic_gain`/`set_monitor`/`set_monitor_gain`/
+ * `set_drive_gain` REFUSE (unobserved field status, or for `drive_gain`,
+ * a capability this profile never declares at all). Two SAFETY findings
+ * pinned, not fixed, in that file's header: (1) `onRfPowerChange`/
+ * `onCompLevelChange` dispatch their `level` param verbatim with no bound
+ * check beyond `Number.isFinite`/`Number.isSafeInteger` — no clamp against
+ * either the declared wire range or `TxPanel.svelte`'s own slider domain;
+ * (2) `set_monitor_gain` has two call sites (`makeTxHandlers().onMonLevelChange`
+ * and `makeCwPanelHandlers().onSidetoneLevelChange`) gated on DIFFERENT
+ * capability sets for the identical wire intent — a MOR-1576-class
+ * inconsistency, demonstrated via a capability-withdrawal discrimination
+ * case in that file.
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
@@ -103,10 +123,19 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'vfo_swap',
   'vfo_equalize',
   'set_scope_hold',
+  // MOR-1564 (C10) — TX-chain family walk
+  'set_rf_power',
+  'set_mic_gain',
+  'set_compressor',
+  'set_compressor_level',
+  'set_monitor',
+  'set_monitor_gain',
+  'set_drive_gain',
+  'set_tuner_status',
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 38;
+export const CLAIMED_INTENTS_COUNT = 46;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.

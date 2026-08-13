@@ -50,16 +50,15 @@ function tag(names: readonly string[], waiver: Waiver): Record<string, Waiver> {
   return Object.fromEntries(names.map((name) => [name, waiver]));
 }
 
-const TX = { reason: 'TX-chain family walk not yet landed', owner: 'MOR-1564' } as const;
 const VOX_CW = { reason: 'VOX/CW family walk not yet landed', owner: 'MOR-1565' } as const;
 const SCOPE_VFO = { reason: 'Scope-remainder/VFO-topology family walk not yet landed', owner: 'MOR-1566' } as const;
 const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner: 'MOR-1567' } as const;
 
 /**
- * The (67 - 9 - 5 - 4 = 49) intents with no conformance assertion, tagged
- * with the family child that owns closing them. MOR-1562 (C8, adapter-seam
- * parity) intentionally claims ZERO entries here — its scope is
- * `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
+ * The (67 - 9 - 5 - 4 - 8 = 41) intents with no conformance assertion,
+ * tagged with the family child that owns closing them. MOR-1562 (C8,
+ * adapter-seam parity) intentionally claims ZERO entries here — its scope
+ * is `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
  *
  * MOR-1560 (C6)'s 9 DSP intents and MOR-1561 (C7)'s 5 filter/PBT intents
  * landed and were moved to `CLAIMED_INTENTS` in `./claimed.ts` — see
@@ -72,17 +71,17 @@ const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner:
  * burn-down rule (a landed `expectFrames` claims the intent regardless of
  * which walk lands it first); MOR-1566/MOR-1567 will extend coverage on
  * these four (more call sites, more profiles), not initiate it.
+ *
+ * MOR-1564 (C10)'s TX-chain walk landed all 8 of its intents — see
+ * `./claimed.ts` and `../mor1564-tx-family-conformance.isolated.test.ts`.
  */
 export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
   // MOR-1560 (C6) — DSP: NR/NB/notch/AGC time constant — CLAIMED, see
   // `./claimed.ts` and `../mor1560-dsp-family-conformance.isolated.test.ts`.
   // MOR-1561 (C7) — Filter, PBT and IF-shift — CLAIMED, see `./claimed.ts`
   // and `../mor1561-filter-pbt-family-conformance.isolated.test.ts`.
-  // MOR-1564 (C10) — TX chain — 8
-  ...tag([
-    'set_rf_power', 'set_mic_gain', 'set_compressor', 'set_compressor_level',
-    'set_monitor', 'set_monitor_gain', 'set_drive_gain', 'set_tuner_status',
-  ], TX),
+  // MOR-1564 (C10) — TX chain — CLAIMED, see `./claimed.ts` and
+  // `../mor1564-tx-family-conformance.isolated.test.ts`.
   // MOR-1565 (C11) — VOX + CW — 12
   ...tag([
     'set_vox', 'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
@@ -110,7 +109,7 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
 };
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_INTENTS_COUNT = 49;
+export const WAIVED_INTENTS_COUNT = 41;
 
 /**
  * `dispatchKeyboardRadioAction` case labels with no conformance assertion.
