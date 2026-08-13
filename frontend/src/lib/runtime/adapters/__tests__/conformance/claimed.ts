@@ -95,10 +95,26 @@ export const CLAIMED_INTENTS_COUNT = 34;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.
- * Only `toggle_split` is asserted today (MOR-1428's "keyboard context"
- * case, over `dispatchKeyboardRadioAction({ action: 'toggle_split' })`).
- * MOR-1563 (C9) walks the remaining 28.
+ * `toggle_split` was claimed by MOR-1428's "keyboard context" case (over
+ * `dispatchKeyboardRadioAction({ action: 'toggle_split' })`). MOR-1563 (C9)
+ * walked the remaining 28 in
+ * `../mor1563-keyboard-fanout-conformance.isolated.test.ts` — 18 genuinely
+ * DISPATCH on this fixture, 10 REFUSE (each case names its firing gate; see
+ * that file's header for the full per-action table and the MOR-1454-related
+ * findings on the cycle/step cases). `WAIVED_KEYBOARD_ACTIONS` in
+ * `./waived.ts` is now empty — this ledger's keyboard half is closed.
  */
 export const CLAIMED_KEYBOARD_ACTIONS: ReadonlySet<string> = new Set([
   'toggle_split',
+  // MOR-1563 (C9) — keyboard action fan-out walk, 28 actions
+  'tune', 'band_select', 'mode_select', 'cycle_data_mode', 'cycle_filter',
+  'cycle_preamp', 'cycle_att', 'cycle_agc', 'toggle_nr', 'toggle_nb',
+  'toggle_auto_notch', 'toggle_ip_plus', 'toggle_rit', 'toggle_xit',
+  'clear_rit_xit', 'adjust_af_level', 'adjust_rf_gain', 'toggle_monitor',
+  'vfo_swap', 'vfo_equalize', 'switch_active_vfo', 'set_active_vfo',
+  'toggle_dial_lock', 'scope_span_step', 'scope_ref_step',
+  'scope_toggle_hold', 'scope_toggle_dual', 'scope_toggle_fst',
 ]);
+
+/** Pinned so a removal (or an undocumented addition) shows up in review. */
+export const CLAIMED_KEYBOARD_ACTIONS_COUNT = 29;

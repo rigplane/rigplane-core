@@ -54,7 +54,6 @@ const TX = { reason: 'TX-chain family walk not yet landed', owner: 'MOR-1564' } 
 const VOX_CW = { reason: 'VOX/CW family walk not yet landed', owner: 'MOR-1565' } as const;
 const SCOPE_VFO = { reason: 'Scope-remainder/VFO-topology family walk not yet landed', owner: 'MOR-1566' } as const;
 const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner: 'MOR-1567' } as const;
-const KEYBOARD = { reason: 'Keyboard action-fan-out walk not yet landed', owner: 'MOR-1563' } as const;
 
 /**
  * The (67 - 9 - 5 = 53) intents with no conformance assertion, tagged with
@@ -105,14 +104,18 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
 export const WAIVED_INTENTS_COUNT = 53;
 
 /**
- * The 28 `dispatchKeyboardRadioAction` case labels with no conformance
- * assertion (only `toggle_split` is claimed — see `./claimed.ts`).
+ * `dispatchKeyboardRadioAction` case labels with no conformance assertion.
+ * MOR-1563 (C9) walked and CLAIMED all 28 that were waived here — see
+ * `./claimed.ts`'s `CLAIMED_KEYBOARD_ACTIONS` and
+ * `../mor1563-keyboard-fanout-conformance.isolated.test.ts`. This map is
+ * now empty; kept (rather than deleted) as the live burn-down target for
+ * any future keyboard action this ledger's completeness test would
+ * otherwise fail on.
  *
- * ON THE PARENT TICKET'S "32 actions" FIGURE: MOR-1563 states 32 — that is
- * correct, not stale. It is 29 radio-family cases in
- * `dispatchKeyboardRadioAction` (28 waived here + 1 claimed) PLUS 3
- * non-radio actions (`adjust_tuning_step`, `open_filter_settings`,
- * `focus_target`) that live in a DIFFERENT switch
+ * ON THE PARENT TICKET'S "32 actions" FIGURE (still relevant context): it
+ * is 29 radio-family cases in `dispatchKeyboardRadioAction` (all 29 now
+ * claimed) PLUS 3 non-radio actions (`adjust_tuning_step`,
+ * `open_filter_settings`, `focus_target`) that live in a DIFFERENT switch
  * (`makeKeyboardHandlers().dispatch`, panel-commands.ts:1588) which
  * `dispatchKeyboardRadioAction` falls through to on `false`. This ledger
  * (MOR-1556) names `dispatchKeyboardRadioAction` specifically, so those 3
@@ -120,15 +123,7 @@ export const WAIVED_INTENTS_COUNT = 53;
  * absent from `KEYBOARD_RADIO_ACTIONS` and out of scope here by design,
  * not because they were miscounted.
  */
-export const WAIVED_KEYBOARD_ACTIONS: Readonly<Record<string, Waiver>> = tag([
-  'tune', 'band_select', 'mode_select', 'cycle_data_mode', 'cycle_filter',
-  'cycle_preamp', 'cycle_att', 'cycle_agc', 'toggle_nr', 'toggle_nb',
-  'toggle_auto_notch', 'toggle_ip_plus', 'toggle_rit', 'toggle_xit',
-  'clear_rit_xit', 'adjust_af_level', 'adjust_rf_gain', 'toggle_monitor',
-  'vfo_swap', 'vfo_equalize', 'switch_active_vfo', 'set_active_vfo',
-  'toggle_dial_lock', 'scope_span_step', 'scope_ref_step',
-  'scope_toggle_hold', 'scope_toggle_dual', 'scope_toggle_fst',
-], KEYBOARD);
+export const WAIVED_KEYBOARD_ACTIONS: Readonly<Record<string, Waiver>> = {};
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_KEYBOARD_ACTIONS_COUNT = 28;
+export const WAIVED_KEYBOARD_ACTIONS_COUNT = 0;

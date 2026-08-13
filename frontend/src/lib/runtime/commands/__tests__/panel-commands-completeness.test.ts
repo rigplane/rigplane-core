@@ -75,6 +75,7 @@ import {
   CLAIMED_INTENTS,
   CLAIMED_INTENTS_COUNT,
   CLAIMED_KEYBOARD_ACTIONS,
+  CLAIMED_KEYBOARD_ACTIONS_COUNT,
 } from '../../adapters/__tests__/conformance/claimed';
 import {
   WAIVED_INTENTS,
@@ -213,12 +214,12 @@ completenessSuite({
 });
 
 completenessSuite({
-  label: 'dispatchKeyboardRadioAction case-label completeness ledger (MOR-1556, owner MOR-1563)',
+  label: 'dispatchKeyboardRadioAction case-label completeness ledger (MOR-1556, landed MOR-1563)',
   sourceNames: extractKeyboardActions(SOURCE),
   claimed: CLAIMED_KEYBOARD_ACTIONS,
   waived: WAIVED_KEYBOARD_ACTIONS,
   waivedCount: WAIVED_KEYBOARD_ACTIONS_COUNT,
-  claimedCount: 1,
+  claimedCount: CLAIMED_KEYBOARD_ACTIONS_COUNT,
 });
 
 describe('dynamic mod-input call site (verified, handled explicitly — MOR-1567 scope)', () => {
