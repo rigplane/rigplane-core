@@ -15,8 +15,9 @@
   import { renderSlot } from './design-language-renderers';
   import type { RadioViewModel } from './radio-view-model';
   import {
-    BLOCKED_LABEL, RF_LABEL, RF_MARK, SESSION_LABEL, keyBlockedReasons, nextSurfaceId,
-    rfState, txDisabledReasons, txOrigin, txSessionState, type TxAuthoritySnapshot,
+    RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, keyBlockedReasons, nextSurfaceId,
+    rfState, targetUnknownMessage, txDisabledReasons, txOrigin, txSessionState,
+    type TxAuthoritySnapshot,
   } from './rx-tx-surface';
 
   interface Props {
@@ -40,6 +41,10 @@
     : undefined);
   let frequencyHz = $derived(view.txTarget.status === 'known' ? view.txTarget.frequencyHz : null);
   let reason = $derived(view.txTarget.status === 'unknown' ? view.txTarget.reason : undefined);
+  /** MOR-1474: the operator-legible unknown-target line, assembled through
+   *  the per-reason catalog keys in `rx-tx-surface.ts` — never the raw
+   *  `reason` enum word interpolated straight into prose. */
+  let unknownTargetMessage = $derived(reason !== undefined ? targetUnknownMessage(reason) : '');
 
   /**
    * MOR-1275: the active design language's `stateFeedback` renderer.
@@ -81,7 +86,7 @@
     </p>
   {:else}
     <p data-testid="rx-tx-target" data-target="unknown" data-reason={reason}>
-      TX target unknown ({reason})
+      {unknownTargetMessage}
     </p>
   {/if}
 
@@ -99,7 +104,7 @@
   </div>
 
   <ul class="rx-tx-blocked" id={blockedId} data-testid="rx-tx-blocked">
-    {#each blocked as code (code)}<li data-reason={code}>{BLOCKED_LABEL[code]}</li>{/each}
+    {#each blocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
     {#each viewBlocked as item (item.field + item.code)}
       <li data-reason={item.code} data-field={item.field}>{item.field}: {item.code}</li>
     {/each}

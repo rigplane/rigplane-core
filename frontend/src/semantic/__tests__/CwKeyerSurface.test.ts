@@ -28,13 +28,14 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import CwKeyerSurface, {
-  APF_CHOICES, BREAK_IN_BLOCKED_LABEL, BREAK_IN_CHOICES, CW_LEVELS, MUTEX_LABEL, POSTURE_LABEL,
-  UNKNOWN_TEXT, breakInPosture, type CwLevelField,
+  APF_CHOICES, BREAK_IN_CHOICES, BREAK_IN_REASON_KEY, CW_LEVELS, MUTEX_LABEL, POSTURE_LABEL,
+  UNKNOWN_TEXT, breakInBlockedLabel, breakInPosture, type CwLevelField,
 } from '../CwKeyerSurface.svelte';
 import { topologyFixtures, withCwKeyer, withTxAux } from '../fixtures/topologies';
 import type {
   Availability, BreakInMode, CwKeyerField, CwKeyerViewModel, DisabledReason, RadioViewModel,
 } from '../radio-view-model';
+import { t } from '$lib/i18n';
 
 const SOURCE = readFileSync('src/semantic/CwKeyerSurface.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
@@ -113,7 +114,12 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   it('imports nothing but the fact contract and the shared pressedOf helper', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)]).toEqual(['./radio-view-model', './pressed-of']);
+    // MOR-1474: `$lib/i18n` added for the operator-legible `t()` catalog
+    // lookups — the SAME allow-listed addition MOR-1448 made to
+    // BandSurface's identical closure guard. It is a pure string-resolution
+    // module (no transport, no controller, no permit utility) and cannot
+    // widen this file's reach any more than `./pressed-of` does.
+    expect([...new Set(specifiers)]).toEqual(['$lib/i18n', './radio-view-model', './pressed-of']);
   });
 
   // Kills: `onMount(() => …)` and every relative of it, plus a dynamic import
@@ -265,15 +271,36 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
     const blocked = r.el('break-in-blocked')!;
     expect(blocked).not.toBeNull();
     expect(blocked.dataset.reason).toBe(code);
-    expect(blocked.textContent!.trim()).toBe(BREAK_IN_BLOCKED_LABEL[code]);
+    expect(blocked.textContent!.trim()).toBe(breakInBlockedLabel(code));
     r.dispose();
   });
 
   // Kills: a label map that drifts from the three codes the adapter can emit
   // for this field (`deriveCwKeyerReasons`).
   it('has a label for each of the three codes the CW break-in gate can record', () => {
-    expect(Object.keys(BREAK_IN_BLOCKED_LABEL).sort())
+    expect(Object.keys(BREAK_IN_REASON_KEY).sort())
       .toEqual(['capability-unavailable', 'out-of-band', 'tx-target-unknown']);
+  });
+
+  /* ── MOR-1474: operator-legible wording, reusing the MOR-1448 per-status
+     catalog keys for the SAME `txPermit`-sourced fact this field's
+     `deriveCwKeyerReasons` reads. ──────────────────────────────────────── */
+  describe('MOR-1474 — break-in block reason resolves through the shared TX-reason catalog', () => {
+    it.each([
+      ['out-of-band', 'core.band.tx.reason.outOfBand'],
+      ['capability-unavailable', 'core.band.tx.reason.rangesNotConfigured'],
+      ['tx-target-unknown', 'core.band.tx.reason.targetUnknown'],
+    ] as const)('composes code %s through core.cwKeyer.breakIn.blocked with reason key %s', (code, key) => {
+      expect(breakInBlockedLabel(code)).toBe(
+        t('core.cwKeyer.breakIn.blocked', { reason: t(key) }),
+      );
+    });
+
+    it('never leaks the raw disabledReasonCode into the rendered text', () => {
+      for (const code of ['out-of-band', 'capability-unavailable', 'tx-target-unknown'] as const) {
+        expect(breakInBlockedLabel(code)).not.toContain(code);
+      }
+    });
   });
 
   // Kills: a radio with no break-in capability growing the control anyway.

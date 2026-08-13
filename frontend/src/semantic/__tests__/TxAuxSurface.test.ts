@@ -23,7 +23,7 @@ import TxAuxSurface, {
 } from '../TxAuxSurface.svelte';
 import { topologyFixtures, withTxAux } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, TxAuxViewModel } from '../radio-view-model';
-import { BLOCKED_LABEL, keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
+import { blockedLabel, keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
 
 const IDLE_RX: TxAuthoritySnapshot = {
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
@@ -398,7 +398,7 @@ describe('TUNE carries its own disabled reason (MOR-1481)', () => {
     const tx = snap(over);
     withSurface(view, tx, (s) => {
       const tune = s.tune()!;
-      const expected = keyBlockedReasons(view, tx).map((code) => BLOCKED_LABEL[code]).join('; ');
+      const expected = keyBlockedReasons(view, tx).map((code) => blockedLabel(code)).join('; ');
       expect(tune.title).toBe(expected);
       expect(describedText(tune)).toBe(expected);
     });
@@ -412,7 +412,7 @@ describe('TUNE carries its own disabled reason (MOR-1481)', () => {
     const reasons = keyBlockedReasons(view, tx);
     expect(reasons.length).toBeGreaterThan(1);
     withSurface(view, tx, (s) => {
-      expect(s.tune()!.title).toBe(reasons.map((code) => BLOCKED_LABEL[code]).join('; '));
+      expect(s.tune()!.title).toBe(reasons.map((code) => blockedLabel(code)).join('; '));
     });
   });
 

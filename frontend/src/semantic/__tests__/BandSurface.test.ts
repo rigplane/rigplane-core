@@ -365,6 +365,48 @@ describe('MOR-1448 — every TX readiness reason resolves to operator-legible co
   });
 });
 
+/* ── MOR-1474: the two remaining hardcoded-English strips (the point-sample
+   permit label and the frequency-entry gating reasons) routed through the
+   i18n catalog. Unlike the MOR-1448 caveat, `defaultHzTxPermit.status` here
+   is a genuinely per-choice tri-state fact (rule 2 — a point sample), so it
+   still gets the F4 per-status-key treatment rather than a raw `{status}`
+   interpolation. ──────────────────────────────────────────────────────── */
+
+describe('MOR-1474 — the default-permit label resolves each status through its own catalog key', () => {
+  it.each([
+    ['allowed', 'core.band.tx.defaultPermit.status.allowed'],
+    ['denied', 'core.band.tx.defaultPermit.status.denied'],
+    ['unknown', 'core.band.tx.defaultPermit.status.unknown'],
+  ] as const)('status %s maps to catalog key %s', (status, key) => {
+    const choice: BandChoice = {
+      name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14074000, bsrCode: 4,
+      defaultHzTxPermit: status === 'allowed'
+        ? { status: 'allowed', band: '20m' }
+        : status === 'denied'
+          ? { status: 'denied', reason: 'outside-configured-ranges' }
+          : { status: 'unknown', reason: 'ranges-unconfigured' },
+    };
+    expect(defaultPermitLabel(choice)).toBe(
+      t('core.band.tx.defaultPermit.label', { frequency: mhz(choice.defaultHz), status: t(key) }),
+    );
+  });
+});
+
+describe('MOR-1474 — the frequency-entry gating reasons resolve through the catalog', () => {
+  it('names the bounds-unknown catalog key when tuneMinHz/tuneMaxHz are null', () => {
+    const r = render(withB({ tuneMinHz: null, tuneMaxHz: null }));
+    expect(r.text('entry-reason')).toBe(t('core.band.entry.reason.boundsUnknown'));
+    r.dispose();
+  });
+
+  it('names the receiver-unconfirmed catalog key when bounds are known but the active receiver is not', () => {
+    const view = { ...withB({ tuneMinHz: 30000, tuneMaxHz: 60000000 }), activeReceiver: { status: 'unknown' as const } };
+    const r = render(view);
+    expect(r.text('entry-reason')).toBe(t('core.band.entry.reason.receiverUnconfirmed'));
+    r.dispose();
+  });
+});
+
 /* ── (c) no band-scoped disabledReason exists, by design ────────── */
 
 describe('the denial signal is the field value itself (carry-forward 3)', () => {
@@ -793,7 +835,7 @@ describe('a receiver-scoped write needs a known active receiver (MOR-1322 B1 cla
     for (const name of ['40m', '20m', 'MW']) expect(r.btn(`choice-${name}`)!.disabled).toBe(true);
     expect(r.input()!.disabled).toBe(true);
     expect(r.btn('entry-set')!.disabled).toBe(true);
-    expect(r.text('entry-reason')).toContain('active receiver not observed');
+    expect(r.text('entry-reason')).toBe(t('core.band.entry.reason.receiverUnconfirmed'));
     r.dispose();
   });
 

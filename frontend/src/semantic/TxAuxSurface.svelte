@@ -126,7 +126,7 @@
 
 <script lang="ts">
   import type { RadioViewModel } from './radio-view-model';
-  import { BLOCKED_LABEL, keyBlockedReasons, type TxAuthoritySnapshot } from './rx-tx-surface';
+  import { blockedLabel, keyBlockedReasons, type TxAuthoritySnapshot } from './rx-tx-surface';
 
   interface Props {
     view: RadioViewModel;
@@ -168,7 +168,7 @@
    *  TX-authority question moot. */
   let tuneReasonText = $derived(
     tuneAtuReason
-    ?? (tuneBlocked.length > 0 ? tuneBlocked.map((code) => BLOCKED_LABEL[code]).join('; ') : undefined),
+    ?? (tuneBlocked.length > 0 ? tuneBlocked.map((code) => blockedLabel(code)).join('; ') : undefined),
   );
   /** MOR-1481 rework (R2): mirrors `tuneReasonText`'s own `??` exclusivity —
    *  it must, since `title` and `aria-describedby` describe the SAME
@@ -255,7 +255,7 @@
 
     {#if txAux.atu.availability.structural}
       <ul class="tx-aux-blocked" id={blockedId} data-testid="tx-aux-tune-blocked">
-        {#each tuneBlocked as code (code)}<li data-reason={code}>{BLOCKED_LABEL[code]}</li>{/each}
+        {#each tuneBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
       </ul>
     {/if}
   </section>
