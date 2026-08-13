@@ -37,6 +37,11 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   timeout: 30_000,
+  // MOR-1549: bounded backstop for total-breakage runs (keeps the job
+  // inside quick.yml's timeout so diagnostics upload); 10 is well above
+  // the 4 production scenes, so a normal multi-scene re-pin never
+  // reintroduces SKIPPED.
+  maxFailures: 10,
   expect: {
     timeout: 5_000,
     toHaveScreenshot: PRODUCTION_VISUAL_COMPARATOR,
