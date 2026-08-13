@@ -341,25 +341,40 @@ class TestIcomGetFilterWidthRouting:
         assert hz == 6000
 
     @pytest.mark.asyncio
-    async def test_ic9700_sub_receiver_raises_without_cmd29_route(self) -> None:
-        """MOR-1528: IC-9700 SUB (receiver=1) must not silently read MAIN.
+    async def test_ic9700_sub_receiver_uses_vfo_select_fallback(self) -> None:
+        """MOR-1538: IC-9700 SUB (receiver=1) reaches SUB via VFO-select.
 
-        IC-9700 is dual-RX (receiver_count=2) but declares no cmd29 routes.
-        Before this fix, ``get_filter_width(receiver=1)`` built the same
-        direct (receiver-unaware) frame as ``receiver=0`` and returned
-        whatever the radio happened to report for its currently-addressed
-        receiver — attributed to SUB. This must now raise instead.
+        IC-9700 is dual-RX (receiver_count=2) with no cmd29 routes but does
+        declare ``vfo.main_select``/``sub_select`` (0x07 0xD0/0xD1).
+        ``get_filter_width(receiver=1)`` now temporarily selects SUB, sends
+        the plain (non-cmd29) 0x1A 0x03 GET, then restores MAIN — mirroring
+        :meth:`set_freq`'s fallback — instead of raising ``CommandError``.
         """
-        from rigplane.exceptions import CommandError
-
         radio = _connected_icom(model="IC-9700")
-        radio._send_civ_expect = AsyncMock()  # type: ignore[method-assign]
         radio._radio_state.sub.mode = "USB"
+        frames: list[bytes] = []
 
-        with pytest.raises(CommandError, match="no cmd29 route"):
-            await radio.get_filter_width(receiver=1)
+        async def fake_expect(civ: bytes, **_: object) -> CivFrame:
+            frames.append(civ)
+            if civ[4] == 0x07:
+                # VFO select/restore ACK.
+                return CivFrame(
+                    to_addr=0xE0, from_addr=0xA2, command=0xFB, sub=None, data=b""
+                )
+            # 1-byte BCD 0x20 = decimal 20 = USB segment index 20 → 1600 Hz.
+            return CivFrame(
+                to_addr=0xE0, from_addr=0xA2, command=0x1A, sub=0x03, data=b"\x20"
+            )
 
-        radio._send_civ_expect.assert_not_awaited()
+        radio._send_civ_expect = fake_expect  # type: ignore[method-assign]
+
+        hz = await radio.get_filter_width(receiver=1)
+
+        assert frames[0].hex() == "fefea2e007d1fd"  # select SUB
+        get_idx = next(i for i, f in enumerate(frames) if f[4] == 0x1A)
+        assert frames[get_idx].hex() == "fefea2e01a03fd"  # plain GET, no cmd29
+        assert frames[-1].hex() == "fefea2e007d0fd"  # restore MAIN
+        assert hz == 1600
 
     @pytest.mark.asyncio
     async def test_ic7610_sub_receiver_still_cmd29_wrapped(self) -> None:
@@ -431,24 +446,35 @@ class TestIcomSetFilterWidthRouting:
         )
 
     @pytest.mark.asyncio
-    async def test_ic9700_sub_receiver_raises_without_cmd29_route(self) -> None:
-        """MOR-1528: IC-9700 SUB (receiver=1) must not silently write MAIN.
+    async def test_ic9700_sub_receiver_uses_vfo_select_fallback(self) -> None:
+        """MOR-1538: IC-9700 SUB (receiver=1) reaches SUB via VFO-select.
 
-        IC-9700 is dual-RX (receiver_count=2) but declares no cmd29 routes.
-        Before this fix, ``set_filter_width(receiver=1)`` sent the same
-        direct (receiver-unaware) frame as ``receiver=0``, writing MAIN's
-        filter width while the caller believed SUB was targeted.
+        IC-9700 is dual-RX (receiver_count=2) with no cmd29 routes but does
+        declare ``vfo.main_select``/``sub_select`` (0x07 0xD0/0xD1).
+        ``set_filter_width(receiver=1)`` now temporarily selects SUB, sends
+        the plain (non-cmd29) 0x1A 0x03 SET, then restores MAIN — mirroring
+        :meth:`set_freq`'s fallback — instead of raising ``CommandError``.
         """
-        from rigplane.exceptions import CommandError
-
         radio = _connected_icom(model="IC-9700")
-        radio.send_civ = AsyncMock()  # type: ignore[method-assign]
         radio._radio_state.sub.mode = "USB"
+        select_frames: list[bytes] = []
 
-        with pytest.raises(CommandError, match="no cmd29 route"):
-            await radio.set_filter_width(2400, receiver=1)
+        async def fake_expect(civ: bytes, **_: object) -> CivFrame:
+            select_frames.append(civ)
+            return CivFrame(
+                to_addr=0xE0, from_addr=0xA2, command=0xFB, sub=None, data=b""
+            )
 
-        radio.send_civ.assert_not_awaited()
+        radio._send_civ_expect = fake_expect  # type: ignore[method-assign]
+        radio.send_civ = AsyncMock()  # type: ignore[method-assign]
+
+        await radio.set_filter_width(2400, receiver=1)
+
+        assert select_frames[0].hex() == "fefea2e007d1fd"  # select SUB
+        assert select_frames[-1].hex() == "fefea2e007d0fd"  # restore MAIN
+        radio.send_civ.assert_awaited_once_with(
+            0x1A, sub=0x03, data=b"\x28", wait_response=False
+        )
 
     @pytest.mark.asyncio
     async def test_ic7610_sub_receiver_still_cmd29_wrapped(self) -> None:
