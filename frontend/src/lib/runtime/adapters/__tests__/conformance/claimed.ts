@@ -50,6 +50,16 @@
  * DIFFERENT from the field the intent itself writes (`main.filterWidth`,
  * unobserved) — see that file's header for the full finding and red-first
  * evidence.
+ *
+ * Plus 4 intents claimed by MOR-1563's (C9) keyboard action fan-out walk
+ * (`../mor1563-keyboard-fanout-conformance.isolated.test.ts`) — per
+ * `./waived.ts`'s own convention (a landed `expectFrames` moves the intent
+ * here even when the claiming test isn't that intent's OWN family walk):
+ * `set_data_mode` (`cycle_data_mode` keyboard case), `vfo_swap`/
+ * `vfo_equalize` (their own like-named keyboard cases), `set_scope_hold`
+ * (`scope_toggle_hold` keyboard case). Removed from the MOR-1566/MOR-1567
+ * waiver tags in `./waived.ts` — those family walks extend coverage on
+ * these four (more call sites, more profiles), they do not initiate it.
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
@@ -88,21 +98,27 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_if_shift',
   'set_pbt_inner',
   'set_pbt_outer',
+  // MOR-1563 (C9) — keyboard action fan-out walk (see comment above)
+  'set_data_mode',
+  'vfo_swap',
+  'vfo_equalize',
+  'set_scope_hold',
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 34;
+export const CLAIMED_INTENTS_COUNT = 38;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.
  * `toggle_split` was claimed by MOR-1428's "keyboard context" case (over
  * `dispatchKeyboardRadioAction({ action: 'toggle_split' })`). MOR-1563 (C9)
  * walked the remaining 28 in
- * `../mor1563-keyboard-fanout-conformance.isolated.test.ts` — 18 genuinely
- * DISPATCH on this fixture, 10 REFUSE (each case names its firing gate; see
- * that file's header for the full per-action table and the MOR-1454-related
- * findings on the cycle/step cases). `WAIVED_KEYBOARD_ACTIONS` in
- * `./waived.ts` is now empty — this ledger's keyboard half is closed.
+ * `../mor1563-keyboard-fanout-conformance.isolated.test.ts` — 17 genuinely
+ * DISPATCH on this fixture, 11 REFUSE (each case names its firing gate; see
+ * that file's header for the full per-action table, the MOR-1577 finding
+ * on adjust_af_level/adjust_rf_gain, and the MOR-1454/MOR-1578-related
+ * notes elsewhere in the table). `WAIVED_KEYBOARD_ACTIONS` in `./waived.ts`
+ * is now empty — this ledger's keyboard half is closed.
  */
 export const CLAIMED_KEYBOARD_ACTIONS: ReadonlySet<string> = new Set([
   'toggle_split',

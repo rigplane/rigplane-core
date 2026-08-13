@@ -12,14 +12,50 @@
  * in a DIFFERENT switch (`makeKeyboardHandlers().dispatch`) and are a
  * deliberate scope boundary per `waived.ts`'s header, not covered here.
  *
- * FINDING (fixture-derived split): of the 28, 18 genuinely DISPATCH on this
- * IC-7300 fixture and 10 genuinely REFUSE. Every refusal below is an
- * honest fail-closed gate (an unobserved top-level or receiver field, or a
- * single-receiver/no-dual_rx structural gate) — never a test artifact. Each
- * case's `gate` string names the exact reason, cross-checked against the
- * fixture's own `fieldStatus`/`capabilities` data below, never invented.
+ * FINDING (fixture-derived split): of the 28, 17 genuinely DISPATCH on this
+ * IC-7300 fixture and 11 genuinely REFUSE. Every refusal below is an honest
+ * fail-closed gate — an unobserved top-level/receiver field, a
+ * single-receiver/no-dual_rx structural gate, or (adjust_af_level/
+ * adjust_rf_gain, MOR-1577 below) a param-shape mismatch between what this
+ * fixture's own keyboard bindings declare and what the handler reads —
+ * never a test artifact. Each case's `gate` string names the exact reason,
+ * cross-checked against the fixture's own `fieldStatus`/
+ * `capabilities.keyboard.bindings` data, never invented.
  *
- * MOR-1454 ANGLE (the cycle/step family): `cycle_preamp`/`cycle_att`/
+ * MOR-1577 (filed this review round): `capabilities.keyboard.bindings`
+ * declares FOUR bindings for `adjust_af_level`/`adjust_rf_gain`
+ * (`af-level-up`/`-down`, `rf-level-up`/`-down`, all on ArrowUp/ArrowDown),
+ * and every one carries `{ delta: 5 }` or `{ delta: -5 }` — never
+ * `direction`. But `dispatchKeyboardRadioAction`'s `adjust_af_level`/
+ * `adjust_rf_gain` cases read ONLY `params.direction`
+ * (`keyboardDirection(safeParams.direction)`) and hardcode a fixed ±5%
+ * step (`* 255` scale for rf_gain); `delta` is never read anywhere in
+ * either case — a source-level dead control on every profile, not
+ * fixture-specific. The two cases below assert that real, declared-shape
+ * REFUSAL as the canonical row for each action. A synthetic-`{direction}`
+ * dispatch is kept further down as two separately-labeled
+ * HANDLER-CAPABILITY PROBES (NOT profile behavior, not counted in the
+ * 17/11 split) — they prove the handler body itself dispatches fine given
+ * the shape it actually reads, which is what makes the declared-binding
+ * refusal a genuine wiring bug rather than defensive fail-closed design.
+ *
+ * MOR-1578 (filed, cited below where this walk's own rows happen to touch
+ * it — not this walk's finding, no production code changed here): (1)
+ * `vfo_swap`/`vfo_equalize` dispatch completely unconditionally, no
+ * field-observation gate at all (confirmed by the two cases below); (2)
+ * `switch_active_vfo` reads `context.state.active` RAW, bypassing the
+ * observation-gated tautological-MAIN resolution every other action here
+ * goes through; (3) `af-level-up`/`rf-level-up` both bind `ArrowUp` (and
+ * `-down` both bind `ArrowDown`), alongside `adjust_tuning_step`'s
+ * `step-up`/`step-down` — a three-way shadow on the same physical keys;
+ * `scope_toggle_fst` (`F`) shadows `open_filter_settings`; (4)
+ * `mode-psk`/`mode-pskr` bindings declare `{ mode: 'PSK' }`/`{ mode:
+ * 'PSK-R' }`, but this fixture's `caps.modes` is `['USB','LSB','CW',
+ * 'CW-R','AM','FM','RTTY','RTTY-R']` — no PSK/PSK-R — so those two
+ * refuse here too, adjacent to (not the same case as) `mode_select` below,
+ * which deliberately uses the declared-and-supported `LSB` binding.
+ *
+ * MOR-1454 ANGLE (the cycle family): `cycle_preamp`/`cycle_att`/
  * `cycle_agc` each wrap over a FIXTURE-DECLARED option list
  * (`caps.preValues`/`attValues`/`agcModes`) via the shared `keyboardCycle`
  * helper — this walk asserts the wrap target by indexing into those SAME
@@ -29,27 +65,38 @@
  * (`caps.filters.length`), not a value list, so MOR-1454 doesn't apply to
  * it the same way. `cycle_data_mode` has a domain of size 1
  * (`caps.dataModeCount === 1`) — the wrap target equals the current value,
- * which is the mathematically correct result of modulo-1, not evidence of
- * MOR-1454's "ignores declared options" failure mode. `adjust_af_level`/
- * `adjust_rf_gain` and `scope_span_step`/`scope_ref_step` use a FIXED step
- * (5%, or 1/5 units) and FIXED clamp bounds hardcoded in
- * `dispatchKeyboardRadioAction` itself — this profile declares no
- * step-size or scope-range capability to check them against, so there is
- * no fixture-declared domain for these four to honor or violate; noted as
- * an honest baseline, not a finding.
+ * the mathematically correct result of modulo-1, not evidence of
+ * MOR-1454's "ignores declared options" failure mode. `scope_span_step`/
+ * `scope_ref_step` use fixed clamp bounds hardcoded in
+ * `dispatchKeyboardRadioAction` itself, with no scope-range capability on
+ * this profile to check them against — an honest baseline, not a finding.
+ * `adjust_af_level`/`adjust_rf_gain` are MOR-1577 above, not this angle:
+ * the fixture DOES declare their domain (`{ delta }`), the handler just
+ * never reads it.
  *
- * RED-FIRST EVIDENCE (MOR-1563 build process, not part of this diff): the
- * `cycle_filter` case below was first authored with a deliberately wrong
- * literal claim, `frames: [['set_filter', { filter: 3, receiver: 0 }]]`
- * (guessing the wrap wrong). `vitest run` on that version failed with
- * `expected [ [ 'set_filter', { filter: 2, receiver: 0 } ] ] to deeply
- * equal [ [ 'set_filter', { filter: 3, receiver: 0 } ] ]` (RED — the real
- * dispatch is filter 2, not the guessed 3). Replacing the literal with the
+ * RED-FIRST EVIDENCE, `cycle_filter` (MOR-1563 build, not part of this
+ * diff): first authored with a deliberately wrong literal claim,
+ * `frames: [['set_filter', { filter: 3, receiver: 0 }]]` (guessing the
+ * wrap wrong). `vitest run` on that version failed with `expected [ [
+ * 'set_filter', { filter: 2, receiver: 0 } ] ] to deeply equal [ [
+ * 'set_filter', { filter: 3, receiver: 0 } ] ]` (RED — the real dispatch
+ * is filter 2, not the guessed 3). Replacing the literal with the
  * fixture-derived expression below (`main.filter=1`,
  * `caps.filters.length=3` → `(((1-1)+1+3)%3)+1 === 2`) turned it GREEN.
  *
- * DISCRIMINATION EVIDENCE (MOR-1563 build process, not part of this diff):
- * to prove the `toggle_rit` refusal below isn't vacuous, its gate was
+ * RED-FIRST EVIDENCE, `tune` (review-round fix, not part of this diff): the
+ * case was rewritten to the real `nudge-right` binding shape (`ArrowRight`,
+ * `{ direction: 'up', fine: false }`) with a deliberately wrong target,
+ * `frames: [['set_freq', { freq: 14_190_000, receiver: 0 }]]`. `vitest
+ * run` failed RED: `expected [ [ 'set_freq', { freq: 14189000, receiver: 0
+ * } ] ] to deeply equal [ [ 'set_freq', { freq: 14190000, receiver: 0 } ]
+ * ]` — the real target is base `main.freqHz` (14188000) plus the harness's
+ * mocked 1000 Hz tuning step = 14189000, not the guessed 14190000. Fixing
+ * the literal to the fixture-derived expression (`main.freqHz + 1000`)
+ * turned it GREEN.
+ *
+ * DISCRIMINATION EVIDENCE (MOR-1563 build, not part of this diff): to
+ * prove the `toggle_rit` refusal below isn't vacuous, its gate was
  * scratch-flipped locally — `h.state.fieldStatus['ritOn']` temporarily set
  * to `{ availability: 'available', observed: true, ... }` before calling
  * `dispatchKeyboardRadioAction({ action: 'toggle_rit' })` — and the refusal
@@ -59,6 +106,20 @@
  * scratch edit was reverted with `git checkout --` (not `git stash`) after
  * observing the failure, restoring the green state before this file was
  * committed.
+ *
+ * TUNING-ACCUMULATOR ISOLATION (review-round fix): `tune`'s dispatch goes
+ * through `makeVfoHandlers()`'s MODULE-SCOPE shared tuning accumulator
+ * (`tuning-accumulator.ts`'s `getSharedTuningAccumulator`), which
+ * `resetCommandLifecycle()` does NOT touch and which
+ * `mor1428-ic7300-conformance.isolated.test.ts` also exercises on receiver
+ * 0 in the same targeted-suite run. Left unreset, a hot burst carried over
+ * from whichever file runs first would make the other's synchronous
+ * `expectFrames` assertion flaky (a hot burst paces its flush via
+ * `setTimeout` instead of emitting inline). This file calls the
+ * already-exported test-only `resetSharedTuningAccumulatorForTests()` in
+ * BOTH `beforeEach` and `afterEach` — the same convention
+ * `tuning-accumulator.test.ts` itself uses — so `tune` always starts cold
+ * here and never leaves hot state behind for a sibling file.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -70,6 +131,7 @@ import {
 } from './conformance/harness';
 import { PROFILES } from './conformance/profiles';
 import { dispatchKeyboardRadioAction } from '../../commands/panel-commands';
+import { resetSharedTuningAccumulatorForTests } from '../../commands/tuning-accumulator';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 
 const profile = PROFILES.ic7300;
@@ -98,12 +160,13 @@ interface KeyboardCase {
 }
 
 const CASES: readonly KeyboardCase[] = [
-  { action: 'tune', frames: [],
-    gate: 'no direction/deltaHz in params — argument-shape gate, never reaches the tuning accumulator' },
+  { action: 'tune', params: { direction: 'up', fine: false },
+    frames: [['set_freq', { freq: main.freqHz + 1000, receiver: 0 }]],
+    gate: 'declared nudge-right binding (ArrowRight); main.freqHz observed, tuning step > 0' },
   { action: 'band_select', params: { index: 5 }, frames: [['set_band', { band: 5 }]],
     gate: 'bsr capability declared + main.freqHz observed' },
   { action: 'mode_select', params: { mode: 'LSB' }, frames: [['set_mode', { mode: 'LSB', receiver: 0 }]],
-    gate: 'main.mode observed + LSB in caps.modes' },
+    gate: 'main.mode observed + LSB in caps.modes (MOR-1578: mode-psk/mode-pskr bindings declare undeclared modes, adjacent case)' },
   { action: 'cycle_data_mode',
     frames: [['set_data_mode', { mode: (main.dataMode + 1) % dataModeCount, receiver: 0 }]],
     gate: 'main.dataMode observed; dataModeCount=1 (see MOR-1454 note above)' },
@@ -123,19 +186,17 @@ const CASES: readonly KeyboardCase[] = [
   { action: 'toggle_rit', frames: [], gate: 'top-level ritOn unobserved (see discrimination evidence above)' },
   { action: 'toggle_xit', frames: [], gate: 'top-level ritTx unobserved' },
   { action: 'clear_rit_xit', frames: [], gate: 'top-level ritFreq unobserved' },
-  { action: 'adjust_af_level', params: { direction: 'up' },
-    frames: [['set_af_level', { level: Math.max(0, Math.min(1, main.afLevel + 0.05)), receiver: 0 }]],
-    gate: 'main.afLevel observed; fixed 5% step (no declared step-size domain, see MOR-1454 note)' },
-  { action: 'adjust_rf_gain', params: { direction: 'down' },
-    frames: [['set_rf_gain', { level: Math.round(Math.max(0, Math.min(1, main.rfGain - 0.05)) * 255), receiver: 0 }]],
-    gate: 'main.rfGain observed; fixed 5% step, hardcoded *255 scale (see MOR-1454 note)' },
+  { action: 'adjust_af_level', params: { delta: 5 }, frames: [],
+    gate: 'declared af-level-up binding ({delta:5}); handler reads only params.direction, never delta — MOR-1577 dead control (see header; probe below)' },
+  { action: 'adjust_rf_gain', params: { delta: -5 }, frames: [],
+    gate: 'declared rf-level-down binding ({delta:-5}); handler reads only params.direction, never delta — MOR-1577 dead control (see header; probe below)' },
   { action: 'toggle_monitor', frames: [], gate: 'top-level monitorOn unobserved' },
   { action: 'vfo_swap', frames: [['vfo_swap', {}]],
-    gate: 'vfoScheme !== "single" — unconditional, no field-observation gate at all' },
+    gate: 'vfoScheme !== "single" — unconditional, no field-observation gate at all (MOR-1578)' },
   { action: 'vfo_equalize', frames: [['vfo_equalize', {}]],
-    gate: 'vfoScheme !== "single" — unconditional, no field-observation gate at all' },
+    gate: 'vfoScheme !== "single" — unconditional, no field-observation gate at all (MOR-1578)' },
   { action: 'switch_active_vfo', frames: [],
-    gate: 'single receiver / no dual_rx — active is tautologically MAIN so target computes to SUB, nothing to switch to' },
+    gate: 'single receiver / no dual_rx — target computes to SUB, nothing to switch to (reads context.state.active RAW, MOR-1578)' },
   { action: 'set_active_vfo', params: { vfo: 'MAIN' }, frames: [['set_vfo', { vfo: 'MAIN' }]],
     gate: 'state.main exists — activateReceiver dispatches unconditionally once the receiver resolves' },
   { action: 'toggle_dial_lock', frames: [], gate: 'top-level dialLock unobserved' },
@@ -150,7 +211,7 @@ const CASES: readonly KeyboardCase[] = [
   { action: 'scope_toggle_dual', frames: [],
     gate: 'single receiver / no dual_rx / no sub — hasPhysicalSub-equivalent gate fails' },
   { action: 'scope_toggle_fst', frames: [['set_scope_speed', { speed: scope.speed === 0 ? 1 : 0 }]],
-    gate: 'scopeControls.speed observed' },
+    gate: 'scopeControls.speed observed (MOR-1578: F key shadows open_filter_settings)' },
 ];
 
 describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', () => {
@@ -158,10 +219,12 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
     h.state = fixtureState(profile);
     h.caps = fixtureCaps(profile);
     h.sendCommand.mockClear();
+    resetSharedTuningAccumulatorForTests();
   });
 
   afterEach(() => {
     resetCommandLifecycle();
+    resetSharedTuningAccumulatorForTests();
   });
 
   it('covers exactly the 28 waived dispatchKeyboardRadioAction actions', () => {
@@ -183,4 +246,23 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
       expect(handled).toBe(true);
     });
   }
+
+  // MOR-1577 handler-capability probes: NOT this profile's declared binding
+  // shape (real bindings send `{ delta }`, asserted as REFUSAL above) — these
+  // prove the handler body itself dispatches fine given `{ direction }`,
+  // establishing that the declared-shape refusal above is a genuine dead
+  // control (delta never read) rather than the handler being broken outright.
+  it('HANDLER-CAPABILITY PROBE (not profile behavior, MOR-1577): adjust_af_level dispatches set_af_level given {direction}', () => {
+    expectFrames(
+      () => dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } }),
+      [['set_af_level', { level: Math.max(0, Math.min(1, main.afLevel + 0.05)), receiver: 0 }]],
+    );
+  });
+
+  it('HANDLER-CAPABILITY PROBE (not profile behavior, MOR-1577): adjust_rf_gain dispatches set_rf_gain given {direction}', () => {
+    expectFrames(
+      () => dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'down' } }),
+      [['set_rf_gain', { level: Math.round(Math.max(0, Math.min(1, main.rfGain - 0.05)) * 255), receiver: 0 }]],
+    );
+  });
 });
