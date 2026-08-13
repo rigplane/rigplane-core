@@ -1495,9 +1495,22 @@ def test_normalized_level_command_expectation_matches_radio_scale(
     actually driven to (``round(0.98 * 255) == 250``). The deferred readback
     (~0.98) then never matched the bogus ``0`` expectation, surfacing as the
     control snapping back to 0. The expected/overlay value must track the same
-    raw scale the radio is set to via ``_normalized_or_raw_level``.
+    raw scale the radio is set to via
+    :func:`rigplane.core.command_service._raw_level_from_param`.
+
+    MOR-1579 note: this StateStore expectation-tracking heuristic is a
+    separate, still-magnitude-based implementation from
+    ``web/handlers/control.py``'s dispatch-time coercion (which MOR-1579
+    replaced with explicit per-intent ``_level_from_normalized`` /
+    ``_level_from_raw`` helpers). ``_raw_level_from_param`` itself was
+    intentionally left untouched by MOR-1579 (out of that fix's file/LOC
+    budget — see the PR body) and still has the same normalized-vs-raw
+    boundary ambiguity; ``0.98`` here is a normalized-domain value that
+    exercises it unchanged, not a claim that ``set_rf_gain``/``set_squelch``
+    web sliders actually emit normalized floats (they emit raw integers,
+    per PR #2491).
     """
-    from rigplane.web.handlers.control import _normalized_or_raw_level
+    from rigplane.core.command_service import _raw_level_from_param
 
     intent = command_intent_from_request(
         name,
@@ -1509,7 +1522,7 @@ def test_normalized_level_command_expectation_matches_radio_scale(
     path = FieldPath.receiver("0", "operator_controls", path_name)
 
     # Param is coerced to the raw scale the radio actually receives — not 0.
-    radio_raw = _normalized_or_raw_level(0.98)
+    radio_raw = _raw_level_from_param(0.98)
     assert radio_raw == 250
     assert intent.params[path_name] == radio_raw
 
@@ -1526,10 +1539,14 @@ def test_normalized_level_command_expectation_matches_radio_scale(
 
 
 def test_normalized_af_level_fifty_round_trips_to_raw_fifty() -> None:
-    """The public AF fixture stays normalized while the server owns raw conversion."""
-    from rigplane.web.handlers.control import _normalized_or_raw_level
+    """The public AF fixture stays normalized while the server owns raw conversion.
 
-    assert _normalized_or_raw_level(50 / 255) == 50
+    set_af_level's wire contract is normalized 0.0-1.0 (MOR-1579), so this
+    exercises the control handler's ``_level_from_normalized`` directly.
+    """
+    from rigplane.web.handlers.control import _level_from_normalized
+
+    assert _level_from_normalized(50 / 255) == 50
 
 
 @pytest.mark.asyncio

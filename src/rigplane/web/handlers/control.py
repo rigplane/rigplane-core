@@ -254,11 +254,41 @@ class _CommandMetadataQueue:
             self.queue.put_ordered(command, future=future)
 
 
-def _normalized_or_raw_level(value: Any) -> int:
+def _level_from_normalized(value: Any) -> int:
+    """Convert a normalized 0.0-1.0 level param to the raw 0-255 wire scale.
+
+    MOR-1579: level params used to be interpreted by *magnitude* — any
+    value in ``[0, 1]`` was assumed normalized, anything else was assumed
+    already raw. That silently misread a legitimate raw value of ``1``
+    (e.g. ``set_rf_gain`` at the bottom of its 0-255 range) as "100%
+    normalized" and drove the radio to full scale. Callers must now
+    declare which wire shape their intent actually uses; this helper is
+    for intents whose frontend contract is a normalized 0.0-1.0 float
+    (``set_rf_power``, ``set_af_level`` — see
+    ``frontend/src/lib/runtime/commands/radio-intents.ts``). An
+    out-of-domain value is a caller bug, not an alternate encoding, so it
+    raises instead of being silently reinterpreted as raw.
+    """
     numeric = float(value)
-    if 0.0 <= numeric <= 1.0:
-        return max(0, min(255, round(numeric * 255)))
-    return int(numeric)
+    if not (0.0 <= numeric <= 1.0):
+        raise ValueError(
+            f"level {numeric!r} is out of the normalized 0.0-1.0 domain "
+            "(this command expects a normalized level, not a raw value)"
+        )
+    return max(0, min(255, round(numeric * 255)))
+
+
+def _level_from_raw(value: Any) -> int:
+    """Coerce an already-raw wire-scale level param.
+
+    MOR-1579: for intents whose frontend contract sends the raw integer
+    directly (``set_rf_gain``, ``set_sql``/``set_squelch`` — see
+    ``frontend/src/lib/runtime/commands/radio-intents.ts``, declared
+    ``'integer'``), the value is used as-is. Range validation is left to
+    the downstream BCD encoder, which already raises on out-of-range
+    raw values.
+    """
+    return int(float(value))
 
 
 class ControlHandler:
@@ -1964,7 +1994,7 @@ class ControlHandler:
                         "command set_rf_power is not supported by this radio "
                         "(radio does not implement PowerControlCapable)"
                     )
-                level = _normalized_or_raw_level(params["level"])
+                level = _level_from_normalized(params["level"])
                 # Tag the unit per radio's wire-level scale. Icom CI-V
                 # backends expose ``native_power_unit = "raw_255"``,
                 # Yaesu CAT exposes ``"watts"`` — see
@@ -2170,7 +2200,7 @@ class ControlHandler:
                         "command set_rf_gain is not supported by this radio "
                         "(missing rf_gain capability)"
                     )
-                level = _normalized_or_raw_level(params["level"])
+                level = _level_from_raw(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("rf_gain", "set_rf_gain")
                 self._ensure_receiver_supported(rx)
@@ -2184,7 +2214,7 @@ class ControlHandler:
                         "command set_af_level is not supported by this radio "
                         "(missing af_level capability)"
                     )
-                level = _normalized_or_raw_level(params["level"])
+                level = _level_from_normalized(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("af_level", "set_af_level")
                 self._ensure_receiver_supported(rx)
@@ -2198,7 +2228,7 @@ class ControlHandler:
                         f"command {name!r} is not supported by this radio "
                         "(missing squelch capability)"
                     )
-                level = _normalized_or_raw_level(params["level"])
+                level = _level_from_raw(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("squelch", name)
                 self._ensure_receiver_supported(rx)
