@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from rigplane.command_map import CommandMap
+from rigplane.core.capabilities import CAP_SPEECH, KNOWN_CAPABILITIES
 from rigplane.profiles import BandInfo, FreqRangeInfo, RadioProfile, get_radio_profile
 from rigplane.rig_loader import RigConfig, RigLoadError, discover_rigs, load_rig
 
@@ -161,6 +162,18 @@ provider = 123
         p = _write_toml(tmp_path, toml)
         with pytest.raises(RigLoadError, match="teleportation"):
             load_rig(p)
+
+    def test_speech_capability_loads(self, tmp_path):
+        toml = _MINIMAL_TOML.replace(
+            'features = ["audio", "scope", "meters", "tx"]',
+            'features = ["audio", "speech"]',
+        )
+        rig = load_rig(_write_toml(tmp_path, toml))
+        assert "speech" in rig.capabilities
+
+    def test_speech_capability_is_exported_and_known(self):
+        assert CAP_SPEECH == "speech"
+        assert CAP_SPEECH in KNOWN_CAPABILITIES
 
     def test_invalid_vfo_scheme(self, tmp_path):
         toml = _MINIMAL_TOML.replace('scheme = "ab"', 'scheme = "xyz"')
