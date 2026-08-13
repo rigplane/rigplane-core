@@ -1923,14 +1923,14 @@ class RadioPoller:
                     )
             case SetFilterShape(shape=shape, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_filter_shape")
-                if shape not in (0, 1):
-                    raise CommandError(
-                        f"set_filter_shape value must be 0 or 1, got {shape}"
-                    )
                 if CAP_FILTER_SHAPE not in self._caps:
                     raise CommandError(
                         "set_filter_shape is not supported by this backend"
                     )
+                # Domain legality (which shape values are valid for THIS
+                # profile) is CoreRadio.set_filter_shape's job — the single
+                # validation seat, not a hardcoded 0/1 duplicate here
+                # (MOR-1534, mirrors the set_agc/set_preamp precedent).
                 await radio.set_filter_shape(shape, receiver=rx)
                 if self._radio_state:
                     target = (

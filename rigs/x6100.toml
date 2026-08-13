@@ -43,6 +43,16 @@ address = 0x70
 # over-declaration the validation harness exists to catch. These three are
 # dropped here BY INFERENCE, not by a direct X6100 capture — do NOT relabel
 # them "live confirmed" for the X6100 until a real X6100 is actually probed.
+#
+# NOTE: ``break_in`` KEEPS the capability tag but intentionally declares NO
+# ``[break_in]`` domain (MOR-1534). There is no X6100 cat-audit in this repo
+# at all (no X6100 hardware to capture — see above) and the shared-firmware
+# inference that justifies dropping tone/pbt doesn't apply here: the X6200's
+# own audit found its break-in opcode isn't in the X6200 CI-V table either,
+# so inferring an X6100 value domain from X6200 data would compound one
+# unconfirmed guess on top of another. No trustworthy in-repo source exists
+# for an OFF/SEMI/FULL domain on this radio, so ``CoreRadio.set_break_in``
+# refuses (fails loud) rather than validate against a guessed table.
 features = [
     "audio",
     "af_level",
