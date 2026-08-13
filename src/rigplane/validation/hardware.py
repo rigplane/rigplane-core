@@ -1904,13 +1904,16 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     ValueRule.STEP_LEVEL_255: 100,
     ValueRule.NUDGE_FILTER: 2800,
     ValueRule.PREAMP_CYCLE: 1,
-    # MOR-1547: radio-unaware fallback only — reachable when a connected
-    # radio's declared ``[agc] modes`` domain cannot be discovered at all
-    # (e.g. a bare test double with no ``_profile``/``_config``). When a
-    # domain IS discoverable, ``_set_and_observe`` overrides this with
-    # ``_agc_probe_value`` (MOR-1529's non-OFF-preferring derivation) before
-    # ever consulting this dict, mirroring the ``STEP_LEVEL_255`` range
-    # override just below.
+    # MOR-1547: dead in practice for AGC_FLIP — ``_set_and_observe``
+    # unconditionally overrides this entry with ``_agc_probe_value``
+    # (MOR-1529's non-OFF-preferring domain derivation) regardless of
+    # whether a domain is discoverable; the dict is still consulted first
+    # (``.get()`` below) but its result is always discarded for this rule,
+    # mirroring the ``STEP_LEVEL_255`` range override further down. Retained
+    # for documentation of the historical fallback value; when
+    # ``_agc_probe_value`` itself cannot discover a domain, its own internal
+    # fallback happens to equal this same constant — a coincidence of the
+    # chosen value, not a shared code path.
     ValueRule.AGC_FLIP: int(AgcMode.FAST),
     ValueRule.TONE_FREQ_CYCLE: 88.5,
     ValueRule.VFO_AB_FLIP: "A",
@@ -1946,11 +1949,13 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     ValueRule.STEP_LEVEL_255: lambda v: 200 if v < 128 else 50,
     ValueRule.NUDGE_FILTER: _nudge_filter,
     ValueRule.PREAMP_CYCLE: lambda v: 1 if v == 0 else 0,
-    # MOR-1547: radio-unaware fallback only — unreachable for check_id
-    # "agc.set" today (the named ``_check_agc_set`` handler always wins) and
-    # overridden by ``_check_from_spec`` with ``_agc_probe_value`` whenever a
-    # connected radio's declared ``[agc] modes`` domain IS discoverable, same
-    # override pattern as the ``STEP_LEVEL_255`` range branch below.
+    # MOR-1547: dead in practice for AGC_FLIP — unreachable for check_id
+    # "agc.set" today (the named ``_check_agc_set`` handler always wins), and
+    # ``_check_from_spec`` unconditionally overrides this entry with
+    # ``_agc_probe_value`` for any OTHER check_id sharing this value_rule,
+    # regardless of whether a domain is discoverable (same override pattern
+    # as the ``STEP_LEVEL_255`` range branch below). Retained for
+    # documentation of the historical fallback value only.
     ValueRule.AGC_FLIP: lambda m: (
         int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
     ),
@@ -2023,9 +2028,15 @@ async def _set_and_observe(
     test_value = _WRITE_ONLY_TEST_VALUES.get(spec.value_rule)
     if spec.value_rule == ValueRule.AGC_FLIP:
         # MOR-1547: derive from the connected radio's own declared domain
-        # instead of the hardcoded IC-7610 ``AgcMode.FAST`` fallback above —
-        # reachable whenever a profile's ``[validation] write_only_controls``
-        # includes "agc" (only X6200 declares that section today).
+        # instead of the hardcoded IC-7610 ``AgcMode.FAST`` dict entry above
+        # — purely defensive today: no shipped profile's
+        # ``[validation] write_only_controls`` actually includes "agc" (the
+        # only radio that declares that section at all, X6200, lists
+        # ``["rit", "xit", "notch"]``, per ``rigs/x6200.toml``), so this
+        # branch is currently unreachable in production. Fixed anyway so a
+        # future profile that DOES route "agc" through write-only
+        # classification does not inherit the same hazard MOR-1529 fixed for
+        # the named RMVR handler.
         test_value = _agc_probe_value(radio, avoid=None)
     if test_value is None:
         return _base_result(

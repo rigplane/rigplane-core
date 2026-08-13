@@ -1192,6 +1192,29 @@ class TestAgcDomainDeclaredOrCapabilityAbsent:
         assert 0 in rig.agc_modes
         assert rig.agc_labels["0"] == "OFF"
 
+    def test_ftx1_agc_auto_labels_are_short_form(self):
+        """MOR-1547: FTX-1's auto-selected AGC modes (4/5/6) must declare the
+        short "A-F"/"A-M"/"A-S" form, not "A-FAST"/"A-MID"/"A-SLOW".
+
+        The long form's 6-character body, prefixed "AGC " by the amber-lcd
+        skin's AmberCockpit/AmberScope status chip, produced a 10-character
+        chip wider than any sibling chip sharing AmberIndStrip's
+        flex-wrap + overflow:hidden row (AmberIndStrip.svelte:68-128) — the
+        wrapped second row was silently clipped. This is the real-profile
+        witness for that fix (a hand-copied constant in a frontend component
+        test cannot catch a regression to the TOML itself — reverting these
+        three lines must fail THIS test).
+        """
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+        assert rig.agc_labels["4"] == "A-F"
+        assert rig.agc_labels["5"] == "A-M"
+        assert rig.agc_labels["6"] == "A-S"
+        # The amber-chip width invariant itself: every declared FTX-1 AGC
+        # label body must fit inside the 4-character FAST/SLOW budget every
+        # other shipped [agc.labels] table (ic7300/ic7610/ic705/ic9700/x6200)
+        # already renders inside without wrapping the AmberIndStrip row.
+        assert max(len(v) for v in rig.agc_labels.values()) <= 4
+
     def test_x6100_and_tx500_declare_no_agc_capability(self):
         """Neither has AGC wired at all today (X6100: no confirmed hardware
         capture; TX-500: no backend/CAT implementation at all) — capability-

@@ -190,14 +190,20 @@ async def test_agc_set_probe_never_lands_on_off_for_a_domain_that_declares_it():
 
 async def test_write_only_agc_probe_derives_from_declared_domain_not_hardcoded_fast():
     """MOR-1547: ``_WRITE_ONLY_TEST_VALUES[AGC_FLIP]`` hardcoded IC-7610
-    ``AgcMode.FAST`` (1) as the write-only probe value, reachable whenever a
-    profile's ``[validation] write_only_controls`` includes "agc" (only
-    X6200 declares that section today, MOR-208). A domain that excludes 1
-    (e.g. X6200's real ``[agc] modes`` OFF/FAST/SLOW/AUTO = 0/1/2/3 happens
-    to include 1, so use a synthetic domain that does not, mirroring the R1
-    regression fixture) would get an illegal write under the old hardcode.
-    The probe must derive from the radio's own declared domain (mirroring
-    ``_check_agc_set``'s MOR-1529 fix) and must never land on OFF (0).
+    ``AgcMode.FAST`` (1) as the write-only probe value. This path is purely
+    defensive today — no shipped profile's ``[validation]
+    write_only_controls`` actually includes "agc" (the only radio that
+    declares that section at all, X6200, lists ``["rit", "xit", "notch"]``,
+    MOR-208) — but would be reachable for any future profile that does route
+    "agc" through write-only classification, exercised here directly via
+    ``_check_from_spec`` + ``CheckKind.WRITE_ONLY_OBSERVE`` rather than
+    through that (currently nonexistent) profile wiring. A domain that
+    excludes 1 (e.g. X6200's real ``[agc] modes`` OFF/FAST/SLOW/AUTO =
+    0/1/2/3 happens to include 1, so use a synthetic domain that does not,
+    mirroring the R1 regression fixture) would get an illegal write under
+    the old hardcode. The probe must derive from the radio's own declared
+    domain (mirroring ``_check_agc_set``'s MOR-1529 fix) and must never land
+    on OFF (0).
     """
     from rigplane.validation.hardware import _check_from_spec
 
