@@ -1674,6 +1674,7 @@ class FakeDuplexStream:
         *,
         device: int | None = None,
         exclusive: dict[int, object] | None = None,
+        block_open: Callable[[], None] | None = None,
     ) -> None:
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
@@ -1683,6 +1684,12 @@ class FakeDuplexStream:
         self.stopped_count = 0
         self.written_frames: list[bytes] = []
         self._capture_health = _CaptureHealthTracker()
+        # MOR-1573: see FakeRxStream.block_open — lets tests model a
+        # genuinely blocking duplex open so UsbAudioDriver.start_duplex's
+        # off-loop timeout handling can be exercised deterministically.
+        self.block_open = block_open
+        # MOR-1573: see FakeRxStream.stop_thread_ident.
+        self.stop_thread_ident: int | None = None
 
     @property
     def running(self) -> bool:
@@ -1702,12 +1709,15 @@ class FakeDuplexStream:
     async def start(self, callback: Callable[[bytes], None]) -> None:
         if self._running:
             raise RuntimeError("FakeDuplexStream already running.")
+        if self.block_open is not None:
+            self.block_open()
         _claim_exclusive_device(self._exclusive, self._device, self)
         self._callback = callback
         self._running = True
         self.started_count += 1
 
     async def stop(self) -> None:
+        self.stop_thread_ident = threading.get_ident()
         _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self._callback = None
@@ -1788,6 +1798,9 @@ class FakeAudioBackend:
         # backend. ``None`` (default) behaves exactly as before.
         self.block_rx_open: Callable[[], None] | None = None
         self.block_tx_open: Callable[[], None] | None = None
+        # MOR-1573: same purpose as block_rx_open/block_tx_open, for the
+        # same-device full-duplex open path (UsbAudioDriver.start_duplex).
+        self.block_duplex_open: Callable[[], None] | None = None
 
     def _strict_stream_kwargs(self, device: AudioDeviceId) -> dict[str, Any]:
         """Strict-mode plumbing for a new fake stream (MOR-566).
@@ -1874,7 +1887,9 @@ class FakeAudioBackend:
     ) -> FakeDuplexStream:
         if not any(d.id == device for d in self._devices):
             raise ValueError(f"Unknown device id {device}")
-        stream = FakeDuplexStream(**self._strict_stream_kwargs(device))
+        stream = FakeDuplexStream(
+            block_open=self.block_duplex_open, **self._strict_stream_kwargs(device)
+        )
         self.duplex_streams.append(stream)
         return stream
 

@@ -121,9 +121,18 @@ default executor: that pool is shared with the web server, eibi lookups,
 diagnostics, and discovery, so a single wedged capture open would
 permanently eat one of its threads and, given enough stuck opens, starve
 those unrelated subsystems too. Sized for a couple of concurrent RX/TX
-opens plus a couple of abandoned-handle closes running at once; it does
-not need to scale with subscriber count since ``_rx_lock``/``_tx_lock``
-serialize new opens.
+opens plus a couple of abandoned-handle closes running at once.
+
+``_rx_lock``/``_tx_lock`` serialize CONCURRENT opens, NOT the pool's worker
+budget (MOR-1573 correction of an earlier, wrong claim here): a wedged
+open is abandoned (see ``_open_stream``) so the NEXT sequential open can
+start while the stuck one's worker keeps running unattended in the
+background. Enough sequential wedged opens against an otherwise-healthy
+device still exhausts this pool one worker at a time. The saturation
+check in ``_open_stream`` catches that case and fails fast with an honest
+"pool saturated" error instead of letting the new open queue behind the
+stuck ones and burn the full ``capture_open_timeout`` for an unrelated
+reason.
 """
 
 
@@ -633,6 +642,12 @@ class UsbAudioDriver:
             max_workers=_CAPTURE_OPEN_MAX_WORKERS,
             thread_name_prefix="rigplane-audio-open",
         )
+        # MOR-1573: count of submitted-but-unfinished _drive_stream_open
+        # open calls (close calls are not counted — see _open_stream). An
+        # abandoned (timed-out or cancelled) open stays counted until its
+        # future actually resolves, so this tracks REAL worker-pool
+        # pressure, not just calls currently being awaited.
+        self._inflight_opens = 0
 
         self._selected_rx: UsbAudioDevice | None = None
         self._selected_tx: UsbAudioDevice | None = None
@@ -984,11 +999,49 @@ class UsbAudioDriver:
         survives a cancelled wait untouched — it must be abandoned the
         same way a timed-out one is, or it leaves a live, un-stoppable
         stream with no consumer.
+
+        Pool-saturation fail-fast (MOR-1573): before submitting anything,
+        checks whether ``_inflight_opens`` already meets
+        ``_CAPTURE_OPEN_MAX_WORKERS``. Sequential wedged opens each leave a
+        worker permanently occupied (see the correction on
+        ``_CAPTURE_OPEN_MAX_WORKERS`` above), so enough of them exhaust the
+        pool even though ``_rx_lock``/``_tx_lock`` only ever allow one open
+        in flight at a time. Without this check, a new open against a
+        perfectly healthy device would silently queue behind the stuck
+        workers, burn the full ``_capture_open_timeout``, and raise the
+        SAME "likely blocked on OS capture-permission consent" message —
+        actively misattributing the cause. Only fires when saturation is
+        real (count >= max workers); a healthy pool is never fast-failed.
+        The caller already constructed *start_coro* (e.g.
+        ``stream.start(...)``) before this method ever runs, so the
+        fail-fast path closes it explicitly — otherwise it is dropped
+        unawaited, which triggers Python's "coroutine was never awaited"
+        warning and skips any cleanup the coroutine itself would run.
         """
+        if self._inflight_opens >= _CAPTURE_OPEN_MAX_WORKERS:
+            logger.warning(
+                "usb-audio: %s capture open worker pool saturated by %d "
+                "stuck open(s) — failing fast instead of queuing behind "
+                "them",
+                direction.upper(),
+                self._inflight_opens,
+            )
+            start_coro.close()
+            raise AudioCaptureOpenTimeoutError(
+                f"{direction.upper()} capture open worker pool saturated "
+                f"by {self._inflight_opens} stuck open(s)."
+            )
+
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(
             self._open_executor, _drive_stream_open, start_coro
         )
+        self._inflight_opens += 1
+
+        def _on_open_settled(_future: "asyncio.Future[None]") -> None:
+            self._inflight_opens -= 1
+
+        future.add_done_callback(_on_open_settled)
         try:
             _done, pending = await asyncio.wait(
                 {future}, timeout=self._capture_open_timeout
@@ -999,7 +1052,7 @@ class UsbAudioDriver:
         if future in pending:
             self._abandon_open(future, stream, direction)
             logger.warning(
-                "usb-audio: %s capture open timed out after %.0fs — likely "
+                "usb-audio: %s capture open timed out after %.1fs — likely "
                 "blocked on OS capture-permission consent (macOS TCC "
                 "microphone-consent prompt that never rendered, see "
                 "MOR-1420); marking %s audio unavailable for this session, "
@@ -1065,8 +1118,23 @@ class UsbAudioDriver:
         handle would otherwise hold the OS device open forever — the
         ResourceDemand handle-identity lesson applies here too: a handle
         nobody stops leaks a binding.
+
+        MOR-1573: an abandoned open that later resolves with an EXCEPTION
+        (as opposed to a late-but-successful open) previously returned
+        here silently — zero trace of the failure ever reached the logs.
+        Now logged as its own WARNING with the exception attached, since
+        there is no stream handle to close in that case.
         """
-        if future.cancelled() or future.exception() is not None:
+        if future.cancelled():
+            return
+        exc = future.exception()
+        if exc is not None:
+            logger.warning(
+                "usb-audio: %s capture open abandoned and later failed: %s",
+                direction.upper(),
+                exc,
+                exc_info=exc,
+            )
             return
         logger.warning(
             "usb-audio: %s capture open completed after it was abandoned "
@@ -1322,7 +1390,7 @@ class UsbAudioDriver:
                 tx_contract.channels,
                 fm,
             )
-            self._duplex_stream = self._backend.open_duplex(
+            stream = self._backend.open_duplex(
                 AudioDeviceId(selected_rx.index),
                 sample_rate=rx_contract.sample_rate_hz,
                 channels=rx_contract.effective_open_channels,
@@ -1331,7 +1399,20 @@ class UsbAudioDriver:
                 rx_audio_channel=self._config.rx_audio_channel,
                 tx_channels=tx_contract.channels,
             )
-            await self._duplex_stream.start(callback)
+            self._duplex_stream = stream
+            try:
+                # MOR-1573: duplex opens get the SAME off-loop + bounded-
+                # timeout treatment as RX/TX (MOR-1438) — a stuck duplex
+                # open is the same blocking OS-level device open as either
+                # single-direction stream, just on the shared CODEC.
+                await self._open_stream(
+                    stream, stream.start(callback), direction="duplex"
+                )
+            except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
+                # Never leave a stuck-open handle wired up as "the" duplex
+                # stream: the next start_duplex() must create a fresh one.
+                self._duplex_stream = None
+                raise
             self._store_stream_contract(rx_contract)
             self._store_stream_contract(tx_contract)
             logger.info(
