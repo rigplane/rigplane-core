@@ -2064,9 +2064,11 @@ class ControlHandler:
                 return {"on": on, "receiver": rx}
             case "set_notch_filter":
                 level = int(params["value"])
+                rx = int(params.get("receiver", 0))
                 self._ensure_capability("notch", "set_notch_filter")
-                q.put(SetNotchFilter(level))
-                return {"value": level}
+                self._ensure_receiver_supported(rx)
+                q.put(SetNotchFilter(level, receiver=rx))
+                return {"value": level, "receiver": rx}
             case "set_manual_notch_width":
                 value = int(params["value"])
                 rx = int(params.get("receiver", 0))

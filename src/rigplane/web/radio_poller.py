@@ -2358,10 +2358,11 @@ class RadioPoller:
             case SetManualNotch(on=on, receiver=rx):
                 # manual_notch read-after-write via overlays + 0x16 0x48 observation.
                 await _r.set_manual_notch(on, receiver=rx)
-            case SetNotchFilter(level=level):
-                await _r.set_notch_filter(level)
-                if self._radio_state:
-                    self._radio_state.notch_filter = level
+            case SetNotchFilter(level=level, receiver=rx):
+                # notch_filter read-after-write via overlays + 0x14 0x0D
+                # observation (receiver-scoped since MOR-1548); the legacy
+                # global-scalar mirror write is gone with it.
+                await _r.set_notch_filter(level, receiver=rx)
             case SetAgcTimeConstant(value=value, receiver=rx):
                 # agc_time_constant read-after-write via overlays + 0x1A 0x04
                 # StateStore observation (MOR-437).
