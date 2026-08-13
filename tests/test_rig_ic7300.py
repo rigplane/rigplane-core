@@ -395,3 +395,88 @@ class TestSMeterCalibration:
         actual, calibrated = interpolate_meter(53, rig.meter_calibrations, "s_meter")
         assert calibrated is True
         assert actual != pytest.approx(-36.0)
+
+
+# ── PA/TX telemetry meter calibration (MOR-1527) ────────────────
+#
+# Before this table existed, power/ALC/COMP/Vd/Id had no
+# [[meters.<key>.calibration]] block on this profile, so
+# `_calibrated_meter_value` published the raw CI-V byte flagged
+# uncalibrated for every one of them — mirrors the pre-MOR-1451 s_meter
+# gap above. Live evidence (the finding that opened this ticket): the Vd
+# tile read raw "158" with no unit, bench PSU actually reading ~13.8 V.
+#
+# These tables are hamlib-sourced (rigs/icom/ic7300.c; full citation and
+# per-meter provenance honesty notes live as a comment in rigs/ic7300.toml
+# itself, right above the tables these tests read). The Vd anchor set is
+# additionally live-corroborated: interpolating at raw 158 reproduces the
+# operator's own bench reading. Table-driven over the TOML data itself —
+# every case reads through `rig.meter_calibrations`, so a profile edit is
+# what the parametrization exercises, not a hand-duplicated literal.
+
+_PA_METER_ANCHORS = [
+    # (meter_key, raw, expected_actual) — each is a real anchor point from
+    # rigs/ic7300.toml's [[meters.<key>.calibration]] tables.
+    ("power", 0, 0.0),
+    ("power", 21, 5.0),
+    ("power", 143, 50.0),
+    ("power", 213, 100.0),
+    ("power", 255, 120.0),
+    ("alc", 0, 0.0),
+    ("alc", 120, 100.0),
+    ("comp", 0, 0.0),
+    ("comp", 130, 15.0),
+    ("comp", 241, 30.0),
+    ("vd", 0, 0.0),
+    ("vd", 13, 10.0),
+    ("vd", 241, 16.0),
+    ("id", 0, 0.0),
+    ("id", 97, 10.0),
+    ("id", 146, 15.0),
+    ("id", 241, 25.0),
+]
+
+
+class TestPaMeterCalibration:
+    """IC-7300 power/ALC/COMP/Vd/Id calibration tables (MOR-1527)."""
+
+    @pytest.mark.parametrize("meter_key", ["power", "alc", "comp", "vd", "id"])
+    def test_declares_calibration_table(self, rig, meter_key):
+        assert rig.meter_calibrations is not None
+        assert meter_key in rig.meter_calibrations
+        assert len(rig.meter_calibrations[meter_key]) >= 2
+
+    @pytest.mark.parametrize("meter_key,raw,expected_actual", _PA_METER_ANCHORS)
+    def test_anchor_round_trip(self, rig, meter_key, raw, expected_actual):
+        """Interpolating at a documented hamlib anchor returns that
+        anchor's engineering value — table-driven directly against
+        ``rig.meter_calibrations``, not a hand-copied expectation."""
+        actual, calibrated = interpolate_meter(raw, rig.meter_calibrations, meter_key)
+        assert calibrated is True
+        assert actual == pytest.approx(expected_actual)
+
+    def test_live_evidence_vd_raw_158_publishes_approximately_13_8_volts(self, rig):
+        """MOR-1527's owner-reported live finding: the Vd tile showed raw
+        158 while the bench PSU actually read ~13.8 V. This is the
+        red-first pin for this ticket: before ``rigs/ic7300.toml`` declared
+        ``[meters.vd]``, ``interpolate_meter`` returned ``(158.0, False)``
+        here — no table, so ``calibrated`` was False and ``actual`` was the
+        untouched raw byte, 158.0. This assertion only passes once the
+        profile's ``[meters.vd]`` table exists (verified failing on `main`
+        prior to this PR's TOML change; see the PR body for the captured
+        red-first run).
+        """
+        actual, calibrated = interpolate_meter(158, rig.meter_calibrations, "vd")
+        assert calibrated is True
+        assert actual == pytest.approx(13.8, abs=0.05)
+
+    def test_alc_actual_is_percent_not_normalized_fraction(self, rig):
+        """The TOML stores ALC ``actual`` in the repo's 0-100 percent
+        convention (matching ``rigs/ic7610.toml``'s own ``[meters.alc]``
+        table), not hamlib's native 0.0-1.0 fraction — ``_civ_rx.py``'s
+        ``_calibrated_meter_value`` divides by 100 after this lookup, so a
+        100.0-scaled table here is what makes that division land in the
+        frontend's expected 0-1 domain."""
+        actual, calibrated = interpolate_meter(120, rig.meter_calibrations, "alc")
+        assert calibrated is True
+        assert actual == pytest.approx(100.0)

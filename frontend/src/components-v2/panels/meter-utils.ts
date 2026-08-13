@@ -12,9 +12,11 @@
 //   value through the curve would be a double conversion.
 // - A meter with NO declared table arrives as the raw device byte,
 //   flagged uncalibrated server-side. Every function here degrades to an
-//   honest raw-scale reading (plain number, neutral raw/255 bar, no fault
-//   claims) — never a unit claim through a borrowed radio's curve. There
-//   are NO hardcoded per-radio fallback curves in this module.
+//   honest raw-scale reading tagged "raw" (e.g. "158 raw"; MOR-1527 — a
+//   naked number here was previously indistinguishable from a real
+//   engineering-unit reading), a neutral raw/255 bar, and no fault claims
+//   — never a unit claim through a borrowed radio's curve. There are NO
+//   hardcoded per-radio fallback curves in this module.
 //
 // Capability-derived calibration and redline data is routed through the
 // runtime adapter (Tier 2 batch 2) so this helper does not reach into
@@ -60,10 +62,12 @@ function topActual(cal: MeterCalPoint[]): number {
   return cal[cal.length - 1].actual;
 }
 
-/** Plain raw readout for an uncalibrated meter — a number, not a unit
- *  claim. */
+/** Honest raw readout for an uncalibrated meter — the device-scale number
+ *  tagged "raw" so it is never mistaken for an engineering-unit claim
+ *  (MOR-1527: the pre-fix bug rendered this as a naked number, e.g. a Vd
+ *  tile reading a bare "158" with no indication it wasn't volts). */
 function formatRaw(value: number): string {
-  return String(Math.round(Math.max(0, Math.min(RAW_SCALE_MAX, value))));
+  return `${Math.round(Math.max(0, Math.min(RAW_SCALE_MAX, value)))} raw`;
 }
 
 // ---- RF power (W when calibrated) ----

@@ -348,6 +348,26 @@ class TestMultiVendorProfiles:
         assert "s_meter" in rig.meter_calibrations
         assert len(rig.meter_calibrations["s_meter"]) >= 6
 
+    def test_ftx1_pa_meters_declare_no_calibration_table(self):
+        """MOR-1527: power/ALC/COMP/Vd/Id have no trustworthy source for the
+        FTX-1. Unlike the IC-7300 (hamlib's ic7300.c driver documents its
+        PA-meter scales, see rigs/ic7300.toml), no equivalent published
+        table exists for the FTX-1 — it postdates hamlib's own FTX-1
+        support (Hamlib#1600, "waiting for CAT manual" as of this ticket)
+        and the pre-existing [meters.swr] table on this profile is itself
+        labelled a best-effort approximation pending bench calibration, not
+        a citable source for the other five meters. Per MOR-1291 doctrine
+        (no invented defaults), the honest choice is to declare nothing:
+        these five meters stay uncalibrated and render the raw device byte
+        (tagged "raw" — see meter-utils.ts's formatRaw) until a real
+        source (live bench measurement or a matured hamlib driver) exists.
+        This test pins that absence so a future change does not
+        accidentally invent unsourced anchors."""
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+        assert rig.meter_calibrations is not None
+        for meter_key in ("power", "alc", "comp", "vd", "id"):
+            assert meter_key not in rig.meter_calibrations
+
     def test_ftx1_nb_level_is_toggle(self):
         rig = load_rig(RIGS_DIR / "ftx1.toml")
         assert rig.controls is not None

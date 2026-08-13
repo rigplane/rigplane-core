@@ -13,7 +13,9 @@ import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.sve
 //   through the curve (the double conversion this ticket removes).
 // - A meter with NO declared table arrives as the raw device byte flagged
 //   uncalibrated server-side; the frontend degrades to an honest raw
-//   readout (plain number, neutral raw/255 bar) — never a unit claim
+//   readout tagged "raw" (e.g. "158 raw"; MOR-1527 — a naked number here
+//   was the live-reported bug: a Vd tile reading bare "158" with nothing
+//   marking it as not-volts), a neutral raw/255 bar — never a unit claim
 //   through a borrowed radio's curve. The hardcoded IC-7610 fallback knots
 //   are gone.
 //
@@ -296,16 +298,16 @@ describe('TX meters — uncalibrated honest fallback (MOR-1470)', () => {
     setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
-  it('formatPowerWatts renders the plain raw number, not fabricated watts', () => {
-    expect(formatPowerWatts(143)).toBe('143');
+  it('formatPowerWatts renders the raw number tagged "raw", not fabricated watts (MOR-1527)', () => {
+    expect(formatPowerWatts(143)).toBe('143 raw');
   });
 
   it('normalizePower degrades to raw/255', () => {
     expect(normalizePower(143)).toBeCloseTo(143 / 255);
   });
 
-  it('formatSwr renders the plain raw number, not a fabricated ratio', () => {
-    expect(formatSwr(48)).toBe('48');
+  it('formatSwr renders the raw number tagged "raw", not a fabricated ratio (MOR-1527)', () => {
+    expect(formatSwr(48)).toBe('48 raw');
   });
 
   it('swrRatio yields NaN — there is no honest ratio to compare', () => {
@@ -320,8 +322,8 @@ describe('TX meters — uncalibrated honest fallback (MOR-1470)', () => {
     expect(swrLevel(120)).toBeCloseTo(120 / 255);
   });
 
-  it('formatAlc renders the plain raw number without table or redline', () => {
-    expect(formatAlc(60)).toBe('60');
+  it('formatAlc renders the raw number tagged "raw" without table or redline (MOR-1527)', () => {
+    expect(formatAlc(60)).toBe('60 raw');
   });
 
   it('alcLevel degrades to raw/255; isAlcFault stays silent', () => {
@@ -329,13 +331,13 @@ describe('TX meters — uncalibrated honest fallback (MOR-1470)', () => {
     expect(isAlcFault(255)).toBe(false);
   });
 
-  it('formatVolts renders the plain raw number, not fabricated volts', () => {
-    expect(formatVolts(184)).toBe('184');
+  it('formatVolts renders the raw number tagged "raw", not fabricated volts (MOR-1527 — the live bug: a bare "184"/"158" with no unit)', () => {
+    expect(formatVolts(184)).toBe('184 raw');
   });
 
-  it('formatAmps / formatCompDb render plain raw numbers', () => {
-    expect(formatAmps(151)).toBe('151');
-    expect(formatCompDb(75)).toBe('75');
+  it('formatAmps / formatCompDb render raw numbers tagged "raw" (MOR-1527)', () => {
+    expect(formatAmps(151)).toBe('151 raw');
+    expect(formatCompDb(75)).toBe('75 raw');
   });
 
   it('vdLevel / idLevel / compLevel degrade to raw/255', () => {
@@ -369,6 +371,78 @@ describe('formatAlc — redline-only profile (raw domain, data-driven %)', () =>
     expect(alcLevel(60)).toBeCloseTo(0.5);
     expect(isAlcFault(115)).toBe(true);
     expect(isAlcFault(60)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IC-7300 profile anchors (MOR-1527) — the hamlib-sourced power/ALC/COMP/
+// Vd/Id calibration tables added to rigs/ic7300.toml by this ticket, mirrored
+// here the same way IC7610_LIKE_TX_METER_CALS mirrors rigs/ic7610.toml above.
+// The raw→actual interpolation itself is proven table-driven directly
+// against the parsed TOML in tests/test_rig_ic7300.py::TestPaMeterCalibration
+// (Python owns the profile-loader boundary); this block instead pins the
+// CONTRACT this file's formatters must honor once the backend has already
+// done that interpolation and handed engineering units to `formatVolts` /
+// `vdLevel` etc. — the live-evidence bug this ticket fixes was a Vd tile
+// showing a bare, unitless raw number, not an interpolation-math bug.
+// ---------------------------------------------------------------------------
+
+const IC7300_TX_METER_CALS = {
+  power: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 143, actual: 50, label: '50' },
+    { raw: 213, actual: 100, label: '100' },
+    { raw: 255, actual: 120, label: '120' },
+  ],
+  alc: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 120, actual: 100, label: '100' },
+  ],
+  comp: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 130, actual: 15, label: '15' },
+    { raw: 241, actual: 30, label: '30' },
+  ],
+  // Live evidence (MOR-1527): raw 158 interpolates to ~13.8 V on this
+  // table, matching the operator's own bench reading at that raw byte.
+  vd: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 13, actual: 10, label: '10' },
+    { raw: 241, actual: 16, label: '16' },
+  ],
+  id: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 97, actual: 10, label: '10' },
+    { raw: 146, actual: 15, label: '15' },
+    { raw: 241, actual: 25, label: '25' },
+  ],
+};
+
+describe('TX meters — IC-7300 profile anchors (MOR-1527)', () => {
+  beforeEach(() => {
+    setCapabilities(makeCaps({
+      model: 'IC-7300',
+      meterCalibrations: IC7300_TX_METER_CALS,
+    }));
+  });
+
+  it('formatVolts renders the calibrated Vd reading with a V unit, never the raw byte', () => {
+    // The backend (`_civ_rx.py`'s `_calibrated_meter_value` over this same
+    // table) is what turns raw 158 into 13.8 — pinned in
+    // tests/test_rig_ic7300.py. This is the value that reaches this
+    // formatter once that conversion has happened.
+    expect(formatVolts(13.8)).toBe('13.8 V');
+  });
+
+  it('formatPowerWatts / formatAlc / formatCompDb / formatAmps render engineering units for this profile', () => {
+    expect(formatPowerWatts(50)).toBe('50W');
+    expect(formatAlc(1.0)).toBe('100%');
+    expect(formatCompDb(15)).toBe('15 dB');
+    expect(formatAmps(10)).toBe('10.0 A');
+  });
+
+  it('vdLevel normalizes against the 16 V top knot from this profile', () => {
+    expect(vdLevel(13.8)).toBeCloseTo(13.8 / 16);
   });
 });
 
