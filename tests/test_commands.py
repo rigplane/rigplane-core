@@ -512,10 +512,23 @@ class TestCmd29ReceiverRouting:
         assert frame[5] == 0x01  # SUB receiver
         assert frame[6] == 0x06  # Mode set command
 
-    def test_set_rf_gain_main_no_cmd29(self) -> None:
+    def test_set_rf_gain_main_wrapped_by_default(self) -> None:
+        # MOR-1543: set_rf_gain's builder now defaults command29=True like
+        # every other cmd29-eligible setter, instead of deriving the wrap
+        # decision from receiver internally. IC-7610 declares a cmd29 route
+        # for 0x14/0x02, so MAIN wraps too.
         from rigplane.commands import RECEIVER_MAIN, set_rf_gain
 
         frame = set_rf_gain(128, receiver=RECEIVER_MAIN)
+        assert frame[4] == 0x29
+        assert frame[5] == 0x00  # MAIN
+        assert frame[6] == 0x14
+        assert frame[7] == 0x02  # RF gain sub
+
+    def test_set_rf_gain_main_unwrapped_with_override(self) -> None:
+        from rigplane.commands import RECEIVER_MAIN, set_rf_gain
+
+        frame = set_rf_gain(128, receiver=RECEIVER_MAIN, command29=False)
         assert frame[4] == 0x14  # Direct level cmd, no cmd29 prefix
         assert frame[5] == 0x02  # RF gain sub
 
@@ -528,10 +541,21 @@ class TestCmd29ReceiverRouting:
         assert frame[6] == 0x14  # Level command
         assert frame[7] == 0x02  # RF gain sub
 
-    def test_set_af_level_main_no_cmd29(self) -> None:
+    def test_set_af_level_main_wrapped_by_default(self) -> None:
+        # MOR-1543: same fix as set_rf_gain — IC-7610 declares a cmd29 route
+        # for 0x14/0x01, so MAIN wraps too.
         from rigplane.commands import RECEIVER_MAIN, set_af_level
 
         frame = set_af_level(200, receiver=RECEIVER_MAIN)
+        assert frame[4] == 0x29
+        assert frame[5] == 0x00  # MAIN
+        assert frame[6] == 0x14
+        assert frame[7] == 0x01  # AF level sub
+
+    def test_set_af_level_main_unwrapped_with_override(self) -> None:
+        from rigplane.commands import RECEIVER_MAIN, set_af_level
+
+        frame = set_af_level(200, receiver=RECEIVER_MAIN, command29=False)
         assert frame[4] == 0x14
         assert frame[5] == 0x01  # AF level sub
 
@@ -544,10 +568,20 @@ class TestCmd29ReceiverRouting:
         assert frame[6] == 0x14
         assert frame[7] == 0x01  # AF level sub
 
-    def test_get_rf_gain_main_no_cmd29(self) -> None:
+    def test_get_rf_gain_main_wrapped_by_default(self) -> None:
+        # MOR-1543: get_rf_gain's builder now defaults command29=True.
         from rigplane.commands import RECEIVER_MAIN, get_rf_gain
 
         frame = get_rf_gain(receiver=RECEIVER_MAIN)
+        assert frame[4] == 0x29
+        assert frame[5] == 0x00  # MAIN
+        assert frame[6] == 0x14
+        assert frame[7] == 0x02  # RF gain sub
+
+    def test_get_rf_gain_main_unwrapped_with_override(self) -> None:
+        from rigplane.commands import RECEIVER_MAIN, get_rf_gain
+
+        frame = get_rf_gain(receiver=RECEIVER_MAIN, command29=False)
         assert frame[4] == 0x14  # Direct level cmd, no cmd29 prefix
         assert frame[5] == 0x02  # RF gain sub
 
@@ -565,10 +599,20 @@ class TestCmd29ReceiverRouting:
 
         assert get_rf_gain() == get_rf_gain(receiver=RECEIVER_MAIN)
 
-    def test_get_af_level_main_no_cmd29(self) -> None:
+    def test_get_af_level_main_wrapped_by_default(self) -> None:
+        # MOR-1543: get_af_level's builder now defaults command29=True.
         from rigplane.commands import RECEIVER_MAIN, get_af_level
 
         frame = get_af_level(receiver=RECEIVER_MAIN)
+        assert frame[4] == 0x29
+        assert frame[5] == 0x00  # MAIN
+        assert frame[6] == 0x14
+        assert frame[7] == 0x01  # AF level sub
+
+    def test_get_af_level_main_unwrapped_with_override(self) -> None:
+        from rigplane.commands import RECEIVER_MAIN, get_af_level
+
+        frame = get_af_level(receiver=RECEIVER_MAIN, command29=False)
         assert frame[4] == 0x14
         assert frame[5] == 0x01  # AF level sub
 
@@ -586,10 +630,20 @@ class TestCmd29ReceiverRouting:
 
         assert get_af_level() == get_af_level(receiver=RECEIVER_MAIN)
 
-    def test_set_squelch_main_no_cmd29(self) -> None:
+    def test_set_squelch_main_wrapped_by_default(self) -> None:
+        # MOR-1543: set_squelch's builder now defaults command29=True.
         from rigplane.commands import RECEIVER_MAIN, set_squelch
 
         frame = set_squelch(100, receiver=RECEIVER_MAIN)
+        assert frame[4] == 0x29
+        assert frame[5] == 0x00  # MAIN
+        assert frame[6] == 0x14
+        assert frame[7] == 0x03  # SQL sub
+
+    def test_set_squelch_main_unwrapped_with_override(self) -> None:
+        from rigplane.commands import RECEIVER_MAIN, set_squelch
+
+        frame = set_squelch(100, receiver=RECEIVER_MAIN, command29=False)
         assert frame[4] == 0x14
         assert frame[5] == 0x03  # SQL sub
 
@@ -706,17 +760,19 @@ class TestCmd29ReceiverRouting:
         )
         from rigplane.types import Mode
 
-        # None of these should use cmd29 when called without receiver
+        # freq/mode never use cmd29 (hard exclusion, IC-7610 CI-V quirk).
         assert set_frequency(14_000_000)[4] == 0x05
         assert set_mode(Mode.USB)[4] == 0x06
-        assert set_rf_gain(128)[4] == 0x14
-        assert set_af_level(200)[4] == 0x14
-        assert set_squelch(50)[4] == 0x14
         # MOR-1537 follow-up: nb/nr/ip_plus builders now default
         # command29=True; no receiver arg still targets MAIN (0x00).
         assert set_nb(True)[4:6] == b"\x29\x00"
         assert set_nr(True)[4:6] == b"\x29\x00"
         assert set_ip_plus(True)[4:6] == b"\x29\x00"
+        # MOR-1543: rf_gain/af_level/squelch builders now default
+        # command29=True; no receiver arg still targets MAIN (0x00).
+        assert set_rf_gain(128)[4:6] == b"\x29\x00"
+        assert set_af_level(200)[4:6] == b"\x29\x00"
+        assert set_squelch(50)[4:6] == b"\x29\x00"
 
 
 class TestDspLevelParityCommands:
@@ -729,6 +785,7 @@ class TestDspLevelParityCommands:
             ("get_nr_level", "set_nr_level", 0x06, 1),
             ("get_pbt_inner", "set_pbt_inner", 0x07, 1),
             ("get_pbt_outer", "set_pbt_outer", 0x08, 1),
+            ("get_notch_filter", "set_notch_filter", 0x0D, 1),
             ("get_nb_level", "set_nb_level", 0x12, 1),
             ("get_digisel_shift", "set_digisel_shift", 0x13, 1),
         ],
@@ -755,7 +812,6 @@ class TestDspLevelParityCommands:
             ("get_cw_pitch", "set_cw_pitch", 0x09, 600),
             ("get_mic_gain", "set_mic_gain", 0x0B, 128),
             ("get_key_speed", "set_key_speed", 0x0C, 30),
-            ("get_notch_filter", "set_notch_filter", 0x0D, 128),
             ("get_compressor_level", "set_compressor_level", 0x0E, 128),
             ("get_break_in_delay", "set_break_in_delay", 0x0F, 128),
             ("get_drive_gain", "set_drive_gain", 0x14, 128),

@@ -2523,11 +2523,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._last_power = level
 
     async def get_rf_gain(self, receiver: int = 0) -> int:
-        """Read the current RF gain level (0-255).
-
-        Routes through cmd29 (0x29 0x01) for the SUB receiver, mirroring
-        ``set_rf_gain``.
-        """
+        """Read the current RF gain level (0-255)."""
         self._check_connected()
         self._require_receiver(receiver, operation="get_rf_gain")
         self._require_cmd29_route(
@@ -2536,7 +2532,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="get_rf_gain",
         )
-        civ = get_rf_gain(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x02)
+        civ = get_rf_gain(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         try:
             resp = await self._send_civ_expect(
                 civ,
@@ -2561,15 +2558,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_rf_gain",
         )
-        civ = set_rf_gain(level, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x02)
+        civ = set_rf_gain(
+            level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_af_level(self, receiver: int = 0) -> int:
-        """Read the current AF output level (0-255).
-
-        Routes through cmd29 (0x29 0x01) for the SUB receiver, mirroring
-        ``set_af_level``.
-        """
+        """Read the current AF output level (0-255)."""
         self._check_connected()
         self._require_receiver(receiver, operation="get_af_level")
         self._require_cmd29_route(
@@ -2578,7 +2574,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="get_af_level",
         )
-        civ = get_af_level(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x01)
+        civ = get_af_level(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         try:
             resp = await self._send_civ_expect(
                 civ,
@@ -2603,7 +2600,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_af_level",
         )
-        civ = set_af_level(level, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x01)
+        civ = set_af_level(
+            level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
 
     async def set_squelch(self, level: int, receiver: int = 0) -> None:
@@ -2621,7 +2621,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         from rigplane.commands import set_squelch as _set_squelch
 
-        civ = _set_squelch(level, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x03)
+        civ = _set_squelch(
+            level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_squelch(self, receiver: int = 0) -> int:
@@ -2637,7 +2640,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         from rigplane.commands import get_squelch as _get_squelch
 
-        civ = _get_squelch(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x03)
+        civ = _get_squelch(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         return await self._get_bcd_level(
             civ,
             key=f"get_squelch:{receiver}",
@@ -2805,8 +2809,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x14, 0x0D, receiver=receiver, operation="get_notch_filter"
         )
+        cmd29 = self._profile.supports_cmd29(0x14, 0x0D)
+        civ = get_notch_filter(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         return await self._get_bcd_level(
-            get_notch_filter(to_addr=self._radio_addr, receiver=receiver),
+            civ,
             key=f"get_notch_filter:{receiver}",
             command=0x14,
             sub=0x0D,
@@ -2818,8 +2826,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x14, 0x0D, receiver=receiver, operation="set_notch_filter"
         )
+        cmd29 = self._profile.supports_cmd29(0x14, 0x0D)
         await self._send_fire_and_forget(
-            set_notch_filter(level, to_addr=self._radio_addr, receiver=receiver)
+            set_notch_filter(
+                level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            )
         )
 
     async def get_compressor_level(self) -> int:
