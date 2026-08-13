@@ -308,3 +308,182 @@ async def test_frame_delivered_after_off_loop_open() -> None:
 
     backend.rx_streams[-1].inject_frame(b"\x01\x02")
     assert received == [b"\x01\x02"]
+
+
+# ---------------------------------------------------------------------------
+# MOR-1573 — independent-review follow-ups on top of MOR-1438
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.timeout(10)
+async def test_timeout_warning_reports_sub_second_timeout_with_one_decimal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Item 3: a sub-second timeout must not render as the misleading "0s".
+
+    ``_TEST_TIMEOUT_S`` (0.05s) previously formatted via ``%.0f`` as "0s",
+    which reads as "no timeout configured" rather than the true 50ms bound.
+    """
+    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+    gate = threading.Event()
+    driver, backend = _make_driver()
+    backend.block_rx_open = gate.wait
+
+    try:
+        with pytest.raises(AudioCaptureOpenTimeoutError):
+            await driver.start_rx(lambda _frame: None)
+
+        warnings = _warnings(caplog)
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "0.1s" in message, (
+            f"expected one-decimal timeout in message: {message!r}"
+        )
+        assert "0s" not in message.replace("0.1s", ""), (
+            f"stale zero-second rendering leaked into message: {message!r}"
+        )
+    finally:
+        # MUST run even if an assertion above fails: the background open is
+        # blocked on a non-daemon worker thread that would otherwise wedge
+        # process exit forever (the exact failure mode this ticket exists
+        # to prevent in production).
+        gate.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.timeout(15)
+async def test_pool_saturation_fails_fast_instead_of_queuing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Item 1: enough sequential wedged opens must fail the NEXT one fast.
+
+    ``_rx_lock`` only serializes concurrent opens; it does not bound how
+    many abandoned (still-running-in-background) opens pile up across
+    SEQUENTIAL start_rx() calls. Each timed-out-and-abandoned open leaves
+    its worker thread permanently blocked on ``gate.wait()``, so eight
+    sequential stuck opens exhaust the whole driver-owned pool
+    (``_CAPTURE_OPEN_MAX_WORKERS`` == 8). The NEXT open against a healthy
+    device must recognize the pool is saturated and fail immediately with
+    an honest "pool saturated" error — NOT queue behind the stuck workers
+    and burn the full timeout while misreporting TCC consent as the cause.
+    """
+    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+    gate = threading.Event()
+    driver, backend = _make_driver()
+    backend.block_rx_open = gate.wait
+
+    try:
+        # Saturate every worker in the driver-owned pool with abandoned,
+        # permanently-blocked opens (max_workers == 8, see usb_driver.py).
+        for _ in range(8):
+            with pytest.raises(AudioCaptureOpenTimeoutError):
+                await driver.start_rx(lambda _frame: None)
+
+        loop = asyncio.get_event_loop()
+        start = loop.time()
+        with pytest.raises(AudioCaptureOpenTimeoutError) as exc_info:
+            await driver.start_rx(lambda _frame: None)
+        elapsed = loop.time() - start
+
+        assert elapsed < _TEST_TIMEOUT_S / 2, (
+            "saturated pool must fail IMMEDIATELY, not queue for the full "
+            f"capture-open timeout (elapsed={elapsed:.3f}s)"
+        )
+        assert "saturated" in str(exc_info.value).lower(), (
+            f"expected an honest pool-saturation message, got: {exc_info.value!r}"
+        )
+    finally:
+        gate.set()  # release every stuck worker so the pool can drain
+        await asyncio.sleep(0.2)
+
+
+@pytest.mark.timeout(10)
+async def test_abandoned_open_that_later_fails_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Item 2: a late-resolving abandoned open must log its exception.
+
+    Before this fix, ``_close_late_stream`` silently swallowed a late
+    background open that finished with an EXCEPTION (as opposed to a
+    successful-but-late open, or a cancellation) -- zero trace of the
+    failure ever reached the logs.
+    """
+    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+    gate = threading.Event()
+    failure = RuntimeError("late device init failure")
+
+    def _block_then_fail() -> None:
+        gate.wait()
+        raise failure
+
+    driver, backend = _make_driver()
+    backend.block_rx_open = _block_then_fail
+
+    try:
+        with pytest.raises(AudioCaptureOpenTimeoutError):
+            await driver.start_rx(lambda _frame: None)
+    finally:
+        # MUST run even if the assertion above fails: releases the
+        # non-daemon worker thread blocked in _block_then_fail so it
+        # cannot wedge process exit.
+        gate.set()
+
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        warnings = _warnings(caplog)
+        if any("late device init failure" in r.getMessage() for r in warnings):
+            break
+
+    warnings = _warnings(caplog)
+    matches = [r for r in warnings if "late device init failure" in r.getMessage()]
+    assert matches, (
+        f"expected a WARNING logging the late open's exception, got: "
+        f"{[r.getMessage() for r in warnings]}"
+    )
+    assert matches[0].exc_info is not None, "exception traceback should be attached"
+
+
+@pytest.mark.timeout(10)
+async def test_duplex_open_routes_off_loop_and_times_out(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Item 4: start_duplex must get the SAME off-loop bounded-open treatment.
+
+    Before this fix, ``start_duplex`` awaited ``DuplexStream.start()``
+    directly instead of through :meth:`UsbAudioDriver._open_stream`, so a
+    stuck duplex open would freeze the event loop exactly like the
+    pre-MOR-1438 RX/TX opens did.
+    """
+    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+    gate = threading.Event()
+    driver, backend = _make_driver()
+    # Bounded even in the not-yet-fixed case: a direct (on-loop) call would
+    # otherwise block this test's entire event loop for as long as the gate
+    # stays unset. Once routed off-loop, the driver's own capture-open
+    # timeout (0.05s) fires long before this 1s bound is reached.
+    backend.block_duplex_open = lambda: gate.wait(timeout=1.0)
+
+    progressed = 0
+    stop = asyncio.Event()
+
+    async def _ticker() -> None:
+        nonlocal progressed
+        while not stop.is_set():
+            progressed += 1
+            await asyncio.sleep(0.005)
+
+    ticker = asyncio.create_task(_ticker())
+    try:
+        with pytest.raises(AudioCaptureOpenTimeoutError):
+            await driver.start_duplex(lambda _frame: None)
+    finally:
+        stop.set()
+        await ticker
+        gate.set()
+        await asyncio.sleep(0.05)
+
+    assert progressed >= 3, (
+        "event loop should keep making progress while the duplex open is stuck"
+    )
+    assert driver.rx_running is False
+    assert driver.tx_running is False
