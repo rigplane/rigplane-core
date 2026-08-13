@@ -43,6 +43,7 @@ _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
     "set_rf_gain": "rf_gain",
     "set_squelch": "squelch",
     "set_rf_power": "power_level",
+    "set_power": "power_level",
 }
 
 
@@ -698,7 +699,11 @@ def _af_level_from_param(value: Any) -> int:
     raise ValueError(f"level {value!r} must be an int or a normalized float")
 
 
-def _power_level_expectation_from_param(value: Any) -> int:
+def _power_level_expectation_from_param(
+    value: Any,
+    *,
+    power_max_watts: int | float | None = None,
+) -> int | float:
     """Coerce ``set_rf_power``/``set_power``'s StateStore expectation param.
 
     MOR-1579 round 3: this used to be a plain ``int(raw_level)``, so a
@@ -730,17 +735,24 @@ def _power_level_expectation_from_param(value: Any) -> int:
     ``reconciled``, rather than snapping to a visibly wrong overlay (the
     residual error is bounded at <=0.2% of full scale).
 
-    A bare int is the documented raw/watts wire value (unchanged from
-    before this fix) — dividing it by 255 to form the expectation is only
-    exact for ``raw_255`` radios; for a watts radio this is a known,
-    separate, deferred gap (see the PR body's "Known follow-up"), since
-    the profile needed to convert watts to a fraction isn't reachable
-    from this intent-normalization function.
+    A bare int is the documented raw/watts wire value. When the ingress
+    supplies a positive profile ``power_max_watts`` for a watts-native
+    radio, retain the existing 0-255 expectation representation while
+    scaling that raw watts value to the same normalized fraction as the
+    readback. Callers for raw-255 radios omit the optional profile value.
     """
     if isinstance(value, float) and not isinstance(value, bool):
         if not (0.0 <= value <= 1.0):
             raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
         return max(0, min(255, round(value * 255)))
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and isinstance(power_max_watts, (int, float))
+        and not isinstance(power_max_watts, bool)
+        and power_max_watts > 0
+    ):
+        return value * 255 / power_max_watts
     return int(value)
 
 
@@ -917,6 +929,7 @@ def command_intent_from_request(
     command_id: str | None = None,
     session_id: str | None = None,
     timeout: float | None = 2.0,
+    power_max_watts: int | float | None = None,
 ) -> CommandIntent:
     """Normalize a production command request into a backend-neutral intent."""
 
@@ -994,7 +1007,10 @@ def command_intent_from_request(
         raw_level = (
             normalized["level"] if "level" in normalized else normalized["value"]
         )
-        normalized["power_level"] = _power_level_expectation_from_param(raw_level)
+        normalized["power_level"] = _power_level_expectation_from_param(
+            raw_level,
+            power_max_watts=power_max_watts,
+        )
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))
     elif command_name == "set_rit":
