@@ -463,6 +463,19 @@ describe('MOR-1474 — unknown TX target names the reason through the catalog', 
       expect(targetUnknownMessage(reason)).not.toContain(reason);
     }
   });
+
+  // R1 (verifier round 1): 'TX target unknown' is the exact phrase
+  // BandSurface.test.ts's own CONTRACT_SPEAK list (lines 301-304) already
+  // bans as contract-speak — 'target' is not a faceplate/glossary term, so
+  // it must localize, and the bare compound read as jargon on this surface
+  // for the same reason it would on BandSurface. Mirrors that guard here.
+  it('never renders the contract-speak "TX target unknown" / bare "TX target" phrasing', () => {
+    for (const reason of ['not-observed', 'stale', 'unsupported', 'contradiction'] as const) {
+      const text = targetUnknownMessage(reason);
+      expect(text).not.toContain('TX target unknown');
+      expect(text).not.toContain('TX target');
+    }
+  });
 });
 
 describe('MOR-1474 — every key-blocked reason resolves to operator-legible copy', () => {

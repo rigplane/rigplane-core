@@ -835,7 +835,7 @@ describe('a receiver-scoped write needs a known active receiver (MOR-1322 B1 cla
     for (const name of ['40m', '20m', 'MW']) expect(r.btn(`choice-${name}`)!.disabled).toBe(true);
     expect(r.input()!.disabled).toBe(true);
     expect(r.btn('entry-set')!.disabled).toBe(true);
-    expect(r.text('entry-reason')).toContain('active receiver not observed');
+    expect(r.text('entry-reason')).toBe(t('core.band.entry.reason.receiverUnconfirmed'));
     r.dispose();
   });
 
