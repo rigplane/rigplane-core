@@ -22,12 +22,37 @@
  * fail-closed shape MOR-1560's DSP walk already established: capability
  * present, sub-parameter never confirmed on the bench, so the handler
  * refuses. `cw_auto_tune` is the sole exception: `onAutoTune`'s gate
- * (`hasCapability('cw') && knownActiveReceiver() !== null`) never inspects
- * ANY field-status leaf at all — it fires on capability + receiver-identity
- * resolution alone, both of which this profile satisfies
- * (`vfoScheme: 'ab'`, `receivers: 1`, `state.main` present) — so it
- * genuinely DISPATCHES. Every refusal/dispatch below is read directly off
- * the real IC-7300 fixture's `fieldStatus`/`capabilities`, never invented.
+ * (`hasCapability('cw') && knownActiveReceiver() !== null`) genuinely
+ * DISPATCHES on this profile — but NOT because it skips field-status
+ * checks entirely. CORRECTION (verifier-caught, first draft of this file
+ * claimed the gate "never inspects any field-status leaf", which is FALSE):
+ * `knownActiveReceiver()` (`panel-commands.ts:52`) DOES read one leaf —
+ * `isFieldAvailable(state, 'active')` — and `active` is itself unobserved
+ * on this fixture (pinned below). The reason the gate still resolves a
+ * receiver despite that is MOR-1418's single-receiver carve-out
+ * (`panel-commands.ts:44-51`, `:53-55`): with `caps.receivers === 1`, an
+ * unobserved `active` falls through to a hardcoded `'MAIN'` instead of
+ * blocking. This carve-out is profile-specific, not a property of
+ * `cw_auto_tune`'s gate shape — on a dual-RX profile with `active`
+ * unobserved and no explicit target, `knownActiveReceiver()` returns
+ * `undefined` → `null`, and `onAutoTune` REFUSES (verified: with
+ * `caps.receivers = 2` and a `sub` receiver present, keeping `active`
+ * unobserved, `onAutoTune` refuses — not walked as its own case here since
+ * this suite is IC-7300-only, but stated for the record so this profile's
+ * dispatch isn't mistaken for a property of the intent itself).
+ *
+ * RISK (MOR-1578 leg 4): `cw_auto_tune` is a TRANSMIT-CAUSING action.
+ * `SemanticRadioSurfaces.svelte:336-340` deliberately leaves `onAutoTune`
+ * UNWIRED — its own comment cites the MOR-1244 ATU-TUNE precedent for
+ * withholding transmit-causing controls from that surface. `CwPanel.svelte`
+ * (`:130-132`, the `AUTO TUNE` `HardwareButton`) wires it directly with no
+ * such guard. Both paths reach the identical `onAutoTune()` handler and the
+ * identical `cw_auto_tune` gate; the asymmetry is in which UI SURFACE
+ * exposes the control, not in the gate this walk conformance-tests. Pinned
+ * per this ticket's instruction to report, not fix.
+ *
+ * Every refusal/dispatch below is read directly off the real IC-7300
+ * fixture's `fieldStatus`/`capabilities`, never invented.
  *
  * GATE-CONSISTENCY FINDINGS (per this ticket's instruction to pin, not
  * fix — MOR-1576 class is "same intent alive on one path, dead on
@@ -43,8 +68,13 @@
  * `onSidetonePitchChange` (a sidetone-pitch alias) have byte-identical
  * bodies (`hasCapability('cw') && knownTopLevelField('cwPitch') &&
  * Number.isSafeInteger(value)`, read off `panel-commands.ts:494-497` and
- * `:540-543`); (3) `set_key_speed`: `onKeySpeedChange` and `onWpmChange`
- * (`:498-501`, `:531-534`) are likewise byte-identical. `set_break_in`'s two
+ * `:540-543`) — PINNED below via `expect(String(hs.onCwPitchChange)).toBe(
+ * String(hs.onSidetonePitchChange))`, not just matching observed refusal
+ * behavior (a first draft of this file asserted refusal-only here, which
+ * stays green even if the two gates later diverge — verifier-caught); (3)
+ * `set_key_speed`: `onKeySpeedChange` and `onWpmChange` (`:498-501`,
+ * `:531-534`) are likewise byte-identical and likewise PINNED via the same
+ * `String(...)` identity pattern below. `set_break_in`'s two
  * call sites (`onBreakInToggle`/`onBreakInModeChange`) share the SAME
  * capability+field-observation gate (`hasCapability('cw') &&
  * hasCapability('break_in') && knownTopLevelField('breakIn')`) but differ
@@ -64,9 +94,10 @@
  * `set_vox_gain`/`set_anti_vox_gain`/`set_key_speed`/`set_break_in_delay`
  * have NO declared range in this profile's `caps.controls` (verified via
  * `toBeUndefined()` below) and no `CONTROL_DEFAULTS` entry either (that
- * table only covers `nr_level`/`nb_level`, so `controlRangeFromCapsOrDefault`
- * would throw for these keys) — each is walked at its own PRODUCTION
- * fallback domain instead, read directly off the real slider markup:
+ * table only covers `nr_level`/`nb_depth` — `filter-controls.ts:122-125` —
+ * so `controlRangeFromCapsOrDefault` would throw for these keys) — each is
+ * walked at its own PRODUCTION fallback domain instead, read directly off
+ * the real slider markup:
  * `VoxPanel.svelte` (`onVoxGainChange`/`onAntiVoxGainChange`: min=0 max=255;
  * `onVoxDelayChange`: min=0 max=20) and `CwPanel.svelte`
  * (`onKeySpeedChange`/`onWpmChange`: min=6 max=48;
@@ -83,10 +114,12 @@
  * { receiver: 0 }]])` — a deliberately wrong claimed params shape (the real
  * intent takes no params at all, per `radio-intents.ts`'s own
  * `{ names: ['cw_auto_tune', ...], params: {} }` spec). `vitest run` on
- * that version failed with `expected [ [ 'cw_auto_tune', {} ] ] to deeply
- * equal [ [ 'cw_auto_tune', { receiver: 0 } ] ]` (RED — the real dispatch
- * carries an empty params object, not the fabricated `{ receiver: 0 }`).
- * Replacing the claim with `{}` turned it GREEN.
+ * that version failed (verbatim vitest 4 output, not paraphrased):
+ * `AssertionError: expected [ [ 'cw_auto_tune', {} ] ] to deeply equal [
+ * Array(1) ]` followed by a diff showing `- { "receiver": 0 }` / `+ {}` for
+ * the params object (RED — the real dispatch carries an empty params
+ * object, not the fabricated `{ receiver: 0 }`). Replacing the claim with
+ * `{}` turned it GREEN.
  *
  * DISCRIMINATION EVIDENCE (MOR-1565 build process, not part of this diff):
  * to prove the `set_vox_gain` refusal below isn't vacuous, its gate was
@@ -193,8 +226,10 @@ describe('IC-7300 fixture — VOX/CW family conformance (MOR-1565)', () => {
       });
     }
 
-    it('onSidetonePitchChange: REFUSES via the same gate (byte-identical body to onCwPitchChange — not a MOR-1576-class split)', () => {
-      expectRefusal(() => makeCwPanelHandlers().onSidetonePitchChange(600));
+    it('onSidetonePitchChange: REFUSES via the same gate, and its source IS pinned byte-identical to onCwPitchChange (source-string identity, not just matching observed behavior — not a MOR-1576-class split)', () => {
+      const hs = makeCwPanelHandlers();
+      expect(String(hs.onCwPitchChange)).toBe(String(hs.onSidetonePitchChange));
+      expectRefusal(() => hs.onSidetonePitchChange(600));
     });
   });
 
@@ -210,8 +245,10 @@ describe('IC-7300 fixture — VOX/CW family conformance (MOR-1565)', () => {
       });
     }
 
-    it('onWpmChange: REFUSES via the same gate (byte-identical body to onKeySpeedChange — not a MOR-1576-class split)', () => {
-      expectRefusal(() => makeCwPanelHandlers().onWpmChange(27));
+    it('onWpmChange: REFUSES via the same gate, and its source IS pinned byte-identical to onKeySpeedChange (source-string identity, not just matching observed behavior — not a MOR-1576-class split)', () => {
+      const hs = makeCwPanelHandlers();
+      expect(String(hs.onKeySpeedChange)).toBe(String(hs.onWpmChange));
+      expectRefusal(() => hs.onWpmChange(27));
     });
   });
 
@@ -251,12 +288,17 @@ describe('IC-7300 fixture — VOX/CW family conformance (MOR-1565)', () => {
     expectRefusal(() => makeCwPanelHandlers().onTwinPeakToggle());
   });
 
-  describe('cw_auto_tune — the one genuine DISPATCH in this family (RED-FIRST evidence in file header)', () => {
-    it('gate is capability + receiver-identity ONLY — no field-status leaf is ever checked, unlike every other CW intent in this family', () => {
+  describe('cw_auto_tune — the one genuine DISPATCH in this family (RED-FIRST evidence in file header; MOR-1578 leg 4 risk finding, see file header)', () => {
+    it("gate reads exactly one field-status leaf, 'active' — unobserved on this fixture, but MOR-1418's single-receiver carve-out (caps.receivers===1) neutralizes it, so onAutoTune still resolves a receiver and dispatches (see file header CORRECTION — the gate is NOT field-status-check-free)", () => {
       expect(IC7300_CAPABILITIES.capabilities).toContain('cw');
       expect(IC7300_CAPABILITIES.vfoScheme).toBe('ab');
       expect(IC7300_CAPABILITIES.receivers).toBe(1);
       expect(IC7300_STATE.main).toBeTruthy();
+      // Pins the carve-out itself, not just its downstream effect: `active`
+      // genuinely IS unobserved on this fixture — the dispatch below only
+      // happens because MOR-1418's single-receiver fallback bypasses this,
+      // not because the gate has no field-status leaf to check at all.
+      expect(IC7300_STATE.fieldStatus?.active?.observed).toBe(false);
     });
 
     it('DISPATCHES cw_auto_tune with an empty params object', () => {

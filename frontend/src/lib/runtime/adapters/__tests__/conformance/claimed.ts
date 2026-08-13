@@ -99,14 +99,26 @@
  * `breakInDelay`, `main.apfTypeLevel`, `main.twinPeakFilter`, `dashRatio` —
  * is unobserved on the real IC-7300 fixture, though every base capability
  * the family needs IS declared); only `cw_auto_tune` genuinely DISPATCHES —
- * its gate (`hasCapability('cw') && knownActiveReceiver() !== null`) never
- * inspects any field-status leaf at all, unlike every sibling intent in
- * this family. Three gate-consistency checks (`set_vox`'s shared
- * `toggleVox` reference, `set_cw_pitch`'s and `set_key_speed`'s two
- * byte-identical call sites) are pinned as POSITIVE findings — MOR-1576
- * class asymmetry checked for and NOT found, unlike `set_monitor_gain`
- * above (that finding's own CW-sidetone leg, `onSidetoneLevelChange`, is a
- * different intent and stays claimed via C10, not this walk).
+ * its gate (`hasCapability('cw') && knownActiveReceiver() !== null`) does
+ * read one field-status leaf (`active`, via `knownActiveReceiver`'s own
+ * `isFieldAvailable(state, 'active')` check), which IS unobserved on this
+ * fixture same as every sibling's leaf — but MOR-1418's single-receiver
+ * carve-out (`caps.receivers === 1`) neutralizes that check on THIS
+ * profile, falling through to a hardcoded `'MAIN'` instead of blocking; on
+ * a dual-RX profile with `active` unobserved the same gate would refuse
+ * (pinned in that walk's own file, not re-derived here). This is a
+ * profile-specific dispatch, not evidence the gate skips field-status
+ * checks — see the walk's own file header for the full correction and the
+ * MOR-1578 leg 4 transmit-causing-action risk finding (`onAutoTune` wired
+ * on `CwPanel.svelte` with no MOR-1244-style guard, unlike
+ * `SemanticRadioSurfaces.svelte`, which deliberately leaves it unwired).
+ * Three gate-consistency checks (`set_vox`'s shared `toggleVox` reference,
+ * `set_cw_pitch`'s and `set_key_speed`'s two byte-identical call sites,
+ * BOTH pinned via `String(...)` source-identity, not refusal-behavior
+ * alone) are pinned as POSITIVE findings — MOR-1576 class asymmetry
+ * checked for and NOT found, unlike `set_monitor_gain` above (that
+ * finding's own CW-sidetone leg, `onSidetoneLevelChange`, is a different
+ * intent and stays claimed via C10, not this walk).
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
