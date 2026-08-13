@@ -1333,9 +1333,14 @@ class TestWebRigctldDefault:
         out = capsys.readouterr().out
         assert "rigctld:" not in out
 
-    async def test_cli_web_rigctld_port_busy_graceful(self, caplog, capsys):
-        """EADDRINUSE on rigctld logs warning and continues serving the web."""
-        import asyncio
+    async def test_cli_web_rigctld_port_busy_aborts_startup(self, caplog):
+        """MOR-1437: EADDRINUSE on rigctld aborts startup — no silent degrade.
+
+        A busy rigctld port most often means an orphaned rigplane instance is
+        already holding the radio session; starting anyway risks serial
+        multiple-access. The owner ruling is that the application must NOT
+        start in this case (``--no-rigctld`` remains the explicit opt-out).
+        """
         import errno
         import logging
 
@@ -1354,12 +1359,12 @@ class TestWebRigctldDefault:
             async def stop(self):  # pragma: no cover - never called
                 pass
 
-        class FakeWebServer:
+        class FakeWebServer:  # pragma: no cover - web must not start
             def __init__(self, _radio, _cfg):
                 pass
 
             async def serve_forever(self):
-                raise asyncio.CancelledError
+                raise AssertionError("web must not start when rigctld fails hard")
 
         p = _build_parser()
         args = p.parse_args(["--host", "1.2.3.4", "web"])
@@ -1367,21 +1372,22 @@ class TestWebRigctldDefault:
         with (
             patch("rigplane.web.server.WebServer", FakeWebServer),
             patch("rigplane.rigctld.server.RigctldServer", BusyRigctldServer),
-            caplog.at_level(logging.WARNING, logger="rigplane.cli"),
+            caplog.at_level(logging.ERROR, logger="rigplane.cli"),
         ):
-            rc = await _cmd_web(radio, args)
+            with pytest.raises(OSError) as exc_info:
+                await _cmd_web(radio, args)
 
-        assert rc == 0, "web must keep running even if rigctld port is busy"
-        # Warning must mention the port and surface the problem.
+        assert exc_info.value.errno == errno.EADDRINUSE
+        # ERROR-level log must name the remedy — lsof and --no-rigctld.
+        messages = [
+            rec.message for rec in caplog.records if rec.levelno >= logging.ERROR
+        ]
         assert any(
-            "rigctld" in rec.message.lower() and "4532" in rec.message
-            for rec in caplog.records
-        ), (
-            f"expected rigctld port-busy warning, got {[r.message for r in caplog.records]}"
-        )
-        out = capsys.readouterr().out
-        assert "rigctld:" not in out, (
-            "banner must not advertise rigctld when bind failed"
+            "rigctld" in msg.lower() and "4532" in msg and "lsof" in msg.lower()
+            for msg in messages
+        ), f"expected actionable ERROR log naming lsof remedy, got {messages}"
+        assert any("--no-rigctld" in msg for msg in messages), (
+            f"expected the --no-rigctld opt-out to be named, got {messages}"
         )
 
     async def test_cli_web_rigctld_eacces_surfaces(self, caplog):
@@ -1605,7 +1611,7 @@ class TestCheckPortsAvailable:
             s.bind(("", 0))
             port = s.getsockname()[1]
         # Port is free now — should not raise.
-        check_ports_available([port])
+        check_ports_available([("", port)])
 
     def test_occupied_port_raises_runtime_error(self):
         import socket
@@ -1618,7 +1624,7 @@ class TestCheckPortsAvailable:
             with pytest.raises(
                 RuntimeError, match=f"Port {occupied_port} already in use"
             ):
-                check_ports_available([occupied_port])
+                check_ports_available([("", occupied_port)])
 
     def test_error_message_includes_port_number(self):
         import socket
@@ -1629,7 +1635,7 @@ class TestCheckPortsAvailable:
             s.listen(1)
             port = s.getsockname()[1]
             try:
-                check_ports_available([port])
+                check_ports_available([("", port)])
             except RuntimeError as exc:
                 assert str(port) in str(exc)
             else:
@@ -1637,6 +1643,37 @@ class TestCheckPortsAvailable:
 
     def test_empty_list_does_not_raise(self):
         check_ports_available([])
+
+    def test_error_message_names_lsof_remedy(self):
+        """MOR-1437: the bind-failure message must be actionable."""
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("", 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+            with pytest.raises(RuntimeError, match="lsof") as exc_info:
+                check_ports_available([("", port)])
+            assert f"lsof -i :{port}" in str(exc_info.value)
+
+    def test_host_mismatched_probe_does_not_false_negative(self):
+        """MOR-1437 R1: a probe must bind the SAME host as the real orphan,
+        or a wildcard probe can succeed over a loopback-bound listener
+        (measured on macOS) — the wildcard-vs-127.0.0.1 case that let a
+        station instance connect to the radio in the pre-fix code.
+        """
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+
+            # Host-matched probe correctly detects the conflict.
+            with pytest.raises(RuntimeError, match=f"Port {port} already in use"):
+                check_ports_available([("127.0.0.1", port)])
 
     def test_web_command_preflight_blocks_on_occupied_port(self, capsys):
         """_run() exits 1 with error before connecting to radio when port is occupied."""
@@ -1672,3 +1709,157 @@ class TestCheckPortsAvailable:
         assert result == 1
         captured = capsys.readouterr()
         assert str(occupied_port) in captured.err
+
+    def test_rigctld_preflight_blocks_on_occupied_port_default_flags(self, capsys):
+        """MOR-1437: occupied rigctld port + default flags aborts before the
+        radio connects — no serial open, no pollers, actionable error naming
+        the lsof remedy.
+        """
+        import asyncio
+        import socket
+
+        from rigplane.cli import _run
+
+        # A free web port (released before use — same pattern as the
+        # existing web-port preflight test above).
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as free_probe:
+            free_probe.bind(("", 0))
+            free_web_port = free_probe.getsockname()[1]
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("", 0))
+            s.listen(1)
+            occupied_rigctld_port = s.getsockname()[1]
+
+            args = _build_parser().parse_args(
+                [
+                    "--host",
+                    "1.2.3.4",
+                    "web",
+                    "--port",
+                    str(free_web_port),
+                    "--rigctld-port",
+                    str(occupied_rigctld_port),
+                ]
+            )
+
+            mock_radio = MagicMock()
+            mock_radio.__aenter__ = AsyncMock(return_value=mock_radio)
+            mock_radio.__aexit__ = AsyncMock(return_value=False)
+            with patch("rigplane.cli.create_radio", return_value=mock_radio):
+                result = asyncio.run(_run(args))
+
+        # No serial/LAN session and no pollers — radio never connected.
+        mock_radio.__aenter__.assert_not_called()
+        mock_radio.__aexit__.assert_not_called()
+        assert result == 1
+        captured = capsys.readouterr()
+        assert str(occupied_rigctld_port) in captured.err
+        assert "lsof" in captured.err.lower()
+
+    def test_no_rigctld_flag_skips_busy_rigctld_port_preflight(self):
+        """MOR-1437: --no-rigctld opts out of the rigctld port check entirely —
+        a busy rigctld port must not block a clean web-only start.
+        """
+        import asyncio
+        import socket
+
+        from rigplane.cli import _run
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as free_probe:
+            free_probe.bind(("", 0))
+            free_web_port = free_probe.getsockname()[1]
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("", 0))
+            s.listen(1)
+            busy_rigctld_port = s.getsockname()[1]
+
+            args = _build_parser().parse_args(
+                [
+                    "--host",
+                    "1.2.3.4",
+                    "web",
+                    "--no-rigctld",
+                    "--port",
+                    str(free_web_port),
+                    "--rigctld-port",
+                    str(busy_rigctld_port),
+                ]
+            )
+
+            mock_radio = MagicMock()
+            mock_radio.__aenter__ = AsyncMock(return_value=mock_radio)
+            mock_radio.__aexit__ = AsyncMock(return_value=False)
+            with (
+                patch("rigplane.cli.create_radio", return_value=mock_radio),
+                patch("rigplane.cli._cmd_web", new_callable=AsyncMock) as cmd_web,
+            ):
+                cmd_web.return_value = 0
+                result = asyncio.run(_run(args))
+
+        assert result == 0
+        mock_radio.__aenter__.assert_called_once()
+        cmd_web.assert_awaited_once_with(mock_radio, args)
+
+    def test_station_preflight_blocks_on_occupied_rigctld_port_at_managed_host(
+        self, capsys
+    ):
+        """MOR-1437 R1: station always runs managed (web_host forced to
+        127.0.0.1, rigctld always on, no --no-rigctld opt-out) — the real
+        rigctld listener binds 127.0.0.1 in this mode (see _cmd_web's
+        ``rigctld_host``). A wildcard-only preflight probe can
+        false-negative against an orphan already bound to 127.0.0.1 (macOS
+        SO_REUSEADDR quirk), letting the radio connect anyway — exactly the
+        serial multiple-access window this ticket exists to close. The
+        preflight must probe the host the real listener will actually use
+        (and the other host too, since an orphan could be on either).
+        """
+        import asyncio
+        import socket
+
+        from rigplane.cli import _run
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as free_probe:
+            free_probe.bind(("127.0.0.1", 0))
+            free_web_port = free_probe.getsockname()[1]
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            occupied_rigctld_port = s.getsockname()[1]
+
+            args = _build_parser().parse_args(
+                [
+                    "--host",
+                    "1.2.3.4",
+                    "station",
+                    "--port",
+                    str(free_web_port),
+                    "--rigctld-port",
+                    str(occupied_rigctld_port),
+                    # Sidestep the unrelated managed-mode auth requirement so
+                    # this test isolates the preflight/port-check path.
+                    "--auth-token",
+                    "test-token",
+                ]
+            )
+            assert args.web_host == "127.0.0.1"
+            assert args.web_rigctld is True
+
+            mock_radio = MagicMock()
+            mock_radio.__aenter__ = AsyncMock(return_value=mock_radio)
+            mock_radio.__aexit__ = AsyncMock(return_value=False)
+            with patch("rigplane.cli.create_radio", return_value=mock_radio):
+                result = asyncio.run(_run(args))
+
+        # No serial/LAN session and no pollers — radio never connected.
+        mock_radio.__aenter__.assert_not_called()
+        mock_radio.__aexit__.assert_not_called()
+        assert result == 1
+        captured = capsys.readouterr()
+        assert str(occupied_rigctld_port) in captured.err
+        assert "lsof" in captured.err.lower()

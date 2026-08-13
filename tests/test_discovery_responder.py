@@ -91,6 +91,39 @@ class TestDiscoveryResponder:
 
         assert calls[0]["reuse_port"] is False
 
+    async def test_start_bind_failure_degrades_gracefully_by_design(
+        self, monkeypatch, caplog
+    ) -> None:
+        """MOR-1437: a discovery bind failure does NOT abort startup — by design.
+
+        Unlike rigctld (an exclusive TCP listener guarding the single
+        serial/LAN radio session), this responder opts into SO_REUSEPORT
+        (see ``_reuse_port_supported()``) specifically so multiple
+        co-located rigplane instances can each announce their own radio on
+        the shared discovery port. A bind failure here is therefore not a
+        reliable signal of a duplicate process holding the radio the way an
+        rigctld EADDRINUSE is, so it stays best-effort: log a warning and
+        continue without discovery, rather than aborting the whole server.
+        """
+        import logging
+
+        class FailingLoop:
+            async def create_datagram_endpoint(self, _factory, **_kwargs: object):
+                raise OSError(48, "Address already in use")
+
+        monkeypatch.setattr(asyncio, "get_running_loop", lambda: FailingLoop())
+        responder = DiscoveryResponder(web_port=8080, discovery_port=8470)
+
+        with caplog.at_level(logging.WARNING, logger="rigplane.web.discovery"):
+            await responder.start()  # must not raise
+
+        assert any(
+            "discovery" in rec.message.lower() and "disabled" in rec.message.lower()
+            for rec in caplog.records
+        ), (
+            f"expected a graceful-degrade warning, got {[r.message for r in caplog.records]}"
+        )
+
     async def test_valid_request_returns_json(
         self, responder: DiscoveryResponder
     ) -> None:
