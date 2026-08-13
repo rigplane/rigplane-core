@@ -67,20 +67,33 @@ def _make_radio(model: str = "IC-7610", caps: set[str] | None = None):
     return radio
 
 
-async def _endpoint_vfo_tags(radio) -> tuple[set[str], set[str]]:
+async def _endpoint_vfo_tags(radio) -> tuple[set[str], set[str], set[str]]:
+    from rigplane.web.handlers import ControlHandler
+
     srv = WebServer(radio)
     info_writer = _FakeWriter()
     capabilities_writer = _FakeWriter()
+    ws_payloads: list[str] = []
+
+    async def _send_text(payload: str) -> None:
+        ws_payloads.append(payload)
+
+    ws = SimpleNamespace(send_text=_send_text)
+    radio_model = getattr(radio, "model", srv._config.radio_model)  # noqa: SLF001
+    handler = ControlHandler(ws, radio, "0.0.0-test", radio_model, server=srv)
 
     await srv._serve_info(info_writer)  # noqa: SLF001
     await srv._serve_capabilities(capabilities_writer)  # noqa: SLF001
+    await handler._send_hello()  # noqa: SLF001
 
     info = _parse_json_body(info_writer)
     capabilities = _parse_json_body(capabilities_writer)
+    hello = json.loads(ws_payloads.pop())
     reserved = {"vfo_swap", "vfo_equalize"}
     return (
         set(info["capabilities"]["tags"]) & reserved,
         set(capabilities["capabilities"]) & reserved,
+        set(hello["capabilities"]) & reserved,
     )
 
 
@@ -184,13 +197,13 @@ class TestInfoEndpoint:
         radio.profile = replace(radio.profile, equal_ab_code=None)
 
         expected = {"vfo_swap"}
-        assert await _endpoint_vfo_tags(radio) == (expected, expected)
+        assert await _endpoint_vfo_tags(radio) == (expected, expected, expected)
 
     @pytest.mark.asyncio
     async def test_vfo_tags_ignore_runtime_injection_on_unsupported_profile(self):
         radio = _make_radio("X6100", {"vfo_swap", "vfo_equalize"})
 
-        assert await _endpoint_vfo_tags(radio) == (set(), set())
+        assert await _endpoint_vfo_tags(radio) == (set(), set(), set())
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("radio_kind", ["unknown", "missing", "none"])
@@ -205,7 +218,7 @@ class TestInfoEndpoint:
             else:
                 del radio.model
 
-        assert await _endpoint_vfo_tags(radio) == (set(), set())
+        assert await _endpoint_vfo_tags(radio) == (set(), set(), set())
 
     @pytest.mark.asyncio
     async def test_vfo_tags_resolve_known_profile_when_not_attached(self):
@@ -213,7 +226,7 @@ class TestInfoEndpoint:
         del radio.profile
 
         expected = {"vfo_swap", "vfo_equalize"}
-        assert await _endpoint_vfo_tags(radio) == (expected, expected)
+        assert await _endpoint_vfo_tags(radio) == (expected, expected, expected)
 
 
 # ── /api/v1/capabilities tests ─────────────────────────────────
@@ -408,7 +421,7 @@ class TestCapabilitiesEndpoint:
         radio = _make_radio("IC-7300")
         radio.profile = replace(radio.profile, vfo_scheme="main_sub")
 
-        assert await _endpoint_vfo_tags(radio) == (set(), set())
+        assert await _endpoint_vfo_tags(radio) == (set(), set(), set())
 
 
 def _yaesu(cls=YaesuCatRadio):
