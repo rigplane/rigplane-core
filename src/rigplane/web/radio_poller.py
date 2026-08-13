@@ -3301,7 +3301,11 @@ class RadioPoller:
                     "web.radio_poller",
                     request_id=request.id,
                     paths=[str(path) for path in newly_sent],
-                    pending_request_count=len(scheduler.pending_requests()),
+                    # MOR-1533: dispatchable_requests(), matching this
+                    # drain's own dispatch view -- not the unfiltered
+                    # pending_requests(), which would also count entries
+                    # this drain will never send (withheld tx_only hints).
+                    pending_request_count=len(scheduler.dispatchable_requests()),
                 )
 
     async def _send_query(self) -> None:

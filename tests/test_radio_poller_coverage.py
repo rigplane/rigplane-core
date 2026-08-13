@@ -15,6 +15,7 @@ import pytest
 from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.capabilities import CAP_SCOPE
 from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
     AcquisitionScheduler,
     MeterObservationCoalescer,
 )
@@ -3612,6 +3613,78 @@ async def test_tx_active_stops_tx_only_group_when_canonical_ptt_de_keys() -> Non
     await poller._send_scheduler_requests()  # noqa: SLF001
     assert scheduler.tx_active_calls == [True, False]
     assert len(executor.calls) == 1  # unchanged -- no re-send while de-keyed
+
+
+@pytest.mark.asyncio
+async def test_drain_withholds_tx_only_reconciliation_when_canonical_ptt_is_rx() -> (
+    None
+):
+    """MOR-1533 web-path regression guard for the dispatch/lookup split.
+
+    ``_send_scheduler_requests`` must dispatch through
+    ``AcquisitionScheduler.dispatchable_requests()`` (tx_active-gated), not
+    the now-unfiltered ``pending_requests()``. The MOR-1525 tests above only
+    exercise ``due_requests()``'s cadence-group skip (BACKGROUND priority);
+    none of them queue a RECONCILIATION-priority ``tx_only`` request through
+    the real drain, so none would catch a regression here -- this test
+    reproduces the exact MOR-1531 shape (a stale-reconciliation hint, as
+    ``StateFreshnessService`` would emit it) through the real web drain.
+    """
+    radio = _make_radio(active="MAIN")
+    power = FieldPath.global_("meters", "power")
+    scheduler = AcquisitionScheduler(profile=_tx_only_profile(power))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+
+    store = StateStore()
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+    state = RadioState()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+        acquisition_executor=executor,
+    )
+
+    scheduler.ensure_fresh(
+        power,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert executor.calls == [], (
+        "tx_only RECONCILIATION request reached the wire while canonical "
+        "ptt is FRESH False -- the MOR-1525 SWR-flap loop, reopened"
+    )
+    assert poller._acquisition_in_flight == {}  # noqa: SLF001
+
+    # Mirror leg: TX active -- the same request must now be dispatched.
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=True,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert any(
+        power in call[0].paths
+        and call[0].priority is AcquisitionPriority.RECONCILIATION
+        for call in executor.calls
+    ), "RECONCILIATION request must dispatch once TX is active"
 
 
 # ---------------------------------------------------------------------------

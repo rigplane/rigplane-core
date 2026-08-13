@@ -26,6 +26,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionRequest,
     AcquisitionScheduler,
+    AcquisitionStatus,
     RadioStateModelService,
     StateFreshnessService,
 )
@@ -878,8 +879,19 @@ class TestLifecycle:
             "scheduler, not create a second one"
         )
 
-        # Canonical PTT fact: FRESH and False (confirmed RX).
+        # Canonical PTT fact: FRESH and False (confirmed RX). A real
+        # RECONCILIATION request is queued -- without this, the RX-leg
+        # ``dispatchable_requests() == ()`` assertion below would be
+        # vacuous (an empty scheduler is trivially "gated").
         _apply_store_value(store, ptt, False, max_age=1000.0)
+        result = scheduler.ensure_fresh(
+            swr,
+            max_age=2.0,
+            priority=AcquisitionPriority.RECONCILIATION,
+            reason="stale",
+        )
+        assert result.status is AcquisitionStatus.QUEUED
+        assert len(scheduler.pending_requests()) == 1
 
         # Web poller's drain runs first: due_requests() caches
         # tx_active=False.
@@ -895,6 +907,17 @@ class TestLifecycle:
             "rigctld's drain must not spuriously re-enable the tx_only "
             "gate the web poller's drain just closed"
         )
+
+        # TX leg: canonical PTT flips FRESH True -- both due_requests()
+        # (web) and _derive_tx_active() (rigctld) must agree, and the
+        # still-queued request must now be dispatchable.
+        _apply_store_value(store, ptt, True, max_age=1000.0)
+        scheduler.due_requests(now=1.0, tx_active=True)
+        derived = srv._derive_tx_active()
+        assert derived is True
+        scheduler.note_tx_active(derived)
+
+        assert len(scheduler.dispatchable_requests()) == 1
 
     async def test_standalone_drain_records_executor_missing_failure(
         self, cfg: RigctldConfig
