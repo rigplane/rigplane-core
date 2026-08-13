@@ -2729,16 +2729,42 @@ class RadioPoller:
                 if self._on_state_event:
                     self._on_state_event("vfo_changed", {"vfo": vfo})
             case VfoSwap():
-                self._last_user_write_ts = time.monotonic()
-                if CAP_DUAL_RX in self._caps:
+                if (
+                    self._profile.vfo_scheme == "ab"
+                    and self._profile.swap_ab_code is not None
+                ):
+                    self._last_user_write_ts = time.monotonic()
+                    await radio.swap_vfo_ab(0)
+                elif (
+                    self._profile.vfo_scheme == "main_sub"
+                    and self._profile.swap_main_sub_code is not None
+                ):
+                    self._last_user_write_ts = time.monotonic()
                     await radio.swap_main_sub()
+                else:
+                    raise CommandError(
+                        f"vfo_swap is unsupported by profile {self._profile.model}"
+                    )
                 # After swap, active VFO stays same but freqs are exchanged
                 if self._on_state_event:
                     self._on_state_event("vfo_swapped", {})
             case VfoEqualize():
-                self._last_user_write_ts = time.monotonic()
-                if CAP_DUAL_RX in self._caps:
+                if (
+                    self._profile.vfo_scheme == "ab"
+                    and self._profile.equal_ab_code is not None
+                ):
+                    self._last_user_write_ts = time.monotonic()
+                    await radio.equalize_vfo_ab(0)
+                elif (
+                    self._profile.vfo_scheme == "main_sub"
+                    and self._profile.equal_main_sub_code is not None
+                ):
+                    self._last_user_write_ts = time.monotonic()
                     await radio.equalize_main_sub()
+                else:
+                    raise CommandError(
+                        f"vfo_equalize is unsupported by profile {self._profile.model}"
+                    )
             case EnableScope(policy=policy, generation=generation):
                 if CAP_SCOPE in self._caps:
                     # Defer scope enable during initial fetch to avoid
