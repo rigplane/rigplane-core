@@ -1092,6 +1092,11 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
                 "filter_shape",
                 "digisel_shift",
                 "apf_freq",
+                # notch_filter (MOR-1548): reclassified from global to
+                # receiver-scoped, matching the ic7610.toml cmd29 route's own
+                # per-receiver rationale (0x14 0x0D); a verifier finding on
+                # PR #2461 caught SUB readback clobbering MAIN's global fact.
+                "notch_filter",
             )
         ),
         spec(
@@ -1304,7 +1309,6 @@ def _global_specs() -> tuple[FieldSpec, ...]:
                 writable=True,
             )
             for name in (
-                "notch_filter",
                 "nb_depth",
                 "nb_width",
                 "drive_gain",

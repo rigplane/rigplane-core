@@ -132,17 +132,19 @@ _MOR1406_CONTROL_ROWS: tuple[tuple[FieldPath, str, Any], ...] = tuple(
             f"{receiver}.filterShape",
             2,
         ),
+        # notch_filter (MOR-1548): reclassified receiver-scoped, matching the
+        # ic7610.toml cmd29 route's own per-receiver rationale.
+        (
+            FieldPath.receiver(receiver, "operator_controls", "notch_filter"),
+            f"{receiver}.notchFilter",
+            3,
+        ),
     )
 ) + (
     (
         FieldPath.global_("tx_state", "main_sub_tracking"),
         "mainSubTracking",
         True,
-    ),
-    (
-        FieldPath.global_("operator_controls", "notch_filter"),
-        "notchFilter",
-        3,
     ),
     (FieldPath.global_("operator_controls", "nb_depth"), "nbDepth", 4),
     (FieldPath.global_("operator_controls", "nb_width"), "nbWidth", 5),

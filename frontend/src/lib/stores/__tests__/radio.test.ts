@@ -103,7 +103,6 @@ function makeState(overrides: Partial<ServerStateWithObservation> = {}): ServerS
     cwPitch: 0,
     micGain: 0,
     keySpeed: 0,
-    notchFilter: 0,
     mainSubTracking: false,
     compressorOn: false,
     compressorLevel: 0,

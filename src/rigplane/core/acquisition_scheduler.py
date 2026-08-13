@@ -251,6 +251,9 @@ _RECEIVER_LEVEL_QUERY_SUBS: dict[str, int] = {
     "nr_level": 0x06,
     "pbt_inner": 0x07,
     "pbt_outer": 0x08,
+    # notch_filter (MOR-1548): reclassified from global to receiver-scoped,
+    # matching the ic7610.toml cmd29 route's own per-receiver rationale.
+    "notch_filter": 0x0D,
     "nb_level": 0x12,
     "digisel_shift": 0x13,
 }
@@ -291,7 +294,6 @@ _GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
     "mic_gain": 0x0B,
     "cw_pitch": 0x09,
     "key_speed": 0x0C,
-    "notch_filter": 0x0D,
     "compressor_level": 0x0E,
     "break_in_delay": 0x0F,
     "drive_gain": 0x14,

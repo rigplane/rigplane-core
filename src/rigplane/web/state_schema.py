@@ -132,6 +132,9 @@ class ReceiverStatePublic(_Strict):
     narrow: bool = False
     manualNotchFreq: int = 0
     manualNotchWidth: int = 0
+    # notch_filter (MOR-1548): reclassified from global to receiver-scoped,
+    # matching the ic7610.toml cmd29 route's own per-receiver rationale.
+    notchFilter: int = 0
     repeaterTone: bool = False
     repeaterTsql: bool = False
     toneFreq: int = 0
@@ -311,7 +314,6 @@ class ServerStatePublic(_Strict):
     cwPitch: int = 0
     micGain: int = 0
     keySpeed: int = 0
-    notchFilter: int = 0
     mainSubTracking: bool = False
     compressorOn: bool = False
     compressorLevel: int = 0

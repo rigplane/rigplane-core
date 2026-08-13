@@ -471,10 +471,10 @@ describe('dsp honesty gate — absent raw values on numeric fields never fabrica
     },
   );
 
-  // `nbDepth`/`notchFreq` are TOP-LEVEL `ServerState` fields (not on `main`),
-  // and `bareState()` already omits both by default — no explicit `delete`
+  // `nbDepth` is a TOP-LEVEL `ServerState` field (not on `main`), and
+  // `bareState()` already omits it by default — no explicit `delete`
   // needed, the baseline fixture itself is the absent-raw case.
-  const TOP_LEVEL_FIELDS = ['nbDepth', 'notchFreq'] as const;
+  const TOP_LEVEL_FIELDS = ['nbDepth'] as const;
 
   it.each(TOP_LEVEL_FIELDS)(
     '%s: absent from top-level state (no fieldStatus entry) reads unknown, not {known, 0}',
@@ -483,6 +483,17 @@ describe('dsp honesty gate — absent raw values on numeric fields never fabrica
       expect(view.dsp![field].reading).toEqual({ status: 'unknown' });
     },
   );
+
+  // notchFreq (MOR-1548): the adapter now reads the receiver-scoped
+  // `main.notchFilter`/`sub.notchFilter` wire field (viewmodel key
+  // `notchFreq` differs from the wire key `notchFilter`, so it can't join
+  // `RECEIVER_SCOPED_FIELDS` above, whose `delete main[field]` assumes
+  // matching wire/viewmodel names). `bareState()` already omits
+  // `main.notchFilter` by default — no explicit `delete` needed.
+  it('notchFreq: absent from the receiver object (no fieldStatus entry) reads unknown, not {known, 0}', () => {
+    const view = model(bareState(), allCaps);
+    expect(view.dsp!.notchFreq.reading).toEqual({ status: 'unknown' });
+  });
 });
 
 describe('dsp validator round-trip (MOR-1290)', () => {

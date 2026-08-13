@@ -596,7 +596,8 @@ export function toDspProps(
     nbDepth: nbDepthRawToDisplay(state?.nbDepth ?? 0),
     nbWidth: state?.nbWidth ?? 0,
     notchMode,
-    notchFreq: state?.notchFilter ?? 0,
+    // notchFilter (MOR-1548): reclassified receiver-scoped.
+    notchFreq: rx?.notchFilter ?? 0,
     manualNotchWidth: rx?.manualNotchWidth ?? 0,
     agcTimeConstant: rx?.agcTimeConstant ?? 0,
     hasNr: hasCap(caps, 'nr') && nrAvailable,
@@ -959,7 +960,8 @@ export function toAudioSpectrumProps(
     pbtInner: rx?.pbtInner ?? 128,
     pbtOuter: rx?.pbtOuter ?? 128,
     manualNotch: rx?.manualNotch ?? false,
-    notchFreq: state?.notchFilter ?? 0,
+    // notchFilter (MOR-1548): reclassified receiver-scoped.
+    notchFreq: rx?.notchFilter ?? 0,
     contour: rx?.contour ?? 0,
     // contourFreq is not yet exposed in ServerState; default to centre.
     contourFreq: 128,

@@ -222,7 +222,13 @@ polling_only = [
     # MOR-1492 (field-policy membership wave, profile parity): notch_filter
     # (14-0D) / manual_notch_width (16-57) — same rationale/sourcing as
     # filter_shape above (documented S/R, already in [commands]/[notch]).
-    "global.operator_controls.notch_filter",
+    # notch_filter reclassified receiver-scoped under MOR-1548: the [cmd29]
+    # route below carries 0x14 0x0D specifically because notch position is
+    # per-receiver on this rig (dual-RX independence) — a verifier finding
+    # on PR #2461 caught the observation side still filing it as global,
+    # letting a SUB readback clobber MAIN's fact.
+    "receiver.main.operator_controls.notch_filter",
+    "receiver.sub.operator_controls.notch_filter",
     "receiver.main.operator_controls.manual_notch_width",
     "receiver.sub.operator_controls.manual_notch_width",
     # MOR-1493 (field-policy membership wave, profile parity): break_in
@@ -617,8 +623,15 @@ adaptive_decay = false
 
 # MOR-1492 (field-policy membership wave, profile parity). notch_filter
 # matches nr_level/pbt_inner's 3.0s/5.0s 0x14-level tier; manual_notch_width
-# matches filter_shape's 1.5s/3.0s 0x16-family tier above.
-[state_acquisition.field_policies."global.operator_controls.notch_filter"]
+# matches filter_shape's 1.5s/3.0s 0x16-family tier above. notch_filter
+# reclassified receiver-scoped under MOR-1548 (see the polling_only comment
+# above) — same cadence/freshness tier, one entry per receiver.
+[state_acquisition.field_policies."receiver.main.operator_controls.notch_filter"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 5.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.notch_filter"]
 cadence_seconds = 3.0
 freshness_ttl_seconds = 5.0
 adaptive_decay = false

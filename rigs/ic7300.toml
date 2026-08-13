@@ -214,7 +214,10 @@ command_response_observable = [
     "receiver.main.operator_controls.nb_level",
     "receiver.main.operator_toggles.auto_notch",
     "receiver.main.operator_toggles.manual_notch",
-    "global.operator_controls.notch_filter",
+    # notch_filter reclassified receiver-scoped under MOR-1548, matching
+    # ic7610.toml's per-receiver cmd29 route rationale for 0x14 0x0D; this
+    # single-RX profile only ever resolves to "main".
+    "receiver.main.operator_controls.notch_filter",
     "receiver.main.operator_controls.manual_notch_width",
     "receiver.main.operator_controls.agc_time_constant",
     # MOR-1493 (field-policy membership wave, leg 4): RIT/XIT and CW keyer
@@ -549,7 +552,7 @@ freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
-[state_acquisition.field_policies."global.operator_controls.notch_filter"]
+[state_acquisition.field_policies."receiver.main.operator_controls.notch_filter"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"

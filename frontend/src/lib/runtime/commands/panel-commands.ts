@@ -608,9 +608,11 @@ export function makeDspHandlers() {
       dispatchRadioIntent({ name: 'set_auto_notch', params: { on: !current, receiver } });
     },
     onNotchFreqChange: (value: number) => {
-      const receiver = knownActiveReceiver();
-      if (!hasCapability('notch') || receiver === null || !knownTopLevelField('notchFilter')
-        || !Number.isSafeInteger(value)) return;
+      // notchFilter (MOR-1548): reclassified receiver-scoped, matching the
+      // ic7610.toml cmd29 route's own per-receiver rationale — same gate
+      // pattern as onManualNotchWidthChange below.
+      const receiver = knownReceiverField('notchFilter');
+      if (!hasCapability('notch') || receiver === null || !Number.isSafeInteger(value)) return;
       dispatchRadioIntent({ name: 'set_notch_filter', params: { value, receiver } });
     },
     onNbDepthChange: (level: number) => {
