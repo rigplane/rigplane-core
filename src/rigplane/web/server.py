@@ -598,6 +598,9 @@ def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     return _runtime_capabilities_impl(radio)
 
 
+_VFO_CAPABILITY_TAGS = frozenset({"vfo_swap", "vfo_equalize"})
+
+
 def _profile_vfo_capability_tags(profile: "RadioProfile") -> set[str]:
     """Project only primitives declared for the profile's VFO scheme."""
     if profile.vfo_scheme == "ab":
@@ -996,6 +999,30 @@ class WebServer:
                 fallback.model,
             )
         return fallback
+
+    def _trusted_vfo_capability_tags(self) -> set[str]:
+        """Resolve VFO tags without the generic profile fallback."""
+        from ..profiles import RadioProfile, resolve_radio_profile
+
+        if self._radio is None:
+            return set()
+        raw_profile = getattr(self._radio, "profile", None)
+        if isinstance(raw_profile, RadioProfile):
+            return _profile_vfo_capability_tags(raw_profile)
+        radio_model = getattr(self._radio, "model", None)
+        candidates = [
+            model
+            for model in (radio_model, self._config.radio_model)
+            if isinstance(model, str) and model != _RADIO_MODEL_UNSPECIFIED
+        ]
+        for candidate in candidates:
+            try:
+                return _profile_vfo_capability_tags(
+                    resolve_radio_profile(model=candidate)
+                )
+            except KeyError:
+                continue
+        return set()
 
     def _bootstrap_state_acquisition(self) -> None:
         """Attach shared StateStore-backed acquisition services when profiled."""
@@ -2867,9 +2894,9 @@ class WebServer:
         )
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
         profile = self._get_profile()
-        caps = _runtime_capabilities(self._radio) | _profile_vfo_capability_tags(
-            profile
-        )
+        caps = (
+            _runtime_capabilities(self._radio) - _VFO_CAPABILITY_TAGS
+        ) | self._trusted_vfo_capability_tags()
         has_dual_rx = "dual_rx" in caps
         raw_connected = (
             getattr(self._radio, "connected", False) if self._radio else False
@@ -3332,9 +3359,9 @@ class WebServer:
             _raw_model if isinstance(_raw_model, str) else self._config.radio_model
         )
         profile = self._get_profile()
-        caps = _runtime_capabilities(self._radio) | _profile_vfo_capability_tags(
-            profile
-        )
+        caps = (
+            _runtime_capabilities(self._radio) - _VFO_CAPABILITY_TAGS
+        ) | self._trusted_vfo_capability_tags()
 
         freq_ranges = [
             {
