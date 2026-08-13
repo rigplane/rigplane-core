@@ -25,7 +25,7 @@ import { runtime } from '../frontend-runtime';
 import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
 import { relativeVfoIdentityUnknown, resolveFilterModeConfig } from '../props/panel-props';
-import type { FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
+import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import {
   mapIfShiftToPbt, nbDepthDisplayToRaw, nrDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
@@ -1405,6 +1405,26 @@ function keyboardDirection(value: unknown): 'up' | 'down' | null {
   return value === 'up' || value === 'down' ? value : null;
 }
 
+/** Finite `delta` param, in RAW units — `null` when absent/non-numeric so
+ *  callers can fall through to the `direction`-based step (MOR-1577:
+ *  explicit `delta` wins over `direction` when a binding declares both). */
+function keyboardDelta(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** A control's declared raw domain (`caps.controls[key].raw_min/raw_max`,
+ *  MOR-1577) — falls back to 0/255 only when caps declares nothing for
+ *  `key`, matching the hardcoded domain the `direction`-based fallback
+ *  below has always assumed. Data-driven per repo doctrine: no other
+ *  hardcoded 255 appears in the `delta`-handling path. */
+function keyboardControlRawDomain(caps: Capabilities, key: string): { rawMin: number; rawMax: number } {
+  const ctrl = caps.controls?.[key];
+  return {
+    rawMin: typeof ctrl?.raw_min === 'number' ? ctrl.raw_min : 0,
+    rawMax: typeof ctrl?.raw_max === 'number' ? ctrl.raw_max : 255,
+  };
+}
+
 function keyboardScopeField(context: KeyboardContext, field: string): unknown | null {
   const scope = context.state.scopeControls;
   const value = (scope as unknown as Record<string, unknown> | undefined)?.[field];
@@ -1530,17 +1550,45 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
         && Number.isSafeInteger(context.state.ritFreq)) makeRitXitHandlers().onClear();
       return true;
     case 'adjust_af_level': {
-      const direction = keyboardDirection(safeParams.direction);
       const current = rx?.afLevel;
-      if (direction && keyboardReceiverField(context, 'afLevel') && isNormalizedLevel(current)) {
+      if (!keyboardReceiverField(context, 'afLevel') || !isNormalizedLevel(current)) return true;
+      const delta = keyboardDelta(safeParams.delta);
+      if (delta !== null) {
+        // MOR-1577: `delta` is declared in RAW units against the control's
+        // domain (`af-level-up`/`-down` bindings), converted here to the
+        // handler's normalized 0-1 wire shape — same shape `direction`
+        // already produced, just scaled from the declared domain instead
+        // of a hardcoded 5%.
+        const { rawMin, rawMax } = keyboardControlRawDomain(context.caps, 'af_level');
+        const span = rawMax - rawMin;
+        if (span > 0) makeRxAudioHandlers().onAfLevelChange(Math.max(0, Math.min(1, current + delta / span)));
+        return true;
+      }
+      const direction = keyboardDirection(safeParams.direction);
+      if (direction) {
         makeRxAudioHandlers().onAfLevelChange(Math.max(0, Math.min(1, current + (direction === 'down' ? -0.05 : 0.05))));
       }
       return true;
     }
     case 'adjust_rf_gain': {
-      const direction = keyboardDirection(safeParams.direction);
       const current = rx?.rfGain;
-      if (direction && keyboardReceiverField(context, 'rfGain') && isNormalizedLevel(current)) {
+      if (!keyboardReceiverField(context, 'rfGain') || !isNormalizedLevel(current)) return true;
+      const delta = keyboardDelta(safeParams.delta);
+      if (delta !== null) {
+        // MOR-1577: `delta` is declared in RAW units against the control's
+        // domain (`rf-level-up`/`-down` bindings) and applied directly to
+        // the raw current value — `onRfGainChange` already takes a raw
+        // integer, so no normalized round-trip is needed here.
+        const { rawMin, rawMax } = keyboardControlRawDomain(context.caps, 'rf_gain');
+        if (rawMax > rawMin) {
+          const currentRaw = rawMin + current * (rawMax - rawMin);
+          const nextRaw = Math.round(Math.max(rawMin, Math.min(rawMax, currentRaw + delta)));
+          makeRfFrontEndHandlers().onRfGainChange(nextRaw);
+        }
+        return true;
+      }
+      const direction = keyboardDirection(safeParams.direction);
+      if (direction) {
         const level = Math.max(0, Math.min(1, current + (direction === 'down' ? -0.05 : 0.05)));
         makeRfFrontEndHandlers().onRfGainChange(Math.round(level * 255));
       }
