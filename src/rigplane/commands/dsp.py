@@ -697,11 +697,21 @@ def set_break_in(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
+    """Build a set break-in mode command.
+
+    Encodes the raw single-BCD-byte break-in value. Which values are legal
+    for a given radio (the documented OFF/SEMI/FULL domain on IC-705/
+    IC-7300/IC-9700/IC-7610 vs. the X6100/X6200, which have no confirmed
+    domain at all) is a per-profile question, not a universal one — this
+    builder only enforces the wire-format's single-BCD-byte range and
+    leaves domain validation to the profile-aware caller (MOR-1534, mirrors
+    MOR-1522's ``set_agc`` fix).
+    """
     return _build_function_value_set(
         _SUB_BREAK_IN,
-        int(BreakInMode(mode)),
-        minimum=int(BreakInMode.OFF),
-        maximum=int(BreakInMode.FULL),
+        int(mode),
+        minimum=0,
+        maximum=99,
         to_addr=to_addr,
         from_addr=from_addr,
         cmd_map=cmd_map,

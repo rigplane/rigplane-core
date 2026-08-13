@@ -545,6 +545,14 @@ width_labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
 values = [0, 1, 2]
 labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
 
+[filter_shape]
+# CI-V 0x16 0x56: DSP IF filter type (docs/validation/cat-audits/ic7300.md
+# "16 56 DSP filter type" — presence-confirmed; SHARP/SOFT values come from
+# the shared IC-7610/IC-7300-family command table, same basis as the
+# [commands] get/set_filter_shape entry below) (MOR-1534).
+values = [0, 1]
+labels = { "0" = "SHARP", "1" = "SOFT" }
+
 [break_in]
 # CI-V 0x16 0x47: 0=OFF, 1=Semi, 2=Full (wfview rig lists Max=1; CI-V supports three levels)
 values = [0, 1, 2]

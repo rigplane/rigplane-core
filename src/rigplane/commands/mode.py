@@ -213,12 +213,19 @@ def set_filter_shape(
     *,
     command29: bool = True,
 ) -> bytes:
-    """Build a set DSP IF filter shape command."""
+    """Build a set DSP IF filter shape command.
+
+    Encodes the raw single-BCD-byte filter-shape value. Which values are
+    legal is a per-profile ``[filter_shape] values`` domain, not a universal
+    enum — this builder only enforces the wire-format's single-BCD-byte
+    range and leaves domain validation to the profile-aware caller
+    (MOR-1534, mirrors MOR-1522's ``set_agc`` fix).
+    """
     return _build_function_value_set(
         _SUB_FILTER_SHAPE,
-        int(FilterShape(shape)),
-        minimum=int(FilterShape.SHARP),
-        maximum=int(FilterShape.SOFT),
+        int(shape),
+        minimum=0,
+        maximum=99,
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
@@ -306,12 +313,19 @@ def set_ssb_tx_bandwidth(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    """Build a set SSB TX bandwidth preset command."""
+    """Build a set SSB TX bandwidth preset command.
+
+    Encodes the raw single-BCD-byte bandwidth value. Which values are legal
+    is a per-profile ``[ssb_tx_bw] values`` domain, not a universal enum —
+    this builder only enforces the wire-format's single-BCD-byte range and
+    leaves domain validation to the profile-aware caller (MOR-1534, mirrors
+    MOR-1522's ``set_agc`` fix).
+    """
     return _build_function_value_set(
         _SUB_SSB_TX_BANDWIDTH,
-        int(SsbTxBandwidth(bandwidth)),
-        minimum=int(SsbTxBandwidth.WIDE),
-        maximum=int(SsbTxBandwidth.NAR),
+        int(bandwidth),
+        minimum=0,
+        maximum=99,
         to_addr=to_addr,
         from_addr=from_addr,
         cmd_map=cmd_map,

@@ -330,9 +330,19 @@ class TestFilterShape:
         with pytest.raises(ValueError):
             commands.set_filter_shape(999, receiver=RECEIVER_MAIN)
 
-    def test_set_filter_shape_rejects_two(self) -> None:
-        with pytest.raises(ValueError):
-            commands.set_filter_shape(2, receiver=RECEIVER_MAIN)
+    def test_set_filter_shape_builder_accepts_values_outside_the_sharp_soft_enum(
+        self,
+    ) -> None:
+        """MOR-1534: the raw wire-command builder no longer polices the
+        IC-7610 SHARP/SOFT enum's range — which filter-shape values are
+        legal is a per-profile ``[filter_shape] values`` domain, enforced
+        one layer up in ``CoreRadio.set_filter_shape`` (see
+        ``TestFilterShapeDomainValidation`` in ``tests/test_radio.py``).
+        This builder only encodes the raw single-BCD-byte value.
+        """
+        assert commands.set_filter_shape(2, receiver=RECEIVER_MAIN) == _cmd29_set(
+            _CMD_PREAMP, _SUB_FILTER_SHAPE, 0x02, receiver=RECEIVER_MAIN
+        )
 
     def test_parse_filter_shape_sharp(self) -> None:
         frame = _response_frame(_CMD_PREAMP, _SUB_FILTER_SHAPE, b"\x00")
@@ -396,9 +406,19 @@ class TestSsbTxBandwidth:
         with pytest.raises(ValueError):
             commands.set_ssb_tx_bandwidth(999)
 
-    def test_set_ssb_tx_bandwidth_rejects_three(self) -> None:
-        with pytest.raises(ValueError):
-            commands.set_ssb_tx_bandwidth(3)
+    def test_set_ssb_tx_bandwidth_builder_accepts_values_outside_the_wide_mid_nar_enum(
+        self,
+    ) -> None:
+        """MOR-1534: the raw wire-command builder no longer polices the
+        IC-7610 WIDE/MID/NAR enum's range — which bandwidth values are
+        legal is a per-profile ``[ssb_tx_bw] values`` domain, enforced one
+        layer up in ``CoreRadio.set_ssb_tx_bandwidth`` (see
+        ``TestSsbTxBandwidthDomainValidation`` in ``tests/test_radio.py``).
+        This builder only encodes the raw single-BCD-byte value.
+        """
+        assert commands.set_ssb_tx_bandwidth(3) == _simple_set(
+            _CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, 0x03
+        )
 
     def test_parse_ssb_tx_bandwidth_wide(self) -> None:
         frame = _response_frame(_CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, b"\x00")

@@ -1278,4 +1278,322 @@ class TestPreampDomainDeclaredOrCapabilityAbsent:
         with IPO/AMP1/AMP2 labels (rigs/ftx1.toml:430-436)."""
         rig = load_rig(RIGS_DIR / "ftx1.toml")
         assert rig.pre_values == (0, 1, 2)
-        assert rig.pre_labels == {"0": "IPO", "1": "AMP1", "2": "AMP2"}
+
+
+# ── MOR-1534: break_in/notch-width/ssb_tx_bw/filter_shape were each either
+# declared in TOML but never parsed (break_in, notch width), hardcoded via
+# an IC-7610-specific enum with no profile domain at all (ssb_tx_bw), or had
+# no TOML domain to begin with (filter_shape). All four now route through
+# ``_parse_enumerated_domain`` — the same shared fail-loud contract
+# ``[agc] modes/labels`` (MOR-1522) established, generalized rather than
+# copy-pasted four times.
+
+
+class TestEnumeratedDomainMalformedDeclarations:
+    """One shared parametrized suite over all four [section] value/label
+    pairs, instead of four near-identical malformed-declaration classes —
+    they all share the same ``_parse_enumerated_domain`` implementation."""
+
+    _SECTIONS = [
+        ("break_in", "values", "labels"),
+        ("notch", "width_values", "width_labels"),
+        ("ssb_tx_bw", "values", "labels"),
+        ("filter_shape", "values", "labels"),
+    ]
+
+    @pytest.mark.parametrize(
+        ("section", "values_key", "labels_key"), _SECTIONS, ids=lambda t: t
+    )
+    def test_domain_values_and_labels_load(
+        self, tmp_path, section, values_key, labels_key
+    ):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + f"""
+
+[{section}]
+{values_key} = [0, 1, 2]
+{labels_key} = {{ "0" = "A", "1" = "B", "2" = "C" }}
+""",
+        )
+        rig = load_rig(p)
+        values_attr = {
+            "break_in": "break_in_modes",
+            "notch": "notch_width_values",
+            "ssb_tx_bw": "ssb_tx_bw_values",
+            "filter_shape": "filter_shape_values",
+        }[section]
+        labels_attr = {
+            "break_in": "break_in_labels",
+            "notch": "notch_width_labels",
+            "ssb_tx_bw": "ssb_tx_bw_labels",
+            "filter_shape": "filter_shape_labels",
+        }[section]
+        assert getattr(rig, values_attr) == (0, 1, 2)
+        assert getattr(rig, labels_attr) == {"0": "A", "1": "B", "2": "C"}
+
+    @pytest.mark.parametrize(
+        ("section", "values_key", "labels_key"), _SECTIONS, ids=lambda t: t
+    )
+    def test_domain_rejects_unknown_key(
+        self, tmp_path, section, values_key, labels_key
+    ):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + f"""
+
+[{section}]
+bogus = [0, 1]
+""",
+        )
+        with pytest.raises(RigLoadError, match=rf"\[{section}\].*unknown key"):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("section", "values_key", "labels_key"), _SECTIONS, ids=lambda t: t
+    )
+    def test_domain_rejects_empty_values_list(
+        self, tmp_path, section, values_key, labels_key
+    ):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + f"""
+
+[{section}]
+{values_key} = []
+""",
+        )
+        with pytest.raises(RigLoadError, match=rf"\[{section}\]\.{values_key}"):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("section", "values_key", "labels_key"), _SECTIONS, ids=lambda t: t
+    )
+    def test_domain_rejects_non_integer_entries(
+        self, tmp_path, section, values_key, labels_key
+    ):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + f"""
+
+[{section}]
+{values_key} = [0, "WIDE", 2]
+""",
+        )
+        with pytest.raises(RigLoadError, match=rf"\[{section}\]\.{values_key}"):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("section", "values_key", "labels_key"), _SECTIONS, ids=lambda t: t
+    )
+    def test_domain_rejects_orphan_label_key(
+        self, tmp_path, section, values_key, labels_key
+    ):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + f"""
+
+[{section}]
+{values_key} = [0, 1, 2]
+{labels_key} = {{ "0" = "A", "1" = "B", "2" = "C", "9" = "PHANTOM" }}
+""",
+        )
+        with pytest.raises(RigLoadError, match=rf"\[{section}\]\.{labels_key}.*9"):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("section", "values_key", "labels_key"), _SECTIONS, ids=lambda t: t
+    )
+    def test_domain_rejects_labels_declared_without_values(
+        self, tmp_path, section, values_key, labels_key
+    ):
+        """MOR-1522 R1 (B2) hole class, generalized: labels with no values
+        must not load silently — that would yield a capability-present
+        control with an empty domain, short-circuiting the runtime
+        validation seat's ``is not None`` guard into a permissive no-op."""
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + f"""
+
+[{section}]
+{labels_key} = {{ "0" = "A", "1" = "B", "2" = "C" }}
+""",
+        )
+        with pytest.raises(
+            RigLoadError,
+            match=rf"\[{section}\]\.{labels_key} declared without \[{section}\]\.{values_key}",
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("section", "values_key", "labels_key"), _SECTIONS, ids=lambda t: t
+    )
+    def test_domain_absent_when_section_absent(
+        self, tmp_path, section, values_key, labels_key
+    ):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        rig = load_rig(p)
+        values_attr = {
+            "break_in": "break_in_modes",
+            "notch": "notch_width_values",
+            "ssb_tx_bw": "ssb_tx_bw_values",
+            "filter_shape": "filter_shape_values",
+        }[section]
+        assert getattr(rig, values_attr) is None
+
+
+class TestBreakInDomainDeclaredOrDocumentedAbsent:
+    """Every shipped profile must land on one of exactly two sides:
+
+    (a) it does not declare the ``break_in`` capability at all, or
+    (b) it declares ``break_in`` AND a non-empty ``[break_in] values``
+        domain — UNLESS it is one of the documented exceptions below, each
+        of which declares the capability without a domain for its own
+        reason (not an oversight):
+
+        - ``ftx1``: Yaesu CAT break-in is boolean on/off, not an enumerated
+          OFF/SEMI/FULL register — ``YaesuCatRadio.set_break_in`` collapses
+          any non-OFF value to ON by design (issue #1100), no TOML domain
+          needed.
+        - ``x6100``/``x6200``: advertise the capability but the backend's
+          break-in opcode (0x16 0x47, IC-7610's CW BK-IN register) is not
+          confirmed in either radio's documented CI-V table
+          (docs/validation/cat-audits/x6200.md lines 56/109/128/132; no
+          X6100 cat-audit exists at all). No trustworthy in-repo source for
+          a value domain — ``CoreRadio.set_break_in`` fails loud instead.
+    """
+
+    _NO_DOMAIN_BY_DESIGN = frozenset({"ftx1", "x6100", "x6200"})
+
+    @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+    def test_break_in_capability_and_domain_agree(self, toml_path):
+        rig = load_rig(toml_path)
+        has_break_in_capability = "break_in" in rig.capabilities
+
+        if not has_break_in_capability:
+            assert rig.break_in_modes is None, (
+                f"{toml_path.name}: declares [break_in] values without the "
+                f"'break_in' capability feature"
+            )
+            return
+
+        if toml_path.stem in self._NO_DOMAIN_BY_DESIGN:
+            assert rig.break_in_modes is None, (
+                f"{toml_path.name}: now declares a [break_in] domain — "
+                "update TestBreakInDomainDeclaredOrDocumentedAbsent's "
+                "_NO_DOMAIN_BY_DESIGN exception list to match"
+            )
+            return
+
+        assert rig.break_in_modes, (
+            f"{toml_path.name}: declares the 'break_in' capability but no "
+            f"(or an empty) [break_in] values domain"
+        )
+
+    def test_ic7610_family_declares_off_semi_full(self):
+        """IC-705/IC-7300/IC-9700/IC-7610 all declare the same CI-V 0x16
+        0x47 domain: 0=OFF, 1=SEMI, 2=FULL."""
+        for name in ("ic705", "ic7300", "ic9700", "ic7610"):
+            rig = load_rig(RIGS_DIR / f"{name}.toml")
+            assert rig.break_in_modes == (0, 1, 2), name
+            assert rig.break_in_labels == {
+                "0": "OFF",
+                "1": "SEMI",
+                "2": "FULL",
+            }, name
+
+    def test_documented_exceptions_declare_capability_without_domain(self):
+        for name in ("ftx1", "x6100", "x6200"):
+            rig = load_rig(RIGS_DIR / f"{name}.toml")
+            assert "break_in" in rig.capabilities, name
+            assert rig.break_in_modes is None, name
+
+
+class TestNotchWidthDomain:
+    """'notch' is a broader capability than manual notch WIDTH — a radio
+    can have auto-notch with no manual-notch-width command at all (IC-705
+    has no CI-V 0x16 0x57 mapping yet still declares width_values "for UI
+    parity"; X6100/X6200 have neither the mapping nor a width domain). So,
+    unlike ssb_tx_bw/filter_shape below, this is NOT a strict
+    capability-implies-domain invariant — just direct regression pins."""
+
+    def test_ic7610_family_declares_wide_mid_nar(self):
+        for name in ("ic705", "ic7300", "ic9700", "ic7610"):
+            rig = load_rig(RIGS_DIR / f"{name}.toml")
+            assert rig.notch_width_values == (0, 1, 2), name
+            assert rig.notch_width_labels == {
+                "0": "WIDE",
+                "1": "MID",
+                "2": "NAR",
+            }, name
+
+    def test_x6100_x6200_declare_notch_without_a_width_domain(self):
+        for name in ("x6100", "x6200"):
+            rig = load_rig(RIGS_DIR / f"{name}.toml")
+            assert "notch" in rig.capabilities, name
+            assert rig.notch_width_values is None, name
+
+
+class TestSsbTxBwDomainDeclaredOrCapabilityAbsent:
+    @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+    def test_ssb_tx_bw_capability_and_domain_agree(self, toml_path):
+        rig = load_rig(toml_path)
+        has_capability = "ssb_tx_bw" in rig.capabilities
+
+        if not has_capability:
+            assert rig.ssb_tx_bw_values is None, (
+                f"{toml_path.name}: declares [ssb_tx_bw] values without "
+                f"the 'ssb_tx_bw' capability feature"
+            )
+            return
+
+        assert rig.ssb_tx_bw_values, (
+            f"{toml_path.name}: declares the 'ssb_tx_bw' capability but no "
+            f"(or an empty) [ssb_tx_bw] values domain"
+        )
+
+    def test_ic7610_family_declares_wide_mid_nar(self):
+        for name in ("ic705", "ic7300", "ic9700", "ic7610"):
+            rig = load_rig(RIGS_DIR / f"{name}.toml")
+            assert rig.ssb_tx_bw_values == (0, 1, 2), name
+
+
+class TestFilterShapeDomainDeclaredOrCapabilityAbsent:
+    """MOR-1534: filter_shape had NO TOML domain at all before this ticket
+    (unlike the other three, which were declared-but-dead). Added here for
+    the exact four profiles that already declare the ``filter_shape``
+    capability, sourced from docs/validation/cat-audits/{ic7300,ic7610}.md
+    (S/R-confirmed for those two) and, for ic705/ic9700 (no dedicated
+    cat-audit in-repo), from the shared runtime ``FilterShape`` enum's
+    pre-existing SHARP=0/SOFT=1 assumption for the same CI-V 0x16 0x56
+    command — see each profile's ``[filter_shape]`` TOML comment for the
+    exact provenance."""
+
+    @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+    def test_filter_shape_capability_and_domain_agree(self, toml_path):
+        rig = load_rig(toml_path)
+        has_capability = "filter_shape" in rig.capabilities
+
+        if not has_capability:
+            assert rig.filter_shape_values is None, (
+                f"{toml_path.name}: declares [filter_shape] values without "
+                f"the 'filter_shape' capability feature"
+            )
+            return
+
+        assert rig.filter_shape_values, (
+            f"{toml_path.name}: declares the 'filter_shape' capability but "
+            f"no (or an empty) [filter_shape] values domain"
+        )
+
+    def test_ic7610_family_declares_sharp_soft(self):
+        for name in ("ic705", "ic7300", "ic9700", "ic7610"):
+            rig = load_rig(RIGS_DIR / f"{name}.toml")
+            assert rig.filter_shape_values == (0, 1), name
+            assert rig.filter_shape_labels == {"0": "SHARP", "1": "SOFT"}, name

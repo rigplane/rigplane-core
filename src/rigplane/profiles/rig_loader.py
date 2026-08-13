@@ -102,6 +102,14 @@ class RigConfig:
     pre_labels: dict[str, str] | None
     agc_modes: tuple[int, ...] | None
     agc_labels: dict[str, str] | None
+    break_in_modes: tuple[int, ...] | None = None
+    break_in_labels: dict[str, str] | None = None
+    notch_width_values: tuple[int, ...] | None = None
+    notch_width_labels: dict[str, str] | None = None
+    ssb_tx_bw_values: tuple[int, ...] | None = None
+    ssb_tx_bw_labels: dict[str, str] | None = None
+    filter_shape_values: tuple[int, ...] | None = None
+    filter_shape_labels: dict[str, str] | None = None
     # MOR-1447 leg 2: "separate" (default) or "combined" (Icom-style single
     # RF/SQL knob — see ``VALID_RF_SQL_CONTROL_MODELS``).
     rf_sql_control_model: str = "separate"
@@ -204,6 +212,14 @@ class RigConfig:
             pre_labels=self.pre_labels,
             agc_modes=self.agc_modes,
             agc_labels=self.agc_labels,
+            break_in_modes=self.break_in_modes,
+            break_in_labels=self.break_in_labels,
+            notch_width_values=self.notch_width_values,
+            notch_width_labels=self.notch_width_labels,
+            ssb_tx_bw_values=self.ssb_tx_bw_values,
+            ssb_tx_bw_labels=self.ssb_tx_bw_labels,
+            filter_shape_values=self.filter_shape_values,
+            filter_shape_labels=self.filter_shape_labels,
             rf_sql_control_model=self.rf_sql_control_model,
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
@@ -552,6 +568,50 @@ def _reject_unknown_keys(
             f"{filename}: {section} unknown key {unknown[0]!r}. "
             f"Valid keys: {sorted(allowed)}"
         )
+
+
+def _parse_enumerated_domain(
+    filename: str,
+    section: str,
+    raw_section: dict[str, Any],
+    *,
+    values_key: str = "values",
+    labels_key: str = "labels",
+) -> tuple[tuple[int, ...] | None, dict[str, str] | None]:
+    """Parse a ``[section] <values_key>/<labels_key>`` enumerated-domain
+    declaration, generalizing the ``[agc] modes/labels`` fail-loud pattern
+    (MOR-1522) to the other per-radio enumerated controls (MOR-1534:
+    break_in, notch width, ssb_tx_bw, filter_shape). Rejects unknown keys,
+    non-integer/empty value lists, orphan label keys, and — the MOR-1522 R1
+    (B2) hole class — labels declared without a matching values list, which
+    would otherwise load silently as a capability-present control with an
+    empty domain.
+    """
+    if raw_section:
+        _reject_unknown_keys(
+            filename, section, raw_section, frozenset({values_key, labels_key})
+        )
+    values = tuple(raw_section[values_key]) if values_key in raw_section else None
+    if values is not None and (
+        not values or any(isinstance(v, bool) or not isinstance(v, int) for v in values)
+    ):
+        raise RigLoadError(
+            f"{filename}: {section}.{values_key} must be a non-empty list of integers"
+        )
+    labels = dict(raw_section[labels_key]) if labels_key in raw_section else None
+    if labels is not None and values is None:
+        raise RigLoadError(
+            f"{filename}: {section}.{labels_key} declared without {section}.{values_key}"
+        )
+    if labels is not None and values is not None:
+        declared = {str(v) for v in values}
+        orphan_labels = sorted(set(labels) - declared)
+        if orphan_labels:
+            raise RigLoadError(
+                f"{filename}: {section}.{labels_key} key {orphan_labels[0]!r} has no "
+                f"matching entry in {section}.{values_key} {sorted(values)}"
+            )
+    return values, labels
 
 
 def _strict_policy_bool(
@@ -1232,6 +1292,27 @@ def load_rig(path: Path) -> RigConfig:
                 f"matching entry in [agc].modes {sorted(agc_modes)}"
             )
 
+    # Parse break_in/notch-width/ssb_tx_bw/filter_shape enumerated domains
+    # (MOR-1534). Each was declared in TOML (or, for filter_shape, nowhere
+    # at all) but never parsed/validated at load time — see rig_loader
+    # tests + CoreRadio's setters for the per-control validation seat.
+    break_in_modes, break_in_labels = _parse_enumerated_domain(
+        filename, "[break_in]", data.get("break_in", {})
+    )
+    notch_width_values, notch_width_labels = _parse_enumerated_domain(
+        filename,
+        "[notch]",
+        data.get("notch", {}),
+        values_key="width_values",
+        labels_key="width_labels",
+    )
+    ssb_tx_bw_values, ssb_tx_bw_labels = _parse_enumerated_domain(
+        filename, "[ssb_tx_bw]", data.get("ssb_tx_bw", {})
+    )
+    filter_shape_values, filter_shape_labels = _parse_enumerated_domain(
+        filename, "[filter_shape]", data.get("filter_shape", {})
+    )
+
     # Parse [data_mode] (optional)
     # If data_mode is in features but no [data_mode] section, default to 1 mode (OFF/DATA)
     data_mode_section = data.get("data_mode", {})
@@ -1467,6 +1548,14 @@ def load_rig(path: Path) -> RigConfig:
         pre_labels=pre_labels,
         agc_modes=agc_modes,
         agc_labels=agc_labels,
+        break_in_modes=break_in_modes,
+        break_in_labels=break_in_labels,
+        notch_width_values=notch_width_values,
+        notch_width_labels=notch_width_labels,
+        ssb_tx_bw_values=ssb_tx_bw_values,
+        ssb_tx_bw_labels=ssb_tx_bw_labels,
+        filter_shape_values=filter_shape_values,
+        filter_shape_labels=filter_shape_labels,
         rf_sql_control_model=rf_sql_control_model,
         data_mode_count=data_mode_count,
         data_mode_labels=data_mode_labels,

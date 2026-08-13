@@ -75,6 +75,15 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     mismatch), and Hamlib marks ``x1ax03_supported = 0``. The cap stays
 #     UNDECLARED pending a setter units fix + a clean live round-trip
 #     (MOR-683 defers; tracked as a filter_width follow-up).
+#   - ``break_in`` KEEPS the capability tag but intentionally declares NO
+#     ``[break_in]`` domain (MOR-1534). docs/validation/cat-audits/x6200.md
+#     (lines 56/109/128/132) found the backend's ``get/set_break_in`` opcode
+#     (``0x16 0x47``, IC-7610's CW BK-IN mode register) is NOT in the X6200's
+#     documented CI-V table at all — the X6200 PDF only documents QSK hang
+#     time (``0x14 0x0F``, already covered by ``break_in_delay``), not a
+#     BK-IN-mode register. There is no trustworthy in-repo source for an
+#     OFF/SEMI/FULL value domain on this radio, so ``CoreRadio.set_break_in``
+#     refuses (fails loud) rather than validate against a guessed table.
 features = [
     "audio",
     "af_level",

@@ -2822,6 +2822,172 @@ class TestBreakInModeRoundTrip:
         )
 
 
+class TestBreakInDomainValidation:
+    """MOR-1534: the break-in domain is profile data, not a universal enum.
+
+    Unlike set_agc/set_preamp (MOR-1522/MOR-1523), a MISSING domain here is
+    NOT permissive — X6100/X6200 advertise the ``break_in`` capability but
+    have no trustworthy in-repo value-domain source (see the
+    rigs/x6100.toml / rigs/x6200.toml [capabilities] notes), so
+    ``set_break_in`` must refuse rather than guess.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1, 2):
+            await radio.set_break_in(legal)
+        assert len(mock_transport.sent_packets) == 3
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_value_outside_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"Break-in mode must be one of"):
+            await radio.set_break_in(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["X6100", "X6200"])
+    async def test_no_domain_declared_fails_loud_not_permissive(
+        self, mock_transport: MockTransport, model: str
+    ) -> None:
+        """X6100/X6200 declare the break_in capability but no domain — this
+        must NOT silently pass any value through (contrast with set_agc's
+        permissive-when-absent behavior for genuinely capability-absent
+        radios)."""
+        radio = IcomRadio("192.168.1.100", model=model)
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"No break-in value domain declared"):
+            await radio.set_break_in(0)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+
+class TestManualNotchWidthDomainValidation:
+    """MOR-1534: [notch] width_values was declared in TOML but never
+    parsed/validated — set_manual_notch_width had ZERO domain checking."""
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1, 2):
+            await radio.set_manual_notch_width(legal)
+        assert len(mock_transport.sent_packets) == 3
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_value_outside_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"Manual notch width must be one of"):
+            await radio.set_manual_notch_width(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_permissive_when_no_width_domain_declared(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """X6200 declares 'notch' (auto-notch) but no manual notch WIDTH
+        domain — unlike break_in, this is permissive-pass-through, matching
+        the set_agc/set_preamp precedent (the 'notch' capability legitimately
+        covers auto-notch-only radios, not just manual-width ones)."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_manual_notch_width(1)
+        assert mock_transport.sent_packets
+        radio._connected = False
+
+
+class TestFilterShapeDomainValidation:
+    """MOR-1534: filter_shape had NO TOML domain at all before this ticket;
+    set_filter_shape cast every value through the hardcoded IC-7610
+    ``FilterShape`` enum instead of a profile-declared domain."""
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1):
+            await radio.set_filter_shape(legal)
+        assert len(mock_transport.sent_packets) == 2
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_value_outside_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"Filter shape must be one of"):
+            await radio.set_filter_shape(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+
+class TestSsbTxBandwidthDomainValidation:
+    """MOR-1534: [ssb_tx_bw] values was declared in TOML but never parsed;
+    set_ssb_tx_bandwidth cast every value through the hardcoded IC-7610
+    ``SsbTxBandwidth`` enum instead."""
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1, 2):
+            await radio.set_ssb_tx_bandwidth(legal)
+        assert len(mock_transport.sent_packets) == 3
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_value_outside_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"SSB TX bandwidth must be one of"):
+            await radio.set_ssb_tx_bandwidth(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+
 class TestToneTsqlParity:
     """Test high-level tone/TSQL parity methods (#134)."""
 

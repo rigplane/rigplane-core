@@ -3244,10 +3244,35 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return BreakInMode(value)
 
     async def set_break_in(self, mode: BreakInMode | int) -> None:
-        """Set break-in mode."""
-        break_in = BreakInMode(mode)
+        """Set break-in mode.
+
+        Valid values are declared per radio by the profile's ``[break_in]
+        values`` (e.g. IC-705/IC-7300/IC-9700/IC-7610 all offer OFF/SEMI/
+        FULL). Unlike ``set_agc``/``set_preamp`` (MOR-1522/MOR-1523), a
+        missing domain here is NOT treated as "unvalidated, pass through" —
+        some profiles (X6100/X6200) advertise the ``break_in`` capability
+        but have no trustworthy in-repo source for a value domain (see the
+        ``rigs/x6200.toml``/``rigs/x6100.toml`` ``[capabilities]`` notes),
+        so this refuses any value rather than guess (MOR-1534).
+
+        Raises:
+            ValueError: If the profile declares no break-in domain, or if
+                ``mode`` is not in the profile's declared domain.
+        """
+        mode_int = int(mode)
+        break_in_modes = self._profile.break_in_modes
+        if break_in_modes is None:
+            raise ValueError(
+                f"No break-in value domain declared for {self._profile.model}; "
+                "refusing to set an unvalidated break-in mode"
+            )
+        if mode_int not in break_in_modes:
+            raise ValueError(
+                f"Break-in mode must be one of {sorted(break_in_modes)} for "
+                f"{self._profile.model}, got {mode_int}"
+            )
         await self._send_fire_and_forget(
-            set_break_in(break_in, to_addr=self._radio_addr)
+            set_break_in(mode_int, to_addr=self._radio_addr)
         )
 
     async def get_manual_notch(self, receiver: int = RECEIVER_MAIN) -> bool:
@@ -3301,11 +3326,30 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_manual_notch_width(
         self, value: int, receiver: int = RECEIVER_MAIN
     ) -> None:
-        """Set manual notch width (0=WIDE, 1=MID, 2=NAR)."""
+        """Set manual notch width.
+
+        Valid values are declared per radio by the profile's ``[notch]
+        width_values`` (e.g. IC-705/IC-7300/IC-9700/IC-7610 all declare
+        0=WIDE/1=MID/2=NAR). A profile that declares no width domain is
+        unvalidated here (permissive), mirroring ``set_agc``/``set_preamp``
+        (MOR-1522/MOR-1523) — the ``notch`` capability covers auto-notch
+        too, so its absence does not by itself mean this control is wrong
+        to call (MOR-1534).
+
+        Raises:
+            ValueError: If the profile declares a width domain and
+                ``value`` is not in it.
+        """
         self._require_receiver(receiver, operation="set_manual_notch_width")
         self._require_cmd29_route(
             0x16, 0x57, receiver=receiver, operation="set_manual_notch_width"
         )
+        notch_width_values = self._profile.notch_width_values
+        if notch_width_values is not None and value not in notch_width_values:
+            raise ValueError(
+                f"Manual notch width must be one of {sorted(notch_width_values)} "
+                f"for {self._profile.model}, got {value}"
+            )
         cmd29 = self._profile.supports_cmd29(0x16, 0x57)
         await self._send_fire_and_forget(
             set_manual_notch_width(
@@ -3379,16 +3423,35 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         shape: FilterShape | int,
         receiver: int = RECEIVER_MAIN,
     ) -> None:
-        """Set DSP IF filter shape."""
+        """Set DSP IF filter shape.
+
+        Valid values are declared per radio by the profile's
+        ``[filter_shape] values`` (IC-705/IC-7300/IC-9700/IC-7610 all
+        declare 0=SHARP/1=SOFT). A profile that declares no domain at all
+        (every radio outside that family) is unvalidated here (permissive),
+        mirroring ``set_agc``/``set_preamp`` (MOR-1522/MOR-1523) — none of
+        those radios advertise the ``filter_shape`` capability, so this
+        path is unreachable for them today (MOR-1534).
+
+        Raises:
+            ValueError: If the profile declares a domain and ``shape`` is
+                not in it.
+        """
         self._require_receiver(receiver, operation="set_filter_shape")
         self._require_cmd29_route(
             0x16, 0x56, receiver=receiver, operation="set_filter_shape"
         )
+        shape_int = int(shape)
+        filter_shape_values = self._profile.filter_shape_values
+        if filter_shape_values is not None and shape_int not in filter_shape_values:
+            raise ValueError(
+                f"Filter shape must be one of {sorted(filter_shape_values)} for "
+                f"{self._profile.model}, got {shape_int}"
+            )
         cmd29 = self._profile.supports_cmd29(0x16, 0x56)
-        filter_shape = FilterShape(shape)
         await self._send_fire_and_forget(
             set_filter_shape(
-                filter_shape,
+                shape_int,
                 to_addr=self._radio_addr,
                 receiver=receiver,
                 command29=cmd29,
@@ -3407,10 +3470,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return SsbTxBandwidth(value)
 
     async def set_ssb_tx_bandwidth(self, bandwidth: SsbTxBandwidth | int) -> None:
-        """Set SSB transmit bandwidth preset."""
-        ssb_tx_bandwidth = SsbTxBandwidth(bandwidth)
+        """Set SSB transmit bandwidth preset.
+
+        Valid values are declared per radio by the profile's
+        ``[ssb_tx_bw] values`` (IC-705/IC-7300/IC-9700/IC-7610 all declare
+        0=WIDE/1=MID/2=NAR). A profile that declares no domain at all
+        (every radio outside that family) is unvalidated here (permissive),
+        mirroring ``set_agc``/``set_preamp`` (MOR-1522/MOR-1523) — none of
+        those radios advertise the ``ssb_tx_bw`` capability, so this path
+        is unreachable for them today (MOR-1534).
+
+        Raises:
+            ValueError: If the profile declares a domain and ``bandwidth``
+                is not in it.
+        """
+        bandwidth_int = int(bandwidth)
+        ssb_tx_bw_values = self._profile.ssb_tx_bw_values
+        if ssb_tx_bw_values is not None and bandwidth_int not in ssb_tx_bw_values:
+            raise ValueError(
+                f"SSB TX bandwidth must be one of {sorted(ssb_tx_bw_values)} for "
+                f"{self._profile.model}, got {bandwidth_int}"
+            )
         await self._send_fire_and_forget(
-            set_ssb_tx_bandwidth(ssb_tx_bandwidth, to_addr=self._radio_addr)
+            set_ssb_tx_bandwidth(bandwidth_int, to_addr=self._radio_addr)
         )
 
     async def get_main_sub_tracking(self) -> bool:

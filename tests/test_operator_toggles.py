@@ -435,9 +435,17 @@ class TestBreakIn:
     def test_set_break_in_accepts_int(self) -> None:
         assert commands.set_break_in(0) == commands.set_break_in(BreakInMode.OFF)
 
-    def test_set_break_in_rejects_value_above_maximum(self) -> None:
-        with pytest.raises(ValueError):
-            commands.set_break_in(3)
+    def test_set_break_in_builder_accepts_values_outside_the_off_semi_full_enum(
+        self,
+    ) -> None:
+        """MOR-1534: the raw wire-command builder no longer polices the
+        IC-7610 OFF/SEMI/FULL enum's range — which break-in values are
+        legal is a per-profile ``[break_in] values`` domain, enforced one
+        layer up in ``CoreRadio.set_break_in`` (see
+        ``TestBreakInDomainValidation`` in ``tests/test_radio.py``). This
+        builder only encodes the raw single-BCD-byte value.
+        """
+        assert commands.set_break_in(3) == _simple_set(_SUB_BREAK_IN, 0x03)
 
     def test_set_break_in_rejects_invalid_enum_int(self) -> None:
         with pytest.raises(ValueError):
