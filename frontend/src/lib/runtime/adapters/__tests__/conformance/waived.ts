@@ -50,12 +50,11 @@ function tag(names: readonly string[], waiver: Waiver): Record<string, Waiver> {
   return Object.fromEntries(names.map((name) => [name, waiver]));
 }
 
-const VOX_CW = { reason: 'VOX/CW family walk not yet landed', owner: 'MOR-1565' } as const;
 const SCOPE_VFO = { reason: 'Scope-remainder/VFO-topology family walk not yet landed', owner: 'MOR-1566' } as const;
 const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner: 'MOR-1567' } as const;
 
 /**
- * The (67 - 9 - 5 - 4 - 8 = 41) intents with no conformance assertion,
+ * The (67 - 9 - 5 - 4 - 8 - 12 = 29) intents with no conformance assertion,
  * tagged with the family child that owns closing them. MOR-1562 (C8,
  * adapter-seam parity) intentionally claims ZERO entries here — its scope
  * is `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
@@ -74,6 +73,9 @@ const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner:
  *
  * MOR-1564 (C10)'s TX-chain walk landed all 8 of its intents — see
  * `./claimed.ts` and `../mor1564-tx-family-conformance.isolated.test.ts`.
+ *
+ * MOR-1565 (C11)'s VOX/CW walk landed all 12 of its intents — see
+ * `./claimed.ts` and `../mor1565-vox-cw-family-conformance.isolated.test.ts`.
  */
 export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
   // MOR-1560 (C6) — DSP: NR/NB/notch/AGC time constant — CLAIMED, see
@@ -82,12 +84,8 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
   // and `../mor1561-filter-pbt-family-conformance.isolated.test.ts`.
   // MOR-1564 (C10) — TX chain — CLAIMED, see `./claimed.ts` and
   // `../mor1564-tx-family-conformance.isolated.test.ts`.
-  // MOR-1565 (C11) — VOX + CW — 12
-  ...tag([
-    'set_vox', 'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
-    'set_cw_pitch', 'set_key_speed', 'set_break_in', 'set_break_in_delay',
-    'set_apf', 'set_twin_peak', 'cw_auto_tune', 'set_dash_ratio',
-  ], VOX_CW),
+  // MOR-1565 (C11) — VOX + CW — CLAIMED, see `./claimed.ts` and
+  // `../mor1565-vox-cw-family-conformance.isolated.test.ts`.
   // MOR-1566 (C12) — scope remainder + VFO topology — 12 (set_scope_hold/
   // vfo_swap/vfo_equalize CLAIMED by MOR-1563's keyboard walk, see above)
   ...tag([
@@ -109,7 +107,7 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
 };
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_INTENTS_COUNT = 41;
+export const WAIVED_INTENTS_COUNT = 29;
 
 /**
  * `dispatchKeyboardRadioAction` case labels with no conformance assertion.

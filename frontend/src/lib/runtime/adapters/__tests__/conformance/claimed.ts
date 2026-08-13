@@ -87,6 +87,26 @@
  * case in that file, but LATENT: `onSidetoneLevelChange` has no UI caller
  * in this codebase today, and the backend independently re-gates the same
  * capability for `set_monitor_gain` regardless of call site.
+ *
+ * Plus MOR-1565's (C11) VOX/CW family walk
+ * (`../mor1565-vox-cw-family-conformance.isolated.test.ts`) — 12 intents:
+ * `set_vox`, `set_vox_gain`, `set_anti_vox_gain`, `set_vox_delay`,
+ * `set_cw_pitch`, `set_key_speed`, `set_break_in`, `set_break_in_delay`,
+ * `set_apf`, `set_twin_peak`, `cw_auto_tune`, `set_dash_ratio`. Even more
+ * skewed than MOR-1564's TX-chain split: 11 of the 12 are claimed via
+ * `expectRefusal` (every field this family reads — `voxOn`, `voxGain`,
+ * `antiVoxGain`, `voxDelay`, `cwPitch`, `keySpeed`, `breakIn`,
+ * `breakInDelay`, `main.apfTypeLevel`, `main.twinPeakFilter`, `dashRatio` —
+ * is unobserved on the real IC-7300 fixture, though every base capability
+ * the family needs IS declared); only `cw_auto_tune` genuinely DISPATCHES —
+ * its gate (`hasCapability('cw') && knownActiveReceiver() !== null`) never
+ * inspects any field-status leaf at all, unlike every sibling intent in
+ * this family. Three gate-consistency checks (`set_vox`'s shared
+ * `toggleVox` reference, `set_cw_pitch`'s and `set_key_speed`'s two
+ * byte-identical call sites) are pinned as POSITIVE findings — MOR-1576
+ * class asymmetry checked for and NOT found, unlike `set_monitor_gain`
+ * above (that finding's own CW-sidetone leg, `onSidetoneLevelChange`, is a
+ * different intent and stays claimed via C10, not this walk).
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
@@ -139,10 +159,23 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_monitor_gain',
   'set_drive_gain',
   'set_tuner_status',
+  // MOR-1565 (C11) — VOX/CW family walk
+  'set_vox',
+  'set_vox_gain',
+  'set_anti_vox_gain',
+  'set_vox_delay',
+  'set_cw_pitch',
+  'set_key_speed',
+  'set_break_in',
+  'set_break_in_delay',
+  'set_apf',
+  'set_twin_peak',
+  'cw_auto_tune',
+  'set_dash_ratio',
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 46;
+export const CLAIMED_INTENTS_COUNT = 58;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.
