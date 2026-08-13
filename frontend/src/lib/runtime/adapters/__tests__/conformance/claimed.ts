@@ -70,16 +70,23 @@
  * (`powerLevel`/`compressorOn`/`compressorLevel`/`tunerStatus` are all
  * observed); `set_mic_gain`/`set_monitor`/`set_monitor_gain`/
  * `set_drive_gain` REFUSE (unobserved field status, or for `drive_gain`,
- * a capability this profile never declares at all). Two SAFETY findings
- * pinned, not fixed, in that file's header: (1) `onRfPowerChange`/
+ * a capability this profile never declares at all). Two findings pinned,
+ * not fixed, in that file's header — both Low severity, verified against
+ * the real backend chain, not live safety issues: (1) `onRfPowerChange`/
  * `onCompLevelChange` dispatch their `level` param verbatim with no bound
- * check beyond `Number.isFinite`/`Number.isSafeInteger` — no clamp against
- * either the declared wire range or `TxPanel.svelte`'s own slider domain;
- * (2) `set_monitor_gain` has two call sites (`makeTxHandlers().onMonLevelChange`
- * and `makeCwPanelHandlers().onSidetoneLevelChange`) gated on DIFFERENT
+ * check beyond `Number.isFinite`/`Number.isSafeInteger` at the FRONTEND
+ * handler layer — a defense-in-depth/UI-hygiene gap only, since the
+ * backend's BCD encoder hard-rejects true out-of-0-255 values; the actual
+ * TX-power semantic hazard (a normalized-vs-raw domain switch with a
+ * boundary trap at the value `1`) is filed separately as MOR-1579
+ * (Medium); (2) `set_monitor_gain` has two call sites
+ * (`makeTxHandlers().onMonLevelChange` and
+ * `makeCwPanelHandlers().onSidetoneLevelChange`) gated on DIFFERENT
  * capability sets for the identical wire intent — a MOR-1576-class
  * inconsistency, demonstrated via a capability-withdrawal discrimination
- * case in that file.
+ * case in that file, but LATENT: `onSidetoneLevelChange` has no UI caller
+ * in this codebase today, and the backend independently re-gates the same
+ * capability for `set_monitor_gain` regardless of call site.
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',

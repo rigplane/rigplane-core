@@ -8,10 +8,12 @@
  * `set_monitor_gain`, `set_drive_gain`, `set_tuner_status` — all dispatched
  * from `makeTxHandlers()` in `panel-commands.ts`, except `set_monitor_gain`,
  * which ALSO has a second dispatch site in `makeCwPanelHandlers()`
- * (`onSidetoneLevelChange` — the CW sidetone-level slider happens to write
- * the same wire field as the TX monitor-gain slider). SAFETY NOTE: this
- * family is TX-chain (RF power, mic gain, compressor, monitor, ATU), so
- * every refusal/dispatch below is read directly off the real IC-7300
+ * (`onSidetoneLevelChange` — writes the same wire field as the TX
+ * monitor-gain handler, but per grep has ZERO UI consumers anywhere in this
+ * codebase today: only its own definition at `panel-commands.ts:544`
+ * exists, no CW sidetone-level slider or any other component calls it).
+ * This family is TX-chain (RF power, mic gain, compressor, monitor, ATU),
+ * so every refusal/dispatch below is read directly off the real IC-7300
  * fixture's `fieldStatus`/`capabilities`, never invented.
  *
  * NOT UNIFORM (4 dispatch, 4 refuse on this fixture): `powerLevel`,
@@ -24,24 +26,40 @@
  * refuse — the same MOR-988 §3.2 fail-closed doctrine the exemplar's
  * `onMicGainChange(100)` case already established for this exact field.
  *
- * FINDING 1 (SAFETY, "does tx_power dispatch blind?"): `onRfPowerChange`
- * has no bound check beyond `Number.isFinite` — no reference to
- * `IC7300_CAPABILITIES.controls.rf_power` (the WIRE-side raw 0-255 range;
- * irrelevant here, see below) or to `TxPanel.svelte`'s own slider domain
- * (`min={0} max={1} step={0.01}`, confirmed by reading that component
- * directly). The same shape repeats for `onCompLevelChange` (dispatches
- * `compressor_level` verbatim, no reference to its own declared 0-255
- * range) — `radio-intents.ts`'s own `dispatchRadioIntent` validation adds
- * no additional bound either (`set_rf_power`'s spec is `{ level: 'number'
- * }`, i.e. "any finite number", not the `'normalized'` kind `set_af_level`
- * uses for its own 0-1 domain). The "blind" probe below (`level=5`, past
- * both the UI's own max=1 AND the wire's declared raw_max=255) proves this
- * concretely: the handler dispatches it verbatim. This is a real gap in
- * defense-in-depth at the handler layer, not a fixture artifact — pinned
- * here per this ticket's instruction to report, not fix.
+ * FINDING 1 (defense-in-depth / UI-hygiene gap at the frontend handler
+ * layer — NOT a live safety issue; verified against the real backend
+ * chain): `onRfPowerChange` has no bound check beyond `Number.isFinite` —
+ * no reference to `IC7300_CAPABILITIES.controls.rf_power` (the WIRE-side
+ * raw 0-255 range; irrelevant here, see below) or to `TxPanel.svelte`'s own
+ * slider domain (`min={0} max={1} step={0.01}`, confirmed by reading that
+ * component directly). The same shape repeats for `onCompLevelChange`
+ * (dispatches `compressor_level` verbatim, no reference to its own
+ * declared 0-255 range) — `radio-intents.ts`'s own `dispatchRadioIntent`
+ * validation adds no additional bound either (`set_rf_power`'s spec is `{
+ * level: 'number' }`, i.e. "any finite number", not the `'normalized'`
+ * kind `set_af_level` uses for its own 0-1 domain). BUT the backend closes
+ * this: `src/rigplane/web/handlers/control.py:257
+ * _normalized_or_raw_level` and `src/rigplane/commands/_codec.py:21
+ * _level_bcd_encode` were read directly — the wire-level BCD encoder
+ * hard-REJECTS (raises `ValueError`) any value outside 0-255, so no
+ * out-of-domain byte can ever reach the radio. The probe below (`level=5`)
+ * is also NOT an over-power case: 5 falls outside `[0,1]`, so
+ * `_normalized_or_raw_level` takes its RAW branch and interprets 5 as raw
+ * units directly — raw 5 of 255 ≈ 2% power, a silent UNDER-power
+ * misinterpretation, not an unclamped over-power dispatch. The genuine,
+ * already-filed hazard is the normalized-vs-raw semantic switch itself
+ * (0-1 is treated as normalized, anything else as raw units, with the
+ * value `1` sitting exactly on the boundary between "100% normalized" and
+ * "raw unit 1 ≈ 0.4% power") — see MOR-1579
+ * ("`_normalized_or_raw_level`: silent normalized→raw semantic switch is a
+ * TX-power foot-gun"), which also documents the `(1)→255=full power`
+ * boundary trap. This test's finding is limited to the frontend handler
+ * layer applying no domain clamp of its own — pinned here per this
+ * ticket's instruction to report, not fix.
  *
- * FINDING 2 (SAFETY, MOR-1576 inconsistency class — "same intent alive on
- * one path, dead on another"): `set_monitor_gain` has two call sites with
+ * FINDING 2 (latent adapter-layer gate inconsistency, MOR-1576 class —
+ * "same intent alive on one path, dead on another"; backend-guarded, no
+ * live operator path today): `set_monitor_gain` has two call sites with
  * DIFFERENT capability gates for the identical wire intent.
  * `onMonLevelChange` (TX family) requires `hasCapability('tx') &&
  * hasCapability('monitor')`; `onSidetoneLevelChange` (CW family,
@@ -51,11 +69,17 @@
  * divergence is invisible today — but the two gates are provably different
  * code paths: the discrimination case below removes only the `monitor`
  * capability (keeping `cw`) and marks `monitorGain` observed, and the CW
- * path DISPATCHES while the TX path still REFUSES. On a profile that
- * declares `cw` but not `monitor` (plausible — they gate unrelated
- * hardware) an operator could push a monitor-gain change through the CW
- * sidetone slider while the TX panel's own monitor-gain control stays
- * correctly dark. Pinned per this ticket's instruction to report, not fix.
+ * path DISPATCHES while the TX path still REFUSES. This asymmetry is
+ * LATENT rather than operator-reachable, for two reasons: (1)
+ * `onSidetoneLevelChange` has no UI caller anywhere in this codebase today
+ * (grep finds only its own definition, see the family note above), so no
+ * component can currently reach it; and (2) even if it were wired up, the
+ * backend independently re-gates the SAME capability regardless of which
+ * frontend call site dispatched it (`src/rigplane/web/handlers/control.py`,
+ * `case "set_monitor_gain":` calls `self._ensure_capability("monitor",
+ * "set_monitor_gain")` unconditionally) — a profile lacking `monitor`
+ * would have its `set_monitor_gain` command rejected server-side either
+ * way. Pinned per this ticket's instruction to report, not fix.
  *
  * RED-FIRST EVIDENCE (MOR-1564 build process, not part of this diff): the
  * `set_rf_power` `level=0.5` case below was first authored as
@@ -105,7 +129,7 @@ describe('IC-7300 fixture — TX-chain family conformance (MOR-1564)', () => {
     resetCommandLifecycle();
   });
 
-  describe('set_rf_power — production-domain walk (TxPanel.svelte slider: min=0 max=1 step=0.01), plus a no-clamp SAFETY probe', () => {
+  describe('set_rf_power — production-domain walk (TxPanel.svelte slider: min=0 max=1 step=0.01), plus a no-clamp defense-in-depth probe (backend-guarded, see finding 1)', () => {
     it('powerLevel IS observed on this fixture; rf_power only declares a WIRE raw range (0-255), which onRfPowerChange never reads', () => {
       expect(IC7300_CAPABILITIES.capabilities).toContain('tx');
       expect(IC7300_STATE.fieldStatus?.powerLevel?.observed).toBe(true);
@@ -118,7 +142,7 @@ describe('IC-7300 fixture — TX-chain family conformance (MOR-1564)', () => {
       });
     }
 
-    it("SAFETY: level=5 (past TxPanel.svelte's own max=1 AND rf_power's declared wire raw_max=255) still DISPATCHES verbatim — no domain clamp exists at the handler layer (finding 1, see file header)", () => {
+    it("DEFENSE-IN-DEPTH: level=5 (past TxPanel.svelte's own max=1) still DISPATCHES verbatim — no domain clamp exists at the frontend handler layer, though the backend's BCD encoder hard-rejects true out-of-0-255 values, and 5 itself would be misinterpreted as raw ≈2% power (UNDER-power, not over) under _normalized_or_raw_level's normalized/raw switch — MOR-1579, not a live safety gap here (finding 1, see file header)", () => {
       expectFrames(() => makeTxHandlers().onRfPowerChange(5), [['set_rf_power', { level: 5 }]]);
     });
   });
@@ -169,7 +193,7 @@ describe('IC-7300 fixture — TX-chain family conformance (MOR-1564)', () => {
       expectRefusal(() => makeCwPanelHandlers().onSidetoneLevelChange(120));
     });
 
-    it("MOR-1576 class: with monitorGain observed and only the 'monitor' capability withdrawn (cw kept), the CW sidetone path DISPATCHES set_monitor_gain while the TX path still REFUSES — same wire intent, two different capability gates", () => {
+    it("MOR-1576 class (latent, backend-guarded, no UI caller — see finding 2): with monitorGain observed and only the 'monitor' capability withdrawn (cw kept), the CW-family handler DISPATCHES set_monitor_gain while the TX-family handler still REFUSES — same wire intent, two different frontend capability gates", () => {
       h.caps!.capabilities = h.caps!.capabilities.filter((c) => c !== 'monitor');
       h.state!.fieldStatus!.monitorGain = {
         ...h.state!.fieldStatus!.monitorGain!,
