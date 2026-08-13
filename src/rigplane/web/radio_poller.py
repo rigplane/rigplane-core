@@ -507,6 +507,28 @@ _POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] 
             _post_write_receiver_id(cmd), "operator_controls", "squelch"
         ),
     ),
+    # MOR-1484 review R1: att/preamp carry the #2452 armed affordance, whose
+    # ONLY confirming path back to the StateStore is this cadence poll --
+    # ``PendingOverlay`` has no web consumer and the CI-V own-frame/transceive
+    # echo this profile relies on for other fields does not reliably cover
+    # these two (see the "read-after-write via overlays + ... observation"
+    # comments on the ``SetAttenuator``/``SetPreamp`` case arms below, which
+    # describe the mechanism but not its actual reach on this profile). This
+    # PR ALSO slows att/preamp's cadence tier from 1.5s to 3.0s
+    # (rigs/ic7300.toml) to fund the freq/mode/rf_gain/squelch tightening
+    # above -- without this entry that give-back alone would widen the
+    # armed-affordance confirm window past the 3000ms ACK_CONFIRM_GRACE for a
+    # slice of clicks (grace expires, armed clears, the button shows the
+    # stale value until the next cadence tick -- the MOR-1478 stale-flash
+    # symptom, reintroduced on a new affordance). Table entries here make the
+    # 1.5s->3.0s give-back free for the operator's own write: confirmation no
+    # longer depends on the slowed cadence tier at all.
+    SetAttenuator: lambda cmd: (
+        FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "att"),
+    ),
+    SetPreamp: lambda cmd: (
+        FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "preamp"),
+    ),
 }
 
 # ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore

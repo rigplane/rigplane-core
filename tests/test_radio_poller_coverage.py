@@ -989,6 +989,14 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
             SetSquelch(64, receiver=0),
             FieldPath.receiver("main", "operator_controls", "squelch"),
         ),
+        (
+            SetAttenuator(10, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "att"),
+        ),
+        (
+            SetPreamp(1, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "preamp"),
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -999,7 +1007,14 @@ async def test_execute_write_requests_immediate_readback_at_user_priority(
     readback of the field it just changed, at USER priority (the scheduler's
     highest rank) -- instead of waiting out that field's normal poll cadence.
     This is the fix for the "pending frequency echo" / "slider readouts trail
-    ~1s" symptom MOR-1484 measured on freq/mode/rfGain/squelch.
+    ~1s" symptom MOR-1484 measured on freq/mode/rfGain/squelch. att/preamp
+    are included (MOR-1484 review R1): both carry the #2452 armed affordance
+    whose only confirming path back to the StateStore is this cadence poll,
+    and this PR ALSO slows their cadence tier 1.5s -> 3.0s (rigs/ic7300.toml)
+    to fund the tightening above -- without this entry that give-back would
+    widen the armed-affordance confirm window past the 3000ms
+    ACK_CONFIRM_GRACE for a slice of clicks (the MOR-1478 stale-flash
+    symptom, reintroduced on a new affordance).
     """
     radio = _make_radio(active="MAIN")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
@@ -1011,6 +1026,42 @@ async def test_execute_write_requests_immediate_readback_at_user_priority(
     pending = scheduler.pending_requests()
     assert len(pending) == 1
     assert pending[0].paths == (path,)
+    assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_set_attenuator_readback_does_not_depend_on_slowed_cadence_tier() -> (
+    None
+):
+    """MOR-1484 review R1: att's confirming readback after a write must be
+    immediate regardless of this profile's OWN (now 3.0s, slowed to fund the
+    freq/mode/rf_gain/squelch tightening) cadence tier for that field -- the
+    armed #2452 affordance's confirm can never be left depending on that slow
+    tier, or a slice of clicks would grace-expire (3000ms ACK_CONFIRM_GRACE)
+    before the field is ever re-polled. Uses the REAL ic7300 profile (not a
+    synthetic one) so this pins the actual shipped cadence, not an assumption
+    about it.
+    """
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    att_path = FieldPath.receiver("main", "operator_controls", "att")
+    att_policy = profile.state_acquisition.policy_for(att_path)
+    assert att_policy.cadence_seconds == 3.0  # the slowed give-back tier
+
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(SetAttenuator(10, receiver=0))  # noqa: SLF001
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].paths == (att_path,)
+    # USER outranks every cadence-driven priority (BACKGROUND/RECONCILIATION/
+    # NORMAL) regardless of the field's own (slow) cadence_seconds -- the
+    # confirming read is dispatched on the very next drain, not gated by the
+    # 3.0s tier at all.
     assert pending[0].priority is AcquisitionPriority.USER
 
 

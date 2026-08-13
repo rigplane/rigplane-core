@@ -264,15 +264,32 @@ adaptive_decay = false
 # MOR-1484: bench-measured cadence tightening for the ACTIVE-VFO freq/mode
 # pair and the RF-gain/squelch sliders -- the fields the ticket's live IC-7300
 # probe (serial @115200) found trailing the operator most (medians 1.30s/
-# 2.16s/1.33s/2.22s, worst case up to 2.92s) because they shared the profile's
-# 17-field default 1.5s round-robin tier. Pulled into their own 1.0s/2.0s
-# tier: moves the cadence from 1.5s -> 1.0s AND shrinks the round-robin
-# population each shares from 17 down to 4, which cuts the worst-case gap
-# between successive polls of any one of them by far more than the cadence
-# ratio alone. Deliberately NOT 0.5-0.8s: MOR-1484's post-write readback
-# mechanism (``RadioPoller._request_post_write_readback``, USER priority)
-# already gives the operator's OWN write an immediate confirmed readback --
-# this tier only has to catch up a front-panel/other-CAT-client change or the
+# 2.16s/1.33s/2.22s, worst case up to 2.92s).
+#
+# Mechanism (MOR-1484 review R1 correction): AcquisitionScheduler groups
+# pollable fields by (scope, family, receiver_id, slot, policy) --
+# ``_AcquisitionRequestKey`` / ``_poll_cadence_groups`` in
+# acquisition_scheduler.py -- and each group gets its OWN independent cadence
+# clock; there is no single flat round-robin across every default-tier field.
+# freq_hz(active)/mode(active) (family ``freq_mode``) were ALREADY their own
+# isolated 2-field group before this PR, sharing a clock with nothing else,
+# so their gain here is purely the 1.5s -> 1.0s cadence-ratio speedup (a
+# ~33% shorter worst-case gap between polls of that pair), not a change in
+# how many fields they share a clock with. rf_gain/squelch (family
+# ``operator_controls``, same scope/receiver/slot) DID share a larger group
+# pre-PR -- {af_level, rf_gain, squelch, att, preamp, agc}, 6 fields, one
+# clock -- so pulling them into their own 2-field group has a genuine but
+# SECOND-ORDER extra benefit on top of the cadence-ratio gain: when that
+# clock fires, the executor no longer has to clear up to 4 other same-tick
+# siblings' frames through the ~20 q/s serial rate limiter
+# (_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS, 50ms/frame) before rf_gain/squelch's
+# own frames go out -- worth roughly 100-200ms off the worst case, not
+# several seconds.
+#
+# Deliberately NOT 0.5-0.8s: MOR-1484's post-write readback mechanism
+# (``RadioPoller._request_post_write_readback``, USER priority) already
+# gives the operator's OWN write an immediate confirmed readback -- this
+# tier only has to catch up a front-panel/other-CAT-client change or the
 # very first poll after connect, so 1.0s is a modest, budget-conservative
 # choice (see the serial-budget accounting at the bottom of this file), not
 # an attempt to match the post-write path's latency. unselectedVfo (measured
@@ -356,10 +373,15 @@ adaptive_decay = false
 # mic_gain populate (slow front-panel knob rotation, not a rigplane write —
 # nothing this profile owns can accelerate that with a post-write readback)
 # at 10.73s median / 16.25s worst case against this 15.0s-cadence tier's
-# "<=15s populate" intent — the round-robin-shared worst case can exceed the
-# nominal cadence itself. 10.0s/15.0s tightens the cadence with margin (a
-# fresh value is now due within 10s, not 15s, cutting the plausible worst
-# case well clear of the 15s target) at a modest added cost: 4 fields /
+# "<=15s populate" intent — these 4 fields share ONE cadence clock/group
+# (same scope/family/receiver/policy, see the mechanism note above the
+# freq/mode/rf_gain/squelch tier) and fire together each time it is due, but
+# the resulting frames still have to clear the ~20 q/s whole-lane serial rate
+# limiter alongside every OTHER group's traffic due around the same moment —
+# that contention, not anything internal to this group, is why the observed
+# worst case exceeds the nominal cadence. 10.0s/15.0s tightens the cadence
+# with margin (a fresh value is now due within 10s, not 15s, cutting the
+# plausible worst case well clear of the 15s target) at a modest added cost: 4 fields /
 # 10.0s = 0.4 q/s vs the previous 4/15.0 = 0.267 q/s, +0.133 q/s. The budget
 # accounting comment above the freq/mode/rf_gain/squelch tier (this file,
 # above) shows where that -- and the freq/mode/rf_gain/squelch tightening's
