@@ -43,7 +43,9 @@ from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.commands.tone import _encode_tone_freq
 from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
     AcquisitionScheduler,
+    AcquisitionStatus,
     MeterObservationCoalescer,
 )
 from rigplane.core.state_acquisition_policy import (
@@ -2180,6 +2182,65 @@ def test_update_state_cache_records_scheduler_result_for_matching_pending_reques
 
     assert scheduler.recorded_count == 1
     assert scheduler.pending_requests() == ()
+
+
+def test_reconciliation_answer_landing_after_dekey_still_credits_pending_request(
+    radio: IcomRadio,
+) -> None:
+    """MOR-1533 (1): the dispatch gate must not blind the credit path.
+
+    A ``tx_only`` RECONCILIATION request queued while TX was active (the
+    scheduler's cached ``tx_active`` from a ``due_requests`` drain) whose
+    answer lands after de-key must still be credited by
+    ``_record_scheduler_result_for_observation``. MOR-1531 gated
+    RECONCILIATION/tx_only entries out of ``pending_requests()`` while
+    ``tx_active`` is False; since ``_civ_rx.py`` used that same method to
+    look up the request an incoming answer completes, the answer became
+    invisible to the credit loop once TX ended and the request lingered in
+    ``_requests_by_key`` forever. The fix splits dispatch
+    (``dispatchable_requests()``, filtered) from lookup
+    (``pending_requests()``, unfiltered).
+    """
+
+    swr = FieldPath.global_("meters", "swr")
+    policy = AcquisitionPolicy(
+        cadence_seconds=None,
+        freshness_ttl_seconds=2.0,
+        tx_only=True,
+    )
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(swr, policy=policy))
+    radio._acquisition_scheduler = scheduler
+
+    # Drain cycle while TX active: caches tx_active=True, then a
+    # stale-reconciliation hint (as StateFreshnessService would emit it) is
+    # queued and sent to the radio.
+    scheduler.due_requests(now=100.0, tx_active=True)
+    result = scheduler.ensure_fresh(
+        swr,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+    assert result.status is AcquisitionStatus.QUEUED
+
+    # De-key before the answer arrives: the next drain caches tx_active=False.
+    scheduler.due_requests(now=100.5, tx_active=False)
+
+    # The radio's answer to the still-outstanding request lands now, after
+    # de-key.
+    radio._civ_runtime._apply_state_store_observations(
+        _make_frame(cmd=0x15, sub=0x12, data=_bcd2(48))
+    )
+
+    # pending_requests() is unfiltered by design (MOR-1533), so it already
+    # proves crediting on its own; re-affirming tx_active=True here just
+    # confirms nothing resurfaces once the tx_only gate reopens either.
+    scheduler.due_requests(now=101.0, tx_active=True)
+    assert scheduler.pending_requests() == (), (
+        "answer landing after de-key must have credited the outstanding "
+        "tx_only reconciliation request -- instead it lingered in "
+        "_requests_by_key and resurfaced once TX resumed"
+    )
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
