@@ -210,104 +210,76 @@ describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
     storePath: 'fixture', observed: true, freshness: 'stale', availability: 'available',
   } as const;
 
-  function indicatorLabels(target: HTMLElement): string[] {
-    return [...target.querySelectorAll('.lcd-ind')].map((indicator) => indicator.textContent ?? '');
-  }
-
   function indicator(target: HTMLElement, label: string): Element | undefined {
     return [...target.querySelectorAll('.lcd-ind')]
       .find((element) => element.textContent === label);
   }
 
-  function fullyObservedState(fieldStatus: Record<string, typeof fresh | typeof missing | typeof stale>) {
-    return {
+  function stateFor(
+    field: string,
+    value: boolean | number,
+    status: typeof fresh | typeof missing | typeof stale,
+  ): ServerState {
+    const state: any = {
       active: 'MAIN',
       main: baseReceiver({ ipplus: true }), sub: baseReceiver(),
       ptt: true, voxOn: true, compressorOn: true, compressorLevel: 7,
       tunerStatus: 1, split: true, dialLock: true,
       ritOn: true, ritFreq: 250, ritTx: true,
-      fieldStatus,
-    } as unknown as ServerState;
+      fieldStatus: { [field]: status },
+    };
+    if (field === 'main.ipplus') state.main.ipplus = value;
+    else state[field] = value;
+    return state as ServerState;
   }
 
-  it('suppresses stale TX rather than rendering a confirmed state in both entry points', () => {
-    const state = {
-      active: 'MAIN', main: baseReceiver(), sub: baseReceiver(), ptt: true,
-      fieldStatus: { ptt: stale },
-    } as unknown as ServerState;
+  const tokenCases = [
+    ['TX', 'ptt', false, true, 'TX', [mountCockpit, mountScope]],
+    ['VOX', 'voxOn', false, true, 'VOX', [mountCockpit, mountScope]],
+    ['PROC', 'compressorOn', false, true, 'PROC 7', [mountCockpit, mountScope]],
+    ['ATU', 'tunerStatus', 0, 1, 'ATU', [mountCockpit]],
+    ['SPLIT', 'split', false, true, 'SPLIT', [mountCockpit, mountScope]],
+    ['LOCK', 'dialLock', false, true, 'LOCK', [mountCockpit, mountScope]],
+    ['IP+', 'main.ipplus', false, true, 'IP+', [mountCockpit]],
+    ['RIT', 'ritOn', false, true, 'RIT', [mountCockpit, mountScope]],
+  ] as const;
 
-    expect(indicatorLabels(mountCockpit(state))).not.toContain('TX');
-    expect(indicatorLabels(mountScope(state))).not.toContain('TX');
-  });
+  it.each(tokenCases)('%s distinguishes fresh off/on from missing/stale', (
+    _name, field, offValue, onValue, label, mounts,
+  ) => {
+    for (const mountPanel of mounts) {
+      const offLabel = _name === 'PROC' ? 'PROC' : label;
+      const off = indicator(mountPanel(stateFor(field, offValue, fresh)), offLabel);
+      expect(off).toBeDefined();
+      expect(off?.classList.contains('active')).toBe(false);
 
-  it('suppresses stale active RIT/XIT inline rows in the cockpit', () => {
-    const state = {
-      active: 'MAIN', main: baseReceiver(), sub: baseReceiver(),
-      ritOn: true, ritFreq: 250, ritTx: true,
-      fieldStatus: { ritOn: stale, ritFreq: stale, ritTx: stale },
-    } as unknown as ServerState;
-
-    expect(mountCockpit(state).querySelector('.lcd-rit-row')).toBeNull();
-  });
-
-  it('renders every changed token only from fresh facts in each applicable entry point', () => {
-    const fieldStatus = Object.fromEntries([
-      'ptt', 'voxOn', 'compressorOn', 'compressorLevel', 'tunerStatus',
-      'split', 'dialLock', 'main.ipplus', 'ritOn', 'ritFreq', 'ritTx',
-    ].map((field) => [field, fresh]));
-    const cockpit = mountCockpit(fullyObservedState(fieldStatus));
-    const scope = mountScope(fullyObservedState(fieldStatus));
-
-    for (const label of ['TX', 'VOX', 'PROC 7', 'ATU', 'SPLIT', 'LOCK', 'IP+', 'RIT']) {
-      expect(indicator(cockpit, label)).toBeDefined();
+      const on = indicator(mountPanel(stateFor(field, onValue, fresh)), label);
+      expect(on).toBeDefined();
+      expect(on?.classList.contains('active')).toBe(true);
+      expect(indicator(mountPanel(stateFor(field, onValue, missing)), label)).toBeUndefined();
+      expect(indicator(mountPanel(stateFor(field, onValue, stale)), label)).toBeUndefined();
     }
-    for (const label of ['TX', 'VOX', 'PROC 7', 'SPLIT', 'LOCK', 'RIT']) {
-      expect(indicator(scope, label)).toBeDefined();
-    }
-    expect(cockpit.querySelector('.rit-label')?.textContent).toBe('RIT');
   });
 
-  it('suppresses every changed token when the corresponding facts are missing or stale', () => {
-    const fieldStatus = Object.fromEntries([
-      'ptt', 'voxOn', 'compressorOn', 'compressorLevel', 'tunerStatus', 'split',
-      'dialLock', 'main.ipplus', 'ritOn', 'ritFreq', 'ritTx',
-    ].map((field, index) => [field, index % 2 === 0 ? missing : stale]));
-    const cockpit = mountCockpit(fullyObservedState(fieldStatus));
-    const scope = mountScope(fullyObservedState(fieldStatus));
-
-    for (const label of ['TX', 'VOX', 'PROC 7', 'ATU', 'SPLIT', 'LOCK', 'IP+', 'RIT']) {
-      expect(indicator(cockpit, label)).toBeUndefined();
+  it('distinguishes ATU from TUNE and never fabricates a PROC level', () => {
+    const tuning = indicator(mountCockpit(stateFor('tunerStatus', 2, fresh)), 'TUNE');
+    expect(tuning?.classList.contains('active')).toBe(true);
+    for (const status of [missing, stale]) {
+      expect(indicator(mountCockpit(stateFor('tunerStatus', 2, status)), 'TUNE')).toBeUndefined();
+      expect(indicator(mountCockpit(stateFor('compressorLevel', 7, status)), 'PROC')).toBeDefined();
+      expect(indicator(mountScope(stateFor('compressorLevel', 7, status)), 'PROC')).toBeDefined();
+      expect(indicator(mountCockpit(stateFor('compressorLevel', 7, status)), 'PROC 7')).toBeUndefined();
+      expect(indicator(mountScope(stateFor('compressorLevel', 7, status)), 'PROC 7')).toBeUndefined();
     }
-    for (const label of ['TX', 'VOX', 'PROC 7', 'SPLIT', 'LOCK', 'RIT']) {
-      expect(indicator(scope, label)).toBeUndefined();
-    }
-    expect(cockpit.querySelector('.lcd-rit-row')).toBeNull();
   });
 
-  it('preserves confirmed-off and confirmed-on distinctions without fabricating levels', () => {
-    const offState = fullyObservedState({ ritOn: fresh, ritFreq: fresh, ritTx: fresh, ptt: fresh });
-    offState.ritOn = false;
-    offState.ritTx = false;
-    offState.ptt = false;
-    const cockpit = mountCockpit(offState);
-    const scope = mountScope(offState);
-    expect(indicator(cockpit, 'RIT')?.classList.contains('active')).toBe(false);
-    expect(indicator(scope, 'RIT')?.classList.contains('active')).toBe(false);
-    expect(indicator(cockpit, 'TX')?.classList.contains('active')).toBe(false);
-    expect(indicator(scope, 'TX')?.classList.contains('active')).toBe(false);
-
-    const levelStale = fullyObservedState({ compressorOn: fresh, compressorLevel: stale });
-    expect(indicator(mountCockpit(levelStale), 'PROC')).toBeDefined();
-    expect(indicator(mountScope(levelStale), 'PROC')).toBeDefined();
-    expect(indicator(mountCockpit(levelStale), 'PROC 7')).toBeUndefined();
-    expect(indicator(mountScope(levelStale), 'PROC 7')).toBeUndefined();
-  });
-
-  it('renders the cockpit inline XIT row only when XIT is confirmed fresh', () => {
-    const state = fullyObservedState({ ritOn: fresh, ritFreq: fresh, ritTx: fresh });
-    state.ritOn = false;
-    state.ritTx = true;
-    expect(mountCockpit(state).querySelector('.rit-label')?.textContent).toBe('XIT');
+  it('shows inline XIT only for fresh XIT-on and hides missing/stale XIT', () => {
+    for (const status of [fresh, missing, stale]) {
+      const state = stateFor('ritTx', true, status) as any;
+      state.ritOn = false;
+      const label = mountCockpit(state).querySelector('.rit-label')?.textContent;
+      expect(label).toBe(status === fresh ? 'XIT' : undefined);
+    }
   });
 });
 
