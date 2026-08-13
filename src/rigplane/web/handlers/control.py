@@ -19,7 +19,7 @@ from ...core.command_service import (
 )
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource
 from ...core.state_store import StateStore
-from ...profiles import RadioProfile
+from ...profiles import RadioProfile, resolve_radio_profile
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -1946,11 +1946,37 @@ class ControlHandler:
                 vfo = str(params.get("vfo", "A"))
                 q.put(SelectVfo(vfo))
                 return {"vfo": vfo}
-            case "vfo_swap":
-                q.put(VfoSwap())
-                return {}
-            case "vfo_equalize":
-                q.put(VfoEqualize())
+            case "vfo_swap" | "vfo_equalize":
+                profile = getattr(radio, "profile", None)
+                if not isinstance(profile, RadioProfile):
+                    model = getattr(radio, "model", None)
+                    try:
+                        profile = (
+                            resolve_radio_profile(model=model)
+                            if isinstance(model, str) and model.strip()
+                            else None
+                        )
+                    except KeyError:
+                        profile = None
+                declared_code = None
+                if isinstance(profile, RadioProfile):
+                    if profile.vfo_scheme == "ab":
+                        declared_code = (
+                            profile.swap_ab_code
+                            if name == "vfo_swap"
+                            else profile.equal_ab_code
+                        )
+                    elif profile.vfo_scheme == "main_sub":
+                        declared_code = (
+                            profile.swap_main_sub_code
+                            if name == "vfo_swap"
+                            else profile.equal_main_sub_code
+                        )
+                if declared_code is None:
+                    raise ValueError(
+                        f"command {name!r} is not supported by active profile"
+                    )
+                q.put(VfoSwap() if name == "vfo_swap" else VfoEqualize())
                 return {}
             case "set_data_mode":
                 dm = int(params["mode"])
