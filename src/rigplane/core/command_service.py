@@ -643,24 +643,105 @@ def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
     return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
 
 
-def _raw_level_from_param(value: Any) -> int:
-    """Coerce a level command param to the raw 0-255 scale.
+def _raw_int_level_from_param(value: Any) -> int:
+    """Coerce a raw-only level command param (MOR-1579).
 
-    MOR-334 regression fix: ``set_rf_gain``/``set_af_level``/``set_squelch``
-    accept a level either pre-scaled (raw 0-255) or normalized (0.0-1.0, as the
-    web sliders emit). The migration replaced the prior scale-aware coercion
-    with a bare ``int()``, so a normalized slider value (e.g. ``0.98``)
-    collapsed to ``int(0.98) == 0``. The expected/overlay value (used for
-    readback reconciliation) then sat at the opposite end of the scale from the
-    value the radio was actually set to, which surfaced as the control snapping
-    back to ``0`` (left edge) ~1s after a set. Mirror the web control-handler
-    coercion (``_normalized_or_raw_level``) so the StateStore expectation tracks
-    reality. Raw ints (and the boundary ``1.0``) round-trip unchanged.
+    ``set_rf_gain``/``set_sql``/``set_squelch``: both the web frontend
+    (``radio-intents.ts`` declares ``'integer'``) and the documented
+    HTTP/WS command catalog agree the wire value is always a raw 0-255
+    integer, never a normalized float. Dispatch on the JSON *type*, not
+    magnitude — a value in ``[0, 1]`` used to be silently reinterpreted as
+    normalized (MOR-1579's headline bug: raw level ``1`` became raw
+    ``255``). A non-int or an out-of-range int is a caller bug, not an
+    alternate encoding, so it raises instead of being coerced.
+
+    This value feeds both the StateStore readback expectation (via
+    :func:`_expected_value_for_path`) *and*, on the ``public_api`` sync
+    ingress (:mod:`rigplane.runtime.sync`), the actual value sent to the
+    radio (``_SyncCommandExecutor`` reads ``intent.params["squelch"]``
+    directly) — so this function is the actuation path there, not just
+    bookkeeping.
     """
-    numeric = float(value)
-    if 0.0 <= numeric <= 1.0:
-        return max(0, min(255, round(numeric * 255)))
-    return max(0, min(255, int(numeric)))
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"level {value!r} must be a raw integer 0-255, not {type(value).__name__}"
+        )
+    if not (0 <= value <= 255):
+        raise ValueError(f"level {value!r} is out of the raw 0-255 domain")
+    return int(value)
+
+
+def _af_level_from_param(value: Any) -> int:
+    """Coerce ``set_af_level``'s type-dispatched level param (MOR-1579).
+
+    Two documented wire contracts coexist for this one intent: the
+    HTTP/WS command catalog (``docs/api/command-catalog.md``) declares
+    ``level: int`` on the raw 0-255 scale (see the live-hardware
+    validation recipe's ``level:35`` example, which expects raw BCD
+    ``0035``); the web frontend (``radio-intents.ts`` declares
+    ``'normalized'``) sends a JSON float in 0.0-1.0. Dispatch on JSON
+    type, never magnitude: an int is always raw, a float is always
+    normalized, matching MOR-334's original coercion for float input
+    while restoring int input to a true no-op. Out-of-domain values for
+    either type raise rather than being reinterpreted as the other.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"level {value!r} must be an int or a normalized float")
+    if isinstance(value, int):
+        if not (0 <= value <= 255):
+            raise ValueError(f"level {value!r} is out of the raw 0-255 domain")
+        return value
+    if isinstance(value, float):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
+        return max(0, min(255, round(value * 255)))
+    raise ValueError(f"level {value!r} must be an int or a normalized float")
+
+
+def _power_level_expectation_from_param(value: Any) -> int:
+    """Coerce ``set_rf_power``/``set_power``'s StateStore expectation param.
+
+    MOR-1579 round 3: this used to be a plain ``int(raw_level)``, so a
+    normalized float level (e.g. ``0.4`` from the web power slider —
+    ``control.py``'s ``_level_for_power`` treats ``set_rf_power`` as
+    type-dispatched, same as ``set_af_level``) collapsed to
+    ``int(0.4) == 0``. The StateStore overlay/expectation then sat at 0%
+    for the optimistic-update TTL before jumping to the real readback —
+    the same snap-back class MOR-1579 fixes for ``rf_gain``/``squelch``,
+    reproduced here on every single power-slider move rather than only at
+    a boundary value.
+
+    ``_normalize_raw_level_value`` (below) always divides this value by
+    255 to recover the normalized overlay value, and *both* backends'
+    readbacks normalize to that same fraction ``v`` regardless of unit —
+    Icom CI-V as ``raw / 255``, Yaesu CAT as ``watts / max_watts`` (see
+    ``backends/yaesu_cat/observations.py``'s ``_normalize_power_level``).
+    So for a float input the coherent expectation is ``round(v * 255)``,
+    independent of ``native_power_unit`` — no radio object needed here
+    (unlike ``control.py``'s ``_level_for_power``, which *does* need
+    ``profile.max_watts`` to compute the correct *actuation* value for a
+    watts radio). This is exact for ``raw_255`` radios; for a ``watts``
+    radio it is accurate to within 1/255 of full scale, since
+    ``round(v * max_watts) / max_watts`` (the real readback's
+    quantization) and ``round(v * 255) / 255`` (this expectation's
+    quantization) are different roundings of the same ``v`` and don't
+    always land on the same value — in practice most float positions on
+    a watts radio simply expire by TTL instead of confirming
+    ``reconciled``, rather than snapping to a visibly wrong overlay (the
+    residual error is bounded at <=0.2% of full scale).
+
+    A bare int is the documented raw/watts wire value (unchanged from
+    before this fix) — dividing it by 255 to form the expectation is only
+    exact for ``raw_255`` radios; for a watts radio this is a known,
+    separate, deferred gap (see the PR body's "Known follow-up"), since
+    the profile needed to convert watts to a fraction isn't reachable
+    from this intent-normalization function.
+    """
+    if isinstance(value, float) and not isinstance(value, bool):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
+        return max(0, min(255, round(value * 255)))
+    return int(value)
 
 
 def _normalize_raw_level_value(value: Any) -> Any:
@@ -870,11 +951,11 @@ def command_intent_from_request(
     elif command_name == "ptt_off":
         normalized["ptt"] = False
     elif command_name == "set_rf_gain":
-        normalized["rf_gain"] = _raw_level_from_param(normalized["level"])
+        normalized["rf_gain"] = _raw_int_level_from_param(normalized["level"])
     elif command_name == "set_af_level":
-        normalized["af_level"] = _raw_level_from_param(normalized["level"])
+        normalized["af_level"] = _af_level_from_param(normalized["level"])
     elif command_name in ("set_sql", "set_squelch"):
-        normalized["squelch"] = _raw_level_from_param(normalized["level"])
+        normalized["squelch"] = _raw_int_level_from_param(normalized["level"])
     elif command_name in ("set_att", "set_attenuator", "set_attenuator_level"):
         raw_value = (
             normalized["db"]
@@ -913,7 +994,7 @@ def command_intent_from_request(
         raw_level = (
             normalized["level"] if "level" in normalized else normalized["value"]
         )
-        normalized["power_level"] = int(raw_level)
+        normalized["power_level"] = _power_level_expectation_from_param(raw_level)
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))
     elif command_name == "set_rit":
