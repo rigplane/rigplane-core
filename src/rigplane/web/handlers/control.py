@@ -1369,12 +1369,18 @@ class ControlHandler:
         intent_params = dict(params)
         if self._server is not None:
             intent_params["_control_server"] = self._server
+        power_max_watts = None
+        if getattr(self._radio, "native_power_unit", "raw_255") == "watts":
+            power_max_watts = getattr(
+                getattr(self._radio, "profile", None), "max_watts", None
+            )
         intent = command_intent_from_request(
             name,
             intent_params,
             source=source,
             command_id=command_id,
             session_id=self._session_id if source == "websocket" else None,
+            power_max_watts=power_max_watts,
         )
         result = await self._command_service.execute(intent)
         return dict(result.executor_result.details or {})

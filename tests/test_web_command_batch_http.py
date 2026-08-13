@@ -1514,3 +1514,53 @@ async def test_http_single_command_missing_required_param_returns_400() -> None:
     assert writer.response_status == 400
     assert writer.response_body["error"] == "invalid_request"
     assert srv.command_queue.drain() == []
+
+
+@pytest.mark.asyncio
+async def test_http_watts_power_expectation_uses_profile_max_watts() -> None:
+    """A documented integer watts command must match the normalized readback."""
+    profile = resolve_radio_profile(model="FTX-1")
+    radio = SimpleNamespace(
+        profile=profile,
+        model=profile.model,
+        capabilities=set(profile.capabilities),
+        native_power_unit="watts",
+        get_powerstat=AsyncMock(return_value=True),
+        set_powerstat=AsyncMock(),
+        get_rf_power=AsyncMock(return_value=0),
+        set_rf_power=AsyncMock(),
+    )
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"id": "watts-50", "name": "set_rf_power", "params": {"level": 50}},
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body["result"] == {"level": 50}
+    assert srv.command_queue.drain()[0].level == 50
+    [expectation] = srv.command_service.readback_expectations(
+        source="http",
+        session_id=None,
+        command_id="watts-50",
+    )
+    assert profile.max_watts == 100
+    assert expectation.value == pytest.approx(50 / profile.max_watts)
+
+    float_writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"id": "watts-float", "name": "set_rf_power", "params": {"level": 0.4}},
+    )
+
+    assert float_writer.response_status == 200
+    assert float_writer.response_body["result"] == {"level": 40}
+    assert srv.command_queue.drain()[0].level == 40
+    [float_expectation] = srv.command_service.readback_expectations(
+        source="http",
+        session_id=None,
+        command_id="watts-float",
+    )
+    assert float_expectation.value == pytest.approx(102 / 255)
