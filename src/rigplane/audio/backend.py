@@ -1499,6 +1499,7 @@ class FakeRxStream:
         *,
         device: int | None = None,
         exclusive: dict[int, object] | None = None,
+        block_open: Callable[[], None] | None = None,
     ) -> None:
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
@@ -1509,6 +1510,12 @@ class FakeRxStream:
         self.heartbeat_count = 0
         self.fail_on_inject: Exception | None = None
         self._capture_health = _CaptureHealthTracker()
+        # MOR-1438: a synchronous hook invoked (on whatever thread calls
+        # ``start()``) before the stream is marked running. Lets tests model
+        # a genuinely blocking OS-level open (e.g. ``threading.Event.wait``)
+        # without touching PortAudio, so ``UsbAudioDriver``'s off-loop
+        # timeout handling can be exercised deterministically.
+        self.block_open = block_open
 
     @property
     def running(self) -> bool:
@@ -1521,6 +1528,8 @@ class FakeRxStream:
     async def start(self, callback: Callable[[bytes], None]) -> None:
         if self._running:
             raise RuntimeError("FakeRxStream already running.")
+        if self.block_open is not None:
+            self.block_open()
         _claim_exclusive_device(self._exclusive, self._device, self)
         self._callback = callback
         self._running = True
@@ -1588,6 +1597,7 @@ class FakeTxStream:
         *,
         device: int | None = None,
         exclusive: dict[int, object] | None = None,
+        block_open: Callable[[], None] | None = None,
     ) -> None:
         self._running = False
         self._device = device
@@ -1598,6 +1608,8 @@ class FakeTxStream:
         self.fail_on_write: OSError | None = None
         self.write_failures = 0
         self.last_error: str | None = None
+        # MOR-1438: see FakeRxStream.block_open.
+        self.block_open = block_open
 
     @property
     def running(self) -> bool:
@@ -1618,6 +1630,8 @@ class FakeTxStream:
     async def start(self) -> None:
         if self._running:
             raise RuntimeError("FakeTxStream already running.")
+        if self.block_open is not None:
+            self.block_open()
         _claim_exclusive_device(self._exclusive, self._device, self)
         self._running = True
         self.started_count += 1
@@ -1760,6 +1774,12 @@ class FakeAudioBackend:
         self.rx_streams: list[FakeRxStream] = []
         self.tx_streams: list[FakeTxStream] = []
         self.duplex_streams: list[FakeDuplexStream] = []
+        # MOR-1438: applied to every stream opened from here on — lets tests
+        # model a genuinely blocking RX/TX open (e.g. a macOS TCC
+        # microphone-consent prompt that never renders) without a real
+        # backend. ``None`` (default) behaves exactly as before.
+        self.block_rx_open: Callable[[], None] | None = None
+        self.block_tx_open: Callable[[], None] | None = None
 
     def _strict_stream_kwargs(self, device: AudioDeviceId) -> dict[str, Any]:
         """Strict-mode plumbing for a new fake stream (MOR-566).
@@ -1811,7 +1831,9 @@ class FakeAudioBackend:
         # ``deliver_channels`` selects the software downmix in the real
         # PortAudio stream; FakeRxStream is a verbatim pass-through, so it only
         # records what it was opened at for assertions.
-        stream = FakeRxStream(**self._strict_stream_kwargs(device))
+        stream = FakeRxStream(
+            block_open=self.block_rx_open, **self._strict_stream_kwargs(device)
+        )
         self.rx_streams.append(stream)
         return stream
 
@@ -1825,7 +1847,9 @@ class FakeAudioBackend:
     ) -> FakeTxStream:
         if not any(d.id == device for d in self._devices):
             raise ValueError(f"Unknown device id {device}")
-        stream = FakeTxStream(**self._strict_stream_kwargs(device))
+        stream = FakeTxStream(
+            block_open=self.block_tx_open, **self._strict_stream_kwargs(device)
+        )
         self.tx_streams.append(stream)
         return stream
 
