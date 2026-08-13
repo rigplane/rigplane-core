@@ -49,6 +49,7 @@ from ..capabilities import (
     CAP_CW,
     CAP_DATA_MODE,
     CAP_DIGISEL,
+    CAP_DIGISEL_SHIFT,
     CAP_DUAL_RX,
     CAP_DUAL_WATCH,
     CAP_FILTER_SHAPE,
@@ -3125,7 +3126,10 @@ class RadioPoller:
                     await radio.set_audio_peak_filter(int(on), receiver=rx)
             case SetDigiselShift(level=level, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_digisel_shift")
-                if CAP_DIGISEL in self._caps:
+                # Distinct capability from CAP_DIGISEL (0x16/0x4E toggle):
+                # DIGI-SEL Shift is 0x14/0x13 and IC-705 exposes it without
+                # the toggle (MOR-1544).
+                if CAP_DIGISEL_SHIFT in self._caps:
                     await radio.set_digisel_shift(level, receiver=rx)
             case SetRefAdjust(value=value):
                 await _r.set_ref_adjust(value)

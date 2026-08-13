@@ -1,4 +1,12 @@
-# Full IC-7610 capability tag set — shared across tests to avoid duplication.
+# A broad Icom capability tag superset shared across web-handler tests to
+# enable capability gates without duplicating a full list per test. NOT a
+# literal, exact copy of any one profile's declared capabilities — e.g. it
+# carries "repeater_tone"/"tsql" which the real IC-7610 profile omits
+# (MOR-661). The authoritative exact-match check for IC-7610's declared
+# capability set is ``tests/test_rig_ic7610.py::TestProfileParity::
+# test_capabilities_exact`` against the real TOML-loaded profile — update
+# that test, not (only) this fixture, when ic7610.toml's [capabilities]
+# list changes.
 FULL_ICOM_CAPS: frozenset[str] = frozenset(
     {
         "audio",
@@ -21,6 +29,7 @@ FULL_ICOM_CAPS: frozenset[str] = frozenset(
         "nr",
         "ip_plus",
         "digisel",
+        "digisel_shift",
         "vox",
         "compressor",
         "break_in",

@@ -67,6 +67,7 @@ class TestProfileParity:
                 "attenuator",
                 "preamp",
                 "digisel",
+                "digisel_shift",
                 "ip_plus",
                 # Antenna
                 "antenna",
@@ -126,7 +127,8 @@ class TestProfileParity:
     def test_capabilities_count(self, profile):
         # MOR-661: dropped repeater_tone + tsql (48 → 46).
         # MOR-678: added mod_input_routing (46 → 47).
-        assert len(profile.capabilities) == 47
+        # MOR-1544: added digisel_shift (47 → 48).
+        assert len(profile.capabilities) == 48
 
     def test_cmd29_routes_exact(self, profile):
         expected = frozenset(

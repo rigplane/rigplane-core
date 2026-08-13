@@ -2084,7 +2084,10 @@ class ControlHandler:
             case "set_digisel_shift":
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))
-                self._ensure_capability("digisel", "set_digisel_shift")
+                # Distinct from "digisel" (0x16/0x4E toggle): DIGI-SEL Shift
+                # is 0x14/0x13 and some profiles (IC-705) expose it without
+                # the toggle (MOR-1544).
+                self._ensure_capability("digisel_shift", "set_digisel_shift")
                 self._ensure_receiver_supported(rx)
                 q.put(SetDigiselShift(level, receiver=rx))
                 return {"level": level, "receiver": rx}

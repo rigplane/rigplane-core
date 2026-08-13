@@ -17,6 +17,7 @@ __all__ = [
     "CAP_ATTENUATOR",
     "CAP_PREAMP",
     "CAP_DIGISEL",
+    "CAP_DIGISEL_SHIFT",
     "CAP_IP_PLUS",
     "CAP_ANTENNA",
     "CAP_RX_ANTENNA",
@@ -93,6 +94,12 @@ CAP_LAN_DUAL_RX_AUDIO_ROUTING = "lan_dual_rx_audio_routing"
 CAP_ATTENUATOR = "attenuator"
 CAP_PREAMP = "preamp"
 CAP_DIGISEL = "digisel"
+# DIGI-SEL Shift level (0x14 0x13 cmd29 level, ``get_digisel_shift``/
+# ``set_digisel_shift``) is a distinct CI-V command from the DIGI-SEL on/off
+# toggle (0x16 0x4E, ``CAP_DIGISEL``) — some profiles (IC-705) expose the
+# shift level without the toggle. Gating ``set_digisel_shift`` on
+# ``CAP_DIGISEL`` rejected valid IC-705 calls at the web layer (MOR-1544).
+CAP_DIGISEL_SHIFT = "digisel_shift"
 CAP_IP_PLUS = "ip_plus"
 
 # Antenna
@@ -196,6 +203,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_ATTENUATOR,
         CAP_PREAMP,
         CAP_DIGISEL,
+        CAP_DIGISEL_SHIFT,
         CAP_IP_PLUS,
         # Antenna
         CAP_ANTENNA,
