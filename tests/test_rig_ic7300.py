@@ -191,8 +191,11 @@ class TestCapabilities:
     def test_has_ip_plus(self, profile):
         assert "ip_plus" in profile.capabilities
 
+    def test_has_speech(self, profile):
+        assert "speech" in profile.capabilities
+
     def test_capabilities_count(self, profile):
-        assert len(profile.capabilities) == 41
+        assert len(profile.capabilities) == 42
 
 
 # ── Command overrides ──────────────────────────────────────────
