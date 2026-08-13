@@ -4,6 +4,7 @@ import {
   valueToSegments,
   getSegmentZone,
   dimColor,
+  valueFontSize,
 } from '../bar-gauge-utils';
 import type { Zone } from '../bar-gauge-utils';
 
@@ -178,5 +179,42 @@ describe('DEFAULT_ZONES', () => {
 
   it('last zone ends at 1.0', () => {
     expect(DEFAULT_ZONES[DEFAULT_ZONES.length - 1].end).toBe(1.0);
+  });
+});
+
+// ── valueFontSize (MOR-1535) ─────────────────────────────────────────────────
+//
+// `displayValue` renders as SVG text at x=260 in a 0-300 viewBox (a fixed
+// ~40px column) — SVG text clips silently rather than wrapping or
+// ellipsizing when it overflows. At the non-compact VALUE_FS=11 the budget
+// is ~6 characters; MOR-1527's own "NNN raw" honesty tag is 7 characters
+// and would clip on MeterPanel.svelte, BarGauge's sole non-compact consumer
+// (dead code per MOR-1535's audit, but not deleted here — no hollowing
+// without an owner call).
+
+describe('valueFontSize', () => {
+  it('keeps the base font size for text within the ~6-char budget', () => {
+    expect(valueFontSize('35W', 11)).toBe(11);
+    expect(valueFontSize('S9+40', 11)).toBe(11);
+  });
+
+  it('steps the font size down below the base for text past the budget', () => {
+    const fs = valueFontSize('158 raw', 11);
+    expect(fs).toBeLessThan(11);
+  });
+
+  it('never steps size up past the base font size', () => {
+    expect(valueFontSize('1', 11)).toBeLessThanOrEqual(11);
+  });
+
+  it('never steps down below a legible floor even for very long text', () => {
+    const fs = valueFontSize('a very long display value indeed', 11);
+    expect(fs).toBeGreaterThanOrEqual(6);
+  });
+
+  it('compact base (9) also steps down once text exceeds its own budget', () => {
+    const base = valueFontSize('35W', 9);
+    const stepped = valueFontSize('a much longer value', 9);
+    expect(stepped).toBeLessThan(base);
   });
 });

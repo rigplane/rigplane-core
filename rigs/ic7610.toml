@@ -690,6 +690,15 @@ width_labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
 values = [0, 1, 2]
 labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
 
+[filter_shape]
+# CI-V 0x16 0x56: DSP IF filter type (docs/validation/cat-audits/ic7610.md
+# "16 56 DSP IF filter type" S/R; the [commands] get/set_filter_shape entry
+# below carries the same 0=SHARP/1=SOFT comment). IC-7610 hardware retired
+# 2026-08-04 — no live verification possible, same disclosure basis as the
+# [agc] note above (MOR-1534).
+values = [0, 1]
+labels = { "0" = "SHARP", "1" = "SOFT" }
+
 [break_in]
 # CI-V 0x16 0x47: 0=OFF, 1=Semi, 2=Full
 values = [0, 1, 2]

@@ -139,6 +139,15 @@ width_labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
 values = [0, 1, 2]
 labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
 
+[filter_shape]
+# CI-V 0x16 0x56: DSP IF filter type. No dedicated IC-9700 cat-audit exists
+# in-repo; SHARP/SOFT = 0/1 is the same domain the runtime's shared
+# `FilterShape` enum (src/rigplane/core/types.py) has always assumed for
+# this command across the whole IC-7610-family profile set, IC-9700 included
+# (MOR-1534 — not independently live-verified for this specific profile).
+values = [0, 1]
+labels = { "0" = "SHARP", "1" = "SOFT" }
+
 [break_in]
 # CI-V 0x16 0x47: 0=OFF, 1=Semi, 2=Full (wfview rig lists Max=1; CI-V supports three levels)
 values = [0, 1, 2]

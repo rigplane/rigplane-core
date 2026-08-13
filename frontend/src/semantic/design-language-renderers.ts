@@ -57,7 +57,21 @@ import '../presentation/languages/declarations';
 export type RendererFields = RendererViewModel['fields'];
 
 export interface RendererDisplay {
-  /** The renderer's own text for this slot, or `null` when it emits none. */
+  /**
+   * The renderer's own text for this slot, or `null` when it emits none.
+   *
+   * MOR-1482 (owner ruling, session 19): currently UNCONSUMED by every
+   * production caller. `VfoSurface.svelte`'s `frequencyDisplay` slot was the
+   * only call site reading `.text` (`MetersSurface`/`RxTxSurface` read only
+   * `.attributes`), and that site now opts out of it — a hero-scale grammar
+   * (studioline's thin-space-grouped ranked digits, fieldline's ungrouped
+   * run) flattened to a plain string at tile font size loses the
+   * ranking/geometry it depends on and reads as unformatted digits, worse
+   * than the plain fallback it replaced. Kept on the interface (not deleted)
+   * for a future HERO-SCALE mount that can actually render a language's
+   * ranked grouping — do not silently "clean this up" as dead without
+   * checking whether such a mount has landed.
+   */
   readonly text: string | null;
   /** `data-dl-*` display annotations, ready to spread onto an element. */
   readonly attributes: Readonly<Record<string, string>>;

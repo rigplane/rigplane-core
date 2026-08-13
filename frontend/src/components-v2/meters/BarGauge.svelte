@@ -5,7 +5,7 @@
     prefersReducedMotion,
     onReducedMotionChange,
   } from '$lib/utils/smoothing.svelte';
-  import { DEFAULT_ZONES, valueToSegments, getSegmentZone, dimColor } from './bar-gauge-utils';
+  import { DEFAULT_ZONES, valueToSegments, getSegmentZone, dimColor, valueFontSize } from './bar-gauge-utils';
   import type { Zone } from './bar-gauge-utils';
   import { updatePeakHold, peakHoldDisplay, PEAK_DECAY_MS, type PeakHoldState } from '../panels/meter-utils';
 
@@ -42,7 +42,10 @@
   const TRACK_H     = $derived(compact ? 10 : 14);
   const TOTAL_HEIGHT = $derived(compact ? 22 : 30);
   const LABEL_FS    = $derived(compact ? 7  : 8);
-  const VALUE_FS    = $derived(compact ? 9  : 11);
+  // MOR-1535: steps down from the base size when `displayValue` is too long
+  // to fit the fixed value column at that size (e.g. "158 raw") — SVG text
+  // clips silently on overflow rather than wrapping or ellipsizing.
+  const VALUE_FS    = $derived(valueFontSize(displayValue, compact ? 9 : 11));
   const TEXT_Y      = $derived(TRACK_Y + TRACK_H / 2);
 
   // ── Smoother ────────────────────────────────────────────────────────────────

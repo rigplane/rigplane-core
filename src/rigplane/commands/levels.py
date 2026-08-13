@@ -43,7 +43,6 @@ from ._frame import (
     _SUB_VOX_GAIN,
     _build_from_map,
     build_civ_frame,
-    build_cmd29_frame,
 )
 
 if TYPE_CHECKING:
@@ -112,18 +111,16 @@ def get_rf_gain(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
-    """Build a 'read RF gain' CI-V command (0x14 0x02).
-
-    For SUB receiver, the frame is wrapped in cmd29 (0x29 0x01) — same routing
-    as ``set_rf_gain``.
-    """
+    """Build a 'read RF gain' CI-V command (0x14 0x02)."""
     return _build_level_get(
         _SUB_RF_GAIN,
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=(receiver != RECEIVER_MAIN),
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_rf_gain",
     )
@@ -135,29 +132,20 @@ def set_rf_gain(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a 'set RF gain' CI-V command."""
-    if cmd_map is not None:
-        return _build_from_map(
-            cmd_map,
-            "set_rf_gain",
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=_level_bcd_encode(level),
-            receiver=receiver,
-            command29=(receiver != RECEIVER_MAIN),
-        )
-    bcd = _level_bcd_encode(level)
-    if receiver != RECEIVER_MAIN:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_LEVEL,
-            sub=_SUB_RF_GAIN,
-            data=bcd,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_LEVEL, sub=_SUB_RF_GAIN, data=bcd)
+    return _build_level_set(
+        _SUB_RF_GAIN,
+        level,
+        to_addr=to_addr,
+        from_addr=from_addr,
+        receiver=receiver,
+        command29=command29,
+        cmd_map=cmd_map,
+        cmd_name="set_rf_gain",
+    )
 
 
 def get_af_level(
@@ -165,18 +153,16 @@ def get_af_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
-    """Build a 'read AF output level' CI-V command (0x14 0x01).
-
-    For SUB receiver, the frame is wrapped in cmd29 (0x29 0x01) — same routing
-    as ``set_af_level``.
-    """
+    """Build a 'read AF output level' CI-V command (0x14 0x01)."""
     return _build_level_get(
         _SUB_AF_LEVEL,
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=(receiver != RECEIVER_MAIN),
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_af_level",
     )
@@ -188,29 +174,20 @@ def set_af_level(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a 'set AF output level' CI-V command."""
-    if cmd_map is not None:
-        return _build_from_map(
-            cmd_map,
-            "set_af_level",
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=_level_bcd_encode(level),
-            receiver=receiver,
-            command29=(receiver != RECEIVER_MAIN),
-        )
-    bcd = _level_bcd_encode(level)
-    if receiver != RECEIVER_MAIN:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_LEVEL,
-            sub=_SUB_AF_LEVEL,
-            data=bcd,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_LEVEL, sub=_SUB_AF_LEVEL, data=bcd)
+    return _build_level_set(
+        _SUB_AF_LEVEL,
+        level,
+        to_addr=to_addr,
+        from_addr=from_addr,
+        receiver=receiver,
+        command29=command29,
+        cmd_map=cmd_map,
+        cmd_name="set_af_level",
+    )
 
 
 def get_squelch(
@@ -218,6 +195,8 @@ def get_squelch(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a 'get squelch level' CI-V command (0x14 0x03)."""
     return _build_level_get(
@@ -225,7 +204,7 @@ def get_squelch(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=(receiver != RECEIVER_MAIN),
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_squelch",
     )
@@ -237,24 +216,20 @@ def set_squelch(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a 'set squelch level' CI-V command."""
-    if cmd_map is not None:
-        return _build_from_map(
-            cmd_map,
-            "set_squelch",
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=_level_bcd_encode(level),
-            receiver=receiver,
-            command29=(receiver != RECEIVER_MAIN),
-        )
-    bcd = _level_bcd_encode(level)
-    if receiver != RECEIVER_MAIN:
-        return build_cmd29_frame(
-            to_addr, from_addr, _CMD_LEVEL, sub=_SUB_SQL, data=bcd, receiver=receiver
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_LEVEL, sub=_SUB_SQL, data=bcd)
+    return _build_level_set(
+        _SUB_SQL,
+        level,
+        to_addr=to_addr,
+        from_addr=from_addr,
+        receiver=receiver,
+        command29=command29,
+        cmd_map=cmd_map,
+        cmd_name="set_squelch",
+    )
 
 
 def get_apf_type_level(
@@ -526,6 +501,8 @@ def get_notch_filter(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a read Notch Filter level command."""
     return _build_level_get(
@@ -533,7 +510,7 @@ def get_notch_filter(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=(receiver != RECEIVER_MAIN),
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="get_notch_filter",
     )
@@ -545,6 +522,8 @@ def set_notch_filter(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build a set Notch Filter level command."""
     return _build_level_set(
@@ -553,7 +532,7 @@ def set_notch_filter(
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
-        command29=(receiver != RECEIVER_MAIN),
+        command29=command29,
         cmd_map=cmd_map,
         cmd_name="set_notch_filter",
     )

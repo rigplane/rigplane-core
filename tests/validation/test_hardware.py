@@ -17,6 +17,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from rigplane.core.exceptions import TimeoutError as RigTimeoutError
@@ -114,6 +115,77 @@ def _stateful_preamp_mock(*, start: int = 0):
     radio.get_preamp = AsyncMock(side_effect=_get)
     radio.set_preamp = AsyncMock(side_effect=_set)
     return radio, store
+
+
+def _stateful_agc_mock(*, start: int, domain: tuple[int, ...]):
+    """A MagicMock(spec=Radio) whose AGC set/get round-trips via a closure
+    and enforces ``domain`` exactly like the real validated seat
+    (``IcomRadio.set_agc``/``YaesuCatRadio.set_agc``, MOR-1522) — an
+    out-of-domain probe raises, just like it would against real hardware.
+    ``radio._profile.agc_modes`` mirrors what ``IcomRadio`` exposes so the
+    harness's domain-derived probe (MOR-1529) can discover it.
+    """
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FAKE"
+    radio.capabilities = {"agc"}
+    radio._profile = SimpleNamespace(agc_modes=domain, model="FAKE")
+    store = {"value": start}
+
+    async def _get(receiver: int = 0) -> int:
+        return store["value"]
+
+    async def _set(value: int, receiver: int = 0) -> None:
+        if value not in domain:
+            raise ValueError(f"AGC mode must be one of {sorted(domain)}, got {value}")
+        store["value"] = value
+
+    radio.get_agc = AsyncMock(side_effect=_get)
+    radio.set_agc = AsyncMock(side_effect=_set)
+    return radio, store
+
+
+async def test_agc_set_probe_derives_from_declared_domain_not_hardcoded_fast_slow():
+    """MOR-1529: the AGC RMVR probe must derive its mutation value from the
+    connected radio's own declared ``[agc] modes``, not hardcoded IC-7610
+    ``AgcMode.FAST``/``AgcMode.SLOW`` constants (1/3) — a radio whose domain
+    excludes both would otherwise get an illegal probe value and FAIL a
+    control that actually works fine.
+    """
+    radio, store = _stateful_agc_mock(start=5, domain=(5, 7))
+    template = _single_entry_template(check_id="agc.set", capability="agc")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["agc.set"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] == 5
+    assert check.evidence["changed"] == 7
+    assert check.evidence["readback"] == 7
+    assert check.evidence["restored"] is True
+    assert store["value"] == 5
+
+
+async def test_agc_set_probe_never_lands_on_off_for_a_domain_that_declares_it():
+    """MOR-1529 R1: the domain-derived probe must never pick 0 (AGC OFF)
+    just because it's the first declared mode != current.
+
+    The live FTX-1 declares ``[agc] modes = [0..6]`` — picking the first
+    declared value != current would land on 0 for every current value
+    except 0 itself. This RMVR probe is documented non-destructive/RX-safe
+    (MOR-659): momentarily disabling AGC on a bench radio is audible and
+    operator-affecting, unlike flipping between two settable AGC speeds.
+    The probe must prefer a non-OFF candidate (landing FTX-1 on 1=FAST).
+    """
+    radio, _store = _stateful_agc_mock(start=3, domain=(0, 1, 2, 3))
+    template = _single_entry_template(check_id="agc.set", capability="agc")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["agc.set"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["changed"] != 0
+    assert check.evidence["changed"] == 1
 
 
 def _digisel_preamp_mock(*, preamp_start: int = 0, digisel_on: bool = True):

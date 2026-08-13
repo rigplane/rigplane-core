@@ -2201,7 +2201,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Hz is translated to a profile-defined index and wrapped via cmd29 only
         when the profile lists ``[0x1A, 0x03]`` in its cmd29 routes
         (IC-7610). The profile must declare a ``set_filter_width`` command
-        before the runtime sends a write.
+        before the runtime sends a write. On dual-RX profiles that do not
+        list the cmd29 route but do declare VFO select codes (IC-9700),
+        ``receiver=1`` (SUB) is reached by temporarily selecting SUB via
+        CI-V 0x07, sending the plain (non-cmd29) frame, then restoring the
+        previously active receiver — mirroring :meth:`set_freq`. Profiles
+        with neither a cmd29 route nor VFO select codes still raise
+        ``CommandError`` instead of silently writing MAIN.
 
         Args:
             width_hz: Filter width in Hz. Bounds and step depend on the
@@ -2249,7 +2255,26 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         bcd_index_byte = bcd_encode_value(payload_value, byte_count=1)
         # CI-V 1A 03: 1-byte BCD index (wfview-confirmed). cmd29-wrapped
         # for receiver routing on dual-RX rigs (IC-7610), direct on single-RX
-        # (IC-705) and on dual-RX rigs without cmd29 support (IC-9700).
+        # (IC-705) and on MAIN for dual-RX rigs without cmd29 support
+        # (IC-9700). SUB on a dual-RX rig without cmd29 support but with VFO
+        # select codes (IC-9700) is reached via the VFO-select fallback
+        # instead of sent to MAIN; SUB with neither raises below.
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1A, 0x03):
+            await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="set_filter_width",
+                action=lambda: self.send_civ(
+                    0x1A, sub=0x03, data=bcd_index_byte, wait_response=False
+                ),
+            )
+            return
+
+        self._require_cmd29_route(
+            0x1A,
+            0x03,
+            receiver=receiver,
+            operation="set_filter_width",
+        )
         if self._profile.supports_cmd29(0x1A, 0x03):
             await self.send_civ(
                 0x29,
@@ -2267,7 +2292,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         The response encoding is profile-driven. Icom profiles use a 1-byte
         BCD segmented index; Xiegu X6200 uses a single raw byte index. The
         request is cmd29-wrapped only when the profile lists ``[0x1A, 0x03]``
-        in its cmd29 routes.
+        in its cmd29 routes. On dual-RX profiles that do not list the
+        route but do declare VFO select codes (IC-9700), ``receiver=1``
+        (SUB) is reached via the VFO-select fallback (mirroring
+        :meth:`set_freq`) instead of silently reading MAIN. Profiles with
+        neither a cmd29 route nor VFO select codes still raise
+        ``CommandError``.
 
         Args:
             receiver: 0=MAIN, 1=SUB.
@@ -2280,18 +2310,43 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         # CI-V 1A 03: 1-byte BCD index for every Icom rig (wfview-confirmed).
         # cmd29-wrapped only for receiver routing on dual-RX rigs that list
-        # the route (IC-7610). IC-705/IC-9700 send the request directly.
-        if self._profile.supports_cmd29(0x1A, 0x03):
-            civ = get_filter_width(to_addr=self._radio_addr, receiver=receiver)
-        else:
-            civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1A, sub=0x03)
+        # the route (IC-7610). IC-705/IC-9700 send the request directly on
+        # MAIN; SUB without a cmd29 route uses the VFO-select fallback when
+        # available, else is rejected below.
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1A, 0x03):
 
-        resp = await self._send_civ_expect(
-            civ,
-            key=f"get_filter_width:{receiver}",
-            dedupe=True,
-            label="get_filter_width",
-        )
+            async def _action() -> CivFrame:
+                civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1A, sub=0x03)
+                return await self._send_civ_expect(
+                    civ,
+                    key=f"get_filter_width:{receiver}",
+                    dedupe=True,
+                    label="get_filter_width",
+                )
+
+            resp = await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="get_filter_width",
+                action=_action,
+            )
+        else:
+            self._require_cmd29_route(
+                0x1A,
+                0x03,
+                receiver=receiver,
+                operation="get_filter_width",
+            )
+            if self._profile.supports_cmd29(0x1A, 0x03):
+                civ = get_filter_width(to_addr=self._radio_addr, receiver=receiver)
+            else:
+                civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1A, sub=0x03)
+
+            resp = await self._send_civ_expect(
+                civ,
+                key=f"get_filter_width:{receiver}",
+                dedupe=True,
+                label="get_filter_width",
+            )
         if resp.command != 0x1A or resp.sub != 0x03:
             raise ValueError(
                 f"Not a filter-width response: command 0x{resp.command:02x} "
@@ -2504,11 +2559,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._last_power = level
 
     async def get_rf_gain(self, receiver: int = 0) -> int:
-        """Read the current RF gain level (0-255).
-
-        Routes through cmd29 (0x29 0x01) for the SUB receiver, mirroring
-        ``set_rf_gain``.
-        """
+        """Read the current RF gain level (0-255)."""
         self._check_connected()
         self._require_receiver(receiver, operation="get_rf_gain")
         self._require_cmd29_route(
@@ -2517,7 +2568,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="get_rf_gain",
         )
-        civ = get_rf_gain(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x02)
+        civ = get_rf_gain(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         try:
             resp = await self._send_civ_expect(
                 civ,
@@ -2542,15 +2594,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_rf_gain",
         )
-        civ = set_rf_gain(level, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x02)
+        civ = set_rf_gain(
+            level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_af_level(self, receiver: int = 0) -> int:
-        """Read the current AF output level (0-255).
-
-        Routes through cmd29 (0x29 0x01) for the SUB receiver, mirroring
-        ``set_af_level``.
-        """
+        """Read the current AF output level (0-255)."""
         self._check_connected()
         self._require_receiver(receiver, operation="get_af_level")
         self._require_cmd29_route(
@@ -2559,7 +2610,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="get_af_level",
         )
-        civ = get_af_level(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x01)
+        civ = get_af_level(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         try:
             resp = await self._send_civ_expect(
                 civ,
@@ -2584,7 +2636,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_af_level",
         )
-        civ = set_af_level(level, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x01)
+        civ = set_af_level(
+            level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
 
     async def set_squelch(self, level: int, receiver: int = 0) -> None:
@@ -2602,7 +2657,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         from rigplane.commands import set_squelch as _set_squelch
 
-        civ = _set_squelch(level, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x03)
+        civ = _set_squelch(
+            level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_squelch(self, receiver: int = 0) -> int:
@@ -2618,7 +2676,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         from rigplane.commands import get_squelch as _get_squelch
 
-        civ = _get_squelch(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x14, 0x03)
+        civ = _get_squelch(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         return await self._get_bcd_level(
             civ,
             key=f"get_squelch:{receiver}",
@@ -2786,8 +2845,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x14, 0x0D, receiver=receiver, operation="get_notch_filter"
         )
+        cmd29 = self._profile.supports_cmd29(0x14, 0x0D)
+        civ = get_notch_filter(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         return await self._get_bcd_level(
-            get_notch_filter(to_addr=self._radio_addr, receiver=receiver),
+            civ,
             key=f"get_notch_filter:{receiver}",
             command=0x14,
             sub=0x0D,
@@ -2799,8 +2862,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x14, 0x0D, receiver=receiver, operation="set_notch_filter"
         )
+        cmd29 = self._profile.supports_cmd29(0x14, 0x0D)
         await self._send_fire_and_forget(
-            set_notch_filter(level, to_addr=self._radio_addr, receiver=receiver)
+            set_notch_filter(
+                level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            )
         )
 
     async def get_compressor_level(self) -> int:
@@ -3028,7 +3094,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x1A, 0x09, receiver=receiver, operation="get_af_mute"
         )
-        civ = get_af_mute(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x1A, 0x09)
+        civ = get_af_mute(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         return await self._get_bool_value(
             civ, key=f"get_af_mute:{receiver}", command=0x1A, sub=0x09
         )
@@ -3039,8 +3106,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_cmd29_route(
             0x1A, 0x09, receiver=receiver, operation="set_af_mute"
         )
+        cmd29 = self._profile.supports_cmd29(0x1A, 0x09)
         await self._send_fire_and_forget(
-            set_af_mute(on, to_addr=self._radio_addr, receiver=receiver)
+            set_af_mute(
+                on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            )
         )
 
     async def get_s_meter_sql_status(self, receiver: int = RECEIVER_MAIN) -> bool:
@@ -3070,22 +3140,35 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=0x07,
         )
 
-    async def get_agc(self, receiver: int = RECEIVER_MAIN) -> AgcMode:
-        """Read AGC mode."""
+    async def get_agc(self, receiver: int = RECEIVER_MAIN) -> int:
+        """Read AGC mode.
+
+        Returns the raw profile-declared value (see the radio's ``[agc]
+        modes`` in its TOML profile), not an ``AgcMode`` enum member.
+        ``AgcMode`` is the IC-7610/generic Icom FAST/MID/SLOW shape — a
+        radio with a differently-shaped domain (e.g. the X6200's
+        OFF=0/FAST=1/SLOW=2/AUTO=3) would otherwise raise on OFF (0 is not
+        a member) or be silently mislabeled for SLOW/AUTO (index 2/3 mean
+        something else there). Label mapping is data-side (``[agc]
+        labels``), mirroring ``set_agc``'s MOR-1522 fix (MOR-1529).
+        """
         self._require_receiver(receiver, operation="get_agc")
-        command29 = receiver != RECEIVER_MAIN
-        if command29:
-            self._require_cmd29_route(
-                0x16, 0x12, receiver=receiver, operation="get_agc"
-            )
+        self._require_cmd29_route(0x16, 0x12, receiver=receiver, operation="get_agc")
+        cmd29 = self._profile.supports_cmd29(0x16, 0x12)
         value = await self._get_bcd_level(
-            get_agc(to_addr=self._radio_addr, receiver=receiver),
+            get_agc(to_addr=self._radio_addr, receiver=receiver, command29=cmd29),
             key=f"get_agc:{receiver}",
             command=0x16,
             sub=0x12,
             bcd_bytes=1,
         )
-        return AgcMode(value)
+        agc_modes = self._profile.agc_modes
+        if agc_modes is not None and value not in agc_modes:
+            raise ValueError(
+                f"AGC mode {value} reported by radio is not in declared domain "
+                f"{sorted(agc_modes)} for {self._profile.model}"
+            )
+        return value
 
     async def set_agc(self, mode: AgcMode | int, receiver: int = RECEIVER_MAIN) -> None:
         """Set AGC mode.
@@ -3098,10 +3181,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         must not be rejected just because it isn't an IC-7610 mode (MOR-1522).
         """
         self._require_receiver(receiver, operation="set_agc")
-        if receiver != RECEIVER_MAIN:
-            self._require_cmd29_route(
-                0x16, 0x12, receiver=receiver, operation="set_agc"
-            )
+        self._require_cmd29_route(0x16, 0x12, receiver=receiver, operation="set_agc")
+        cmd29 = self._profile.supports_cmd29(0x16, 0x12)
         mode_int = int(mode)
         agc_modes = self._profile.agc_modes
         if agc_modes is not None and mode_int not in agc_modes:
@@ -3110,7 +3191,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 f"{self._profile.model}, got {mode_int}"
             )
         await self._send_fire_and_forget(
-            set_agc(mode_int, to_addr=self._radio_addr, receiver=receiver)
+            set_agc(
+                mode_int, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            )
         )
 
     async def get_audio_peak_filter(
@@ -3224,10 +3307,35 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return BreakInMode(value)
 
     async def set_break_in(self, mode: BreakInMode | int) -> None:
-        """Set break-in mode."""
-        break_in = BreakInMode(mode)
+        """Set break-in mode.
+
+        Valid values are declared per radio by the profile's ``[break_in]
+        values`` (e.g. IC-705/IC-7300/IC-9700/IC-7610 all offer OFF/SEMI/
+        FULL). Unlike ``set_agc``/``set_preamp`` (MOR-1522/MOR-1523), a
+        missing domain here is NOT treated as "unvalidated, pass through" —
+        some profiles (X6100/X6200) advertise the ``break_in`` capability
+        but have no trustworthy in-repo source for a value domain (see the
+        ``rigs/x6200.toml``/``rigs/x6100.toml`` ``[capabilities]`` notes),
+        so this refuses any value rather than guess (MOR-1534).
+
+        Raises:
+            ValueError: If the profile declares no break-in domain, or if
+                ``mode`` is not in the profile's declared domain.
+        """
+        mode_int = int(mode)
+        break_in_modes = self._profile.break_in_modes
+        if break_in_modes is None:
+            raise ValueError(
+                f"No break-in value domain declared for {self._profile.model}; "
+                "refusing to set an unvalidated break-in mode"
+            )
+        if mode_int not in break_in_modes:
+            raise ValueError(
+                f"Break-in mode must be one of {sorted(break_in_modes)} for "
+                f"{self._profile.model}, got {mode_int}"
+            )
         await self._send_fire_and_forget(
-            set_break_in(break_in, to_addr=self._radio_addr)
+            set_break_in(mode_int, to_addr=self._radio_addr)
         )
 
     async def get_manual_notch(self, receiver: int = RECEIVER_MAIN) -> bool:
@@ -3281,11 +3389,30 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_manual_notch_width(
         self, value: int, receiver: int = RECEIVER_MAIN
     ) -> None:
-        """Set manual notch width (0=WIDE, 1=MID, 2=NAR)."""
+        """Set manual notch width.
+
+        Valid values are declared per radio by the profile's ``[notch]
+        width_values`` (e.g. IC-705/IC-7300/IC-9700/IC-7610 all declare
+        0=WIDE/1=MID/2=NAR). A profile that declares no width domain is
+        unvalidated here (permissive), mirroring ``set_agc``/``set_preamp``
+        (MOR-1522/MOR-1523) — the ``notch`` capability covers auto-notch
+        too, so its absence does not by itself mean this control is wrong
+        to call (MOR-1534).
+
+        Raises:
+            ValueError: If the profile declares a width domain and
+                ``value`` is not in it.
+        """
         self._require_receiver(receiver, operation="set_manual_notch_width")
         self._require_cmd29_route(
             0x16, 0x57, receiver=receiver, operation="set_manual_notch_width"
         )
+        notch_width_values = self._profile.notch_width_values
+        if notch_width_values is not None and value not in notch_width_values:
+            raise ValueError(
+                f"Manual notch width must be one of {sorted(notch_width_values)} "
+                f"for {self._profile.model}, got {value}"
+            )
         cmd29 = self._profile.supports_cmd29(0x16, 0x57)
         await self._send_fire_and_forget(
             set_manual_notch_width(
@@ -3359,16 +3486,35 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         shape: FilterShape | int,
         receiver: int = RECEIVER_MAIN,
     ) -> None:
-        """Set DSP IF filter shape."""
+        """Set DSP IF filter shape.
+
+        Valid values are declared per radio by the profile's
+        ``[filter_shape] values`` (IC-705/IC-7300/IC-9700/IC-7610 all
+        declare 0=SHARP/1=SOFT). A profile that declares no domain at all
+        (every radio outside that family) is unvalidated here (permissive),
+        mirroring ``set_agc``/``set_preamp`` (MOR-1522/MOR-1523) — none of
+        those radios advertise the ``filter_shape`` capability, so this
+        path is unreachable for them today (MOR-1534).
+
+        Raises:
+            ValueError: If the profile declares a domain and ``shape`` is
+                not in it.
+        """
         self._require_receiver(receiver, operation="set_filter_shape")
         self._require_cmd29_route(
             0x16, 0x56, receiver=receiver, operation="set_filter_shape"
         )
+        shape_int = int(shape)
+        filter_shape_values = self._profile.filter_shape_values
+        if filter_shape_values is not None and shape_int not in filter_shape_values:
+            raise ValueError(
+                f"Filter shape must be one of {sorted(filter_shape_values)} for "
+                f"{self._profile.model}, got {shape_int}"
+            )
         cmd29 = self._profile.supports_cmd29(0x16, 0x56)
-        filter_shape = FilterShape(shape)
         await self._send_fire_and_forget(
             set_filter_shape(
-                filter_shape,
+                shape_int,
                 to_addr=self._radio_addr,
                 receiver=receiver,
                 command29=cmd29,
@@ -3387,10 +3533,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return SsbTxBandwidth(value)
 
     async def set_ssb_tx_bandwidth(self, bandwidth: SsbTxBandwidth | int) -> None:
-        """Set SSB transmit bandwidth preset."""
-        ssb_tx_bandwidth = SsbTxBandwidth(bandwidth)
+        """Set SSB transmit bandwidth preset.
+
+        Valid values are declared per radio by the profile's
+        ``[ssb_tx_bw] values`` (IC-705/IC-7300/IC-9700/IC-7610 all declare
+        0=WIDE/1=MID/2=NAR). A profile that declares no domain at all
+        (every radio outside that family) is unvalidated here (permissive),
+        mirroring ``set_agc``/``set_preamp`` (MOR-1522/MOR-1523) — none of
+        those radios advertise the ``ssb_tx_bw`` capability, so this path
+        is unreachable for them today (MOR-1534).
+
+        Raises:
+            ValueError: If the profile declares a domain and ``bandwidth``
+                is not in it.
+        """
+        bandwidth_int = int(bandwidth)
+        ssb_tx_bw_values = self._profile.ssb_tx_bw_values
+        if ssb_tx_bw_values is not None and bandwidth_int not in ssb_tx_bw_values:
+            raise ValueError(
+                f"SSB TX bandwidth must be one of {sorted(ssb_tx_bw_values)} for "
+                f"{self._profile.model}, got {bandwidth_int}"
+            )
         await self._send_fire_and_forget(
-            set_ssb_tx_bandwidth(ssb_tx_bandwidth, to_addr=self._radio_addr)
+            set_ssb_tx_bandwidth(bandwidth_int, to_addr=self._radio_addr)
         )
 
     async def get_main_sub_tracking(self) -> bool:
@@ -4028,7 +4193,25 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._preamp_level = level
 
     async def get_digisel(self, receiver: int = RECEIVER_MAIN) -> bool:
-        """Read DIGI-SEL status (IC-7610 frontend selector)."""
+        """Read DIGI-SEL status (IC-7610 frontend selector).
+
+        Wrapping is gated purely on ``self._profile.supports_cmd29(0x16,
+        0x4E)`` via ``_require_cmd29_route`` (a no-op for receiver=MAIN,
+        which raises for receiver!=MAIN without a route) — matching every
+        other command in this family. Previously this also hard-raised
+        ``CommandError`` for receiver=MAIN when the profile lacked the
+        route, instead of unwrapping like the rest of the family (MOR-1537).
+
+        That earlier raise was NOT purely redundant, contrary to MOR-1537's
+        framing: it was the only thing turning a profile that over-declares
+        the ``"digisel"`` capability without a matching cmd29 route/command
+        into a fast, explicit ``CommandError`` instead of a live, always-
+        0x16/0x4E CI-V send that blocks for a full timeout because the
+        radio never answers (MOR-1540 hit this on IC-705). The fix for that
+        class of bug is correcting the capability declaration at the source
+        (``rigs/<model>.toml``), not restoring the raise here — this method
+        still unwraps for MAIN as documented above.
+        """
         self._check_connected()
         self._require_capability("digisel", operation="get_digisel")
         self._require_receiver(receiver, operation="get_digisel")
@@ -4038,12 +4221,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="get_digisel",
         )
-        if not self._profile.supports_cmd29(0x16, 0x4E):
-            raise CommandError(
-                f"get_digisel is unsupported by profile {self._profile.model}: "
-                "no cmd29 route for command 0x16/0x4E"
-            )
-        civ = get_digisel(to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x4E)
+        civ = get_digisel(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         resp = await self._send_civ_expect(civ, label="get_digisel")
         if not resp.data:
             raise CommandError("Radio returned empty DIGI-SEL response")
@@ -4062,7 +4241,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_digisel",
         )
-        civ = set_digisel(on, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x4E)
+        civ = set_digisel(
+            on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         resp = await self._send_civ_expect(civ, label="set_digisel")
         ack = parse_ack_nak(resp)
         if ack is False:
@@ -4071,7 +4253,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_nb(self) -> bool:
         """Read Noise Blanker status."""
         self._check_connected()
-        civ = get_nb(to_addr=self._radio_addr)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x22)
+        civ = get_nb(to_addr=self._radio_addr, command29=cmd29)
         resp = await self._send_civ_expect(civ, label="get_nb")
         return resp.data[0] == 0x01 if resp.data else False
 
@@ -4086,13 +4269,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_nb",
         )
-        civ = set_nb(on, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x22)
+        civ = set_nb(on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_nr(self) -> bool:
         """Read Noise Reduction status."""
         self._check_connected()
-        civ = get_nr(to_addr=self._radio_addr)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x40)
+        civ = get_nr(to_addr=self._radio_addr, command29=cmd29)
         resp = await self._send_civ_expect(civ, label="get_nr")
         return resp.data[0] == 0x01 if resp.data else False
 
@@ -4107,13 +4292,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_nr",
         )
-        civ = set_nr(on, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x40)
+        civ = set_nr(on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_ip_plus(self) -> bool:
         """Read IP+ status."""
         self._check_connected()
-        civ = get_ip_plus(to_addr=self._radio_addr)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x65)
+        civ = get_ip_plus(to_addr=self._radio_addr, command29=cmd29)
         resp = await self._send_civ_expect(civ, label="get_ip_plus")
         return resp.data[0] == 0x01 if resp.data else False
 
@@ -4128,11 +4315,43 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_ip_plus",
         )
-        civ = set_ip_plus(on, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x65)
+        civ = set_ip_plus(
+            on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_repeater_tone(self, receiver: int = 0) -> bool:
         """Read repeater tone status (0x16 0x42)."""
+        self._check_connected()
+        self._require_receiver(receiver, operation="get_repeater_tone")
+
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(
+            0x16, _SUB_REPEATER_TONE
+        ):
+
+            async def _action() -> bool:
+                civ = _get_repeater_tone_cmd(
+                    to_addr=self._radio_addr,
+                    receiver=RECEIVER_MAIN,
+                    command29=False,
+                )
+                return await self._get_bool_value(
+                    civ,
+                    key="get_repeater_tone",
+                    command=0x16,
+                    sub=_SUB_REPEATER_TONE,
+                )
+
+            return await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="get_repeater_tone",
+                action=_action,
+            )
+
+        self._require_cmd29_route(
+            0x16, _SUB_REPEATER_TONE, receiver=receiver, operation="get_repeater_tone"
+        )
         cmd29 = self._profile.supports_cmd29(0x16, _SUB_REPEATER_TONE)
         civ = _get_repeater_tone_cmd(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
@@ -4143,6 +4362,33 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     async def set_repeater_tone(self, on: bool, receiver: int = 0) -> None:
         """Set repeater tone on/off (0x16 0x42)."""
+        self._check_connected()
+        self._require_receiver(receiver, operation="set_repeater_tone")
+
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(
+            0x16, _SUB_REPEATER_TONE
+        ):
+
+            async def _action() -> None:
+                await self._send_fire_and_forget(
+                    _set_repeater_tone_cmd(
+                        on,
+                        to_addr=self._radio_addr,
+                        receiver=RECEIVER_MAIN,
+                        command29=False,
+                    )
+                )
+
+            await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="set_repeater_tone",
+                action=_action,
+            )
+            return
+
+        self._require_cmd29_route(
+            0x16, _SUB_REPEATER_TONE, receiver=receiver, operation="set_repeater_tone"
+        )
         cmd29 = self._profile.supports_cmd29(0x16, _SUB_REPEATER_TONE)
         await self._send_fire_and_forget(
             _set_repeater_tone_cmd(
@@ -4152,6 +4398,35 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     async def get_repeater_tsql(self, receiver: int = 0) -> bool:
         """Read repeater TSQL status (0x16 0x43)."""
+        self._check_connected()
+        self._require_receiver(receiver, operation="get_repeater_tsql")
+
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(
+            0x16, _SUB_REPEATER_TSQL
+        ):
+
+            async def _action() -> bool:
+                civ = _get_repeater_tsql_cmd(
+                    to_addr=self._radio_addr,
+                    receiver=RECEIVER_MAIN,
+                    command29=False,
+                )
+                return await self._get_bool_value(
+                    civ,
+                    key="get_repeater_tsql",
+                    command=0x16,
+                    sub=_SUB_REPEATER_TSQL,
+                )
+
+            return await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="get_repeater_tsql",
+                action=_action,
+            )
+
+        self._require_cmd29_route(
+            0x16, _SUB_REPEATER_TSQL, receiver=receiver, operation="get_repeater_tsql"
+        )
         cmd29 = self._profile.supports_cmd29(0x16, _SUB_REPEATER_TSQL)
         civ = _get_repeater_tsql_cmd(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
@@ -4162,6 +4437,33 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     async def set_repeater_tsql(self, on: bool, receiver: int = 0) -> None:
         """Set repeater TSQL on/off (0x16 0x43)."""
+        self._check_connected()
+        self._require_receiver(receiver, operation="set_repeater_tsql")
+
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(
+            0x16, _SUB_REPEATER_TSQL
+        ):
+
+            async def _action() -> None:
+                await self._send_fire_and_forget(
+                    _set_repeater_tsql_cmd(
+                        on,
+                        to_addr=self._radio_addr,
+                        receiver=RECEIVER_MAIN,
+                        command29=False,
+                    )
+                )
+
+            await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="set_repeater_tsql",
+                action=_action,
+            )
+            return
+
+        self._require_cmd29_route(
+            0x16, _SUB_REPEATER_TSQL, receiver=receiver, operation="set_repeater_tsql"
+        )
         cmd29 = self._profile.supports_cmd29(0x16, _SUB_REPEATER_TSQL)
         await self._send_fire_and_forget(
             _set_repeater_tsql_cmd(
@@ -4172,6 +4474,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_tone_freq(self, receiver: int = 0) -> float:
         """Read CTCSS tone frequency in Hz (0x1B 0x00)."""
         self._check_connected()
+        self._require_receiver(receiver, operation="get_tone_freq")
+
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x00):
+
+            async def _action() -> float:
+                civ = _get_tone_freq_cmd(
+                    to_addr=self._radio_addr,
+                    receiver=RECEIVER_MAIN,
+                    command29=False,
+                )
+                resp = await self._send_civ_expect(civ, label="get_tone_freq")
+                _, freq = parse_tone_freq_response(resp)
+                return freq
+
+            return await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="get_tone_freq",
+                action=_action,
+            )
+
+        self._require_cmd29_route(
+            0x1B, 0x00, receiver=receiver, operation="get_tone_freq"
+        )
         cmd29 = self._profile.supports_cmd29(0x1B, 0x00)
         civ = _get_tone_freq_cmd(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
@@ -4182,6 +4507,31 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     async def set_tone_freq(self, freq_hz: float, receiver: int = 0) -> None:
         """Set CTCSS tone frequency in Hz (0x1B 0x00)."""
+        self._check_connected()
+        self._require_receiver(receiver, operation="set_tone_freq")
+
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x00):
+
+            async def _action() -> None:
+                await self._send_fire_and_forget(
+                    _set_tone_freq_cmd(
+                        freq_hz,
+                        to_addr=self._radio_addr,
+                        receiver=RECEIVER_MAIN,
+                        command29=False,
+                    )
+                )
+
+            await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="set_tone_freq",
+                action=_action,
+            )
+            return
+
+        self._require_cmd29_route(
+            0x1B, 0x00, receiver=receiver, operation="set_tone_freq"
+        )
         cmd29 = self._profile.supports_cmd29(0x1B, 0x00)
         await self._send_fire_and_forget(
             _set_tone_freq_cmd(
@@ -4192,6 +4542,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_tsql_freq(self, receiver: int = 0) -> float:
         """Read TSQL frequency in Hz (0x1B 0x01)."""
         self._check_connected()
+        self._require_receiver(receiver, operation="get_tsql_freq")
+
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x01):
+
+            async def _action() -> float:
+                civ = _get_tsql_freq_cmd(
+                    to_addr=self._radio_addr,
+                    receiver=RECEIVER_MAIN,
+                    command29=False,
+                )
+                resp = await self._send_civ_expect(civ, label="get_tsql_freq")
+                _, freq = parse_tsql_freq_response(resp)
+                return freq
+
+            return await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="get_tsql_freq",
+                action=_action,
+            )
+
+        self._require_cmd29_route(
+            0x1B, 0x01, receiver=receiver, operation="get_tsql_freq"
+        )
         cmd29 = self._profile.supports_cmd29(0x1B, 0x01)
         civ = _get_tsql_freq_cmd(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
@@ -4202,6 +4575,31 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     async def set_tsql_freq(self, freq_hz: float, receiver: int = 0) -> None:
         """Set TSQL frequency in Hz (0x1B 0x01)."""
+        self._check_connected()
+        self._require_receiver(receiver, operation="set_tsql_freq")
+
+        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x01):
+
+            async def _action() -> None:
+                await self._send_fire_and_forget(
+                    _set_tsql_freq_cmd(
+                        freq_hz,
+                        to_addr=self._radio_addr,
+                        receiver=RECEIVER_MAIN,
+                        command29=False,
+                    )
+                )
+
+            await self._run_with_receiver_vfo_fallback(
+                receiver=receiver,
+                operation="set_tsql_freq",
+                action=_action,
+            )
+            return
+
+        self._require_cmd29_route(
+            0x1B, 0x01, receiver=receiver, operation="set_tsql_freq"
+        )
         cmd29 = self._profile.supports_cmd29(0x1B, 0x01)
         await self._send_fire_and_forget(
             _set_tsql_freq_cmd(

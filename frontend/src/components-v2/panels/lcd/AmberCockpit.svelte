@@ -5,7 +5,7 @@
   } from '$lib/runtime/adapters/panel-adapters';
   import {
     toTxProps, toRitXitProps, toVfoOpsProps, toMeterProps,
-    toDspProps, toFilterProps,
+    toDspProps, toFilterProps, formatPreLabel,
   } from '$lib/runtime/props/panel-props';
   import AmberFrequency from './AmberFrequency.svelte';
   import AmberSmeter from './AmberSmeter.svelte';
@@ -160,12 +160,6 @@
   let fftPush: ((data: Uint8Array) => void) | null = null;
   let showFft = $derived(cockpitProps.hasAudioFft);
 
-  // FTX-1 AGC: 0=OFF, 1=FAST, 2=MID, 3=SLOW, 4=AUTO-F, 5=AUTO-M, 6=AUTO-S
-  const AGC_LABELS: Record<number, string> = {
-    0: 'OFF', 1: 'FAST', 2: 'MID', 3: 'SLOW',
-    4: 'A-F', 5: 'A-M', 6: 'A-S',
-  };
-
   // ── Indicator token arrays ──
   // globalTokens: radio-wide status indicators for the top global strip
   let globalTokens = $derived<IndToken[]>([
@@ -195,9 +189,13 @@
     }] : []),
   ]);
 
-  // Helper: AGC label from raw AGC mode number
+  // MOR-1529: AGC mode labels come from the profile-declared capabilities
+  // payload (`[agc].labels` per radio, e.g. ic7300/ic7610 FAST/MID/SLOW vs
+  // X6200 OFF/FAST/SLOW/AUTO — index 2/3 differ from the IC-7610 shape this
+  // file used to hardcode unconditionally, mirrors AmberScope). Falls back
+  // to the plain numeric value when the profile declares no label for it.
   function agcLabelFor(agcMode: number): string {
-    return AGC_LABELS[agcMode] ?? `${agcMode}`;
+    return caps?.agcLabels?.[String(agcMode)] ?? `${agcMode}`;
   }
 
   // Per-receiver token builder — gates every indicator on fieldStatus
@@ -212,8 +210,12 @@
       }] : []),
       ...(hasCap('preamp') && rxAvailable(rxKey, 'preamp') ? [{
         id: 'pre' as const,
-        label: (rxState?.preamp ?? 0) === 0 ? 'IPO'
-             : (rxState?.preamp ?? 0) === 1 ? 'AMP1' : 'AMP2',
+        // MOR-1529: profile-declared `[preamp].labels` (e.g. FTX-1's
+        // IPO/AMP1) instead of hardcoding that Yaesu vocabulary for every
+        // radio — most Icom profiles declare no preamp labels at all, so
+        // this falls back to `formatPreLabel`'s generic OFF/P{n}, matching
+        // `toRfFrontEndProps`'s `preOptions` for the same radios.
+        label: formatPreLabel(rxState?.preamp ?? 0, caps?.preLabels ?? {}),
         active: true,
       }] : []),
       ...(hasCap('digisel') && rxAvailable(rxKey, 'digisel') ? [{

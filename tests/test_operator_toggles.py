@@ -93,29 +93,56 @@ def _response_frame(sub: int, data: bytes) -> CivFrame:
 
 
 # ---------------------------------------------------------------------------
-# AGC Status (no cmd29, enum: AgcMode)
+# AGC Status (cmd29, enum: AgcMode)
 # ---------------------------------------------------------------------------
 
 
 class TestAGCStatus:
-    """Tests for get_agc / set_agc."""
+    """Tests for get_agc / set_agc.
+
+    MOR-1537: the builder's ``command29`` default is ``True`` (matching every
+    other cmd29-eligible builder in this module, e.g. ``TestAudioPeakFilter``)
+    — it no longer derives the wrap decision from ``receiver`` internally.
+    The profile-aware caller (``IcomRadio.get_agc``/``set_agc``) is
+    responsible for computing and passing the actual
+    ``self._profile.supports_cmd29(0x16, 0x12)`` value; see
+    ``tests/test_mor1537_cmd29_gating.py`` for that gating behavior,
+    including the IC-7610 MAIN-receiver behavior change this pinned.
+    """
 
     def test_get_agc_builds_correct_frame(self) -> None:
-        assert commands.get_agc() == _simple_get(_SUB_AGC)
+        assert commands.get_agc() == _cmd29_get(_SUB_AGC, RECEIVER_MAIN)
+
+    def test_get_agc_default_is_main(self) -> None:
+        assert commands.get_agc() == commands.get_agc(receiver=RECEIVER_MAIN)
 
     def test_get_agc_sub_receiver_builds_cmd29_frame(self) -> None:
         assert commands.get_agc(receiver=RECEIVER_SUB) == _cmd29_get(
             _SUB_AGC, RECEIVER_SUB
         )
 
+    def test_get_agc_command29_false_builds_plain_frame(self) -> None:
+        assert commands.get_agc(command29=False) == _simple_get(_SUB_AGC)
+
     def test_set_agc_fast_builds_correct_frame(self) -> None:
-        assert commands.set_agc(AgcMode.FAST) == _simple_set(_SUB_AGC, 0x01)
+        assert commands.set_agc(AgcMode.FAST) == _cmd29_set(
+            _SUB_AGC, 0x01, RECEIVER_MAIN
+        )
 
     def test_set_agc_mid_builds_correct_frame(self) -> None:
-        assert commands.set_agc(AgcMode.MID) == _simple_set(_SUB_AGC, 0x02)
+        assert commands.set_agc(AgcMode.MID) == _cmd29_set(
+            _SUB_AGC, 0x02, RECEIVER_MAIN
+        )
 
     def test_set_agc_slow_builds_correct_frame(self) -> None:
-        assert commands.set_agc(AgcMode.SLOW) == _simple_set(_SUB_AGC, 0x03)
+        assert commands.set_agc(AgcMode.SLOW) == _cmd29_set(
+            _SUB_AGC, 0x03, RECEIVER_MAIN
+        )
+
+    def test_set_agc_command29_false_builds_plain_frame(self) -> None:
+        assert commands.set_agc(AgcMode.SLOW, command29=False) == _simple_set(
+            _SUB_AGC, 0x03
+        )
 
     def test_set_agc_sub_receiver_builds_cmd29_frame(self) -> None:
         assert commands.set_agc(AgcMode.MID, receiver=RECEIVER_SUB) == _cmd29_set(
@@ -135,8 +162,8 @@ class TestAGCStatus:
         ``tests/test_radio.py``). This builder only encodes the raw
         single-BCD-byte value.
         """
-        assert commands.set_agc(0) == _simple_set(_SUB_AGC, 0x00)
-        assert commands.set_agc(4) == _simple_set(_SUB_AGC, 0x04)
+        assert commands.set_agc(0) == _cmd29_set(_SUB_AGC, 0x00, RECEIVER_MAIN)
+        assert commands.set_agc(4) == _cmd29_set(_SUB_AGC, 0x04, RECEIVER_MAIN)
 
     def test_set_agc_rejects_value_outside_single_bcd_byte_range(self) -> None:
         with pytest.raises(ValueError):
@@ -408,9 +435,17 @@ class TestBreakIn:
     def test_set_break_in_accepts_int(self) -> None:
         assert commands.set_break_in(0) == commands.set_break_in(BreakInMode.OFF)
 
-    def test_set_break_in_rejects_value_above_maximum(self) -> None:
-        with pytest.raises(ValueError):
-            commands.set_break_in(3)
+    def test_set_break_in_builder_accepts_values_outside_the_off_semi_full_enum(
+        self,
+    ) -> None:
+        """MOR-1534: the raw wire-command builder no longer polices the
+        IC-7610 OFF/SEMI/FULL enum's range — which break-in values are
+        legal is a per-profile ``[break_in] values`` domain, enforced one
+        layer up in ``CoreRadio.set_break_in`` (see
+        ``TestBreakInDomainValidation`` in ``tests/test_radio.py``). This
+        builder only encodes the raw single-BCD-byte value.
+        """
+        assert commands.set_break_in(3) == _simple_set(_SUB_BREAK_IN, 0x03)
 
     def test_set_break_in_rejects_invalid_enum_int(self) -> None:
         with pytest.raises(ValueError):

@@ -1403,7 +1403,7 @@ def test_reconciliation_of_tx_only_field_suppressed_while_tx_inactive() -> None:
         clock.advance(2.1)
         delta = service.tick(now=clock.now())
         scheduler.due_requests(now=clock.now(), tx_active=False)
-        pending = scheduler.pending_requests()
+        pending = scheduler.dispatchable_requests()
 
         swr_requests = [
             r
@@ -1464,7 +1464,7 @@ def test_reconciliation_of_tx_only_field_still_fires_while_tx_active() -> None:
     clock.advance(2.1)
     delta = service.tick(now=clock.now())
     scheduler.due_requests(now=clock.now(), tx_active=True)
-    pending = scheduler.pending_requests()
+    pending = scheduler.dispatchable_requests()
 
     assert delta.reconciliation_requests
     assert any(
@@ -1513,20 +1513,59 @@ def test_reconciliation_queued_during_tx_but_drained_after_dekey_is_deferred_not
     )
     assert result.status is AcquisitionStatus.QUEUED
 
-    # TX ends before the next drain reads pending_requests().
+    # TX ends before the next drain reads dispatchable_requests().
     clock.advance(0.1)
     scheduler.due_requests(now=clock.now(), tx_active=False)
-    assert scheduler.pending_requests() == (), (
+    assert scheduler.dispatchable_requests() == (), (
         "a reconciliation queued during TX must not fire once drained after de-key"
     )
+    # It is not lost either -- pending_requests() (unfiltered, MOR-1533)
+    # still finds it, so an in-flight answer can still be credited.
+    assert len(scheduler.pending_requests()) == 1
 
     # TX resumes: the same still-queued request must fire -- not lost.
     clock.advance(0.1)
     scheduler.due_requests(now=clock.now(), tx_active=True)
-    resumed = scheduler.pending_requests()
+    resumed = scheduler.dispatchable_requests()
     assert len(resumed) == 1
     assert resumed[0].paths == (swr,)
     assert resumed[0].priority is AcquisitionPriority.RECONCILIATION
+
+
+def test_user_priority_read_of_tx_only_field_is_never_gated_by_tx_active() -> None:
+    """MOR-1532 acceptance note: rigctld's own USER-priority reads (e.g. its
+    ``l SWR`` one-shot) must stay ungated by the MOR-1531 tx_active gate --
+    only the automatic RECONCILIATION-priority hint is in scope for it (see
+    ``AcquisitionPolicy.tx_only``'s docstring and
+    ``dispatchable_requests()``'s docstring).
+    """
+
+    clock = FreshnessClock(start=800.0)
+    swr = FieldPath.global_("meters", "swr")
+    profile = _profile(
+        [swr],
+        field_policies={
+            swr: AcquisitionPolicy(
+                cadence_seconds=None,
+                freshness_ttl_seconds=2.0,
+                tx_only=True,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    scheduler.due_requests(now=clock.now(), tx_active=False)
+
+    result = scheduler.ensure_fresh(
+        swr,
+        max_age=2.0,
+        priority=AcquisitionPriority.USER,
+        reason="rigctld.get_level",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    dispatchable = scheduler.dispatchable_requests()
+    assert len(dispatchable) == 1
+    assert dispatchable[0].priority is AcquisitionPriority.USER
 
 
 def test_prime_unobserved_queues_background_read_for_never_observed_policy_field() -> (

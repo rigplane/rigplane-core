@@ -473,13 +473,33 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         )
         self._scope_controls().vbw_narrow = narrow
 
-    async def get_scope_fixed_edge(self) -> ScopeFixedEdge:
-        """Read the fixed-edge scope bounds."""
+    async def get_scope_fixed_edge(
+        self, *, range_index: int | None = None, edge: int | None = None
+    ) -> ScopeFixedEdge:
+        """Read the fixed-edge scope bounds for one <range><edge> slot.
+
+        The IC-7610 selector on this query addresses ONE specific slot, not
+        "whatever is currently displayed" (MOR-662) — a bare re-read after a
+        write to a different slot silently fetches unrelated data and
+        clobbers the mirror the write just populated (MOR-1530). Defaults to
+        the slot most recently resolved by ``set_scope_fixed_edge`` (or a
+        prior ``get_scope_fixed_edge``), so an argument-less reconfirm call
+        re-reads the SAME slot. Falls back to the original range 1 / edge 1
+        default only when no slot is known yet (``range_index == 0``, the
+        ``ScopeFixedEdge`` dataclass default).
+        """
         self._check_connected()
+        current = self._scope_controls().fixed_edge
+        resolved_range = (
+            range_index if range_index is not None else (current.range_index or 1)
+        )
+        resolved_edge = edge if edge is not None else (current.edge or 1)
         resp = await self._send_civ_expect(
-            # IC-7610 requires a <range><edge> selector or it NAKs the read
-            # (MOR-662). Use range 1, edge 1.
-            _get_scope_fixed_edge_cmd(to_addr=self._radio_addr, range_index=1, edge=1),
+            _get_scope_fixed_edge_cmd(
+                to_addr=self._radio_addr,
+                range_index=resolved_range,
+                edge=resolved_edge,
+            ),
             label="get_scope_fixed_edge",
         )
         fixed_edge = parse_scope_fixed_edge_response(resp)

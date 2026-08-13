@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-08-13T01:32:28.000Z",
-  "commit": "60b05b3395b22ae5254711c35327cb0dc19dea43",
-  "commitShort": "60b05b33",
-  "branch": "codex/mor-1474-tx-wording-surfaces",
+  "generatedAt": "2026-08-13T01:23:28.000Z",
+  "commit": "0c5216e34c3cc4e06122a906889e90901617d663",
+  "commitShort": "0c5216e3",
+  "branch": "codex/mor-1482-vfo-tile-format",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",

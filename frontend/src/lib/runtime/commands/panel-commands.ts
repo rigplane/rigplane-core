@@ -590,6 +590,13 @@ export function makeDspHandlers() {
       } else if (mode === 'manual') {
         dispatchRadioIntent({ name: 'set_manual_notch', params: { on: true, receiver } });
       } else {
+        // MOR-1541: notch-off genuinely dispatches BOTH commands, so both
+        // NOTCH and A-NOTCH legitimately arm until each is confirmed —
+        // that is an honest reflection of what is actually in flight, not
+        // a bug (owner-decided: keep this behavior). Dispatch-order pin:
+        // panel-commands.intent.isolated.test.ts:396. Rendered-armed pin
+        // (both buttons show data-armed together): mor1536-armed-adoption
+        // .test.ts, "DspPanel notch armed signal".
         dispatchRadioIntent({ name: 'set_auto_notch', params: { on: false, receiver } });
         dispatchRadioIntent({ name: 'set_manual_notch', params: { on: false, receiver } });
       }
@@ -1590,22 +1597,43 @@ export function makeKeyboardHandlers() {
         case 'focus_target': {
           const target = action.params?.target;
           if (typeof target === 'string') {
+            // MOR-1456: every selector below is verified against the ACTUAL
+            // rendered desktop-v2 composition, not the pre-v3-rework legacy
+            // panels (`LeftSidebar`'s `RfFrontEnd`/`ModePanel`/`FilterPanel`
+            // are suppressed there — see `desktop-declarations.ts`'s
+            // `filter`/`rfFrontEnd`/`rx-audio` zones). Each entry points at
+            // the semantic surface that actually mounts, reusing its existing
+            // `data-testid` hooks rather than inventing a parallel
+            // `data-panel`/`data-control` vocabulary no component emits.
             const selectors: Record<string, string> = {
-              af: '[data-panel="rf-frontend"] [data-control="af-gain"]',
-              rf:
-                '[data-panel="rf-frontend"] [data-control="rf-sql-dual"], [data-panel="rf-frontend"] [data-control="rf-gain"]',
-              filter: '[data-panel="filter"]',
-              squelch:
-                '[data-panel="rf-frontend"] [data-control="rf-sql-dual"], [data-panel="rf-frontend"] [data-control="squelch"]',
-              mode: '[data-panel="mode"]',
-              pbt: '[data-panel="filter"] [data-control="pbt-inner"]',
+              af: '[data-testid="rx-audio-af"] input',
+              rf: '[data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-rfGain"] input',
+              squelch: '[data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-squelch"] input',
+              filter: '[data-testid="filter-select"] button',
+              mode: '[data-testid="filter-mode"] button',
+              pbt: '[data-testid="filter-pbtInner"] input',
               waterfall: '[data-waterfall]',
-              vfo: '[data-vfo="main"] .freq-display',
+              // The active receiver's tunable frequency tile: `data-vfo-freq`
+              // marks the region (`VfoSurface.svelte`, MOR-1480), but the
+              // actual focusable node is `FrequencyDisplayInteractive`'s
+              // `tabindex="0"` root nested inside it (`vfoFreqHook={false}`
+              // there deliberately keeps the attribute off that inner node —
+              // see `keyboard-map.ts`'s `isFrequencyDisplayFocused` for the
+              // same closest()-based hook this selector mirrors).
+              vfo: '[data-vfo-tile][data-vfo-active="true"] [data-vfo-freq] [tabindex]',
             };
-            const el = document.querySelector(selectors[target] ?? `[data-panel="${target}"]`);
+            const selector = selectors[target];
+            const el = selector ? document.querySelector(selector) : null;
             if (el instanceof HTMLElement) {
               el.focus();
               el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+            // Honest failure (MOR-1456): a dead selector must never look like
+            // a no-op keypress. `document.activeElement !== el` also catches
+            // an element that resolved but couldn't actually take focus (e.g.
+            // disabled or not currently rendered).
+            if (!(el instanceof HTMLElement) || document.activeElement !== el) {
+              console.warn(`[keyboard] focus_target "${target}" has no focusable anchor in the current layout`);
             }
           }
           return;

@@ -713,8 +713,12 @@ class TestSquelch:
     async def test_levels_get_squelch_icom(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """get_squelch on MAIN parses a non-cmd29 0x14 0x03 BCD response."""
-        mock_transport.queue_response(_level_response(0x03, 200))
+        """get_squelch on MAIN parses a cmd29-wrapped 0x14 0x03 BCD response.
+
+        IC-7610 declares a cmd29 route for 0x14/0x03, so MAIN is now
+        cmd29-wrapped too (MOR-1543) — previously only SUB wrapped.
+        """
+        mock_transport.queue_response(_level_response(0x03, 200, receiver=0))
         assert await radio.get_squelch() == 200
 
     @pytest.mark.asyncio
@@ -2133,6 +2137,7 @@ class TestDspLevelParity:
             ("get_pbt_inner", 0x07, 92, 1),
             ("get_pbt_outer", 0x08, 93, 1),
             ("get_notch_filter", 0x0D, 96, 1),
+            ("get_notch_filter", 0x0D, 97, 0),
             ("get_nb_level", 0x12, 94, 1),
             ("get_digisel_shift", 0x13, 95, 1),
         ],
@@ -2156,7 +2161,6 @@ class TestDspLevelParity:
         ("method_name", "sub", "value"),
         [
             ("get_mic_gain", 0x0B, 101),
-            ("get_notch_filter", 0x0D, 102),
             ("get_compressor_level", 0x0E, 103),
             ("get_break_in_delay", 0x0F, 104),
             ("get_drive_gain", 0x14, 105),
@@ -2501,7 +2505,14 @@ class TestOperatorToggleParity:
     @pytest.mark.parametrize(
         ("method_name", "response", "expected"),
         [
-            ("get_agc", _function_response(0x12, b"\x03"), AgcMode.SLOW),
+            (
+                "get_agc",
+                # MOR-1537: IC-7610 declares a cmd29 route for 0x16/0x12, so
+                # get_agc(receiver=0) now wraps (previously it derived
+                # command29 from receiver != MAIN and never wrapped MAIN).
+                _function_response(0x12, b"\x03", receiver=0),
+                AgcMode.SLOW,
+            ),
             (
                 "get_audio_peak_filter",
                 _function_response(0x32, b"\x02", receiver=1),
@@ -2695,6 +2706,79 @@ class TestAgcDomainValidation:
         radio._connected = False
 
 
+_X6200_ADDR = 0xA4
+
+
+def _x6200_function_response(sub: int, payload: bytes) -> bytes:
+    """Build a plain (no cmd29) CI-V 0x16 response from an X6200.
+
+    X6200 declares no ``[cmd29]`` routes, so its responses (unlike the
+    IC-7610 fixture's) come from ``civ_addr = 0xA4``, not ``IC_7610_ADDR``
+    — the receive path drops any frame whose ``from_addr`` doesn't match
+    the connected radio's own address.
+    """
+    civ = build_civ_frame(CONTROLLER_ADDR, _X6200_ADDR, 0x16, sub=sub, data=payload)
+    return _wrap_civ_in_udp(civ)
+
+
+class TestAgcReadPath:
+    """MOR-1529: ``get_agc`` must not cast the read value through the
+    IC-7610-shaped ``AgcMode`` enum (FAST=1/MID=2/SLOW=3).
+
+    The X6200 declares a different domain (OFF=0/FAST=1/SLOW=2/AUTO=3) —
+    ``AgcMode(0)`` raises ``ValueError`` (0 is not a member) and
+    ``AgcMode(2)``/``AgcMode(3)`` silently mislabel X6200's SLOW/AUTO as the
+    IC-7610's MID/SLOW. The fix returns the raw profile-validated int;
+    label mapping is data-side (``[agc].labels``), not a hardcoded enum cast.
+    """
+
+    @pytest.mark.asyncio
+    async def test_x6200_reports_declared_off_without_raising(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """AgcMode has no OFF member — casting X6200's real OFF=0 reading
+        through it would raise, even though OFF is a legal X6200 value."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response(_x6200_function_response(0x12, b"\x00"))
+        assert await radio.get_agc() == 0
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_reports_declared_auto_as_plain_int_not_mislabeled(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """X6200 index 3 means AUTO, not the IC-7610's SLOW — the return
+        must be the raw int 3, not an ``AgcMode.SLOW`` enum member (whose
+        ``.name`` would present the wrong label downstream)."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response(_x6200_function_response(0x12, b"\x03"))
+        result = await radio.get_agc()
+        assert result == 3
+        assert type(result) is int
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_rejects_reading_outside_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """A raw value the radio reports that falls outside the profile's
+        declared ``[agc] modes`` must raise, not be silently returned."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response(_x6200_function_response(0x12, b"\x09"))
+        with pytest.raises(ValueError, match=r"AGC mode.*not in declared domain"):
+            await radio.get_agc()
+        radio._connected = False
+
+
 class TestPreampDomainValidation:
     """MOR-1523: the preamp level domain is profile data, not a universal
     3-state enum.
@@ -2815,6 +2899,172 @@ class TestBreakInModeRoundTrip:
         )
 
 
+class TestBreakInDomainValidation:
+    """MOR-1534: the break-in domain is profile data, not a universal enum.
+
+    Unlike set_agc/set_preamp (MOR-1522/MOR-1523), a MISSING domain here is
+    NOT permissive — X6100/X6200 advertise the ``break_in`` capability but
+    have no trustworthy in-repo value-domain source (see the
+    rigs/x6100.toml / rigs/x6200.toml [capabilities] notes), so
+    ``set_break_in`` must refuse rather than guess.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1, 2):
+            await radio.set_break_in(legal)
+        assert len(mock_transport.sent_packets) == 3
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_value_outside_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"Break-in mode must be one of"):
+            await radio.set_break_in(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["X6100", "X6200"])
+    async def test_no_domain_declared_fails_loud_not_permissive(
+        self, mock_transport: MockTransport, model: str
+    ) -> None:
+        """X6100/X6200 declare the break_in capability but no domain — this
+        must NOT silently pass any value through (contrast with set_agc's
+        permissive-when-absent behavior for genuinely capability-absent
+        radios)."""
+        radio = IcomRadio("192.168.1.100", model=model)
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"No break-in value domain declared"):
+            await radio.set_break_in(0)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+
+class TestManualNotchWidthDomainValidation:
+    """MOR-1534: [notch] width_values was declared in TOML but never
+    parsed/validated — set_manual_notch_width had ZERO domain checking."""
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1, 2):
+            await radio.set_manual_notch_width(legal)
+        assert len(mock_transport.sent_packets) == 3
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_value_outside_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"Manual notch width must be one of"):
+            await radio.set_manual_notch_width(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_permissive_when_no_width_domain_declared(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """X6200 declares 'notch' (auto-notch) but no manual notch WIDTH
+        domain — unlike break_in, this is permissive-pass-through, matching
+        the set_agc/set_preamp precedent (the 'notch' capability legitimately
+        covers auto-notch-only radios, not just manual-width ones)."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_manual_notch_width(1)
+        assert mock_transport.sent_packets
+        radio._connected = False
+
+
+class TestFilterShapeDomainValidation:
+    """MOR-1534: filter_shape had NO TOML domain at all before this ticket;
+    set_filter_shape cast every value through the hardcoded IC-7610
+    ``FilterShape`` enum instead of a profile-declared domain."""
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1):
+            await radio.set_filter_shape(legal)
+        assert len(mock_transport.sent_packets) == 2
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_value_outside_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"Filter shape must be one of"):
+            await radio.set_filter_shape(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+
+class TestSsbTxBandwidthDomainValidation:
+    """MOR-1534: [ssb_tx_bw] values was declared in TOML but never parsed;
+    set_ssb_tx_bandwidth cast every value through the hardcoded IC-7610
+    ``SsbTxBandwidth`` enum instead."""
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        for legal in (0, 1, 2):
+            await radio.set_ssb_tx_bandwidth(legal)
+        assert len(mock_transport.sent_packets) == 3
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_value_outside_its_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(ValueError, match=r"SSB TX bandwidth must be one of"):
+            await radio.set_ssb_tx_bandwidth(9)
+        assert mock_transport.sent_packets == []
+        radio._connected = False
+
+
 class TestToneTsqlParity:
     """Test high-level tone/TSQL parity methods (#134)."""
 
@@ -2914,6 +3164,167 @@ class TestToneTsqlParity:
         assert mock_transport.sent_packets[-1].endswith(
             b"\x29\x01\x1b\x01\x01\x10\x09\xfd"
         )
+
+
+class TestToneTsqlDualRxCmd29Guard:
+    """MOR-1528/MOR-1538: tone/TSQL receiver=1 routing on cmd29-less dual-RX.
+
+    IC-9700 is dual-RX (``receiver_count=2``) but declares no cmd29 routes
+    (``[cmd29] routes = []``). Before MOR-1528, ``receiver=1`` calls on the
+    four tone/TSQL method pairs built a direct, receiver-unaware CI-V frame
+    instead of raising — silently writing/reading MAIN while the caller
+    believed it was targeting SUB. MOR-1528 made these raise, matching
+    ``_require_cmd29_route``-guarded siblings (e.g. ``set_rf_gain``).
+
+    MOR-1538 upgrades the raise to a working path: IC-9700 also declares
+    ``vfo.main_select``/``sub_select`` (0x07 0xD0/0xD1), so ``receiver=1``
+    now reaches SUB via the same VFO-switch fallback already used by
+    ``set_freq``/``set_mode``/``set_data_mode`` (select SUB, run the plain
+    non-cmd29 command, restore the previously active receiver) instead of
+    raising. ``receiver=0`` (MAIN) and IC-7610 (has cmd29 routes) behavior
+    stay byte-identical — see ``TestToneTsqlParity`` above, which exercises
+    the IC-7610 fixture on both receivers and stays green.
+    """
+
+    @pytest.fixture
+    def ic9700_radio(self, mock_transport: MockTransport):
+        r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        yield r
+        r._connected = False  # reset _conn_state so __del__ stays quiet
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "request_tail", "response_civ", "expected"),
+        [
+            (
+                "get_repeater_tone",
+                b"\x16\x42\xfd",
+                build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x16, sub=0x42, data=b"\x01"),
+                True,
+            ),
+            (
+                "get_repeater_tsql",
+                b"\x16\x43\xfd",
+                build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x16, sub=0x43, data=b"\x00"),
+                False,
+            ),
+            (
+                "get_tone_freq",
+                b"\x1b\x00\xfd",
+                build_civ_frame(
+                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x00, data=b"\x00\x88\x05"
+                ),
+                88.5,
+            ),
+            (
+                "get_tsql_freq",
+                b"\x1b\x01\xfd",
+                build_civ_frame(
+                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x01, data=b"\x01\x10\x09"
+                ),
+                110.9,
+            ),
+        ],
+    )
+    async def test_sub_receiver_get_uses_vfo_select_fallback(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        request_tail: bytes,
+        response_civ: bytes,
+        expected: bool | float,
+    ) -> None:
+        """MOR-1538: SUB GETs reach SUB via VFO-select instead of raising."""
+        ack = _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA2, _CMD_ACK))
+        mock_transport.queue_response_on_send(1, ack)
+        mock_transport.queue_response_on_send(2, _wrap_civ_in_udp(response_civ))
+        mock_transport.queue_response_on_send(3, ack)
+
+        method = getattr(ic9700_radio, method_name)
+        result = await method(receiver=1)
+
+        if isinstance(expected, float):
+            assert result == pytest.approx(expected)
+        else:
+            assert result is expected
+
+        frames = mock_transport.sent_packets
+        assert frames[0].endswith(b"\x07\xd1\xfd")  # select SUB
+        assert frames[1].endswith(request_tail)  # plain GET, no cmd29/receiver byte
+        assert frames[2].endswith(b"\x07\xd0\xfd")  # restore MAIN
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "args", "expected_tail"),
+        [
+            ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
+            ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
+            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x88\x05\xfd"),
+            ("set_tsql_freq", (110.9,), b"\x1b\x01\x01\x10\x09\xfd"),
+        ],
+    )
+    async def test_sub_receiver_set_uses_vfo_select_fallback(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        args: tuple,
+        expected_tail: bytes,
+    ) -> None:
+        """MOR-1538: SUB SETs reach SUB via VFO-select instead of raising.
+
+        Per-send ACK release — see
+        ``test_icom_receiver_tier.TestSetVfoSlot.
+        test_ic9700_sub_uses_select_restore_pattern`` for the 3.11-vs-3.12+
+        scheduling rationale (release each ACK only after its own send).
+        """
+        ack = _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA2, _CMD_ACK))
+        mock_transport.queue_response_on_send(1, ack)
+        mock_transport.queue_response_on_send(2, ack)
+        mock_transport.queue_response_on_send(3, ack)
+
+        method = getattr(ic9700_radio, method_name)
+        await method(*args, receiver=1)
+
+        frames = mock_transport.sent_packets
+        assert frames[0].endswith(b"\x07\xd1\xfd")  # select SUB
+        assert frames[1].endswith(expected_tail)  # plain SET, no cmd29/receiver byte
+        assert frames[2].endswith(b"\x07\xd0\xfd")  # restore MAIN
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "args", "expected_tail"),
+        [
+            ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
+            ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
+            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x88\x05\xfd"),
+            ("set_tsql_freq", (110.9,), b"\x1b\x01\x01\x10\x09\xfd"),
+        ],
+    )
+    async def test_main_receiver_still_sends_direct_frame(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        args: tuple,
+        expected_tail: bytes,
+    ) -> None:
+        method = getattr(ic9700_radio, method_name)
+        await method(*args, receiver=0)
+        assert mock_transport.sent_packets[-1].endswith(expected_tail)
+
+    @pytest.mark.asyncio
+    async def test_main_receiver_get_repeater_tone_still_works(
+        self, ic9700_radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        civ = build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x16, sub=0x42, data=b"\x01")
+        mock_transport.queue_response(_wrap_civ_in_udp(civ))
+        assert await ic9700_radio.get_repeater_tone(receiver=0) is True
+        assert mock_transport.sent_packets[-1].endswith(b"\x16\x42\xfd")
 
 
 class TestCodecProfileOverride:

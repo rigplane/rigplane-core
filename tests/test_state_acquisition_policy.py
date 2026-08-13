@@ -574,12 +574,15 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     ):
         assert acquisition.capability_for(path).command_response_observable is True
 
-    # MOR-1452 (review fix): the 4 newly-polled fields sit at 15.0s/25.0s, NOT
-    # IC-7610's 3.0s/5.0s for the same fields (rigs/ic7610.toml) — IC-7610 is
-    # LAN, IC-7300 is serial and shares one ~20 q/s software floor across
-    # every poll, operator command, and keep-alive on the same lane (see the
+    # MOR-1452 (review fix) / MOR-1484 (bench-measured tightening): the 4
+    # mic/monitor/VOX/anti-VOX gain fields sit at 10.0s/15.0s, NOT IC-7610's
+    # 3.0s/5.0s for the same fields (rigs/ic7610.toml) — IC-7610 is LAN,
+    # IC-7300 is serial and shares one ~20 q/s software floor across every
+    # poll, operator command, and keep-alive on the same lane (see the
     # serial-budget assertion below for the exact arithmetic that rules out
-    # 3.0s here).
+    # 3.0s here). MOR-1484 tightened these from 15.0s/25.0s after the
+    # ticket's bench probe measured mic_gain populate (slow front-panel
+    # rotation) at 10.73s/16.25s against this tier's "<=15s populate" intent.
     for path in (
         FieldPath.global_("operator_controls", "mic_gain"),
         FieldPath.global_("operator_controls", "monitor_gain"),
@@ -587,14 +590,45 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("operator_controls", "anti_vox_gain"),
     ):
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 15.0
-        assert policy.freshness_ttl_seconds == 25.0
+        assert policy.cadence_seconds == 10.0
+        assert policy.freshness_ttl_seconds == 15.0
 
-    fast_tier_ttl = acquisition.policy_for(
-        FieldPath.active("main", "freq_mode", "freq_hz")
-    ).freshness_ttl_seconds
-    assert fast_tier_ttl == acquisition.default_policy.freshness_ttl_seconds
-    assert fast_tier_ttl < 25.0
+    # MOR-1484: freq_hz/mode (active VFO) and rf_gain/squelch were pulled out
+    # of the profile's shared 1.5s/3.0s default tier into their own 1.0s/2.0s
+    # tier — the bench probe's most-measured "pending frequency echo" /
+    # "slider trail" symptoms — so they no longer share the default policy's
+    # freshness TTL.
+    for path in (
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.receiver("main", "operator_controls", "rf_gain"),
+        FieldPath.receiver("main", "operator_controls", "squelch"),
+    ):
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 1.0
+        assert policy.freshness_ttl_seconds == 2.0
+    assert (
+        acquisition.policy_for(
+            FieldPath.active("main", "freq_mode", "freq_hz")
+        ).freshness_ttl_seconds
+        < acquisition.default_policy.freshness_ttl_seconds
+    )
+
+    # MOR-1484: budget freed for the tier above by giving back cadence on six
+    # rarely-touched settings (tuner match, RF power level, compressor
+    # on/level, attenuator, preamp) — none in the ticket's measured or
+    # operator-felt symptom list.
+    for path in (
+        FieldPath.global_("operator_controls", "tuner_status"),
+        FieldPath.global_("operator_controls", "power_level"),
+        FieldPath.global_("tx_state", "compressor_on"),
+        FieldPath.global_("operator_controls", "compressor_level"),
+        FieldPath.receiver("main", "operator_controls", "att"),
+        FieldPath.receiver("main", "operator_controls", "preamp"),
+    ):
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == 3.0
+        assert policy.freshness_ttl_seconds == 6.0
 
     # MOR-1452 (review fix): pin the actual serial-lane arithmetic, not just
     # the cadence numbers, so a future "just speed this field up a bit" edit
@@ -616,8 +650,8 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     # test_acquisition_scheduler.py's due_polling_*tx_only* coverage for the
     # gating behavior itself). The RX-state share is what MOR-1484's live
     # medians (s_meter/ptt/freq) were measured against, so THAT figure is the
-    # one that must stay near the pre-existing ~19.933 q/s baseline -- not
-    # the transient TX-window total.
+    # one that must stay near the MOR-1484 baseline below -- not the
+    # transient TX-window total.
     rx_state_demand_hz = sum(
         1.0 / acquisition.policy_for(path).cadence_seconds
         for path in acquisition.pollable_paths()
@@ -628,21 +662,25 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         for path in acquisition.pollable_paths()
         if acquisition.policy_for(path).tx_only
     )
-    # Pre-existing baseline (MOR-1452) was 19.933 q/s, already only 0.067 q/s
-    # below the 20 q/s ceiling. MOR-1485 adds only Vd/Id (2 fields / 60.0s =
-    # 0.033 q/s) to the always-on RX-state total, spending under half of that
-    # remaining headroom (19.933 -> 19.967 q/s) and staying BELOW the
+    # MOR-1484 baseline: pre-MOR-1484 total was 19.967 q/s. This PR moves
+    # freq_hz(active)/mode(active)/rf_gain/squelch (4 fields) from the 1.5s
+    # default tier to a dedicated 1.0s tier (+2.667 -> +4.0 = +1.333 q/s) and
+    # mic/monitor/VOX/anti-VOX gain (4 fields) from 15.0s to 10.0s (+0.267 ->
+    # +0.4 = +0.133 q/s), funded by giving six rarely-touched settings
+    # (tuner_status, power_level, compressor_on/level, att, preamp; 6 fields)
+    # back from 1.5s to 3.0s (-4.0 -> -2.0 = -2.0 q/s). Net:
+    # 19.967 + 1.333 + 0.133 - 2.0 = 19.433 q/s, comfortably BELOW the 20 q/s
     # ceiling — required, not just desirable, since exceeding it would
     # necessarily slow every other polled field's real throughput and risk
-    # regressing the MOR-1484 medians this profile is measured against.
-    assert rx_state_demand_hz == pytest.approx(19.967, abs=0.001)
+    # regressing the very medians this tightening is meant to improve.
+    assert rx_state_demand_hz == pytest.approx(19.433, abs=0.001)
     assert rx_state_demand_hz < serial_ceiling_hz
     # Po/SWR/ALC/COMP: 4 fields / 1.0s = 4.0 q/s, ONLY while tx_only gating
     # lets them through (PTT observed true) — a transient TX-window cost, not
-    # a steady-state one.
+    # a steady-state one. Untouched by MOR-1484.
     assert tx_only_demand_hz == pytest.approx(4.0, abs=0.001)
     total_during_tx_hz = rx_state_demand_hz + tx_only_demand_hz
-    assert total_during_tx_hz == pytest.approx(23.967, abs=0.001)
+    assert total_during_tx_hz == pytest.approx(23.433, abs=0.001)
 
     assert (
         acquisition.capability_for(

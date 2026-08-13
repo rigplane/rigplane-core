@@ -1772,6 +1772,24 @@ async def _check_nr_set(
     )
 
 
+def _declared_agc_modes(radio: Radio) -> tuple[int, ...] | None:
+    """Best-effort read of the connected radio's declared ``[agc] modes``.
+
+    Mirrors the private attribute both validated seats already read
+    internally (``IcomRadio._profile.agc_modes`` / ``YaesuCatRadio.
+    _config.agc_modes``, MOR-1522) — there is no public cross-vendor
+    accessor for a capability's declared domain today. Returns ``None``
+    (domain unknown) rather than raising, matching this module's
+    best-effort style for every other optional lookup (MOR-1529).
+    """
+    for attr in ("_profile", "_config"):
+        holder = getattr(radio, attr, None)
+        modes = getattr(holder, "agc_modes", None)
+        if modes:
+            return tuple(modes)
+    return None
+
+
 async def _check_agc_set(
     radio: Radio,
     entry: CapabilityDeclarationEntry,
@@ -1783,14 +1801,41 @@ async def _check_agc_set(
     if gate is not None:
         return gate
     dsp = cast(DspControlCapable, radio)
+
+    def _make_changed(current: int) -> int:
+        # MOR-1529: derive the probe from the radio's OWN declared domain
+        # when discoverable, instead of always assuming the IC-7610-shaped
+        # AgcMode.FAST/SLOW constants (1/3) are legal for every radio —
+        # true for every currently-shipped profile by coincidence, but not
+        # by design (e.g. would break for a hypothetical profile whose
+        # domain excludes both).
+        #
+        # R1: prefer a non-OFF (0) candidate. The live FTX-1 declares
+        # ``[agc] modes = [0..6]`` — picking the first declared value
+        # != current would land on 0 (AGC OFF) for every current value
+        # except 0 itself. This RMVR probe is documented non-destructive/
+        # RX-safe (MOR-659): momentarily disabling AGC on a bench radio is
+        # audible and operator-affecting, unlike flipping between two
+        # settable AGC speeds (the old hardcoded SLOW/FAST probe never did
+        # this). Landing on 1 (FAST) instead keeps the probe inside
+        # "change AGC speed", never "turn AGC off".
+        modes = _declared_agc_modes(radio)
+        if modes:
+            candidates = [m for m in modes if m != current]
+            non_off = [m for m in candidates if m != 0]
+            if candidates:
+                return (non_off or candidates)[0]
+        # No declared domain reachable (e.g. a bare test double) — fall
+        # back to the two values every currently-shipped ``[agc] modes``
+        # table happens to include.
+        return int(AgcMode.SLOW) if current != AgcMode.SLOW else int(AgcMode.FAST)
+
     return await _read_modify_verify_restore(
         radio,
         entry,
         read=lambda: dsp.get_agc(0),
         write=lambda value: dsp.set_agc(value, 0),
-        make_changed=lambda m: (
-            int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
-        ),
+        make_changed=_make_changed,
         per_check_timeout=per_check_timeout,
     )
 

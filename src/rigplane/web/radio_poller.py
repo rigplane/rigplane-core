@@ -78,6 +78,7 @@ from ..core.command_service import (
 )
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
+    AcquisitionPriority,
     AcquisitionRequest,
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -449,6 +450,93 @@ from .._poller_types import (  # noqa: E402
     VfoEqualize,
     VfoSwap,
 )
+
+
+# ------------------------------------------------------------------
+# MOR-1484: post-write readback jump-queue
+# ------------------------------------------------------------------
+#
+# Forces a fresh readback of the field(s) a write command just changed
+# instead of waiting out that field's normal poll cadence -- the "pending
+# frequency echo" / "slider readouts trail ~1s" symptom the ticket measured
+# on freq/mode/rfGain/squelch. These are the operator-facing writes in this
+# dispatch that carry no ``CommandService`` optimistic-overlay + confirming-
+# observation path the way nb/nr/att/preamp/agc/mic_gain/etc already do (see
+# the "read-after-write via overlays + ... observation" comments on those
+# ``case`` arms below) -- without a forced readback they only refresh on the
+# field's normal cadence tick.
+#
+# Table-driven so covering another command later is a new entry here, not a
+# new call site: ``_request_post_write_readback`` (called once, generically,
+# at the end of ``_execute`` below) looks up ``type(cmd)`` and, on a hit,
+# builds the written ``FieldPath`` set and calls
+# ``AcquisitionScheduler.ensure_fresh`` at ``USER`` priority -- the
+# scheduler's highest rank (``_PRIORITY_RANK`` in ``acquisition_scheduler.py``)
+# -- so the request jumps ahead of whatever BACKGROUND/RECONCILIATION/
+# NORMAL-tier cadence work is already queued and is picked up by the very
+# next ``_send_scheduler_requests`` drain, instead of waiting out the
+# field's own cadence.
+def _post_write_receiver_id(cmd: Any) -> str:
+    """Return the ``main``/``sub`` receiver_id spelling.
+
+    This is the spelling ``field_policies`` TOML keys and the scheduler's
+    cadence-driven requests already use (``rigs/*.toml``, e.g.
+    ``[state_acquisition.field_policies."receiver.main..."]``), so a
+    post-write request coalesces into any already-pending same-field request
+    (``_AcquisitionRequestKey`` groups by exact ``receiver_id`` string)
+    instead of racing it as a second, differently-keyed entry.
+    """
+
+    return "sub" if getattr(cmd, "receiver", 0) == 1 else "main"
+
+
+_POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] = {
+    SetFreq: lambda cmd: (
+        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "freq_hz"),
+    ),
+    SetMode: lambda cmd: (
+        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "mode"),
+    ),
+    SetRfGain: lambda cmd: (
+        FieldPath.receiver(
+            _post_write_receiver_id(cmd), "operator_controls", "rf_gain"
+        ),
+    ),
+    SetSquelch: lambda cmd: (
+        FieldPath.receiver(
+            _post_write_receiver_id(cmd), "operator_controls", "squelch"
+        ),
+    ),
+    # MOR-1484 review R1: att/preamp carry the #2452 armed affordance, whose
+    # ONLY confirming path back to the StateStore is this cadence poll --
+    # ``PendingOverlay`` has no web consumer and the CI-V own-frame/transceive
+    # echo this profile relies on for other fields does not reliably cover
+    # these two (see the "read-after-write via overlays + ... observation"
+    # comments on the ``SetAttenuator``/``SetPreamp`` case arms below, which
+    # describe the mechanism but not its actual reach on this profile). This
+    # PR ALSO slows att/preamp's cadence tier from 1.5s to 3.0s
+    # (rigs/ic7300.toml) to fund the freq/mode/rf_gain/squelch tightening
+    # above -- without this entry that give-back alone would widen the
+    # armed-affordance confirm window past the 3000ms ACK_CONFIRM_GRACE for a
+    # slice of clicks (grace expires, armed clears, the button shows the
+    # stale value until the next cadence tick -- the MOR-1478 stale-flash
+    # symptom, reintroduced on a new affordance). Table entries here make the
+    # 1.5s->3.0s give-back free for the operator's own write: confirmation no
+    # longer depends on the slowed cadence tier at all.
+    SetAttenuator: lambda cmd: (
+        FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "att"),
+    ),
+    SetPreamp: lambda cmd: (
+        FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "preamp"),
+    ),
+}
+
+# ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore
+# observation be and still count as fresh". A write always invalidates
+# whatever confirmed observation predates it, so this is deliberately far
+# below any real cadence/ttl -- the point is to force a request every time,
+# never take the ``FRESH`` short-circuit against a pre-write value.
+_POST_WRITE_READBACK_MAX_AGE: float = 1e-9
 
 
 # ------------------------------------------------------------------
@@ -896,7 +984,7 @@ class RadioPoller:
         sub = wire[1] if len(wire) > 1 else None
         extra = bytes(wire[2:]) if len(wire) > 2 else b""
         payload = extra + data
-        if receiver != 0 and self._profile.supports_cmd29(cmd, sub):
+        if self._profile.supports_cmd29(cmd, sub):
             inner = bytes([receiver, cmd])
             if sub is not None:
                 inner += bytes([sub])
@@ -1059,7 +1147,15 @@ class RadioPoller:
         # Iterate through all scope-control getters in the same order as
         # the previous raw 0x27 sub-command sequence so cadence/queue
         # behavior is preserved. Each call sleeps `_adaptive_gap()` to
-        # keep the existing throttle.
+        # keep the existing throttle. `get_scope_fixed_edge` (0x1E) was
+        # never part of that legacy sequence — MOR-1530 closed the gap —
+        # so it is placed immediately ahead of rbw (0x1F) to keep the
+        # trailing entries in ascending sub-command order. Calling it with
+        # no arguments here (rather than at EnableScope time) is
+        # intentional: it defaults to the CURRENT known <range><edge> slot
+        # (see ``ScopeRuntimeMixin.get_scope_fixed_edge``), so the periodic
+        # fetch always re-reads the freshest relevant slot instead of a
+        # fixed one.
         scope_getters: tuple[tuple[str, Any], ...] = (
             ("get_scope_receiver", radio.get_scope_receiver),
             ("get_scope_dual", radio.get_scope_dual),
@@ -1072,6 +1168,7 @@ class RadioPoller:
             ("get_scope_ref", radio.get_scope_ref),
             ("get_scope_speed", radio.get_scope_speed),
             ("get_scope_vbw", radio.get_scope_vbw),
+            ("get_scope_fixed_edge", radio.get_scope_fixed_edge),
             ("get_scope_rbw", radio.get_scope_rbw),
         )
         for label, getter in scope_getters:
@@ -1132,6 +1229,37 @@ class RadioPoller:
             )
         except Exception:
             logger.debug("radio-poller: %s reconfirm failed", label, exc_info=True)
+
+    def _request_post_write_readback(self, cmd: Command) -> None:
+        """Jump the scheduler queue for the field(s) ``cmd`` just wrote (MOR-1484).
+
+        Table-driven counterpart to :meth:`_reconfirm_scope_field` for
+        non-scope fields: looks ``type(cmd)`` up in
+        ``_POST_WRITE_READBACK_FIELDS`` and, on a hit, calls
+        ``AcquisitionScheduler.ensure_fresh`` at ``AcquisitionPriority.USER``
+        (the scheduler's highest rank) for the FieldPath(s) it names. Fire-
+        and-queue like ``ensure_fresh`` itself — this never awaits a backend
+        read; it only ensures the request is queued ahead of any pending
+        BACKGROUND/RECONCILIATION/NORMAL-tier cadence work so the next
+        ``_send_scheduler_requests`` drain fetches a confirmed value instead
+        of waiting out the field's normal cadence. A miss (command not in
+        the table, or no scheduler attached) is a silent no-op.
+        """
+        scheduler = self._acquisition_scheduler
+        if scheduler is None:
+            return
+        build_paths = _POST_WRITE_READBACK_FIELDS.get(type(cmd))
+        if build_paths is None:
+            return
+        paths = build_paths(cmd)
+        if not paths:
+            return
+        scheduler.ensure_fresh(
+            paths,
+            max_age=_POST_WRITE_READBACK_MAX_AGE,
+            priority=AcquisitionPriority.USER,
+            reason="post_write_readback",
+        )
 
     def _apply_global_control_observation(
         self,
@@ -1923,14 +2051,14 @@ class RadioPoller:
                     )
             case SetFilterShape(shape=shape, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_filter_shape")
-                if shape not in (0, 1):
-                    raise CommandError(
-                        f"set_filter_shape value must be 0 or 1, got {shape}"
-                    )
                 if CAP_FILTER_SHAPE not in self._caps:
                     raise CommandError(
                         "set_filter_shape is not supported by this backend"
                     )
+                # Domain legality (which shape values are valid for THIS
+                # profile) is CoreRadio.set_filter_shape's job — the single
+                # validation seat, not a hardcoded 0/1 duplicate here
+                # (MOR-1534, mirrors the set_agc/set_preamp precedent).
                 await radio.set_filter_shape(shape, receiver=rx)
                 if self._radio_state:
                     target = (
@@ -2635,6 +2763,30 @@ class RadioPoller:
                         start_hz=start_hz,
                         end_hz=end_hz,
                     )
+                    # radio.set_scope_fixed_edge already resolves the wire
+                    # range_index and mirrors the full ScopeFixedEdge into
+                    # this SAME RadioState.scope_controls object (see
+                    # ScopeRuntimeMixin.set_scope_fixed_edge) — a separate
+                    # optimistic write here would be a no-op (MOR-1530: a
+                    # prior version of this arm did exactly that and it
+                    # silently no-opped in production, masked by a bare
+                    # AsyncMock double in tests). The reconfirm GET must
+                    # target the SAME slot the SET just wrote — the IC-7610
+                    # selector addresses ONE specific slot (MOR-662), so a
+                    # bare re-read would default back to range 1/edge 1 and
+                    # clobber the mirror with an unrelated slot's data.
+                    if self._radio_state:
+                        written = self._radio_state.scope_controls.fixed_edge
+                        await self._reconfirm_scope_field(
+                            "get_scope_fixed_edge",
+                            lambda w=written: radio.get_scope_fixed_edge(
+                                range_index=w.range_index, edge=w.edge
+                            ),
+                        )
+                    else:
+                        await self._reconfirm_scope_field(
+                            "get_scope_fixed_edge", radio.get_scope_fixed_edge
+                        )
             case SetScopeDual(dual=dual):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_dual(dual)
@@ -3027,6 +3179,15 @@ class RadioPoller:
             case Speak(mode=what):
                 await _r.get_speech(what)
 
+        # MOR-1484: jump the scheduler queue for whatever field(s) this
+        # write just changed (table-driven no-op for any command not in
+        # ``_POST_WRITE_READBACK_FIELDS``). Placed after the match rather
+        # than per-case so covering another command is a table entry, not a
+        # new call site; safe here because none of the mapped commands
+        # (``SetFreq``/``SetMode``/``SetRfGain``/``SetSquelch``) return early
+        # out of the match above.
+        self._request_post_write_readback(cmd)
+
     # Fast: meters (polled on even cycles)
     # wfview: Priority=Highest, queue interval 25ms for LAN (HasFDComms)
     # For serial: only high-priority meters to keep S-meter responsive.
@@ -3167,7 +3328,12 @@ class RadioPoller:
                 ptt_field.value
             )
         scheduler.due_requests(now=now, tx_active=tx_active)
-        pending = scheduler.pending_requests()
+        # MOR-1533: dispatch must use the tx_active-gated view. Crediting an
+        # already-sent answer (runtime._civ_rx) uses the unfiltered
+        # pending_requests() instead, so an answer landing after de-key is
+        # never blinded by this gate -- see dispatchable_requests()'s
+        # docstring.
+        pending = scheduler.dispatchable_requests()
         pending_ids = {request.id for request in pending}
         for request_id in tuple(self._acquisition_in_flight):
             if request_id not in pending_ids:
@@ -3296,7 +3462,11 @@ class RadioPoller:
                     "web.radio_poller",
                     request_id=request.id,
                     paths=[str(path) for path in newly_sent],
-                    pending_request_count=len(scheduler.pending_requests()),
+                    # MOR-1533: dispatchable_requests(), matching this
+                    # drain's own dispatch view -- not the unfiltered
+                    # pending_requests(), which would also count entries
+                    # this drain will never send (withheld tx_only hints).
+                    pending_request_count=len(scheduler.dispatchable_requests()),
                 )
 
     async def _send_query(self) -> None:

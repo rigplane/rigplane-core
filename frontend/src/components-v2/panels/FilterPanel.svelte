@@ -4,11 +4,19 @@
   import { ValueControl } from '../controls/value-control';
   import { formatFilterWidth } from './filter-utils';
   import { getShortcutHint, joinShortcutHints } from '../layout/shortcut-hints';
+  import { t } from '$lib/i18n';
 
-  import { deriveFilterProps, getFilterHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { deriveFilterProps, getFilterHandlers, getFilterArmed } from '$lib/runtime/adapters/panel-adapters';
 
   const handlers = getFilterHandlers();
   let p = $derived(deriveFilterProps());
+  // MOR-1536: the freshest in-flight `set_filter` target, DISPLAY ONLY (see
+  // `panel-adapters.ts`'s ARMED-SIGNAL CONTRACT). `currentFilter` below
+  // stays the sole selection source — armed only marks the button the
+  // pending command is racing toward, never a substitute for the confirmed
+  // reading.
+  let filterArmed = $derived(getFilterArmed());
+  const filterArmedIdBase = $props.id();
 
   let currentMode = $derived(p.currentMode);
   let currentFilter = $derived(p.currentFilter);
@@ -201,16 +209,23 @@
     <div class="filter-top-row">
       <div class="filter-grid">
         {#each normalizedLabels as label, index}
+          {@const isFilterArmed = filterArmed.armed && filterArmed.value === index + 1}
+          {@const filterArmedId = `${filterArmedIdBase}-${index + 1}`}
           <HardwareButton
             active={currentFilter === index + 1}
             indicator="edge-left"
             color="cyan"
             title={cycleFilterShortcut}
             shortcutHint={cycleFilterShortcut}
+            armed={isFilterArmed}
+            describedBy={isFilterArmed ? filterArmedId : undefined}
             onclick={() => onFilterChange?.(index + 1)}
           >
             {label}
           </HardwareButton>
+          {#if isFilterArmed}
+            <span id={filterArmedId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>
+          {/if}
         {/each}
       </div>
 
@@ -433,6 +448,14 @@
   .modal-close,
   .defaults-button {
     min-width: 0;
+  }
+
+  /* MOR-1536 — same convention as `ModePanel.svelte`'s `.sr-only`: visually
+     hidden, `position: absolute` removes it from `.filter-grid`'s flow so
+     it never consumes a grid cell. */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 
   .bw-row {

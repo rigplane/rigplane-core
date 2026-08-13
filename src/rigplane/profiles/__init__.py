@@ -173,6 +173,20 @@ class RadioProfile:
     pre_labels: dict[str, str] | None = None
     agc_modes: tuple[int, ...] | None = None
     agc_labels: dict[str, str] | None = None
+    # MOR-1534: enumerated-domain controls that were declared in TOML but
+    # never parsed/validated (break_in, notch width) or hardcoded via an
+    # IC-7610-specific enum with no profile domain to check against
+    # (ssb_tx_bw, filter_shape). ``None`` means the profile declared no
+    # domain — see each ``CoreRadio`` setter's docstring for what that means
+    # for that specific control (some fail loud, some are permissive).
+    break_in_modes: tuple[int, ...] | None = None
+    break_in_labels: dict[str, str] | None = None
+    notch_width_values: tuple[int, ...] | None = None
+    notch_width_labels: dict[str, str] | None = None
+    ssb_tx_bw_values: tuple[int, ...] | None = None
+    ssb_tx_bw_labels: dict[str, str] | None = None
+    filter_shape_values: tuple[int, ...] | None = None
+    filter_shape_labels: dict[str, str] | None = None
     # MOR-1447 leg 2: "separate" (default, two independent controls) or
     # "combined" (Icom-style single RF/SQL knob). Data-driven from
     # ``[capabilities].rf_sql_control_model`` in the rig TOML — never a

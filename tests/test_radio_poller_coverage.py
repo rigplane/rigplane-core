@@ -15,7 +15,9 @@ import pytest
 from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.capabilities import CAP_SCOPE
 from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
     AcquisitionScheduler,
+    AcquisitionStatus,
     MeterObservationCoalescer,
 )
 from rigplane.core.state_acquisition_policy import (
@@ -32,7 +34,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
-from rigplane.core.types import CivFrame
+from rigplane.core.types import CivFrame, ScopeFixedEdge
 from rigplane.core.command_service import (
     CommandExecutionResult,
     CommandService,
@@ -80,6 +82,7 @@ from rigplane.web.radio_poller import (
     SetScopeDual,
     SetScopeDuringTx,
     SetScopeEdge,
+    SetScopeFixedEdge,
     SetScopeHold,
     SetScopeMode,
     SetScopeRbw,
@@ -961,6 +964,168 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
     assert scheduler.pending_requests()[0].paths == (path,)
 
 
+# ---------------------------------------------------------------------------
+# MOR-1484: post-write readback jumps the scheduler queue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("cmd", "path"),
+    [
+        (
+            SetFreq(14_250_000, receiver=0),
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+        ),
+        (SetMode("USB", receiver=0), FieldPath.active("main", "freq_mode", "mode")),
+        (
+            SetFreq(7_100_000, receiver=1),
+            FieldPath.active("sub", "freq_mode", "freq_hz"),
+        ),
+        (
+            SetRfGain(128, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "rf_gain"),
+        ),
+        (
+            SetSquelch(64, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "squelch"),
+        ),
+        (
+            SetAttenuator(10, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "att"),
+        ),
+        (
+            SetPreamp(1, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "preamp"),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_execute_write_requests_immediate_readback_at_user_priority(
+    cmd: Any, path: FieldPath
+) -> None:
+    """A successful write must jump the scheduler queue for an immediate
+    readback of the field it just changed, at USER priority (the scheduler's
+    highest rank) -- instead of waiting out that field's normal poll cadence.
+    This is the fix for the "pending frequency echo" / "slider readouts trail
+    ~1s" symptom MOR-1484 measured on freq/mode/rfGain/squelch. att/preamp
+    are included (MOR-1484 review R1): both carry the #2452 armed affordance
+    whose only confirming path back to the StateStore is this cadence poll,
+    and this PR ALSO slows their cadence tier 1.5s -> 3.0s (rigs/ic7300.toml)
+    to fund the tightening above -- without this entry that give-back would
+    widen the armed-affordance confirm window past the 3000ms
+    ACK_CONFIRM_GRACE for a slice of clicks (the MOR-1478 stale-flash
+    symptom, reintroduced on a new affordance).
+    """
+    radio = _make_radio(active="MAIN")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(cmd)  # noqa: SLF001
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].paths == (path,)
+    assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_set_attenuator_readback_does_not_depend_on_slowed_cadence_tier() -> (
+    None
+):
+    """MOR-1484 review R1: att's confirming readback after a write must be
+    immediate regardless of this profile's OWN (now 3.0s, slowed to fund the
+    freq/mode/rf_gain/squelch tightening) cadence tier for that field -- the
+    armed #2452 affordance's confirm can never be left depending on that slow
+    tier, or a slice of clicks would grace-expire (3000ms ACK_CONFIRM_GRACE)
+    before the field is ever re-polled. Uses the REAL ic7300 profile (not a
+    synthetic one) so this pins the actual shipped cadence, not an assumption
+    about it.
+    """
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    att_path = FieldPath.receiver("main", "operator_controls", "att")
+    att_policy = profile.state_acquisition.policy_for(att_path)
+    assert att_policy.cadence_seconds == 3.0  # the slowed give-back tier
+
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(SetAttenuator(10, receiver=0))  # noqa: SLF001
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].paths == (att_path,)
+    # USER outranks every cadence-driven priority (BACKGROUND/RECONCILIATION/
+    # NORMAL) regardless of the field's own (slow) cadence_seconds -- the
+    # confirming read is dispatched on the very next drain, not gated by the
+    # 3.0s tier at all.
+    assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_set_freq_readback_coalesces_with_pending_cadence_request() -> (
+    None
+):
+    """A post-write readback for a field with an already-queued BACKGROUND/
+    RECONCILIATION-tier cadence request must coalesce into that SAME request
+    (upgraded to USER priority) rather than racing it as a second, separately
+    -tracked entry -- the coalescing MOR-1484 requires so the forced readback
+    never doubles the serial traffic for a field already about to be polled.
+    """
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    pending_before = scheduler.ensure_fresh(
+        (path,),
+        max_age=1.5,
+        priority=AcquisitionPriority.BACKGROUND,
+        reason="cadence",
+    )
+    assert pending_before.status == AcquisitionStatus.QUEUED
+    assert len(scheduler.pending_requests()) == 1
+
+    await poller._execute(SetFreq(14_250_000, receiver=0))  # noqa: SLF001
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1  # coalesced, not a second entry
+    assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_unmapped_write_does_not_queue_a_readback() -> None:
+    """A write command with no entry in ``_POST_WRITE_READBACK_FIELDS`` (e.g.
+    ``SetPower``) must be a silent no-op for this mechanism -- it must not
+    queue any acquisition request."""
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("operator_controls", "power_level")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(SetPower(200))  # noqa: SLF001
+
+    assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_freq_without_scheduler_does_not_raise() -> None:
+    """A backend with no acquisition scheduler attached (``_acquisition_scheduler``
+    is ``None``) must not error when a mapped write command executes."""
+    radio = _make_radio(active="MAIN")
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+    assert poller._acquisition_scheduler is None  # noqa: SLF001
+
+    await poller._execute(SetFreq(14_250_000, receiver=0))  # noqa: SLF001
+
+    radio.set_freq.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_poller_falls_back_to_legacy_query_without_scheduler() -> None:
     radio = _make_radio(active="MAIN")
@@ -1470,7 +1635,10 @@ async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None
 
 @pytest.mark.parametrize(
     ("model", "expected_seconds"),
-    (("IC-7300", 8.0), ("IC-705", 11.1)),
+    # IC-705 dropped from 11.1s to 11.0s (one fewer query per rotation) when
+    # MOR-1540 removed the over-declared "digisel" capability, which had
+    # been adding an unanswerable 0x16/0x4E poll to every rotation.
+    (("IC-7300", 8.0), ("IC-705", 11.0)),
 )
 def test_relative_vfo_retention_window_follows_provider_poll_cadence(
     model: str,
@@ -2124,6 +2292,93 @@ async def test_execute_set_scope_rbw_updates_state_and_reconfirms() -> None:
     radio.set_scope_rbw.assert_awaited_once_with(2)
     assert state.scope_controls.rbw == 2
     radio.get_scope_rbw.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_fixed_edge_updates_state_and_reconfirms() -> None:
+    """MOR-1530: SetScopeFixedEdge previously got neither an optimistic
+    ``scope_controls.fixed_edge`` mirror write nor a ``_reconfirm_scope_field``
+    call — the ``scopeControls.fixedEdge`` published leaf stayed at its
+    pre-write reading forever, same MOR-1446/MOR-1524 desync class as the
+    other scope-control leaves.
+
+    ``radio.set_scope_fixed_edge``'s side_effect below reproduces what the
+    REAL mixin does (``runtime/_scope_runtime.py``: resolve the wire
+    range_index and mirror the full ``ScopeFixedEdge`` into
+    ``RadioState.scope_controls`` — the SAME object the poller holds)
+    instead of leaving it a bare AsyncMock. A bare double writes no
+    mirror at all, which let an earlier version of this test pass while
+    the radio_poller.py arm's own (dead, duplicate) optimistic-write block
+    was a no-op in production — the exact CLAUDE.md MagicMock hazard an
+    independent review caught on PR #2445. The final assertion is the
+    wire-level pin that review used: the reconfirm GET's (range_index,
+    edge) must equal the SET's resolved (range_index, edge), never the
+    hardcoded 1/1 MOR-662 fallback.
+    """
+    radio = _make_radio()
+    state = RadioState()
+
+    async def _set_side_effect(*, edge: int, start_hz: int, end_hz: int) -> None:
+        # start_hz=14_000_000 resolves to range_index 6 (20 m band) per
+        # commands/scope.py's _resolve_scope_fixed_edge_range table —
+        # mirrored here rather than re-derived to keep the double simple.
+        state.scope_controls.fixed_edge = ScopeFixedEdge(
+            range_index=6, edge=edge, start_hz=start_hz, end_hz=end_hz
+        )
+        state.scope_controls.edge = edge
+
+    radio.set_scope_fixed_edge = AsyncMock(side_effect=_set_side_effect)
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(  # noqa: SLF001
+        SetScopeFixedEdge(edge=2, start_hz=14_000_000, end_hz=14_350_000)
+    )
+
+    radio.set_scope_fixed_edge.assert_awaited_once_with(
+        edge=2, start_hz=14_000_000, end_hz=14_350_000
+    )
+    assert state.scope_controls.fixed_edge.range_index == 6
+    assert state.scope_controls.fixed_edge.edge == 2
+    assert state.scope_controls.fixed_edge.start_hz == 14_000_000
+    assert state.scope_controls.fixed_edge.end_hz == 14_350_000
+    assert state.scope_controls.edge == 2
+    # Wire-level pin: the reconfirm targets the slot the SET just wrote
+    # (range_index=6, edge=2) — NOT the hardcoded range_index=1/edge=1
+    # MOR-662 fallback, which would silently overwrite the mirror with an
+    # unrelated slot's data (MOR-1530).
+    radio.get_scope_fixed_edge.assert_awaited_once_with(range_index=6, edge=2)
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_fixed_edge_reconfirm_timeout_does_not_raise() -> None:
+    """A dropped confirm response must not fail the command, same as the
+    other scope-control leaves (MOR-1446/MOR-1524)."""
+    radio = _make_radio()
+    state = RadioState()
+
+    async def _set_side_effect(*, edge: int, start_hz: int, end_hz: int) -> None:
+        state.scope_controls.fixed_edge = ScopeFixedEdge(
+            range_index=1, edge=edge, start_hz=start_hz, end_hz=end_hz
+        )
+        state.scope_controls.edge = edge
+
+    radio.set_scope_fixed_edge = AsyncMock(side_effect=_set_side_effect)
+
+    async def _never_resolves(*, range_index: int, edge: int) -> Any:
+        await asyncio.sleep(10)
+
+    radio.get_scope_fixed_edge = AsyncMock(side_effect=_never_resolves)
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(  # noqa: SLF001
+        SetScopeFixedEdge(edge=1, start_hz=7_000_000, end_hz=7_300_000)
+    )
+
+    radio.set_scope_fixed_edge.assert_awaited_once_with(
+        edge=1, start_hz=7_000_000, end_hz=7_300_000
+    )
+    assert state.scope_controls.fixed_edge.edge == 1
+    radio.get_scope_fixed_edge.assert_awaited_once_with(range_index=1, edge=1)
 
 
 @pytest.mark.asyncio
@@ -3232,20 +3487,21 @@ async def test_fetch_scope_controls_bounds_latency_on_dropped_response() -> None
         "get_scope_speed",
         "get_scope_vbw",
         "get_scope_rbw",
+        "get_scope_fixed_edge",
     ):
         setattr(radio, name, AsyncMock(side_effect=_hang))
 
-    # Tighten the timeout for the test so we don't wait 12 * 0.2 s = 2.4 s.
+    # Tighten the timeout for the test so we don't wait 13 * 0.2 s = 2.6 s.
     poller._SCOPE_GETTER_TIMEOUT = 0.02  # noqa: SLF001
 
     start = asyncio.get_event_loop().time()
     await poller._fetch_scope_controls()  # noqa: SLF001
     elapsed = asyncio.get_event_loop().time() - start
 
-    # 13 attempts (11 single-shot getters + rbw's 2, MOR-1524) * (0.02 s
-    # timeout + ~0 s gap) ≈ 0.26 s.  Allow generous slack so the test is not
+    # 14 attempts (12 single-shot getters + rbw's 2, MOR-1524) * (0.02 s
+    # timeout + ~0 s gap) ≈ 0.28 s.  Allow generous slack so the test is not
     # flaky on slow CI; the important property is that we are NOT blocked
-    # for 12 * 2.0 s = 24 s.
+    # for 13 * 2.0 s = 26 s.
     assert elapsed < 2.0, f"poller stalled for {elapsed:.2f}s on dropped responses"
 
     # Every getter was attempted exactly once even though they all hung,
@@ -3279,6 +3535,7 @@ async def test_fetch_scope_controls_normal_path_still_works() -> None:
         "get_scope_speed",
         "get_scope_vbw",
         "get_scope_rbw",
+        "get_scope_fixed_edge",
     ):
         getter = getattr(radio, name)
         getter.assert_awaited_once()
@@ -3315,6 +3572,7 @@ async def test_fetch_scope_controls_repeated_timeouts_do_not_accumulate() -> Non
         "get_scope_speed",
         "get_scope_vbw",
         "get_scope_rbw",
+        "get_scope_fixed_edge",
     ):
         setattr(radio, name, AsyncMock(side_effect=_hang))
 
@@ -3326,9 +3584,9 @@ async def test_fetch_scope_controls_repeated_timeouts_do_not_accumulate() -> Non
         await poller._fetch_scope_controls()  # noqa: SLF001
     elapsed = loop.time() - start
 
-    # 3 calls * 13 attempts (11 single-shot getters + rbw's 2, MOR-1524) *
-    # 0.01 s = 0.39 s nominal.  Generous upper bound so the test is robust
-    # on slow CI but still rejects the 3 * 24 s = 72 s blowup.
+    # 3 calls * 14 attempts (12 single-shot getters + rbw's 2, MOR-1524) *
+    # 0.01 s = 0.42 s nominal.  Generous upper bound so the test is robust
+    # on slow CI but still rejects the 3 * 26 s = 78 s blowup.
     assert elapsed < 3.0, f"3 successive calls took {elapsed:.2f}s — accumulated"
 
     # Each getter was attempted exactly 3 times (no early exit), except rbw
@@ -3612,6 +3870,78 @@ async def test_tx_active_stops_tx_only_group_when_canonical_ptt_de_keys() -> Non
     await poller._send_scheduler_requests()  # noqa: SLF001
     assert scheduler.tx_active_calls == [True, False]
     assert len(executor.calls) == 1  # unchanged -- no re-send while de-keyed
+
+
+@pytest.mark.asyncio
+async def test_drain_withholds_tx_only_reconciliation_when_canonical_ptt_is_rx() -> (
+    None
+):
+    """MOR-1533 web-path regression guard for the dispatch/lookup split.
+
+    ``_send_scheduler_requests`` must dispatch through
+    ``AcquisitionScheduler.dispatchable_requests()`` (tx_active-gated), not
+    the now-unfiltered ``pending_requests()``. The MOR-1525 tests above only
+    exercise ``due_requests()``'s cadence-group skip (BACKGROUND priority);
+    none of them queue a RECONCILIATION-priority ``tx_only`` request through
+    the real drain, so none would catch a regression here -- this test
+    reproduces the exact MOR-1531 shape (a stale-reconciliation hint, as
+    ``StateFreshnessService`` would emit it) through the real web drain.
+    """
+    radio = _make_radio(active="MAIN")
+    power = FieldPath.global_("meters", "power")
+    scheduler = AcquisitionScheduler(profile=_tx_only_profile(power))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+
+    store = StateStore()
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+    state = RadioState()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=state,
+        state_store=store,
+        acquisition_executor=executor,
+    )
+
+    scheduler.ensure_fresh(
+        power,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert executor.calls == [], (
+        "tx_only RECONCILIATION request reached the wire while canonical "
+        "ptt is FRESH False -- the MOR-1525 SWR-flap loop, reopened"
+    )
+    assert poller._acquisition_in_flight == {}  # noqa: SLF001
+
+    # Mirror leg: TX active -- the same request must now be dispatched.
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=True,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert any(
+        power in call[0].paths
+        and call[0].priority is AcquisitionPriority.RECONCILIATION
+        for call in executor.calls
+    ), "RECONCILIATION request must dispatch once TX is active"
 
 
 # ---------------------------------------------------------------------------
