@@ -1244,7 +1244,12 @@ def test_command_response_observation_carries_session_metadata() -> None:
             "global.operator_controls.power_level",
             88 / 255,
         ),
-        ("set_power", {"level": 77}, "global.operator_controls.power_level", 77),
+        (
+            "set_power",
+            {"level": 77},
+            "global.operator_controls.power_level",
+            77 / 255,
+        ),
         (
             "set_filter_width",
             {"width": 1500},
@@ -1664,6 +1669,56 @@ def test_power_level_float_expectation_matches_readback_scale() -> None:
     assert str(intent.target) == str(path)
     assert observation.value == pytest.approx(102 / 255)
     assert observation.value == pytest.approx(0.4, abs=0.01)
+
+
+@pytest.mark.parametrize(
+    ("name", "level", "expected"),
+    [
+        ("set_rf_power", 50, 0.5),
+        ("set_power", 50, 0.5),
+        ("set_rf_power", 0.4, 102 / 255),
+        ("set_power", 0.4, 102 / 255),
+    ],
+)
+def test_power_expectations_share_canonical_and_alias_contract(
+    name: str,
+    level: int | float,
+    expected: float,
+) -> None:
+    """A watts profile input applies only to integer power commands."""
+    intent = command_intent_from_request(
+        name,
+        {"level": level},
+        source="http",
+        power_max_watts=100,
+    )
+
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=70.0,
+        provider="test",
+    )
+    assert observation.value == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("power_max_watts", [None, 0, -1])
+def test_power_expectation_without_positive_watts_max_preserves_raw_scale(
+    power_max_watts: int | None,
+) -> None:
+    """Absent or invalid watts metadata keeps the raw-255 contract."""
+    intent = command_intent_from_request(
+        "set_rf_power",
+        {"level": 50},
+        source="http",
+        power_max_watts=power_max_watts,
+    )
+
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=70.0,
+        provider="test",
+    )
+    assert observation.value == pytest.approx(50 / 255)
 
 
 @pytest.mark.asyncio
