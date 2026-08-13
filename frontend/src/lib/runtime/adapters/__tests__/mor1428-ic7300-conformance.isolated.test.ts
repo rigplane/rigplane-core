@@ -34,91 +34,35 @@
  *                                          (`ritOn`, `micGain`, `main.nbLevel`)
  *                                          must still refuse.
  *
- * ISOLATED POOL (MOR-1272 naming convention): this file module-scope-mocks
- * six store/transport modules the same way
- * `panel-commands.intent.isolated.test.ts` does, for the identical reason —
- * under the `fast` project's `isolate: false`, a sibling file importing the
- * real modules later in the same worker could inherit this file's mocked
- * instances from the shared module cache.
+ * ISOLATED POOL (MOR-1272 naming convention): this file imports
+ * `./conformance/harness`, which module-scope-mocks six store/transport
+ * modules the same way `panel-commands.intent.isolated.test.ts` does, for
+ * the identical reason — under the `fast` project's `isolate: false`, a
+ * sibling file importing the real modules later in the same worker could
+ * inherit this file's mocked instances from the shared module cache.
  *
- * Unlike `panel-commands.intent.isolated.test.ts`, this file does NOT mock
+ * Unlike `panel-commands.intent.isolated.test.ts`, the harness does NOT mock
  * `$lib/state/field-status` — that module is pure (reads `state.fieldStatus`
  * directly, no store lookups), and the whole point of an over-the-fixture
  * suite is to exercise it against the REAL captured `fieldStatus` map rather
  * than a synthetic per-test override.
+ *
+ * MOR-1555: this file is the first (and so far only) consumer of the
+ * profile-parameterized harness in `./conformance/harness.ts` — the six
+ * mocks, deep-clone fixture loaders, and dispatch-assertion primitives
+ * (`expectFrames`/`expectRefusal`/`expectIntentTransport`) used to live here
+ * inline; they were extracted so a second profile is a declarative table
+ * entry (`./conformance/profiles.ts`) rather than a copy of this file.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Capabilities } from '$lib/types/capabilities';
-import type { ServerState } from '$lib/types/state';
-
-const h = vi.hoisted(() => ({
-  state: null as ServerState | null,
-  caps: null as Capabilities | null,
-  sendCommand: vi.fn((
-    _name: string,
-    _params: Record<string, unknown>,
-    _id?: string,
-  ) => true),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  patchReceiver: vi.fn(),
-  rxEnabled: false,
-  setMuted: vi.fn(),
-  setRxLive: vi.fn(),
-  setRxVolume: vi.fn(),
-  setVolume: vi.fn(),
-  setAudioConfig: vi.fn(),
-}));
-
-vi.mock('$lib/transport/ws-client', () => ({
-  getControlSession: vi.fn(() => ({ state: 'connected', epoch: 1 })),
-  onCommandDelivery: vi.fn(() => () => undefined),
-  onControlSessionTransition: vi.fn(() => () => undefined),
-  sendCommand: h.sendCommand,
-}));
-
-vi.mock('$lib/stores/radio.svelte', () => ({
-  getActiveReceiver: vi.fn(() => {
-    if (!h.state) return null;
-    return h.state.active === 'SUB' ? h.state.sub ?? null : h.state.main ?? null;
-  }),
-  getRadioState: vi.fn(() => h.state),
-  // Unused by panel-commands.ts (it reads `$lib/state/field-status`'s
-  // `isFieldAvailable` instead, which this file leaves REAL) — kept for
-  // mock-module shape completeness only.
-  isRadioFieldAvailable: vi.fn(() => false),
-  patchActiveReceiver: h.patchActiveReceiver,
-  patchRadioState: h.patchRadioState,
-  patchReceiver: h.patchReceiver,
-}));
-
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => h.caps),
-  capabilitiesMatchGeneration: vi.fn((providerGeneration: unknown) =>
-    Number.isSafeInteger(providerGeneration)
-    && h.caps?.stateContractVersion === 1
-    && h.caps?.providerGeneration === providerGeneration),
-  getControlRange: vi.fn((name: string) =>
-    (h.caps?.controls as Record<string, unknown> | undefined)?.[name] ?? null),
-}));
-
-vi.mock('$lib/runtime/frontend-runtime', () => ({
-  runtime: {
-    get rxEnabled() { return h.rxEnabled; },
-    setMuted: h.setMuted,
-    setRxLive: h.setRxLive,
-    setRxVolume: h.setRxVolume,
-    setVolume: h.setVolume,
-  },
-}));
-
-vi.mock('$lib/audio/audio-manager', () => ({
-  audioManager: { setAudioConfig: h.setAudioConfig },
-}));
-
-vi.mock('$lib/stores/tuning.svelte', () => ({
-  getTuningStep: vi.fn(() => 1_000),
-}));
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  expectFrames,
+  expectRefusal,
+  fixtureCaps,
+  fixtureState,
+  h,
+} from './conformance/harness';
+import { PROFILES } from './conformance/profiles';
 
 import {
   makeAgcHandlers,
@@ -135,7 +79,7 @@ import {
   makeVfoHandlers,
   dispatchKeyboardRadioAction,
 } from '../../commands/panel-commands';
-import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { validateRadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
@@ -144,27 +88,10 @@ import { getRfFrontEndHandlers } from '../panel-adapters';
 import {
   dualParamNormXFromValues, dualParamValuesFromNormX,
 } from '../../../../components-v2/controls/value-control/value-control-core';
-import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
 
-/** Deep clone so a test that mutates `h.state`/`h.caps` never leaks into a sibling. */
-function fixtureState(): ServerState {
-  return structuredClone(IC7300_STATE);
-}
-function fixtureCaps(): Capabilities {
-  return structuredClone(IC7300_CAPABILITIES);
-}
-
-function exactCalls(): Array<[string, Record<string, unknown>]> {
-  return h.sendCommand.mock.calls.map(([name, params]) => [name, params]);
-}
-
-function expectIntentTransport(): void {
-  for (const call of h.sendCommand.mock.calls) {
-    expect(call[2]).toEqual(expect.any(String));
-    expect(call).toHaveLength(3);
-  }
-  expect(getCommandLifecycles()).toHaveLength(h.sendCommand.mock.calls.length);
-}
+const profile = PROFILES.ic7300;
+const IC7300_STATE = profile.state;
+const IC7300_CAPABILITIES = profile.caps;
 
 /* ── Section 1: real adapters over the raw fixture (no store mocking needed —
  * toRadioViewModel/toSpectrumAuthority take state+caps as plain arguments). */
@@ -231,8 +158,8 @@ describe('IC-7300 fixture — real toRadioViewModel/toSpectrumAuthority (MOR-142
 
 describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/MOR-1423)', () => {
   beforeEach(() => {
-    h.state = fixtureState();
-    h.caps = fixtureCaps();
+    h.state = fixtureState(profile);
+    h.caps = fixtureCaps(profile);
     h.sendCommand.mockClear();
     h.patchActiveReceiver.mockClear();
     h.patchRadioState.mockClear();
@@ -246,35 +173,38 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
   });
 
   it('mode: dispatches set_mode on receiver 0 although `active` was never observed', () => {
-    makeModeHandlers().onModeChange('CW');
-    expect(exactCalls()).toEqual([['set_mode', { mode: 'CW', receiver: 0 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeModeHandlers().onModeChange('CW'),
+      [['set_mode', { mode: 'CW', receiver: 0 }]],
+    );
   });
 
   it('filter: dispatches set_filter on receiver 0', () => {
-    makeFilterHandlers().onFilterChange(2);
-    expect(exactCalls()).toEqual([['set_filter', { filter: 2, receiver: 0 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeFilterHandlers().onFilterChange(2),
+      [['set_filter', { filter: 2, receiver: 0 }]],
+    );
   });
 
   it('band: dispatches set_band from a BSR-coded band select', () => {
-    makeBandHandlers().onBandSelect('20m', 14_225_000, 5);
-    expect(exactCalls()).toEqual([['set_band', { band: 5 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeBandHandlers().onBandSelect('20m', 14_225_000, 5),
+      [['set_band', { band: 5 }]],
+    );
   });
 
   it('RF front end: dispatches set_attenuator / set_preamp / set_rf_gain / set_squelch on receiver 0', () => {
-    makeRfFrontEndHandlers().onAttChange(0);
-    makeRfFrontEndHandlers().onPreChange(1);
-    makeRfFrontEndHandlers().onRfGainChange(200);
-    makeRfFrontEndHandlers().onSquelchChange(51);
-    expect(exactCalls()).toEqual([
+    expectFrames(() => {
+      makeRfFrontEndHandlers().onAttChange(0);
+      makeRfFrontEndHandlers().onPreChange(1);
+      makeRfFrontEndHandlers().onRfGainChange(200);
+      makeRfFrontEndHandlers().onSquelchChange(51);
+    }, [
       ['set_attenuator', { db: 0, receiver: 0 }],
       ['set_preamp', { level: 1, receiver: 0 }],
       ['set_rf_gain', { level: 200, receiver: 0 }],
       ['set_squelch', { level: 51, receiver: 0 }],
     ]);
-    expectIntentTransport();
   });
 
   // MOR-1447 regression: the live stand's captured `main.rfGain` reading
@@ -288,14 +218,13 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
   it('RF gain/squelch sliders: getRfFrontEndHandlers converts a normalized drag to the raw wire level (MOR-1447)', () => {
     expect(IC7300_STATE.main!.rfGain).toBeCloseTo(0.8196078431372549);
 
-    getRfFrontEndHandlers().onRfGainChange(IC7300_STATE.main!.rfGain!);
-    getRfFrontEndHandlers().onSquelchChange(0.2);
-
-    expect(exactCalls()).toEqual([
+    expectFrames(() => {
+      getRfFrontEndHandlers().onRfGainChange(IC7300_STATE.main!.rfGain!);
+      getRfFrontEndHandlers().onSquelchChange(0.2);
+    }, [
       ['set_rf_gain', { level: 209, receiver: 0 }],
       ['set_squelch', { level: 51, receiver: 0 }],
     ]);
-    expectIntentTransport();
   });
 
   // MOR-1447 leg 2: IC-7300 is the live gate radio for
@@ -323,49 +252,53 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
 
     it('a hard-right drag from the captured position dispatches SQL max / RF max, raw 255/255', () => {
       const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(1, 0, 1, 0.01);
-      getRfFrontEndHandlers().onRfGainChange(nextRf);
-      getRfFrontEndHandlers().onSquelchChange(nextSql);
-      expect(exactCalls()).toEqual([
+      expectFrames(() => {
+        getRfFrontEndHandlers().onRfGainChange(nextRf);
+        getRfFrontEndHandlers().onSquelchChange(nextSql);
+      }, [
         ['set_rf_gain', { level: 255, receiver: 0 }],
         ['set_squelch', { level: 255, receiver: 0 }],
       ]);
-      expectIntentTransport();
     });
 
     it('a left-of-center drag (normX 0.23) dispatches RF 128 / SQL 0, raw wire integers', () => {
       const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(0.23, 0, 1, 0.01);
-      getRfFrontEndHandlers().onRfGainChange(nextRf);
-      getRfFrontEndHandlers().onSquelchChange(nextSql);
-      expect(exactCalls()).toEqual([
+      expectFrames(() => {
+        getRfFrontEndHandlers().onRfGainChange(nextRf);
+        getRfFrontEndHandlers().onSquelchChange(nextSql);
+      }, [
         ['set_rf_gain', { level: 128, receiver: 0 }],
         ['set_squelch', { level: 0, receiver: 0 }],
       ]);
-      expectIntentTransport();
     });
   });
 
   it('AGC: dispatches set_agc on receiver 0', () => {
-    makeAgcHandlers().onAgcModeChange(2);
-    expect(exactCalls()).toEqual([['set_agc', { mode: 2, receiver: 0 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeAgcHandlers().onAgcModeChange(2),
+      [['set_agc', { mode: 2, receiver: 0 }]],
+    );
   });
 
   it('NB: dispatches set_nb on receiver 0', () => {
-    makeDspHandlers().onNbToggle(true);
-    expect(exactCalls()).toEqual([['set_nb', { on: true, receiver: 0 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeDspHandlers().onNbToggle(true),
+      [['set_nb', { on: true, receiver: 0 }]],
+    );
   });
 
   it('NR: dispatches set_nr on receiver 0', () => {
-    makeDspHandlers().onNrModeChange(1);
-    expect(exactCalls()).toEqual([['set_nr', { on: true, receiver: 0 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeDspHandlers().onNrModeChange(1),
+      [['set_nr', { on: true, receiver: 0 }]],
+    );
   });
 
   it('AF level: dispatches set_af_level on receiver 0', () => {
-    makeRxAudioHandlers().onAfLevelChange(0.5);
-    expect(exactCalls()).toEqual([['set_af_level', { level: 0.5, receiver: 0 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeRxAudioHandlers().onAfLevelChange(0.5),
+      [['set_af_level', { level: 0.5, receiver: 0 }]],
+    );
   });
 
   it('memory recall: dispatches set_memory_mode + memory_to_vfo (relative A/B identity, MOR-1423)', () => {
@@ -373,31 +306,34 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
     // `vfoReadback: 'selected_unselected'` makes `relativeVfoIdentityUnknown`
     // route the snapshot through `main.freqHz`/`main.mode` directly instead
     // of the absolute A/B slot — both genuinely observed on this fixture.
-    const ok = makeMemoryHandlers().onRecall(7);
+    const ok = expectFrames(
+      () => makeMemoryHandlers().onRecall(7),
+      [
+        ['set_memory_mode', { channel: 7 }],
+        ['memory_to_vfo', { channel: 7 }],
+      ],
+    );
     expect(ok).toBe(true);
-    expect(exactCalls()).toEqual([
-      ['set_memory_mode', { channel: 7 }],
-      ['memory_to_vfo', { channel: 7 }],
-    ]);
-    expectIntentTransport();
   });
 
   it('memory store: dispatches set_memory_mode + memory_write for the fixture\'s live freq/mode', () => {
-    const ok = makeMemoryHandlers().onStore(5, IC7300_STATE.main!.freqHz, IC7300_STATE.main!.mode);
+    const ok = expectFrames(
+      () => makeMemoryHandlers().onStore(5, IC7300_STATE.main!.freqHz, IC7300_STATE.main!.mode),
+      [
+        ['set_memory_mode', { channel: 5 }],
+        ['memory_write', {}],
+      ],
+    );
     expect(ok).toBe(true);
-    expect(exactCalls()).toEqual([
-      ['set_memory_mode', { channel: 5 }],
-      ['memory_write', {}],
-    ]);
-    expectIntentTransport();
   });
 
   it('keyboard context: dispatches set_split via dispatchKeyboardRadioAction(toggle_split)', () => {
     expect(IC7300_STATE.split).toBe(false);
-    const handled = dispatchKeyboardRadioAction({ action: 'toggle_split' });
+    const handled = expectFrames(
+      () => dispatchKeyboardRadioAction({ action: 'toggle_split' }),
+      [['set_split', { on: true }]],
+    );
     expect(handled).toBe(true);
-    expect(exactCalls()).toEqual([['set_split', { on: true }]]);
-    expectIntentTransport();
   });
 
   it('VFO A/B select: dispatches set_vfo for the target slot (no dependency on activeSlot)', () => {
@@ -405,15 +341,17 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
     // structurally (MOR-1423) and only checks the SLOT is reachable
     // (`vfoScheme: 'ab'` supports A/B). Works although activeSlot is
     // unobserved on this fixture.
-    makeVfoHandlers().onVfoSelect('MAIN', 'B');
-    expect(exactCalls()).toEqual([['set_vfo', { vfo: 'B' }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeVfoHandlers().onVfoSelect('MAIN', 'B'),
+      [['set_vfo', { vfo: 'B' }]],
+    );
   });
 
   it('onMainFreqChange: dispatches set_freq on receiver 0', () => {
-    makeVfoHandlers().onMainFreqChange(14_205_000);
-    expect(exactCalls()).toEqual([['set_freq', { freq: 14_205_000, receiver: 0 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeVfoHandlers().onMainFreqChange(14_205_000),
+      [['set_freq', { freq: 14_205_000, receiver: 0 }]],
+    );
   });
 
   it('RIT toggle: REFUSES — `ritOn` is genuinely unobserved on this fixture, not fabricated MAIN-bypassed (MOR-1418 scope boundary)', () => {
@@ -426,10 +364,7 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
     expect(IC7300_CAPABILITIES.capabilities).toContain('rit');
     expect(IC7300_STATE.fieldStatus?.ritOn?.observed).toBe(false);
 
-    makeRitXitHandlers().onRitToggle();
-
-    expect(h.sendCommand).not.toHaveBeenCalled();
-    expect(getCommandLifecycles()).toHaveLength(0);
+    expectRefusal(() => makeRitXitHandlers().onRitToggle());
   });
 
   // MOR-1446: the live IC-7300 walkthrough found SPAN/SPEED/REF desynced —
@@ -443,23 +378,26 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
   // write (`radio_poller.py`'s `_reconfirm_scope_field`, MOR-1446 fix).
   it('scope span: dispatches set_scope_span for the confirmed span leaf', () => {
     expect(IC7300_STATE.fieldStatus?.['scopeControls.span']?.observed).toBe(true);
-    makeScopeControlsHandlers().onSpanChange(6);
-    expect(exactCalls()).toEqual([['set_scope_span', { span: 6 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeScopeControlsHandlers().onSpanChange(6),
+      [['set_scope_span', { span: 6 }]],
+    );
   });
 
   it('scope speed: dispatches set_scope_speed for the confirmed speed leaf', () => {
     expect(IC7300_STATE.fieldStatus?.['scopeControls.speed']?.observed).toBe(true);
-    makeScopeControlsHandlers().onSpeedChange(1);
-    expect(exactCalls()).toEqual([['set_scope_speed', { speed: 1 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeScopeControlsHandlers().onSpeedChange(1),
+      [['set_scope_speed', { speed: 1 }]],
+    );
   });
 
   it('scope ref: dispatches set_scope_ref for the confirmed refDb leaf', () => {
     expect(IC7300_STATE.fieldStatus?.['scopeControls.refDb']?.observed).toBe(true);
-    makeScopeControlsHandlers().onRefChange(10);
-    expect(exactCalls()).toEqual([['set_scope_ref', { ref: 10 }]]);
-    expectIntentTransport();
+    expectFrames(
+      () => makeScopeControlsHandlers().onRefChange(10),
+      [['set_scope_ref', { ref: 10 }]],
+    );
   });
 });
 
@@ -469,8 +407,8 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
 
 describe('IC-7300 fixture — honest refusals pinned (MOR-988 §3.2 fail-closed)', () => {
   beforeEach(() => {
-    h.state = fixtureState();
-    h.caps = fixtureCaps();
+    h.state = fixtureState(profile);
+    h.caps = fixtureCaps(profile);
     h.sendCommand.mockClear();
   });
 
@@ -481,10 +419,7 @@ describe('IC-7300 fixture — honest refusals pinned (MOR-988 §3.2 fail-closed)
   it('mic gain: REFUSES — micGain is unobserved on the live stand', () => {
     expect(IC7300_STATE.fieldStatus?.micGain?.observed).toBe(false);
 
-    makeTxHandlers().onMicGainChange(100);
-
-    expect(h.sendCommand).not.toHaveBeenCalled();
-    expect(getCommandLifecycles()).toHaveLength(0);
+    expectRefusal(() => makeTxHandlers().onMicGainChange(100));
   });
 
   it('NB level: REFUSES — main.nbLevel is unobserved on the live stand (main.nb itself IS observed)', () => {
@@ -492,9 +427,6 @@ describe('IC-7300 fixture — honest refusals pinned (MOR-988 §3.2 fail-closed)
     // Contrast: the boolean NB toggle IS observed and DOES dispatch (Section 2).
     expect(IC7300_STATE.fieldStatus?.['main.nb']?.observed).toBe(true);
 
-    makeDspHandlers().onNbLevelChange(5);
-
-    expect(h.sendCommand).not.toHaveBeenCalled();
-    expect(getCommandLifecycles()).toHaveLength(0);
+    expectRefusal(() => makeDspHandlers().onNbLevelChange(5));
   });
 });
