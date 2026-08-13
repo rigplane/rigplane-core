@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,10 +32,6 @@ __all__ = ["start_web_server", "stop_web_server"]
 logger = logging.getLogger(__name__)
 
 _SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S = 1.0
-
-
-def _reuse_port_supported() -> bool:
-    return sys.platform != "win32"
 
 
 def _supports_scope_local(server: WebServer) -> bool:
@@ -86,7 +81,19 @@ async def start_web_server(server: WebServer) -> None:
         port=server._config.port,
         ssl=ssl_ctx,
         reuse_address=True,
-        reuse_port=_reuse_port_supported(),
+        # MOR-1572: deliberately NOT reuse_port. This is an exclusive TCP
+        # listener guarding a single radio session (same rationale as
+        # rigctld's listener, see rigctld/server.py) — SO_REUSEPORT let a
+        # second rigplane instance silently bind the same web port on
+        # macOS/BSD, so two instances raced for the same radio with no
+        # error and the operator saw a half-dead UI. It also undermined the
+        # check_ports_available() preflight (MOR-1437): an orphan holding
+        # the port with SO_REUSEPORT set could let the preflight probe bind
+        # successfully right alongside it. Contrast with the UDP discovery
+        # responder (web/discovery.py), which legitimately opts into
+        # SO_REUSEPORT so multiple co-located instances can each announce
+        # their own radio on the shared discovery port — that is a
+        # best-effort broadcast responder, not an exclusive session guard.
     )
     server._server_was_running = True
     addr = server._server.sockets[0].getsockname()

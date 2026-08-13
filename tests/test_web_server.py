@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -1401,6 +1402,38 @@ class TestServerConfig:
         assert cfg.host == "0.0.0.0"
         assert cfg.port == 8080
         assert cfg.max_clients == 100
+
+    async def test_second_web_server_cannot_bind_same_port(self) -> None:
+        """MOR-1572 red-first: a second rigplane instance must not silently
+        share the first instance's web port.
+
+        Before this fix the listener opted into SO_REUSEPORT, so on
+        macOS/BSD a *second full WebServer* using the exact same production
+        start-up path could bind the same (host, port) with no error at
+        all — the two instances then raced for the same radio while the
+        operator saw a half-dead UI (verified locally: reproduces 100% on
+        darwin prior to the fix). On Linux, SO_REUSEPORT requires every
+        participating socket to opt in, so the second start may already
+        fail there for an unrelated reason. Either way, the invariant this
+        test protects is host-independent: starting a second listener on
+        the same (host, port) while the first is still running MUST fail
+        with EADDRINUSE, everywhere.
+        """
+        config = WebConfig(host="127.0.0.1", port=0)
+        srv1 = WebServer(None, config)
+        await srv1.start()
+        srv2: WebServer | None = None
+        try:
+            port = srv1.port
+            srv2 = WebServer(None, WebConfig(host="127.0.0.1", port=port))
+            with pytest.raises(OSError) as exc_info:
+                await srv2.start()
+            assert exc_info.value.errno == errno.EADDRINUSE
+        finally:
+            if srv2 is not None:
+                with contextlib.suppress(Exception):
+                    await srv2.stop()
+            await srv1.stop()
 
 
 # ---------------------------------------------------------------------------

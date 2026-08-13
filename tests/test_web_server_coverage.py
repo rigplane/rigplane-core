@@ -653,21 +653,26 @@ def test_state_store_freshness_refresh_broadcasts_without_semantic_change() -> N
 
 
 @pytest.mark.asyncio
-async def test_start_disables_reuse_port_on_windows() -> None:
+async def test_start_never_requests_reuse_port() -> None:
+    """MOR-1572: the web listener must never opt into SO_REUSEPORT.
+
+    Unlike the UDP discovery responder (best-effort, meant to be shared by
+    co-located instances), this TCP listener guards an exclusive radio
+    session — a second rigplane instance silently sharing the port (as
+    SO_REUSEPORT allowed on macOS/BSD) means two instances race for the
+    same radio with no error. Guard against the kwarg being reintroduced.
+    """
     srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, discovery=False))
     fake_server = _FakeAsyncServer()
 
-    with (
-        patch("rigplane.web.web_startup.sys.platform", "win32"),
-        patch(
-            "rigplane.web.web_startup.asyncio.start_server",
-            new=AsyncMock(return_value=fake_server),
-        ) as start_server,
-    ):
+    with patch(
+        "rigplane.web.web_startup.asyncio.start_server",
+        new=AsyncMock(return_value=fake_server),
+    ) as start_server:
         await srv.start()
         await srv.stop()
 
-    assert start_server.await_args.kwargs["reuse_port"] is False
+    assert "reuse_port" not in start_server.await_args.kwargs
 
 
 def test_shutdown_signal_handler_falls_back_when_loop_does_not_support_signals(
