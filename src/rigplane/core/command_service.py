@@ -698,6 +698,44 @@ def _af_level_from_param(value: Any) -> int:
     raise ValueError(f"level {value!r} must be an int or a normalized float")
 
 
+def _power_level_expectation_from_param(value: Any) -> int:
+    """Coerce ``set_rf_power``/``set_power``'s StateStore expectation param.
+
+    MOR-1579 round 3: this used to be a plain ``int(raw_level)``, so a
+    normalized float level (e.g. ``0.4`` from the web power slider —
+    ``control.py``'s ``_level_for_power`` treats ``set_rf_power`` as
+    type-dispatched, same as ``set_af_level``) collapsed to
+    ``int(0.4) == 0``. The StateStore overlay/expectation then sat at 0%
+    for the optimistic-update TTL before jumping to the real readback —
+    the same snap-back class MOR-1579 fixes for ``rf_gain``/``squelch``,
+    reproduced here on every single power-slider move rather than only at
+    a boundary value.
+
+    ``_normalize_raw_level_value`` (below) always divides this value by
+    255 to recover the normalized overlay value, and *both* backends'
+    readbacks normalize to that same fraction ``v`` regardless of unit —
+    Icom CI-V as ``raw / 255``, Yaesu CAT as ``watts / max_watts`` (see
+    ``backends/yaesu_cat/observations.py``'s ``_normalize_power_level``).
+    So for a float input the coherent expectation is always
+    ``round(v * 255)``, independent of ``native_power_unit`` — no radio
+    object needed here (unlike ``control.py``'s ``_level_for_power``,
+    which *does* need ``profile.max_watts`` to compute the correct
+    *actuation* value for a watts radio).
+
+    A bare int is the documented raw/watts wire value (unchanged from
+    before this fix) — dividing it by 255 to form the expectation is only
+    exact for ``raw_255`` radios; for a watts radio this is a known,
+    separate, deferred gap (see the PR body's "Known follow-up"), since
+    the profile needed to convert watts to a fraction isn't reachable
+    from this intent-normalization function.
+    """
+    if isinstance(value, float) and not isinstance(value, bool):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
+        return max(0, min(255, round(value * 255)))
+    return int(value)
+
+
 def _normalize_raw_level_value(value: Any) -> Any:
     if isinstance(value, bool):
         return value
@@ -948,7 +986,7 @@ def command_intent_from_request(
         raw_level = (
             normalized["level"] if "level" in normalized else normalized["value"]
         )
-        normalized["power_level"] = int(raw_level)
+        normalized["power_level"] = _power_level_expectation_from_param(raw_level)
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))
     elif command_name == "set_rit":

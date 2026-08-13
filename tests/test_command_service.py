@@ -1622,6 +1622,50 @@ def test_public_api_sync_squelch_actuation_value_is_not_reinterpreted() -> None:
     assert intent.params["squelch"] == 1
 
 
+def test_power_level_float_expectation_matches_readback_scale() -> None:
+    """MOR-1579 round 3 regression (red-first leg): the ``set_rf_power``
+    expectation branch used to do a plain ``int(raw_level)``, so a
+    normalized float level (e.g. ``0.4`` from the web power slider —
+    ``control.py``'s ``_level_for_power`` treats ``set_rf_power`` as
+    type-dispatched, same as ``set_af_level``) collapsed to
+    ``int(0.4) == 0``. The StateStore overlay/expectation then sat at 0%
+    for the optimistic-update TTL on *every single power-slider move*
+    (not just a boundary value like the rf_gain/squelch raw-1 case),
+    before jumping to the real readback — the same snap-back class this
+    PR fixes elsewhere.
+
+    Both backends' readbacks normalize to the same fraction ``v``
+    regardless of unit (Icom CI-V as ``raw / 255``, Yaesu CAT as
+    ``watts / max_watts`` — see
+    ``backends/yaesu_cat/observations.py``'s ``_normalize_power_level``),
+    so the coherent expectation for a float input is ``round(v * 255)``
+    for *both* units, independent of ``native_power_unit`` — no radio
+    object needed here.
+    """
+    intent = command_intent_from_request(
+        "set_rf_power",
+        {"level": 0.4},
+        source="websocket",
+        command_id="ws-set_rf_power",
+        session_id="client-a",
+    )
+    path = FieldPath.global_("operator_controls", "power_level")
+
+    # Param is coerced to the raw scale the radio actually receives — not 0.
+    assert intent.params["power_level"] == 102  # round(0.4 * 255)
+
+    # The expectation/overlay value the readback reconciles against is the
+    # normalized form of that same raw value (~0.4), not 0.0.
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=70.0,
+        provider="test",
+    )
+    assert str(intent.target) == str(path)
+    assert observation.value == pytest.approx(102 / 255)
+    assert observation.value == pytest.approx(0.4, abs=0.01)
+
+
 @pytest.mark.asyncio
 async def test_raw_external_rigctld_level_readback_normalizes_before_reconcile() -> (
     None
