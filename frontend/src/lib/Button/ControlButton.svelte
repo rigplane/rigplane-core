@@ -1,6 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import type { IndicatorColor, IndicatorStyle, GlowVariant, ButtonSurface } from './types';
+  // MOR-1536: the shared armed-state CSS seat — see the file's own doc
+  // comment. Imported here (not by every caller) because this is the one
+  // place `data-armed` is ever rendered onto the DOM.
+  import './control-button.css';
 
   interface Props {
     active?: boolean;

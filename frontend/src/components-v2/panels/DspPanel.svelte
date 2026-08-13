@@ -12,10 +12,24 @@
     isNotchActive,
   } from './dsp-panel-logic';
 
-  import { deriveDspProps, getDspHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    deriveDspProps, getDspHandlers, getAutoNotchArmed, getManualNotchArmed,
+  } from '$lib/runtime/adapters/panel-adapters';
+  import { t } from '$lib/i18n';
 
   const handlers = getDspHandlers();
   let p = $derived(deriveDspProps());
+  // MOR-1536: freshest in-flight `set_auto_notch`/`set_manual_notch`
+  // targets, DISPLAY ONLY (see `panel-adapters.ts`'s ARMED-SIGNAL
+  // CONTRACT). `notchMode` below stays the sole selection source — armed
+  // only marks the button the pending command is racing toward, never a
+  // substitute for the confirmed reading. Two independent accessors
+  // because notch mode is written as two independent commands (see
+  // `getAutoNotchArmed`'s doc comment) — NOTCH tracks manual, A-NOTCH
+  // tracks auto.
+  let manualNotchArmed = $derived(getManualNotchArmed());
+  let autoNotchArmed = $derived(getAutoNotchArmed());
+  const notchArmedIdBase = $props.id();
 
   let nrMode = $derived(p.nrMode);
   let nrLevel = $derived(p.nrLevel);
@@ -227,12 +241,15 @@
     {/if}
 
     {#if showNotch}
+      {@const manualNotchArmedId = `${notchArmedIdBase}-manual`}
       <div class="dsp-btn-wrap" bind:this={notchAnchorEl}>
         <HardwareButton
           active={notchMode === 'manual'}
           indicator="edge-left"
           color="cyan"
           title="Manual Notch — click to toggle; long-press for settings"
+          armed={manualNotchArmed.armed}
+          describedBy={manualNotchArmed.armed ? manualNotchArmedId : undefined}
           onclick={onNotchClick}
           onpointerdown={() => startLongPress('notch')}
           onpointerup={endLongPressPointer}
@@ -240,18 +257,27 @@
           onpointerleave={endLongPressPointer}
         >NOTCH</HardwareButton>
       </div>
+      {#if manualNotchArmed.armed}
+        <span id={manualNotchArmedId} class="sr-only">{t('core.dsp.notch.pendingAnnouncement')}</span>
+      {/if}
     {/if}
 
     {#if showAutoNotch}
+      {@const autoNotchArmedId = `${notchArmedIdBase}-auto`}
       <div class="dsp-btn-wrap">
         <HardwareButton
           active={notchMode === 'auto'}
           indicator="edge-left"
           color="green"
           title="Auto Notch"
+          armed={autoNotchArmed.armed}
+          describedBy={autoNotchArmed.armed ? autoNotchArmedId : undefined}
           onclick={() => onNotchModeChange(notchMode === 'auto' ? 'off' : 'auto')}
         >A-NOTCH</HardwareButton>
       </div>
+      {#if autoNotchArmed.armed}
+        <span id={autoNotchArmedId} class="sr-only">{t('core.dsp.notch.pendingAnnouncement')}</span>
+      {/if}
     {/if}
 
     {#if showAgcTime}
@@ -507,5 +533,13 @@
   .dsp-mode-grid > :global(button) {
     flex: 1 1 0;
     min-width: 0;
+  }
+
+  /* MOR-1536 — same convention as `ModePanel.svelte`'s `.sr-only`: visually
+     hidden, `position: absolute` removes it from `.dsp-button-grid`'s flow
+     so it never consumes a grid cell. */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 </style>

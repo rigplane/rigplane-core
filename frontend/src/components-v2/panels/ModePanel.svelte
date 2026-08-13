@@ -1,7 +1,9 @@
 <script lang="ts">
   import { HardwareButton } from '$lib/Button';
   import { getShortcutHint } from '../layout/shortcut-hints';
-  import { deriveModeProps, getModeHandlers, getModeArmed } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    deriveModeProps, getModeHandlers, getModeArmed, getDataModeArmed,
+  } from '$lib/runtime/adapters/panel-adapters';
   import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
   import { t } from '$lib/i18n';
 
@@ -23,6 +25,14 @@
   // split); not fixed here.
   let armed = $derived(getModeArmed());
   const pendingModeIdBase = $props.id();
+
+  // MOR-1536: DATA mode's own armed fact (`set_data_mode`) — a DIFFERENT
+  // intent than MODE's `set_mode` above; a mode change and a data-mode
+  // change can be in flight at once and must not be conflated (see
+  // `getDataModeArmed`'s doc comment, `panel-adapters.ts`). `dataMode`
+  // below stays the confirmed selection source, independent of armed.
+  let dataModeArmed = $derived(getDataModeArmed());
+  const dataModeIdBase = `${pendingModeIdBase}-dataMode`;
 
   // Destructure for template readability
   let currentMode = $derived(p.currentMode);
@@ -98,30 +108,43 @@
     </div>
 
     {#if hasDataMode && dataOptions.length === 2}
+      {@const dataArmedId = `${dataModeIdBase}-toggle`}
       <HardwareButton
         active={dataMode > 0}
         indicator="edge-left"
         color="red"
         title={dataShortcut}
         shortcutHint={dataShortcut}
+        armed={dataModeArmed.armed}
+        describedBy={dataModeArmed.armed ? dataArmedId : undefined}
         onclick={() => onDataModeChange(dataMode > 0 ? 0 : 1)}
       >
         DATA
       </HardwareButton>
+      {#if dataModeArmed.armed}
+        <span id={dataArmedId} class="sr-only">{t('core.modePanel.dataMode.pendingAnnouncement')}</span>
+      {/if}
     {:else if hasDataMode && dataOptions.length > 2}
       <div class="section-label">DATA</div>
       <div class="data-grid">
         {#each dataOptions as option}
+          {@const isDataArmed = dataModeArmed.armed && dataModeArmed.value === option.value}
+          {@const dataArmedId = `${dataModeIdBase}-${option.value}`}
           <HardwareButton
             active={dataMode === option.value}
             indicator="edge-left"
             color="cyan"
             title={dataShortcut}
             shortcutHint={dataShortcut}
+            armed={isDataArmed}
+            describedBy={isDataArmed ? dataArmedId : undefined}
             onclick={() => onDataModeChange(option.value)}
           >
             {option.label}
           </HardwareButton>
+          {#if isDataArmed}
+            <span id={dataArmedId} class="sr-only">{t('core.modePanel.dataMode.pendingAnnouncement')}</span>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -166,21 +189,12 @@
     gap: 4px;
   }
 
-  /* MOR-1519: rule sits ON the button itself (`data-armed`, rendered by
-     `ControlButton`), not a wrapper — a wrapper can't be matched by an
-     attribute selector, and inherited `font-style` is silently beaten by
-     the UA button stylesheet (review F1). `opacity` is the PRIMARY channel:
-     it is font-independent and always renders. `text-decoration: underline`
-     is the structural backstop that survives even without an italic face
-     (review F2 — this build's vendored Roboto Mono has none, and
-     `app.css`'s `font-synthesis: none` blocks the synthetic fallback, so
-     italic alone would compute but render pixel-identical to upright).
-     `:global(...)` because `ControlButton`'s own template — not this
-     file's — owns the element the attribute lands on. */
-  :global(.v2-control-button[data-armed='true']) {
-    opacity: 0.75;
-    text-decoration: underline;
-  }
+  /* MOR-1519/MOR-1536: the `data-armed` visual channel (opacity + underline)
+     used to live here as a per-panel `:global(...)` rule. It is now the
+     shared seat at `$lib/Button/control-button.css` (imported once by
+     `ControlButton.svelte`, the element that actually renders
+     `data-armed`) so every later `ControlButton`/`HardwareButton` consumer
+     gets it for free instead of re-authoring a copy per panel. */
 
   .section-label {
     color: var(--v2-text-dim);

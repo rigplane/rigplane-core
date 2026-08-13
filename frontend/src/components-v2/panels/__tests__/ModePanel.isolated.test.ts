@@ -10,19 +10,19 @@ import path from 'node:path';
 // document, however, IS parsed and matched by jsdom's CSSOM (verified: a
 // manually inserted rule targeting `[data-armed='true']` DOES resolve via
 // `getComputedStyle`). So to get a test that actually fails if the visual
-// affordance goes dark, this reads ModePanel.svelte's REAL `<style>` block
-// off disk and injects it as a literal `<style>` element — a typo'd
-// property, a deleted rule, or a wrong selector in the source file changes
-// what gets injected here too, unlike a hand-copied expectation.
+// affordance goes dark, this reads the REAL armed-state CSS off disk and
+// injects it as a literal `<style>` element — a typo'd property, a deleted
+// rule, or a wrong selector in the source file changes what gets injected
+// here too, unlike a hand-copied expectation.
+//
+// MOR-1536: the rule moved from a `:global(...)` block inside
+// `ModePanel.svelte` to the shared seat, `$lib/Button/control-button.css`
+// (imported once by `ControlButton.svelte`) — this now reads THAT file, a
+// plain CSS file with no `:global(...)` wrapper to unwrap.
 function loadComponentCss(): string {
   // `process.cwd()` is `frontend/` under this project's vitest config (test
   // files run from the package root, not their own directory).
-  const source = readFileSync(path.resolve(process.cwd(), 'src/components-v2/panels/ModePanel.svelte'), 'utf-8');
-  const match = source.match(/<style>([\s\S]*?)<\/style>/);
-  if (!match) throw new Error('ModePanel.svelte: no <style> block found');
-  // Svelte's `:global(...)` wrapper is compile-time syntax, not valid CSS on
-  // its own — unwrap it so a plain <style> tag parses the same rule.
-  return match[1].replace(/:global\(([^)]+)\)/g, '$1');
+  return readFileSync(path.resolve(process.cwd(), 'src/lib/Button/control-button.css'), 'utf-8');
 }
 
 const mockProps = {
@@ -45,20 +45,29 @@ const mockHandlers = {
 // MOR-1519: the generic armed signal, default unarmed (matches
 // `getModeArmed`'s real shape, `panel-adapters.ts`).
 const mockArmed: { armed: boolean; value: string | null } = { armed: false, value: null };
+// MOR-1536: DATA mode's own armed fact — a DIFFERENT intent (`set_data_mode`)
+// than MODE's `set_mode` above, default unarmed.
+const mockDataModeArmed: { armed: boolean; value: number | null } = { armed: false, value: null };
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveModeProps: () => mockProps,
   getModeHandlers: () => mockHandlers,
   getModeArmed: () => mockArmed,
+  getDataModeArmed: () => mockDataModeArmed,
 }));
 
 import ModePanel from '../ModePanel.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(overrides?: Partial<typeof mockProps>, armedOverride?: typeof mockArmed) {
+function mountPanel(
+  overrides?: Partial<typeof mockProps>,
+  armedOverride?: typeof mockArmed,
+  dataModeArmedOverride?: typeof mockDataModeArmed,
+) {
   if (overrides) Object.assign(mockProps, overrides);
   if (armedOverride) Object.assign(mockArmed, armedOverride);
+  if (dataModeArmedOverride) Object.assign(mockDataModeArmed, dataModeArmedOverride);
   const target = document.createElement('div');
   document.body.appendChild(target);
   const component = mount(ModePanel, { target });
@@ -82,6 +91,8 @@ beforeEach(() => {
   mockHandlers.onModInputChange = vi.fn();
   mockArmed.armed = false;
   mockArmed.value = null;
+  mockDataModeArmed.armed = false;
+  mockDataModeArmed.value = null;
 });
 
 afterEach(() => {
@@ -190,6 +201,71 @@ describe('ModePanel', () => {
         const usbDecoration = getComputedStyle(usbButton).textDecorationLine || getComputedStyle(usbButton).textDecoration;
         expect(cwDecoration).toContain('underline');
         expect(usbDecoration).not.toContain('underline');
+      });
+    });
+  });
+
+  // ── MOR-1536: DATA mode's own armed signal (adoption long tail) ──
+  describe('DATA mode armed signal (MOR-1536)', () => {
+    function dataButtonOf(target: HTMLElement, label: string): HTMLButtonElement | null {
+      const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.data-grid .v2-control-button'));
+      return buttons.find((b) => b.textContent?.trim() === label) ?? null;
+    }
+
+    it('marks only the armed target DATA option (>2-value grid)', () => {
+      const target = mountPanel(undefined, undefined, { armed: true, value: 2 });
+      expect(dataButtonOf(target, 'D2')?.dataset.armed).toBe('true');
+      expect(dataButtonOf(target, 'OFF')?.dataset.armed).toBeUndefined();
+      expect(dataButtonOf(target, 'D1')?.dataset.armed).toBeUndefined();
+    });
+
+    it('pairs the armed DATA option with an aria-describedby sr-only announcement', () => {
+      const target = mountPanel(undefined, undefined, { armed: true, value: 2 });
+      const button = dataButtonOf(target, 'D2')!;
+      const describedById = button.getAttribute('aria-describedby');
+      expect(describedById).toBeTruthy();
+      const announcement = target.querySelector(`#${describedById}`);
+      expect(announcement?.classList.contains('sr-only')).toBe(true);
+      expect(announcement?.textContent).toBeTruthy();
+    });
+
+    it('marks the single DATA toggle button (2-value case) when armed', () => {
+      const target = mountPanel({ dataModeCount: 1 }, undefined, { armed: true, value: 1 });
+      const button = target.querySelector<HTMLButtonElement>('.panel-body > .v2-control-button');
+      expect(button?.dataset.armed).toBe('true');
+      expect(button?.getAttribute('aria-describedby')).toBeTruthy();
+    });
+
+    it('marks no DATA button when nothing is armed', () => {
+      const target = mountPanel(undefined, undefined, { armed: false, value: null });
+      expect(target.querySelectorAll('.data-grid .v2-control-button[data-armed]')).toHaveLength(0);
+    });
+
+    // Same F4-class test-honesty pattern as MODE's armed CSS above — reuses
+    // the SAME shared `control-button.css` rule (that is the point of
+    // MOR-1536's styling-seat move), so this proves the shared seat truly
+    // applies to a SECOND consumer within the same file, not just to MODE.
+    describe('as rendered (real component CSS injected, see loadComponentCss above)', () => {
+      let styleEl: HTMLStyleElement;
+
+      beforeEach(() => {
+        styleEl = document.createElement('style');
+        styleEl.textContent = loadComponentCss();
+        document.head.appendChild(styleEl);
+      });
+
+      afterEach(() => {
+        styleEl.remove();
+      });
+
+      it('renders the armed DATA option at reduced opacity with an underline', () => {
+        const target = mountPanel(undefined, undefined, { armed: true, value: 2 });
+        const armedButton = dataButtonOf(target, 'D2')!;
+        const unarmedButton = dataButtonOf(target, 'OFF')!;
+        expect(getComputedStyle(armedButton).opacity).toBe('0.75');
+        expect(getComputedStyle(unarmedButton).opacity).not.toBe('0.75');
+        const decoration = getComputedStyle(armedButton).textDecorationLine || getComputedStyle(armedButton).textDecoration;
+        expect(decoration).toContain('underline');
       });
     });
   });
