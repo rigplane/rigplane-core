@@ -410,6 +410,25 @@ class IcomCivAcquisitionExecutor:
                 if slot == "unselected":
                     return None
                 return (0x1A, 0x03, receiver)
+            if path.name == "filter_num":
+                # MOR-1546: no dedicated CI-V read for the filter-selection
+                # fact -- it rides the SAME 0x26 selected/unselected mode
+                # readback as ``mode`` above (``frame.data[3]``, see
+                # ``parse_selected_mode_response`` / ``_civ_rx.py``'s cmd
+                # 0x26 observation branch, which already emits a
+                # ``filter_num`` observation alongside ``mode``/``data_mode``
+                # from that one response). Same selector, same command --
+                # this is an observation-side mapping, not a new query.
+                return (0x26, None, selector)
+            if path.name == "data_mode":
+                # MOR-1546: unlike filter_num, DATA mode has its own
+                # dedicated read (CI-V 0x1A 0x06, ``get_data_mode`` in every
+                # profile's ``[commands]`` table) -- no VFO-selector variant,
+                # so (like filter_width) only the selected/active slot is
+                # queryable.
+                if slot == "unselected":
+                    return None
+                return (0x1A, 0x06, receiver)
             return None
         if path.scope.value == "receiver" and path.family.value == "meters":
             if path.name == "s_meter":
