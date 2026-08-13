@@ -35,7 +35,7 @@ from ..core.acquisition_scheduler import (
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import FieldPath
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
-from ..core.state_store import StateStore
+from ..core.state_store import FreshnessState, StateStore
 from ..radio_protocol import (
     CivCommandCapable,
     StateModelCapable,
@@ -570,12 +570,44 @@ class RigctldServer:
             link_healthy=False,
         )
 
+    def _derive_tx_active(self) -> bool:
+        """Derive the canonical tx_active fact for the scheduler's dispatch gate.
+
+        MOR-1532: standalone rigctld never calls
+        ``AcquisitionScheduler.due_requests()`` (it has no cadence-poll
+        concept of its own), so its scheduler's cached ``_tx_active`` never
+        left the ``__init__`` default of ``True`` -- the MOR-1531
+        ``tx_only`` reconciliation gate stayed permanently open in that
+        mode. Derived identically to the web poller (MOR-1525 / PR #2438):
+        the canonical ``global.tx_state.ptt`` observation, FRESH-gated. Fail
+        closed: unobserved/stale/unknown ptt -> tx_active False, the honest
+        direction when the fact isn't known.
+        """
+
+        store = self._state_store
+        if store is None:
+            return False
+        try:
+            ptt_field = store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
+        except KeyError:
+            return False
+        return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
+
     async def _drain_state_acquisition_once(self) -> None:
         scheduler = self._acquisition_scheduler
         if scheduler is None:
             return
         now = time.monotonic()
-        pending = scheduler.pending_requests()
+        # MOR-1532: keep the scheduler's tx_active cache current on this
+        # drain path too -- see note_tx_active()'s docstring for why calling
+        # it here can never disagree with the web poller's due_requests()
+        # call in combined (shared-scheduler) mode.
+        scheduler.note_tx_active(self._derive_tx_active())
+        # MOR-1533: dispatch must use the tx_active-gated view; crediting an
+        # already-sent answer (runtime._civ_rx, driven by this radio's own
+        # CI-V pump) uses the unfiltered pending_requests() instead, so an
+        # answer landing after de-key is never blinded by this gate.
+        pending = scheduler.dispatchable_requests()
         pending_ids = {request.id for request in pending}
         for request_id in tuple(self._acquisition_in_flight):
             if request_id not in pending_ids:

@@ -537,13 +537,15 @@ class AcquisitionScheduler:
         self._external_cat_paused = False
         self._external_cat_owner: str | None = None
         self._external_cat_reason = ""
-        # MOR-1531: last ``tx_active`` observed by ``due_requests`` (the
-        # poller's cadence-drain call). ``pending_requests`` reads this same
-        # cached value to gate RECONCILIATION-priority requests for
-        # ``tx_only``-policy fields -- see that method's docstring. Defaults
-        # to True (no gating) so a scheduler whose caller never calls
-        # ``due_requests`` at all (e.g. rigctld's own drain loop, MOR-1531)
-        # keeps its pre-existing, unfiltered reconciliation behavior.
+        # MOR-1531: last ``tx_active`` observed by ``due_requests`` (the web
+        # poller's cadence-drain call) or ``note_tx_active`` (rigctld's own
+        # drain, MOR-1532). ``dispatchable_requests()`` reads this cached
+        # value to gate RECONCILIATION-priority requests for
+        # ``tx_only``-policy fields -- see that method's docstring;
+        # ``pending_requests()`` (unfiltered, MOR-1533) never reads it.
+        # Defaults to True (no gating) so a scheduler whose caller never
+        # calls either update method keeps its pre-existing, unfiltered
+        # reconciliation behavior.
         self._tx_active = True
 
     @property
@@ -643,30 +645,60 @@ class AcquisitionScheduler:
         )
 
     def pending_requests(self) -> tuple[AcquisitionRequest, ...]:
-        """Return queued backend acquisition requests in execution order.
+        """Return ALL queued backend acquisition requests, unfiltered.
+
+        MOR-1533: this is the *lookup* view -- every request currently
+        queued in ``_requests_by_key``, regardless of the ``tx_active``
+        dispatch gate (MOR-1531) applied by :meth:`dispatchable_requests`.
+        Callers that credit an already-sent request against an incoming
+        observation (e.g. ``runtime._civ_rx``) must use THIS method: a
+        ``tx_only`` RECONCILIATION request dispatched during TX can have its
+        answer land after de-key, once the cached ``tx_active`` has already
+        flipped False. Before this split, dispatch and lookup shared one
+        filtered method, so such an answer became invisible to the credit
+        loop and the request lingered in ``_requests_by_key`` forever.
+
+        Callers that DISPATCH (send a wire read) must use
+        :meth:`dispatchable_requests` instead.
+        """
+
+        return tuple(
+            sorted(
+                self._requests_by_key.values(),
+                key=lambda request: (
+                    -_PRIORITY_RANK[request.priority],
+                    request.deadline_monotonic,
+                    request.requested_at_monotonic,
+                    request.id,
+                ),
+            )
+        )
+
+    def dispatchable_requests(self) -> tuple[AcquisitionRequest, ...]:
+        """Return queued requests eligible for dispatch, in execution order.
 
         MOR-1531: while the last ``tx_active`` reported to ``due_requests``
-        is False, ``RECONCILIATION``-priority requests for ``tx_only``-
-        policy fields are withheld from the returned tuple (root cause of
-        the live SWR-flap, MOR-1525). ``StateStore.mark_stale_due`` has no
-        notion of ``tx_only`` and emits a "stale" reconciliation hint for
-        ANY field that ages past its ``freshness_ttl_seconds``, regardless
-        of TX state; ``ensure_fresh`` queues that hint just like any other
-        request. Filtering here -- at drain time, not enqueue time -- means
-        a hint queued while TX was active but drained after de-key does not
-        fire, while a de-key/re-key race can never permanently lose it: the
-        request stays in ``_requests_by_key`` (not deleted, just withheld)
-        until a drain observes ``tx_active=True`` again. This does not
-        touch freshness decay itself -- ``mark_stale_due`` has already
-        transitioned the field to STALE in the published state before the
-        scheduler is ever consulted, so decay/unobserve keeps working
-        exactly as before; only the resulting re-poll is suppressed.
+        (the web poller's cadence-drain call) or ``note_tx_active`` (rigctld's
+        own drain, MOR-1532) is False, ``RECONCILIATION``-priority requests
+        for ``tx_only``-policy fields are withheld from the returned tuple
+        (root cause of the live SWR-flap, MOR-1525). ``StateStore.
+        mark_stale_due`` has no notion of ``tx_only`` and emits a "stale"
+        hint for ANY field past its ``freshness_ttl_seconds``, regardless of
+        TX state; filtering here -- at drain time, not enqueue time -- means
+        a hint queued during TX but drained after de-key does not fire,
+        while a de-key/re-key race can never permanently lose it: the
+        request stays in ``_requests_by_key`` (withheld, not deleted) until
+        a drain observes ``tx_active=True`` again. Decay is untouched --
+        ``mark_stale_due`` has already transitioned the field to STALE
+        before the scheduler is consulted; only the resulting re-poll is
+        suppressed.
 
         Other priorities (e.g. an explicit USER-triggered read of a
         ``tx_only`` field) are never gated here -- see
-        ``AcquisitionPolicy.tx_only``'s docstring: only the automatic
-        reconciliation-on-stale hint is in scope for this gate, not
-        caller-triggered acquisition.
+        ``AcquisitionPolicy.tx_only``'s docstring.
+
+        MOR-1533: this is the *dispatch* view -- backend executors/pollers
+        must call this, not :meth:`pending_requests` (unfiltered lookup).
         """
 
         eligible = (
@@ -688,6 +720,28 @@ class AcquisitionScheduler:
             )
         )
 
+    def note_tx_active(self, tx_active: bool) -> None:
+        """Update the cached ``tx_active`` gate without driving cadence polling.
+
+        MOR-1532: standalone rigctld has no cadence-poll concept of its own
+        -- it never calls :meth:`due_requests` -- so a scheduler instance
+        owned by a standalone rigctld server never updated ``_tx_active``
+        away from the ``__init__`` default of ``True``, leaving
+        :meth:`dispatchable_requests`'s ``tx_only`` gate (MOR-1531)
+        permanently open in that mode. rigctld's drain calls this every
+        cycle with ``tx_active`` derived the same way the web poller does
+        (canonical ``global.tx_state.ptt``, FRESH-gated).
+
+        In combined (``rigplane web --rigctld``) mode the two servers share
+        this scheduler instance, and ``due_requests()`` (driven by the web
+        poller) already keeps ``_tx_active`` current every cycle; rigctld
+        calling this method too changes nothing, since both derive
+        ``tx_active`` from the identical canonical fact -- no second source
+        of truth, no fight over the cached value.
+        """
+
+        self._tx_active = tx_active
+
     def due_requests(
         self, *, now: float | None = None, tx_active: bool = False
     ) -> tuple[AcquisitionRequest, ...]:
@@ -704,15 +758,20 @@ class AcquisitionScheduler:
         """
 
         # MOR-1531: remember the caller's tx_active for this drain cycle so
-        # pending_requests() -- called immediately afterward by the web
-        # radio_poller's drain loop, the one known caller of due_requests()
-        # -- can gate RECONCILIATION requests for tx_only fields using the
-        # exact same value, without a second tx_active source of truth.
-        # rigctld's own drain loop never calls due_requests() at all (it has
-        # no cadence-poll concept of its own), so its scheduler instance
-        # keeps the __init__ default (_tx_active=True, no gating) forever --
-        # unaffected by this change. See pending_requests()'s docstring for
-        # why filtering happens there and not at enqueue time.
+        # dispatchable_requests() -- called immediately afterward by the web
+        # radio_poller's drain loop, the one caller of due_requests() -- can
+        # gate RECONCILIATION requests for tx_only fields using the exact
+        # same value, without a second tx_active source of truth.
+        #
+        # rigctld never calls due_requests() itself (it has no cadence-poll
+        # concept of its own). In STANDALONE mode its scheduler is its own;
+        # its drain calls note_tx_active() every cycle instead (MOR-1532),
+        # so it does NOT keep the __init__ default forever -- correcting an
+        # earlier claim here that it did. In COMBINED (`rigplane web
+        # --rigctld`) mode the two servers share this exact scheduler
+        # instance, so this due_requests() call already keeps _tx_active
+        # current for both drains; see note_tx_active()'s docstring for why
+        # rigctld also calling it there can never disagree.
         self._tx_active = tx_active
         timestamp = self._clock.now() if now is None else now
         groups = self._due_poll_groups(timestamp, tx_active=tx_active)
@@ -1077,6 +1136,7 @@ class AcquisitionScheduler:
     def diagnostics(self) -> dict[str, Any]:
         """Return a JSON-safe scheduler projection for diagnostics surfaces."""
 
+        dispatchable_count = len(self.dispatchable_requests())
         now = self._clock.now()
         cadence_by_path: dict[str, dict[str, Any]] = {}
         cadence_by_group: dict[str, dict[str, Any]] = {}
@@ -1103,6 +1163,10 @@ class AcquisitionScheduler:
 
         return {
             "queuedRequestCount": len(self._requests_by_key),
+            # MOR-1533 (3): the subset of queuedRequestCount currently
+            # withheld by the MOR-1531 tx_only/tx_active gate -- see
+            # dispatchable_requests() -- distinguished from "backlog".
+            "withheldRequestCount": len(self._requests_by_key) - dispatchable_count,
             "deferredRequestCount": len(self._deferred),
             "failedRequestCount": self._failed_request_count,
             "failureCountByReason": dict(self._failure_count_by_reason),

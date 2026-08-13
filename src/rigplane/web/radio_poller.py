@@ -3167,7 +3167,12 @@ class RadioPoller:
                 ptt_field.value
             )
         scheduler.due_requests(now=now, tx_active=tx_active)
-        pending = scheduler.pending_requests()
+        # MOR-1533: dispatch must use the tx_active-gated view. Crediting an
+        # already-sent answer (runtime._civ_rx) uses the unfiltered
+        # pending_requests() instead, so an answer landing after de-key is
+        # never blinded by this gate -- see dispatchable_requests()'s
+        # docstring.
+        pending = scheduler.dispatchable_requests()
         pending_ids = {request.id for request in pending}
         for request_id in tuple(self._acquisition_in_flight):
             if request_id not in pending_ids:

@@ -13,6 +13,7 @@ Strategy
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -276,6 +277,19 @@ def _unavailable_profile(path: FieldPath) -> RadioAcquisitionProfile:
             ),
         ),
         default_policy=AcquisitionPolicy(),
+    )
+
+
+def _tx_only_swr_profile(swr: FieldPath) -> RadioAcquisitionProfile:
+    """MOR-1531/1532 fixture: one reconciliation-only tx_only global meter."""
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(FieldCapability(path=swr, command_response_observable=True),),
+        field_policies={
+            swr: AcquisitionPolicy(
+                cadence_seconds=None, freshness_ttl_seconds=2.0, tx_only=True
+            ),
+        },
     )
 
 
@@ -738,6 +752,149 @@ class TestLifecycle:
                 )
             finally:
                 await srv.stop()
+
+    async def test_standalone_drain_derives_tx_active_and_suppresses_tx_only_reconciliation(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """MOR-1532: standalone rigctld's drain must feed the scheduler a
+        canonical ``tx_active`` source.
+
+        Standalone rigctld never calls ``AcquisitionScheduler.due_requests()``
+        (no cadence-poll concept of its own), so pre-fix its scheduler's
+        cached ``_tx_active`` stays at the ``__init__`` default of ``True``
+        forever -- the MOR-1531 ``tx_only`` gate never engages in this mode.
+        Reproduces the MOR-1525 SWR-flap loop for standalone rigctld: a
+        ``tx_only`` meter observed once (e.g. a rigctld one-shot ``l SWR``
+        read) keeps getting reconciled/re-sent forever, even with the
+        canonical ``global.tx_state.ptt`` observation FRESH and False
+        throughout.
+        """
+
+        swr = FieldPath.global_("meters", "swr")
+        ptt = FieldPath.global_("tx_state", "ptt")
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile", (), {"state_acquisition": _tx_only_swr_profile(swr)}
+            )()
+        )
+
+        class _ReapplyingExecutor:
+            """Re-observes the field with its own answer, like a real radio."""
+
+            def __init__(self) -> None:
+                self.calls: list[AcquisitionRequest] = []
+
+            async def execute(
+                self,
+                request: AcquisitionRequest,
+                *,
+                already_sent_paths: frozenset[FieldPath],
+            ) -> AcquisitionExecutionResult:
+                self.calls.append(request)
+                store = radio._state_store
+                scheduler = radio._acquisition_scheduler
+                change_set = store.apply(
+                    Observation(
+                        path=request.paths[0],
+                        value=1,
+                        source=SourceMetadata(
+                            source="poll_response",
+                            provider=request.provider,
+                            native_id="fake-provider-read",
+                        ),
+                        timestamp_monotonic=time.monotonic(),
+                        max_age=request.policy.freshness_ttl_seconds,
+                        provider_generation=store.provider_generation,
+                    )
+                )
+                scheduler.record_acquisition_result(request, change_set)
+                return AcquisitionExecutionResult(sent_paths=request.paths)
+
+        executor = _ReapplyingExecutor()
+        radio._acquisition_executor = executor
+
+        fake_now = [1000.0]
+        with patch("time.monotonic", side_effect=lambda: fake_now[0]):
+            srv = RigctldServer(radio, cfg)
+            # Bootstrap directly (no real background loop tasks) so time can
+            # be driven deterministically across several drain cycles.
+            srv._bootstrap_state_acquisition()
+            assert isinstance(srv._state_store, StateStore)
+            assert isinstance(srv._acquisition_scheduler, AcquisitionScheduler)
+            assert isinstance(srv._state_freshness_service, StateFreshnessService)
+
+            # Canonical PTT: FRESH and False (confirmed RX) throughout. SWR
+            # observed exactly once, as if from an earlier TX or a rigctld
+            # one-shot cmd15 read.
+            _apply_store_value(srv._state_store, ptt, False, max_age=1000.0)
+            _apply_store_value(srv._state_store, swr, 1, max_age=2.0)
+
+            for _ in range(5):
+                fake_now[0] += 2.1
+                srv._state_freshness_service.tick(now=fake_now[0])
+                await srv._drain_state_acquisition_once()
+
+        assert executor.calls == [], (
+            "tx_only field re-polled via reconciliation while "
+            "global.tx_state.ptt is FRESH and False -- this is the "
+            "MOR-1525 SWR-flap loop, reachable in standalone rigctld mode "
+            "(MOR-1532)"
+        )
+
+    async def test_combined_mode_rigctld_drain_never_flips_shared_scheduler_tx_active(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """MOR-1532: combined (`rigplane web --rigctld`) mode shares one
+        scheduler. Both ``due_requests()`` (driven by the web poller) and
+        rigctld's own drain derive ``tx_active`` from the identical
+        canonical ``global.tx_state.ptt`` fact, so rigctld's drain must
+        never spuriously flip the cached value the web poller just set --
+        same source, same value, no fight.
+        """
+
+        swr = FieldPath.global_("meters", "swr")
+        ptt = FieldPath.global_("tx_state", "ptt")
+        profile = _tx_only_swr_profile(swr)
+        store = StateStore()
+        scheduler = AcquisitionScheduler(profile=profile)
+        model_service = _RecordingStateModelService()
+
+        class _SharedSchedulerRadio:
+            def __init__(self) -> None:
+                self.profile = type("Profile", (), {"state_acquisition": profile})()
+                self.connected = True
+                self.radio_ready = True
+                self.control_connected = True
+                self.state_store = store
+                self.state_model_service = model_service
+                self._acquisition_scheduler = scheduler
+                self._state_store = store
+
+        radio = _SharedSchedulerRadio()
+        srv = RigctldServer(radio, cfg)
+        srv._bootstrap_state_acquisition()
+        assert srv._acquisition_scheduler is scheduler, (
+            "combined mode must reuse the radio's already-attached "
+            "scheduler, not create a second one"
+        )
+
+        # Canonical PTT fact: FRESH and False (confirmed RX).
+        _apply_store_value(store, ptt, False, max_age=1000.0)
+
+        # Web poller's drain runs first: due_requests() caches
+        # tx_active=False.
+        scheduler.due_requests(now=0.0, tx_active=False)
+
+        # rigctld's own drain runs next, deriving tx_active from the same
+        # canonical fact -- must not flip the cache.
+        derived = srv._derive_tx_active()
+        assert derived is False
+        scheduler.note_tx_active(derived)
+
+        assert scheduler.dispatchable_requests() == (), (
+            "rigctld's drain must not spuriously re-enable the tx_only "
+            "gate the web poller's drain just closed"
+        )
 
     async def test_standalone_drain_records_executor_missing_failure(
         self, cfg: RigctldConfig
