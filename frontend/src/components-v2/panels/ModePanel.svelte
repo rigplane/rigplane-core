@@ -191,7 +191,7 @@
 
   /* MOR-1519/MOR-1536: the `data-armed` visual channel (opacity + underline)
      used to live here as a per-panel `:global(...)` rule. It is now the
-     shared seat at `$lib/Button/control-button.css` (imported once by
+     shared seat at `$lib/Button/control-button-armed.css` (imported once by
      `ControlButton.svelte`, the element that actually renders
      `data-armed`) so every later `ControlButton`/`HardwareButton` consumer
      gets it for free instead of re-authoring a copy per panel. */

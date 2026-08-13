@@ -246,7 +246,7 @@ describe('ModePanel', () => {
     });
 
     // Same F4-class test-honesty pattern as MODE's armed CSS above — reuses
-    // the SAME shared `control-button.css` rule (that is the point of
+    // the SAME shared `control-button-armed.css` rule (that is the point of
     // MOR-1536's styling-seat move), so this proves the shared seat truly
     // applies to a SECOND consumer within the same file, not just to MODE.
     describe('as rendered (real component CSS injected, see loadComponentCss above)', () => {
