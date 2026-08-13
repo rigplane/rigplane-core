@@ -1830,6 +1830,43 @@ async def test_execute_set_filter_shape_updates_sub_receiver_state_and_radio_cal
 
 
 @pytest.mark.asyncio
+async def test_execute_set_filter_shape_out_of_domain_surfaces_as_command_failure() -> (
+    None
+):
+    """MOR-1542: domain legality is CoreRadio.set_filter_shape's single
+    validation seat (MOR-1534) — the poller must not swallow the ValueError
+    it raises for an out-of-domain shape. ``_execute`` propagates it
+    unchanged, which is what lets the queue-drain loop's generic
+    ``except Exception as exc: self._mark_queued_command_failed(entry, exc)``
+    (radio_poller.py) turn it into a command failure instead of a silently
+    accepted write or a crashed poller."""
+    events: list[tuple[str, dict]] = []
+    radio = _make_radio(active="MAIN")
+    radio.set_filter_shape.side_effect = ValueError(
+        "Filter shape must be one of [0, 1, 2], got 9"
+    )
+    state = RadioState()
+    state.main.filter_shape = 0
+    state.sub.filter_shape = 0
+    poller = RadioPoller(
+        radio,
+        StateCache(),
+        CommandQueue(),
+        on_state_event=lambda name, data: events.append((name, data)),
+        radio_state=state,
+    )
+
+    with pytest.raises(ValueError, match="Filter shape must be one of"):
+        await poller._execute(SetFilterShape(9, receiver=1))  # noqa: SLF001
+
+    radio.set_filter_shape.assert_awaited_once_with(9, receiver=1)
+    # Rejected before any state/UI side effect is applied.
+    assert state.main.filter_shape == 0
+    assert state.sub.filter_shape == 0
+    assert events == []
+
+
+@pytest.mark.asyncio
 async def test_execute_set_agc_sends_wire_value_without_legacy_mirror() -> None:
     # agc is observation-backed (0x16 0x12); the legacy RadioState mirror was
     # removed (MOR-437). The poller routes the wire command and emits the event

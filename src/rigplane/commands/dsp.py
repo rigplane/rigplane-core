@@ -788,12 +788,21 @@ def set_manual_notch_width(
     *,
     command29: bool = True,
 ) -> bytes:
-    """Build a 'set manual notch width' CI-V command (0x16 0x57). 0=WIDE, 1=MID, 2=NAR."""
+    """Build a 'set manual notch width' CI-V command (0x16 0x57).
+
+    Encodes the raw single-BCD-byte notch-width value. Which values are
+    legal is a per-profile ``[notch] width_values`` domain, not a fixed
+    0/1/2 (WIDE/MID/NAR) enum on every radio — this builder only enforces
+    the wire-format's single-BCD-byte range and leaves domain validation
+    to the profile-aware caller (MOR-1542, mirrors set_break_in/
+    set_filter_shape/set_ssb_tx_bandwidth's MOR-1534 fix; CoreRadio keeps
+    the domain-legality seat).
+    """
     return _build_function_value_set(
         _SUB_MANUAL_NOTCH_WIDTH,
         width,
         minimum=0,
-        maximum=2,
+        maximum=99,
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
