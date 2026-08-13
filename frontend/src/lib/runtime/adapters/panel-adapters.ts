@@ -431,6 +431,97 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
+// ── Generic armed/pending signal (MOR-1519) ──
+/**
+ * ARMED-SIGNAL CONTRACT — owner ruling MOR-1519: any control that does not
+ * switch in real time but is instead confirmed by polling (the radio's own
+ * observed state, same as every accessor above) needs a generic "in flight"
+ * marker, so an operator gets feedback the instant they act instead of the
+ * multi-second silent lag the ticket was filed against (MODE buttons: click
+ * → nothing visible → the poll eventually confirms). `ArmedFact`/`armedFact`
+ * below are a GENERIC READ over `latestPendingParam`'s decision table above
+ * — not a second source of truth, not a reimplementation. Every honesty rule
+ * documented on `latestPendingParam` and `ACK_CONFIRM_GRACE_MS` applies
+ * unchanged:
+ *  - `armed` goes true the instant a command dispatches (`status ===
+ *    'pending'`) and stays true through the transport ack (`'acknowledged'`)
+ *    until a confirming post-ack observation of the target value arrives, or
+ *    `ACK_CONFIRM_GRACE_MS` elapses since ack with no confirmation.
+ *  - A re-click while armed re-arms at the new target: `latestPendingParam`'s
+ *    freshest-`createdAt`-wins tie-break already handles this, no separate
+ *    "already armed" state to fight.
+ *  - `armed` NEVER survives a terminal failure. A command that reaches
+ *    `'failed'`/`'cancelled'`/`'timed-out'` fails `latestPendingParam`'s own
+ *    `status !== 'pending' && status !== 'acknowledged'` scan guard and is
+ *    excluded from consideration the instant it transitions — `armed` clears
+ *    immediately, it must never present a failed command as still in flight.
+ *
+ * Contract for skins consuming this signal:
+ *  - MAY style `armed` however fits: desktop-v2 renders it as a `data-armed`
+ *    attribute on the actual `<button>` element (`ControlButton.svelte`,
+ *    parity with `DspSurface.svelte`'s `data-pending-status` marker for
+ *    NB/NR) with `opacity: 0.75` as the primary, font-independent visual
+ *    channel plus an underline structural backstop (`ModePanel.svelte`); an
+ *    LCD skin may prefer a glow or blink — that is a presentation choice,
+ *    not part of this contract. NOTE (review F1/F2): the marker MUST sit on
+ *    the actual interactive element, never a wrapper — a wrapper is not
+ *    reachable by an attribute selector, and relying on CSS inheritance
+ *    (e.g. `font-style`) is unsafe: the UA `<button>` stylesheet supplies
+ *    its own `font-style: normal` that beats an inherited value, and this
+ *    codebase's vendored font + `font-synthesis: none` (`app.css`) means an
+ *    italic-only affordance can compute without ever rendering — verify any
+ *    font-dependent channel AS RENDERED, not just as computed.
+ *  - MUST NOT suppress the confirmed-vs-armed distinction, and MUST NOT ever
+ *    present an armed (unconfirmed) value as confirmed — same doctrine as
+ *    `data-freq-status='pending'` (`FrequencyDisplayInteractive.svelte`) and
+ *    `data-pending-status='pending'` (`DspSurface.svelte`): a structural
+ *    marker on the element, never a color-only tell.
+ *  - `data-*` carries NO accessibility semantics on its own (review F3) — it
+ *    is a hook for CSS and tests, not for assistive tech. A skin exposing
+ *    `armed` MUST also pair the marked control with an `aria-describedby`
+ *    announcement (a `.sr-only` element, same pattern as
+ *    `DspSurface.svelte`'s pending-toggle announcement) so AT users get the
+ *    same "still in flight" information sighted users get from the visual
+ *    channel. `ModePanel.svelte` does this via `HardwareButton`'s
+ *    `describedBy` prop.
+ */
+export interface ArmedFact<T> {
+  /** True from command dispatch until a confirming observation (or grace
+   *  expiry) clears the pending record — see the contract above. */
+  armed: boolean;
+  /** The in-flight target while `armed`; `null` otherwise. Pending is
+   *  display-only (leg-1 doctrine) — never read this as an arithmetic base
+   *  for a "toggle from pending" computation. */
+  value: T | null;
+}
+
+function armedFact<T>(
+  intentName: string, paramKey: string, receiver: 0 | 1, confirmedField: keyof ServerState['main'],
+): ArmedFact<T> {
+  const value = latestPendingParam(intentName, paramKey, receiver, confirmedField);
+  return value === undefined ? { armed: false, value: null } : { armed: true, value: value as T };
+}
+
+/**
+ * MODE buttons' armed fact (MOR-1519, first consumer of the generic signal
+ * above). No `receiver` param: `ModePanel` renders a single mode grid for
+ * the ACTIVE receiver only, the same single-receiver read `toModeProps`'s
+ * `activeRx(state)` already performs (`panel-props.ts`) — `state.active`
+ * mirrors that helper's `'SUB' ? sub : main` split.
+ *
+ * KNOWN BOUND: `onModeChange` (`panel-commands.ts`) can target a DIFFERENT
+ * receiver than `state.active` currently reports during the focus-echo
+ * window (`consumePendingFocus()`) — armed degrades to no-feedback for that
+ * click. Same staleness class `currentMode`/`toModeProps` already carries
+ * (both read `state.active`); not addressed by this accessor.
+ */
+export function getModeArmed(): ArmedFact<string> {
+  const state = runtime.state;
+  if (!state) return { armed: false, value: null };
+  const receiver: 0 | 1 = state.active === 'SUB' ? 1 : 0;
+  return armedFact<string>('set_mode', 'mode', receiver, 'mode');
+}
+
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
 const _vfoHandlers = makeVfoHandlers();

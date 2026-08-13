@@ -173,6 +173,7 @@
 
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Источник входной модуляции",
+  "core.modePanel.pendingAnnouncement": "В ожидании, ещё не подтверждено",
 
   "core.vfo.groupLabel": "VFO",
   "core.vfo.receiverGroupLabel": "Приёмник {receiver}",

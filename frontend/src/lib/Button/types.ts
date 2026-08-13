@@ -23,6 +23,16 @@ export interface BaseButtonProps {
   title?: string | null;
   /** Shortcut hint rendered as data-shortcut-hint attribute */
   shortcutHint?: string | null;
+  /** Generic armed/pending signal (MOR-1519) — renders as `data-armed='true'`
+   *  on the underlying `<button>` element (never on a wrapper — a wrapper
+   *  can't be targeted by an attribute selector, and CSS `font-style` on a
+   *  wrapper is silently beaten by the UA button stylesheet). See the
+   *  ARMED-SIGNAL CONTRACT in `lib/runtime/adapters/panel-adapters.ts`. */
+  armed?: boolean;
+  /** `aria-describedby` passthrough — pairs with a `.sr-only` announcement
+   *  element the caller renders (same pattern as `DspSurface.svelte`'s
+   *  pending-toggle announcement). */
+  describedBy?: string;
   /** Click handler */
   onclick?: (event: MouseEvent) => void;
   /** Pointer event handlers */

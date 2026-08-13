@@ -14,6 +14,8 @@
     color = 'cyan',
     title = null,
     shortcutHint = null,
+    armed = false,
+    describedBy,
     onclick,
     onpointerdown,
     onpointerup,
@@ -32,6 +34,8 @@
   indicatorColor={color}
   {title}
   {shortcutHint}
+  {armed}
+  {describedBy}
   {onclick}
   {onpointerdown}
   {onpointerup}

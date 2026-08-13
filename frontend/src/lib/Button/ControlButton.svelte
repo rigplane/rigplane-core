@@ -12,6 +12,13 @@
     glow?: GlowVariant;
     title?: string | null;
     shortcutHint?: string | null;
+    /** MOR-1519 — see `types.ts`'s `BaseButtonProps.armed` doc comment.
+     *  Rendered as `data-armed` on THIS `<button>` element (never a
+     *  wrapper) so both the CSS selector and any AT/test query can target
+     *  the actual interactive element directly. */
+    armed?: boolean;
+    /** Pairs with a caller-rendered `.sr-only` announcement (MOR-1519). */
+    describedBy?: string;
     onclick?: (event: MouseEvent) => void;
     onpointerdown?: (event: PointerEvent) => void;
     onpointerup?: (event: PointerEvent) => void;
@@ -30,6 +37,8 @@
     glow,
     title = null,
     shortcutHint = null,
+    armed = false,
+    describedBy,
     onclick,
     onpointerdown,
     onpointerup,
@@ -83,6 +92,8 @@
   data-indicator-style={indicatorStyle}
   data-indicator-color={indicatorColor}
   data-glow={glowAttr}
+  data-armed={armed || undefined}
+  aria-describedby={describedBy}
   title={title ?? shortcutHint ?? undefined}
   data-shortcut-hint={shortcutHint ?? undefined}
   {disabled}
