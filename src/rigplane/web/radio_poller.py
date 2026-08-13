@@ -78,6 +78,7 @@ from ..core.command_service import (
 )
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
+    AcquisitionPriority,
     AcquisitionRequest,
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -449,6 +450,71 @@ from .._poller_types import (  # noqa: E402
     VfoEqualize,
     VfoSwap,
 )
+
+
+# ------------------------------------------------------------------
+# MOR-1484: post-write readback jump-queue
+# ------------------------------------------------------------------
+#
+# Forces a fresh readback of the field(s) a write command just changed
+# instead of waiting out that field's normal poll cadence -- the "pending
+# frequency echo" / "slider readouts trail ~1s" symptom the ticket measured
+# on freq/mode/rfGain/squelch. These are the operator-facing writes in this
+# dispatch that carry no ``CommandService`` optimistic-overlay + confirming-
+# observation path the way nb/nr/att/preamp/agc/mic_gain/etc already do (see
+# the "read-after-write via overlays + ... observation" comments on those
+# ``case`` arms below) -- without a forced readback they only refresh on the
+# field's normal cadence tick.
+#
+# Table-driven so covering another command later is a new entry here, not a
+# new call site: ``_request_post_write_readback`` (called once, generically,
+# at the end of ``_execute`` below) looks up ``type(cmd)`` and, on a hit,
+# builds the written ``FieldPath`` set and calls
+# ``AcquisitionScheduler.ensure_fresh`` at ``USER`` priority -- the
+# scheduler's highest rank (``_PRIORITY_RANK`` in ``acquisition_scheduler.py``)
+# -- so the request jumps ahead of whatever BACKGROUND/RECONCILIATION/
+# NORMAL-tier cadence work is already queued and is picked up by the very
+# next ``_send_scheduler_requests`` drain, instead of waiting out the
+# field's own cadence.
+def _post_write_receiver_id(cmd: Any) -> str:
+    """Return the ``main``/``sub`` receiver_id spelling.
+
+    This is the spelling ``field_policies`` TOML keys and the scheduler's
+    cadence-driven requests already use (``rigs/*.toml``, e.g.
+    ``[state_acquisition.field_policies."receiver.main..."]``), so a
+    post-write request coalesces into any already-pending same-field request
+    (``_AcquisitionRequestKey`` groups by exact ``receiver_id`` string)
+    instead of racing it as a second, differently-keyed entry.
+    """
+
+    return "sub" if getattr(cmd, "receiver", 0) == 1 else "main"
+
+
+_POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] = {
+    SetFreq: lambda cmd: (
+        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "freq_hz"),
+    ),
+    SetMode: lambda cmd: (
+        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "mode"),
+    ),
+    SetRfGain: lambda cmd: (
+        FieldPath.receiver(
+            _post_write_receiver_id(cmd), "operator_controls", "rf_gain"
+        ),
+    ),
+    SetSquelch: lambda cmd: (
+        FieldPath.receiver(
+            _post_write_receiver_id(cmd), "operator_controls", "squelch"
+        ),
+    ),
+}
+
+# ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore
+# observation be and still count as fresh". A write always invalidates
+# whatever confirmed observation predates it, so this is deliberately far
+# below any real cadence/ttl -- the point is to force a request every time,
+# never take the ``FRESH`` short-circuit against a pre-write value.
+_POST_WRITE_READBACK_MAX_AGE: float = 1e-9
 
 
 # ------------------------------------------------------------------
@@ -1141,6 +1207,37 @@ class RadioPoller:
             )
         except Exception:
             logger.debug("radio-poller: %s reconfirm failed", label, exc_info=True)
+
+    def _request_post_write_readback(self, cmd: Command) -> None:
+        """Jump the scheduler queue for the field(s) ``cmd`` just wrote (MOR-1484).
+
+        Table-driven counterpart to :meth:`_reconfirm_scope_field` for
+        non-scope fields: looks ``type(cmd)`` up in
+        ``_POST_WRITE_READBACK_FIELDS`` and, on a hit, calls
+        ``AcquisitionScheduler.ensure_fresh`` at ``AcquisitionPriority.USER``
+        (the scheduler's highest rank) for the FieldPath(s) it names. Fire-
+        and-queue like ``ensure_fresh`` itself — this never awaits a backend
+        read; it only ensures the request is queued ahead of any pending
+        BACKGROUND/RECONCILIATION/NORMAL-tier cadence work so the next
+        ``_send_scheduler_requests`` drain fetches a confirmed value instead
+        of waiting out the field's normal cadence. A miss (command not in
+        the table, or no scheduler attached) is a silent no-op.
+        """
+        scheduler = self._acquisition_scheduler
+        if scheduler is None:
+            return
+        build_paths = _POST_WRITE_READBACK_FIELDS.get(type(cmd))
+        if build_paths is None:
+            return
+        paths = build_paths(cmd)
+        if not paths:
+            return
+        scheduler.ensure_fresh(
+            paths,
+            max_age=_POST_WRITE_READBACK_MAX_AGE,
+            priority=AcquisitionPriority.USER,
+            reason="post_write_readback",
+        )
 
     def _apply_global_control_observation(
         self,
@@ -3059,6 +3156,15 @@ class RadioPoller:
                         self._on_state_event("split_changed", {"on": True})
             case Speak(mode=what):
                 await _r.get_speech(what)
+
+        # MOR-1484: jump the scheduler queue for whatever field(s) this
+        # write just changed (table-driven no-op for any command not in
+        # ``_POST_WRITE_READBACK_FIELDS``). Placed after the match rather
+        # than per-case so covering another command is a table entry, not a
+        # new call site; safe here because none of the mapped commands
+        # (``SetFreq``/``SetMode``/``SetRfGain``/``SetSquelch``) return early
+        # out of the match above.
+        self._request_post_write_readback(cmd)
 
     # Fast: meters (polled on even cycles)
     # wfview: Priority=Highest, queue interval 25ms for LAN (HasFDComms)
