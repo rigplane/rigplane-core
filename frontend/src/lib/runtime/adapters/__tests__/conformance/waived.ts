@@ -50,13 +50,12 @@ function tag(names: readonly string[], waiver: Waiver): Record<string, Waiver> {
   return Object.fromEntries(names.map((name) => [name, waiver]));
 }
 
-const SCOPE_VFO = { reason: 'Scope-remainder/VFO-topology family walk not yet landed', owner: 'MOR-1566' } as const;
 const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner: 'MOR-1567' } as const;
 
 /**
- * The (67 - 9 - 5 - 4 - 8 - 12 = 29) intents with no conformance assertion,
- * tagged with the family child that owns closing them. MOR-1562 (C8,
- * adapter-seam parity) intentionally claims ZERO entries here — its scope
+ * The (67 - 9 - 5 - 4 - 8 - 12 - 12 = 17) intents with no conformance
+ * assertion, tagged with the family child that owns closing them. MOR-1562
+ * (C8, adapter-seam parity) intentionally claims ZERO entries here — its scope
  * is `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
  *
  * MOR-1560 (C6)'s 9 DSP intents and MOR-1561 (C7)'s 5 filter/PBT intents
@@ -64,18 +63,22 @@ const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner:
  * `../mor1560-dsp-family-conformance.isolated.test.ts` and
  * `../mor1561-filter-pbt-family-conformance.isolated.test.ts`. MOR-1563
  * (C9)'s keyboard walk additionally landed the FIRST real coverage for 4
- * intents that otherwise belong to MOR-1566/MOR-1567's still-unwalked
- * families (`set_data_mode`, `vfo_swap`, `vfo_equalize`, `set_scope_hold`)
- * — moved out of those two families' tags below per this file's own
- * burn-down rule (a landed `expectFrames` claims the intent regardless of
- * which walk lands it first); MOR-1566/MOR-1567 will extend coverage on
- * these four (more call sites, more profiles), not initiate it.
+ * intents that otherwise belong to MOR-1566/MOR-1567's families
+ * (`set_data_mode`, `vfo_swap`, `vfo_equalize`, `set_scope_hold`) — moved
+ * out of those two families' tags below per this file's own burn-down rule
+ * (a landed `expectFrames` claims the intent regardless of which walk lands
+ * it first); MOR-1566 extended coverage on the 3 that belong to it (more
+ * call sites — see below) rather than initiating it.
  *
  * MOR-1564 (C10)'s TX-chain walk landed all 8 of its intents — see
  * `./claimed.ts` and `../mor1564-tx-family-conformance.isolated.test.ts`.
  *
  * MOR-1565 (C11)'s VOX/CW walk landed all 12 of its intents — see
  * `./claimed.ts` and `../mor1565-vox-cw-family-conformance.isolated.test.ts`.
+ *
+ * MOR-1566 (C12)'s scope-remainder/VFO-topology walk landed all 12 of its
+ * intents — see `./claimed.ts` and
+ * `../mor1566-scope-vfo-family-conformance.isolated.test.ts`.
  */
 export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
   // MOR-1560 (C6) — DSP: NR/NB/notch/AGC time constant — CLAIMED, see
@@ -86,14 +89,12 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
   // `../mor1564-tx-family-conformance.isolated.test.ts`.
   // MOR-1565 (C11) — VOX + CW — CLAIMED, see `./claimed.ts` and
   // `../mor1565-vox-cw-family-conformance.isolated.test.ts`.
-  // MOR-1566 (C12) — scope remainder + VFO topology — 12 (set_scope_hold/
-  // vfo_swap/vfo_equalize CLAIMED by MOR-1563's keyboard walk, see above)
-  ...tag([
-    'set_scope_mode', 'set_scope_edge', 'set_scope_dual',
-    'set_scope_during_tx', 'set_scope_center_type', 'set_scope_vbw',
-    'set_scope_rbw', 'switch_scope_receiver',
-    'set_dual_watch', 'set_main_sub_tracking', 'quick_dualwatch', 'quick_split',
-  ], SCOPE_VFO),
+  // MOR-1566 (C12) — scope remainder + VFO topology — CLAIMED, see
+  // `./claimed.ts` and
+  // `../mor1566-scope-vfo-family-conformance.isolated.test.ts`
+  // (set_scope_hold/vfo_swap/vfo_equalize were already CLAIMED by MOR-1563's
+  // keyboard walk — MOR-1566 extended their coverage to real non-keyboard UI
+  // call sites, see that file's header).
   // MOR-1567 (C13) — sweeper — 14 named in its own prose (set_data_mode
   // CLAIMED by MOR-1563's keyboard walk, see above) + 3 orphaned RIT/XIT
   // (see file header) — 17
@@ -107,7 +108,7 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
 };
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_INTENTS_COUNT = 29;
+export const WAIVED_INTENTS_COUNT = 17;
 
 /**
  * `dispatchKeyboardRadioAction` case labels with no conformance assertion.
