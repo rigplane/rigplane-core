@@ -12,38 +12,37 @@
  * in a DIFFERENT switch (`makeKeyboardHandlers().dispatch`) and are a
  * deliberate scope boundary per `waived.ts`'s header, not covered here.
  *
- * FINDING (fixture-derived split): of the 28, 17 genuinely DISPATCH on this
- * IC-7300 fixture and 11 genuinely REFUSE. Every refusal below is an honest
- * fail-closed gate — an unobserved top-level/receiver field, a
- * single-receiver/no-dual_rx structural gate, or (adjust_af_level/
- * adjust_rf_gain, MOR-1577 below) a param-shape mismatch between what this
- * fixture's own keyboard bindings declare and what the handler reads —
- * never a test artifact. Each case's `gate` string names the exact reason,
- * cross-checked against the fixture's own `fieldStatus`/
- * `capabilities.keyboard.bindings` data, never invented.
+ * FINDING (fixture-derived split): of the 28, 19 genuinely DISPATCH on this
+ * IC-7300 fixture and 9 genuinely REFUSE. Every refusal below is an honest
+ * fail-closed gate — an unobserved top-level/receiver field, or a
+ * single-receiver/no-dual_rx structural gate — never a test artifact. Each
+ * case's `gate` string names the exact reason, cross-checked against the
+ * fixture's own `fieldStatus`/`capabilities.keyboard.bindings` data, never
+ * invented.
  *
- * MOR-1577 (filed this review round): `capabilities.keyboard.bindings`
- * declares FOUR bindings for `adjust_af_level`/`adjust_rf_gain`
- * (`af-level-up`/`-down`, `rf-level-up`/`-down`, all on ArrowUp/ArrowDown),
- * and every one carries `{ delta: 5 }` or `{ delta: -5 }` — never
- * `direction`. But `dispatchKeyboardRadioAction`'s `adjust_af_level`/
- * `adjust_rf_gain` cases read ONLY `params.direction`
- * (`keyboardDirection(safeParams.direction)`) and hardcode a fixed ±5%
- * step (`* 255` scale for rf_gain); `delta` is never read anywhere in
- * either case — a source-level dead control on every profile, not
- * fixture-specific. The two cases below assert that real, declared-shape
- * REFUSAL as the canonical row for each action. A synthetic-`{direction}`
- * dispatch is kept further down as two separately-labeled
- * HANDLER-CAPABILITY PROBES (NOT profile behavior, not counted in the
- * 17/11 split) — they prove the handler body itself dispatches fine given
- * the shape it actually reads, which is what makes the declared-binding
- * refusal a genuine wiring bug rather than defensive fail-closed design.
+ * MOR-1577 (filed a prior review round, FIXED this round):
+ * `capabilities.keyboard.bindings` declares FOUR bindings for
+ * `adjust_af_level`/`adjust_rf_gain` (`af-level-up`/`-down`,
+ * `rf-level-up`/`-down`, all on ArrowUp/ArrowDown), and every one carries
+ * `{ delta: 5 }` or `{ delta: -5 }` — never `direction`. Before this fix,
+ * `dispatchKeyboardRadioAction`'s `adjust_af_level`/`adjust_rf_gain` cases
+ * read ONLY `params.direction` and never `params.delta` — a source-level
+ * dead control on every profile, not fixture-specific: press Ctrl+ArrowUp
+ * (or Ctrl+Shift+ArrowUp) and nothing was sent. Both cases now interpret a
+ * declared `delta` as RAW units against the control's declared domain
+ * (`caps.controls.af_level`/`rf_gain`, `raw_min`/`raw_max` — 0/255 on this
+ * fixture), converted to the handler's normalized/raw wire shape as
+ * appropriate, and dispatch below asserts the real fixture-derived target.
+ * `direction`-style bindings still work unchanged (explicit `delta` wins
+ * when both are present) — kept as two separately-labeled
+ * HANDLER-CAPABILITY PROBES further down (NOT profile behavior, not
+ * counted in the 19/9 split) proving the fallback path is intact.
  * STRENGTHENED (round-2 review): `af-level-up`/`rf-level-up` carry
  * `modifiers: ['CTRL']`/`['CTRL','SHIFT']` — `keyboard-map.ts`'s
  * `modifiersMatch()` (line ~206) resolves plain ArrowUp to `step-up`
  * (`adjust_tuning_step`) and only Ctrl+ArrowUp reaches `af-level-up`, so
- * this is a genuinely reachable, user-visible dead control on this
- * profile: press Ctrl+ArrowUp and nothing is sent, not a theoretical gap.
+ * this was a genuinely reachable, user-visible dead control on this
+ * profile before the fix — not a theoretical gap.
  *
  * MOR-1578 (filed, cited below where this walk's own rows happen to touch
  * it — not this walk's finding, no production code changed here): (1)
@@ -84,9 +83,10 @@
  * `scope_ref_step` use fixed clamp bounds hardcoded in
  * `dispatchKeyboardRadioAction` itself, with no scope-range capability on
  * this profile to check them against — an honest baseline, not a finding.
- * `adjust_af_level`/`adjust_rf_gain` are MOR-1577 above, not this angle:
- * the fixture DOES declare their domain (`{ delta }`), the handler just
- * never reads it.
+ * `adjust_af_level`/`adjust_rf_gain` were MOR-1577 above, not this angle:
+ * the fixture DOES declare their domain (`{ delta }`), and the handler now
+ * reads it and scales against `caps.controls.af_level`/`rf_gain`'s declared
+ * `raw_min`/`raw_max` rather than a hardcoded step.
  *
  * RED-FIRST EVIDENCE, `cycle_filter` (MOR-1563 build, not part of this
  * diff): first authored with a deliberately wrong literal claim,
@@ -158,6 +158,8 @@ const attValues = IC7300_CAPABILITIES.attValues!;
 const agcModes = IC7300_CAPABILITIES.agcModes!;
 const filterCount = IC7300_CAPABILITIES.filters.length;
 const dataModeCount = IC7300_CAPABILITIES.dataModeCount!;
+const afLevelRange = IC7300_CAPABILITIES.controls!.af_level!;
+const rfGainRange = IC7300_CAPABILITIES.controls!.rf_gain!;
 
 /** Wraps `current` to the NEXT entry in a fixture-declared option list. */
 function wrap(values: number[], current: number): number {
@@ -200,10 +202,21 @@ const CASES: readonly KeyboardCase[] = [
   { action: 'toggle_rit', frames: [], gate: 'top-level ritOn unobserved (see discrimination evidence above)' },
   { action: 'toggle_xit', frames: [], gate: 'top-level ritTx unobserved' },
   { action: 'clear_rit_xit', frames: [], gate: 'top-level ritFreq unobserved' },
-  { action: 'adjust_af_level', params: { delta: 5 }, frames: [],
-    gate: 'declared af-level-up binding ({delta:5}); handler reads only params.direction, never delta — MOR-1577 dead control (see header; probe below)' },
-  { action: 'adjust_rf_gain', params: { delta: -5 }, frames: [],
-    gate: 'declared rf-level-down binding ({delta:-5}); handler reads only params.direction, never delta — MOR-1577 dead control (see header; probe below)' },
+  { action: 'adjust_af_level', params: { delta: 5 },
+    frames: [['set_af_level', {
+      level: Math.max(0, Math.min(1, main.afLevel + 5 / (afLevelRange.raw_max - afLevelRange.raw_min))),
+      receiver: 0,
+    }]],
+    gate: 'declared af-level-up binding ({delta:5}); main.afLevel observed; delta scaled against '
+      + 'caps.controls.af_level raw domain (MOR-1577, fixed)' },
+  { action: 'adjust_rf_gain', params: { delta: -5 },
+    frames: [['set_rf_gain', {
+      level: Math.round(Math.max(rfGainRange.raw_min, Math.min(rfGainRange.raw_max,
+        rfGainRange.raw_min + main.rfGain * (rfGainRange.raw_max - rfGainRange.raw_min) - 5))),
+      receiver: 0,
+    }]],
+    gate: 'declared rf-level-down binding ({delta:-5}); main.rfGain observed; delta scaled against '
+      + 'caps.controls.rf_gain raw domain (MOR-1577, fixed)' },
   { action: 'toggle_monitor', frames: [], gate: 'top-level monitorOn unobserved' },
   { action: 'vfo_swap', frames: [['vfo_swap', {}]],
     gate: 'vfoScheme !== "single" — unconditional, no field-observation gate at all (MOR-1578)' },
@@ -262,10 +275,10 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
   }
 
   // MOR-1577 handler-capability probes: NOT this profile's declared binding
-  // shape (real bindings send `{ delta }`, asserted as REFUSAL above) — these
-  // prove the handler body itself dispatches fine given `{ direction }`,
-  // establishing that the declared-shape refusal above is a genuine dead
-  // control (delta never read) rather than the handler being broken outright.
+  // shape (real bindings send `{ delta }`, asserted as DISPATCH above) —
+  // these prove the `direction`-based fallback path documented in the
+  // header ("explicit delta wins") is still intact after the fix, exercised
+  // with a synthetic `{ direction }` param no fixture binding actually sends.
   it('HANDLER-CAPABILITY PROBE (not profile behavior, MOR-1577): adjust_af_level dispatches set_af_level given {direction}', () => {
     expectFrames(
       () => dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } }),
