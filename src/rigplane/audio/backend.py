@@ -1516,6 +1516,10 @@ class FakeRxStream:
         # without touching PortAudio, so ``UsbAudioDriver``'s off-loop
         # timeout handling can be exercised deterministically.
         self.block_open = block_open
+        # MOR-1438 (F2 coverage): records which thread called ``stop()``, so
+        # tests can assert a late/abandoned handle was closed off the event
+        # loop rather than by a synchronous await on the loop thread.
+        self.stop_thread_ident: int | None = None
 
     @property
     def running(self) -> bool:
@@ -1536,6 +1540,7 @@ class FakeRxStream:
         self.started_count += 1
 
     async def stop(self) -> None:
+        self.stop_thread_ident = threading.get_ident()
         _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self._callback = None
@@ -1610,6 +1615,8 @@ class FakeTxStream:
         self.last_error: str | None = None
         # MOR-1438: see FakeRxStream.block_open.
         self.block_open = block_open
+        # MOR-1438 (F2 coverage): see FakeRxStream.stop_thread_ident.
+        self.stop_thread_ident: int | None = None
 
     @property
     def running(self) -> bool:
@@ -1637,6 +1644,7 @@ class FakeTxStream:
         self.started_count += 1
 
     async def stop(self) -> None:
+        self.stop_thread_ident = threading.get_ident()
         _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self.stopped_count += 1

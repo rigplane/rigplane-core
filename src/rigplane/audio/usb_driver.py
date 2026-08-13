@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Literal
 
@@ -112,37 +113,35 @@ _DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_00
 _CAPTURE_OPEN_TIMEOUT_S = 8.0
 """Default bound (seconds) on an RX/TX stream open, see ``_open_stream``."""
 
+_CAPTURE_OPEN_MAX_WORKERS = 8
+"""Size of the driver-owned open/close thread pool (MOR-1438, F3).
+
+A DEDICATED pool, not ``loop.run_in_executor(None, ...)``'s process-wide
+default executor: that pool is shared with the web server, eibi lookups,
+diagnostics, and discovery, so a single wedged capture open would
+permanently eat one of its threads and, given enough stuck opens, starve
+those unrelated subsystems too. Sized for a couple of concurrent RX/TX
+opens plus a couple of abandoned-handle closes running at once; it does
+not need to scale with subscriber count since ``_rx_lock``/``_tx_lock``
+serialize new opens.
+"""
+
 
 def _drive_stream_open(coro: "Coroutine[Any, Any, None]") -> None:
-    """Run a stream's ``start()`` coroutine to completion on this thread.
+    """Run a stream's ``start()``/``stop()`` coroutine to completion here.
 
     ``RxStream``/``TxStream`` implementations (PortAudio, Fake) perform no
-    genuine async I/O inside ``start()`` — the real device open is a
-    synchronous CoreAudio/PortAudio call made from an ``async def`` only
-    for Protocol conformance — so driving the coroutine via a private event
-    loop on a worker thread (MOR-1438) safely moves any blocking work off
-    the caller's loop without changing the ``RxStream``/``TxStream``
-    contract.
+    genuine async I/O inside ``start()``/``stop()`` — the real device open
+    and close are synchronous CoreAudio/PortAudio calls made from an
+    ``async def`` only for Protocol conformance — so driving the coroutine
+    via a private event loop on a worker thread (MOR-1438) safely moves
+    any blocking work off the caller's loop without changing the
+    ``RxStream``/``TxStream`` contract. Reused for BOTH the initial open
+    (:meth:`UsbAudioDriver._open_stream`) and a late/abandoned handle's
+    close (:meth:`UsbAudioDriver._close_late_stream`, F2) — a wedged
+    device can block its ``stop()`` exactly as it blocked its ``start()``.
     """
     asyncio.run(coro)
-
-
-async def _close_quietly(
-    stream: "RxStream | TxStream | DuplexStream", direction: str
-) -> None:
-    """Stop a late-arriving stream handle, swallowing close-time errors.
-
-    Fire-and-forget task target for :meth:`UsbAudioDriver._close_late_stream`
-    — nobody is awaiting this handle's lifecycle any more, so a failure
-    here must not surface as an "unretrieved task exception"; it is logged
-    at DEBUG instead (MOR-1438).
-    """
-    try:
-        await stream.stop()
-    except Exception:
-        logger.debug(
-            "usb-audio: failed to close late %s handle", direction, exc_info=True
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -624,6 +623,16 @@ class UsbAudioDriver:
         # tests can shrink it well below ``_CAPTURE_OPEN_TIMEOUT_S`` without
         # a real multi-second wait.
         self._capture_open_timeout = capture_open_timeout
+        # MOR-1438 (F3): dedicated pool for stream opens/closes, isolated
+        # from the process-wide default executor other subsystems share.
+        # Non-daemon threads (stdlib default): a permanently wedged open
+        # leaves a live thread that ``atexit`` will try to join, which can
+        # delay process exit — the same failure mode the frozen event loop
+        # already caused pre-fix, not a new regression.
+        self._open_executor = ThreadPoolExecutor(
+            max_workers=_CAPTURE_OPEN_MAX_WORKERS,
+            thread_name_prefix="rigplane-audio-open",
+        )
 
         self._selected_rx: UsbAudioDevice | None = None
         self._selected_tx: UsbAudioDevice | None = None
@@ -963,18 +972,32 @@ class UsbAudioDriver:
         flag is introduced here. The background open keeps running after
         this gives up on it; see :meth:`_close_late_stream` for the
         late-arriving-handle cleanup.
+
+        Cancellation of the AWAITING coroutine (e.g. a WS session torn
+        down mid-open) is handled the SAME way (MOR-1438 F1): before this
+        fix the frozen event loop could never actually deliver a cancel
+        here, so the path was unreachable; now the caller can sit
+        suspended up to ``_capture_open_timeout`` inside a routinely
+        cancelled code path (an operator reloading the browser tab
+        mid-open is exactly the incident scenario). ``asyncio.wait``
+        never cancels the futures it was given, so the background open
+        survives a cancelled wait untouched — it must be abandoned the
+        same way a timed-out one is, or it leaves a live, un-stoppable
+        stream with no consumer.
         """
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(None, _drive_stream_open, start_coro)
-        _done, pending = await asyncio.wait(
-            {future}, timeout=self._capture_open_timeout
+        future = loop.run_in_executor(
+            self._open_executor, _drive_stream_open, start_coro
         )
+        try:
+            _done, pending = await asyncio.wait(
+                {future}, timeout=self._capture_open_timeout
+            )
+        except asyncio.CancelledError:
+            self._abandon_open(future, stream, direction)
+            raise
         if future in pending:
-
-            def _on_late_open(late_future: "asyncio.Future[None]") -> None:
-                self._close_late_stream(late_future, stream, direction)
-
-            future.add_done_callback(_on_late_open)
+            self._abandon_open(future, stream, direction)
             logger.warning(
                 "usb-audio: %s capture open timed out after %.0fs — likely "
                 "blocked on OS capture-permission consent (macOS TCC "
@@ -991,29 +1014,82 @@ class UsbAudioDriver:
             )
         future.result()  # re-raise the open's own exception, if any
 
+    def _abandon_open(
+        self,
+        future: "asyncio.Future[None]",
+        stream: RxStream | TxStream | DuplexStream,
+        direction: str,
+    ) -> None:
+        """Detach from a still-running background open (MOR-1438, F1).
+
+        Used on BOTH the timeout branch and caller-cancellation: either
+        way, nobody is going to await *future* to completion any more, so
+        its eventual result must not be silently dropped. Without this, a
+        stream that finishes opening late flips ``running`` True with no
+        consumer and no callback wired up — every later subscriber trips
+        ``AudioAlreadyStartedError`` and the bus can't self-heal (
+        ``rx_active``/``tx_active`` never got set, so
+        ``AudioBus._remove_subscriber`` never runs the ``stop()`` it would
+        take to recover) until process restart.
+
+        Handles the (rare) race where *future* already finished right as
+        cancellation landed: closes it immediately via
+        :meth:`_close_late_stream` instead of registering a callback that
+        would never fire.
+        """
+        if future.done():
+            self._close_late_stream(future, stream, direction)
+            return
+
+        def _on_late_open(late_future: "asyncio.Future[None]") -> None:
+            self._close_late_stream(late_future, stream, direction)
+
+        future.add_done_callback(_on_late_open)
+
     def _close_late_stream(
         self,
         future: "asyncio.Future[None]",
         stream: RxStream | TxStream | DuplexStream,
         direction: str,
     ) -> None:
-        """Close a stream handle that finished opening after its timeout fired.
+        """Close a stream handle that finished opening after it was abandoned.
 
-        Runs as an asyncio done-callback on the event-loop thread (never
-        the worker thread that ran the open). The caller already gave up
-        and moved on when the timeout fired, so a late-arriving handle
-        would otherwise hold the OS device open forever — the
+        Fires as an asyncio done-callback ON THE EVENT-LOOP THREAD — but a
+        real ``stream.stop()`` is the SAME kind of synchronous
+        Pa_StopStream/Pa_CloseStream call this ticket exists to keep off
+        that thread (MOR-1438, F2): a wedged device can block its close
+        exactly as it blocked its open. So the close itself is driven
+        through the same off-loop helper (:func:`_drive_stream_open`) as
+        the original open, never awaited directly here. The caller already
+        gave up and moved on (timeout or cancellation), so a late-arriving
+        handle would otherwise hold the OS device open forever — the
         ResourceDemand handle-identity lesson applies here too: a handle
         nobody stops leaks a binding.
         """
         if future.cancelled() or future.exception() is not None:
             return
         logger.warning(
-            "usb-audio: %s capture open completed after its timeout had "
-            "already fired — closing the late handle instead of leaking it",
+            "usb-audio: %s capture open completed after it was abandoned "
+            "— closing the late handle instead of leaking it",
             direction.upper(),
         )
-        asyncio.ensure_future(_close_quietly(stream, direction))
+        loop = asyncio.get_running_loop()
+        close_future = loop.run_in_executor(
+            self._open_executor, _drive_stream_open, stream.stop()
+        )
+
+        def _on_close_done(done_future: "asyncio.Future[None]") -> None:
+            if done_future.cancelled():
+                return
+            exc = done_future.exception()
+            if exc is not None:
+                logger.debug(
+                    "usb-audio: failed to close late %s handle",
+                    direction,
+                    exc_info=exc,
+                )
+
+        close_future.add_done_callback(_on_close_done)
 
     def _store_stream_contract(self, contract: UsbAudioStreamContract) -> None:
         if contract.direction == "rx":
@@ -1099,11 +1175,13 @@ class UsbAudioDriver:
                     stream.start(self._silence_watchdog(callback, fm)),
                     direction="rx",
                 )
-            except AudioCaptureOpenTimeoutError:
+            except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
                 # Never leave a stuck-open handle wired up as "the" RX
                 # stream (MOR-1438): the next start_rx() must create a
                 # fresh one rather than observe this abandoned attempt
-                # flip ``running`` True behind its back.
+                # flip ``running`` True behind its back. Cancellation
+                # (F1) gets the same treatment as a timeout — both leave
+                # the background open running unattended.
                 self._rx_stream = None
                 raise
             self._store_stream_contract(contract)
@@ -1164,7 +1242,7 @@ class UsbAudioDriver:
                 # (MOR-1438), even though the specific bench trigger — a
                 # macOS TCC microphone-consent prompt — is RX/input-only.
                 await self._open_stream(stream, stream.start(), direction="tx")
-            except AudioCaptureOpenTimeoutError:
+            except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
                 self._tx_stream = None
                 raise
             self._store_stream_contract(contract)
