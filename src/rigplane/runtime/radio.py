@@ -4056,6 +4056,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         other command in this family. Previously this also hard-raised
         ``CommandError`` for receiver=MAIN when the profile lacked the
         route, instead of unwrapping like the rest of the family (MOR-1537).
+
+        That earlier raise was NOT purely redundant, contrary to MOR-1537's
+        framing: it was the only thing turning a profile that over-declares
+        the ``"digisel"`` capability without a matching cmd29 route/command
+        into a fast, explicit ``CommandError`` instead of a live, always-
+        0x16/0x4E CI-V send that blocks for a full timeout because the
+        radio never answers (MOR-1540 hit this on IC-705). The fix for that
+        class of bug is correcting the capability declaration at the source
+        (``rigs/<model>.toml``), not restoring the raise here — this method
+        still unwraps for MAIN as documented above.
         """
         self._check_connected()
         self._require_capability("digisel", operation="get_digisel")

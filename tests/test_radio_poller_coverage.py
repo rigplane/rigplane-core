@@ -1472,7 +1472,10 @@ async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None
 
 @pytest.mark.parametrize(
     ("model", "expected_seconds"),
-    (("IC-7300", 8.0), ("IC-705", 11.1)),
+    # IC-705 dropped from 11.1s to 11.0s (one fewer query per rotation) when
+    # MOR-1540 removed the over-declared "digisel" capability, which had
+    # been adding an unanswerable 0x16/0x4E poll to every rotation.
+    (("IC-7300", 8.0), ("IC-705", 11.0)),
 )
 def test_relative_vfo_retention_window_follows_provider_poll_cadence(
     model: str,
