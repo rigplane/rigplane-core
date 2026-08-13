@@ -981,7 +981,9 @@ class RadioPoller:
                 return resolve_radio_profile(model=raw_model)
         except KeyError:
             pass
-        return resolve_radio_profile()
+        if "dual_rx" in self._caps:
+            return resolve_radio_profile(model="IC-7610")
+        return resolve_radio_profile(model="IC-7300")
 
     def _vfo_command_profile(self, command: str) -> RadioProfile:
         """Resolve the exact profile allowed to declare a VFO primitive."""

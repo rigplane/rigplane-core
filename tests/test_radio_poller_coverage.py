@@ -1477,6 +1477,22 @@ async def test_unknown_profileless_vfo_commands_fail_before_mutation(
 
 
 @pytest.mark.asyncio
+async def test_unknown_profileless_set_freq_keeps_base_receiver_guard() -> None:
+    """Unknown profile-less non-VFO commands retain the base fallback behavior."""
+    radio = _make_radio()
+    radio.profile = None
+    radio.model = "Unknown Rig"
+    radio.capabilities = set()
+    poller = RadioPoller(radio, CommandQueue())
+
+    with pytest.raises(CommandError, match="receiver=1"):
+        await poller._execute(SetFreq(14_074_000, receiver=1))  # noqa: SLF001
+
+    radio.set_freq.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("model", "command", "method"),
     [
