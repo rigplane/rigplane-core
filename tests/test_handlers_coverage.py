@@ -483,10 +483,10 @@ def _scope_frame() -> ScopeFrame:
         ),
         (
             "set_notch_filter",
-            {"value": 91},
+            {"value": 91, "receiver": 1},
             SetNotchFilter,
-            {"level": 91},
-            {"value": 91},
+            {"level": 91, "receiver": 1},
+            {"value": 91, "receiver": 1},
         ),
         (
             "set_digisel",

@@ -3744,8 +3744,12 @@ class TestSwitchScopeReceiver:
         assert poller._radio_state is not None
         assert poller._radio_state.main.manual_notch is False  # no legacy mirror write
 
-    async def test_set_notch_filter_updates_radio_and_state(self) -> None:
-        """SetNotchFilter(level) calls radio.set_notch_filter and updates RadioState.notch_filter."""
+    async def test_set_notch_filter_sends_wire_without_legacy_mirror(self) -> None:
+        """SetNotchFilter threads receiver; notch_filter is observation-backed (0x14 0x0D).
+
+        The legacy global-scalar mirror write was removed alongside the
+        MOR-1548 receiver-scoped readback reclassification.
+        """
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetNotchFilter
 
         radio = self._make_radio()
@@ -3754,13 +3758,13 @@ class TestSwitchScopeReceiver:
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
         poller.start()
-        queue.put(SetNotchFilter(91))
+        queue.put(SetNotchFilter(91, receiver=1))
         await asyncio.sleep(0.03)
         poller.stop()
 
-        radio.set_notch_filter.assert_awaited_once_with(91)
+        radio.set_notch_filter.assert_awaited_once_with(91, receiver=1)
         assert poller._radio_state is not None
-        assert poller._radio_state.notch_filter == 91
+        assert poller._radio_state.notch_filter == 0  # no legacy mirror write
 
     async def test_set_agc_time_constant_sends_wire_without_legacy_mirror(self) -> None:
         """SetAgcTimeConstant sends the wire command; agc_time_constant is observation-backed (0x1A 0x04).

@@ -301,6 +301,7 @@ class SetManualNotch:
 @dataclass(frozen=True, slots=True)
 class SetNotchFilter:
     level: int
+    receiver: int = 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -106,7 +106,7 @@ Use `set_freq` directly for bands that have no `bsrCode` in capabilities.
 | `set_nb_width` | `level: int`, `receiver?: int=0` | `nb` | Yes | |
 | `set_auto_notch` | `on?: bool=false`, `receiver?: int=0` | `notch` | Yes | |
 | `set_manual_notch` | `on?: bool=false`, `receiver?: int=0` | `notch` | Yes | |
-| `set_notch_filter` | `value: int` | `notch` | Yes | No `receiver` param. |
+| `set_notch_filter` | `value: int`, `receiver?: int=0` | `notch` | Yes | |
 | `set_manual_notch_width` | `value: int`, `receiver?: int=0` | `notch` | Yes | |
 | `set_digisel` | `on?: bool=false`, `receiver?: int=0` | `digisel` | Yes | IC-7610 DIGI-SEL on/off. |
 | `set_digisel_shift` | `level: int`, `receiver?: int=0` | `digisel` | Yes | |
