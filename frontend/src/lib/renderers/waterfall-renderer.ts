@@ -100,6 +100,13 @@ export class WaterfallRenderer {
   private rowBuf: ImageData | null = null;
   private rowData: Uint8ClampedArray | null = null;
   private destroyed = false;
+  // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
+  // detect a genuine SPAN change (MOR-1479) vs. a same-value re-observation
+  // or the initial 0→real transition (first frame / reconnect), neither of
+  // which should clear the backlog. Kept separate from `options.spanHz` so
+  // a transient 0 (disconnect / not-yet-observed) doesn't get treated as a
+  // "real" span and doesn't erase the baseline used for comparison.
+  private lastConfirmedSpanHz: number | null = null;
 
   constructor(canvas: HTMLCanvasElement, options: WaterfallOptions) {
     const ctx = canvas.getContext('2d');
@@ -206,6 +213,25 @@ export class WaterfallRenderer {
       // NOTE: Existing canvas pixels retain the old color mapping. A proper fix
       // requires a ring buffer of raw amplitude rows to re-render with the new LUT.
       // For now, new rows will use the new scheme and old rows will fade out naturally.
+    }
+    // MOR-1479: SPAN change remaps every row's pixel→frequency (pixelToFreq
+    // reads options.spanHz directly), so rows drawn under the old span would
+    // bend/jump at the seam once a new span applies. Owner ruling: clear the
+    // backlog on a genuine SPAN change so every visible row shares the
+    // current mapping. `opts.spanHz` here is the CONFIRMED value the caller
+    // (SpectrumPanel) derives from the actual scope frame's startFreq/
+    // endFreq — the same value pixelToFreq uses — not a pending/optimistic
+    // one, so this can't double-clear on armed-then-confirmed span changes.
+    //
+    // A momentary 0 (no data yet / disconnected) is not a "real" span and is
+    // ignored on both sides of the comparison: it neither triggers a clear
+    // nor overwrites the last confirmed span, so the first real observation
+    // and a reconnect-to-the-same-span both stay quiet.
+    if (opts.spanHz !== undefined && opts.spanHz > 0) {
+      if (this.lastConfirmedSpanHz !== null && this.lastConfirmedSpanHz !== opts.spanHz) {
+        this.clear();
+      }
+      this.lastConfirmedSpanHz = opts.spanHz;
     }
   }
 

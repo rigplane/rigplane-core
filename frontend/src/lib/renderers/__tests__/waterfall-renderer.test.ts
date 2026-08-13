@@ -134,6 +134,84 @@ describe('updateOptions', () => {
   });
 });
 
+// ── history clearing on confirmed span change (MOR-1479) ─────────────────────
+//
+// SPAN change remaps every waterfall row's pixel→frequency (pixelToFreq uses
+// options.spanHz directly), so old rows drawn under the previous span bend/
+// jump at the seam. Owner ruling: clear the backlog on SPAN change only —
+// center-frequency retunes are explicitly out of scope (separate ruling).
+
+describe('history clearing on confirmed span change', () => {
+  it('does not clear on the very first span observation (initial fill)', () => {
+    const r = makeRenderer(100, 50, { spanHz: 0 });
+    const clearSpy = vi.spyOn(r, 'clear');
+    r.updateOptions({ spanHz: 100_000 });
+    expect(clearSpy).not.toHaveBeenCalled();
+  });
+
+  it('clears history when the confirmed span changes', () => {
+    const r = makeRenderer(100, 50, { spanHz: 0 });
+    r.updateOptions({ spanHz: 100_000 }); // establish baseline (first observation)
+    const clearSpy = vi.spyOn(r, 'clear');
+    r.updateOptions({ spanHz: 200_000 });
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clear when the reported span is unchanged (no-op observation)', () => {
+    const r = makeRenderer(100, 50, { spanHz: 0 });
+    r.updateOptions({ spanHz: 100_000 }); // baseline
+    const clearSpy = vi.spyOn(r, 'clear');
+    r.updateOptions({ spanHz: 100_000 });
+    expect(clearSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not clear when an unrelated option changes (spanHz omitted)', () => {
+    const r = makeRenderer(100, 50, { spanHz: 0 });
+    r.updateOptions({ spanHz: 100_000 }); // baseline
+    const clearSpy = vi.spyOn(r, 'clear');
+    r.updateOptions({ refLevel: 5 });
+    r.updateOptions({ colorScheme: 'thermal' });
+    expect(clearSpy).not.toHaveBeenCalled();
+  });
+
+  it('clears on each step of a rapid double span change', () => {
+    const r = makeRenderer(100, 50, { spanHz: 0 });
+    r.updateOptions({ spanHz: 100_000 }); // baseline
+    const clearSpy = vi.spyOn(r, 'clear');
+    r.updateOptions({ spanHz: 200_000 });
+    r.updateOptions({ spanHz: 300_000 });
+    expect(clearSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds/pauses without clearing: repeated same-span pushes stay quiet', () => {
+    const r = makeRenderer(100, 50, { spanHz: 0 });
+    r.updateOptions({ spanHz: 100_000 }); // baseline
+    const clearSpy = vi.spyOn(r, 'clear');
+    for (let i = 0; i < 5; i++) {
+      r.updateOptions({ spanHz: 100_000 });
+    }
+    expect(clearSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not clear across a disconnect/reconnect gap that returns to the same span', () => {
+    const r = makeRenderer(100, 50, { spanHz: 0 });
+    r.updateOptions({ spanHz: 100_000 }); // baseline
+    const clearSpy = vi.spyOn(r, 'clear');
+    r.updateOptions({ spanHz: 0 }); // disconnect / no-data placeholder
+    r.updateOptions({ spanHz: 100_000 }); // reconnect, same span as before
+    expect(clearSpy).not.toHaveBeenCalled();
+  });
+
+  it('clears when the span differs from before a disconnect gap', () => {
+    const r = makeRenderer(100, 50, { spanHz: 0 });
+    r.updateOptions({ spanHz: 100_000 }); // baseline
+    const clearSpy = vi.spyOn(r, 'clear');
+    r.updateOptions({ spanHz: 0 }); // disconnect
+    r.updateOptions({ spanHz: 150_000 }); // reconnect with a different span
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ── resize ───────────────────────────────────────────────────────────────────
 
 describe('resize', () => {
