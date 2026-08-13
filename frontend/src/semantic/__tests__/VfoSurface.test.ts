@@ -24,6 +24,7 @@ import { validateRadioViewModel, type RadioViewModel, type VfoSlot } from '../ra
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
 import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
+import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
 
 const ids: readonly TopologyFixtureId[] = ['1/single', '1/ab', '2/ab_shared', '2/main_sub'];
 
@@ -50,8 +51,20 @@ afterEach(() => {
 function expectedSlotKey(slot: VfoSlot): string {
   return slot.kind === 'slotted' ? slot.id : slot.kind;
 }
+/**
+ * MOR-1482: the ONE stable frequency format the whole surface uses — the same
+ * dot-grouped digit convention `FrequencyDisplayInteractive` (the tunable/
+ * selected-tile readout) uses, built from the SAME shared utility rather than
+ * a hand-rolled string, so this helper cannot drift from what the component
+ * actually renders. Previously this asserted a decimal-MHz string
+ * (`14.250000 MHz`) that matched neither the selected tile's dot convention
+ * nor the design-language renderer's own text — two mismatched fallback
+ * formats on the same slot (the ticket's bug).
+ */
 function expectedFreq(hz: number | null): string {
-  return hz === null ? '—' : `${(hz / 1_000_000).toFixed(6)} MHz`;
+  if (hz === null) return '—';
+  const { mhz, khz, hz: hzGroup } = groupDigitsForDisplay(splitFrequencyToDigits(hz));
+  return [mhz, khz, hzGroup].map((group) => group.map((d) => d.char).join('')).join('.');
 }
 
 /** Normalized rendered-DOM summary — only VFO-surface-owned facts. */
@@ -132,6 +145,88 @@ it('shows a distinct role per VFO across single/dual and slotted/unslotted schem
   const mainSub = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
   const roles = Array.from(mainSub.querySelectorAll('.vfo-role')).map((e) => e.textContent);
   expect(roles).toEqual(['MAIN A', 'MAIN B', 'SUB A', 'SUB B']);
+});
+
+// ── MOR-1482: one stable frequency format + role text shown exactly once ───
+//
+// Live-observed bug: the unselected-VFO tile's frequency readout flipped
+// between two DIFFERENT formats — a decimal-MHz fallback (`14.332000 MHz`)
+// and, whenever the studioline/fieldline design language is active (it is
+// the workspace DEFAULT — `DEFAULT_WORKSPACE.designLanguage === 'studioline'`,
+// declared compatible with the `desktop-v2` skin — this is not a rare edge
+// case), the language's own thin-space-grouped text. Neither matched the
+// selected tile's dot-grouped convention (`FrequencyDisplayInteractive`),
+// and at tile font size the thin space (U+2009) is imperceptible, so the
+// language variant reads as an unformatted digit string. This block pins
+// the fallback (no-design-language) path to the SAME dot convention the
+// selected tile always uses, in both the observed and not-yet-observed
+// (`null`) states, and pins that each tile's role text is visually shown
+// exactly once.
+
+describe('MOR-1482: unselected-tile frequency format is stable and dot-grouped', () => {
+  function nonTunableModel(frequencyHz: number | null): RadioViewModel {
+    const base = topologyFixtures['1/ab'];
+    return validateRadioViewModel({
+      ...base,
+      vfos: [
+        { ...base.vfos[0], frequencyHz: 7_100_000 },
+        { ...base.vfos[1], frequencyHz },
+      ],
+    });
+  }
+
+  it('an observed frequency renders dot-grouped, matching the selected tile\'s convention — never decimal-MHz, never a thin space', () => {
+    // No `onTuneFrequency` wired and no design language active: the tile
+    // renders through the plain fallback this ticket fixes.
+    const target = mountSurface({ viewModel: nonTunableModel(14_332_000) });
+    const text = target.querySelectorAll('.vfo-freq')[1]?.textContent ?? '';
+    expect(text).toBe('14.332.000');
+    expect(text).not.toContain('MHz');
+    expect(text).not.toContain(' '); // studioline's THIN_SPACE grouping mark
+    expect(text).not.toMatch(/\s/); // no space-grouped digits either
+  });
+
+  it('a not-yet-observed frequency renders the honest placeholder, never a differently-formatted number', () => {
+    const target = mountSurface({ viewModel: nonTunableModel(null) });
+    const tiles = target.querySelectorAll('.vfo-freq');
+    expect(tiles[0]?.textContent).toBe('7.100.000');
+    expect(tiles[1]?.textContent).toBe('—');
+    expect(tiles[1]?.textContent).not.toContain('MHz');
+  });
+
+  it('the tile role text appears exactly once, visually — the duplicate label span is hidden, not deleted', () => {
+    // Mirrors the ADAPTER's real output for a 'relative' slot scheme
+    // (`radio-view-model-adapter.ts`), where `label` is set to the SAME
+    // string `roleLabel()` computes ('Selected VFO' / 'Unselected VFO') —
+    // the actual live-observed duplication, not a fixture artifact.
+    const base = topologyFixtures['1/ab'];
+    const model: RadioViewModel = validateRadioViewModel({
+      ...base,
+      vfos: [
+        {
+          ...base.vfos[0], slot: { kind: 'relative', role: 'selected' },
+          label: 'Selected VFO', isActive: true, isActiveSlot: true,
+        },
+        {
+          ...base.vfos[1], slot: { kind: 'relative', role: 'unselected' },
+          label: 'Unselected VFO', isActive: false, isActiveSlot: false,
+        },
+      ],
+    });
+    const target = mountSurface({ viewModel: model });
+    const selected = target.querySelector<HTMLElement>('[data-vfo-slot="selected"]')!;
+
+    const role = selected.querySelector('.vfo-role')!;
+    const label = selected.querySelector<HTMLElement>('[data-vfo-label]')!;
+    // Both carry the SAME text — the duplication the ticket reports.
+    expect(role.textContent).toBe('Selected VFO');
+    expect(label.textContent).toBe('Selected VFO');
+    // The role text is the one VISIBLE copy...
+    expect(role.className).not.toMatch(/sr-only/);
+    // ...and the label span is present for tests/assistive tech but hidden
+    // from sight, not a second painted copy of the same words.
+    expect(label.className).toMatch(/sr-only/);
+  });
 });
 
 // ── UNCERTAINTY IS VISIBLE ───────────────────────────────────────────────────
@@ -309,7 +404,7 @@ describe('VFO selection intent', () => {
     });
     const target = mountSurface({ viewModel: model });
     expect(target.querySelector('[data-vfo-slot="selected"] .vfo-freq')?.textContent)
-      .toContain('14.250000 MHz');
+      .toContain(expectedFreq(14_250_000));
     expect(target.querySelector('[data-vfo-slot="unselected"] .vfo-freq')?.textContent)
       .toBe('—');
     expect(target.querySelector('[data-testid="vfo-ops"]')?.getAttribute('data-disabled-reason'))
@@ -1661,6 +1756,17 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
  * both survived the whole suite. These tests activate a real registered
  * language (MOR-1278 attribute doctrine, same `activate` idiom as
  * `design-language-wiring.component.test.ts`) and assert the rule directly.
+ *
+ * MOR-1482 (owner ruling, session 19) update: the NON-tunable branch now ALSO
+ * opts out of the language's TEXT — previously only the tunable branch did
+ * (this is the same MOR-1322 option-(b) precedent, extended). The verifier's
+ * live finding: `studioline` is `DEFAULT_WORKSPACE.designLanguage`, declared
+ * compatible with the shipped `desktop-v2` skin, so a hero-scale grammar
+ * (thin-space-grouped ranked digits) flattened to tile-scale text was the
+ * OUT-OF-THE-BOX readout, not a rare state, and read as unformatted digits.
+ * Tests (a) and (c) below are rewritten for that: a language's TEXT never
+ * reaches this slot now, in either filling — only its `data-dl-*` region
+ * attributes do, still pinned unchanged by (b).
  */
 describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design language', () => {
   /** MOR-1278: the activation attribute is the single switch. */
@@ -1686,16 +1792,13 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
     const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
     const slot = activeSlot(t);
     const digits = [...slot.querySelectorAll('.digit')].map((d) => d.textContent).join('');
-    // The language's own rendering of this frequency, for comparison.
-    activate(null);
-    const plainSlot = activeSlot(mountSurface({ viewModel: tunableTile }));
-    activate(lang);
-    const languageText = activeSlot(mountSurface({ viewModel: tunableTile })).textContent!.trim();
-    // The language text is a real, DIFFERENT string from the v2 readout —
-    // otherwise this test could pass with the language inert.
-    expect(languageText).not.toBe(plainSlot.textContent!.trim());
-    // ...and it does not appear in the tunable slot: exactly one readout.
-    expect(slot.textContent!.replace(/\s/g, '')).not.toContain(languageText.replace(/\s/g, ''));
+    // No OTHER text node sits alongside the digit control — MOR-1482: this is
+    // no longer "the language's text specifically", it is ANY text at all,
+    // since the non-tunable branch's language text was retired too.
+    const ownText = [...slot.childNodes]
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent!.trim()).join('');
+    expect(ownText).toBe('');
     // The one readout present is the digit control, spelling the same fact.
     expect(Number(digits)).toBe(tunableTile.vfos.find((v) => v.isActive)!.frequencyHz);
   });
@@ -1713,32 +1816,40 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
     expect(regionAttrs(tuned)).toEqual(regionAttrs(plain));
   });
 
-  // (c) The language text RETURNS when tuning is unavailable — the other half
-  // of the mutual exclusion, so the rule is not "digits always win".
-  it.each(LANGUAGES)('%s: the language readout returns on a non-tunable tile', (lang) => {
+  // (c) MOR-1482: the v2 dot-grouped fallback RETURNS when tuning is
+  // unavailable — the other half of the mutual exclusion (the rule is not
+  // "digits always win") — and, unlike before this ticket, it reads
+  // IDENTICALLY whether or not a language is active: there is no longer a
+  // separate "language readout" for this slot to fall back FROM.
+  it.each(LANGUAGES)('%s: the v2 fallback returns on a non-tunable tile, identical with or without the language', (lang) => {
     activate(lang);
-    // THE SAME TILE, both fillings. With no intent wired the active tile shows
-    // the language text; with the intent wired it shows digits. Comparing one
-    // tile across the two states is what proves mutual exclusion rather than
-    // two tiles that happen to differ.
     const untuned = activeSlot(mountSurface({ viewModel: tunableTile }));
-    const languageText = untuned.textContent!.trim();
-    expect(languageText.length).toBeGreaterThan(0);
+    const untunedText = untuned.textContent!.trim();
+    expect(untunedText.length).toBeGreaterThan(0);
     expect(untuned.querySelectorAll('.digit')).toHaveLength(0);
 
     const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
     expect(activeSlot(t).querySelectorAll('.digit').length).toBeGreaterThan(0);
 
-    // ...and an INACTIVE tile keeps the language readout even while tuning is
-    // wired elsewhere — the language is not switched off globally by tuning.
+    // ...and an INACTIVE tile stays non-tunable even while tuning is wired
+    // elsewhere for a different tile — the mutual-exclusion gate is per-tile,
+    // not a surface-wide switch.
     const inactive = slots(t).find((sl) => sl !== activeSlot(t))!;
     expect(inactive.querySelectorAll('.digit')).toHaveLength(0);
-    expect(inactive.textContent!.trim().length).toBeGreaterThan(0);
-    // It is the LANGUAGE's rendering, not the v2 fallback.
+    const inactiveText = inactive.textContent!.trim();
+    expect(inactiveText.length).toBeGreaterThan(0);
+
+    // THE SAME TILE POSITION, language OFF: one mount, so `slots`/`activeSlot`
+    // read the SAME DOM tree — comparing across two separate mounts (each
+    // producing its own, non-`===`-equal elements) would make `.find(sl => sl
+    // !== activeSlot(...))` trivially return the FIRST slot regardless of
+    // which one is active, silently comparing two DIFFERENT VFOs instead of
+    // the same one under two language states.
     activate(null);
-    const v2 = slots(mountSurface({ viewModel: tunableTile })).find(
-      (sl) => sl !== activeSlot(mountSurface({ viewModel: tunableTile })))!;
-    expect(inactive.textContent!.trim()).not.toBe(v2.textContent!.trim());
+    const bare = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
+    const bareInactive = slots(bare).find((sl) => sl !== activeSlot(bare))!;
+    expect(bareInactive.querySelectorAll('.digit')).toHaveLength(0);
+    expect(inactiveText).toBe(bareInactive.textContent!.trim());
   });
 
   // Exactly ONE readout per tile, counted structurally — no tautology this

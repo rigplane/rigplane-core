@@ -49,7 +49,10 @@ import { renderSlot } from '../design-language-renderers';
 const VIEW: RadioViewModel = topologyFixtures['2/main_sub'];
 /** M-A's frequency, the one every frequency assertion below reads. */
 const MAIN_A_HZ = 14250000;
-const V2_READOUT = '14.250000 MHz';
+// MOR-1482: the v2 fallback now matches `FrequencyDisplayInteractive`'s own
+// dot-grouped digit convention (previously a decimal-MHz string that matched
+// neither that convention nor either design language's grammar).
+const V2_READOUT = '14.250.000';
 const THIN_SPACE = ' ';
 
 const IDLE_RX: TxAuthoritySnapshot = {
@@ -111,30 +114,75 @@ function frequencies(language: string | null): string[] {
   return out;
 }
 
-// ── 1. The frequency grammar becomes live, for ANY registered language ──────
+/** Every `data-dl-*` attribute on each `.vfo-freq` region, in DOM order. */
+function frequencyRegionAttributes(language: string | null): string[][] {
+  activate(language);
+  let out: string[][] = [];
+  withMounted(VfoSurface, { viewModel: VIEW }, (root) => {
+    out = [...root.querySelectorAll<HTMLElement>('.vfo-freq')].map((el) =>
+      [...el.attributes].filter((a) => a.name.startsWith('data-dl-')).map((a) => `${a.name}=${a.value}`));
+  });
+  return out;
+}
 
-describe('MOR-1275 — a registered language\'s frequency renderer reaches the DOM', () => {
-  it('studioline replaces the v2 dot readout with its grouped-digit grammar (MOR-977)', () => {
-    // Kill-mutation: drop the `resolveRenderer` call from VfoSurface and the
-    // readout falls back to `formatFrequency`, i.e. to the v2 string.
-    const [mainA] = frequencies('studioline');
-    expect(mainA).toBe(`14${THIN_SPACE}250${THIN_SPACE}000`);
-    expect(mainA).not.toBe(V2_READOUT);
-    expect(mainA).not.toContain('.');
+// ── 1. MOR-1482 (owner ruling, session 19): the frequency SLOT opts the
+// language's TEXT out, permanently — the same MOR-1322 option-(b) precedent
+// the tunable branch already used, now extended to the non-tunable one. A
+// hero-scale grammar (studioline's thin-space-grouped ranked digits,
+// fieldline's ungrouped run) flattened to a tile-scale string loses the
+// ranking/geometry it depends on and reads as unformatted digits — the
+// verifier's live finding was that `studioline` is
+// `DEFAULT_WORKSPACE.designLanguage` and is declared compatible with the
+// shipped `desktop-v2` skin, so this was the OUT-OF-THE-BOX tile text, not a
+// rare state. The region's `data-dl-*` attributes are untouched: a language
+// still owns the REGION, only the VALUE's text is no longer its call.
+// `frequencyDisplay`'s own `.text` output is unconsumed anywhere in
+// production now (see the doc note on `RendererDisplay.text`).
+
+describe('MOR-1482 — the frequency slot opts out of the language\'s TEXT, keeps its attributes', () => {
+  it.each(['studioline', 'fieldline'])(
+    '%s: the tile text is the v2 dot-grouped fallback, not the language\'s own grammar', (id) => {
+      // Kill-mutation: restoring `freq?.text ??` would flip this back to
+      // studioline's thin-space run / fieldline's ungrouped run.
+      const [mainA] = frequencies(id);
+      expect(mainA).toBe(V2_READOUT);
+      expect(mainA).not.toBe(`14${THIN_SPACE}250${THIN_SPACE}000`); // studioline's own grammar
+      expect(mainA).not.toBe('14250000'); // fieldline's own grammar
+    });
+
+  it.each(['studioline', 'fieldline'])(
+    '%s: the region still carries the language\'s data-dl-* attributes', (id) => {
+      // Kill-mutation: dropping `freq?.attributes` from the spread — the
+      // language's claim on the REGION must survive even though it no
+      // longer supplies the region's text.
+      const [mainARegion] = frequencyRegionAttributes(id);
+      expect(mainARegion.length).toBeGreaterThan(0);
+    });
+
+  it('the no-language fallback carries no data-dl-* attributes at all', () => {
+    const [mainARegion] = frequencyRegionAttributes(null);
+    expect(mainARegion).toEqual([]);
   });
 
-  it('fieldline lights up through the SAME wiring — no per-language branch', () => {
-    // Kill-mutation: `if (id === 'studioline')` anywhere in the wiring. The two
-    // grammars differ (fieldline's grouping is geometry, not a character), so a
-    // fast path for one language shows up as the other falling back to v2.
-    const [mainA] = frequencies('fieldline');
-    expect(mainA).toBe('14250000');
-    expect(mainA).not.toBe(V2_READOUT);
-    expect(mainA).not.toBe(frequencies('studioline')[0]);
+  it('every VFO is dot-grouped, matching the v2/no-language fallback, under EITHER language', () => {
+    const bare = frequencies(null);
+    expect(frequencies('studioline')).toEqual(bare);
+    expect(frequencies('fieldline')).toEqual(bare);
+    expect(bare).toEqual([V2_READOUT, '14.280.000', '21.295.000', '21.330.000']);
   });
 
-  it('renders every VFO through the renderer, not only the first', () => {
-    expect(frequencies('fieldline')).toEqual(['14250000', '14280000', '21295000', '21330000']);
+  // The verifier's own probe (BLOCKED finding on MOR-1482, session 19): the
+  // exact live scenario — studioline active (the workspace DEFAULT) on the
+  // desktop-v2 skin (VfoSurface's only production mount) — pinned permanently
+  // so it can never regress silently again.
+  it('PERMANENT PROBE: under studioline-active desktop-v2, the unselected tile text is dot-grouped', () => {
+    activate('studioline');
+    withMounted(VfoSurface, { viewModel: VIEW }, (root) => {
+      const unselected = root.querySelector<HTMLElement>('[data-vfo-active="false"] .vfo-freq')!;
+      expect(unselected.textContent).toMatch(/^\d{1,3}(\.\d{3}){2}$/);
+      expect(unselected.textContent).not.toMatch(/\s/); // no thin-space grammar leak
+      expect(unselected.textContent).not.toContain('MHz');
+    });
   });
 });
 
@@ -144,7 +192,7 @@ describe('MOR-1275 — the wiring falls back to the component\'s own rendering',
   it('renders the v2 readout when no language is active', () => {
     expect(frequencies(null)[0]).toBe(V2_READOUT);
     expect(frequencies(null)).toEqual([
-      V2_READOUT, '14.280000 MHz', '21.295000 MHz', '21.330000 MHz',
+      V2_READOUT, '14.280.000', '21.295.000', '21.330.000',
     ]);
   });
 
