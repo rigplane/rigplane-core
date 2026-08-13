@@ -12,7 +12,14 @@ import pytest
 
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web import server as web_server
-from rigplane.web.radio_poller import CommandQueue, SendCiv, SetFreq, SetMode
+from rigplane.web.radio_poller import (
+    CommandQueue,
+    CommandQueueEntry,
+    SendCiv,
+    SetFreq,
+    SetMode,
+    SetPower,
+)
 from rigplane.web.server import WebConfig, WebServer
 
 
@@ -106,6 +113,19 @@ async def _complete_ordered_commands(
         await queue.wait(timeout=1.0)
         for entry in queue.drain_entries():
             captured.append(entry.command)
+            if entry.future is not None and not entry.future.done():
+                entry.future.set_result(None)
+
+
+async def _complete_ordered_entries(
+    queue: CommandQueue,
+    count: int,
+    captured: list[CommandQueueEntry],
+) -> None:
+    while len(captured) < count:
+        await queue.wait(timeout=1.0)
+        for entry in queue.drain_entries():
+            captured.append(entry)
             if entry.future is not None and not entry.future.done():
                 entry.future.set_result(None)
 
@@ -1514,3 +1534,64 @@ async def test_http_single_command_missing_required_param_returns_400() -> None:
     assert writer.response_status == 400
     assert writer.response_body["error"] == "invalid_request"
     assert srv.command_queue.drain() == []
+
+
+def _watts_radio() -> SimpleNamespace:
+    profile = resolve_radio_profile(model="FTX-1")
+    return SimpleNamespace(
+        profile=profile,
+        model=profile.model,
+        capabilities=set(profile.capabilities),
+        native_power_unit="watts",
+        get_powerstat=AsyncMock(return_value=True),
+        set_powerstat=AsyncMock(),
+        get_rf_power=AsyncMock(return_value=0),
+        set_rf_power=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "level", "expected_level", "expected_expectation"),
+    [
+        ("set_rf_power", 50, 50, 0.5),
+        ("set_power", 50, 50, 0.5),
+        ("set_rf_power", 0.4, 40, 102 / 255),
+        ("set_power", 0.4, 40, 102 / 255),
+    ],
+)
+async def test_http_batch_watts_power_expectation_uses_profile_max_watts(
+    name: str,
+    level: int | float,
+    expected_level: int,
+    expected_expectation: float,
+) -> None:
+    """HTTP batch power commands retain shared watts expectation semantics."""
+    radio = _watts_radio()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    captured: list[CommandQueueEntry] = []
+    consumer = asyncio.create_task(
+        _complete_ordered_entries(srv.command_queue, 1, captured)
+    )
+
+    try:
+        writer = await _post_json(
+            srv,
+            "/api/v1/commands/batch",
+            {"steps": [{"name": name, "params": {"level": level}}]},
+        )
+    finally:
+        await asyncio.wait_for(consumer, timeout=1.0)
+
+    assert writer.response_status == 200
+    assert writer.response_body["results"][0]["status"] == "executed"
+    [entry] = captured
+    assert entry.command == SetPower(expected_level, unit="watts")
+    assert entry.command_id is not None
+    [expectation] = srv.command_service.readback_expectations(
+        source="http",
+        session_id=None,
+        command_id=entry.command_id,
+    )
+    assert radio.profile.max_watts == 100
+    assert expectation.value == pytest.approx(expected_expectation)
