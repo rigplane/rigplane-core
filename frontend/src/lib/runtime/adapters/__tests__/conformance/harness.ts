@@ -6,8 +6,8 @@
  * radio family is a declarative table entry (see `profiles.ts`), not a
  * copy-pasted ~170 LOC of mock scaffolding.
  *
- * ISOLATED POOL (MOR-1272 naming convention): this module module-scope-mocks
- * six store/transport modules the same way
+ * ISOLATED POOL (MOR-1272 naming convention): this module-scope-mocks six
+ * store/transport modules the same way
  * `panel-commands.intent.isolated.test.ts` does, for the identical reason —
  * under the `fast` project's `isolate: false`, a sibling file importing the
  * real modules later in the same worker could inherit a mocked instance from

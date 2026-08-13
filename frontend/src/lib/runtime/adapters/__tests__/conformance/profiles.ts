@@ -11,7 +11,7 @@
  * `fixtures/ic7300-profile.ts` loader, which remains the single source of
  * truth for the fixture JSON pair and its capture provenance.
  */
-import type { Capabilities } from '$lib/types/capabilities';
+import type { Capabilities, VfoReadback, VfoScheme } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { IC7300_CAPABILITIES, IC7300_STATE } from '../fixtures/ic7300-profile';
 
@@ -20,17 +20,17 @@ export interface ConformanceProfile {
   caps: Capabilities;
   model: string;
   receivers: number;
-  vfoScheme: string;
-  vfoReadback: string;
+  vfoScheme: VfoScheme;
+  vfoReadback?: VfoReadback;
 }
 
 export const PROFILES = {
   ic7300: {
     state: IC7300_STATE,
     caps: IC7300_CAPABILITIES,
-    model: 'IC-7300',
-    receivers: 1,
-    vfoScheme: 'ab',
-    vfoReadback: 'selected_unselected',
+    model: IC7300_CAPABILITIES.model,
+    receivers: IC7300_CAPABILITIES.receivers,
+    vfoScheme: IC7300_CAPABILITIES.vfoScheme,
+    vfoReadback: IC7300_CAPABILITIES.vfoReadback,
   },
 } satisfies Record<string, ConformanceProfile>;
