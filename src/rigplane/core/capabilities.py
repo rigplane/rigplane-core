@@ -51,6 +51,7 @@ __all__ = [
     "CAP_CSQL",
     "CAP_SQL_TYPE",
     "CAP_VOICE_TX",
+    "CAP_SPEECH",
     "CAP_DATA_MODE",
     "CAP_MOD_INPUT_ROUTING",
     "CAP_AGC",
@@ -152,6 +153,8 @@ CAP_TSQL = "tsql"
 CAP_DTCS = "dtcs"
 CAP_CSQL = "csql"
 CAP_VOICE_TX = "voice_tx"
+# Radio built-in voice-announcement command; distinct from voice TX.
+CAP_SPEECH = "speech"
 # Squelch-type readback (Yaesu FTX-1 CAT ``CT`` "SQL TYPE"). Distinct from the
 # Icom-style ``repeater_tone``/``tsql`` SET-command capabilities: ``sql_type``
 # gates only the observation-pipeline readback that maps the ``CT`` P2 code onto
@@ -247,6 +250,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_CSQL,
         CAP_SQL_TYPE,
         CAP_VOICE_TX,
+        CAP_SPEECH,
         # Data
         CAP_DATA_MODE,
         # Modulation input routing

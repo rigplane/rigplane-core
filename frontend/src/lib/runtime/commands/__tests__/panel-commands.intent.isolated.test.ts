@@ -237,7 +237,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
         'tx', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
         'cw', 'break_in', 'apf', 'twin_peak', 'rx_antenna',
         'split', 'dual_rx', 'dual_watch', 'main_sub_tracking',
-        'bsr', 'preamp', 'attenuator', 'ip_plus',
+        'bsr', 'preamp', 'attenuator', 'ip_plus', 'scan',
       ],
       stateContractVersion: 1,
       providerGeneration: 31,
@@ -590,6 +590,24 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_antenna_1', { on: false }],
       ['set_antenna_2', { on: true }],
       ['set_rx_antenna_ant1', { on: true }],
+      ['scan_start', { type: 0x22 }],
+      ['scan_stop', {}],
+      ['scan_set_df_span', { span: 25_000 }],
+      ['scan_set_resume', { mode: 0xd2 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('dispatches all explicit scan commands with scan capability and no observed scan state', () => {
+    h.state = null;
+    const scan = makeScanHandlers();
+    scan.onScanStart(0x22);
+    scan.onScanStop();
+    scan.onDfSpanChange(25_000);
+    scan.onResumeChange(0xd2);
+
+    expect(exactCalls()).toEqual([
       ['scan_start', { type: 0x22 }],
       ['scan_stop', {}],
       ['scan_set_df_span', { span: 25_000 }],

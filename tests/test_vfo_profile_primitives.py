@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from rigplane.core.exceptions import CommandError
 from rigplane.core.state_store import StateStore
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers.control import ControlHandler
@@ -164,7 +163,7 @@ async def test_absent_vfo_primitive_direct_poller_command_fails_closed(
     radio = _radio(model)
     poller = RadioPoller(radio, CommandQueue())
 
-    with pytest.raises(CommandError, match="unsupported by profile"):
+    with pytest.raises(NotImplementedError, match="profile declares no matching"):
         await poller._execute(queued_command)  # noqa: SLF001
 
     assert poller._last_user_write_ts == 0.0  # noqa: SLF001

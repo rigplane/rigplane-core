@@ -985,6 +985,19 @@ class RadioPoller:
             return resolve_radio_profile(model="IC-7610")
         return resolve_radio_profile(model="IC-7300")
 
+    def _vfo_command_profile(self, command: str) -> RadioProfile:
+        """Resolve the exact profile allowed to declare a VFO primitive."""
+        raw_profile = getattr(self._radio, "profile", None)
+        if isinstance(raw_profile, RadioProfile):
+            return raw_profile
+        raw_model = getattr(self._radio, "model", None)
+        try:
+            if isinstance(raw_model, str) and raw_model.strip():
+                return resolve_radio_profile(model=raw_model)
+        except KeyError:
+            pass
+        raise NotImplementedError(f"{command} unsupported: unknown profile-less radio")
+
     def _load_command_map(self) -> dict[str, tuple[int, ...]]:
         """Load command wire bytes from TOML rig profile."""
         try:
@@ -2729,42 +2742,46 @@ class RadioPoller:
                 if self._on_state_event:
                     self._on_state_event("vfo_changed", {"vfo": vfo})
             case VfoSwap():
-                if (
-                    self._profile.vfo_scheme == "ab"
-                    and self._profile.swap_ab_code is not None
-                ):
-                    self._last_user_write_ts = time.monotonic()
-                    await radio.swap_vfo_ab(0)
+                profile = self._vfo_command_profile("VfoSwap")
+                if profile.vfo_scheme == "ab" and profile.swap_ab_code is not None:
+                    swap_ab = True
                 elif (
-                    self._profile.vfo_scheme == "main_sub"
-                    and self._profile.swap_main_sub_code is not None
+                    profile.vfo_scheme == "main_sub"
+                    and profile.swap_main_sub_code is not None
                 ):
-                    self._last_user_write_ts = time.monotonic()
-                    await radio.swap_main_sub()
+                    swap_ab = False
                 else:
-                    raise CommandError(
-                        f"vfo_swap is unsupported by profile {self._profile.model}"
+                    raise NotImplementedError(
+                        f"VfoSwap unsupported on {profile.model}: "
+                        "profile declares no matching primitive"
                     )
+                self._last_user_write_ts = time.monotonic()
+                if swap_ab:
+                    await radio.swap_vfo_ab(0)
+                else:
+                    await radio.swap_main_sub()
                 # After swap, active VFO stays same but freqs are exchanged
                 if self._on_state_event:
                     self._on_state_event("vfo_swapped", {})
             case VfoEqualize():
-                if (
-                    self._profile.vfo_scheme == "ab"
-                    and self._profile.equal_ab_code is not None
-                ):
-                    self._last_user_write_ts = time.monotonic()
-                    await radio.equalize_vfo_ab(0)
+                profile = self._vfo_command_profile("VfoEqualize")
+                if profile.vfo_scheme == "ab" and profile.equal_ab_code is not None:
+                    equal_ab = True
                 elif (
-                    self._profile.vfo_scheme == "main_sub"
-                    and self._profile.equal_main_sub_code is not None
+                    profile.vfo_scheme == "main_sub"
+                    and profile.equal_main_sub_code is not None
                 ):
-                    self._last_user_write_ts = time.monotonic()
-                    await radio.equalize_main_sub()
+                    equal_ab = False
                 else:
-                    raise CommandError(
-                        f"vfo_equalize is unsupported by profile {self._profile.model}"
+                    raise NotImplementedError(
+                        f"VfoEqualize unsupported on {profile.model}: "
+                        "profile declares no matching primitive"
                     )
+                self._last_user_write_ts = time.monotonic()
+                if equal_ab:
+                    await radio.equalize_vfo_ab(0)
+                else:
+                    await radio.equalize_main_sub()
             case EnableScope(policy=policy, generation=generation):
                 if CAP_SCOPE in self._caps:
                     # Defer scope enable during initial fetch to avoid

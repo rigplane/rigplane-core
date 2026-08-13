@@ -24,7 +24,12 @@ from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
-from rigplane.web.radio_poller import CommandQueue, SetFreq
+from rigplane.web.radio_poller import (
+    CommandQueue,
+    SetFreq,
+    VfoEqualize,
+    VfoSwap,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1392,6 +1397,79 @@ async def test_drain_commands_sets_future_exception_on_execution_failure() -> No
     assert future.done()
     assert not future.cancelled()
     assert future.exception() is boom
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_name", ["FTX-1", "TX-500", "X6100", "X6200"])
+@pytest.mark.parametrize(
+    ("command", "profile_primitive", "radio_method"),
+    [
+        (VfoSwap, "swap_ab_code", "swap_vfo_ab"),
+        (VfoEqualize, "equal_ab_code", "equalize_vfo_ab"),
+    ],
+)
+async def test_undeclared_vfo_commands_reject_before_radio_mutation(
+    profile_name: str,
+    command: type[VfoSwap] | type[VfoEqualize],
+    profile_primitive: str,
+    radio_method: str,
+) -> None:
+    """Undeclared direct Yaesu VFO actions must fail closed before mutation."""
+    radio = make_radio()
+    radio.profile = get_radio_profile(profile_name)
+    radio.vfo_a_to_b = AsyncMock()
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    poller = YaesuCatPoller(radio, callback=lambda s: None)
+
+    assert getattr(radio.profile, profile_primitive) is None
+    with pytest.raises(
+        NotImplementedError,
+        match=rf"{command.__name__} unsupported on {profile_name}: .*{profile_primitive}",
+    ):
+        await poller._execute_command(command())  # noqa: SLF001
+
+    radio.vfo_a_to_b.assert_not_awaited()
+    getattr(radio, radio_method).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_name", ["FTX-1", "TX-500", "X6100", "X6200"])
+@pytest.mark.parametrize(
+    ("command", "profile_primitive", "radio_method"),
+    [
+        (VfoSwap, "swap_ab_code", "swap_vfo_ab"),
+        (VfoEqualize, "equal_ab_code", "equalize_vfo_ab"),
+    ],
+)
+async def test_undeclared_queued_vfo_commands_set_future_exception_before_mutation(
+    profile_name: str,
+    command: type[VfoSwap] | type[VfoEqualize],
+    profile_primitive: str,
+    radio_method: str,
+) -> None:
+    """Queued undeclared Yaesu VFO actions must never acknowledge success."""
+    radio = make_radio()
+    radio.profile = get_radio_profile(profile_name)
+    radio.vfo_a_to_b = AsyncMock()
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    queue = CommandQueue()
+    poller = YaesuCatPoller(radio, callback=lambda s: None, command_queue=queue)
+
+    assert getattr(radio.profile, profile_primitive) is None
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    queue.put_ordered(command(), future=future)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    error = future.exception()
+    assert isinstance(error, NotImplementedError)
+    assert f"{command.__name__} unsupported on {profile_name}" in str(
+        error
+    ) and profile_primitive in str(error)
+    radio.vfo_a_to_b.assert_not_awaited()
+    getattr(radio, radio_method).assert_not_awaited()
 
 
 @pytest.mark.asyncio
