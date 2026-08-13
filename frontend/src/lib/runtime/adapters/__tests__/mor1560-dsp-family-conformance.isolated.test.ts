@@ -168,15 +168,27 @@ describe('IC-7300 fixture — DSP family conformance (MOR-1560)', () => {
     });
   });
 
-  it('set_notch_filter: REFUSES — main.notchFilter does not exist as a per-receiver field on this profile (onNotchFreqChange is receiver-scoped)', () => {
+  it('set_notch_filter: REFUSES — fixture artifact, not a production structural gap: this capture predates MOR-1548 (eabd506b); production defines main.notchFilter receiver-scoped and the gate matches it. Allow-listed drift, re-pin after the MOR-1558/C4 bench re-capture.', () => {
     // MOR-1548 reclassified `onNotchFreqChange` as receiver-scoped
     // (`knownReceiverField('notchFilter')`, i.e. it reads `main.notchFilter`)
     // but this fixture's `main` object has no `notchFilter` key at all.
-    // `knownReceiverField` returns null because the per-receiver VALUE is
-    // undefined, independent of fieldStatus availability — so no declared
-    // input domain exists here; the input value below is a neutral literal
-    // (same convention as the exemplar's `onMicGainChange(100)` refusal
-    // case), not a fixture- or radio-derived number.
+    // MOR-1575 confirmed the PRODUCTION mapping (backend routing +
+    // frontend gate) has been correct and consistent since MOR-1548 — this
+    // fixture is simply a byte-faithful capture (backendHeadSha e0b19814)
+    // taken before that fix landed, so it still carries the pre-migration
+    // top-level `notchFilter` shape. This is NOT proof `set_notch_filter`
+    // is structurally dead on real IC-7300 hardware: the capture also
+    // predates the MOR-1492 membership wave, so `notch_filter` had no
+    // acquisition membership at capture time (never polled, honestly
+    // missing) — today `ic7300.toml` polls it every ~25s, so a genuine
+    // bench re-capture at HEAD may show it observed, i.e. the control
+    // DISPATCHES. Only the bench can settle that (see
+    // `fixture-provenance.guard.test.ts`'s `KNOWN_STALE_FIELDS.ic7300`,
+    // held pending MOR-1558/MOR-1410) — this pin must NOT be hand-edited to
+    // assert a different fieldStatus shape in the meantime. The input value
+    // below is a neutral literal (same convention as the exemplar's
+    // `onMicGainChange(100)` refusal case), not a fixture- or radio-derived
+    // number.
     expect(IC7300_CAPABILITIES.capabilities).toContain('notch');
     expect(IC7300_STATE.main).not.toHaveProperty('notchFilter');
     expectRefusal(() => makeDspHandlers().onNotchFreqChange(0));
