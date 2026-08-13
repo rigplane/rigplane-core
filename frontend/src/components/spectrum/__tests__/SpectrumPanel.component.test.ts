@@ -79,6 +79,10 @@ globalThis.requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
   return setTimeout(() => cb(performance.now()), 0) as unknown as number;
 });
 globalThis.cancelAnimationFrame = vi.fn((id: number) => clearTimeout(id));
+
+// jsdom does not implement `Element.scrollIntoView` at all; MOR-1456's
+// `focus_target` dispatch calls it unconditionally after `.focus()`.
+Element.prototype.scrollIntoView = vi.fn();
 HTMLElement.prototype.setPointerCapture = vi.fn();
 HTMLElement.prototype.releasePointerCapture = vi.fn();
 
@@ -1073,6 +1077,29 @@ describe('SpectrumPanel hideScopeControls pass-through (MOR-1369, S6b-1)', () =>
     // the view-options half is unaffected by the forwarded prop
     expect(labels).toContain('AVG');
     expect(labels).toContain('PEAK');
+  });
+});
+
+// MOR-1456 — the "Go to Waterfall" (`g w`) keyboard shortcut. Neither the
+// spectrum `<canvas>` nor the waterfall `<canvas>` (`WaterfallCanvas.svelte`)
+// is natively focusable, and `ScopeDisplaySurface.svelte` (the semantic
+// scope-display readout) is a bare readout with ZERO focusable elements by
+// construction (MOR-1069) — the panel root's own `data-waterfall`/
+// `tabindex="-1"` is the one stable anchor `focus_target` can resolve to.
+// Lives here, not alongside the other `focus_target` shortcuts in
+// `panel-commands/__tests__/focus-target-resolution.component.test.ts`,
+// because only THIS file already carries the canvas/ResizeObserver/rAf
+// mocking a real `SpectrumPanel` mount needs.
+describe('"waterfall" focus_target shortcut resolves to the real SpectrumPanel root (MOR-1456)', () => {
+  it('"g w" focuses the spectrum panel root', async () => {
+    const { makeKeyboardHandlers } = await import('$lib/runtime/commands/panel-commands');
+    const target = mountPanel();
+    const root = target.querySelector('[data-waterfall]');
+    expect(root).not.toBeNull();
+
+    makeKeyboardHandlers().dispatch({ action: 'focus_target', params: { target: 'waterfall' } });
+
+    expect(document.activeElement).toBe(root);
   });
 });
 

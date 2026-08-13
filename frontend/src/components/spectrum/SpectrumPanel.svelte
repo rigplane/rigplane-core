@@ -479,7 +479,20 @@
   onpointercancel={(e) => { handleResizeCancel(e); handleDragCancel(e); }}
 />
 
-<div class="spectrum-panel" class:fullscreen onwheel={handleWheel}>
+<!--
+  MOR-1456: `data-waterfall` + `tabindex="-1"` make this region a real,
+  program-focusable landing spot for the "Go to Waterfall" (`g w`) keyboard
+  shortcut (`panel-commands.ts`'s `focus_target` dispatch). Neither the
+  spectrum `<canvas>` nor the waterfall `<canvas>` (`WaterfallCanvas.svelte`)
+  is natively focusable, and `ScopeDisplaySurface.svelte` is a bare readout
+  with ZERO focusable elements by construction (MOR-1069) — this panel root
+  is the one stable anchor the shortcut can jump to. `tabindex="-1"` keeps it
+  OUT of normal Tab order (it is a jump target, not a tab stop) — unlike the
+  other `g <key>` targets, which land on a real form control that was already
+  in the tab order.
+-->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div class="spectrum-panel" class:fullscreen data-waterfall tabindex="-1" onwheel={handleWheel}>
   <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} />
   <div class="spectrum-with-scales">
     <div class="db-scale">
