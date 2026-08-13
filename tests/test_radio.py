@@ -2501,7 +2501,14 @@ class TestOperatorToggleParity:
     @pytest.mark.parametrize(
         ("method_name", "response", "expected"),
         [
-            ("get_agc", _function_response(0x12, b"\x03"), AgcMode.SLOW),
+            (
+                "get_agc",
+                # MOR-1537: IC-7610 declares a cmd29 route for 0x16/0x12, so
+                # get_agc(receiver=0) now wraps (previously it derived
+                # command29 from receiver != MAIN and never wrapped MAIN).
+                _function_response(0x12, b"\x03", receiver=0),
+                AgcMode.SLOW,
+            ),
             (
                 "get_audio_peak_filter",
                 _function_response(0x32, b"\x02", receiver=1),

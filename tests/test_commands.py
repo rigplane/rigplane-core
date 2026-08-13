@@ -862,6 +862,10 @@ class TestOperatorToggleParityCommands:
             ("get_twin_peak_filter", 0x4F, 1),
             ("get_filter_shape", 0x56, 1),
             ("get_agc_time_constant", 0x04, 1),
+            # MOR-1537: get_agc's builder now defaults command29=True like
+            # every other cmd29-eligible getter here, instead of deriving
+            # the wrap decision from receiver internally.
+            ("get_agc", 0x12, 1),
         ],
     )
     def test_cmd29_operator_getters(
@@ -888,6 +892,9 @@ class TestOperatorToggleParityCommands:
             ("set_twin_peak_filter", True, b"\x29\x01\x16\x4f\x01\xfd"),
             ("set_filter_shape", FilterShape.SOFT, b"\x29\x01\x16\x56\x01\xfd"),
             ("set_agc_time_constant", 13, b"\x29\x01\x1a\x04\x13\xfd"),
+            # MOR-1537: set_agc's builder now defaults command29=True like
+            # every other cmd29-eligible setter here.
+            ("set_agc", AgcMode.SLOW, b"\x29\x01\x16\x12\x03\xfd"),
         ],
     )
     def test_cmd29_operator_setters(
@@ -905,7 +912,6 @@ class TestOperatorToggleParityCommands:
         ("getter_name", "sub"),
         [
             ("get_overflow_status", 0x07),
-            ("get_agc", 0x12),
             ("get_compressor", 0x44),
             ("get_monitor", 0x45),
             ("get_vox", 0x46),
@@ -924,7 +930,6 @@ class TestOperatorToggleParityCommands:
     @pytest.mark.parametrize(
         ("setter_name", "value", "expected_tail"),
         [
-            ("set_agc", AgcMode.SLOW, b"\x16\x12\x03\xfd"),
             ("set_compressor", True, b"\x16\x44\x01\xfd"),
             ("set_monitor", False, b"\x16\x45\x00\xfd"),
             ("set_vox", True, b"\x16\x46\x01\xfd"),
