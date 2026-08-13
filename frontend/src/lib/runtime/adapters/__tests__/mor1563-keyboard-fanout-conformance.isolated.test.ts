@@ -38,6 +38,12 @@
  * 17/11 split) — they prove the handler body itself dispatches fine given
  * the shape it actually reads, which is what makes the declared-binding
  * refusal a genuine wiring bug rather than defensive fail-closed design.
+ * STRENGTHENED (round-2 review): `af-level-up`/`rf-level-up` carry
+ * `modifiers: ['CTRL']`/`['CTRL','SHIFT']` — `keyboard-map.ts`'s
+ * `modifiersMatch()` (line ~206) resolves plain ArrowUp to `step-up`
+ * (`adjust_tuning_step`) and only Ctrl+ArrowUp reaches `af-level-up`, so
+ * this is a genuinely reachable, user-visible dead control on this
+ * profile: press Ctrl+ArrowUp and nothing is sent, not a theoretical gap.
  *
  * MOR-1578 (filed, cited below where this walk's own rows happen to touch
  * it — not this walk's finding, no production code changed here): (1)
@@ -45,15 +51,23 @@
  * field-observation gate at all (confirmed by the two cases below); (2)
  * `switch_active_vfo` reads `context.state.active` RAW, bypassing the
  * observation-gated tautological-MAIN resolution every other action here
- * goes through; (3) `af-level-up`/`rf-level-up` both bind `ArrowUp` (and
- * `-down` both bind `ArrowDown`), alongside `adjust_tuning_step`'s
- * `step-up`/`step-down` — a three-way shadow on the same physical keys;
- * `scope_toggle_fst` (`F`) shadows `open_filter_settings`; (4)
- * `mode-psk`/`mode-pskr` bindings declare `{ mode: 'PSK' }`/`{ mode:
- * 'PSK-R' }`, but this fixture's `caps.modes` is `['USB','LSB','CW',
- * 'CW-R','AM','FM','RTTY','RTTY-R']` — no PSK/PSK-R — so those two
+ * goes through; (3) `mode-psk`/`mode-pskr` bindings declare `{ mode: 'PSK'
+ * }`/`{ mode: 'PSK-R' }`, but this fixture's `caps.modes` is `['USB','LSB',
+ * 'CW','CW-R','AM','FM','RTTY','RTTY-R']` — no PSK/PSK-R — so those two
  * refuse here too, adjacent to (not the same case as) `mode_select` below,
  * which deliberately uses the declared-and-supported `LSB` binding.
+ * RETRACTED (round-2 review, runtime-verified): an earlier draft of this
+ * walk claimed `af-level-up`/`rf-level-up`/`step-up` share `ArrowUp` as a
+ * three-way shadow, and that `scope_toggle_fst` (`F`) shadows
+ * `open_filter_settings` — both FALSE. Every one of those bindings also
+ * declares a `modifiers` array (`step-up`: none, `af-level-up`: `['CTRL']`,
+ * `rf-level-up`: `['CTRL','SHIFT']`; `open-filter-settings`: none,
+ * `scope-toggle-fst`: `['SHIFT']`) that `modifiersMatch()` discriminates
+ * on exactly — each key+modifier combination resolves to its own single
+ * binding, with no shadow. The direction in the original claim was also
+ * backwards (plain `F` → `open-filter-settings`, Shift+`F` →
+ * `scope-toggle-fst`, not the reverse). MOR-1578 has been amended to drop
+ * this leg; the PSK/PSK-R leg above is unaffected and remains true.
  *
  * MOR-1454 ANGLE (the cycle family): `cycle_preamp`/`cycle_att`/
  * `cycle_agc` each wrap over a FIXTURE-DECLARED option list
@@ -211,7 +225,7 @@ const CASES: readonly KeyboardCase[] = [
   { action: 'scope_toggle_dual', frames: [],
     gate: 'single receiver / no dual_rx / no sub — hasPhysicalSub-equivalent gate fails' },
   { action: 'scope_toggle_fst', frames: [['set_scope_speed', { speed: scope.speed === 0 ? 1 : 0 }]],
-    gate: 'scopeControls.speed observed (MOR-1578: F key shadows open_filter_settings)' },
+    gate: 'scopeControls.speed observed' },
 ];
 
 describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', () => {
