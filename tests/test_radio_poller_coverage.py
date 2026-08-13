@@ -17,6 +17,7 @@ from rigplane.core.capabilities import CAP_SCOPE
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
+    AcquisitionStatus,
     MeterObservationCoalescer,
 )
 from rigplane.core.state_acquisition_policy import (
@@ -961,6 +962,168 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
         wait_dispatch=False,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
+
+
+# ---------------------------------------------------------------------------
+# MOR-1484: post-write readback jumps the scheduler queue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("cmd", "path"),
+    [
+        (
+            SetFreq(14_250_000, receiver=0),
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+        ),
+        (SetMode("USB", receiver=0), FieldPath.active("main", "freq_mode", "mode")),
+        (
+            SetFreq(7_100_000, receiver=1),
+            FieldPath.active("sub", "freq_mode", "freq_hz"),
+        ),
+        (
+            SetRfGain(128, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "rf_gain"),
+        ),
+        (
+            SetSquelch(64, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "squelch"),
+        ),
+        (
+            SetAttenuator(10, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "att"),
+        ),
+        (
+            SetPreamp(1, receiver=0),
+            FieldPath.receiver("main", "operator_controls", "preamp"),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_execute_write_requests_immediate_readback_at_user_priority(
+    cmd: Any, path: FieldPath
+) -> None:
+    """A successful write must jump the scheduler queue for an immediate
+    readback of the field it just changed, at USER priority (the scheduler's
+    highest rank) -- instead of waiting out that field's normal poll cadence.
+    This is the fix for the "pending frequency echo" / "slider readouts trail
+    ~1s" symptom MOR-1484 measured on freq/mode/rfGain/squelch. att/preamp
+    are included (MOR-1484 review R1): both carry the #2452 armed affordance
+    whose only confirming path back to the StateStore is this cadence poll,
+    and this PR ALSO slows their cadence tier 1.5s -> 3.0s (rigs/ic7300.toml)
+    to fund the tightening above -- without this entry that give-back would
+    widen the armed-affordance confirm window past the 3000ms
+    ACK_CONFIRM_GRACE for a slice of clicks (the MOR-1478 stale-flash
+    symptom, reintroduced on a new affordance).
+    """
+    radio = _make_radio(active="MAIN")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(cmd)  # noqa: SLF001
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].paths == (path,)
+    assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_set_attenuator_readback_does_not_depend_on_slowed_cadence_tier() -> (
+    None
+):
+    """MOR-1484 review R1: att's confirming readback after a write must be
+    immediate regardless of this profile's OWN (now 3.0s, slowed to fund the
+    freq/mode/rf_gain/squelch tightening) cadence tier for that field -- the
+    armed #2452 affordance's confirm can never be left depending on that slow
+    tier, or a slice of clicks would grace-expire (3000ms ACK_CONFIRM_GRACE)
+    before the field is ever re-polled. Uses the REAL ic7300 profile (not a
+    synthetic one) so this pins the actual shipped cadence, not an assumption
+    about it.
+    """
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    att_path = FieldPath.receiver("main", "operator_controls", "att")
+    att_policy = profile.state_acquisition.policy_for(att_path)
+    assert att_policy.cadence_seconds == 3.0  # the slowed give-back tier
+
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(SetAttenuator(10, receiver=0))  # noqa: SLF001
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].paths == (att_path,)
+    # USER outranks every cadence-driven priority (BACKGROUND/RECONCILIATION/
+    # NORMAL) regardless of the field's own (slow) cadence_seconds -- the
+    # confirming read is dispatched on the very next drain, not gated by the
+    # 3.0s tier at all.
+    assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_set_freq_readback_coalesces_with_pending_cadence_request() -> (
+    None
+):
+    """A post-write readback for a field with an already-queued BACKGROUND/
+    RECONCILIATION-tier cadence request must coalesce into that SAME request
+    (upgraded to USER priority) rather than racing it as a second, separately
+    -tracked entry -- the coalescing MOR-1484 requires so the forced readback
+    never doubles the serial traffic for a field already about to be polled.
+    """
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    pending_before = scheduler.ensure_fresh(
+        (path,),
+        max_age=1.5,
+        priority=AcquisitionPriority.BACKGROUND,
+        reason="cadence",
+    )
+    assert pending_before.status == AcquisitionStatus.QUEUED
+    assert len(scheduler.pending_requests()) == 1
+
+    await poller._execute(SetFreq(14_250_000, receiver=0))  # noqa: SLF001
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1  # coalesced, not a second entry
+    assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_unmapped_write_does_not_queue_a_readback() -> None:
+    """A write command with no entry in ``_POST_WRITE_READBACK_FIELDS`` (e.g.
+    ``SetPower``) must be a silent no-op for this mechanism -- it must not
+    queue any acquisition request."""
+    radio = _make_radio(active="MAIN")
+    path = FieldPath.global_("operator_controls", "power_level")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(SetPower(200))  # noqa: SLF001
+
+    assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_freq_without_scheduler_does_not_raise() -> None:
+    """A backend with no acquisition scheduler attached (``_acquisition_scheduler``
+    is ``None``) must not error when a mapped write command executes."""
+    radio = _make_radio(active="MAIN")
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+    assert poller._acquisition_scheduler is None  # noqa: SLF001
+
+    await poller._execute(SetFreq(14_250_000, receiver=0))  # noqa: SLF001
+
+    radio.set_freq.assert_awaited_once()
 
 
 @pytest.mark.asyncio

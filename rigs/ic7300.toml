@@ -261,6 +261,101 @@ cadence_seconds = 0.3
 freshness_ttl_seconds = 1.0
 adaptive_decay = false
 
+# MOR-1484: bench-measured cadence tightening for the ACTIVE-VFO freq/mode
+# pair and the RF-gain/squelch sliders -- the fields the ticket's live IC-7300
+# probe (serial @115200) found trailing the operator most (medians 1.30s/
+# 2.16s/1.33s/2.22s, worst case up to 2.92s).
+#
+# Mechanism (MOR-1484 review R1 correction): AcquisitionScheduler groups
+# pollable fields by (scope, family, receiver_id, slot, policy) --
+# ``_AcquisitionRequestKey`` / ``_poll_cadence_groups`` in
+# acquisition_scheduler.py -- and each group gets its OWN independent cadence
+# clock; there is no single flat round-robin across every default-tier field.
+# freq_hz(active)/mode(active) (family ``freq_mode``) were ALREADY their own
+# isolated 2-field group before this PR, sharing a clock with nothing else,
+# so their gain here is purely the 1.5s -> 1.0s cadence-ratio speedup (a
+# ~33% shorter worst-case gap between polls of that pair), not a change in
+# how many fields they share a clock with. rf_gain/squelch (family
+# ``operator_controls``, same scope/receiver/slot) DID share a larger group
+# pre-PR -- {af_level, rf_gain, squelch, att, preamp, agc}, 6 fields, one
+# clock -- so pulling them into their own 2-field group has a genuine but
+# SECOND-ORDER extra benefit on top of the cadence-ratio gain: when that
+# clock fires, the executor no longer has to clear up to 4 other same-tick
+# siblings' frames through the ~20 q/s serial rate limiter
+# (_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS, 50ms/frame) before rf_gain/squelch's
+# own frames go out -- worth roughly 100-200ms off the worst case, not
+# several seconds.
+#
+# Deliberately NOT 0.5-0.8s: MOR-1484's post-write readback mechanism
+# (``RadioPoller._request_post_write_readback``, USER priority) already
+# gives the operator's OWN write an immediate confirmed readback -- this
+# tier only has to catch up a front-panel/other-CAT-client change or the
+# very first poll after connect, so 1.0s is a modest, budget-conservative
+# choice (see the serial-budget accounting at the bottom of this file), not
+# an attempt to match the post-write path's latency. unselectedVfo (measured
+# 1.18s/2.54s) and af_level are deliberately left on the default 1.5s tier --
+# the ticket's operator-felt symptoms (pending-frequency echo, slider trail)
+# are about the ACTIVE vfo and rf_gain/squelch specifically; widening this
+# tier further would eat into the budget freed below for no measured gain.
+[state_acquisition.field_policies."receiver.main.active.freq_mode.freq_hz"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.mode"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+
+# MOR-1484: this profile's ~20 q/s serial floor (see the accounting at the
+# bottom of this file) has essentially no free headroom for the 1.0s tier
+# above without giving something back. These six fields are settings an
+# operator changes rarely mid-QSO (tuner match, RF power level, compressor
+# on/level, attenuator, preamp) rather than continuously-live readouts like
+# freq/mode/rf_gain/squelch/s_meter/ptt, and none of them appear in the
+# ticket's measured or operator-felt symptom list -- 3.0s/6.0s trades a cheap,
+# low-stakes cadence give-back on these for real headroom to spend on the
+# fields that were actually measured trailing the operator.
+[state_acquisition.field_policies."global.operator_controls.tuner_status"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 6.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.power_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 6.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.compressor_on"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 6.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.compressor_level"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 6.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.att"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 6.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
+cadence_seconds = 3.0
+freshness_ttl_seconds = 6.0
+adaptive_decay = false
+
 # MOR-1452 (review fix): mic/monitor/VOX/anti-VOX gain. IC-7610 polls these
 # same 4 fields at 3.0s/5.0s (rigs/ic7610.toml), but IC-7610 is LAN — IC-7300
 # is SERIAL, sharing one ~20 transactions/s software floor
@@ -270,28 +365,45 @@ adaptive_decay = false
 # pre-existing ~19.667 q/s demand (freq/mode/keep-alive/af/rf/squelch/
 # att/preamp/agc/nb/nr/power/compressor/ptt/tuner/split, each 1/cadence) —
 # 21.0 q/s, structurally over the 20 q/s ceiling, degrading cadence on EVERY
-# polled field including PTT (0.3s) and freq/mode (1.5s). 15.0s/25.0s instead
-# adds only 4/15.0 = 0.267 q/s -> 19.933 q/s, leaving real headroom rather
-# than sitting exactly on the boundary. A live bench measurement at the gate
-# may justify tightening this later (tracked as a bench follow-up item).
+# polled field including PTT (0.3s) and freq/mode (1.5s). 15.0s/25.0s was
+# chosen instead to leave real headroom rather than sitting exactly on the
+# boundary.
+#
+# MOR-1484 (bench-measured follow-up): the ticket's live probe measured
+# mic_gain populate (slow front-panel knob rotation, not a rigplane write —
+# nothing this profile owns can accelerate that with a post-write readback)
+# at 10.73s median / 16.25s worst case against this 15.0s-cadence tier's
+# "<=15s populate" intent — these 4 fields share ONE cadence clock/group
+# (same scope/family/receiver/policy, see the mechanism note above the
+# freq/mode/rf_gain/squelch tier) and fire together each time it is due, but
+# the resulting frames still have to clear the ~20 q/s whole-lane serial rate
+# limiter alongside every OTHER group's traffic due around the same moment —
+# that contention, not anything internal to this group, is why the observed
+# worst case exceeds the nominal cadence. 10.0s/15.0s tightens the cadence
+# with margin (a fresh value is now due within 10s, not 15s, cutting the
+# plausible worst case well clear of the 15s target) at a modest added cost: 4 fields /
+# 10.0s = 0.4 q/s vs the previous 4/15.0 = 0.267 q/s, +0.133 q/s. The budget
+# accounting comment above the freq/mode/rf_gain/squelch tier (this file,
+# above) shows where that -- and the freq/mode/rf_gain/squelch tightening's
+# larger cost -- comes from.
 [state_acquisition.field_policies."global.operator_controls.mic_gain"]
-cadence_seconds = 15.0
-freshness_ttl_seconds = 25.0
+cadence_seconds = 10.0
+freshness_ttl_seconds = 15.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.monitor_gain"]
-cadence_seconds = 15.0
-freshness_ttl_seconds = 25.0
+cadence_seconds = 10.0
+freshness_ttl_seconds = 15.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.vox_gain"]
-cadence_seconds = 15.0
-freshness_ttl_seconds = 25.0
+cadence_seconds = 10.0
+freshness_ttl_seconds = 15.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
-cadence_seconds = 15.0
-freshness_ttl_seconds = 25.0
+cadence_seconds = 10.0
+freshness_ttl_seconds = 15.0
 adaptive_decay = false
 
 # MOR-1485 (TX/PA meters dead on serial): owner ruling splits the six 0x15
@@ -303,8 +415,9 @@ adaptive_decay = false
 # is chosen for TX-window responsiveness, matching this profile's own
 # 1.5s-or-faster tier for everything else that matters live; it only ever
 # fires during a TX segment, transiently adding 4 fields / 1.0s = 4.0 q/s on
-# top of this profile's ~19.967 q/s RX-state demand (see vd/id below) for as
-# long as the key is down -- an accepted, TX-scoped tradeoff, not a
+# top of this profile's RX-state demand (see vd/id below; 19.967 q/s when
+# this was written, 19.433 q/s after the MOR-1484 cadence tightening above)
+# for as long as the key is down -- an accepted, TX-scoped tradeoff, not a
 # steady-state regression of the MOR-1484 serial medians.
 [state_acquisition.field_policies."global.meters.power"]
 cadence_seconds = 1.0
@@ -341,7 +454,9 @@ tx_only = true
 # to the MOR-1484 medians. 60.0s spends under half of that remaining headroom
 # (2 fields / 60.0s = 0.033 q/s, 19.933 -> 19.967 q/s) while still refreshing
 # a slowly-varying supply rail/current reading roughly once a minute --
-# "live", just not fast.
+# "live", just not fast. (These 19.933/19.967 figures predate the MOR-1484
+# cadence tightening above/below this block -- see that block's comment for
+# the current total, 19.433 q/s.)
 [state_acquisition.field_policies."global.meters.vd"]
 cadence_seconds = 60.0
 freshness_ttl_seconds = 90.0
