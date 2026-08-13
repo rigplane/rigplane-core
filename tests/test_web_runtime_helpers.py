@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from itertools import permutations
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -700,6 +702,60 @@ async def test_webserver_and_control_handler_use_same_capabilities_and_ready() -
     expected_ready = radio_ready(radio)
     assert info["connection"]["radioReady"] is expected_ready
     assert hello["radio_ready"] is expected_ready
+
+
+@pytest.mark.asyncio
+async def test_websocket_hello_projects_only_trusted_vfo_primitives() -> None:
+    """WS hello cannot expose injected VFO primitive capability tags."""
+    from rigplane.profiles import resolve_radio_profile
+    from rigplane.web.handlers import ControlHandler
+    from rigplane.web.websocket import WebSocketConnection
+
+    reserved = {"vfo_swap", "vfo_equalize"}
+    ic7300 = resolve_radio_profile(model="IC-7300")
+    partial_ic7300 = replace(ic7300, equal_ab_code=None)
+    cases = [
+        (SimpleNamespace(model="X6100", capabilities=reserved), "X6100", set()),
+        (SimpleNamespace(model="UNKNOWN", capabilities=reserved), "UNKNOWN", set()),
+        (SimpleNamespace(capabilities=reserved), "UNKNOWN", set()),
+        (None, "IC-7610", set()),
+        (
+            SimpleNamespace(model="IC-7300", capabilities=reserved),
+            "IC-7300",
+            reserved,
+        ),
+        (
+            SimpleNamespace(model="X6100", profile=ic7300, capabilities=reserved),
+            "X6100",
+            reserved,
+        ),
+        (
+            SimpleNamespace(
+                model="X6100", profile=partial_ic7300, capabilities=reserved
+            ),
+            "X6100",
+            {"vfo_swap"},
+        ),
+        (
+            SimpleNamespace(model="IC-7610", capabilities=reserved),
+            "IC-7610",
+            reserved,
+        ),
+    ]
+
+    for radio, radio_model, expected in cases:
+        ws = MagicMock(spec=WebSocketConnection)
+        sent: list[str] = []
+
+        async def _send_text(payload: str) -> None:
+            sent.append(payload)
+
+        ws.send_text = _send_text
+        handler = ControlHandler(ws, radio, "0.0.0-test", radio_model)
+        await handler._send_hello()  # noqa: SLF001
+
+        hello = json.loads(sent.pop())
+        assert hello["capabilities"] == sorted(expected)
 
 
 def test_public_state_projection_uses_snapshot_revisions_and_meter_values() -> None:
