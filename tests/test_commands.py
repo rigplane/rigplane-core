@@ -936,6 +936,19 @@ class TestDspLevelParityCommands:
         with pytest.raises(ValueError, match="0-255"):
             set_nb_width(256)
 
+    def test_set_manual_notch_width_wire_bounds_match_siblings(self) -> None:
+        """MOR-1542: set_manual_notch_width hardcoded minimum=0/maximum=2 —
+        the currently-known WIDE/MID/NAR domain — instead of the wire-format
+        single-BCD-byte range (0-99) its three siblings (set_break_in,
+        set_filter_shape, set_ssb_tx_bandwidth) leave to the profile-aware
+        caller (MOR-1534). Domain legality stays enforced at the CoreRadio
+        seat (see TestManualNotchWidthDomainValidation in test_radio.py)."""
+        from rigplane.commands import set_manual_notch_width
+
+        assert set_manual_notch_width(3).endswith(b"\x03\xfd")
+        with pytest.raises(ValueError, match="0-99"):
+            set_manual_notch_width(100)
+
 
 class TestOperatorToggleParityCommands:
     """Test IC-7610 operator toggle/status parity command builders."""
