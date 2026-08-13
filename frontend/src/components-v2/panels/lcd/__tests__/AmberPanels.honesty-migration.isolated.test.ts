@@ -45,6 +45,10 @@ const scopeProps = vi.hoisted(() => ({
   },
 }));
 
+const amberCaps = {
+  capabilities: ['rit', 'xit'],
+} as any;
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveAmberCockpitProps: () => cockpitProps.value,
   deriveAmberScopeProps: () => scopeProps.value,
@@ -85,11 +89,15 @@ function baseReceiver(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mountCockpit(state: ServerState | null, hasAudioFft = false) {
+function mountCockpit(
+  state: ServerState | null,
+  hasAudioFft = false,
+  caps = amberCaps,
+) {
   cockpitProps.value = {
     radioState: state,
-    caps: null,
-    hasCapability: () => true,
+    caps,
+    hasCapability: (name: string) => caps?.capabilities?.includes(name) ?? false,
     hasAudioFft,
     hasDualReceiver: false,
   };
@@ -101,11 +109,15 @@ function mountCockpit(state: ServerState | null, hasAudioFft = false) {
   return target;
 }
 
-function mountScope(state: ServerState | null, hasAudioFft = false) {
+function mountScope(
+  state: ServerState | null,
+  hasAudioFft = false,
+  caps = amberCaps,
+) {
   scopeProps.value = {
     radioState: state,
-    caps: null,
-    hasCapability: () => true,
+    caps,
+    hasCapability: (name: string) => caps?.capabilities?.includes(name) ?? false,
     hasAudioFft,
     hasDualReceiver: false,
   };
@@ -139,6 +151,49 @@ describe('AmberCockpit / AmberScope import migration (MOR-1409 A14)', () => {
     const source = readFileSync('src/components-v2/panels/lcd/AmberScope.svelte', 'utf8');
     expect(source).not.toMatch(/wiring\/state-adapter/);
     expect(source).toContain("from '$lib/runtime/props/panel-props'");
+  });
+});
+
+describe('Amber RIT indicator availability (MOR-1586)', () => {
+  const fresh = {
+    storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available',
+  } as const;
+  const missing = {
+    storePath: 'fixture', observed: false, freshness: 'unknown', availability: 'missing',
+  } as const;
+
+  function indicatorLabels(target: HTMLElement): string[] {
+    return [...target.querySelectorAll('.lcd-ind')].map((indicator) => indicator.textContent ?? '');
+  }
+
+  it('uses the real capability props to render confirmed RIT in both entry points', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      sub: baseReceiver(),
+      ritOn: true,
+      ritFreq: 0,
+      ritTx: false,
+      fieldStatus: { ritOn: fresh, ritFreq: fresh, ritTx: fresh },
+    } as unknown as ServerState;
+
+    expect(indicatorLabels(mountCockpit(state))).toContain('RIT');
+    expect(indicatorLabels(mountScope(state))).toContain('RIT');
+  });
+
+  it('suppresses RIT rather than presenting an unobserved false value as confirmed off', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      sub: baseReceiver(),
+      ritOn: false,
+      ritFreq: 0,
+      ritTx: false,
+      fieldStatus: { ritOn: missing, ritFreq: missing, ritTx: missing },
+    } as unknown as ServerState;
+
+    expect(indicatorLabels(mountCockpit(state))).not.toContain('RIT');
+    expect(indicatorLabels(mountScope(state))).not.toContain('RIT');
   });
 });
 
