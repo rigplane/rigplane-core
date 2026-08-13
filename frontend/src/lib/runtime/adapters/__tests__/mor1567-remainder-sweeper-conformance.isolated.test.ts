@@ -26,13 +26,16 @@
  * SKEWED TOWARD REFUSAL, but for THREE distinct reasons, not one: (1) 8
  * genuinely REFUSE on an unobserved field this fixture never confirmed —
  * `dialLock`, `rxAntenna1`/`rxAntenna2`/`txAntenna` (antenna family, though
- * a STRUCTURAL gate fires first — see below), `main.digisel`,
+ * STRUCTURAL gates fire first — see below), `main.digisel`,
  * `main.ipplus`, `ritOn`, `ritTx`, `ritFreq` — same honest fail-closed shape
  * as C6/C7/C10/C11's walks; (2) `set_antenna_1`/`set_antenna_2`/
  * `set_rx_antenna_ant1`/`set_rx_antenna_ant2` all REFUSE on
  * `caps.antennas === 1 < 2`, a STRUCTURAL gate that fires before the
- * (also-unobserved) field check ever runs — `onToggleRxAnt` is the SOLE
- * call site for both `set_rx_antenna_ant1` and `set_rx_antenna_ant2` (the
+ * (also-unobserved) field check ever runs; `set_rx_antenna_ant1`/
+ * `set_rx_antenna_ant2` additionally sit behind a SECOND, independent
+ * structural gate on this fixture — the `rx_antenna` capability itself is
+ * undeclared (confirmed in `mor1562-adapter-seams-conformance.isolated.test.ts:289`)
+ * — `onToggleRxAnt` is the SOLE call site for both names (the
  * `state.txAntenna` value picks which name it would dispatch), so both
  * names refuse identically here, before that branch is ever reached; (3) 6
  * genuinely DISPATCH: all 4 scan intents and `speak` dispatch UNCONDITIONALLY
@@ -41,24 +44,31 @@
  * ungated shape MOR-1578 already flagged for `vfo_swap`/`vfo_equalize`
  * (leg 1) — cited here as the same class, not re-filed; `set_powerstat`
  * DOES check a capability (`power_control`, declared) but has no field
- * gate either (RED-FIRST target, see below). `memory_clear` is the one
- * DISPATCH that goes through a real multi-field resolution
- * (`currentMemorySnapshot()`, see its own case below).
+ * gate either (RED-FIRST target, see below). `memory_clear` (via
+ * `onClear`) is the one DISPATCH that goes through `currentMemorySnapshot()`'s
+ * structural resolution (receiver/slot identity must resolve), but it only
+ * requires the resolved snapshot object to be non-null — it does NOT
+ * itself check the snapshot's `frequencyHz`/`mode` contents. `onStore` is
+ * the sibling handler that does check those contents (against the
+ * caller's values), see its own case below.
  *
- * MOR-1574 CONTRAST (RIT/XIT, cited per this ticket's instruction): MOR-1574
- * is the ADAPTER-SEAM finding that `toRitXitProps` (the READ path,
- * `panel-props.ts:482`, walked in
- * `mor1562-adapter-seams-conformance.isolated.test.ts:311-323`) has NO
+ * MOR-1574 CONTRAST (RIT/XIT, cited per this ticket's instruction — now
+ * HISTORICAL): MOR-1574 was the ADAPTER-SEAM finding that `toRitXitProps`
+ * (the READ path, `panel-props.ts:496`, walked in
+ * `mor1562-adapter-seams-conformance.isolated.test.ts:311-323`) had NO
  * fieldStatus gate on `ritOn`/`ritFreq`/`ritTx` at all — an honesty gap on
- * the props side. The WRITE path walked here (`makeRitXitHandlers()`) is
- * DIFFERENT: `onRitToggle`/`onXitToggle`/`onRitOffsetChange`/
+ * the props side. That gap is CLOSED by MOR-1574/PR #2488: `hasRit`/
+ * `hasXit` now gate on field availability the same way `toAgcProps`/
+ * `toRfFrontEndProps` already did, so an unobserved `ritOn`/`ritFreq`/
+ * `ritTx` no longer reads back as a confirmed "RIT/XIT OFF". The WRITE
+ * path walked here (`makeRitXitHandlers()`) was always separately honest:
+ * `onRitToggle`/`onXitToggle`/`onRitOffsetChange`/
  * `onXitOffsetChange`/`onClear` all DO check `knownTopLevelField('ritOn'
  * | 'ritTx' | 'ritFreq')` before dispatching — on this fixture all three
  * leaves are genuinely unobserved (confirmed below), so all 3 write-side
- * intents correctly REFUSE. The two paths reach the opposite outcome
- * (read: silently reports stale zeros; write: fails closed) off the SAME
- * unobserved data — MOR-1574 is the read-side half of that asymmetry, not
- * re-derived here.
+ * intents correctly REFUSE. Post-#2488 the two paths now AGREE (both fail
+ * closed / hide on the SAME unobserved data) — MOR-1574 closed what used
+ * to be the read-side half of that asymmetry; not re-derived here.
  *
  * RED-FIRST EVIDENCE (MOR-1567 build process, not part of this diff): the
  * `set_powerstat` case below was first authored with a deliberately wrong
@@ -155,10 +165,10 @@ const CASES: readonly IntentCase[] = [
     gate: 'no gate at all beyond Number.isSafeInteger(mode) (MOR-1578-class)' },
   { label: 'set_dial_lock', run: () => makeSystemHandlers().onDialLock(true),
     frames: [],
-    gate: 'top-level dialLock unobserved (dial_lock capability IS declared) — discrimination evidence in file header' },
+    gate: 'currentA03cContext() resolves (state/caps present, receiver count matches vfoScheme) before the top-level dialLock unobserved gate fires (dial_lock capability IS declared) — discrimination evidence in file header' },
   { label: 'set_powerstat', run: () => makeSystemHandlers().onPowerOff(),
     frames: [['set_powerstat', { on: false }]],
-    gate: 'power_control capability declared; no field-observation gate at all — RED-FIRST target, see file header' },
+    gate: 'currentA03cContext() resolves; power_control capability declared; no field-observation gate beyond that — RED-FIRST target, see file header' },
   { label: 'speak', run: () => makeSystemHandlers().onSpeak(),
     frames: [['speak', { mode: 0 }]],
     gate: 'no gate at all — unconditional, not even a capability check (MOR-1578-class)' },
@@ -170,10 +180,10 @@ const CASES: readonly IntentCase[] = [
     gate: 'caps.antennas=1 < 2 structural gate (fires before the also-unobserved rxAntenna2 field check)' },
   { label: 'set_rx_antenna_ant1', run: () => makeAntennaHandlers().onToggleRxAnt(),
     frames: [],
-    gate: 'caps.antennas=1 < 2 structural gate — SHARED onToggleRxAnt() call site with set_rx_antenna_ant2; fires before the txAntenna branch that would pick between the two names is ever reached' },
+    gate: 'TWO independent structural gates on this fixture: caps.antennas=1 < 2 AND rx_antenna capability undeclared — SHARED onToggleRxAnt() call site with set_rx_antenna_ant2; fires before the txAntenna branch that would pick between the two names is ever reached' },
   { label: 'set_rx_antenna_ant2', run: () => makeAntennaHandlers().onToggleRxAnt(),
     frames: [],
-    gate: 'same shared onToggleRxAnt() call site and gate as set_rx_antenna_ant1 above — see that row' },
+    gate: 'same shared onToggleRxAnt() call site and same two-layer structural gate as set_rx_antenna_ant1 above — see that row' },
   { label: 'set_digisel', run: () => makeRfFrontEndHandlers().onDigiSelToggle(true),
     frames: [],
     gate: "main.digisel unobserved (via knownActiveReceiver('digisel')'s field check)" },

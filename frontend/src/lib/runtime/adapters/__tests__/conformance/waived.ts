@@ -8,12 +8,17 @@
  * enforces that split, so a name that is neither claimed nor waived (e.g.
  * a newly-added intent) fails vitest.
  *
- * THIS MAP IS THE BURN-DOWN. When a family walk (C6-C13, MOR-1560..1567)
- * lands real `expectFrames` coverage for a waived intent: delete it from
- * the matching `tag([...])` call below, add the name to `CLAIMED_INTENTS`
- * in `./claimed.ts`, and update the matching `*_COUNT` pin in the same
- * diff — pinned as a literal so a removal (or a silent re-add) shows up
- * as a diff / count-assertion break.
+ * EMPTY-MAP ERA (post MOR-1567): the sweeper walked the last of the
+ * original 67 intents into `CLAIMED_INTENTS`, so both maps below are now
+ * `{}`. This file is no longer a burn-down in progress — it is the
+ * standing gate for anything NEW. If the completeness meta-test fails
+ * because an intent or keyboard action has no conformance case yet,
+ * either (a) add a real `expectFrames`/`expectRefusal` case and list the
+ * name in `CLAIMED_INTENTS` / `CLAIMED_KEYBOARD_ACTIONS` in `./claimed.ts`,
+ * or (b) add an entry directly to `WAIVED_INTENTS` / `WAIVED_KEYBOARD_ACTIONS`
+ * below with a one-line `reason` and an owning `owner` ticket, and bump
+ * the matching `*_COUNT` pin in the same diff — pinned as a literal so any
+ * change shows up as a diff / count-assertion break.
  *
  * Provenance: family assignment came from the MOR-1426 decomposition's
  * per-family "Work" lists, cross-checked against the actual
@@ -25,11 +30,12 @@
  * ONE DELIBERATE EXCLUSION (full account in the completeness meta-test's
  * header): `onModInputChange` builds its intent name at runtime via
  * `modInputCommand(dataMode)`, not a `name: '<literal>'`, so it can't
- * appear in a source-literal parse and is NOT one of the 67 below — its
- * 4-value domain is pinned separately by `$lib/radio/mod-input.test.ts`.
- * MOR-1567's prose calls out "the mod-input command" as in its scope, so
- * add a case for it there — do not fold it into this map, which would
- * perturb the pinned 87/67/20 baseline MOR-1426 measured.
+ * appear in a source-literal parse and was excluded from the original
+ * 67-intent baseline this ledger measured — its 4-value domain is pinned
+ * separately by `$lib/radio/mod-input.test.ts`. MOR-1567's prose calls out
+ * "the mod-input command" as in its scope, so add a case for it there — do
+ * not fold it into this map, which would perturb the pinned 87/67/20
+ * baseline MOR-1426 measured.
  */
 
 /** One-line justification for an unclaimed intent or keyboard action. */
@@ -38,11 +44,6 @@ export interface Waiver {
   readonly reason: string;
   /** Linear ticket id that owns closing this waiver. */
   readonly owner: string;
-}
-
-/** Tags every name in `names` with the same waiver — one family, one call. */
-function tag(names: readonly string[], waiver: Waiver): Record<string, Waiver> {
-  return Object.fromEntries(names.map((name) => [name, waiver]));
 }
 
 /**
