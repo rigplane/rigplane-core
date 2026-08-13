@@ -88,6 +88,7 @@ features = [
     "power_control",
     "dial_lock",
     "scan",
+    "speech",
     "bsr",
     # AGC
     "agc",
