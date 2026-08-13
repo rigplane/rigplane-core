@@ -54,18 +54,24 @@ const TX = { reason: 'TX-chain family walk not yet landed', owner: 'MOR-1564' } 
 const VOX_CW = { reason: 'VOX/CW family walk not yet landed', owner: 'MOR-1565' } as const;
 const SCOPE_VFO = { reason: 'Scope-remainder/VFO-topology family walk not yet landed', owner: 'MOR-1566' } as const;
 const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner: 'MOR-1567' } as const;
-const KEYBOARD = { reason: 'Keyboard action-fan-out walk not yet landed', owner: 'MOR-1563' } as const;
 
 /**
- * The (67 - 9 - 5 = 53) intents with no conformance assertion, tagged with
- * the family child that owns closing them. MOR-1562 (C8, adapter-seam
+ * The (67 - 9 - 5 - 4 = 49) intents with no conformance assertion, tagged
+ * with the family child that owns closing them. MOR-1562 (C8, adapter-seam
  * parity) intentionally claims ZERO entries here — its scope is
  * `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
  *
  * MOR-1560 (C6)'s 9 DSP intents and MOR-1561 (C7)'s 5 filter/PBT intents
  * landed and were moved to `CLAIMED_INTENTS` in `./claimed.ts` — see
  * `../mor1560-dsp-family-conformance.isolated.test.ts` and
- * `../mor1561-filter-pbt-family-conformance.isolated.test.ts`.
+ * `../mor1561-filter-pbt-family-conformance.isolated.test.ts`. MOR-1563
+ * (C9)'s keyboard walk additionally landed the FIRST real coverage for 4
+ * intents that otherwise belong to MOR-1566/MOR-1567's still-unwalked
+ * families (`set_data_mode`, `vfo_swap`, `vfo_equalize`, `set_scope_hold`)
+ * — moved out of those two families' tags below per this file's own
+ * burn-down rule (a landed `expectFrames` claims the intent regardless of
+ * which walk lands it first); MOR-1566/MOR-1567 will extend coverage on
+ * these four (more call sites, more profiles), not initiate it.
  */
 export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
   // MOR-1560 (C6) — DSP: NR/NB/notch/AGC time constant — CLAIMED, see
@@ -83,36 +89,44 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
     'set_cw_pitch', 'set_key_speed', 'set_break_in', 'set_break_in_delay',
     'set_apf', 'set_twin_peak', 'cw_auto_tune', 'set_dash_ratio',
   ], VOX_CW),
-  // MOR-1566 (C12) — scope remainder + VFO topology — 15
+  // MOR-1566 (C12) — scope remainder + VFO topology — 12 (set_scope_hold/
+  // vfo_swap/vfo_equalize CLAIMED by MOR-1563's keyboard walk, see above)
   ...tag([
-    'set_scope_mode', 'set_scope_edge', 'set_scope_hold', 'set_scope_dual',
+    'set_scope_mode', 'set_scope_edge', 'set_scope_dual',
     'set_scope_during_tx', 'set_scope_center_type', 'set_scope_vbw',
-    'set_scope_rbw', 'switch_scope_receiver', 'vfo_swap', 'vfo_equalize',
+    'set_scope_rbw', 'switch_scope_receiver',
     'set_dual_watch', 'set_main_sub_tracking', 'quick_dualwatch', 'quick_split',
   ], SCOPE_VFO),
-  // MOR-1567 (C13) — sweeper — 15 named in its own prose + 3 orphaned
-  // RIT/XIT (see file header) — 18
+  // MOR-1567 (C13) — sweeper — 14 named in its own prose (set_data_mode
+  // CLAIMED by MOR-1563's keyboard walk, see above) + 3 orphaned RIT/XIT
+  // (see file header) — 17
   ...tag([
     'scan_start', 'scan_stop', 'scan_set_df_span', 'scan_set_resume',
     'set_dial_lock', 'set_powerstat', 'speak', 'set_antenna_1', 'set_antenna_2',
-    'set_rx_antenna_ant1', 'set_rx_antenna_ant2', 'set_data_mode',
+    'set_rx_antenna_ant1', 'set_rx_antenna_ant2',
     'set_digisel', 'set_ip_plus', 'memory_clear',
     'set_rit_status', 'set_rit_tx_status', 'set_rit_frequency',
   ], SWEEPER),
 };
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_INTENTS_COUNT = 53;
+export const WAIVED_INTENTS_COUNT = 49;
 
 /**
- * The 28 `dispatchKeyboardRadioAction` case labels with no conformance
- * assertion (only `toggle_split` is claimed — see `./claimed.ts`).
+ * `dispatchKeyboardRadioAction` case labels with no conformance assertion.
+ * MOR-1563 (C9) walked and CLAIMED all 28 that were waived here (17
+ * dispatch, 11 refuse on the IC-7300 fixture — see `./claimed.ts`'s
+ * `CLAIMED_KEYBOARD_ACTIONS` and
+ * `../mor1563-keyboard-fanout-conformance.isolated.test.ts`, including the
+ * MOR-1577 finding on `adjust_af_level`/`adjust_rf_gain`). This map is
+ * now empty; kept (rather than deleted) as the live burn-down target for
+ * any future keyboard action this ledger's completeness test would
+ * otherwise fail on.
  *
- * ON THE PARENT TICKET'S "32 actions" FIGURE: MOR-1563 states 32 — that is
- * correct, not stale. It is 29 radio-family cases in
- * `dispatchKeyboardRadioAction` (28 waived here + 1 claimed) PLUS 3
- * non-radio actions (`adjust_tuning_step`, `open_filter_settings`,
- * `focus_target`) that live in a DIFFERENT switch
+ * ON THE PARENT TICKET'S "32 actions" FIGURE (still relevant context): it
+ * is 29 radio-family cases in `dispatchKeyboardRadioAction` (all 29 now
+ * claimed) PLUS 3 non-radio actions (`adjust_tuning_step`,
+ * `open_filter_settings`, `focus_target`) that live in a DIFFERENT switch
  * (`makeKeyboardHandlers().dispatch`, panel-commands.ts:1588) which
  * `dispatchKeyboardRadioAction` falls through to on `false`. This ledger
  * (MOR-1556) names `dispatchKeyboardRadioAction` specifically, so those 3
@@ -120,15 +134,7 @@ export const WAIVED_INTENTS_COUNT = 53;
  * absent from `KEYBOARD_RADIO_ACTIONS` and out of scope here by design,
  * not because they were miscounted.
  */
-export const WAIVED_KEYBOARD_ACTIONS: Readonly<Record<string, Waiver>> = tag([
-  'tune', 'band_select', 'mode_select', 'cycle_data_mode', 'cycle_filter',
-  'cycle_preamp', 'cycle_att', 'cycle_agc', 'toggle_nr', 'toggle_nb',
-  'toggle_auto_notch', 'toggle_ip_plus', 'toggle_rit', 'toggle_xit',
-  'clear_rit_xit', 'adjust_af_level', 'adjust_rf_gain', 'toggle_monitor',
-  'vfo_swap', 'vfo_equalize', 'switch_active_vfo', 'set_active_vfo',
-  'toggle_dial_lock', 'scope_span_step', 'scope_ref_step',
-  'scope_toggle_hold', 'scope_toggle_dual', 'scope_toggle_fst',
-], KEYBOARD);
+export const WAIVED_KEYBOARD_ACTIONS: Readonly<Record<string, Waiver>> = {};
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_KEYBOARD_ACTIONS_COUNT = 28;
+export const WAIVED_KEYBOARD_ACTIONS_COUNT = 0;
