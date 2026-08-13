@@ -282,6 +282,14 @@ describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
     }
   });
 
+  it('hides the inline row for fresh confirmed-off RIT and XIT', () => {
+    const state = stateFor('ritTx', false, fresh) as any;
+    state.ritOn = false;
+    state.fieldStatus.ritOn = fresh;
+
+    expect(mountCockpit(state).querySelector('.rit-label')).toBeNull();
+  });
+
   it('does not let stale RIT steal inline XIT label priority', () => {
     const state = stateFor('ritTx', true, fresh) as any;
     state.ritOn = true;
