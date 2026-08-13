@@ -65,11 +65,11 @@
   let hasCap = $derived(cockpitProps.hasCapability);
 
   // ── Adapter-derived state ──
-  let tx = $derived(toTxProps(radioState, null));
-  let ritXit = $derived(toRitXitProps(radioState, null));
-  let vfoOps = $derived(toVfoOpsProps(radioState, null));
+  let tx = $derived(toTxProps(radioState, caps));
+  let ritXit = $derived(toRitXitProps(radioState, caps));
+  let vfoOps = $derived(toVfoOpsProps(radioState, caps));
   let meter = $derived(toMeterProps(radioState, caps));
-  let dsp = $derived(toDspProps(radioState, null));
+  let dsp = $derived(toDspProps(radioState, caps));
   let filterProps = $derived(toFilterProps(radioState, caps));
 
   // MOR-1409 A14: `panel-props`' honesty-hardened projections default an
@@ -163,26 +163,29 @@
   // ── Indicator token arrays ──
   // globalTokens: radio-wide status indicators for the top global strip
   let globalTokens = $derived<IndToken[]>([
-    {
-      id: 'tx', label: 'TX', active: tx.txActive,
-      variant: tx.txActive ? 'tx' : undefined,
-    },
-    ...(hasCap('vox') ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
-    ...(hasCap('compressor') ? [{
+    ...(tx.txActiveAvailable ? [{
+      id: 'tx' as const, label: 'TX', active: tx.txActive,
+      variant: tx.txActive ? ('tx' as const) : undefined,
+    }] : []),
+    ...(hasCap('vox') && tx.voxAvailable
+      ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
+    ...(hasCap('compressor') && tx.compAvailable ? [{
       id: 'proc' as const,
-      label: tx.compActive ? `PROC ${tx.compLevel}` : 'PROC',
+      label: tx.compActive && tx.compLevelAvailable ? `PROC ${tx.compLevel}` : 'PROC',
       active: tx.compActive,
     }] : []),
-    ...(hasCap('tuner') ? [{
+    ...(hasCap('tuner') && tx.atuAvailable ? [{
       id: 'atu' as const,
       label: tx.atuTuning ? 'TUNE' : 'ATU',
       active: tx.atuActive,
       variant: tx.atuTuning ? ('tuning' as const) : undefined,
     }] : []),
-    ...(hasCap('split') ? [{ id: 'split' as const, label: 'SPLIT', active: vfoOps.splitActive }] : []),
-    ...(hasCap('dial_lock') ? [{ id: 'lock' as const, label: 'LOCK', active: lockActive }] : []),
+    ...(hasCap('split') && isFieldAvailable(radioState, 'split')
+      ? [{ id: 'split' as const, label: 'SPLIT', active: vfoOps.splitActive }] : []),
+    ...(hasCap('dial_lock') && isFieldAvailable(radioState, 'dialLock')
+      ? [{ id: 'lock' as const, label: 'LOCK', active: lockActive }] : []),
     ...(dataActive ? [{ id: 'data' as const, label: 'DATA', active: true }] : []),
-    ...(hasCap('ip_plus') ? [{
+    ...(hasCap('ip_plus') && rxAvailable(radioState?.active === 'SUB' ? 'sub' : 'main', 'ipplus') ? [{
       // IP+ is a per-receiver setting on IC-7610 (codex P2 on PR #906).
       // Bind to the active RX so SUB's IP+ state is reflected when SUB is active.
       id: 'ipPlus' as const, label: 'IP+', active: rx?.ipplus ?? false,
@@ -260,7 +263,7 @@
   // vfoATokens: per-receiver indicators for VFO A (main)
   let vfoATokens = $derived<IndToken[]>([
     ...vfoTokens('main'),
-    ...(hasCap('rit') ? [{
+    ...(hasCap('rit') && ritXit.hasRit ? [{
       id: 'rit' as const, label: 'RIT', active: ritXit.ritActive,
     }] : []),
   ]);
@@ -413,9 +416,9 @@
       </div>
 
       <!-- RIT / XIT offset (inline within cockpit, collapses when inactive) -->
-      {#if ritXit.ritActive || ritXit.xitActive}
+      {#if (ritXit.hasRit && ritXit.ritActive) || (ritXit.hasXit && ritXit.xitActive)}
         <div class="lcd-rit-row">
-          <span class="rit-label">{ritXit.ritActive ? 'RIT' : 'XIT'}</span>
+          <span class="rit-label">{ritXit.hasRit && ritXit.ritActive ? 'RIT' : 'XIT'}</span>
           <span class="rit-value">{ritOffsetLabel}</span>
         </div>
       {/if}

@@ -55,10 +55,10 @@
     return caps?.agcLabels?.[String(agcMode)] ?? `${agcMode}`;
   }
 
-  let tx = $derived(toTxProps(radioState, null));
-  let ritXit = $derived(toRitXitProps(radioState, null));
-  let vfoOps = $derived(toVfoOpsProps(radioState, null));
-  let dsp = $derived(toDspProps(radioState, null));
+  let tx = $derived(toTxProps(radioState, caps));
+  let ritXit = $derived(toRitXitProps(radioState, caps));
+  let vfoOps = $derived(toVfoOpsProps(radioState, caps));
+  let dsp = $derived(toDspProps(radioState, caps));
   let filterProps = $derived(toFilterProps(radioState, caps));
 
   // MOR-1409 A14: `filterProps.filterWidth` is `Number.NaN` when
@@ -115,14 +115,15 @@
 
   // frontendTokens: TX-chain (TX/VOX/PROC/ATT/PRE)
   let frontendTokens = $derived<IndToken[]>([
-    {
-      id: 'tx', label: 'TX', active: tx.txActive,
-      variant: tx.txActive ? 'tx' : undefined,
-    },
-    ...(hasCap('vox') ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
-    ...(hasCap('compressor') ? [{
+    ...(tx.txActiveAvailable ? [{
+      id: 'tx' as const, label: 'TX', active: tx.txActive,
+      variant: tx.txActive ? ('tx' as const) : undefined,
+    }] : []),
+    ...(hasCap('vox') && tx.voxAvailable
+      ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
+    ...(hasCap('compressor') && tx.compAvailable ? [{
       id: 'proc' as const,
-      label: tx.compActive ? `PROC ${tx.compLevel}` : 'PROC',
+      label: tx.compActive && tx.compLevelAvailable ? `PROC ${tx.compLevel}` : 'PROC',
       active: tx.compActive,
     }] : []),
     ...(hasCap('attenuator') && rxAvailable('att') ? [{
@@ -175,9 +176,11 @@
     ...(hasCap('squelch') && rxAvailable('squelch') ? [{
       id: 'sql' as const, label: 'SQL', active: (rx?.squelch ?? 0) > 0,
     }] : []),
-    ...(hasCap('dial_lock') ? [{ id: 'lock' as const, label: 'LOCK', active: lockActive }] : []),
-    ...(hasCap('split') ? [{ id: 'split' as const, label: 'SPLIT', active: vfoOps.splitActive }] : []),
-    ...(hasCap('rit') ? [{
+    ...(hasCap('dial_lock') && isFieldAvailable(radioState, 'dialLock')
+      ? [{ id: 'lock' as const, label: 'LOCK', active: lockActive }] : []),
+    ...(hasCap('split') && isFieldAvailable(radioState, 'split')
+      ? [{ id: 'split' as const, label: 'SPLIT', active: vfoOps.splitActive }] : []),
+    ...(hasCap('rit') && ritXit.hasRit ? [{
       id: 'rit' as const, label: 'RIT', active: ritXit.ritActive,
     }] : []),
   ]);
