@@ -160,6 +160,14 @@ class DiscoveryResponder:
                 self._discovery_port,
             )
         except OSError as exc:
+            # MOR-1437 disposition: unlike rigctld (an exclusive TCP listener
+            # guarding the single serial/LAN radio session), this UDP socket
+            # opts into SO_REUSEPORT (`_reuse_port_supported()`) precisely so
+            # multiple co-located rigplane instances can each announce their
+            # own radio on the shared discovery port. A bind failure here is
+            # not a reliable signal of a duplicate process holding the radio
+            # the way a rigctld EADDRINUSE is, so it stays best-effort: warn
+            # and continue without discovery rather than aborting startup.
             logger.warning(
                 "discovery: failed to bind %s:%d — %s (discovery disabled)",
                 self._bind_host,

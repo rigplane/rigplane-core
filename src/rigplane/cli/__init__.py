@@ -1706,7 +1706,10 @@ def check_ports_available(ports: list[int]) -> None:
             except OSError:
                 pid = _find_port_pid(port)
                 pid_info = f" (PID {pid})" if pid else ""
-                raise RuntimeError(f"Port {port} already in use{pid_info}")
+                raise RuntimeError(
+                    f"Port {port} already in use{pid_info}. "
+                    f"Run `lsof -i :{port}` to find the process holding it."
+                )
 
 
 async def _build_backend_config(
@@ -1879,10 +1882,16 @@ async def _run(args: argparse.Namespace) -> int:
     radio = create_radio(config)
 
     if args.command in ("web", "station"):
-        # Only the web port is required. rigctld is best-effort: if its port
-        # is busy we log a warning and continue (handled in _cmd_web).
+        # Declared listeners are checked before the radio connects (MOR-1437):
+        # a bind failure here must abort before any serial/LAN session or
+        # poller starts. rigctld is included whenever it is enabled (the
+        # default) — `--no-rigctld` is the explicit opt-out that skips its
+        # port entirely.
+        ports_to_check = [args.web_port]
+        if getattr(args, "web_rigctld", False):
+            ports_to_check.append(getattr(args, "web_rigctld_port", 4532))
         try:
-            check_ports_available([args.web_port])
+            check_ports_available(ports_to_check)
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -3773,8 +3782,11 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
     if bridge_device is None:
         loopback_hint = _detect_loopback_hint()
 
-    # Start rigctld if requested. Failure (e.g. port already in use) is
-    # logged as a warning and skipped — the web server keeps serving.
+    # Start rigctld if requested. MOR-1437: any bind failure (including a
+    # busy port — the common orphaned-instance case) aborts startup rather
+    # than degrading silently, since starting anyway risks serial
+    # multiple-access with whatever already holds the port. `--no-rigctld`
+    # remains the explicit opt-out.
     rigctld_server = None
     rigctld_addr: str | None = None
     if getattr(args, "web_rigctld", False):
@@ -3800,30 +3812,33 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
         try:
             await candidate.start()
         except OSError as exc:
-            # Only port-busy (EADDRINUSE) is treated as graceful degrade —
-            # another rigctld is likely already running. Other errno values
-            # (EACCES on privileged ports, EMFILE on fd exhaustion,
-            # ENETUNREACH, etc.) indicate a misconfigured environment and
-            # must surface so the operator can fix it.
+            # MOR-1437: every declared-listener bind failure aborts startup —
+            # a busy port most often means an orphaned rigplane instance is
+            # already holding the radio session, and starting anyway risks
+            # serial multiple-access. EACCES (privileged ports), EMFILE (fd
+            # exhaustion), etc. are equally a misconfigured environment that
+            # must surface, not be masked.
+            server._runtime_last_error = f"rigctld bind failed: {exc}"
             if exc.errno == errno.EADDRINUSE:
-                server._runtime_last_error = f"rigctld bind failed: {exc}"
-                logger.warning(
-                    "rigctld disabled: failed to bind %s:%d: %s "
-                    "(another rigctld may already be running; pass --no-rigctld to silence)",
+                logger.error(
+                    "rigctld failed to bind %s:%d: %s "
+                    "(another rigctld — likely an orphaned rigplane instance — "
+                    "is probably already running; run `lsof -i :%d` to find it, "
+                    "or pass --no-rigctld to disable the embedded server). "
+                    "Startup aborted.",
                     rigctld_host,
                     rigctld_port,
                     exc,
+                    rigctld_port,
                 )
-                rigctld_server = None
             else:
-                server._runtime_last_error = f"rigctld bind failed: {exc}"
                 logger.error(
                     "rigctld failed to start on port %d: %s (errno=%s)",
                     rigctld_port,
                     exc,
                     exc.errno,
                 )
-                raise
+            raise
         else:
             rigctld_server = candidate
             rigctld_addr = f"{rigctld_host}:{rigctld_port}"
