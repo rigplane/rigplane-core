@@ -168,17 +168,25 @@ describe('IC-7300 fixture — DSP family conformance (MOR-1560)', () => {
     });
   });
 
-  it('set_notch_filter: REFUSES — main.notchFilter does not exist as a per-receiver field on this profile (onNotchFreqChange is receiver-scoped)', () => {
+  it('set_notch_filter: REFUSES — main.notchFilter is unobserved, same fail-closed shape as the rest of the DSP family (MOR-1575)', () => {
     // MOR-1548 reclassified `onNotchFreqChange` as receiver-scoped
-    // (`knownReceiverField('notchFilter')`, i.e. it reads `main.notchFilter`)
-    // but this fixture's `main` object has no `notchFilter` key at all.
-    // `knownReceiverField` returns null because the per-receiver VALUE is
-    // undefined, independent of fieldStatus availability — so no declared
-    // input domain exists here; the input value below is a neutral literal
-    // (same convention as the exemplar's `onMicGainChange(100)` refusal
-    // case), not a fixture- or radio-derived number.
+    // (`knownReceiverField('notchFilter')`, i.e. it reads `main.notchFilter`).
+    // MOR-1575 found this fixture was itself stale: `ic7300-state.json` was
+    // captured (backendHeadSha e0b19814) before MOR-1548 landed (eabd506b),
+    // so it still carried the PRE-migration top-level `notchFilter` shape —
+    // `main` had no `notchFilter` key at all, making this refusal look
+    // structural (the field could never exist, no matter what was ever
+    // observed) rather than the ordinary fail-closed "never confirmed on
+    // the bench" reason every other DSP sub-parameter above hits. The
+    // fixture is now corrected to the current-schema receiver-scoped shape
+    // (`fixture-provenance.guard.test.ts`'s `KNOWN_STALE_FIELDS` entry for
+    // this drift is closed) — same still-unobserved fact, now at its
+    // correct path, so the gate refuses for the right, non-structural
+    // reason; no fixture-derived input domain exists here either, so the
+    // input value below stays the same neutral literal as before.
     expect(IC7300_CAPABILITIES.capabilities).toContain('notch');
-    expect(IC7300_STATE.main).not.toHaveProperty('notchFilter');
+    expect(IC7300_STATE.main).toHaveProperty('notchFilter');
+    expect(IC7300_STATE.fieldStatus?.['main.notchFilter']?.observed).toBe(false);
     expectRefusal(() => makeDspHandlers().onNotchFreqChange(0));
   });
 

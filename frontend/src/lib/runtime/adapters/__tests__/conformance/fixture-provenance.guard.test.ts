@@ -49,9 +49,21 @@ const FIXTURES_DIR = resolve(CONFORMANCE_DIR, '../fixtures');
 // of MOR-1426). Remove an entry ONLY once the fixture is genuinely
 // re-captured — removing it while the fixture is unchanged must turn this
 // guard red again (see PR body for the reproduction).
-const KNOWN_STALE_FIELDS: Record<string, { stateTopLevel: string[]; fieldStatus: string[] }> = {
-  ic7300: { stateTopLevel: ['notchFilter'], fieldStatus: ['notchFilter'] },
-};
+//
+// MOR-1575: the ic7300 `notchFilter` drift this allow-list carried is now
+// closed. `ic7300-state.json` was corrected to the current-schema
+// receiver-scoped shape (`main.notchFilter` / `fieldStatus['main.notchFilter']`,
+// storePath `receiver.main.operator_controls.notch_filter`) — the same
+// mapping `_civ_rx.py`'s `_OBSERVABLE_CMD14_FIELDS[0x0D]` and
+// `rigs/ic7300.toml`'s field-policy membership list have used since MOR-1548
+// (PR #2466). No live hardware re-capture was run for this correction: the
+// underlying raw fact was never observed either before or after (raw `0`,
+// `availability: "missing"` both times) — only its JSON key location was
+// wrong, carried over from a fixture frozen before MOR-1548 landed. Moving
+// an always-unobserved fact to its schema-correct path adds no invented
+// data. The empty `KNOWN_STALE_FIELDS` object is kept (not deleted) so a
+// future drift only needs a new entry added, not this scaffolding rebuilt.
+const KNOWN_STALE_FIELDS: Record<string, { stateTopLevel: string[]; fieldStatus: string[] }> = {};
 
 interface FieldInfo {
   name: string;
