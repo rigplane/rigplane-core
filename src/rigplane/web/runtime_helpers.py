@@ -72,6 +72,9 @@ _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "filter_shape",
     "manual_notch_freq",
     "manual_notch_width",
+    # notch_filter (MOR-1548): reclassified from global to receiver-scoped,
+    # matching the ic7610.toml cmd29 route's own per-receiver rationale.
+    "notch_filter",
     "digisel_shift",
     "tone_freq",
     "tsql_freq",
@@ -135,7 +138,6 @@ _GLOBAL_OPERATOR_CONTROL_FIELDS = {
     "cw_pitch",
     "mic_gain",
     "key_speed",
-    "notch_filter",
     "compressor_level",
     "break_in_delay",
     "break_in",

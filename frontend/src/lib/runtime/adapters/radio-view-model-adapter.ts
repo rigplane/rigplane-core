@@ -620,7 +620,12 @@ function deriveDsp(
     nbDepth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbDepth'), nbDepthValue),
     nbWidth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbWidth'), numOrUndef(state?.nbWidth)),
     notchMode: txAuxField(hasNotchCap, autoNotchObserved && manualNotchObserved, notchModeValue),
-    notchFreq: txAuxField(hasNotchCap, topFieldAvailable(state, 'notchFilter'), numOrUndef(state?.notchFilter)),
+    // notchFilter (MOR-1548): reclassified receiver-scoped, matching the
+    // ic7610.toml cmd29 route's own per-receiver rationale — same pattern as
+    // manualNotchWidth below.
+    notchFreq: txAuxField(
+      hasNotchCap, topFieldAvailable(state, `${base}notchFilter`), numOrUndef(rx?.notchFilter),
+    ),
     manualNotchWidth: txAuxField(
       hasNotchCap, topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
     ),

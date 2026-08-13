@@ -149,6 +149,9 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     autoNotch: false,
     manualNotch: false,
     manualNotchWidth: 1,
+    // notchFilter (MOR-1548): reclassified receiver-scoped, matching
+    // manualNotchWidth above.
+    notchFilter: 64,
     apfTypeLevel: 1,
     twinPeakFilter: false,
     sMeter: 0,
@@ -164,7 +167,6 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     ritFreq: 300,
     nbDepth: 4,
     nbWidth: 2,
-    notchFilter: 64,
     powerLevel: 0.5,
     split: false,
     dualWatch: false,

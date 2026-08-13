@@ -176,7 +176,8 @@ def test_to_dict_structure() -> None:
         "cw_pitch",
         "mic_gain",
         "key_speed",
-        "notch_filter",
+        # notch_filter (MOR-1548): moved into the per-receiver "main"/"sub"
+        # dicts (see test_to_dict_main_keys), no longer a top-level key.
         "main_sub_tracking",
         "compressor_on",
         "compressor_level",
@@ -261,6 +262,9 @@ def test_to_dict_main_keys() -> None:
         "tsql_freq",
         "manual_notch_freq",
         "manual_notch_width",
+        # notch_filter (MOR-1548): reclassified receiver-scoped, matching the
+        # ic7610.toml cmd29 route's own per-receiver rationale.
+        "notch_filter",
         "narrow",
         "vfo_a",
         "vfo_b",

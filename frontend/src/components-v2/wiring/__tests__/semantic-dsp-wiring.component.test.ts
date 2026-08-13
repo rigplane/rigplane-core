@@ -192,7 +192,10 @@ const DSP_STATE = {
 const DSP_PATHS = [
   'main.nr', 'main.nrLevel', 'main.nb', 'main.nbLevel', 'main.autoNotch',
   'main.manualNotch', 'main.manualNotchWidth', 'main.agc', 'main.agcTimeConstant',
-  'nbDepth', 'nbWidth', 'notchFilter',
+  // notchFilter (MOR-1548): reclassified receiver-scoped, so its fieldStatus
+  // path moved from top-level to "main." like the other DSP receiver fields.
+  'main.notchFilter',
+  'nbDepth', 'nbWidth',
 ];
 
 function liveState(withDsp: boolean): ServerState {
@@ -208,14 +211,14 @@ function liveState(withDsp: boolean): ServerState {
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1,
     ...(withDsp ? { nr: DSP_STATE.nr, nrLevel: DSP_STATE.nrLevel, nb: DSP_STATE.nb,
       nbLevel: DSP_STATE.nbLevel, autoNotch: DSP_STATE.autoNotch, manualNotch: DSP_STATE.manualNotch,
-      manualNotchWidth: DSP_STATE.manualNotchWidth, agc: DSP_STATE.agc,
-      agcTimeConstant: DSP_STATE.agcTimeConstant } : {}),
+      manualNotchWidth: DSP_STATE.manualNotchWidth, notchFilter: DSP_STATE.notchFilter,
+      agc: DSP_STATE.agc, agcTimeConstant: DSP_STATE.agcTimeConstant } : {}),
   });
   return {
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
-    ...(withDsp ? { nbDepth: DSP_STATE.nbDepth, nbWidth: DSP_STATE.nbWidth, notchFilter: DSP_STATE.notchFilter } : {}),
+    ...(withDsp ? { nbDepth: DSP_STATE.nbDepth, nbWidth: DSP_STATE.nbWidth } : {}),
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   } as unknown as ServerState;
 }

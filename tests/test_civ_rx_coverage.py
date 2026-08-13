@@ -3079,6 +3079,51 @@ def test_update_radio_state_cmd14_receiver_dsp_levels_observation_backed(
     assert store_field.value == value
 
 
+def test_update_radio_state_cmd14_notch_filter_observation_backed_on_sub(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-1548: notch_filter (0x14 0x0D) reclassified receiver-scoped.
+
+    Unlike apf_type_level/nr_level/nb_level above, notch_filter has no
+    legacy per-receiver ``ReceiverState`` mirror attribute (its old mirror
+    lived on the global ``RadioState`` dataclass), so this is a standalone
+    test rather than a member of the parametrize group above.
+    """
+    frame = _make_frame(cmd=0x14, sub=0x0D, data=_bcd2(102), receiver=0x01)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    store_field = radio_with_state._state_store.snapshot().field(
+        "receiver.1.operator_controls.notch_filter"
+    )
+    assert store_field.value == 102
+
+
+def test_update_radio_state_cmd14_notch_filter_sub_does_not_clobber_main(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-1548: a SUB notch (0x14 0x0D) readback must land on
+    ``receiver.1.operator_controls.notch_filter`` and leave MAIN's own fact
+    (``receiver.0...``) untouched — the pre-fix behavior routed both
+    receivers' readbacks into a single shared
+    ``global.operator_controls.notch_filter`` field, so SUB's observation
+    would silently overwrite MAIN's value (PR #2461 verifier finding)."""
+    civ = radio_with_state._civ_runtime
+
+    main_frame = _make_frame(cmd=0x14, sub=0x0D, data=_bcd2(50), receiver=0x00)
+    civ._update_state_cache_from_frame(main_frame)
+    sub_frame = _make_frame(cmd=0x14, sub=0x0D, data=_bcd2(200), receiver=0x01)
+    civ._update_state_cache_from_frame(sub_frame)
+
+    snapshot = radio_with_state._state_store.snapshot()
+    main_field = snapshot.field("receiver.0.operator_controls.notch_filter")
+    sub_field = snapshot.field("receiver.1.operator_controls.notch_filter")
+    assert main_field.value == 50
+    assert sub_field.value == 200
+    # The old shared global field must never have been populated at all —
+    # both observations must resolve through the receiver-scoped family.
+    with pytest.raises(KeyError):
+        snapshot.field("global.operator_controls.notch_filter")
+
+
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "raw", "field", "expected"),
     [
@@ -3111,9 +3156,9 @@ def test_update_radio_state_cmd14_global_dsp_levels(
         (0x17, 108, "anti_vox_gain", 108),
         # key_speed raw level 146 → 30 WPM via the linear key-speed map (MOR-493).
         (0x0C, 146, "key_speed", 30),
-        # notch_filter/break_in_delay promoted to neutral observations
-        # (MOR-1492/1493 field-policy membership wave); plain BCD-pair decode.
-        (0x0D, 102, "notch_filter", 102),
+        # break_in_delay promoted to a neutral observation (MOR-1493
+        # field-policy membership wave); plain BCD-pair decode. notch_filter
+        # (0x0D) moved to the receiver-scoped test above under MOR-1548.
         (0x0F, 104, "break_in_delay", 104),
     ],
 )
@@ -3124,9 +3169,9 @@ def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
     field: str,
     expected: int,
 ) -> None:
-    """MOR-437/MOR-459/MOR-1492/MOR-1493: cw_pitch/mic_gain/compressor_level/
+    """MOR-437/MOR-459/MOR-1493: cw_pitch/mic_gain/compressor_level/
     monitor_gain, the VOX gain pair (vox_gain/anti_vox_gain), and
-    notch_filter/break_in_delay are observation-backed; the legacy
+    break_in_delay are observation-backed; the legacy
     global RadioState mirror was removed.
 
     cw_pitch in particular asserts the exact non-linear raw→Hz mapping

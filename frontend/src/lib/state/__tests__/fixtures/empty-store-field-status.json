@@ -335,6 +335,12 @@
     "observed": false,
     "storePath": "receiver.main.operator_controls.nb_level"
   },
+  "main.notchFilter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.notch_filter"
+  },
   "main.nr": {
     "availability": "missing",
     "freshness": "unknown",
@@ -538,12 +544,6 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "global.operator_controls.nb_width"
-  },
-  "notchFilter": {
-    "availability": "missing",
-    "freshness": "unknown",
-    "observed": false,
-    "storePath": "global.operator_controls.notch_filter"
   },
   "overflow": {
     "availability": "missing",
@@ -934,6 +934,12 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "receiver.sub.operator_controls.nb_level"
+  },
+  "sub.notchFilter": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.notch_filter"
   },
   "sub.nr": {
     "availability": "missing",

@@ -90,6 +90,12 @@ class ReceiverState:
     narrow: bool = False
     manual_notch_freq: int = 0  # 0-255
     manual_notch_width: int = 0  # 0-255
+    # notch_filter (MOR-1548): reclassified from a global RadioState
+    # attribute to receiver-scoped, matching the ic7610.toml cmd29 route's
+    # own per-receiver rationale (0x14 0x0D). Only the JSON-facing shape
+    # moved here; ``RadioState.notch_filter`` below is untouched (still
+    # written by the SET-command legacy overlay, out of this ticket's scope).
+    notch_filter: int = 0  # 0-255
     repeater_tone: bool = False
     repeater_tsql: bool = False
     tone_freq: int = 0  # centihz, e.g. 8850 = 88.50 Hz
@@ -339,7 +345,9 @@ class RadioState:
             "cw_pitch": self.cw_pitch,
             "mic_gain": self.mic_gain,
             "key_speed": self.key_speed,
-            "notch_filter": self.notch_filter,
+            # notch_filter (MOR-1548): moved to the per-receiver "main"/"sub"
+            # dicts below (``ReceiverState.notch_filter``) — no longer
+            # serialized at the top level.
             "main_sub_tracking": self.main_sub_tracking,
             "compressor_on": self.compressor_on,
             "compressor_level": self.compressor_level,

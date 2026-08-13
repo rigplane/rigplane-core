@@ -44,7 +44,6 @@ export interface ServerStatePublic {
   cwPitch?: number;
   micGain?: number;
   keySpeed?: number;
-  notchFilter?: number;
   mainSubTracking?: boolean;
   compressorOn?: boolean;
   compressorLevel?: number;
@@ -185,6 +184,7 @@ export interface ReceiverStatePublic {
   narrow?: boolean;
   manualNotchFreq?: number;
   manualNotchWidth?: number;
+  notchFilter?: number;
   repeaterTone?: boolean;
   repeaterTsql?: boolean;
   toneFreq?: number;

@@ -196,13 +196,13 @@ _CMD14_RECEIVER_LEVEL_FIELDS = {
     0x06: "nr_level",
     0x07: "pbt_inner",
     0x08: "pbt_outer",
+    0x0D: "notch_filter",  # per-receiver (MOR-1548; was misfiled as global)
     0x12: "nb_level",
     0x13: "digisel_shift",
 }
 
 _CMD14_GLOBAL_LEVEL_FIELDS = {
     0x0B: "mic_gain",
-    0x0D: "notch_filter",
     0x0E: "compressor_level",
     0x0F: "break_in_delay",
     0x14: "drive_gain",
@@ -289,11 +289,18 @@ _OBSERVABLE_CMD14_FIELDS = {
     0x08: ("receiver", "operator_controls", "pbt_outer"),
     0x0A: ("global", "operator_controls", "power_level"),
     0x0B: ("global", "operator_controls", "mic_gain"),
-    # notch_filter (MOR-1492) / break_in_delay (MOR-1493): documented
-    # BCD-pair 0x14 levels, same decode as the other global level fields
-    # below; the legacy ``_handle_14`` mirror write is suppressed for these
-    # subs via ``_CMD14_OBSERVATION_BACKED_SUBS``.
-    0x0D: ("global", "operator_controls", "notch_filter"),
+    # notch_filter (MOR-1548, receiver-scoped): the ic7610.toml cmd29 route
+    # for 0x14 0x0D is per-receiver by design (dual-RX notch independence —
+    # see the route comment there), so this must mirror the classification
+    # of the other per-receiver 0x14 subs (rf_gain 0x02, af_level 0x01,
+    # squelch 0x03) rather than the plain global level fields below. It was
+    # originally filed as global by MOR-1492; a verifier finding on PR #2461
+    # caught that a SUB readback mirrored into and clobbered MAIN's fact.
+    0x0D: ("receiver", "operator_controls", "notch_filter"),
+    # break_in_delay (MOR-1493): documented BCD-pair 0x14 level, same decode
+    # as the other global level fields below; the legacy ``_handle_14``
+    # mirror write is suppressed for this sub via
+    # ``_CMD14_OBSERVATION_BACKED_SUBS``.
     0x0E: ("global", "operator_controls", "compressor_level"),
     0x0F: ("global", "operator_controls", "break_in_delay"),
     0x12: ("receiver", "operator_controls", "nb_level"),
@@ -328,7 +335,7 @@ _CMD14_OBSERVATION_BACKED_SUBS = frozenset(
         0x06,  # nr_level (receiver)
         0x12,  # nb_level (receiver)
         0x0B,  # mic_gain (global)
-        0x0D,  # notch_filter (global — MOR-1492)
+        0x0D,  # notch_filter (receiver — MOR-1548; was global under MOR-1492)
         0x0E,  # compressor_level (global)
         0x0F,  # break_in_delay (global — MOR-1493)
         0x15,  # monitor_gain (global)
