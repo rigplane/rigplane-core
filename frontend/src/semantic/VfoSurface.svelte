@@ -273,10 +273,21 @@
   /**
    * MOR-1275: the active design language's `frequencyDisplay` renderer, given
    * the ONE fact it is entitled to — this tile's own frequency, already a prop.
-   * `null` whenever no language is active or none declares that renderer, in
-   * which case `formatFrequency` above renders exactly as it always did. This
-   * changes the READOUT only: which tiles exist, which controls are gated and
-   * every accessible name are decided above and are not passed in.
+   * `null` whenever no language is active or none declares that renderer.
+   *
+   * MOR-1482 (owner ruling, session 19) — only `.attributes` (the region
+   * claim, spread onto `.vfo-freq` below) is read from this call's result
+   * now; `.text` is deliberately NOT consumed anywhere in production (see the
+   * doc note on `RendererDisplay.text` in `design-language-renderers.ts`). A
+   * language's `frequencyDisplay` grammar is hero-scale — studioline's
+   * thin-space-grouped ranked digits, fieldline's ungrouped run — and
+   * flattened to a plain string at this tile's small font size it loses the
+   * ranking/geometry that grammar depends on to read as anything but an
+   * unformatted digit string, which is worse than the plain fallback it
+   * displaced. The verifier caught this live: studioline is
+   * `DEFAULT_WORKSPACE.designLanguage` and is declared compatible with the
+   * shipped `desktop-v2` skin, so this was not a rare state — it was the
+   * out-of-the-box tile text on the live bench.
    */
   function frequencyDisplay(vfo: VfoViewModel): ReturnType<typeof renderSlot> {
     return renderSlot('frequencyDisplay', { frequencyHz: vfo.frequencyHz });
@@ -289,18 +300,20 @@
    * to produce interactive markup — and the digit control self-renders.
    *
    * COMPOSITION RULE: one readout slot (`.vfo-freq`), two MUTUALLY EXCLUSIVE
-   * fillings. Tunable → the self-rendered digit control; not tunable → the
-   * language's text, or `formatFrequency` when no language is active (today's
-   * behaviour, byte-identical). Never both: two elements painting the same
-   * frequency is a double readout, and the operator must see exactly one number
-   * per VFO. Because both fillings read the SAME single fact
+   * fillings, and BOTH now opt out of the language's text (MOR-1482 extends
+   * the same option-(b) precedent from the tunable branch to this one).
+   * Tunable → the self-rendered digit control; not tunable → `formatFrequency`,
+   * unconditionally, language active or not. Never both: two elements painting
+   * the same frequency is a double readout, and the operator must see exactly
+   * one number per VFO. Because both fillings read the SAME single fact
    * (`vfo.frequencyHz`), they cannot show conflicting values by construction —
    * that is the property the tests pin, in both language states.
    *
    * The language keeps its claim on the REGION either way: `freq.attributes`
    * are spread onto the slot in both branches, so a language's tokens/hooks
    * still decorate the frequency area. What opts out is the rendering of the
-   * VALUE, which is exactly what "the renderer stays display-only" means.
+   * VALUE — including, as of MOR-1482, the value's TEXT — which is exactly
+   * what "the renderer stays display-only" means, taken one step further.
    *
    * Two-level gating (MOR-977), and the split matters — it is what makes the
    * guard REACHABLE and therefore independently testable:
@@ -413,6 +426,19 @@
    * with the per-tile TX-target badge. Either side reads `null` — rendered `—`
    * by `formatFrequency` — when its fact is unobserved; neither is ever defaulted
    * to the other's value, which is precisely what a split digest must not do.
+   *
+   * MOR-1482 disclosure: this digest has always called the SAME
+   * `formatFrequency` the tile readout uses (no design-language involvement
+   * here — this row is plain text, not a `.vfo-freq` region), so MOR-1482's
+   * dot-grouped rewrite of that function changed this row's text too
+   * (`RX 14.332000 MHz` → `RX 14.332.000`). Kept as-is rather than restoring
+   * a unit suffix: the catalog string (`core.vfo.splitDigest.rx` =
+   * `"RX {frequency}"`) never carried a unit itself — "MHz" was only ever a
+   * side effect of the old `formatFrequency` — and re-introducing one here
+   * would recreate the exact two-formats-on-one-radio inconsistency this
+   * ticket exists to remove. The dot-grouped convention (like a ham-radio
+   * frequency dial) carries no unit by design; this digest now reads
+   * identically to every VFO tile on the same surface.
    */
   let rxFrequencyHz = $derived(viewModel.vfos.find((vfo) => vfo.isActive)?.frequencyHz ?? null);
   let txFrequencyHz = $derived(
@@ -495,7 +521,26 @@
               vfoFreqHook={false}
             />
           {:else}
-            {freq?.text ?? formatFrequency(vfo.frequencyHz)}
+            <!--
+              MOR-1482 (owner ruling, session 19) — the tile frequency
+              self-renders unconditionally, the SAME MOR-1322 option-(b)
+              precedent the tunable branch above already follows: the
+              design-language grammar opts OUT of this slot's TEXT. A
+              language's hero-ranked, grouped-digit grammar (studioline's
+              `THIN_SPACE`-separated groups, fieldline's ungrouped run) is
+              built for a hero-scale mount; flattened to a plain string at
+              tile scale it loses its own ranking/geometry and reads as an
+              unformatted digit run — worse than the plain fallback it was
+              meant to improve on. `freq.attributes` (the region claim) is
+              still spread on this `<span>` above, unconditionally — a
+              language keeps its hooks on the tile even though it no longer
+              supplies the tile's text. `frequencyDisplay`'s `.text` output
+              is therefore unconsumed in production (see the doc note next
+              to `RendererDisplay.text` in `design-language-renderers.ts`);
+              a future hero-scale mount (not this tile) is the intended
+              consumer.
+            -->
+            {formatFrequency(vfo.frequencyHz)}
           {/if}
         </span>
         <span class="vfo-mode">{vfo.mode ?? '—'}{vfo.filter ? ` / ${vfo.filter}` : ''}</span>

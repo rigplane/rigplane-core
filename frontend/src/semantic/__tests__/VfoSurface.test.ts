@@ -1756,6 +1756,17 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
  * both survived the whole suite. These tests activate a real registered
  * language (MOR-1278 attribute doctrine, same `activate` idiom as
  * `design-language-wiring.component.test.ts`) and assert the rule directly.
+ *
+ * MOR-1482 (owner ruling, session 19) update: the NON-tunable branch now ALSO
+ * opts out of the language's TEXT — previously only the tunable branch did
+ * (this is the same MOR-1322 option-(b) precedent, extended). The verifier's
+ * live finding: `studioline` is `DEFAULT_WORKSPACE.designLanguage`, declared
+ * compatible with the shipped `desktop-v2` skin, so a hero-scale grammar
+ * (thin-space-grouped ranked digits) flattened to tile-scale text was the
+ * OUT-OF-THE-BOX readout, not a rare state, and read as unformatted digits.
+ * Tests (a) and (c) below are rewritten for that: a language's TEXT never
+ * reaches this slot now, in either filling — only its `data-dl-*` region
+ * attributes do, still pinned unchanged by (b).
  */
 describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design language', () => {
   /** MOR-1278: the activation attribute is the single switch. */
@@ -1781,16 +1792,13 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
     const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
     const slot = activeSlot(t);
     const digits = [...slot.querySelectorAll('.digit')].map((d) => d.textContent).join('');
-    // The language's own rendering of this frequency, for comparison.
-    activate(null);
-    const plainSlot = activeSlot(mountSurface({ viewModel: tunableTile }));
-    activate(lang);
-    const languageText = activeSlot(mountSurface({ viewModel: tunableTile })).textContent!.trim();
-    // The language text is a real, DIFFERENT string from the v2 readout —
-    // otherwise this test could pass with the language inert.
-    expect(languageText).not.toBe(plainSlot.textContent!.trim());
-    // ...and it does not appear in the tunable slot: exactly one readout.
-    expect(slot.textContent!.replace(/\s/g, '')).not.toContain(languageText.replace(/\s/g, ''));
+    // No OTHER text node sits alongside the digit control — MOR-1482: this is
+    // no longer "the language's text specifically", it is ANY text at all,
+    // since the non-tunable branch's language text was retired too.
+    const ownText = [...slot.childNodes]
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.textContent!.trim()).join('');
+    expect(ownText).toBe('');
     // The one readout present is the digit control, spelling the same fact.
     expect(Number(digits)).toBe(tunableTile.vfos.find((v) => v.isActive)!.frequencyHz);
   });
@@ -1808,32 +1816,40 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
     expect(regionAttrs(tuned)).toEqual(regionAttrs(plain));
   });
 
-  // (c) The language text RETURNS when tuning is unavailable — the other half
-  // of the mutual exclusion, so the rule is not "digits always win".
-  it.each(LANGUAGES)('%s: the language readout returns on a non-tunable tile', (lang) => {
+  // (c) MOR-1482: the v2 dot-grouped fallback RETURNS when tuning is
+  // unavailable — the other half of the mutual exclusion (the rule is not
+  // "digits always win") — and, unlike before this ticket, it reads
+  // IDENTICALLY whether or not a language is active: there is no longer a
+  // separate "language readout" for this slot to fall back FROM.
+  it.each(LANGUAGES)('%s: the v2 fallback returns on a non-tunable tile, identical with or without the language', (lang) => {
     activate(lang);
-    // THE SAME TILE, both fillings. With no intent wired the active tile shows
-    // the language text; with the intent wired it shows digits. Comparing one
-    // tile across the two states is what proves mutual exclusion rather than
-    // two tiles that happen to differ.
     const untuned = activeSlot(mountSurface({ viewModel: tunableTile }));
-    const languageText = untuned.textContent!.trim();
-    expect(languageText.length).toBeGreaterThan(0);
+    const untunedText = untuned.textContent!.trim();
+    expect(untunedText.length).toBeGreaterThan(0);
     expect(untuned.querySelectorAll('.digit')).toHaveLength(0);
 
     const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
     expect(activeSlot(t).querySelectorAll('.digit').length).toBeGreaterThan(0);
 
-    // ...and an INACTIVE tile keeps the language readout even while tuning is
-    // wired elsewhere — the language is not switched off globally by tuning.
+    // ...and an INACTIVE tile stays non-tunable even while tuning is wired
+    // elsewhere for a different tile — the mutual-exclusion gate is per-tile,
+    // not a surface-wide switch.
     const inactive = slots(t).find((sl) => sl !== activeSlot(t))!;
     expect(inactive.querySelectorAll('.digit')).toHaveLength(0);
-    expect(inactive.textContent!.trim().length).toBeGreaterThan(0);
-    // It is the LANGUAGE's rendering, not the v2 fallback.
+    const inactiveText = inactive.textContent!.trim();
+    expect(inactiveText.length).toBeGreaterThan(0);
+
+    // THE SAME TILE POSITION, language OFF: one mount, so `slots`/`activeSlot`
+    // read the SAME DOM tree — comparing across two separate mounts (each
+    // producing its own, non-`===`-equal elements) would make `.find(sl => sl
+    // !== activeSlot(...))` trivially return the FIRST slot regardless of
+    // which one is active, silently comparing two DIFFERENT VFOs instead of
+    // the same one under two language states.
     activate(null);
-    const v2 = slots(mountSurface({ viewModel: tunableTile })).find(
-      (sl) => sl !== activeSlot(mountSurface({ viewModel: tunableTile })))!;
-    expect(inactive.textContent!.trim()).not.toBe(v2.textContent!.trim());
+    const bare = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
+    const bareInactive = slots(bare).find((sl) => sl !== activeSlot(bare))!;
+    expect(bareInactive.querySelectorAll('.digit')).toHaveLength(0);
+    expect(inactiveText).toBe(bareInactive.textContent!.trim());
   });
 
   // Exactly ONE readout per tile, counted structurally — no tautology this
