@@ -17,6 +17,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from rigplane.core.exceptions import TimeoutError as RigTimeoutError
@@ -114,6 +115,55 @@ def _stateful_preamp_mock(*, start: int = 0):
     radio.get_preamp = AsyncMock(side_effect=_get)
     radio.set_preamp = AsyncMock(side_effect=_set)
     return radio, store
+
+
+def _stateful_agc_mock(*, start: int, domain: tuple[int, ...]):
+    """A MagicMock(spec=Radio) whose AGC set/get round-trips via a closure
+    and enforces ``domain`` exactly like the real validated seat
+    (``IcomRadio.set_agc``/``YaesuCatRadio.set_agc``, MOR-1522) — an
+    out-of-domain probe raises, just like it would against real hardware.
+    ``radio._profile.agc_modes`` mirrors what ``IcomRadio`` exposes so the
+    harness's domain-derived probe (MOR-1529) can discover it.
+    """
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FAKE"
+    radio.capabilities = {"agc"}
+    radio._profile = SimpleNamespace(agc_modes=domain, model="FAKE")
+    store = {"value": start}
+
+    async def _get(receiver: int = 0) -> int:
+        return store["value"]
+
+    async def _set(value: int, receiver: int = 0) -> None:
+        if value not in domain:
+            raise ValueError(f"AGC mode must be one of {sorted(domain)}, got {value}")
+        store["value"] = value
+
+    radio.get_agc = AsyncMock(side_effect=_get)
+    radio.set_agc = AsyncMock(side_effect=_set)
+    return radio, store
+
+
+async def test_agc_set_probe_derives_from_declared_domain_not_hardcoded_fast_slow():
+    """MOR-1529: the AGC RMVR probe must derive its mutation value from the
+    connected radio's own declared ``[agc] modes``, not hardcoded IC-7610
+    ``AgcMode.FAST``/``AgcMode.SLOW`` constants (1/3) — a radio whose domain
+    excludes both would otherwise get an illegal probe value and FAIL a
+    control that actually works fine.
+    """
+    radio, store = _stateful_agc_mock(start=5, domain=(5, 7))
+    template = _single_entry_template(check_id="agc.set", capability="agc")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["agc.set"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] == 5
+    assert check.evidence["changed"] == 7
+    assert check.evidence["readback"] == 7
+    assert check.evidence["restored"] is True
+    assert store["value"] == 5
 
 
 def _digisel_preamp_mock(*, preamp_start: int = 0, digisel_on: bool = True):

@@ -68,6 +68,13 @@ vi.mock('$lib/runtime/props/panel-props', () => ({
   toVfoOpsProps: () => ({ splitActive: false }),
   toDspProps: () => ({ notchMode: 'off', notchFreq: 0 }),
   toFilterProps: () => ({ filterWidth: Number.NaN, filterWidthMax: 9999, ifShift: 0 }),
+  // MOR-1529: AmberScope's preamp indicator now calls the real
+  // `formatPreLabel` (profile-data label lookup, falling back to
+  // OFF/P{n}) — this file's tests don't assert on the preamp chip, so a
+  // faithful-shape stub is enough; the real implementation is covered by
+  // AmberLabels.profile-data.isolated.test.ts.
+  formatPreLabel: (level: number, labels: Record<string, string>) =>
+    labels[String(level)] ?? (level === 0 ? 'OFF' : `P${level}`),
 }));
 
 import AmberScope from '../AmberScope.svelte';

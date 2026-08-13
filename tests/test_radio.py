@@ -2702,6 +2702,79 @@ class TestAgcDomainValidation:
         radio._connected = False
 
 
+_X6200_ADDR = 0xA4
+
+
+def _x6200_function_response(sub: int, payload: bytes) -> bytes:
+    """Build a plain (no cmd29) CI-V 0x16 response from an X6200.
+
+    X6200 declares no ``[cmd29]`` routes, so its responses (unlike the
+    IC-7610 fixture's) come from ``civ_addr = 0xA4``, not ``IC_7610_ADDR``
+    — the receive path drops any frame whose ``from_addr`` doesn't match
+    the connected radio's own address.
+    """
+    civ = build_civ_frame(CONTROLLER_ADDR, _X6200_ADDR, 0x16, sub=sub, data=payload)
+    return _wrap_civ_in_udp(civ)
+
+
+class TestAgcReadPath:
+    """MOR-1529: ``get_agc`` must not cast the read value through the
+    IC-7610-shaped ``AgcMode`` enum (FAST=1/MID=2/SLOW=3).
+
+    The X6200 declares a different domain (OFF=0/FAST=1/SLOW=2/AUTO=3) —
+    ``AgcMode(0)`` raises ``ValueError`` (0 is not a member) and
+    ``AgcMode(2)``/``AgcMode(3)`` silently mislabel X6200's SLOW/AUTO as the
+    IC-7610's MID/SLOW. The fix returns the raw profile-validated int;
+    label mapping is data-side (``[agc].labels``), not a hardcoded enum cast.
+    """
+
+    @pytest.mark.asyncio
+    async def test_x6200_reports_declared_off_without_raising(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """AgcMode has no OFF member — casting X6200's real OFF=0 reading
+        through it would raise, even though OFF is a legal X6200 value."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response(_x6200_function_response(0x12, b"\x00"))
+        assert await radio.get_agc() == 0
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_reports_declared_auto_as_plain_int_not_mislabeled(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """X6200 index 3 means AUTO, not the IC-7610's SLOW — the return
+        must be the raw int 3, not an ``AgcMode.SLOW`` enum member (whose
+        ``.name`` would present the wrong label downstream)."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response(_x6200_function_response(0x12, b"\x03"))
+        result = await radio.get_agc()
+        assert result == 3
+        assert type(result) is int
+        radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6200_rejects_reading_outside_its_declared_domain(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """A raw value the radio reports that falls outside the profile's
+        declared ``[agc] modes`` must raise, not be silently returned."""
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        mock_transport.queue_response(_x6200_function_response(0x12, b"\x09"))
+        with pytest.raises(ValueError, match=r"AGC mode.*not in declared domain"):
+            await radio.get_agc()
+        radio._connected = False
+
+
 class TestPreampDomainValidation:
     """MOR-1523: the preamp level domain is profile data, not a universal
     3-state enum.

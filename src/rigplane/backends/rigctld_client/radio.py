@@ -742,8 +742,18 @@ def _parse_func(line: str, name: str) -> bool:
 
 
 def _preamp_level_to_db(level: int) -> str:
-    """Map a RigPlane preamp level (0/1/2) to a rigctl dB string."""
-    return {0: "0", 1: "10", 2: "20"}.get(int(level), "0")
+    """Map a RigPlane preamp level (0/1/2) to a rigctl dB string.
+
+    Raises ``ValueError`` for any other level. This backend talks to an
+    already-running external rigctld daemon and has no ``RigProfile`` to
+    validate against (unlike ``IcomRadio``/``YaesuCatRadio``, MOR-1522/
+    MOR-1523) — an unrecognized level must fail loud, not be silently
+    misrepresented on the wire as "preamp off" (MOR-1529).
+    """
+    table = {0: "0", 1: "10", 2: "20"}
+    if int(level) not in table:
+        raise ValueError(f"preamp level must be one of {sorted(table)}, got {level}")
+    return table[int(level)]
 
 
 def _preamp_db_to_level(db: int) -> int:

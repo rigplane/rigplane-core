@@ -231,7 +231,12 @@ export interface RfFrontEndProps {
   showIpPlus: boolean;
 }
 
-function formatPreLabel(level: number, labels: Record<string, string>): string {
+// MOR-1529: exported so `AmberCockpit`/`AmberScope` (amber-lcd skin) can
+// resolve their read-only preamp status token from the same profile-declared
+// `[preamp.labels]` data this file already uses for `toRfFrontEndProps`'
+// `preOptions`, instead of duplicating (or worse, re-hardcoding) the
+// fallback logic.
+export function formatPreLabel(level: number, labels: Record<string, string>): string {
   const key = String(level);
   if (key in labels) return labels[key];
   return level === 0 ? 'OFF' : `P${level}`;
