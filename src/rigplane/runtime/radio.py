@@ -4338,7 +4338,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
                 return await self._get_bool_value(
                     civ,
-                    key="get_repeater_tone",
+                    key=f"get_repeater_tone:{receiver}",
                     command=0x16,
                     sub=_SUB_REPEATER_TONE,
                 )
@@ -4357,7 +4357,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
         return await self._get_bool_value(
-            civ, key="get_repeater_tone", command=0x16, sub=_SUB_REPEATER_TONE
+            civ,
+            key=f"get_repeater_tone:{receiver}",
+            command=0x16,
+            sub=_SUB_REPEATER_TONE,
         )
 
     async def set_repeater_tone(self, on: bool, receiver: int = 0) -> None:
@@ -4413,7 +4416,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
                 return await self._get_bool_value(
                     civ,
-                    key="get_repeater_tsql",
+                    key=f"get_repeater_tsql:{receiver}",
                     command=0x16,
                     sub=_SUB_REPEATER_TSQL,
                 )
@@ -4432,7 +4435,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
         return await self._get_bool_value(
-            civ, key="get_repeater_tsql", command=0x16, sub=_SUB_REPEATER_TSQL
+            civ,
+            key=f"get_repeater_tsql:{receiver}",
+            command=0x16,
+            sub=_SUB_REPEATER_TSQL,
         )
 
     async def set_repeater_tsql(self, on: bool, receiver: int = 0) -> None:
