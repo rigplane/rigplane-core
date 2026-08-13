@@ -1474,57 +1474,46 @@ async def test_set_squelch_command_response_reconciles_normalized_overlay() -> N
     ]
 
 
-@pytest.mark.parametrize(
-    ("name", "path_name"),
-    [
-        ("set_rf_gain", "rf_gain"),
-        ("set_af_level", "af_level"),
-        ("set_squelch", "squelch"),
-    ],
-)
-def test_normalized_level_command_expectation_matches_radio_scale(
-    name: str,
-    path_name: str,
-) -> None:
+def test_normalized_level_command_expectation_matches_radio_scale() -> None:
     """MOR-334 regression (rf-gain set reverts to 0 / left edge).
 
-    Web level sliders emit a normalized 0.0-1.0 ``level``. The migration
-    coerced the command param with a bare ``int()``, so a slider at 98%
-    (``0.98``) collapsed to ``int(0.98) == 0`` and the StateStore expectation /
-    overlay sat at the *opposite* end of the scale from the value the radio was
-    actually driven to (``round(0.98 * 255) == 250``). The deferred readback
-    (~0.98) then never matched the bogus ``0`` expectation, surfacing as the
-    control snapping back to 0. The expected/overlay value must track the same
-    raw scale the radio is set to via
-    :func:`rigplane.core.command_service._raw_level_from_param`.
+    The web AF-level slider emits a normalized 0.0-1.0 ``level`` — this is
+    ``set_af_level``'s genuine, documented frontend contract (unlike
+    ``set_rf_gain``/``set_squelch``, which are raw-int-only; see MOR-1579
+    below). The migration coerced the command param with a bare ``int()``,
+    so a slider at 98% (``0.98``) collapsed to ``int(0.98) == 0`` and the
+    StateStore expectation/overlay sat at the *opposite* end of the scale
+    from the value the radio was actually driven to
+    (``round(0.98 * 255) == 250``). The deferred readback (~0.98) then
+    never matched the bogus ``0`` expectation, surfacing as the control
+    snapping back to 0. The expected/overlay value must track the same raw
+    scale the radio is set to via
+    :func:`rigplane.core.command_service._af_level_from_param`.
 
-    MOR-1579 note: this StateStore expectation-tracking heuristic is a
-    separate, still-magnitude-based implementation from
-    ``web/handlers/control.py``'s dispatch-time coercion (which MOR-1579
-    replaced with explicit per-intent ``_level_from_normalized`` /
-    ``_level_from_raw`` helpers). ``_raw_level_from_param`` itself was
-    intentionally left untouched by MOR-1579 (out of that fix's file/LOC
-    budget — see the PR body) and still has the same normalized-vs-raw
-    boundary ambiguity; ``0.98`` here is a normalized-domain value that
-    exercises it unchanged, not a claim that ``set_rf_gain``/``set_squelch``
-    web sliders actually emit normalized floats (they emit raw integers,
-    per PR #2491).
+    MOR-1579 follow-up: this test used to also parametrize over
+    ``set_rf_gain``/``set_squelch`` with the same ``0.98`` float, which was
+    itself an instance of the bug this PR fixes — those two intents are
+    raw-int-only (PR #2491), so a float is never valid input for them at
+    all, not "normalized 0.98". See
+    ``test_raw_level_one_expectation_is_not_reinterpreted_as_full_scale``
+    and ``test_squelch_float_level_rejected_not_silently_coerced`` below
+    for their corrected coverage.
     """
-    from rigplane.core.command_service import _raw_level_from_param
+    from rigplane.core.command_service import _af_level_from_param
 
     intent = command_intent_from_request(
-        name,
+        "set_af_level",
         {"level": 0.98, "receiver": 0},
         source="websocket",
-        command_id=f"ws-{name}",
+        command_id="ws-set_af_level",
         session_id="client-a",
     )
-    path = FieldPath.receiver("0", "operator_controls", path_name)
+    path = FieldPath.receiver("0", "operator_controls", "af_level")
 
     # Param is coerced to the raw scale the radio actually receives — not 0.
-    radio_raw = _raw_level_from_param(0.98)
+    radio_raw = _af_level_from_param(0.98)
     assert radio_raw == 250
-    assert intent.params[path_name] == radio_raw
+    assert intent.params["af_level"] == radio_raw
 
     # The expectation/overlay value the readback reconciles against is the
     # normalized form of that same raw value (~0.98), not 0.0.
@@ -1541,12 +1530,96 @@ def test_normalized_level_command_expectation_matches_radio_scale(
 def test_normalized_af_level_fifty_round_trips_to_raw_fifty() -> None:
     """The public AF fixture stays normalized while the server owns raw conversion.
 
-    set_af_level's wire contract is normalized 0.0-1.0 (MOR-1579), so this
-    exercises the control handler's ``_level_from_normalized`` directly.
+    set_af_level's frontend wire contract is normalized 0.0-1.0 (MOR-1579),
+    so a float in that domain exercises ``_af_level_from_param`` directly
+    (shared by both ``web/handlers/control.py``'s dispatch-time coercion
+    and this module's StateStore expectation coercion).
     """
-    from rigplane.web.handlers.control import _level_from_normalized
+    from rigplane.core.command_service import _af_level_from_param
 
-    assert _level_from_normalized(50 / 255) == 50
+    assert _af_level_from_param(50 / 255) == 50
+
+
+@pytest.mark.parametrize(
+    ("name", "path_name"),
+    [
+        ("set_rf_gain", "rf_gain"),
+        ("set_squelch", "squelch"),
+    ],
+)
+def test_raw_level_one_expectation_is_not_reinterpreted_as_full_scale(
+    name: str,
+    path_name: str,
+) -> None:
+    """MOR-1579 regression (red-first leg): the magnitude heuristic used
+    to treat any level in ``[0, 1]`` as normalized, so a legitimate raw
+    level of ``1`` produced a StateStore expectation/overlay of ``1.0``
+    (100%) instead of ``1/255`` (~0.4%) — the *opposite* end of the scale,
+    reproducing the MOR-334 snap-back class in the other direction: the
+    overlay would show 100% for the optimistic-update TTL, then "snap
+    back" to ~0.4% once the real readback landed. ``set_rf_gain`` and
+    ``set_squelch`` are raw-int-only (PR #2491) — an int level of ``1``
+    must expectation-track as raw ``1`` (normalized ``1/255``), never as
+    normalized ``1.0``.
+    """
+    from rigplane.core.command_service import _raw_int_level_from_param
+
+    intent = command_intent_from_request(
+        name,
+        {"level": 1, "receiver": 0},
+        source="websocket",
+        command_id=f"ws-{name}",
+        session_id="client-a",
+    )
+    path = FieldPath.receiver("0", "operator_controls", path_name)
+
+    radio_raw = _raw_int_level_from_param(1)
+    assert radio_raw == 1
+    assert intent.params[path_name] == radio_raw
+
+    observation = command_response_observation(
+        intent,
+        timestamp_monotonic=70.0,
+        provider="test",
+    )
+    assert str(intent.target) == str(path)
+    assert observation.value == pytest.approx(1 / 255)
+    assert observation.value < 0.01
+
+
+def test_squelch_float_level_rejected_not_silently_coerced() -> None:
+    """MOR-1579: set_squelch is raw-int-only — a float is never a valid
+    encoding for it, even one that superficially looks like a plausible
+    normalized value. Type dispatch, never magnitude.
+    """
+    from rigplane.core.command_service import _raw_int_level_from_param
+
+    with pytest.raises(ValueError, match="raw integer"):
+        _raw_int_level_from_param(0.5)
+
+
+def test_public_api_sync_squelch_actuation_value_is_not_reinterpreted() -> None:
+    """MOR-1579 regression (red-first leg): ``_raw_level_from_param`` was
+    NOT expectation-only — on the ``public_api`` sync ingress
+    (:mod:`rigplane.runtime.sync`), its output is the *actual* value sent
+    to the radio. ``_SyncCommandExecutor.execute`` reads
+    ``intent.params["squelch"]`` directly and calls
+    ``radio.set_squelch(int(params["squelch"]), ...)`` — it never looks at
+    ``intent.params["level"]``. So ``sync.set_squelch(level=1)`` used to
+    build an intent whose ``params["squelch"]`` was ``255`` (the same
+    magnitude-heuristic bug as the wire-level fix, but unfixed on this
+    ingress), driving the radio to full squelch instead of raw level 1.
+    This builds the exact intent ``IcomRadio.set_squelch(1, receiver=0)``
+    constructs and asserts the actuation value ``_SyncCommandExecutor``
+    would read is raw ``1``, not ``255``.
+    """
+    intent = command_intent_from_request(
+        "set_squelch",
+        {"level": 1, "receiver": 0},
+        source="public_api",
+    )
+
+    assert intent.params["squelch"] == 1
 
 
 @pytest.mark.asyncio

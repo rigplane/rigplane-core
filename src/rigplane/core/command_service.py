@@ -643,24 +643,59 @@ def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
     return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
 
 
-def _raw_level_from_param(value: Any) -> int:
-    """Coerce a level command param to the raw 0-255 scale.
+def _raw_int_level_from_param(value: Any) -> int:
+    """Coerce a raw-only level command param (MOR-1579).
 
-    MOR-334 regression fix: ``set_rf_gain``/``set_af_level``/``set_squelch``
-    accept a level either pre-scaled (raw 0-255) or normalized (0.0-1.0, as the
-    web sliders emit). The migration replaced the prior scale-aware coercion
-    with a bare ``int()``, so a normalized slider value (e.g. ``0.98``)
-    collapsed to ``int(0.98) == 0``. The expected/overlay value (used for
-    readback reconciliation) then sat at the opposite end of the scale from the
-    value the radio was actually set to, which surfaced as the control snapping
-    back to ``0`` (left edge) ~1s after a set. Mirror the web control-handler
-    coercion (``_normalized_or_raw_level``) so the StateStore expectation tracks
-    reality. Raw ints (and the boundary ``1.0``) round-trip unchanged.
+    ``set_rf_gain``/``set_sql``/``set_squelch``: both the web frontend
+    (``radio-intents.ts`` declares ``'integer'``) and the documented
+    HTTP/WS command catalog agree the wire value is always a raw 0-255
+    integer, never a normalized float. Dispatch on the JSON *type*, not
+    magnitude — a value in ``[0, 1]`` used to be silently reinterpreted as
+    normalized (MOR-1579's headline bug: raw level ``1`` became raw
+    ``255``). A non-int or an out-of-range int is a caller bug, not an
+    alternate encoding, so it raises instead of being coerced.
+
+    This value feeds both the StateStore readback expectation (via
+    :func:`_expected_value_for_path`) *and*, on the ``public_api`` sync
+    ingress (:mod:`rigplane.runtime.sync`), the actual value sent to the
+    radio (``_SyncCommandExecutor`` reads ``intent.params["squelch"]``
+    directly) — so this function is the actuation path there, not just
+    bookkeeping.
     """
-    numeric = float(value)
-    if 0.0 <= numeric <= 1.0:
-        return max(0, min(255, round(numeric * 255)))
-    return max(0, min(255, int(numeric)))
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"level {value!r} must be a raw integer 0-255, not {type(value).__name__}"
+        )
+    if not (0 <= value <= 255):
+        raise ValueError(f"level {value!r} is out of the raw 0-255 domain")
+    return int(value)
+
+
+def _af_level_from_param(value: Any) -> int:
+    """Coerce ``set_af_level``'s type-dispatched level param (MOR-1579).
+
+    Two documented wire contracts coexist for this one intent: the
+    HTTP/WS command catalog (``docs/api/command-catalog.md``) declares
+    ``level: int`` on the raw 0-255 scale (see the live-hardware
+    validation recipe's ``level:35`` example, which expects raw BCD
+    ``0035``); the web frontend (``radio-intents.ts`` declares
+    ``'normalized'``) sends a JSON float in 0.0-1.0. Dispatch on JSON
+    type, never magnitude: an int is always raw, a float is always
+    normalized, matching MOR-334's original coercion for float input
+    while restoring int input to a true no-op. Out-of-domain values for
+    either type raise rather than being reinterpreted as the other.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"level {value!r} must be an int or a normalized float")
+    if isinstance(value, int):
+        if not (0 <= value <= 255):
+            raise ValueError(f"level {value!r} is out of the raw 0-255 domain")
+        return value
+    if isinstance(value, float):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
+        return max(0, min(255, round(value * 255)))
+    raise ValueError(f"level {value!r} must be an int or a normalized float")
 
 
 def _normalize_raw_level_value(value: Any) -> Any:
@@ -870,11 +905,11 @@ def command_intent_from_request(
     elif command_name == "ptt_off":
         normalized["ptt"] = False
     elif command_name == "set_rf_gain":
-        normalized["rf_gain"] = _raw_level_from_param(normalized["level"])
+        normalized["rf_gain"] = _raw_int_level_from_param(normalized["level"])
     elif command_name == "set_af_level":
-        normalized["af_level"] = _raw_level_from_param(normalized["level"])
+        normalized["af_level"] = _af_level_from_param(normalized["level"])
     elif command_name in ("set_sql", "set_squelch"):
-        normalized["squelch"] = _raw_level_from_param(normalized["level"])
+        normalized["squelch"] = _raw_int_level_from_param(normalized["level"])
     elif command_name in ("set_att", "set_attenuator", "set_attenuator_level"):
         raw_value = (
             normalized["db"]

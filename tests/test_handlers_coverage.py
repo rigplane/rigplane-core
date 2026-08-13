@@ -725,19 +725,35 @@ async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
     Protocol property added in epic #1322) instead of the legacy
     ``backend_id == "yaesu_cat"`` discriminator.
 
-    MOR-1579: the ``level`` param is normalized 0.0-1.0 regardless of
-    backend (the frontend slider is hardcoded min=0/max=1) — only the
-    *unit tag* attached to the outgoing ``SetPower`` differs by radio.
+    MOR-1579: ``level`` is type-dispatched, not magnitude-dispatched. An
+    int is the documented raw/watts value and passes through unchanged
+    regardless of unit (``level=50`` on a watts radio means 50 W — the
+    HTTP/WS command catalog's documented contract, and also what the
+    pre-1579 magnitude heuristic coincidentally produced for any value
+    ``> 1``). A float in ``[0, 1]`` is normalized, scaled to the radio's
+    native wire range: ``value * profile.max_watts`` for watts radios
+    (the exact inverse of
+    ``backends.yaesu_cat.observations.ObservationBuilder._normalize_power_level``,
+    which reports watts back as ``watts / max_watts``), or ``value *
+    255`` for raw_255 radios.
     """
     queue = _QueueRecorder()
     server = SimpleNamespace(command_queue=queue)
 
     radio = _capable_radio()
     radio.native_power_unit = "watts"
+    assert radio.profile.max_watts == 100
     handler = _control_handler(radio=radio, server=server)
-    await handler._enqueue_command("set_rf_power", {"level": 0.2})
+
+    # int: documented raw/watts value, passed through unchanged.
+    await handler._enqueue_command("set_rf_power", {"level": 50})
     assert isinstance(queue.items[-1], SetPower)
-    assert queue.items[-1].level == 51
+    assert queue.items[-1].level == 50
+    assert queue.items[-1].unit == "watts"
+
+    # float: normalized, scaled by profile.max_watts (not 255).
+    await handler._enqueue_command("set_rf_power", {"level": 0.2})
+    assert queue.items[-1].level == 20
     assert queue.items[-1].unit == "watts"
 
     queue2 = _QueueRecorder()
@@ -745,8 +761,15 @@ async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
     radio2 = _capable_radio()
     radio2.native_power_unit = "raw_255"
     handler2 = _control_handler(radio=radio2, server=server2)
-    await handler2._enqueue_command("set_rf_power", {"level": 0.8})
+
+    # int: documented raw value, passed through unchanged.
+    await handler2._enqueue_command("set_rf_power", {"level": 200})
     assert isinstance(queue2.items[-1], SetPower)
+    assert queue2.items[-1].level == 200
+    assert queue2.items[-1].unit == "raw_255"
+
+    # float: normalized, scaled by 255 (no max_watts machinery for raw_255).
+    await handler2._enqueue_command("set_rf_power", {"level": 0.8})
     assert queue2.items[-1].level == 204
     assert queue2.items[-1].unit == "raw_255"
 
@@ -755,9 +778,9 @@ async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
 @pytest.mark.parametrize(
     ("name", "params", "expected_type", "expected_level"),
     [
-        # MOR-1579: set_rf_power and set_af_level declare a normalized
-        # 0.0-1.0 wire contract (radio-intents.ts) — in-domain values
-        # convert to the raw 0-255 scale.
+        # MOR-1579: set_rf_power and set_af_level are type-dispatched — a
+        # JSON *float* is the frontend's normalized 0.0-1.0 wire contract
+        # (radio-intents.ts) and converts to the raw 0-255 scale.
         ("set_rf_power", {"level": 0.5}, SetPower, 128),
         ("set_af_level", {"level": 0.25, "receiver": 0}, SetAfLevel, 64),
     ],
@@ -783,12 +806,17 @@ async def test_enqueue_normalized_level_controls_convert_to_raw_wire_scale(
 @pytest.mark.parametrize(
     ("name", "params", "expected_type", "expected_level"),
     [
-        # MOR-1579: set_rf_gain and set_squelch declare a raw 0-255 wire
-        # contract (radio-intents.ts declares 'integer', PR #2491
-        # confirmed set_rf_gain sends a raw integer) — values pass through
-        # unchanged, never scaled as if normalized.
+        # MOR-1579: set_rf_gain and set_squelch are raw-int-only — every
+        # int passes through unchanged, never scaled as if normalized
+        # (radio-intents.ts declares 'integer'; PR #2491 confirmed
+        # set_rf_gain sends a raw integer).
         ("set_rf_gain", {"level": 128, "receiver": 0}, SetRfGain, 128),
         ("set_squelch", {"level": 191, "receiver": 0}, SetSquelch, 191),
+        # MOR-1579: set_af_level is type-dispatched — a JSON *int* is the
+        # documented HTTP/WS raw 0-255 contract (docs/api/command-catalog.md,
+        # live-hardware validation recipe's level:35→raw 0035 example) and
+        # also passes through unchanged.
+        ("set_af_level", {"level": 72, "receiver": 0}, SetAfLevel, 72),
     ],
 )
 async def test_enqueue_raw_level_controls_pass_through_unscaled(
@@ -839,28 +867,67 @@ async def test_enqueue_raw_level_one_is_not_reinterpreted_as_full_scale(
     assert queue.items[-1].level == 1
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("name", "params"),
-    [
-        ("set_rf_power", {"level": 5}),
-        ("set_af_level", {"level": 5, "receiver": 0}),
-    ],
-)
-async def test_enqueue_normalized_level_out_of_domain_rejects_loudly(
-    name: str,
-    params: dict[str, object],
-) -> None:
-    """MOR-1579: an out-of-domain value for a normalized-intent level must
-    raise, not be silently reinterpreted as an already-raw value (the old
-    magnitude heuristic's behavior for ``set_af_level(5)`` was to
-    silently treat it as raw ``5`` ~= 2% — a silent meaning switch).
+async def test_enqueue_af_level_int_one_is_raw_but_float_one_is_full_scale() -> None:
+    """MOR-1579: type dispatch, not magnitude — ``int(1)`` and ``float(1.0)``
+    are the *same number* but different JSON types, and set_af_level must
+    treat them differently: an int is always the documented raw 0-255
+    value (``1`` stays raw ``1``, ~0.4%), a float is always normalized
+    0.0-1.0 (``1.0`` is 100%, raw ``255``). No shared magnitude heuristic
+    may reinterpret one as the other.
     """
     queue = _QueueRecorder()
     server = SimpleNamespace(command_queue=queue)
     handler = _control_handler(radio=_capable_radio(), server=server)
 
-    with pytest.raises(ValueError, match="normalized"):
+    result = await handler._enqueue_command("set_af_level", {"level": 1, "receiver": 0})
+    assert result["level"] == 1
+    assert queue.items[-1].level == 1
+
+    result = await handler._enqueue_command(
+        "set_af_level", {"level": 1.0, "receiver": 0}
+    )
+    assert result["level"] == 255
+    assert queue.items[-1].level == 255
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "params"),
+    [
+        # set_af_level: out-of-domain for whichever type was sent.
+        ("set_af_level", {"level": 1.5, "receiver": 0}),  # float outside [0, 1]
+        ("set_af_level", {"level": 300, "receiver": 0}),  # int outside 0-255
+        # set_rf_power: out-of-domain normalized float. (A bare int has no
+        # upper bound check here — range validation for the raw/watts int
+        # path is left to the downstream encoder's backstop, same as
+        # set_rf_gain/set_squelch below.)
+        ("set_rf_power", {"level": 1.5}),
+        # set_rf_gain / set_squelch: raw-int-only — a float is *never*
+        # valid, even one that looks like a plausible normalized value.
+        # This is the crux of "type dispatch, never magnitude": 0.5 is
+        # in-domain for a normalized reading but set_rf_gain/set_squelch
+        # never accept normalized input at all.
+        ("set_rf_gain", {"level": 0.5, "receiver": 0}),
+        ("set_rf_gain", {"level": 300, "receiver": 0}),  # int outside 0-255
+        ("set_squelch", {"level": 0.5, "receiver": 0}),
+        ("set_squelch", {"level": 300, "receiver": 0}),  # int outside 0-255
+    ],
+)
+async def test_enqueue_level_type_or_domain_violation_rejects_loudly(
+    name: str,
+    params: dict[str, object],
+) -> None:
+    """MOR-1579: a value that is either the wrong JSON type for its
+    intent's wire contract, or in-type but out of domain, must raise —
+    never be silently reinterpreted as the other encoding (the old
+    magnitude heuristic's behavior for e.g. ``set_af_level(5)`` was to
+    silently treat it as raw ``5`` ~= 2%, a silent meaning switch).
+    """
+    queue = _QueueRecorder()
+    server = SimpleNamespace(command_queue=queue)
+    handler = _control_handler(radio=_capable_radio(), server=server)
+
+    with pytest.raises(ValueError):
         await handler._enqueue_command(name, params)
 
 

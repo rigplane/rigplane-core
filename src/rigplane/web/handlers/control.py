@@ -13,6 +13,8 @@ from ..._bounded_queue import BoundedQueue
 from ...core.command_service import (
     CommandExecutionResult,
     CommandService,
+    _af_level_from_param,
+    _raw_int_level_from_param,
     command_intent_from_request,
 )
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource
@@ -254,41 +256,41 @@ class _CommandMetadataQueue:
             self.queue.put_ordered(command, future=future)
 
 
-def _level_from_normalized(value: Any) -> int:
-    """Convert a normalized 0.0-1.0 level param to the raw 0-255 wire scale.
+def _level_for_power(value: Any, radio: Any) -> int:
+    """Coerce ``set_rf_power``/``set_power``'s type-dispatched level param.
 
-    MOR-1579: level params used to be interpreted by *magnitude* — any
-    value in ``[0, 1]`` was assumed normalized, anything else was assumed
-    already raw. That silently misread a legitimate raw value of ``1``
-    (e.g. ``set_rf_gain`` at the bottom of its 0-255 range) as "100%
-    normalized" and drove the radio to full scale. Callers must now
-    declare which wire shape their intent actually uses; this helper is
-    for intents whose frontend contract is a normalized 0.0-1.0 float
-    (``set_rf_power``, ``set_af_level`` — see
-    ``frontend/src/lib/runtime/commands/radio-intents.ts``). An
-    out-of-domain value is a caller bug, not an alternate encoding, so it
-    raises instead of being silently reinterpreted as raw.
+    MOR-1579: dispatch on JSON type, never magnitude. A JSON float in
+    ``[0.0, 1.0]`` is normalized — scaled to the radio's native wire
+    range: 0-255 for Icom CI-V (``native_power_unit == "raw_255"``), or
+    0-``max_watts`` for Yaesu CAT (``native_power_unit == "watts"``,
+    using ``radio.profile.max_watts`` — the exact inverse of the ratio
+    :meth:`backends.yaesu_cat.observations.ObservationBuilder._normalize_power_level`
+    applies when reporting watts *back* as a normalized state value). A
+    bare int is already the documented raw/watts value (HTTP/WS command
+    catalog: "0-255 raw (Icom CI-V); watts (Yaesu CAT)") and is used
+    as-is, regardless of unit — this restores ``set_rf_power(level=50)``
+    on a watts radio to 50 W, which the old magnitude heuristic also
+    produced (any value ``> 1`` passed through raw) but by accident of
+    bucketing on magnitude rather than by declared type.
     """
-    numeric = float(value)
-    if not (0.0 <= numeric <= 1.0):
-        raise ValueError(
-            f"level {numeric!r} is out of the normalized 0.0-1.0 domain "
-            "(this command expects a normalized level, not a raw value)"
-        )
-    return max(0, min(255, round(numeric * 255)))
-
-
-def _level_from_raw(value: Any) -> int:
-    """Coerce an already-raw wire-scale level param.
-
-    MOR-1579: for intents whose frontend contract sends the raw integer
-    directly (``set_rf_gain``, ``set_sql``/``set_squelch`` — see
-    ``frontend/src/lib/runtime/commands/radio-intents.ts``, declared
-    ``'integer'``), the value is used as-is. Range validation is left to
-    the downstream BCD encoder, which already raises on out-of-range
-    raw values.
-    """
-    return int(float(value))
+    if isinstance(value, bool):
+        raise ValueError(f"level {value!r} must be an int or a normalized float")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
+        if getattr(radio, "native_power_unit", "raw_255") == "watts":
+            profile = getattr(radio, "profile", None)
+            max_watts = getattr(profile, "max_watts", None)
+            if (
+                isinstance(max_watts, (int, float))
+                and not isinstance(max_watts, bool)
+                and max_watts > 0
+            ):
+                return max(0, min(int(max_watts), round(value * max_watts)))
+        return max(0, min(255, round(value * 255)))
+    raise ValueError(f"level {value!r} must be an int or a normalized float")
 
 
 class ControlHandler:
@@ -1994,7 +1996,7 @@ class ControlHandler:
                         "command set_rf_power is not supported by this radio "
                         "(radio does not implement PowerControlCapable)"
                     )
-                level = _level_from_normalized(params["level"])
+                level = _level_for_power(params["level"], radio)
                 # Tag the unit per radio's wire-level scale. Icom CI-V
                 # backends expose ``native_power_unit = "raw_255"``,
                 # Yaesu CAT exposes ``"watts"`` — see
@@ -2200,7 +2202,7 @@ class ControlHandler:
                         "command set_rf_gain is not supported by this radio "
                         "(missing rf_gain capability)"
                     )
-                level = _level_from_raw(params["level"])
+                level = _raw_int_level_from_param(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("rf_gain", "set_rf_gain")
                 self._ensure_receiver_supported(rx)
@@ -2214,7 +2216,7 @@ class ControlHandler:
                         "command set_af_level is not supported by this radio "
                         "(missing af_level capability)"
                     )
-                level = _level_from_normalized(params["level"])
+                level = _af_level_from_param(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("af_level", "set_af_level")
                 self._ensure_receiver_supported(rx)
@@ -2228,7 +2230,7 @@ class ControlHandler:
                         f"command {name!r} is not supported by this radio "
                         "(missing squelch capability)"
                     )
-                level = _level_from_raw(params["level"])
+                level = _raw_int_level_from_param(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("squelch", name)
                 self._ensure_receiver_supported(rx)
