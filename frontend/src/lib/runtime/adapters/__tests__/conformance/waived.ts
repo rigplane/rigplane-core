@@ -20,10 +20,12 @@
  * the actual `dispatchRadioIntent` call sites grouped by factory. One gap:
  * `makeRitXitHandlers`' 3 intents (`set_rit_status`/`set_rit_tx_status`/
  * `set_rit_frequency`) aren't named in ANY of MOR-1560..1567's prose — the
- * family table has a genuine hole there, not a parsing mistake (C6+C7+
- * C10+C11+C12+C13's own itemized 16 sum to 64, 3 short of 67). They land
- * on MOR-1567 here because C13 is explicitly the closing sweeper — its own
- * acceptance criterion is "C2's waiver map is EMPTY ... after this lands".
+ * family table has a genuine hole there, not a parsing mistake: C6(9) +
+ * C7(5) + C10(8) + C11(12) + C12(15) + 15 literal of C13's own itemized 16
+ * (its 16th is the dynamic mod-input call, tracked separately — see
+ * below) sum to 64, exactly 3 short of 67. They land on MOR-1567 here
+ * because C13 is explicitly the closing sweeper — its own acceptance
+ * criterion is "C2's waiver map is EMPTY ... after this lands".
  *
  * ONE DELIBERATE EXCLUSION (full account in the completeness meta-test's
  * header): `onModInputChange` builds its intent name at runtime via
@@ -110,17 +112,17 @@ export const WAIVED_INTENTS_COUNT = 67;
  * The 28 `dispatchKeyboardRadioAction` case labels with no conformance
  * assertion (only `toggle_split` is claimed — see `./claimed.ts`).
  *
- * ON THE PARENT TICKET'S "32 actions" FIGURE: MOR-1563 (written at the
- * MOR-1426 decomposition) states 32; recounting the actual
- * `KEYBOARD_RADIO_ACTIONS` set / switch cases in `panel-commands.ts` as of
- * this ledger lands exactly 29 (28 waived + 1 claimed) — reflecting the
- * CURRENT source, not the ticket's count at authoring time, per this
- * program's own honesty doctrine. `adjust_tuning_step`,
- * `open_filter_settings` and `focus_target` are real keyboard actions but
- * live in a DIFFERENT switch (`makeKeyboardHandlers().dispatch`,
- * panel-commands.ts:1588) that `dispatchKeyboardRadioAction` falls through
- * to on `false` — out of this ledger's scope and absent from
- * `KEYBOARD_RADIO_ACTIONS`.
+ * ON THE PARENT TICKET'S "32 actions" FIGURE: MOR-1563 states 32 — that is
+ * correct, not stale. It is 29 radio-family cases in
+ * `dispatchKeyboardRadioAction` (28 waived here + 1 claimed) PLUS 3
+ * non-radio actions (`adjust_tuning_step`, `open_filter_settings`,
+ * `focus_target`) that live in a DIFFERENT switch
+ * (`makeKeyboardHandlers().dispatch`, panel-commands.ts:1588) which
+ * `dispatchKeyboardRadioAction` falls through to on `false`. This ledger
+ * (MOR-1556) names `dispatchKeyboardRadioAction` specifically, so those 3
+ * are a deliberate SCOPE BOUNDARY, not a count discrepancy — they are
+ * absent from `KEYBOARD_RADIO_ACTIONS` and out of scope here by design,
+ * not because they were miscounted.
  */
 export const WAIVED_KEYBOARD_ACTIONS: Readonly<Record<string, Waiver>> = tag([
   'tune', 'band_select', 'mode_select', 'cycle_data_mode', 'cycle_filter',

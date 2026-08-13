@@ -20,15 +20,27 @@
  *   1. `dispatchRadioIntent({ name: '<intent>', ... })` — `INTENT_CALL_RE`.
  *      Requires `name:` to be the FIRST property (true at all 119 literal
  *      call sites today, including the multi-line one at ~line 877-880) —
- *      a call putting `params` before `name` would silently NOT match.
- *      Handles both quote styles and any whitespace/newlines before the
- *      string (`\s` is newline-inclusive).
+ *      a call putting `params` before `name` (`{ params: {...}, name: 'x'
+ *      }`) does NOT match this regex, or `INTENT_CALL_HEADER_RE` below.
+ *      That shape is NOT silently invisible, though: the "total
+ *      accounting" describe block asserts every `dispatchRadioIntent(`
+ *      occurrence in the file is either a literal match or a known-dynamic
+ *      call, so a params-first (or any other unparseable) call site fails
+ *      that check loudly instead of slipping past every other assertion
+ *      unclaimed and unwaived. Handles both quote styles and any
+ *      whitespace/newlines before the string (`\s` is newline-inclusive).
  *
  *   2. `case '<action>':` inside `dispatchKeyboardRadioAction`'s switch
  *      body only — sliced between that function and the next
  *      `export function` (`makeKeyboardHandlers`), so that function's OWN
  *      switch (`adjust_tuning_step`/`open_filter_settings`/`focus_target`)
- *      is deliberately excluded — see `waived.ts`'s header.
+ *      is deliberately excluded — see `waived.ts`'s header. The
+ *      `KEYBOARD_RADIO_ACTIONS` set literal (the dispatcher's actual entry
+ *      gate) is parsed independently and checked for set-equality against
+ *      these case labels, so an action added to the set with no matching
+ *      `case` — a silent dead control, since the gate passes and the
+ *      switch falls to `default` — fails loudly instead of never
+ *      surfacing (it would produce no `case` label to claim or waive).
  *
  * DYNAMIC NAME, VERIFIED AND HANDLED EXPLICITLY: one call site,
  * `onModInputChange`, computes its name at runtime via
@@ -39,6 +51,16 @@
  * source still contains EXACTLY one such non-literal call, so a second
  * one introduced later fails loudly instead of silently escaping both
  * this parse and mod-input.test.ts's coverage.
+ *
+ * KNOWN OVER-STRICT FALSE POSITIVES (would fail this suite even though
+ * production behavior is fine — none exist in the source today, but both
+ * are plain string/regex parsing against text, not an AST, so neither is
+ * filtered): a `dispatchRadioIntent(...)` call sitting inside a `//` or
+ * `/* * /` comment counts toward the total in the "total accounting"
+ * check; and a `case '<label>':` inside a SECOND, nested `switch`
+ * statement within `dispatchKeyboardRadioAction`'s body (there isn't one
+ * today) would count toward `extractKeyboardActions` and
+ * `KEYBOARD_RADIO_ACTIONS` set-equality as if it were a top-level case.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -104,6 +126,24 @@ const CASE_LABEL_RE = /case\s+(['"])([A-Za-z0-9_]+)\1\s*:/g;
 function extractKeyboardActions(source: string): Set<string> {
   const names = new Set<string>();
   for (const match of extractKeyboardActionBody(source).matchAll(CASE_LABEL_RE)) names.add(match[2]);
+  return names;
+}
+
+/**
+ * The `KEYBOARD_RADIO_ACTIONS` set literal that gates
+ * `dispatchKeyboardRadioAction`'s entry (`if (!KEYBOARD_RADIO_ACTIONS.has(
+ * action)) return false;`) — parsed independently of the `case` labels so a
+ * name added to the set with no matching `case` (a silent dead control:
+ * the gate passes, the switch falls to `default`, nothing dispatches) is
+ * detectable by set-equality against `extractKeyboardActions` below.
+ */
+function extractKeyboardRadioActionsSet(source: string): Set<string> {
+  const start = source.indexOf('const KEYBOARD_RADIO_ACTIONS = new Set([');
+  if (start === -1) throw new Error('KEYBOARD_RADIO_ACTIONS not found — renamed or removed?');
+  const end = source.indexOf(']);', start);
+  if (end === -1) throw new Error('KEYBOARD_RADIO_ACTIONS literal not closed with ]);');
+  const names = new Set<string>();
+  for (const match of source.slice(start, end).matchAll(/(['"])([A-Za-z0-9_]+)\1/g)) names.add(match[2]);
   return names;
 }
 
@@ -184,5 +224,37 @@ describe('dynamic mod-input call site (verified, handled explicitly — MOR-1567
   it('that one dynamic call site is onModInputChange\'s modInputCommand(...) construction', () => {
     const [start] = dynamicCalls;
     expect(SOURCE.slice(start, start + 120)).toContain('modInputCommand(dataMode as number)');
+  });
+});
+
+describe('total accounting (no unparseable dispatchRadioIntent shape slips through)', () => {
+  // A call written `{ params: {...}, name: 'x' }` (params before name)
+  // matches neither `INTENT_CALL_RE` (requires `name:` first) nor
+  // `INTENT_CALL_HEADER_RE` (same requirement) — it would silently vanish
+  // from BOTH the literal parse and the dynamic-call count, passing every
+  // completeness assertion above while never being claimed or waived. This
+  // is the total-accounting invariant that catches that shape (and any
+  // other unparseable one): every `dispatchRadioIntent(` occurrence in the
+  // file must be EITHER a literal match OR a known-dynamic call — no third
+  // category.
+  it('every call site is either a literal match or a known dynamic call', () => {
+    const total = [...SOURCE.matchAll(/dispatchRadioIntent\(/g)].length;
+    const literal = [...SOURCE.matchAll(INTENT_CALL_RE)].length;
+    const dynamic = findDynamicIntentCalls(SOURCE).length;
+    expect(total).toBe(literal + dynamic);
+  });
+});
+
+describe('KEYBOARD_RADIO_ACTIONS set vs. case labels (no case-less dead control)', () => {
+  // The dispatcher's entry gate is `KEYBOARD_RADIO_ACTIONS.has(action)` —
+  // an action added to that set with no matching `case` passes the gate,
+  // falls through the switch to `default`, and silently no-ops forever.
+  // Set-equality against the parsed `case` labels catches it (and the
+  // inverse: a `case` with no matching set entry, which is unreachable
+  // since the gate would already have returned `false`).
+  it('KEYBOARD_RADIO_ACTIONS and the switch\'s case labels are set-equal', () => {
+    const declared = [...extractKeyboardRadioActionsSet(SOURCE)].sort();
+    const cased = [...extractKeyboardActions(SOURCE)].sort();
+    expect(declared).toEqual(cased);
   });
 });

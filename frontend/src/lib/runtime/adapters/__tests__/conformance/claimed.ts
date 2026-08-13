@@ -6,8 +6,13 @@
  * in a `*-conformance.isolated.test.ts` file, per `./harness.ts`). This
  * file is that registry — the completeness meta-test
  * (`../../../commands/__tests__/panel-commands-completeness.test.ts`) unions
- * it with `./waived.ts` and asserts every intent `panel-commands.ts` can
- * emit falls in exactly one of the two sets.
+ * it with `./waived.ts` and asserts every LITERAL-NAMED intent
+ * `panel-commands.ts` dispatches (i.e. every `dispatchRadioIntent({ name:
+ * '<literal>', ... })` call site) falls in exactly one of the two sets.
+ * The 4 `modInputCommand(...)`-derived names are real emissions outside
+ * this 87-name literal universe — see `./waived.ts`'s header and the
+ * meta-test's "dynamic mod-input call site" block for how those are
+ * tracked instead.
  *
  * Convention for future family walks (C6-C13, MOR-1560..1567): when a walk
  * adds real `expectFrames` assertions for a previously-waived intent, add
