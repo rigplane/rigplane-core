@@ -1519,9 +1519,16 @@ class TestNotchWidthDomain:
     """'notch' is a broader capability than manual notch WIDTH — a radio
     can have auto-notch with no manual-notch-width command at all (IC-705
     has no CI-V 0x16 0x57 mapping yet still declares width_values "for UI
-    parity"; X6100/X6200 have neither the mapping nor a width domain). So,
-    unlike ssb_tx_bw/filter_shape below, this is NOT a strict
-    capability-implies-domain invariant — just direct regression pins."""
+    parity"; X6100/X6200/FTX-1/TX-500 have neither the mapping nor a width
+    domain). So, unlike ssb_tx_bw/filter_shape below, this is NOT a strict
+    capability-implies-domain invariant — just direct regression pins.
+
+    MOR-1551 audited the four profiles below (none had a ``[notch]
+    width_values`` domain) against in-repo sources and found no trustworthy
+    evidence of an actual manual-notch WIDTH control on any of them — see
+    the per-profile ``[capabilities]`` comments in each ``.toml`` for the
+    full provenance. This class pins that "undeclared" is the correct,
+    audited state, not an oversight."""
 
     def test_ic7610_family_declares_wide_mid_nar(self):
         for name in ("ic705", "ic7300", "ic9700", "ic7610"):
@@ -1534,10 +1541,36 @@ class TestNotchWidthDomain:
             }, name
 
     def test_x6100_x6200_declare_notch_without_a_width_domain(self):
+        """X6200's own cat-audit (docs/validation/cat-audits/x6200.md lines
+        55/95/107) found no WIDE/MID/NAR-style width register anywhere in
+        the documented CI-V table — its real notch is a DNF toggle
+        (0x16 0x41) + center frequency (0x14 0x0D). X6100 has no hardware
+        to audit directly and leans on X6100/X6200 shared-firmware
+        inference (same basis as the existing break_in exception)."""
         for name in ("x6100", "x6200"):
             rig = load_rig(RIGS_DIR / f"{name}.toml")
             assert "notch" in rig.capabilities, name
             assert rig.notch_width_values is None, name
+
+    def test_ftx1_declares_notch_without_a_width_domain(self):
+        """FTX-1's manual notch is a Yaesu CAT BP00 (on/off) + BP01
+        (frequency index 0-255) pair — no separate WIDTH register is
+        documented in wfview's FTX-1.rig or the Yaesu FT-X1 CAT manual.
+        YaesuCatRadio.set_manual_notch_width/get_manual_notch_width also
+        raise NotImplementedError unconditionally, so this control is not
+        wire-reachable on this backend regardless of the TOML domain."""
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+        assert "notch" in rig.capabilities
+        assert rig.notch_width_values is None
+
+    def test_tx500_declares_notch_without_a_width_domain(self):
+        """TX-500's NT command is a single 0=OFF/1=Auto toggle per the
+        Lab599 CAT Protocol rev. 2 (docs/validation/cat-audits/tx500.md
+        line 37) — auto-notch only, no manual notch and therefore no width
+        parameter documented anywhere in the protocol doc."""
+        rig = load_rig(RIGS_DIR / "tx500.toml")
+        assert "notch" in rig.capabilities
+        assert rig.notch_width_values is None
 
 
 class TestSsbTxBwDomainDeclaredOrCapabilityAbsent:

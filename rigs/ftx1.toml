@@ -29,6 +29,19 @@ rx_audio_channel = "left"
 max_watts = 100
 
 [capabilities]
+# NOTE: ``notch`` KEEPS the capability tag but intentionally declares NO
+# ``[notch] width_values`` domain (MOR-1551). The FTX-1's manual notch is a
+# Yaesu CAT ``BP`` pair: ``BP00`` toggles it on/off and ``BP01`` selects a
+# frequency index (0-255, see ``get/set_manual_notch_freq`` below) — neither
+# the wfview FTX-1.rig source nor the Yaesu FT-X1 CAT manual this profile is
+# sourced from documents a separate WIDTH register for it. Independently,
+# ``YaesuCatRadio.set_manual_notch_width``/``get_manual_notch_width``
+# (src/rigplane/backends/yaesu_cat/radio.py) already raise
+# ``NotImplementedError`` unconditionally on every Yaesu CAT radio, so no
+# wire encoding is possible for this control regardless of what the TOML
+# declares — this comment records the provenance, it does not change
+# behavior. Closing evidence: a CAT manual revision or wfview update that
+# documents an FTX-1 notch-width register.
 features = [
     "audio",
     "dual_rx",

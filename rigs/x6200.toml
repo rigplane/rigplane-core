@@ -84,6 +84,21 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     BK-IN-mode register. There is no trustworthy in-repo source for an
 #     OFF/SEMI/FULL value domain on this radio, so ``CoreRadio.set_break_in``
 #     refuses (fails loud) rather than validate against a guessed table.
+#   - ``notch`` likewise KEEPS the capability tag but intentionally declares
+#     NO ``[notch] width_values`` domain (MOR-1551). docs/validation/
+#     cat-audits/x6200.md (lines 55/95/107) found the ``notch`` cap
+#     currently routes to ``set_manual_notch`` (``0x16 0x48``, Icom
+#     manual-notch on/off) which is ALSO not in the X6200's documented CI-V
+#     table — the X6200's real notch mechanism is the digital notch filter
+#     (DNF) toggle at ``0x16 0x41`` plus its center frequency at
+#     ``0x14 0x0D`` (confirmed-correct opcode, 100-3000 Hz). Neither the PDF
+#     Table 1 nor Hamlib's ``x6100_priv_caps`` document a WIDE/MID/NAR-style
+#     width register for this radio at all, so there is no trustworthy
+#     in-repo source for a width domain — ``CoreRadio.set_manual_notch_width``
+#     stays unvalidated (permissive, mirrors ``set_agc``/``set_preamp``)
+#     rather than fabricate one. Closing evidence: a live X6200 CI-V capture
+#     of ``0x16 0x57`` GET/SET (NAK vs. ACK), or discovery of an actual DNF
+#     width register via a wfview/hamlib update or firmware doc revision.
 features = [
     "audio",
     "af_level",

@@ -37,6 +37,15 @@ type = "kenwood_cat"
 variant = "lab599"
 
 [capabilities]
+# NOTE: ``notch`` KEEPS the capability tag but intentionally declares NO
+# ``[notch] width_values`` domain (MOR-1551). Per the Lab599 CAT Protocol
+# rev. 2 (docs/validation/cat-audits/tx500.md line 37), ``NT`` is a single
+# 0=OFF/1=Auto toggle — auto-notch only, with no manual notch and therefore
+# no width parameter documented anywhere in the protocol doc. This is the
+# "auto-notch-only rig" case the MOR-1551 invariant is designed to leave
+# alone. (The TX-500 also has no backend yet — see the file header — so
+# this control is not runtime-reachable at all today.) Closing evidence: a
+# Lab599 protocol revision documenting a manual-notch/width register.
 features = [
     "audio",
     "af_level",      # AG  000-250

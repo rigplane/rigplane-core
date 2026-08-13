@@ -53,6 +53,21 @@ address = 0x70
 # unconfirmed guess on top of another. No trustworthy in-repo source exists
 # for an OFF/SEMI/FULL domain on this radio, so ``CoreRadio.set_break_in``
 # refuses (fails loud) rather than validate against a guessed table.
+#
+# NOTE: ``notch`` likewise KEEPS the capability tag but intentionally
+# declares NO ``[notch] width_values`` domain (MOR-1551). There is no
+# X6100 cat-audit in this repo (no hardware to capture), so this leans on
+# the same shared-firmware inference as ``break_in`` above: the X6200's own
+# audit found its manual-notch opcode (``0x16 0x48``) isn't in the X6200
+# CI-V table either — the X6200's actual notch mechanism is a DNF on/off
+# toggle (``0x16 0x41``) plus a center-frequency register (``0x14 0x0D``),
+# with no WIDE/MID/NAR-style width register documented anywhere. Inferring
+# an X6100 width domain from X6200 data would compound one unconfirmed
+# guess on top of another, so ``CoreRadio.set_manual_notch_width`` stays
+# unvalidated (permissive, mirrors ``set_agc``/``set_preamp``) rather than
+# fabricate a table. Closing evidence: a live X6100 CI-V capture (no
+# hardware currently available) or a firmware/wfview doc update that
+# documents an X6100/X6200 notch-width register.
 features = [
     "audio",
     "af_level",
