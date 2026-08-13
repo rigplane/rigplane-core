@@ -101,6 +101,15 @@ describe('buildAgcOptions', () => {
   });
 
   it('FTX-1: full 7-value domain including manual OFF/FAST/MID/SLOW and auto variants', () => {
+    // MOR-1547: mirrors rigs/ftx1.toml's real [agc.labels] — the auto-mode
+    // labels (4/5/6) are the short "A-F"/"A-M"/"A-S" form, not
+    // "A-FAST"/"A-MID"/"A-SLOW" (shortened to keep the amber-lcd skin's
+    // "AGC "-prefixed status chip within its established single-row width
+    // budget, see AmberIndStrip.svelte:68-128 and
+    // tests/test_rig_loader.py::test_ftx1_agc_auto_labels_are_short_form for
+    // the real-profile witness). Asserting every option here (not just
+    // length + options[0]) so this stays a real regression pin instead of a
+    // stale document that silently drifts from the profile data.
     const options = buildAgcOptions(
       [0, 1, 2, 3, 4, 5, 6],
       {
@@ -108,12 +117,19 @@ describe('buildAgcOptions', () => {
         '1': 'FAST',
         '2': 'MID',
         '3': 'SLOW',
-        '4': 'A-FAST',
-        '5': 'A-MID',
-        '6': 'A-SLOW',
+        '4': 'A-F',
+        '5': 'A-M',
+        '6': 'A-S',
       },
     );
-    expect(options).toHaveLength(7);
-    expect(options[0]).toEqual({ value: 0, label: 'OFF' });
+    expect(options).toEqual([
+      { value: 0, label: 'OFF' },
+      { value: 1, label: 'FAST' },
+      { value: 2, label: 'MID' },
+      { value: 3, label: 'SLOW' },
+      { value: 4, label: 'A-F' },
+      { value: 5, label: 'A-M' },
+      { value: 6, label: 'A-S' },
+    ]);
   });
 });

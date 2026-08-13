@@ -701,6 +701,30 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
       expect(props.agcModes).toEqual([1, 3]);
     });
 
+    it('does not fabricate an IC-7610-shaped FAST/MID/SLOW label dict when the profile declares no agcLabels (MOR-1547)', () => {
+      // Companion to the `agcModes` fabrication fix above: `agcLabels`
+      // carried the same IC-7610-shaped hardcode
+      // `{ '1': 'FAST', '2': 'MID', '3': 'SLOW' }` as its fallback, applied
+      // to every radio's numeric AGC modes regardless of what that radio
+      // actually declares — a radio whose modes 1/2/3 mean something else
+      // (or a capabilities payload with no `agcLabels` at all) would get a
+      // plausible-looking but wrong label. `buildAgcOptions`
+      // (agc-utils.ts) already falls back to the raw mode number
+      // (`String(mode)`) per-entry when a label is missing — the honest
+      // behavior this fallback must defer to instead of inventing labels.
+      const props = toAgcProps(makeState(), { capabilities: ['agc'], agcModes: [1, 3] } as any);
+      expect(props.agcLabels).toEqual({});
+    });
+
+    it('still reports the real declared agcLabels from capabilities', () => {
+      const props = toAgcProps(makeState(), {
+        capabilities: ['agc'],
+        agcModes: [1, 3],
+        agcLabels: { '1': 'FAST', '3': 'SLOW' },
+      } as any);
+      expect(props.agcLabels).toEqual({ '1': 'FAST', '3': 'SLOW' });
+    });
+
     it('reports the real observed agcMode value when the field IS available (symmetric positive pin)', () => {
       // Companion to 'does not present missing AGC as the default MID mode':
       // that test proves the missing-field side (agcAvailable === false =>

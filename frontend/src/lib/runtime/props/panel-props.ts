@@ -444,7 +444,12 @@ export function toAgcProps(
   return {
     agcMode: agcAvailable ? (rx?.agc ?? Number.NaN) : Number.NaN,
     agcModes: caps?.agcModes ?? [],
-    agcLabels: caps?.agcLabels ?? { '1': 'FAST', '2': 'MID', '3': 'SLOW' },
+    // MOR-1547: no fabricated IC-7610-shaped FAST/MID/SLOW dict when the
+    // profile declares no agcLabels — `{}` lets `buildAgcOptions`
+    // (agc-utils.ts) fall back to the honest raw mode number per-entry,
+    // the same "no invented label" contract it already applies whenever a
+    // caps-provided `agcLabels` is missing an individual entry.
+    agcLabels: caps?.agcLabels ?? {},
     hasAgc: hasCap(caps, 'agc') && agcAvailable,
   };
 }
