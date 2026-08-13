@@ -4098,7 +4098,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_nb(self) -> bool:
         """Read Noise Blanker status."""
         self._check_connected()
-        civ = get_nb(to_addr=self._radio_addr)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x22)
+        civ = get_nb(to_addr=self._radio_addr, command29=cmd29)
         resp = await self._send_civ_expect(civ, label="get_nb")
         return resp.data[0] == 0x01 if resp.data else False
 
@@ -4113,13 +4114,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_nb",
         )
-        civ = set_nb(on, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x22)
+        civ = set_nb(on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_nr(self) -> bool:
         """Read Noise Reduction status."""
         self._check_connected()
-        civ = get_nr(to_addr=self._radio_addr)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x40)
+        civ = get_nr(to_addr=self._radio_addr, command29=cmd29)
         resp = await self._send_civ_expect(civ, label="get_nr")
         return resp.data[0] == 0x01 if resp.data else False
 
@@ -4134,13 +4137,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_nr",
         )
-        civ = set_nr(on, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x40)
+        civ = set_nr(on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_ip_plus(self) -> bool:
         """Read IP+ status."""
         self._check_connected()
-        civ = get_ip_plus(to_addr=self._radio_addr)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x65)
+        civ = get_ip_plus(to_addr=self._radio_addr, command29=cmd29)
         resp = await self._send_civ_expect(civ, label="get_ip_plus")
         return resp.data[0] == 0x01 if resp.data else False
 
@@ -4155,7 +4160,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_ip_plus",
         )
-        civ = set_ip_plus(on, to_addr=self._radio_addr, receiver=receiver)
+        cmd29 = self._profile.supports_cmd29(0x16, 0x65)
+        civ = set_ip_plus(
+            on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_repeater_tone(self, receiver: int = 0) -> bool:

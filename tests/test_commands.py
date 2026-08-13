@@ -602,10 +602,22 @@ class TestCmd29ReceiverRouting:
         assert frame[6] == 0x14
         assert frame[7] == 0x03  # SQL sub
 
-    def test_set_nb_main_no_cmd29(self) -> None:
+    def test_set_nb_main_wrapped_by_default(self) -> None:
+        # MOR-1537 follow-up: set_nb's builder now defaults command29=True
+        # like every other cmd29-eligible setter, instead of deriving the
+        # wrap decision from receiver internally.
         from rigplane.commands import RECEIVER_MAIN, set_nb
 
         frame = set_nb(True, receiver=RECEIVER_MAIN)
+        assert frame[4] == 0x29
+        assert frame[5] == 0x00  # MAIN
+        assert frame[6] == 0x16
+        assert frame[7] == 0x22  # NB sub
+
+    def test_set_nb_main_unwrapped_with_override(self) -> None:
+        from rigplane.commands import RECEIVER_MAIN, set_nb
+
+        frame = set_nb(True, receiver=RECEIVER_MAIN, command29=False)
         assert frame[4] == 0x16  # Direct cmd, no cmd29
         assert frame[5] == 0x22  # NB sub
 
@@ -619,10 +631,19 @@ class TestCmd29ReceiverRouting:
         assert frame[7] == 0x22  # NB sub
         assert frame[8] == 0x01  # on=True
 
-    def test_set_nr_main_no_cmd29(self) -> None:
+    def test_set_nr_main_wrapped_by_default(self) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_nr
 
         frame = set_nr(False, receiver=RECEIVER_MAIN)
+        assert frame[4] == 0x29
+        assert frame[5] == 0x00  # MAIN
+        assert frame[6] == 0x16
+        assert frame[7] == 0x40  # NR sub
+
+    def test_set_nr_main_unwrapped_with_override(self) -> None:
+        from rigplane.commands import RECEIVER_MAIN, set_nr
+
+        frame = set_nr(False, receiver=RECEIVER_MAIN, command29=False)
         assert frame[4] == 0x16
         assert frame[5] == 0x40  # NR sub
 
@@ -636,10 +657,19 @@ class TestCmd29ReceiverRouting:
         assert frame[7] == 0x40  # NR sub
         assert frame[8] == 0x00  # on=False
 
-    def test_set_ip_plus_main_no_cmd29(self) -> None:
+    def test_set_ip_plus_main_wrapped_by_default(self) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_ip_plus
 
         frame = set_ip_plus(True, receiver=RECEIVER_MAIN)
+        assert frame[4] == 0x29
+        assert frame[5] == 0x00  # MAIN
+        assert frame[6] == 0x16
+        assert frame[7] == 0x65  # IP+ sub
+
+    def test_set_ip_plus_main_unwrapped_with_override(self) -> None:
+        from rigplane.commands import RECEIVER_MAIN, set_ip_plus
+
+        frame = set_ip_plus(True, receiver=RECEIVER_MAIN, command29=False)
         assert frame[4] == 0x16
         assert frame[5] == 0x65  # IP+ sub
 
@@ -682,9 +712,11 @@ class TestCmd29ReceiverRouting:
         assert set_rf_gain(128)[4] == 0x14
         assert set_af_level(200)[4] == 0x14
         assert set_squelch(50)[4] == 0x14
-        assert set_nb(True)[4] == 0x16
-        assert set_nr(True)[4] == 0x16
-        assert set_ip_plus(True)[4] == 0x16
+        # MOR-1537 follow-up: nb/nr/ip_plus builders now default
+        # command29=True; no receiver arg still targets MAIN (0x00).
+        assert set_nb(True)[4:6] == b"\x29\x00"
+        assert set_nr(True)[4:6] == b"\x29\x00"
+        assert set_ip_plus(True)[4:6] == b"\x29\x00"
 
 
 class TestDspLevelParityCommands:

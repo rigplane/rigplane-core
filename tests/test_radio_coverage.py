@@ -63,15 +63,27 @@ def _data_mode_response(on: bool) -> bytes:
     return _wrap_civ_in_udp(civ)
 
 
-def _bool_response(cmd: int, sub: int | None, value: bool) -> bytes:
+def _bool_response(
+    cmd: int, sub: int | None, value: bool, *, receiver: int | None = None
+) -> bytes:
     """CI-V response with a single bool byte for NB/NR/IP+ etc."""
-    civ = build_civ_frame(
-        CONTROLLER_ADDR,
-        IC_7610_ADDR,
-        cmd,
-        sub=sub,
-        data=bytes([0x01 if value else 0x00]),
-    )
+    if receiver is None:
+        civ = build_civ_frame(
+            CONTROLLER_ADDR,
+            IC_7610_ADDR,
+            cmd,
+            sub=sub,
+            data=bytes([0x01 if value else 0x00]),
+        )
+    else:
+        civ = build_cmd29_frame(
+            CONTROLLER_ADDR,
+            IC_7610_ADDR,
+            cmd,
+            sub=sub,
+            data=bytes([0x01 if value else 0x00]),
+            receiver=receiver,
+        )
     return _wrap_civ_in_udp(civ)
 
 
@@ -724,8 +736,9 @@ async def test_set_digisel_succeeds_on_ack(
 async def test_get_nb_returns_true(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    # NB command is 0x16, sub 0x22 (typical IC-7610)
-    mock_transport.queue_response(_bool_response(0x16, 0x22, True))
+    # NB command is 0x16, sub 0x22 — IC-7610 declares a cmd29 route, so
+    # the request and the radio's reply are both 0x29-wrapped (MOR-1537).
+    mock_transport.queue_response(_bool_response(0x16, 0x22, True, receiver=0))
     result = await radio.get_nb()
     assert result is True
 
@@ -745,7 +758,7 @@ async def test_set_nb_sends_command(
 async def test_get_nr_returns_false(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    mock_transport.queue_response(_bool_response(0x16, 0x40, False))
+    mock_transport.queue_response(_bool_response(0x16, 0x40, False, receiver=0))
     result = await radio.get_nr()
     assert result is False
 
@@ -765,7 +778,7 @@ async def test_set_nr_sends_command(
 async def test_get_ip_plus_returns_true(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    mock_transport.queue_response(_bool_response(0x16, 0x65, True))
+    mock_transport.queue_response(_bool_response(0x16, 0x65, True, receiver=0))
     result = await radio.get_ip_plus()
     assert result is True
 
@@ -2128,7 +2141,7 @@ async def test_get_nb_returns_false_on_empty_data(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """get_nb() returns False when response has no data (line 1462)."""
-    civ = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x16, sub=0x22)
+    civ = build_cmd29_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x16, sub=0x22)
     mock_transport.queue_response(_wrap_civ_in_udp(civ))
     result = await radio.get_nb()
     assert result is False
@@ -2138,7 +2151,7 @@ async def test_get_nr_returns_true_on_data(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """get_nr() returns True when response data byte is 0x01 (line 1475)."""
-    civ = build_civ_frame(
+    civ = build_cmd29_frame(
         CONTROLLER_ADDR, IC_7610_ADDR, 0x16, sub=0x40, data=bytes([0x01])
     )
     mock_transport.queue_response(_wrap_civ_in_udp(civ))
@@ -2150,7 +2163,7 @@ async def test_get_nr_returns_false_on_empty_data(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """get_nr() returns False when response has no data (line 1475 else branch)."""
-    civ = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x16, sub=0x40)
+    civ = build_cmd29_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x16, sub=0x40)
     mock_transport.queue_response(_wrap_civ_in_udp(civ))
     result = await radio.get_nr()
     assert result is False
@@ -2160,7 +2173,7 @@ async def test_get_ip_plus_returns_true_on_data(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """get_ip_plus() returns True when response data byte is 0x01 (line 1490)."""
-    civ = build_civ_frame(
+    civ = build_cmd29_frame(
         CONTROLLER_ADDR, IC_7610_ADDR, 0x16, sub=0x65, data=bytes([0x01])
     )
     mock_transport.queue_response(_wrap_civ_in_udp(civ))
@@ -2172,7 +2185,7 @@ async def test_get_ip_plus_returns_false_on_empty_data(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """get_ip_plus() returns False when response has no data (line 1490 else branch)."""
-    civ = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x16, sub=0x65)
+    civ = build_cmd29_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x16, sub=0x65)
     mock_transport.queue_response(_wrap_civ_in_udp(civ))
     result = await radio.get_ip_plus()
     assert result is False

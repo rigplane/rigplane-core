@@ -244,11 +244,23 @@ def set_digisel(
 
 
 def get_nb(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build CI-V command to read NB status."""
     if cmd_map is not None:
-        return _build_from_map(cmd_map, "get_nb", to_addr=to_addr, from_addr=from_addr)
+        return _build_from_map(
+            cmd_map,
+            "get_nb",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            command29=command29,
+        )
+    if command29:
+        return build_cmd29_frame(to_addr, from_addr, _CMD_PREAMP, sub=_SUB_NB)
     return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=_SUB_NB)
 
 
@@ -258,20 +270,22 @@ def set_nb(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Set Noise Blanker on/off."""
+    data = bytes([0x01 if on else 0x00])
     if cmd_map is not None:
         return _build_from_map(
             cmd_map,
             "set_nb",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=bytes([0x01 if on else 0x00]),
+            data=data,
             receiver=receiver,
-            command29=(receiver != RECEIVER_MAIN),
+            command29=command29,
         )
-    data = bytes([0x01 if on else 0x00])
-    if receiver != RECEIVER_MAIN:
+    if command29:
         return build_cmd29_frame(
             to_addr, from_addr, _CMD_PREAMP, sub=_SUB_NB, data=data, receiver=receiver
         )
@@ -279,11 +293,23 @@ def set_nb(
 
 
 def get_nr(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build CI-V command to read NR status."""
     if cmd_map is not None:
-        return _build_from_map(cmd_map, "get_nr", to_addr=to_addr, from_addr=from_addr)
+        return _build_from_map(
+            cmd_map,
+            "get_nr",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            command29=command29,
+        )
+    if command29:
+        return build_cmd29_frame(to_addr, from_addr, _CMD_PREAMP, sub=_SUB_NR)
     return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=_SUB_NR)
 
 
@@ -293,20 +319,22 @@ def set_nr(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Set Noise Reduction on/off."""
+    data = bytes([0x01 if on else 0x00])
     if cmd_map is not None:
         return _build_from_map(
             cmd_map,
             "set_nr",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=bytes([0x01 if on else 0x00]),
+            data=data,
             receiver=receiver,
-            command29=(receiver != RECEIVER_MAIN),
+            command29=command29,
         )
-    data = bytes([0x01 if on else 0x00])
-    if receiver != RECEIVER_MAIN:
+    if command29:
         return build_cmd29_frame(
             to_addr, from_addr, _CMD_PREAMP, sub=_SUB_NR, data=data, receiver=receiver
         )
@@ -314,13 +342,23 @@ def set_nr(
 
 
 def get_ip_plus(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Build CI-V command to read IP+ status."""
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_ip_plus", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_ip_plus",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            command29=command29,
         )
+    if command29:
+        return build_cmd29_frame(to_addr, from_addr, _CMD_PREAMP, sub=_SUB_IP_PLUS)
     return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=_SUB_IP_PLUS)
 
 
@@ -330,20 +368,22 @@ def set_ip_plus(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     cmd_map: CommandMap | None = None,
+    *,
+    command29: bool = True,
 ) -> bytes:
     """Set IP+ on/off."""
+    data = bytes([0x01 if on else 0x00])
     if cmd_map is not None:
         return _build_from_map(
             cmd_map,
             "set_ip_plus",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=bytes([0x01 if on else 0x00]),
+            data=data,
             receiver=receiver,
-            command29=(receiver != RECEIVER_MAIN),
+            command29=command29,
         )
-    data = bytes([0x01 if on else 0x00])
-    if receiver != RECEIVER_MAIN:
+    if command29:
         return build_cmd29_frame(
             to_addr,
             from_addr,
