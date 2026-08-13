@@ -206,6 +206,17 @@ command_response_observable = [
     "global.operator_controls.vox_delay",
     # MOR-1491 (field-policy membership wave, leg 2): filter/PBT facts.
     "receiver.main.active.freq_mode.filter_width",
+    # MOR-1546: filter-select (filter_num) and DATA-mode carry the #2452
+    # armed affordance but had NO acquisition capability declared at all --
+    # ``_availability_for`` (acquisition_scheduler.py) rejects any
+    # ``ensure_fresh`` request for a path with no declared capability
+    # (UNKNOWN availability), so their armed confirm could not even reach
+    # the post-write-readback table added here (``_POST_WRITE_READBACK_FIELDS``
+    # in radio_poller.py) without this. Same event-driven-only shape as
+    # ``filter_width`` above -- no periodic cadence, so this adds nothing to
+    # the standing serial budget accounted at the bottom of this file.
+    "receiver.main.active.freq_mode.filter_num",
+    "receiver.main.active.freq_mode.data_mode",
     "receiver.main.operator_controls.filter_shape",
     "receiver.main.operator_controls.pbt_inner",
     "receiver.main.operator_controls.pbt_outer",

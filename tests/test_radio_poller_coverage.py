@@ -66,6 +66,7 @@ from rigplane.web.radio_poller import (
     SetData1ModInput,
     SetDataMode,
     SetDigiSel,
+    SetFilter,
     SetFilterShape,
     SetFilterWidth,
     SetFreq,
@@ -997,6 +998,14 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
             SetPreamp(1, receiver=0),
             FieldPath.receiver("main", "operator_controls", "preamp"),
         ),
+        (
+            SetFilter(2, receiver=0),
+            FieldPath.active("main", "freq_mode", "filter_num"),
+        ),
+        (
+            SetDataMode(1, receiver=0),
+            FieldPath.active("main", "freq_mode", "data_mode"),
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1015,6 +1024,21 @@ async def test_execute_write_requests_immediate_readback_at_user_priority(
     widen the armed-affordance confirm window past the 3000ms
     ACK_CONFIRM_GRACE for a slice of clicks (the MOR-1478 stale-flash
     symptom, reintroduced on a new affordance).
+
+    filter_num/data_mode are included (MOR-1546): both carry the same #2452
+    armed affordance and were ALREADY confirmed incidentally by ``mode``'s
+    own 1.0s cadence poll (CI-V 0x26 already returns ``(mode, data_mode,
+    filter)`` in one frame, and ``_civ_rx.py`` already decodes all three) --
+    so armed was already clearing via a genuine observation well inside the
+    3000ms grace, not only via timeout. What was missing was a DEDICATED
+    event-driven confirm at write time (this table entry) so the operator's
+    own click doesn't wait out even that 1.0s cadence tick, plus an
+    acquisition capability declaration for ``ensure_fresh`` reachability
+    (rigs/ic7300.toml) -- without it this table entry alone is rejected as
+    UNAVAILABLE before it ever reaches the executor. Zero cadence give-back
+    needed here: neither field is (or ever was) in any
+    [state_acquisition.field_policies] cadence tier, so this is pure
+    additional confirm-latency improvement with no existing budget to fund.
     """
     radio = _make_radio(active="MAIN")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))

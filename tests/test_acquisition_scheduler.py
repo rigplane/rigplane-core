@@ -2829,6 +2829,77 @@ def test_ic7610_real_profile_filter_width_query_for_path() -> None:
     assert executor.query_for_path(mode) == (0x26, None, 0)
 
 
+def test_filter_num_and_data_mode_query_for_path() -> None:
+    """MOR-1546: filter-select (filter_num) piggybacks on the SAME 0x26
+    selected/unselected mode readback ``mode`` already uses -- the filter
+    byte in that response (``parse_selected_mode_response`` /
+    ``_civ_rx.py``'s cmd 0x26 observation branch already emits a
+    ``filter_num`` observation alongside ``mode``/``data_mode`` from that one
+    response, this only teaches the executor how to REQUEST it). data_mode
+    has its own dedicated read (CI-V 0x1A 0x06, ``get_data_mode`` in every
+    profile's ``[commands]`` table), matching ``filter_width``'s
+    selected-only (no "unselected") shape rather than ``mode``'s.
+    """
+    sent: list[tuple[int, int | None, int | None]] = []
+
+    async def send_query(
+        command: int,
+        sub: int | None,
+        receiver: int | None,
+    ) -> None:
+        sent.append((command, sub, receiver))
+
+    executor = IcomCivAcquisitionExecutor(send_query)
+
+    filter_num_main = FieldPath.active("main", "freq_mode", "filter_num")
+    filter_num_sub = FieldPath.active("sub", "freq_mode", "filter_num")
+    assert executor.query_for_path(filter_num_main) == (0x26, None, 0)
+    assert executor.query_for_path(filter_num_sub) == (0x26, None, 1)
+
+    data_mode_main = FieldPath.active("main", "freq_mode", "data_mode")
+    data_mode_sub = FieldPath.active("sub", "freq_mode", "data_mode")
+    assert executor.query_for_path(data_mode_main) == (0x1A, 0x06, 0)
+    assert executor.query_for_path(data_mode_sub) == (0x1A, 0x06, 1)
+
+    # filter_num follows mode's selector scheme for the unselected slot
+    # (0x26 answers for either VFO); data_mode has no VFO-selector read at
+    # all, same as filter_width.
+    filter_num_unselected = FieldPath.unselected("main", "freq_mode", "filter_num")
+    data_mode_unselected = FieldPath.unselected("main", "freq_mode", "data_mode")
+    assert executor.query_for_path(filter_num_unselected) == (0x26, None, 1)
+    assert executor.query_for_path(data_mode_unselected) is None
+
+
+def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
+    """MOR-1546: without a declared acquisition capability, ``ensure_fresh``
+    rejects the path as UNAVAILABLE before it ever reaches the executor
+    (``AcquisitionScheduler._availability_for``) -- so the post-write
+    readback table entries alone are not sufficient, the profile must also
+    declare these two fields. Both are command_response_observable-only
+    (event-driven, like ``filter_width``), not ``polling_only`` -- neither
+    field is ever added to ``[state_acquisition.field_policies]``, so this
+    adds nothing to the standing serial budget accounted for at the bottom
+    of ``rigs/ic7300.toml``.
+    """
+    profile = get_radio_profile("IC-7300")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+
+    filter_num = FieldPath.active("main", "freq_mode", "filter_num")
+    data_mode = FieldPath.active("main", "freq_mode", "data_mode")
+
+    filter_cap = acquisition.capability_for(filter_num)
+    data_mode_cap = acquisition.capability_for(data_mode)
+    assert filter_cap.command_response_observable is True
+    assert filter_cap.polling is False
+    assert data_mode_cap.command_response_observable is True
+    assert data_mode_cap.polling is False
+
+    # Event-driven only: neither field is in the cadence sweep.
+    assert filter_num not in acquisition.field_policies
+    assert data_mode not in acquisition.field_policies
+
+
 def test_ic7610_real_profile_filter_width_pollable_and_emit_reads() -> None:
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None

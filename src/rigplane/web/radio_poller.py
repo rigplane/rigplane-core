@@ -530,6 +530,47 @@ _POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] 
     SetPreamp: lambda cmd: (
         FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "preamp"),
     ),
+    # MOR-1546: filter-select and DATA-mode carry the #2452 armed affordance.
+    # Both were ALREADY confirmed incidentally: ``mode``'s own 1.0s cadence
+    # poll (CI-V 0x26 selected/unselected mode readback,
+    # [state_acquisition.field_policies] in rigs/ic7300.toml) returns
+    # ``(mode, data_mode, filter)`` in one frame, and ``_civ_rx.py``'s cmd
+    # 0x26 observation branch already emits ``data_mode``/``filter_num``
+    # observations alongside ``mode`` from that same answer -- so armed was
+    # already clearing via a genuine observation within that cadence's
+    # worst case (~1.0s), comfortably inside the 3000ms ACK_CONFIRM_GRACE.
+    # What was actually missing:
+    #  (1) a DEDICATED event-driven confirm at write time, so the
+    #      operator's own click doesn't have to wait out even the 1.0s
+    #      cadence tick before confirming -- the same class of latency win
+    #      freq/mode/rf_gain/squelch/att/preamp already get from this table;
+    #  (2) an acquisition CAPABILITY declaration for these two paths
+    #      (rigs/ic7300.toml) -- without one, ``ensure_fresh`` rejects the
+    #      path as UNAVAILABLE before it ever reaches the executor, so
+    #      these table entries alone would still be unreachable.
+    # Neither entry funds or is funded by a cadence give-back -- there is no
+    # new cadence here, zero standing budget added either way.
+    #
+    # filter_num has no dedicated CI-V read; it rides the SAME 0x26
+    # selected/unselected mode readback ``SetMode`` above already requests,
+    # as the filter byte in that response (``query_for_path`` in
+    # ``acquisition_scheduler.py``, ``_civ_rx.py``'s cmd 0x26 observation
+    # branch) -- requesting the ``filter_num`` path here still costs exactly
+    # one 0x26 query, identical to what a `mode` post-write readback would
+    # send. This entry fires unconditionally for every ``SetFilter``,
+    # including on a backend without ``CAP_FILTER_WIDTH`` (whose ``case
+    # SetFilter`` arm above never calls ``radio.set_filter`` at all) --
+    # harmless, one extra 0x26 query per click on a filterless backend, not
+    # a wire write.
+    SetFilter: lambda cmd: (
+        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "filter_num"),
+    ),
+    # data_mode DOES have its own dedicated read (CI-V 0x1A 0x06,
+    # ``get_data_mode`` in every profile's ``[commands]`` table), so it gets
+    # its own one-query readback rather than piggybacking on ``mode``.
+    SetDataMode: lambda cmd: (
+        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "data_mode"),
+    ),
 }
 
 # ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore
