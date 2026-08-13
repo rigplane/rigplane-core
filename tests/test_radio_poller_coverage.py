@@ -80,6 +80,7 @@ from rigplane.web.radio_poller import (
     SetScopeDual,
     SetScopeDuringTx,
     SetScopeEdge,
+    SetScopeFixedEdge,
     SetScopeHold,
     SetScopeMode,
     SetScopeRbw,
@@ -2127,6 +2128,54 @@ async def test_execute_set_scope_rbw_updates_state_and_reconfirms() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_set_scope_fixed_edge_updates_state_and_reconfirms() -> None:
+    """MOR-1530: SetScopeFixedEdge previously got neither an optimistic
+    ``scope_controls.fixed_edge`` mirror write nor a ``_reconfirm_scope_field``
+    call — the ``scopeControls.fixedEdge`` published leaf stayed at its
+    pre-write reading forever, same MOR-1446/MOR-1524 desync class as the
+    other scope-control leaves."""
+    radio = _make_radio()
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(  # noqa: SLF001
+        SetScopeFixedEdge(edge=2, start_hz=14_000_000, end_hz=14_350_000)
+    )
+
+    radio.set_scope_fixed_edge.assert_awaited_once_with(
+        edge=2, start_hz=14_000_000, end_hz=14_350_000
+    )
+    assert state.scope_controls.fixed_edge.edge == 2
+    assert state.scope_controls.fixed_edge.start_hz == 14_000_000
+    assert state.scope_controls.fixed_edge.end_hz == 14_350_000
+    assert state.scope_controls.edge == 2
+    radio.get_scope_fixed_edge.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_scope_fixed_edge_reconfirm_timeout_does_not_raise() -> None:
+    """A dropped confirm response must not fail the command, same as the
+    other scope-control leaves (MOR-1446/MOR-1524)."""
+    radio = _make_radio()
+    state = RadioState()
+
+    async def _never_resolves() -> Any:
+        await asyncio.sleep(10)
+
+    radio.get_scope_fixed_edge = _never_resolves
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(  # noqa: SLF001
+        SetScopeFixedEdge(edge=1, start_hz=7_000_000, end_hz=7_300_000)
+    )
+
+    radio.set_scope_fixed_edge.assert_awaited_once_with(
+        edge=1, start_hz=7_000_000, end_hz=7_300_000
+    )
+    assert state.scope_controls.fixed_edge.edge == 1
+
+
+@pytest.mark.asyncio
 async def test_execute_switch_scope_receiver_mirrors_state_and_reconfirms() -> None:
     """MOR-1524: SwitchScopeReceiver previously only sent the fire-and-forget
     0x27 0x12 CI-V frame — it never mirrored ``scope_controls.receiver``
@@ -3232,20 +3281,21 @@ async def test_fetch_scope_controls_bounds_latency_on_dropped_response() -> None
         "get_scope_speed",
         "get_scope_vbw",
         "get_scope_rbw",
+        "get_scope_fixed_edge",
     ):
         setattr(radio, name, AsyncMock(side_effect=_hang))
 
-    # Tighten the timeout for the test so we don't wait 12 * 0.2 s = 2.4 s.
+    # Tighten the timeout for the test so we don't wait 13 * 0.2 s = 2.6 s.
     poller._SCOPE_GETTER_TIMEOUT = 0.02  # noqa: SLF001
 
     start = asyncio.get_event_loop().time()
     await poller._fetch_scope_controls()  # noqa: SLF001
     elapsed = asyncio.get_event_loop().time() - start
 
-    # 13 attempts (11 single-shot getters + rbw's 2, MOR-1524) * (0.02 s
-    # timeout + ~0 s gap) ≈ 0.26 s.  Allow generous slack so the test is not
+    # 14 attempts (12 single-shot getters + rbw's 2, MOR-1524) * (0.02 s
+    # timeout + ~0 s gap) ≈ 0.28 s.  Allow generous slack so the test is not
     # flaky on slow CI; the important property is that we are NOT blocked
-    # for 12 * 2.0 s = 24 s.
+    # for 13 * 2.0 s = 26 s.
     assert elapsed < 2.0, f"poller stalled for {elapsed:.2f}s on dropped responses"
 
     # Every getter was attempted exactly once even though they all hung,
@@ -3279,6 +3329,7 @@ async def test_fetch_scope_controls_normal_path_still_works() -> None:
         "get_scope_speed",
         "get_scope_vbw",
         "get_scope_rbw",
+        "get_scope_fixed_edge",
     ):
         getter = getattr(radio, name)
         getter.assert_awaited_once()
@@ -3315,6 +3366,7 @@ async def test_fetch_scope_controls_repeated_timeouts_do_not_accumulate() -> Non
         "get_scope_speed",
         "get_scope_vbw",
         "get_scope_rbw",
+        "get_scope_fixed_edge",
     ):
         setattr(radio, name, AsyncMock(side_effect=_hang))
 
@@ -3326,9 +3378,9 @@ async def test_fetch_scope_controls_repeated_timeouts_do_not_accumulate() -> Non
         await poller._fetch_scope_controls()  # noqa: SLF001
     elapsed = loop.time() - start
 
-    # 3 calls * 13 attempts (11 single-shot getters + rbw's 2, MOR-1524) *
-    # 0.01 s = 0.39 s nominal.  Generous upper bound so the test is robust
-    # on slow CI but still rejects the 3 * 24 s = 72 s blowup.
+    # 3 calls * 14 attempts (12 single-shot getters + rbw's 2, MOR-1524) *
+    # 0.01 s = 0.42 s nominal.  Generous upper bound so the test is robust
+    # on slow CI but still rejects the 3 * 26 s = 78 s blowup.
     assert elapsed < 3.0, f"3 successive calls took {elapsed:.2f}s — accumulated"
 
     # Each getter was attempted exactly 3 times (no early exit), except rbw

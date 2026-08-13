@@ -94,6 +94,7 @@ from ..core.radio_protocol import (
     ManagedTxApi,
     RelativeVfoReadbackCapable,
 )
+from ..core.types import ScopeFixedEdge
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import FreshnessState, StateSnapshot, StateStore
 from ..core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS, TxOutcome
@@ -1073,6 +1074,7 @@ class RadioPoller:
             ("get_scope_speed", radio.get_scope_speed),
             ("get_scope_vbw", radio.get_scope_vbw),
             ("get_scope_rbw", radio.get_scope_rbw),
+            ("get_scope_fixed_edge", radio.get_scope_fixed_edge),
         )
         for label, getter in scope_getters:
             ok = await self._scope_getter_attempt(label, getter)
@@ -2634,6 +2636,20 @@ class RadioPoller:
                         edge=edge,
                         start_hz=start_hz,
                         end_hz=end_hz,
+                    )
+                    if self._radio_state:
+                        prev_range = (
+                            self._radio_state.scope_controls.fixed_edge.range_index
+                        )
+                        self._radio_state.scope_controls.fixed_edge = ScopeFixedEdge(
+                            range_index=prev_range,
+                            edge=edge,
+                            start_hz=start_hz,
+                            end_hz=end_hz,
+                        )
+                        self._radio_state.scope_controls.edge = edge
+                    await self._reconfirm_scope_field(
+                        "get_scope_fixed_edge", radio.get_scope_fixed_edge
                     )
             case SetScopeDual(dual=dual):
                 if CAP_SCOPE in self._caps:
