@@ -287,12 +287,17 @@ class IcomRadio:
             raise AttributeError(
                 "set_rf_power requires a radio that implements PowerControlCapable"
             )
+        power_max_watts = None
+        if getattr(self._radio, "native_power_unit", "raw_255") == "watts":
+            profile = getattr(self._radio, "profile", None)
+            power_max_watts = getattr(profile, "max_watts", None)
         self._run(
             self._command_service.execute(
                 command_intent_from_request(
                     "set_rf_power",
                     {"value": level},
                     source="public_api",
+                    power_max_watts=power_max_watts,
                 )
             )
         )

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.core.capabilities import CAP_POWER_CONTROL
+from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.sync import IcomRadio
 
@@ -223,6 +226,72 @@ def test_sync_wrappers_delegate_and_return_values() -> None:
         == 100 / 255
     )
     r._loop.close()
+
+
+def _power_sync_radio(
+    *,
+    native_power_unit: str,
+    max_watts: int | None,
+) -> IcomRadio:
+    r = _radio()
+    profile = resolve_radio_profile(model="FTX-1")
+    r._radio._profile = replace(  # noqa: SLF001
+        profile,
+        max_watts=max_watts,
+        capabilities=frozenset({*profile.capabilities, CAP_POWER_CONTROL}),
+    )
+    r._radio.native_power_unit = native_power_unit
+    r._radio.set_rf_power = AsyncMock()
+    return r
+
+
+@pytest.mark.parametrize("method_name", ["set_rf_power", "set_power"])
+def test_sync_watts_power_expectation_uses_profile_max_watts(
+    method_name: str,
+) -> None:
+    """The sync power command actuates watts and publishes the same fraction."""
+    r = _power_sync_radio(native_power_unit="watts", max_watts=100)
+    try:
+        getattr(r, method_name)(50)
+
+        r._radio.set_rf_power.assert_awaited_once_with(50)
+        field = r._state_store.snapshot().field(  # noqa: SLF001
+            "global.operator_controls.power_level"
+        )
+        assert field.value == pytest.approx(0.5)
+    finally:
+        r._loop.close()
+
+
+@pytest.mark.parametrize(
+    ("native_power_unit", "max_watts", "expected"),
+    [
+        ("watts", 200, 0.25),
+        ("raw_255", 100, 50 / 255),
+        ("watts", None, 50 / 255),
+        ("watts", 0, 50 / 255),
+    ],
+)
+def test_sync_power_expectation_unit_gate_and_safe_fallback(
+    native_power_unit: str,
+    max_watts: int | None,
+    expected: float,
+) -> None:
+    """Only a positive watts-native profile changes the raw expectation scale."""
+    r = _power_sync_radio(
+        native_power_unit=native_power_unit,
+        max_watts=max_watts,
+    )
+    try:
+        r.set_rf_power(50)
+
+        r._radio.set_rf_power.assert_awaited_once_with(50)
+        field = r._state_store.snapshot().field(  # noqa: SLF001
+            "global.operator_controls.power_level"
+        )
+        assert field.value == pytest.approx(expected)
+    finally:
+        r._loop.close()
 
 
 def test_vfo_dispatch_single_rx_uses_ab_methods() -> None:
