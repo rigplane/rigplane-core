@@ -884,19 +884,36 @@ export function makeFilterHandlers() {
     // as `onFilterWidthChange` above, for the same reason (receiver identity
     // + mode/dataMode resolve the quantization rule; no confirmed prior
     // `filterWidth` reading is needed).
+    //
+    // MOR-1576 review (B1): `quantizeFilterWidthToRule` passes non-finite
+    // input straight through when no usable rule/segment covers it
+    // (`filter-controls.ts`), and `dispatchRadioIntent` THROWS on a
+    // non-safe-integer width. `FilterPanel.svelte`'s `factoryDefaults`
+    // falls back to the observed `filterWidth` (which is `Number.NaN`
+    // whenever `main.filterWidth` is unobserved — `panel-props.ts`) when
+    // the mode has no declared `defaults` array, so `defaults` here CAN
+    // legitimately arrive carrying NaN — precisely on radios that never
+    // confirm `filterWidth` readback, the case this ticket exists for. The
+    // whole array is validated (quantized-and-checked) BEFORE any command
+    // is dispatched, same MOR-1291 fail-closed shape used elsewhere in this
+    // file — a mid-loop throw would otherwise leave the radio bracketed
+    // into a non-active filter slot with the restoring `set_filter` never
+    // reached.
     onFilterDefaults: (defaults: number[]) => {
       const receiver = knownActiveReceiver('filter');
       const activeFilter = receiver === null ? null : getActiveReceiver()?.filter;
       if (receiver === null || !Number.isSafeInteger(activeFilter)) return;
       const rule = activeFilterRule(receiver);
-      for (let i = 0; i < defaults.length; i++) {
+      const quantizedWidths = defaults.map((width) => quantizeFilterWidthToRule(width, rule));
+      if (!quantizedWidths.every((width) => positiveSafeInteger(width))) return;
+      for (let i = 0; i < quantizedWidths.length; i++) {
         const filter = i + 1;
         if (filter !== activeFilter) {
           dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver } });
         }
         dispatchRadioIntent({
           name: 'set_filter_width',
-          params: { width: quantizeFilterWidthToRule(defaults[i], rule), receiver },
+          params: { width: quantizedWidths[i], receiver },
         });
       }
       if ((activeFilter as number) <= defaults.length) {
