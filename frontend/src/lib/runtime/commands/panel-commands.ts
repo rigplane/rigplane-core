@@ -590,6 +590,11 @@ export function makeDspHandlers() {
       } else if (mode === 'manual') {
         dispatchRadioIntent({ name: 'set_manual_notch', params: { on: true, receiver } });
       } else {
+        // MOR-1541: notch-off genuinely dispatches BOTH commands, so both
+        // NOTCH and A-NOTCH legitimately arm until each is confirmed —
+        // that is an honest reflection of what is actually in flight, not
+        // a bug (owner-decided: keep this behavior, see MOR-1536 adoption
+        // tests for the pinning coverage).
         dispatchRadioIntent({ name: 'set_auto_notch', params: { on: false, receiver } });
         dispatchRadioIntent({ name: 'set_manual_notch', params: { on: false, receiver } });
       }

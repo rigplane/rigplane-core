@@ -16,13 +16,17 @@ import path from 'node:path';
 // here too, unlike a hand-copied expectation.
 //
 // MOR-1536: the rule moved from a `:global(...)` block inside
-// `ModePanel.svelte` to the shared seat, `$lib/Button/control-button.css`
+// `ModePanel.svelte` to the shared seat, `$lib/Button/control-button-armed.css`
 // (imported once by `ControlButton.svelte`) — this now reads THAT file, a
 // plain CSS file with no `:global(...)` wrapper to unwrap.
+//
+// MOR-1541: file renamed from `control-button.css` to
+// `control-button-armed.css` (basename collided with the unrelated
+// `components-v2/controls/control-button.css`).
 function loadComponentCss(): string {
   // `process.cwd()` is `frontend/` under this project's vitest config (test
   // files run from the package root, not their own directory).
-  return readFileSync(path.resolve(process.cwd(), 'src/lib/Button/control-button.css'), 'utf-8');
+  return readFileSync(path.resolve(process.cwd(), 'src/lib/Button/control-button-armed.css'), 'utf-8');
 }
 
 const mockProps = {

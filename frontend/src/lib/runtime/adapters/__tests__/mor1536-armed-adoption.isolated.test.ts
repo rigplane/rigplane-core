@@ -23,6 +23,8 @@
  * adopted/skipped table.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 type FakeCommand = {
   name: string;
@@ -82,6 +84,21 @@ const fixtures: Fixture[] = [
   { label: 'getAutoNotchArmed', accessor: getAutoNotchArmed, intentName: 'set_auto_notch', paramKey: 'on', confirmedField: 'autoNotch', target: true, otherTarget: false },
   { label: 'getManualNotchArmed', accessor: getManualNotchArmed, intentName: 'set_manual_notch', paramKey: 'on', confirmedField: 'manualNotch', target: true, otherTarget: false },
 ];
+
+// MOR-1541: pin `ControlButton.svelte`'s import of the shared armed-state
+// CSS seat by its literal source string — a regression here (import
+// dropped, or the MOR-1541 rename to `control-button-armed.css` reverted
+// without updating the import) means the `data-armed` visual channel
+// (`control-button-armed.css`) silently stops loading.
+describe('ControlButton armed-state CSS import (MOR-1541)', () => {
+  it("imports './control-button-armed.css'", () => {
+    const source = readFileSync(
+      path.resolve(process.cwd(), 'src/lib/Button/ControlButton.svelte'),
+      'utf-8',
+    );
+    expect(source).toContain("import './control-button-armed.css'");
+  });
+});
 
 for (const fx of fixtures) {
   describe(`${fx.label} (MOR-1536)`, () => {
