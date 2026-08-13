@@ -51,6 +51,7 @@
       with `off`.
 -->
 <script module lang="ts">
+  import { t } from '$lib/i18n';
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
   import { pressedOf } from './pressed-of';
 
@@ -78,11 +79,28 @@
     armed: 'break-in ARMED — the key transmits',
     unknown: 'break-in state unknown — assume the key transmits',
   };
-  /** Why break-in is blocked, in the permit's own vocabulary (rule 3). */
-  export const BREAK_IN_BLOCKED_LABEL: Partial<Record<DisabledReasonCode, string>> = {
-    'out-of-band': 'TX not permitted: frequency outside the configured TX ranges',
-    'capability-unavailable': 'TX not permitted: TX ranges are not configured',
-    'tx-target-unknown': 'TX not permitted: the TX target is not observed',
+  /**
+   * MOR-1474: why break-in is blocked, in the permit's own vocabulary (rule
+   * 3) — routed through the i18n catalog. The `{reason}` half REUSES the
+   * exact `core.band.tx.reason.*` keys MOR-1448 established for BandSurface:
+   * this field is gated on the SAME `view.txPermit` object BandSurface's
+   * `txDeniedReason` reads (`deriveCwKeyerReasons` in
+   * `radio-view-model-adapter.ts` derives `cwKeyer.breakIn`'s code from
+   * `txPermit.status`/`txPermit.reason`, identically to how BandSurface's
+   * `field: 'txPermit'` disabledReasons are populated) — same fact, same
+   * words, including the out-of-band reason's explicit "your transmit
+   * frequency" subject (never "this frequency", which would read as the
+   * displayed band's frequency rather than the actual TX target). */
+  export const BREAK_IN_REASON_KEY: Partial<Record<DisabledReasonCode, string>> = {
+    'out-of-band': 'core.band.tx.reason.outOfBand',
+    'capability-unavailable': 'core.band.tx.reason.rangesNotConfigured',
+    'tx-target-unknown': 'core.band.tx.reason.targetUnknown',
+  };
+  export const breakInBlockedLabel = (code: DisabledReasonCode): string | undefined => {
+    const reasonKey = BREAK_IN_REASON_KEY[code];
+    return reasonKey === undefined
+      ? undefined
+      : t('core.cwKeyer.breakIn.blocked', { reason: t(reasonKey) });
   };
   /** Rule 4 — the mutex reason, per field, with the OTHER mode named. The
    *  `mutually-exclusive-control` code is generic by design (MOR-1293), so the
@@ -182,7 +200,7 @@
         <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
         {#if !permitAllowed && breakInReason}
           <output data-testid="cw-keyer-break-in-blocked" data-reason={breakInReason}
-          >{BREAK_IN_BLOCKED_LABEL[breakInReason]}</output>
+          >{breakInBlockedLabel(breakInReason)}</output>
         {/if}
       </div>
     {/if}

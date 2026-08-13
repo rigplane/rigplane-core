@@ -17,7 +17,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import type { RadioViewModel } from '../radio-view-model';
-import type { TxAuthoritySnapshot } from '../rx-tx-surface';
+import { blockedLabel, targetUnknownMessage, type KeyBlockedReason, type TxAuthoritySnapshot } from '../rx-tx-surface';
+import { t } from '$lib/i18n';
 
 const IDS: readonly TopologyFixtureId[] = ['1/single', '1/ab', '2/ab_shared', '2/main_sub'];
 /** The only fixture whose permit is 'allowed' AND whose txTarget is known. */
@@ -423,6 +424,74 @@ describe('accessibility', () => {
       const describedBy = s.key().getAttribute('aria-describedby');
       expect(describedBy).toBeTruthy();
       expect(target.querySelector(`#${describedBy}`)).not.toBeNull();
+    });
+  });
+});
+
+/* ── MOR-1474: operator-legible wording for the unknown-target line and the
+   blocked-reason list — pinned against the contract-speak regression the
+   MOR-1448 wording fix already removed one surface over. Every reason code
+   is pinned to its catalog key (not just today's rendered text), so a
+   future edit that silently reintroduces a raw enum word or an interpolated
+   status fails a test by name. ────────────────────────────────────────── */
+
+describe('MOR-1474 — unknown TX target names the reason through the catalog', () => {
+  it.each([
+    ['not-observed', 'core.rxTx.target.reason.notObserved'],
+    ['stale', 'core.rxTx.target.reason.stale'],
+    ['unsupported', 'core.rxTx.target.reason.unsupported'],
+    ['contradiction', 'core.rxTx.target.reason.contradiction'],
+  ] as const)('reason %s maps to catalog key %s', (reason, key) => {
+    expect(targetUnknownMessage(reason)).toBe(
+      t('core.rxTx.target.unknown', { reason: t(key) }),
+    );
+  });
+
+  it('renders the composed catalog message for the fixture\'s own not-observed reason', () => {
+    withSurface(topologyFixtures['1/ab'], IDLE_RX, () => {
+      const t2 = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
+      expect(t2.dataset.reason).toBe('not-observed');
+      expect(t2.textContent?.trim()).toBe(targetUnknownMessage('not-observed'));
+    });
+  });
+
+  it('never leaks the raw reason enum word as a bare, untranslated fragment', () => {
+    // Kill-mutation: interpolating `reason` (the enum value itself) straight
+    // into `core.rxTx.target.unknown` instead of resolving it through
+    // `TARGET_REASON_KEY` first — the exact MOR-1448 F4 class of defect.
+    for (const reason of ['not-observed', 'stale', 'unsupported', 'contradiction'] as const) {
+      expect(targetUnknownMessage(reason)).not.toContain(reason);
+    }
+  });
+});
+
+describe('MOR-1474 — every key-blocked reason resolves to operator-legible copy', () => {
+  const ALL_CODES: readonly KeyBlockedReason[] = [
+    'tx-target-unknown', 'tx-permit-denied', 'tx-permit-unknown',
+    'tx-fault', 'tx-busy', 'radio-transmitting', 'rf-state-unknown',
+  ];
+
+  it.each([
+    ['tx-target-unknown', 'core.band.tx.reason.targetUnknown'],
+    ['tx-permit-denied', 'core.band.tx.reason.outOfBand'],
+    ['tx-permit-unknown', 'core.rxTx.blocked.permitUnknown'],
+    ['tx-fault', 'core.rxTx.blocked.fault'],
+    ['tx-busy', 'core.rxTx.blocked.busy'],
+    ['radio-transmitting', 'core.rxTx.blocked.radioTransmitting'],
+    ['rf-state-unknown', 'core.rxTx.blocked.rfStateUnknown'],
+  ] as const)('code %s maps to catalog key %s', (code, key) => {
+    expect(blockedLabel(code)).toBe(t(key));
+  });
+
+  it('has a mapping for every KeyBlockedReason the shared predicate can return', () => {
+    for (const code of ALL_CODES) expect(blockedLabel(code)).not.toBe('');
+  });
+
+  it('renders the catalog-resolved text on the real blocked-reasons list', () => {
+    withSurface(topologyFixtures['1/single'], snap({ radioTx: 'on' }), (s) => {
+      const li = target.querySelector('[data-testid="rx-tx-blocked"] [data-reason="radio-transmitting"]');
+      expect(li?.textContent?.trim()).toBe(blockedLabel('radio-transmitting'));
+      expect(s.reasons()).toContain('radio-transmitting');
     });
   });
 });

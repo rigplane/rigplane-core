@@ -111,10 +111,22 @@
   /** Display only, never parsed back — the entry field works in whole Hz so a
    *  boundary comparison can never lose a digit to a decimal round-trip. */
   export const mhz = (hz: number): string => `${(hz / 1e6).toFixed(3)} MHz`;
+  /** MOR-1474: catalog keys behind each `defaultHzTxPermit.status` tri-state
+   *  word — the same F4 doctrine as `REASON_KEY` above: the verdict stays
+   *  explicit, but as a per-status key rather than the raw English enum
+   *  interpolated into (in particular) the ru-RU label. */
+  const DEFAULT_PERMIT_STATUS_KEY: Record<BandChoice['defaultHzTxPermit']['status'], string> = {
+    allowed: 'core.band.tx.defaultPermit.status.allowed',
+    denied: 'core.band.tx.defaultPermit.status.denied',
+    unknown: 'core.band.tx.defaultPermit.status.unknown',
+  };
   /** Rule (2): the permit is spelled WITH the frequency it was sampled at, so
    *  the label cannot be read as a claim about the whole band. */
   export const defaultPermitLabel = (choice: BandChoice): string =>
-    `TX at ${mhz(choice.defaultHz)}: ${choice.defaultHzTxPermit.status}`;
+    t('core.band.tx.defaultPermit.label', {
+      frequency: mhz(choice.defaultHz),
+      status: t(DEFAULT_PERMIT_STATUS_KEY[choice.defaultHzTxPermit.status]),
+    });
 
   /**
    * MOR-1462 (owner ruling B) — the standard ham direct-entry heuristic. A
@@ -382,8 +394,8 @@
       >Set</button>
       {#if !boundsKnown || !receiverKnown}
         <span data-testid="band-entry-reason">{boundsKnown
-          ? 'active receiver not observed — no honest tuning target'
-          : 'tuning limits unknown — entry cannot be validated'}</span>
+          ? t('core.band.entry.reason.receiverUnconfirmed')
+          : t('core.band.entry.reason.boundsUnknown')}</span>
       {/if}
     </label>
   </section>
