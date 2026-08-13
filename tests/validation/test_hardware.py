@@ -166,6 +166,28 @@ async def test_agc_set_probe_derives_from_declared_domain_not_hardcoded_fast_slo
     assert store["value"] == 5
 
 
+async def test_agc_set_probe_never_lands_on_off_for_a_domain_that_declares_it():
+    """MOR-1529 R1: the domain-derived probe must never pick 0 (AGC OFF)
+    just because it's the first declared mode != current.
+
+    The live FTX-1 declares ``[agc] modes = [0..6]`` — picking the first
+    declared value != current would land on 0 for every current value
+    except 0 itself. This RMVR probe is documented non-destructive/RX-safe
+    (MOR-659): momentarily disabling AGC on a bench radio is audible and
+    operator-affecting, unlike flipping between two settable AGC speeds.
+    The probe must prefer a non-OFF candidate (landing FTX-1 on 1=FAST).
+    """
+    radio, _store = _stateful_agc_mock(start=3, domain=(0, 1, 2, 3))
+    template = _single_entry_template(check_id="agc.set", capability="agc")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["agc.set"]
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["changed"] != 0
+    assert check.evidence["changed"] == 1
+
+
 def _digisel_preamp_mock(*, preamp_start: int = 0, digisel_on: bool = True):
     """A stateful preamp mock that ALSO exposes get/set_digisel.
 

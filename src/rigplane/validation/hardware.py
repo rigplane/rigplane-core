@@ -1809,11 +1809,22 @@ async def _check_agc_set(
         # true for every currently-shipped profile by coincidence, but not
         # by design (e.g. would break for a hypothetical profile whose
         # domain excludes both).
+        #
+        # R1: prefer a non-OFF (0) candidate. The live FTX-1 declares
+        # ``[agc] modes = [0..6]`` — picking the first declared value
+        # != current would land on 0 (AGC OFF) for every current value
+        # except 0 itself. This RMVR probe is documented non-destructive/
+        # RX-safe (MOR-659): momentarily disabling AGC on a bench radio is
+        # audible and operator-affecting, unlike flipping between two
+        # settable AGC speeds (the old hardcoded SLOW/FAST probe never did
+        # this). Landing on 1 (FAST) instead keeps the probe inside
+        # "change AGC speed", never "turn AGC off".
         modes = _declared_agc_modes(radio)
         if modes:
-            for candidate in modes:
-                if candidate != current:
-                    return candidate
+            candidates = [m for m in modes if m != current]
+            non_off = [m for m in candidates if m != 0]
+            if candidates:
+                return (non_off or candidates)[0]
         # No declared domain reachable (e.g. a bare test double) — fall
         # back to the two values every currently-shipped ``[agc] modes``
         # table happens to include.
