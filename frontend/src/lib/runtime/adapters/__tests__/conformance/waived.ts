@@ -15,17 +15,12 @@
  * diff — pinned as a literal so a removal (or a silent re-add) shows up
  * as a diff / count-assertion break.
  *
- * Provenance: family assignment comes from the MOR-1426 decomposition's
- * per-family "Work" lists (session 19, 2026-08-13), cross-checked against
- * the actual `dispatchRadioIntent` call sites grouped by factory. One gap:
- * `makeRitXitHandlers`' 3 intents (`set_rit_status`/`set_rit_tx_status`/
- * `set_rit_frequency`) aren't named in ANY of MOR-1560..1567's prose — the
- * family table has a genuine hole there, not a parsing mistake: C6(9) +
- * C7(5) + C10(8) + C11(12) + C12(15) + 15 literal of C13's own itemized 16
- * (its 16th is the dynamic mod-input call, tracked separately — see
- * below) sum to 64, exactly 3 short of 67. They land on MOR-1567 here
- * because C13 is explicitly the closing sweeper — its own acceptance
- * criterion is "C2's waiver map is EMPTY ... after this lands".
+ * Provenance: family assignment came from the MOR-1426 decomposition's
+ * per-family "Work" lists, cross-checked against the actual
+ * `dispatchRadioIntent` call sites grouped by factory. `makeRitXitHandlers`'
+ * 3 intents were never named in ANY of MOR-1560..1567's prose (a genuine
+ * hole in the family table, not a parsing mistake) — they landed on MOR-1567
+ * as the closing sweeper; see `./claimed.ts`'s MOR-1567 paragraph.
  *
  * ONE DELIBERATE EXCLUSION (full account in the completeness meta-test's
  * header): `onModInputChange` builds its intent name at runtime via
@@ -50,65 +45,35 @@ function tag(names: readonly string[], waiver: Waiver): Record<string, Waiver> {
   return Object.fromEntries(names.map((name) => [name, waiver]));
 }
 
-const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner: 'MOR-1567' } as const;
-
 /**
- * The (67 - 9 - 5 - 4 - 8 - 12 - 12 = 17) intents with no conformance
- * assertion, tagged with the family child that owns closing them. MOR-1562
- * (C8, adapter-seam parity) intentionally claims ZERO entries here — its scope
- * is `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
+ * MOR-1560 (C6)'s 9 DSP intents, MOR-1561 (C7)'s 5 filter/PBT intents,
+ * MOR-1564 (C10)'s 8 TX-chain intents, MOR-1565 (C11)'s 12 VOX/CW intents,
+ * MOR-1566 (C12)'s 12 scope-remainder/VFO-topology intents, and MOR-1567
+ * (C13)'s 17 remainder-sweeper intents (the 14 named in its own prose +
+ * the 3 orphaned RIT/XIT intents this file previously documented as a
+ * genuine gap in MOR-1426's per-family prose — `set_rit_status`,
+ * `set_rit_tx_status`, `set_rit_frequency`) all landed and moved to
+ * `CLAIMED_INTENTS` in `./claimed.ts` — see that file's header for the
+ * per-walk breakdown and each walk's own `*-conformance.isolated.test.ts`
+ * for the fixture-derived dispatch/refusal split. MOR-1563 (C9)'s keyboard
+ * walk additionally landed the FIRST real coverage for 4 intents that
+ * otherwise belonged to MOR-1566/MOR-1567's families (`set_data_mode`,
+ * `vfo_swap`, `vfo_equalize`, `set_scope_hold`) — per this file's own
+ * burn-down rule (a landed `expectFrames` claims the intent regardless of
+ * which walk lands it first). MOR-1562 (C8, adapter-seam parity)
+ * intentionally claimed ZERO entries here — its scope was
+ * `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
  *
- * MOR-1560 (C6)'s 9 DSP intents and MOR-1561 (C7)'s 5 filter/PBT intents
- * landed and were moved to `CLAIMED_INTENTS` in `./claimed.ts` — see
- * `../mor1560-dsp-family-conformance.isolated.test.ts` and
- * `../mor1561-filter-pbt-family-conformance.isolated.test.ts`. MOR-1563
- * (C9)'s keyboard walk additionally landed the FIRST real coverage for 4
- * intents that otherwise belong to MOR-1566/MOR-1567's families
- * (`set_data_mode`, `vfo_swap`, `vfo_equalize`, `set_scope_hold`) — moved
- * out of those two families' tags below per this file's own burn-down rule
- * (a landed `expectFrames` claims the intent regardless of which walk lands
- * it first); MOR-1566 extended coverage on the 3 that belong to it (more
- * call sites — see below) rather than initiating it.
- *
- * MOR-1564 (C10)'s TX-chain walk landed all 8 of its intents — see
- * `./claimed.ts` and `../mor1564-tx-family-conformance.isolated.test.ts`.
- *
- * MOR-1565 (C11)'s VOX/CW walk landed all 12 of its intents — see
- * `./claimed.ts` and `../mor1565-vox-cw-family-conformance.isolated.test.ts`.
- *
- * MOR-1566 (C12)'s scope-remainder/VFO-topology walk landed all 12 of its
- * intents — see `./claimed.ts` and
- * `../mor1566-scope-vfo-family-conformance.isolated.test.ts`.
+ * This map is now EMPTY (0 of the original 67 walked-family intents
+ * remain) — MOR-1567's own acceptance criterion, and the closing state of
+ * the whole MOR-1426 Tier-2 conformance program's `WAIVED_INTENTS`
+ * ledger. Kept (rather than deleted) as the live burn-down target for any
+ * future intent this ledger's completeness test would otherwise fail on.
  */
-export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
-  // MOR-1560 (C6) — DSP: NR/NB/notch/AGC time constant — CLAIMED, see
-  // `./claimed.ts` and `../mor1560-dsp-family-conformance.isolated.test.ts`.
-  // MOR-1561 (C7) — Filter, PBT and IF-shift — CLAIMED, see `./claimed.ts`
-  // and `../mor1561-filter-pbt-family-conformance.isolated.test.ts`.
-  // MOR-1564 (C10) — TX chain — CLAIMED, see `./claimed.ts` and
-  // `../mor1564-tx-family-conformance.isolated.test.ts`.
-  // MOR-1565 (C11) — VOX + CW — CLAIMED, see `./claimed.ts` and
-  // `../mor1565-vox-cw-family-conformance.isolated.test.ts`.
-  // MOR-1566 (C12) — scope remainder + VFO topology — CLAIMED, see
-  // `./claimed.ts` and
-  // `../mor1566-scope-vfo-family-conformance.isolated.test.ts`
-  // (set_scope_hold/vfo_swap/vfo_equalize were already CLAIMED by MOR-1563's
-  // keyboard walk — MOR-1566 extended their coverage to real non-keyboard UI
-  // call sites, see that file's header).
-  // MOR-1567 (C13) — sweeper — 14 named in its own prose (set_data_mode
-  // CLAIMED by MOR-1563's keyboard walk, see above) + 3 orphaned RIT/XIT
-  // (see file header) — 17
-  ...tag([
-    'scan_start', 'scan_stop', 'scan_set_df_span', 'scan_set_resume',
-    'set_dial_lock', 'set_powerstat', 'speak', 'set_antenna_1', 'set_antenna_2',
-    'set_rx_antenna_ant1', 'set_rx_antenna_ant2',
-    'set_digisel', 'set_ip_plus', 'memory_clear',
-    'set_rit_status', 'set_rit_tx_status', 'set_rit_frequency',
-  ], SWEEPER),
-};
+export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {};
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_INTENTS_COUNT = 17;
+export const WAIVED_INTENTS_COUNT = 0;
 
 /**
  * `dispatchKeyboardRadioAction` case labels with no conformance assertion.

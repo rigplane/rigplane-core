@@ -152,6 +152,32 @@
  * exercised (see that file's own header). `vfo_swap`/`vfo_equalize`'s
  * structural-only, no-field-observation gate reconfirms MOR-1578 leg 1 at
  * the handler itself, not just its keyboard wrapper.
+ *
+ * Plus MOR-1567's (C13) remainder-sweeper family walk — the CLOSING walk of
+ * the MOR-1426 Tier-2 program, `WAIVED_INTENTS` now empty — 17 intents:
+ * `scan_start`/`scan_stop`/`scan_set_df_span`/`scan_set_resume`,
+ * `set_dial_lock`/`set_powerstat`/`speak`,
+ * `set_antenna_1`/`set_antenna_2`/`set_rx_antenna_ant1`/`set_rx_antenna_ant2`,
+ * `set_digisel`/`set_ip_plus`, `memory_clear`, and the 3 orphaned RIT/XIT
+ * intents `waived.ts`'s history documents as a genuine gap in MOR-1426's
+ * per-family prose — `set_rit_status`/`set_rit_tx_status`/
+ * `set_rit_frequency`. Skewed for THREE reasons, not one: 8 refuse on an
+ * unobserved field this fixture never confirmed; the 4 antenna intents
+ * refuse on a STRUCTURAL gate (`caps.antennas===1<2`, fires before the
+ * also-unobserved field check — `set_rx_antenna_ant1`/`set_rx_antenna_ant2`
+ * additionally share ONE call site, `onToggleRxAnt`); the remaining 6
+ * genuinely DISPATCH — the 4 scan intents and `speak` UNCONDITIONALLY (no
+ * capability check at all, the same ungated shape MOR-1578 leg 1 already
+ * flagged for `vfo_swap`/`vfo_equalize`, cited as the same class here), and
+ * `set_powerstat` on a capability-only gate with no field check (RED-FIRST
+ * target, see that file's header). `memory_clear` is the one dispatch
+ * resolved through a real multi-field snapshot (`currentMemorySnapshot()`).
+ * MOR-1574 is cited (not re-derived) as CONTRAST: the READ-path
+ * `toRitXitProps` (MOR-1562/C8) has no fieldStatus gate on `ritOn`/
+ * `ritFreq`/`ritTx` at all, while the WRITE-path handlers walked here DO
+ * gate on those same three unobserved leaves. Also adds ADDITIVE (uncounted,
+ * outside the 87-name universe) coverage of the dynamic mod-input dispatch
+ * across all 4 DATA groups on this fixture — see that file's own header.
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
@@ -230,10 +256,28 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_main_sub_tracking',
   'quick_dualwatch',
   'quick_split',
+  // MOR-1567 (C13) — remainder-sweeper family walk (closing walk)
+  'scan_start',
+  'scan_stop',
+  'scan_set_df_span',
+  'scan_set_resume',
+  'set_dial_lock',
+  'set_powerstat',
+  'speak',
+  'set_antenna_1',
+  'set_antenna_2',
+  'set_rx_antenna_ant1',
+  'set_rx_antenna_ant2',
+  'set_digisel',
+  'set_ip_plus',
+  'memory_clear',
+  'set_rit_status',
+  'set_rit_tx_status',
+  'set_rit_frequency',
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 70;
+export const CLAIMED_INTENTS_COUNT = 87;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.
