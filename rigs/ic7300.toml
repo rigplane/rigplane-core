@@ -1285,3 +1285,162 @@ label = "S9"
 raw = 241
 actual = 60.0
 label = "S9+60"
+
+# PA/TX telemetry meter calibration (MOR-1527) -- power / ALC / COMP / Vd / Id.
+# Before this table existed these five meters had no [[meters.<key>.
+# calibration]] block on this profile, so the backend published the raw
+# CI-V byte (`_civ_rx.py`'s `_calibrated_meter_value` -> `interpolate_meter`
+# returns `(raw, False)` with no table) and the frontend rendered it as a
+# naked device-scale number with no unit -- the live finding behind this
+# ticket: the Vd tile read "158" with nothing to say it wasn't volts.
+#
+# Source: hamlib's own IC-7300 driver (rigs/icom/ic7300.c,
+# IC7300_RFPOWER_METER_CAL / IC7300_ALC_CAL / IC7300_COMP_METER_CAL /
+# IC7300_VD_METER_CAL / IC7300_ID_METER_CAL), verified against commit
+# cfaf1573deabe962452a42b58402e4f158554676 (2026-06-19):
+# https://github.com/Hamlib/Hamlib/blob/cfaf1573deabe962452a42b58402e4f158554676/rigs/icom/ic7300.c#L93-L131
+# The existing [meters.swr] table above (raw 0/48/80/120/240 -> 1.0/1.5/
+# 2.0/3.0/6.0) is the SAME source and matches exactly, which is why hamlib
+# is trusted here as a documented-Icom-convention proxy the same way it
+# already stood in for wfview's SWR table.
+#
+# Provenance is honest, not uniform: hamlib-sourced but NOT independently
+# live-validated on this bench for power/ALC/COMP/Id. Vd is the exception --
+# live-corroborated: interpolating this table at raw 158 (13/10.0 ..
+# 241/16.0) gives 13.82 V, which reproduces the operator's own live IC-7300
+# bench reading ("~13.8 V" at that same raw byte, the finding that opened
+# this ticket) to within rounding. Bench validation of the remaining four
+# curves against a real load/meter is tracked as a MOR-1410 follow-up, not
+# claimed here.
+#
+# ALC's `actual` column is stored in this repo's percent convention (0-100,
+# matching rigs/ic7610.toml's own [meters.alc] table: raw 0/120 ->
+# actual 0.0/100.0) rather than hamlib's normalized 0.0-1.0 scale --
+# `_civ_rx.py`'s `_calibrated_meter_value` divides the interpolated ALC
+# value by 100 back to the 0-1 domain before publishing, so this profile
+# must speak the 0-100 wire format the loader expects, not hamlib's own
+# units verbatim.
+[[meters.power.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.power.calibration]]
+raw = 21
+actual = 5.0
+label = "5"
+
+[[meters.power.calibration]]
+raw = 43
+actual = 10.0
+label = "10"
+
+[[meters.power.calibration]]
+raw = 65
+actual = 15.0
+label = "15"
+
+[[meters.power.calibration]]
+raw = 83
+actual = 20.0
+label = "20"
+
+[[meters.power.calibration]]
+raw = 95
+actual = 25.0
+label = "25"
+
+[[meters.power.calibration]]
+raw = 105
+actual = 30.0
+label = "30"
+
+[[meters.power.calibration]]
+raw = 114
+actual = 35.0
+label = "35"
+
+[[meters.power.calibration]]
+raw = 124
+actual = 40.0
+label = "40"
+
+[[meters.power.calibration]]
+raw = 143
+actual = 50.0
+label = "50"
+
+[[meters.power.calibration]]
+raw = 183
+actual = 75.0
+label = "75"
+
+[[meters.power.calibration]]
+raw = 213
+actual = 100.0
+label = "100"
+
+[[meters.power.calibration]]
+raw = 255
+actual = 120.0
+label = "120"
+
+[[meters.alc.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.alc.calibration]]
+raw = 120
+actual = 100.0
+label = "100"
+
+[[meters.comp.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.comp.calibration]]
+raw = 130
+actual = 15.0
+label = "15"
+
+[[meters.comp.calibration]]
+raw = 241
+actual = 30.0
+label = "30"
+
+[[meters.vd.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.vd.calibration]]
+raw = 13
+actual = 10.0
+label = "10"
+
+[[meters.vd.calibration]]
+raw = 241
+actual = 16.0
+label = "16"
+
+[[meters.id.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.id.calibration]]
+raw = 97
+actual = 10.0
+label = "10"
+
+[[meters.id.calibration]]
+raw = 146
+actual = 15.0
+label = "15"
+
+[[meters.id.calibration]]
+raw = 241
+actual = 25.0
+label = "25"
