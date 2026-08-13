@@ -29,10 +29,11 @@
  * a byte-faithful capture. `deriveModeProps`/`deriveAgcProps`/
  * `deriveRfFrontEndProps`/`deriveFilterProps`/`deriveBandSelectorProps`/
  * `deriveDspProps`/`deriveTxProps`/`deriveAntennaProps`/`deriveScanProps`/
- * `deriveCwProps`, and the entire `capabilities-adapter.ts` surface, had
- * literally no test importing them before this file (verified by grep —
- * see PR body). `presentation-capabilities.ts` has a synthetic-fixture unit
- * test but had never run over the live ic7300 caps either.
+ * `deriveCwProps`/`deriveRitXitProps`, and the entire `capabilities-
+ * adapter.ts` surface, had literally no test importing them before this
+ * file (verified by grep — see PR body). `presentation-capabilities.ts` has
+ * a synthetic-fixture unit test but had never run over the live ic7300
+ * caps either.
  *
  * HARNESS EXTENSION (see `./conformance/harness.ts`'s own MOR-1562 comment):
  * `derive*Props` reads `runtime.state`/`runtime.caps` (the
@@ -57,25 +58,22 @@
  * wrapper with real logic — MOR-1447's normalized-to-raw conversion) is
  * already fully covered by MOR-1428 and not repeated here.
  *
- * DEFERRED (explicit follow-up scope, not silent gaps — see PR body for the
- * full accounting against `panel-adapters.ts`'s ~50 exports): RitXit/Scan/
- * Cw/Antenna/Vfo/Memory/AudioRouting/Preset/Keyboard/System get*Handlers
- * (bare passthroughs, see SCOPE DECISION above); the armed-signal family
- * beyond none needed here (fully covered by `mor1536-armed-adoption` +
- * `mor1519-mode-armed`, just not against this fixture); getPendingXxx
- * (covered by `mor1441-pending-*`); getActiveFrequencyHz (covered by
- * `mor1409-a15-active-frequency`); bindSemanticSurfaceHandlers/
- * bindVfoTunerContext (covered by `semantic-surface-handler-binder`);
- * deriveAmberScopeProps/deriveAmberCockpitProps/getAmberCockpitHandlers
- * (need a THIRD harness extension — `hasAudioFft`/`hasDualReceiver`/
- * `hasCapability` from `$lib/stores/capabilities.svelte` are not mocked at
- * all today — out of scope to avoid growing the harness beyond what this
- * walk strictly needs); deriveMemoryPanelProps/deriveVfoControlProps/
+ * DEFERRED (explicit follow-up scope, not silent gaps — full accounting in
+ * PR body): RitXit/Scan/Cw/Antenna/Vfo/Memory/AudioRouting/Preset/Keyboard/
+ * System `get*Handlers` ONLY — not `derive*Props`, `deriveRitXitProps` IS
+ * covered below (bare passthroughs, see SCOPE DECISION above); the
+ * armed-signal family (fully covered by `mor1536-armed-adoption` +
+ * `mor1519-mode-armed`, just not this fixture); getPendingXxx
+ * (`mor1441-pending-*`); getActiveFrequencyHz (`mor1409-a15-active-
+ * frequency`); bindSemanticSurfaceHandlers/bindVfoTunerContext
+ * (`semantic-surface-handler-binder`); deriveAmberScopeProps/
+ * deriveAmberCockpitProps/getAmberCockpitHandlers (need a THIRD harness
+ * extension — `hasAudioFft`/`hasDualReceiver`/`hasCapability` are unmocked
+ * today, out of scope); deriveMemoryPanelProps/deriveVfoControlProps/
  * deriveAudioSpectrumProps/deriveAmberTelemetryProps; every non-panel-
  * adapters seam (audio-adapter.ts, qsy-history-adapter.ts, vfo-adapter.ts,
  * tx-adapter.ts, tx-capabilities.ts, lcd-chrome-adapter.ts, mod-input-*,
- * scope-adapter.ts — scope-adapter's `toSpectrumAuthority` is already
- * walked by MOR-1428 directly).
+ * scope-adapter.ts — its `toSpectrumAuthority` is walked by MOR-1428).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -98,6 +96,7 @@ import {
   deriveAntennaProps,
   deriveScanProps,
   deriveCwProps,
+  deriveRitXitProps,
 } from '../panel-adapters';
 import {
   getMeterCalibration, getMeterRedline, getControlRange, getReceiverLabel,
@@ -306,6 +305,20 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
       hasBreakIn: true,
       hasApf: true,
       hasTwinPeak: true,
+    });
+  });
+
+  // MOR-1574 (filed off this walk): unlike toAgcProps/toRfFrontEndProps,
+  // `toRitXitProps` (panel-props.ts:482-494) has NO fieldStatus gate on
+  // ritOn/ritFreq/ritTx — pinned CURRENT baseline, not an endorsement;
+  // update once MOR-1574 lands.
+  it('deriveRitXitProps: pins the current un-gated reading — production honesty gap tracked as MOR-1574', () => {
+    expect(IC7300_STATE.fieldStatus?.ritOn?.observed).toBe(false);
+    expect(IC7300_STATE.fieldStatus?.ritFreq?.observed).toBe(false);
+    expect(IC7300_STATE.fieldStatus?.ritTx?.observed).toBe(false);
+    expect(deriveRitXitProps()).toEqual({
+      ritActive: false, ritOffset: 0, xitActive: false, xitOffset: 0,
+      hasRit: true, hasXit: true,
     });
   });
 });
