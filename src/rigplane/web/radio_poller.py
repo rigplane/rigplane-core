@@ -94,7 +94,6 @@ from ..core.radio_protocol import (
     ManagedTxApi,
     RelativeVfoReadbackCapable,
 )
-from ..core.types import ScopeFixedEdge
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import FreshnessState, StateSnapshot, StateStore
 from ..core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS, TxOutcome
@@ -1060,7 +1059,15 @@ class RadioPoller:
         # Iterate through all scope-control getters in the same order as
         # the previous raw 0x27 sub-command sequence so cadence/queue
         # behavior is preserved. Each call sleeps `_adaptive_gap()` to
-        # keep the existing throttle.
+        # keep the existing throttle. `get_scope_fixed_edge` (0x1E) was
+        # never part of that legacy sequence — MOR-1530 closed the gap —
+        # so it is placed immediately ahead of rbw (0x1F) to keep the
+        # trailing entries in ascending sub-command order. Calling it with
+        # no arguments here (rather than at EnableScope time) is
+        # intentional: it defaults to the CURRENT known <range><edge> slot
+        # (see ``ScopeRuntimeMixin.get_scope_fixed_edge``), so the periodic
+        # fetch always re-reads the freshest relevant slot instead of a
+        # fixed one.
         scope_getters: tuple[tuple[str, Any], ...] = (
             ("get_scope_receiver", radio.get_scope_receiver),
             ("get_scope_dual", radio.get_scope_dual),
@@ -1073,8 +1080,8 @@ class RadioPoller:
             ("get_scope_ref", radio.get_scope_ref),
             ("get_scope_speed", radio.get_scope_speed),
             ("get_scope_vbw", radio.get_scope_vbw),
-            ("get_scope_rbw", radio.get_scope_rbw),
             ("get_scope_fixed_edge", radio.get_scope_fixed_edge),
+            ("get_scope_rbw", radio.get_scope_rbw),
         )
         for label, getter in scope_getters:
             ok = await self._scope_getter_attempt(label, getter)
@@ -2637,20 +2644,30 @@ class RadioPoller:
                         start_hz=start_hz,
                         end_hz=end_hz,
                     )
+                    # radio.set_scope_fixed_edge already resolves the wire
+                    # range_index and mirrors the full ScopeFixedEdge into
+                    # this SAME RadioState.scope_controls object (see
+                    # ScopeRuntimeMixin.set_scope_fixed_edge) — a separate
+                    # optimistic write here would be a no-op (MOR-1530: a
+                    # prior version of this arm did exactly that and it
+                    # silently no-opped in production, masked by a bare
+                    # AsyncMock double in tests). The reconfirm GET must
+                    # target the SAME slot the SET just wrote — the IC-7610
+                    # selector addresses ONE specific slot (MOR-662), so a
+                    # bare re-read would default back to range 1/edge 1 and
+                    # clobber the mirror with an unrelated slot's data.
                     if self._radio_state:
-                        prev_range = (
-                            self._radio_state.scope_controls.fixed_edge.range_index
+                        written = self._radio_state.scope_controls.fixed_edge
+                        await self._reconfirm_scope_field(
+                            "get_scope_fixed_edge",
+                            lambda w=written: radio.get_scope_fixed_edge(
+                                range_index=w.range_index, edge=w.edge
+                            ),
                         )
-                        self._radio_state.scope_controls.fixed_edge = ScopeFixedEdge(
-                            range_index=prev_range,
-                            edge=edge,
-                            start_hz=start_hz,
-                            end_hz=end_hz,
+                    else:
+                        await self._reconfirm_scope_field(
+                            "get_scope_fixed_edge", radio.get_scope_fixed_edge
                         )
-                        self._radio_state.scope_controls.edge = edge
-                    await self._reconfirm_scope_field(
-                        "get_scope_fixed_edge", radio.get_scope_fixed_edge
-                    )
             case SetScopeDual(dual=dual):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_dual(dual)

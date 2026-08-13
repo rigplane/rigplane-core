@@ -32,7 +32,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
-from rigplane.core.types import CivFrame
+from rigplane.core.types import CivFrame, ScopeFixedEdge
 from rigplane.core.command_service import (
     CommandExecutionResult,
     CommandService,
@@ -2133,9 +2133,34 @@ async def test_execute_set_scope_fixed_edge_updates_state_and_reconfirms() -> No
     ``scope_controls.fixed_edge`` mirror write nor a ``_reconfirm_scope_field``
     call — the ``scopeControls.fixedEdge`` published leaf stayed at its
     pre-write reading forever, same MOR-1446/MOR-1524 desync class as the
-    other scope-control leaves."""
+    other scope-control leaves.
+
+    ``radio.set_scope_fixed_edge``'s side_effect below reproduces what the
+    REAL mixin does (``runtime/_scope_runtime.py``: resolve the wire
+    range_index and mirror the full ``ScopeFixedEdge`` into
+    ``RadioState.scope_controls`` — the SAME object the poller holds)
+    instead of leaving it a bare AsyncMock. A bare double writes no
+    mirror at all, which let an earlier version of this test pass while
+    the radio_poller.py arm's own (dead, duplicate) optimistic-write block
+    was a no-op in production — the exact CLAUDE.md MagicMock hazard an
+    independent review caught on PR #2445. The final assertion is the
+    wire-level pin that review used: the reconfirm GET's (range_index,
+    edge) must equal the SET's resolved (range_index, edge), never the
+    hardcoded 1/1 MOR-662 fallback.
+    """
     radio = _make_radio()
     state = RadioState()
+
+    async def _set_side_effect(*, edge: int, start_hz: int, end_hz: int) -> None:
+        # start_hz=14_000_000 resolves to range_index 6 (20 m band) per
+        # commands/scope.py's _resolve_scope_fixed_edge_range table —
+        # mirrored here rather than re-derived to keep the double simple.
+        state.scope_controls.fixed_edge = ScopeFixedEdge(
+            range_index=6, edge=edge, start_hz=start_hz, end_hz=end_hz
+        )
+        state.scope_controls.edge = edge
+
+    radio.set_scope_fixed_edge = AsyncMock(side_effect=_set_side_effect)
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
 
     await poller._execute(  # noqa: SLF001
@@ -2145,11 +2170,16 @@ async def test_execute_set_scope_fixed_edge_updates_state_and_reconfirms() -> No
     radio.set_scope_fixed_edge.assert_awaited_once_with(
         edge=2, start_hz=14_000_000, end_hz=14_350_000
     )
+    assert state.scope_controls.fixed_edge.range_index == 6
     assert state.scope_controls.fixed_edge.edge == 2
     assert state.scope_controls.fixed_edge.start_hz == 14_000_000
     assert state.scope_controls.fixed_edge.end_hz == 14_350_000
     assert state.scope_controls.edge == 2
-    radio.get_scope_fixed_edge.assert_awaited_once_with()
+    # Wire-level pin: the reconfirm targets the slot the SET just wrote
+    # (range_index=6, edge=2) — NOT the hardcoded range_index=1/edge=1
+    # MOR-662 fallback, which would silently overwrite the mirror with an
+    # unrelated slot's data (MOR-1530).
+    radio.get_scope_fixed_edge.assert_awaited_once_with(range_index=6, edge=2)
 
 
 @pytest.mark.asyncio
@@ -2159,10 +2189,18 @@ async def test_execute_set_scope_fixed_edge_reconfirm_timeout_does_not_raise() -
     radio = _make_radio()
     state = RadioState()
 
-    async def _never_resolves() -> Any:
+    async def _set_side_effect(*, edge: int, start_hz: int, end_hz: int) -> None:
+        state.scope_controls.fixed_edge = ScopeFixedEdge(
+            range_index=1, edge=edge, start_hz=start_hz, end_hz=end_hz
+        )
+        state.scope_controls.edge = edge
+
+    radio.set_scope_fixed_edge = AsyncMock(side_effect=_set_side_effect)
+
+    async def _never_resolves(*, range_index: int, edge: int) -> Any:
         await asyncio.sleep(10)
 
-    radio.get_scope_fixed_edge = _never_resolves
+    radio.get_scope_fixed_edge = AsyncMock(side_effect=_never_resolves)
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
 
     await poller._execute(  # noqa: SLF001
@@ -2173,6 +2211,7 @@ async def test_execute_set_scope_fixed_edge_reconfirm_timeout_does_not_raise() -
         edge=1, start_hz=7_000_000, end_hz=7_300_000
     )
     assert state.scope_controls.fixed_edge.edge == 1
+    radio.get_scope_fixed_edge.assert_awaited_once_with(range_index=1, edge=1)
 
 
 @pytest.mark.asyncio
