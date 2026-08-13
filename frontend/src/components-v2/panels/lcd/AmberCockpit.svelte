@@ -163,10 +163,10 @@
   // ── Indicator token arrays ──
   // globalTokens: radio-wide status indicators for the top global strip
   let globalTokens = $derived<IndToken[]>([
-    {
-      id: 'tx', label: 'TX', active: tx.txActive,
-      variant: tx.txActive ? 'tx' : undefined,
-    },
+    ...(tx.txActiveAvailable ? [{
+      id: 'tx' as const, label: 'TX', active: tx.txActive,
+      variant: tx.txActive ? ('tx' as const) : undefined,
+    }] : []),
     ...(hasCap('vox') && tx.voxAvailable
       ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
     ...(hasCap('compressor') && tx.compAvailable ? [{
@@ -416,7 +416,7 @@
       </div>
 
       <!-- RIT / XIT offset (inline within cockpit, collapses when inactive) -->
-      {#if ritXit.ritActive || ritXit.xitActive}
+      {#if (ritXit.hasRit && ritXit.ritActive) || (ritXit.hasXit && ritXit.xitActive)}
         <div class="lcd-rit-row">
           <span class="rit-label">{ritXit.ritActive ? 'RIT' : 'XIT'}</span>
           <span class="rit-value">{ritOffsetLabel}</span>

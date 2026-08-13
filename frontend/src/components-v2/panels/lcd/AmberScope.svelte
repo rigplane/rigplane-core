@@ -115,10 +115,10 @@
 
   // frontendTokens: TX-chain (TX/VOX/PROC/ATT/PRE)
   let frontendTokens = $derived<IndToken[]>([
-    {
-      id: 'tx', label: 'TX', active: tx.txActive,
-      variant: tx.txActive ? 'tx' : undefined,
-    },
+    ...(tx.txActiveAvailable ? [{
+      id: 'tx' as const, label: 'TX', active: tx.txActive,
+      variant: tx.txActive ? ('tx' as const) : undefined,
+    }] : []),
     ...(hasCap('vox') && tx.voxAvailable
       ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
     ...(hasCap('compressor') && tx.compAvailable ? [{

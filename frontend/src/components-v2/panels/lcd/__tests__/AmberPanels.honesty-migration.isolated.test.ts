@@ -46,7 +46,9 @@ const scopeProps = vi.hoisted(() => ({
 }));
 
 const amberCaps = {
-  capabilities: ['rit', 'xit'],
+  capabilities: [
+    'rit', 'xit', 'vox', 'compressor', 'tuner', 'split', 'dial_lock', 'ip_plus',
+  ],
 } as any;
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
@@ -194,6 +196,118 @@ describe('Amber RIT indicator availability (MOR-1586)', () => {
 
     expect(indicatorLabels(mountCockpit(state))).not.toContain('RIT');
     expect(indicatorLabels(mountScope(state))).not.toContain('RIT');
+  });
+});
+
+describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
+  const fresh = {
+    storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available',
+  } as const;
+  const missing = {
+    storePath: 'fixture', observed: false, freshness: 'unknown', availability: 'missing',
+  } as const;
+  const stale = {
+    storePath: 'fixture', observed: true, freshness: 'stale', availability: 'available',
+  } as const;
+
+  function indicatorLabels(target: HTMLElement): string[] {
+    return [...target.querySelectorAll('.lcd-ind')].map((indicator) => indicator.textContent ?? '');
+  }
+
+  function indicator(target: HTMLElement, label: string): Element | undefined {
+    return [...target.querySelectorAll('.lcd-ind')]
+      .find((element) => element.textContent === label);
+  }
+
+  function fullyObservedState(fieldStatus: Record<string, typeof fresh | typeof missing | typeof stale>) {
+    return {
+      active: 'MAIN',
+      main: baseReceiver({ ipplus: true }), sub: baseReceiver(),
+      ptt: true, voxOn: true, compressorOn: true, compressorLevel: 7,
+      tunerStatus: 1, split: true, dialLock: true,
+      ritOn: true, ritFreq: 250, ritTx: true,
+      fieldStatus,
+    } as unknown as ServerState;
+  }
+
+  it('suppresses stale TX rather than rendering a confirmed state in both entry points', () => {
+    const state = {
+      active: 'MAIN', main: baseReceiver(), sub: baseReceiver(), ptt: true,
+      fieldStatus: { ptt: stale },
+    } as unknown as ServerState;
+
+    expect(indicatorLabels(mountCockpit(state))).not.toContain('TX');
+    expect(indicatorLabels(mountScope(state))).not.toContain('TX');
+  });
+
+  it('suppresses stale active RIT/XIT inline rows in the cockpit', () => {
+    const state = {
+      active: 'MAIN', main: baseReceiver(), sub: baseReceiver(),
+      ritOn: true, ritFreq: 250, ritTx: true,
+      fieldStatus: { ritOn: stale, ritFreq: stale, ritTx: stale },
+    } as unknown as ServerState;
+
+    expect(mountCockpit(state).querySelector('.lcd-rit-row')).toBeNull();
+  });
+
+  it('renders every changed token only from fresh facts in each applicable entry point', () => {
+    const fieldStatus = Object.fromEntries([
+      'ptt', 'voxOn', 'compressorOn', 'compressorLevel', 'tunerStatus',
+      'split', 'dialLock', 'main.ipplus', 'ritOn', 'ritFreq', 'ritTx',
+    ].map((field) => [field, fresh]));
+    const cockpit = mountCockpit(fullyObservedState(fieldStatus));
+    const scope = mountScope(fullyObservedState(fieldStatus));
+
+    for (const label of ['TX', 'VOX', 'PROC 7', 'ATU', 'SPLIT', 'LOCK', 'IP+', 'RIT']) {
+      expect(indicator(cockpit, label)).toBeDefined();
+    }
+    for (const label of ['TX', 'VOX', 'PROC 7', 'SPLIT', 'LOCK', 'RIT']) {
+      expect(indicator(scope, label)).toBeDefined();
+    }
+    expect(cockpit.querySelector('.rit-label')?.textContent).toBe('RIT');
+  });
+
+  it('suppresses every changed token when the corresponding facts are missing or stale', () => {
+    const fieldStatus = Object.fromEntries([
+      'ptt', 'voxOn', 'compressorOn', 'compressorLevel', 'tunerStatus', 'split',
+      'dialLock', 'main.ipplus', 'ritOn', 'ritFreq', 'ritTx',
+    ].map((field, index) => [field, index % 2 === 0 ? missing : stale]));
+    const cockpit = mountCockpit(fullyObservedState(fieldStatus));
+    const scope = mountScope(fullyObservedState(fieldStatus));
+
+    for (const label of ['TX', 'VOX', 'PROC 7', 'ATU', 'SPLIT', 'LOCK', 'IP+', 'RIT']) {
+      expect(indicator(cockpit, label)).toBeUndefined();
+    }
+    for (const label of ['TX', 'VOX', 'PROC 7', 'SPLIT', 'LOCK', 'RIT']) {
+      expect(indicator(scope, label)).toBeUndefined();
+    }
+    expect(cockpit.querySelector('.lcd-rit-row')).toBeNull();
+  });
+
+  it('preserves confirmed-off and confirmed-on distinctions without fabricating levels', () => {
+    const offState = fullyObservedState({ ritOn: fresh, ritFreq: fresh, ritTx: fresh, ptt: fresh });
+    offState.ritOn = false;
+    offState.ritTx = false;
+    offState.ptt = false;
+    const cockpit = mountCockpit(offState);
+    const scope = mountScope(offState);
+    expect(indicator(cockpit, 'RIT')?.classList.contains('active')).toBe(false);
+    expect(indicator(scope, 'RIT')?.classList.contains('active')).toBe(false);
+    expect(indicator(cockpit, 'TX')?.classList.contains('active')).toBe(false);
+    expect(indicator(scope, 'TX')?.classList.contains('active')).toBe(false);
+
+    const levelStale = fullyObservedState({ compressorOn: fresh, compressorLevel: stale });
+    expect(indicator(mountCockpit(levelStale), 'PROC')).toBeDefined();
+    expect(indicator(mountScope(levelStale), 'PROC')).toBeDefined();
+    expect(indicator(mountCockpit(levelStale), 'PROC 7')).toBeUndefined();
+    expect(indicator(mountScope(levelStale), 'PROC 7')).toBeUndefined();
+  });
+
+  it('renders the cockpit inline XIT row only when XIT is confirmed fresh', () => {
+    const state = fullyObservedState({ ritOn: fresh, ritFreq: fresh, ritTx: fresh });
+    state.ritOn = false;
+    state.ritTx = true;
+    expect(mountCockpit(state).querySelector('.rit-label')?.textContent).toBe('XIT');
   });
 });
 
