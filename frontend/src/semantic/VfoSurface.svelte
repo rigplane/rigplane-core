@@ -38,6 +38,7 @@
 <script lang="ts">
   import { t } from '$lib/i18n';
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
+  import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
   import type { BooleanFact, RadioViewModel, VfoViewModel } from './radio-view-model';
 
@@ -250,8 +251,23 @@
     return vfo.receiver;
   }
 
+  /**
+   * MOR-1482 — the ONE stable frequency format this surface's own fallback
+   * uses: the same dot-grouped digit convention `FrequencyDisplayInteractive`
+   * renders for the tunable/active tile, built from the SAME shared utility
+   * (`frequency-tuning.ts`) so the two can never drift apart. Previously this
+   * emitted a decimal-MHz string (`14.332000 MHz`) that matched neither the
+   * active tile's dot convention nor (when a design language is active — the
+   * WORKSPACE DEFAULT, see `DEFAULT_WORKSPACE.designLanguage`) the language's
+   * own thin-space-grouped text: two mismatched formats on the same slot,
+   * flipping between them as the design-language activation effect raced this
+   * surface's own render. `null` still renders the honest placeholder, never
+   * a differently-formatted number.
+   */
   function formatFrequency(hz: number | null): string {
-    return hz === null ? '—' : `${(hz / 1_000_000).toFixed(6)} MHz`;
+    if (hz === null) return '—';
+    const { mhz, khz, hz: hzGroup } = groupDigitsForDisplay(splitFrequencyToDigits(hz));
+    return [mhz, khz, hzGroup].map((group) => group.map((d) => d.char).join('')).join('.');
   }
 
   /**
@@ -504,7 +520,17 @@
             <span id={reasonId(`select-${i}`, selectReason)} class="sr-only">{selectReason}</span>
           {/if}
         {:else}
-          <span class="vfo-label" data-vfo-label>{vfo.label}</span>
+          <!--
+            MOR-1482 — `.vfo-role` above already paints this tile's identity
+            (byte-identical to `vfo.label` in every real case: 'relative' and
+            'slotted' slots both carry the exact same string via the adapter,
+            per `radio-view-model-adapter.ts`; only the rare 'unknown'-slot
+            case differs). A second painted copy read as a duplicated label
+            strip. `sr-only` keeps this span in the DOM (assistive tech and
+            the `[data-vfo-label]` hook both still see it) without a second
+            visible copy of the same words.
+          -->
+          <span class="vfo-label sr-only" data-vfo-label>{vfo.label}</span>
         {/if}
       </div>
     {/each}

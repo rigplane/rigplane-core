@@ -24,6 +24,7 @@ import { validateRadioViewModel, type RadioViewModel, type VfoSlot } from '../ra
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
 import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
+import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
 
 const ids: readonly TopologyFixtureId[] = ['1/single', '1/ab', '2/ab_shared', '2/main_sub'];
 
@@ -50,8 +51,20 @@ afterEach(() => {
 function expectedSlotKey(slot: VfoSlot): string {
   return slot.kind === 'slotted' ? slot.id : slot.kind;
 }
+/**
+ * MOR-1482: the ONE stable frequency format the whole surface uses — the same
+ * dot-grouped digit convention `FrequencyDisplayInteractive` (the tunable/
+ * selected-tile readout) uses, built from the SAME shared utility rather than
+ * a hand-rolled string, so this helper cannot drift from what the component
+ * actually renders. Previously this asserted a decimal-MHz string
+ * (`14.250000 MHz`) that matched neither the selected tile's dot convention
+ * nor the design-language renderer's own text — two mismatched fallback
+ * formats on the same slot (the ticket's bug).
+ */
 function expectedFreq(hz: number | null): string {
-  return hz === null ? '—' : `${(hz / 1_000_000).toFixed(6)} MHz`;
+  if (hz === null) return '—';
+  const { mhz, khz, hz: hzGroup } = groupDigitsForDisplay(splitFrequencyToDigits(hz));
+  return [mhz, khz, hzGroup].map((group) => group.map((d) => d.char).join('')).join('.');
 }
 
 /** Normalized rendered-DOM summary — only VFO-surface-owned facts. */
@@ -132,6 +145,88 @@ it('shows a distinct role per VFO across single/dual and slotted/unslotted schem
   const mainSub = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
   const roles = Array.from(mainSub.querySelectorAll('.vfo-role')).map((e) => e.textContent);
   expect(roles).toEqual(['MAIN A', 'MAIN B', 'SUB A', 'SUB B']);
+});
+
+// ── MOR-1482: one stable frequency format + role text shown exactly once ───
+//
+// Live-observed bug: the unselected-VFO tile's frequency readout flipped
+// between two DIFFERENT formats — a decimal-MHz fallback (`14.332000 MHz`)
+// and, whenever the studioline/fieldline design language is active (it is
+// the workspace DEFAULT — `DEFAULT_WORKSPACE.designLanguage === 'studioline'`,
+// declared compatible with the `desktop-v2` skin — this is not a rare edge
+// case), the language's own thin-space-grouped text. Neither matched the
+// selected tile's dot-grouped convention (`FrequencyDisplayInteractive`),
+// and at tile font size the thin space (U+2009) is imperceptible, so the
+// language variant reads as an unformatted digit string. This block pins
+// the fallback (no-design-language) path to the SAME dot convention the
+// selected tile always uses, in both the observed and not-yet-observed
+// (`null`) states, and pins that each tile's role text is visually shown
+// exactly once.
+
+describe('MOR-1482: unselected-tile frequency format is stable and dot-grouped', () => {
+  function nonTunableModel(frequencyHz: number | null): RadioViewModel {
+    const base = topologyFixtures['1/ab'];
+    return validateRadioViewModel({
+      ...base,
+      vfos: [
+        { ...base.vfos[0], frequencyHz: 7_100_000 },
+        { ...base.vfos[1], frequencyHz },
+      ],
+    });
+  }
+
+  it('an observed frequency renders dot-grouped, matching the selected tile\'s convention — never decimal-MHz, never a thin space', () => {
+    // No `onTuneFrequency` wired and no design language active: the tile
+    // renders through the plain fallback this ticket fixes.
+    const target = mountSurface({ viewModel: nonTunableModel(14_332_000) });
+    const text = target.querySelectorAll('.vfo-freq')[1]?.textContent ?? '';
+    expect(text).toBe('14.332.000');
+    expect(text).not.toContain('MHz');
+    expect(text).not.toContain(' '); // studioline's THIN_SPACE grouping mark
+    expect(text).not.toMatch(/\s/); // no space-grouped digits either
+  });
+
+  it('a not-yet-observed frequency renders the honest placeholder, never a differently-formatted number', () => {
+    const target = mountSurface({ viewModel: nonTunableModel(null) });
+    const tiles = target.querySelectorAll('.vfo-freq');
+    expect(tiles[0]?.textContent).toBe('7.100.000');
+    expect(tiles[1]?.textContent).toBe('—');
+    expect(tiles[1]?.textContent).not.toContain('MHz');
+  });
+
+  it('the tile role text appears exactly once, visually — the duplicate label span is hidden, not deleted', () => {
+    // Mirrors the ADAPTER's real output for a 'relative' slot scheme
+    // (`radio-view-model-adapter.ts`), where `label` is set to the SAME
+    // string `roleLabel()` computes ('Selected VFO' / 'Unselected VFO') —
+    // the actual live-observed duplication, not a fixture artifact.
+    const base = topologyFixtures['1/ab'];
+    const model: RadioViewModel = validateRadioViewModel({
+      ...base,
+      vfos: [
+        {
+          ...base.vfos[0], slot: { kind: 'relative', role: 'selected' },
+          label: 'Selected VFO', isActive: true, isActiveSlot: true,
+        },
+        {
+          ...base.vfos[1], slot: { kind: 'relative', role: 'unselected' },
+          label: 'Unselected VFO', isActive: false, isActiveSlot: false,
+        },
+      ],
+    });
+    const target = mountSurface({ viewModel: model });
+    const selected = target.querySelector<HTMLElement>('[data-vfo-slot="selected"]')!;
+
+    const role = selected.querySelector('.vfo-role')!;
+    const label = selected.querySelector<HTMLElement>('[data-vfo-label]')!;
+    // Both carry the SAME text — the duplication the ticket reports.
+    expect(role.textContent).toBe('Selected VFO');
+    expect(label.textContent).toBe('Selected VFO');
+    // The role text is the one VISIBLE copy...
+    expect(role.className).not.toMatch(/sr-only/);
+    // ...and the label span is present for tests/assistive tech but hidden
+    // from sight, not a second painted copy of the same words.
+    expect(label.className).toMatch(/sr-only/);
+  });
 });
 
 // ── UNCERTAINTY IS VISIBLE ───────────────────────────────────────────────────
@@ -309,7 +404,7 @@ describe('VFO selection intent', () => {
     });
     const target = mountSurface({ viewModel: model });
     expect(target.querySelector('[data-vfo-slot="selected"] .vfo-freq')?.textContent)
-      .toContain('14.250000 MHz');
+      .toContain(expectedFreq(14_250_000));
     expect(target.querySelector('[data-vfo-slot="unselected"] .vfo-freq')?.textContent)
       .toBe('—');
     expect(target.querySelector('[data-testid="vfo-ops"]')?.getAttribute('data-disabled-reason'))

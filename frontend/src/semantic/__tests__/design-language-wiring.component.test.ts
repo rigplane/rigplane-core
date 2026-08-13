@@ -49,7 +49,10 @@ import { renderSlot } from '../design-language-renderers';
 const VIEW: RadioViewModel = topologyFixtures['2/main_sub'];
 /** M-A's frequency, the one every frequency assertion below reads. */
 const MAIN_A_HZ = 14250000;
-const V2_READOUT = '14.250000 MHz';
+// MOR-1482: the v2 fallback now matches `FrequencyDisplayInteractive`'s own
+// dot-grouped digit convention (previously a decimal-MHz string that matched
+// neither that convention nor either design language's grammar).
+const V2_READOUT = '14.250.000';
 const THIN_SPACE = ' ';
 
 const IDLE_RX: TxAuthoritySnapshot = {
@@ -144,7 +147,7 @@ describe('MOR-1275 — the wiring falls back to the component\'s own rendering',
   it('renders the v2 readout when no language is active', () => {
     expect(frequencies(null)[0]).toBe(V2_READOUT);
     expect(frequencies(null)).toEqual([
-      V2_READOUT, '14.280000 MHz', '21.295000 MHz', '21.330000 MHz',
+      V2_READOUT, '14.280.000', '21.295.000', '21.330.000',
     ]);
   });
 
