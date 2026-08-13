@@ -1924,21 +1924,50 @@ describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
     expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
-  it('requires fresh positive current mode, width and supported DATA facts', () => {
+  // MOR-1576: this used to also require fresh positive `main.filterWidth`
+  // (both unavailable and value 0/NaN cases) — that was a receiver-identity
+  // proxy check, not a functional need, since the write never reads a
+  // confirmed prior `filterWidth`; it resolves the quantization rule from
+  // `mode`/`dataMode` alone and validates the passed `width` PARAMETER
+  // (see the separate "rejects ... unsafe candidates" case below, which
+  // still covers `attempt(0)`/`attempt(NaN)` on the parameter itself).
+  it('requires fresh current mode and supported DATA facts; filterWidth observation is no longer required', () => {
     const attempt = () => makeFilterHandlers().onFilterWidthCommit(2400, 0, 31);
-    for (const path of ['main.mode', 'main.filterWidth', 'main.dataMode']) {
+    for (const path of ['main.mode', 'main.dataMode']) {
       h.unavailable.add(path); attempt(); h.unavailable.clear();
     }
     for (const [field, value] of [
-      ['mode', ''], ['filterWidth', 0], ['filterWidth', Number.NaN], ['dataMode', -1],
+      ['mode', ''], ['dataMode', -1],
     ] as const) {
       h.state = { ...a06State(), main: { ...a06State().main, [field]: value } } as ServerState;
       attempt();
     }
+    // main.filterWidth unavailable/stale no longer blocks the commit.
+    h.state = a06State();
+    h.unavailable.add('main.filterWidth');
+    attempt();
+    h.unavailable.clear();
     h.state = a06State();
     h.caps = { ...a06Caps(), capabilities: ['filter_width'] } as unknown as Record<string, unknown>;
     h.unavailable.add('main.dataMode');
     attempt();
+    expect(exactCalls()).toEqual([
+      ['set_filter_width', { width: 2400, receiver: 0 }],
+      ['set_filter_width', { width: 2400, receiver: 0 }],
+    ]);
+  });
+
+  // MOR-1576 review (B2): the removed `positiveSafeInteger(currentWidth)`
+  // check used to reject `main.filterWidth === 0` even though it's fresh
+  // and observed (0 isn't positive). Pin the behavior change directly:
+  // an observed-but-zero `filterWidth` no longer blocks the commit, since
+  // the write never reads it — only `mode`/`dataMode` (to resolve the
+  // quantization rule) and the passed `width` PARAMETER matter now.
+  it('dispatches even when observed main.filterWidth is 0 (MOR-1576: removed the positiveSafeInteger(currentWidth) proxy check)', () => {
+    h.state = { ...a06State(), main: { ...a06State().main, filterWidth: 0 } } as ServerState;
+
+    makeFilterHandlers().onFilterWidthCommit(2400, 0, 31);
+
     expect(exactCalls()).toEqual([['set_filter_width', { width: 2400, receiver: 0 }]]);
   });
 
@@ -2147,5 +2176,65 @@ describe('MOR-1518 client-side filter-width quantization at command emission', (
     vi.advanceTimersByTime(200);
 
     expect(exactCalls()).toEqual([['set_filter_width', { width: 1055, receiver: 0 }]]);
+  });
+});
+
+/**
+ * MOR-1576 review (B1, PR #2489 BLOCKED finding) — relaxing `onFilterDefaults`
+ * off `knownActiveReceiver('filterWidth')` opened a partial-command +
+ * uncaught-throw path it didn't have before. `quantizeFilterWidthToRule`
+ * passes non-finite input straight through (`filter-controls.ts`'s first
+ * guard, `if (!Number.isFinite(value)) return value;` — see the "no declared
+ * width rule at all" case just above), and `dispatchRadioIntent` THROWS on a
+ * non-safe-integer width. `FilterPanel.svelte`'s `factoryDefaults` falls
+ * back to `Array.from({length}, () => filterWidth)` when `filterConfig` has
+ * no `defaults` array, and `filterWidth` is `Number.NaN` whenever
+ * `main.filterWidth` is unobserved (`panel-props.ts`'s `toFilterProps`) —
+ * exactly the radios that motivated this whole ticket (x6100/tx500 declare
+ * no width tables; several FTX-1 modes resolve no rule at all). Before this
+ * fix, `onFilterDefaults`'s loop would dispatch `set_filter` to bracket into
+ * a non-active slot BEFORE reaching the invalid width and throwing —
+ * leaving the radio parked on the wrong filter slot with the restoring
+ * `set_filter` back to the real active filter never reached.
+ */
+describe('MOR-1576 (review B1) — onFilterDefaults validates the whole array before dispatching anything', () => {
+  beforeEach(() => {
+    h.state = a06State();
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    h.unavailable.clear();
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+  });
+
+  it('emits ZERO frames — no partial set_filter bracket, no throw — when a quantized default resolves non-finite', () => {
+    // No declared width rule for the current mode, so
+    // `quantizeFilterWidthToRule` passes `NaN` straight through.
+    // `a06State()`'s active filter is 2 (non-FIL1): the pre-fix loop would
+    // have dispatched `set_filter{filter:1}` to bracket into slot 1 before
+    // ever validating `defaults[0]`.
+    h.caps = { ...a06Caps(), filterConfig: {} } as unknown as Record<string, unknown>;
+    expect(() =>
+      makeFilterHandlers().onFilterDefaults([Number.NaN, 2400, 1800]),
+    ).not.toThrow();
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('still dispatches normally when every quantized default is a valid positive safe integer', () => {
+    // All three already sit on the default A06_SEGMENTS grid (no
+    // quantization needed) — active filter is 2 (a06State's fixture).
+    expect(() =>
+      makeFilterHandlers().onFilterDefaults([3000, 1800, 2400]),
+    ).not.toThrow();
+
+    expect(exactCalls()).toEqual([
+      ['set_filter', { filter: 1, receiver: 0 }],
+      ['set_filter_width', { width: 3000, receiver: 0 }],
+      ['set_filter_width', { width: 1800, receiver: 0 }],
+      ['set_filter', { filter: 3, receiver: 0 }],
+      ['set_filter_width', { width: 2400, receiver: 0 }],
+      ['set_filter', { filter: 2, receiver: 0 }],
+    ]);
   });
 });

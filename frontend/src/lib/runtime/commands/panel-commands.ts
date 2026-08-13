@@ -779,14 +779,23 @@ export function makeFilterHandlers() {
     // emission point", not just a display-layer clamp — so this handler
     // never dispatches the alignment-error-triggering values the live
     // bench reported (1050/2150/3150 Hz).
+    //
+    // MOR-1576: gates on `knownActiveReceiver('filter')`, matching
+    // `onFilterPresetChange` below — NOT `knownActiveReceiver('filterWidth')`
+    // as before. The write only needs receiver identity plus the mode/
+    // dataMode `activeFilterRule` resolves the quantization rule from; it
+    // never reads a confirmed prior `filterWidth` value, so requiring one
+    // as a receiver-identity proxy only produced false refusals on radios
+    // (e.g. the IC-7300 live bench) that never confirm `filterWidth`
+    // readback at all.
     onFilterWidthChange: (() => {
       let timer: ReturnType<typeof setTimeout> | null = null;
       return (width: number) => {
-        if (knownActiveReceiver('filterWidth') === null) return;
+        if (knownActiveReceiver('filter') === null) return;
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
           timer = null;
-          const receiver = knownActiveReceiver('filterWidth');
+          const receiver = knownActiveReceiver('filter');
           if (receiver === null) return;
           const quantized = quantizeFilterWidthToRule(width, activeFilterRule(receiver));
           dispatchRadioIntent({ name: 'set_filter_width', params: { width: quantized, receiver } });
@@ -807,21 +816,28 @@ export function makeFilterHandlers() {
       const singleReceiver = context?.caps.receivers === 1;
       const active = context
         && (activeObserved ? context.state.active : singleReceiver ? 'MAIN' : undefined);
+      // MOR-1576: receiver identity is established via `mode` only. The
+      // `filterWidth`-observation checks that used to sit alongside it here
+      // (a `knownA03cReceiver(..., 'filterWidth')` receiver-identity check
+      // plus a `positiveSafeInteger(currentWidth)` freshness check) were a
+      // receiver-identity proxy, not a functional need — the write below
+      // never reads `currentWidth`; it resolves the quantization `rule` from
+      // `mode`/`dataMode` alone and validates the passed `width` PARAMETER
+      // against that rule via `validResolvedFilterWidth`. Dropping them
+      // aligns this site with the other three `set_filter_width` dispatch
+      // sites, all of which already gate on identity + mode/dataMode only.
       if (!context || !Number.isSafeInteger(expectedProviderGeneration)
         || expectedProviderGeneration < 0 || !Number.isSafeInteger(stateGeneration)
         || expectedProviderGeneration !== stateGeneration
         || (active !== 'MAIN' && active !== 'SUB')
         || (active === 'MAIN' ? 0 : 1) !== receiver
         || knownA03cReceiver(context, active, 'mode') !== receiver
-        || knownA03cReceiver(context, active, 'filterWidth') !== receiver
         || !context.caps.capabilities.includes('filter_width')) return;
       const key = receiver === 1 ? 'sub' : 'main';
       const observed = context.state[key];
       const mode = observed?.mode;
-      const currentWidth = observed?.filterWidth;
       if (!observed || !observedAvailableField(context.state, `${key}.mode`)
-        || !observedAvailableField(context.state, `${key}.filterWidth`)
-        || typeof mode !== 'string' || mode.length === 0 || !positiveSafeInteger(currentWidth)) return;
+        || typeof mode !== 'string' || mode.length === 0) return;
       const supportsData = context.caps.capabilities.includes('data_mode');
       const dataMode = supportsData ? observed.dataMode : 0;
       if (supportsData && (!observedAvailableField(context.state, `${key}.dataMode`)
@@ -864,19 +880,40 @@ export function makeFilterHandlers() {
         }, 200);
       };
     })(),
+    // MOR-1576: gates on `knownActiveReceiver('filter')` — same relaxation
+    // as `onFilterWidthChange` above, for the same reason (receiver identity
+    // + mode/dataMode resolve the quantization rule; no confirmed prior
+    // `filterWidth` reading is needed).
+    //
+    // MOR-1576 review (B1): `quantizeFilterWidthToRule` passes non-finite
+    // input straight through when no usable rule/segment covers it
+    // (`filter-controls.ts`), and `dispatchRadioIntent` THROWS on a
+    // non-safe-integer width. `FilterPanel.svelte`'s `factoryDefaults`
+    // falls back to the observed `filterWidth` (which is `Number.NaN`
+    // whenever `main.filterWidth` is unobserved — `panel-props.ts`) when
+    // the mode has no declared `defaults` array, so `defaults` here CAN
+    // legitimately arrive carrying NaN — precisely on radios that never
+    // confirm `filterWidth` readback, the case this ticket exists for. The
+    // whole array is validated (quantized-and-checked) BEFORE any command
+    // is dispatched, same MOR-1291 fail-closed shape used elsewhere in this
+    // file — a mid-loop throw would otherwise leave the radio bracketed
+    // into a non-active filter slot with the restoring `set_filter` never
+    // reached.
     onFilterDefaults: (defaults: number[]) => {
-      const receiver = knownActiveReceiver('filterWidth');
+      const receiver = knownActiveReceiver('filter');
       const activeFilter = receiver === null ? null : getActiveReceiver()?.filter;
       if (receiver === null || !Number.isSafeInteger(activeFilter)) return;
       const rule = activeFilterRule(receiver);
-      for (let i = 0; i < defaults.length; i++) {
+      const quantizedWidths = defaults.map((width) => quantizeFilterWidthToRule(width, rule));
+      if (!quantizedWidths.every((width) => positiveSafeInteger(width))) return;
+      for (let i = 0; i < quantizedWidths.length; i++) {
         const filter = i + 1;
         if (filter !== activeFilter) {
           dispatchRadioIntent({ name: 'set_filter', params: { filter, receiver } });
         }
         dispatchRadioIntent({
           name: 'set_filter_width',
-          params: { width: quantizeFilterWidthToRule(defaults[i], rule), receiver },
+          params: { width: quantizedWidths[i], receiver },
         });
       }
       if ((activeFilter as number) <= defaults.length) {

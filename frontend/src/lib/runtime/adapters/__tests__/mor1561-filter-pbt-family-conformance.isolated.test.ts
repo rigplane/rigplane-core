@@ -7,24 +7,29 @@
  * `set_filter_shape`, `set_if_shift`, `set_pbt_inner`, `set_pbt_outer` — all
  * dispatched from `makeFilterHandlers()` in `panel-commands.ts`.
  *
- * UNLIKE MOR-1560's DSP walk (9/9 uniform refusals), this family is NOT
- * uniform: `set_filter_width` has FOUR distinct dispatch sites
- * (`onFilterWidthChange`, `onFilterWidthCommit`, `onFilterPresetChange`,
- * `onFilterDefaults`), and they do not all gate on the same field.
- * `onFilterWidthChange`/`onFilterDefaults` gate on `knownActiveReceiver('filterWidth')`
- * — `main.filterWidth` is unobserved on this fixture, so both refuse.
- * `onFilterPresetChange` gates on `knownActiveReceiver('filter')` instead
- * (`panel-commands.ts`'s own choice — it only needs to know the CURRENT
- * active filter slot to decide whether a `set_filter` bracket is needed, not
- * whether `filterWidth` itself was ever confirmed) — `main.filter` IS
- * observed on this fixture, so this path genuinely dispatches
- * `set_filter_width`. This is a real, profile-derived finding, not a test
- * artifact: the same live IC-7300 session that never confirmed
- * `filterWidth` readback still lets an operator push a width through the
- * settings-modal preset path today. `set_filter_shape`/`set_if_shift`/
- * `set_pbt_inner`/`set_pbt_outer` have no such split — each refuses through
- * its own single gate, named per case below and verified against the
- * fixture's own `fieldStatus`/`capabilities.controls` data (never invented).
+ * UNLIKE MOR-1560's DSP walk (9/9 uniform refusals), `set_filter_width` has
+ * FOUR distinct dispatch sites (`onFilterWidthChange`, `onFilterWidthCommit`,
+ * `onFilterPresetChange`, `onFilterDefaults`). Before MOR-1576,
+ * `onFilterWidthChange`/`onFilterDefaults` gated on
+ * `knownActiveReceiver('filterWidth')` — using the WRITTEN field as a
+ * receiver-identity proxy — while `onFilterPresetChange` gated on
+ * `knownActiveReceiver('filter')` instead (`panel-commands.ts`'s own
+ * choice — it only needs to know the CURRENT active filter slot to decide
+ * whether a `set_filter` bracket is needed, not whether `filterWidth` itself
+ * was ever confirmed). On this fixture `main.filterWidth` is unobserved but
+ * `main.filter` IS observed, so the two gates disagreed: the slider and
+ * "restore defaults" paths silently refused while the settings-modal preset
+ * path dispatched fine for the identical write. MOR-1576 (verifier analysis,
+ * PR #2481) relaxed the three strict sites to the preset path's gating —
+ * receiver identity via `knownActiveReceiver('filter')` plus mode/dataMode
+ * to resolve the quantization rule, not a confirmed prior `filterWidth`
+ * reading — so all three now dispatch identically on this fixture (see the
+ * "unified call-site gating" cases below, plus the discrimination case
+ * proving they still correctly refuse when `main.filter` itself is
+ * unobserved too). `set_filter_shape`/`set_if_shift`/`set_pbt_inner`/
+ * `set_pbt_outer` have no such split — each refuses through its own single
+ * gate, named per case below and verified against the fixture's own
+ * `fieldStatus`/`capabilities.controls` data (never invented).
  *
  * RED-FIRST EVIDENCE (MOR-1561 build process, not part of this diff): the
  * `onFilterPresetChange` case below was first authored as
@@ -79,19 +84,42 @@ describe('IC-7300 fixture — filter/PBT family conformance (MOR-1561)', () => {
     resetCommandLifecycle();
   });
 
-  describe('set_filter_width — divergent call-site gates on this profile (see file header)', () => {
-    it('onFilterWidthChange: REFUSES — main.filterWidth is unobserved (checked before the 200ms debounce even starts)', () => {
+  describe('set_filter_width — unified call-site gating on this profile (MOR-1576, see file header)', () => {
+    it('onFilterWidthChange: DISPATCHES — relaxed to knownActiveReceiver(\'filter\') like onFilterPresetChange; main.filterWidth stays unobserved on this fixture but is no longer the gate', () => {
       expect(IC7300_CAPABILITIES.capabilities).toContain('filter_width');
       expect(IC7300_STATE.fieldStatus?.['main.filterWidth']?.observed).toBe(false);
-      expectRefusal(() => makeFilterHandlers().onFilterWidthChange(1800));
+      expect(IC7300_STATE.fieldStatus?.['main.filter']?.observed).toBe(true);
+      // Fixture's own USB filter-width rule (rigs/ic7300.toml via
+      // filterConfig.USB): 1800 Hz already sits on the declared 100 Hz-step
+      // segment grid (600-3600), so quantizeFilterWidthToRule is a no-op.
+      vi.useFakeTimers();
+      try {
+        expectFrames(() => {
+          makeFilterHandlers().onFilterWidthChange(1800);
+          vi.advanceTimersByTime(200);
+        }, [['set_filter_width', { width: 1800, receiver: 0 }]]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
-    it('onFilterDefaults: REFUSES — same knownActiveReceiver(\'filterWidth\') gate as onFilterWidthChange', () => {
+    it('onFilterDefaults: DISPATCHES — same relaxed knownActiveReceiver(\'filter\') gate as onFilterWidthChange', () => {
       expect(IC7300_STATE.fieldStatus?.['main.filterWidth']?.observed).toBe(false);
-      expectRefusal(() => makeFilterHandlers().onFilterDefaults([3000, 2400, 1800]));
+      expect(IC7300_STATE.fieldStatus?.['main.filter']?.observed).toBe(true);
+      expect(IC7300_STATE.main!.filter).toBe(1);
+      // filter=1 equals the fixture's own active filter, so slot 1 needs no
+      // bracketing set_filter, while slots 2/3 do (bracket-and-restore).
+      expectFrames(() => makeFilterHandlers().onFilterDefaults([3000, 2400, 1800]), [
+        ['set_filter_width', { width: 3000, receiver: 0 }],
+        ['set_filter', { filter: 2, receiver: 0 }],
+        ['set_filter_width', { width: 2400, receiver: 0 }],
+        ['set_filter', { filter: 3, receiver: 0 }],
+        ['set_filter_width', { width: 1800, receiver: 0 }],
+        ['set_filter', { filter: 1, receiver: 0 }],
+      ]);
     });
 
-    it('onFilterPresetChange: CLAIMS — gated only on knownActiveReceiver(\'filter\') (main.filter IS observed), not on filterWidth at all (RED-FIRST evidence in file header)', () => {
+    it('onFilterPresetChange: DISPATCHES — gated on knownActiveReceiver(\'filter\') (main.filter IS observed), not on filterWidth at all (RED-FIRST evidence in file header)', () => {
       expect(IC7300_STATE.fieldStatus?.['main.filter']?.observed).toBe(true);
       expect(IC7300_STATE.main!.filter).toBe(1);
       // Fixture's own USB filter-width rule (rigs/ic7300.toml via
@@ -110,6 +138,29 @@ describe('IC-7300 fixture — filter/PBT family conformance (MOR-1561)', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('discrimination: with main.filter ALSO unobserved, onFilterWidthChange/onFilterDefaults/onFilterPresetChange all still refuse — receiver identity is genuinely unknown, not just filterWidth', () => {
+      expect(IC7300_STATE.fieldStatus?.['main.filter']?.observed).toBe(true);
+      h.state = {
+        ...fixtureState(profile),
+        fieldStatus: {
+          ...IC7300_STATE.fieldStatus,
+          'main.filter': {
+            ...IC7300_STATE.fieldStatus!['main.filter'],
+            observed: false,
+            availability: 'missing',
+            freshness: 'unknown',
+          },
+        },
+      };
+
+      expectRefusal(() => makeFilterHandlers().onFilterWidthChange(1800));
+      expectRefusal(() => makeFilterHandlers().onFilterDefaults([3000, 2400, 1800]));
+      // Both onFilterWidthChange and onFilterPresetChange re-check receiver
+      // identity BEFORE scheduling their 200ms debounce, so the refusal is
+      // synchronous — no fake timers needed to observe it.
+      expectRefusal(() => makeFilterHandlers().onFilterPresetChange(1, 3000));
     });
   });
 
