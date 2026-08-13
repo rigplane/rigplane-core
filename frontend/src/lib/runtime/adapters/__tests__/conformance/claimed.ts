@@ -172,12 +172,14 @@
  * `set_powerstat` on a capability-only gate with no field check (RED-FIRST
  * target, see that file's header). `memory_clear` is the one dispatch
  * resolved through a real multi-field snapshot (`currentMemorySnapshot()`).
- * MOR-1574 is cited (not re-derived) as CONTRAST: the READ-path
- * `toRitXitProps` (MOR-1562/C8) has no fieldStatus gate on `ritOn`/
- * `ritFreq`/`ritTx` at all, while the WRITE-path handlers walked here DO
- * gate on those same three unobserved leaves. Also adds ADDITIVE (uncounted,
- * outside the 87-name universe) coverage of the dynamic mod-input dispatch
- * across all 4 DATA groups on this fixture — see that file's own header.
+ * MOR-1574 is cited (not re-derived) as CONTRAST, now historical: the
+ * READ-path `toRitXitProps` (MOR-1562/C8) HAD no fieldStatus gate on
+ * `ritOn`/`ritFreq`/`ritTx` at all — closed by MOR-1574/PR #2488, which
+ * brought it in line with the WRITE-path handlers walked here, which
+ * always DID gate on those same three unobserved leaves. Also adds
+ * ADDITIVE (uncounted, outside the 87-name universe) coverage of the
+ * dynamic mod-input dispatch across all 4 DATA groups on this fixture —
+ * see that file's own header.
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
