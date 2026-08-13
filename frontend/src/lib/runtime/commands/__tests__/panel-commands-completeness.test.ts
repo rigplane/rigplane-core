@@ -202,7 +202,7 @@ completenessSuite({
   claimed: CLAIMED_INTENTS,
   waived: WAIVED_INTENTS,
   waivedCount: WAIVED_INTENTS_COUNT,
-  claimedCount: 20,
+  claimedCount: 29,
 });
 
 completenessSuite({
