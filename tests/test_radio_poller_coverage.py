@@ -1443,6 +1443,110 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", [VfoSwap, VfoEqualize])
+@pytest.mark.parametrize("queued", [False, True], ids=("direct", "queued"))
+async def test_unknown_profileless_vfo_commands_fail_before_mutation(
+    command: type[VfoSwap] | type[VfoEqualize], queued: bool
+) -> None:
+    """Unknown profile-less VFO commands must never inherit a foreign primitive."""
+    radio = _make_radio()
+    radio.profile = None
+    radio.model = "Unknown Rig"
+    radio.capabilities = {"dual_rx"}
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    poller = RadioPoller(radio, CommandQueue())
+    timestamp_before = poller._last_user_write_ts  # noqa: SLF001
+
+    if queued:
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        poller._queue.put_ordered(command(), future=future)  # noqa: SLF001
+        poller.start()
+        with pytest.raises(NotImplementedError, match="unknown.*profile"):
+            await asyncio.wait_for(future, timeout=1)
+        poller.stop()
+    else:
+        with pytest.raises(NotImplementedError, match="unknown.*profile"):
+            await poller._execute(command())  # noqa: SLF001
+
+    assert poller._last_user_write_ts == timestamp_before  # noqa: SLF001
+    radio.swap_vfo_ab.assert_not_awaited()
+    radio.equalize_vfo_ab.assert_not_awaited()
+    radio.swap_main_sub.assert_not_awaited()
+    radio.equalize_main_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unknown_profileless_set_freq_keeps_base_receiver_guard() -> None:
+    """Unknown profile-less non-VFO commands retain the base fallback behavior."""
+    radio = _make_radio()
+    radio.profile = None
+    radio.model = "Unknown Rig"
+    radio.capabilities = set()
+    poller = RadioPoller(radio, CommandQueue())
+
+    with pytest.raises(CommandError, match="receiver=1"):
+        await poller._execute(SetFreq(14_074_000, receiver=1))  # noqa: SLF001
+
+    radio.set_freq.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "command", "method"),
+    [
+        ("IC-7300", VfoSwap, "swap_vfo_ab"),
+        ("IC-7300", VfoEqualize, "equalize_vfo_ab"),
+        ("IC-7610", VfoSwap, "swap_main_sub"),
+        ("IC-7610", VfoEqualize, "equalize_main_sub"),
+    ],
+)
+async def test_profileless_known_model_vfo_commands_resolve_registry_primitive(
+    model: str,
+    command: type[VfoSwap] | type[VfoEqualize],
+    method: str,
+) -> None:
+    """Legacy doubles resolve their exact VFO primitive only from the registry."""
+    radio = _make_radio(model=model)
+    radio.profile = None
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    poller = RadioPoller(radio, CommandQueue())
+
+    await poller._execute(command())  # noqa: SLF001
+
+    expected = getattr(radio, method)
+    if method.endswith("_ab"):
+        expected.assert_awaited_once_with(0)
+    else:
+        expected.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["FTX-1", "TX-500", "X6100", "X6200"])
+@pytest.mark.parametrize("command", [VfoSwap, VfoEqualize])
+async def test_undeclared_profile_vfo_commands_fail_before_mutation(
+    model: str, command: type[VfoSwap] | type[VfoEqualize]
+) -> None:
+    """A shipped profile without the primitive cannot acknowledge the command."""
+    radio = _make_radio(model=model)
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    poller = RadioPoller(radio, CommandQueue())
+    timestamp_before = poller._last_user_write_ts  # noqa: SLF001
+
+    with pytest.raises(NotImplementedError, match="no matching primitive"):
+        await poller._execute(command())  # noqa: SLF001
+
+    assert poller._last_user_write_ts == timestamp_before  # noqa: SLF001
+    radio.swap_vfo_ab.assert_not_awaited()
+    radio.equalize_vfo_ab.assert_not_awaited()
+    radio.swap_main_sub.assert_not_awaited()
+    radio.equalize_main_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_select_vfo_legacy_backend_falls_back_to_set_vfo() -> None:
     """SelectVfo on backends predating ReceiverBankCapable falls back to set_vfo.
 
