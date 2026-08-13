@@ -11,10 +11,15 @@
  * preamp + attenuator (`RfFrontEnd.svelte`), and notch (`DspPanel.svelte`).
  *
  * All four share the ONE seat this ticket moved the CSS rule to
- * (`$lib/Button/control-button.css`) — each `describe` below re-injects the
- * SAME file, which is itself the point: the shared seat must work
+ * (`$lib/Button/control-button-armed.css`) — each `describe` below re-injects
+ * the SAME file, which is itself the point: the shared seat must work
  * identically for every consumer, not just the one (`ModePanel.svelte`,
  * `ModePanel.isolated.test.ts`) that originally owned a private copy.
+ *
+ * MOR-1541: the file was renamed from `control-button.css` to
+ * `control-button-armed.css` to stop the basename colliding with
+ * `components-v2/controls/control-button.css` (the unrelated `.v2-control-
+ * button` base-style sheet).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
@@ -22,7 +27,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 function loadArmedCss(): string {
-  return readFileSync(path.resolve(process.cwd(), 'src/lib/Button/control-button.css'), 'utf-8');
+  return readFileSync(path.resolve(process.cwd(), 'src/lib/Button/control-button-armed.css'), 'utf-8');
 }
 
 let components: ReturnType<typeof mount>[] = [];
@@ -266,6 +271,18 @@ describe('DspPanel notch armed signal (MOR-1536)', () => {
     const target = mountInto(DspPanel);
     expect(notchButton(target, 'A-NOTCH')?.dataset.armed).toBe('true');
     expect(notchButton(target, 'NOTCH')?.dataset.armed).toBeUndefined();
+  });
+
+  // MOR-1541: notch-off dispatches BOTH set_auto_notch{on:false} and
+  // set_manual_notch{on:false} (panel-commands.ts) — an owner-decided,
+  // intentionally honest double-arm, not a bug. Pin it: both buttons show
+  // data-armed at once when both commands are genuinely in flight.
+  it('marks BOTH NOTCH and A-NOTCH armed together after notch-off dispatches both commands', () => {
+    mockManualNotchArmed.armed = true; mockManualNotchArmed.value = false;
+    mockAutoNotchArmed.armed = true; mockAutoNotchArmed.value = false;
+    const target = mountInto(DspPanel);
+    expect(notchButton(target, 'NOTCH')?.dataset.armed).toBe('true');
+    expect(notchButton(target, 'A-NOTCH')?.dataset.armed).toBe('true');
   });
 
   describe('as rendered', () => {

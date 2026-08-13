@@ -484,6 +484,17 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
  *    same "still in flight" information sighted users get from the visual
  *    channel. `ModePanel.svelte` does this via `HardwareButton`'s
  *    `describedBy` prop.
+ *
+ * KNOWN DUPLICATION (MOR-1541): the `.sr-only` rule itself is copy-pasted
+ * verbatim into all five consumer panels (`ModePanel.svelte`,
+ * `AgcPanel.svelte`, `FilterPanel.svelte`, `RfFrontEnd.svelte`,
+ * `DspPanel.svelte`) rather than living in one shared file, unlike the
+ * `data-armed` visual rule above which was consolidated into
+ * `control-button-armed.css`. Accepted, not an oversight: Svelte's
+ * `<style>` scoping makes a genuinely shared `.sr-only` class awkward to
+ * factor out (either an unscoped `:global()` leak, or a shared import every
+ * panel needs just for one utility class) for a one-line rule unlikely to
+ * drift. Left as-is; do not refactor without a concrete reason.
  */
 export interface ArmedFact<T> {
   /** True from command dispatch until a confirming observation (or grace

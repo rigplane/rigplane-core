@@ -590,6 +590,13 @@ export function makeDspHandlers() {
       } else if (mode === 'manual') {
         dispatchRadioIntent({ name: 'set_manual_notch', params: { on: true, receiver } });
       } else {
+        // MOR-1541: notch-off genuinely dispatches BOTH commands, so both
+        // NOTCH and A-NOTCH legitimately arm until each is confirmed —
+        // that is an honest reflection of what is actually in flight, not
+        // a bug (owner-decided: keep this behavior). Dispatch-order pin:
+        // panel-commands.intent.isolated.test.ts:396. Rendered-armed pin
+        // (both buttons show data-armed together): mor1536-armed-adoption
+        // .test.ts, "DspPanel notch armed signal".
         dispatchRadioIntent({ name: 'set_auto_notch', params: { on: false, receiver } });
         dispatchRadioIntent({ name: 'set_manual_notch', params: { on: false, receiver } });
       }
