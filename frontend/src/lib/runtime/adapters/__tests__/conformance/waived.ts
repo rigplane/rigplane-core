@@ -50,7 +50,6 @@ function tag(names: readonly string[], waiver: Waiver): Record<string, Waiver> {
   return Object.fromEntries(names.map((name) => [name, waiver]));
 }
 
-const FILTER = { reason: 'Filter/PBT family walk not yet landed', owner: 'MOR-1561' } as const;
 const TX = { reason: 'TX-chain family walk not yet landed', owner: 'MOR-1564' } as const;
 const VOX_CW = { reason: 'VOX/CW family walk not yet landed', owner: 'MOR-1565' } as const;
 const SCOPE_VFO = { reason: 'Scope-remainder/VFO-topology family walk not yet landed', owner: 'MOR-1566' } as const;
@@ -58,22 +57,21 @@ const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner:
 const KEYBOARD = { reason: 'Keyboard action-fan-out walk not yet landed', owner: 'MOR-1563' } as const;
 
 /**
- * The (67 - 9 = 58) intents with no conformance assertion, tagged with the
- * family child that owns closing them. MOR-1562 (C8, adapter-seam parity)
- * intentionally claims ZERO entries here — its scope is
+ * The (67 - 9 - 5 = 53) intents with no conformance assertion, tagged with
+ * the family child that owns closing them. MOR-1562 (C8, adapter-seam
+ * parity) intentionally claims ZERO entries here — its scope is
  * `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
  *
- * MOR-1560 (C6)'s 9 DSP intents landed and were moved to `CLAIMED_INTENTS`
- * in `./claimed.ts` — see `../mor1560-dsp-family-conformance.isolated.test.ts`.
+ * MOR-1560 (C6)'s 9 DSP intents and MOR-1561 (C7)'s 5 filter/PBT intents
+ * landed and were moved to `CLAIMED_INTENTS` in `./claimed.ts` — see
+ * `../mor1560-dsp-family-conformance.isolated.test.ts` and
+ * `../mor1561-filter-pbt-family-conformance.isolated.test.ts`.
  */
 export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
   // MOR-1560 (C6) — DSP: NR/NB/notch/AGC time constant — CLAIMED, see
   // `./claimed.ts` and `../mor1560-dsp-family-conformance.isolated.test.ts`.
-  // MOR-1561 (C7) — Filter, PBT and IF-shift — 5
-  ...tag([
-    'set_filter_width', 'set_filter_shape', 'set_if_shift',
-    'set_pbt_inner', 'set_pbt_outer',
-  ], FILTER),
+  // MOR-1561 (C7) — Filter, PBT and IF-shift — CLAIMED, see `./claimed.ts`
+  // and `../mor1561-filter-pbt-family-conformance.isolated.test.ts`.
   // MOR-1564 (C10) — TX chain — 8
   ...tag([
     'set_rf_power', 'set_mic_gain', 'set_compressor', 'set_compressor_level',
@@ -104,7 +102,7 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
 };
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_INTENTS_COUNT = 58;
+export const WAIVED_INTENTS_COUNT = 53;
 
 /**
  * The 28 `dispatchKeyboardRadioAction` case labels with no conformance

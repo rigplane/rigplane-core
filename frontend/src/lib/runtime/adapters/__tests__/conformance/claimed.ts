@@ -38,6 +38,18 @@
  * fixture never observed any of these DSP sub-parameter leaves, so honest
  * fail-closed refusal IS the conformant behavior on this profile (see that
  * file's header for the fixture-derived evidence per intent).
+ *
+ * Plus MOR-1561's (C7) filter/PBT family walk
+ * (`../mor1561-filter-pbt-family-conformance.isolated.test.ts`) — 5 intents:
+ * `set_filter_width`, `set_filter_shape`, `set_if_shift`, `set_pbt_inner`,
+ * `set_pbt_outer`. NOT uniform like C6: `set_filter_shape`/`set_if_shift`/
+ * `set_pbt_inner`/`set_pbt_outer` are claimed via `expectRefusal` (each
+ * genuinely unobserved/undeclared on this fixture), but `set_filter_width`
+ * is claimed via a real `expectFrames` — `onFilterPresetChange` dispatches
+ * it on this fixture through a gate (`main.filter`, observed) that is
+ * DIFFERENT from the field the intent itself writes (`main.filterWidth`,
+ * unobserved) — see that file's header for the full finding and red-first
+ * evidence.
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
@@ -70,7 +82,16 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_manual_notch_width',
   'set_notch_filter',
   'set_agc_time_constant',
+  // MOR-1561 (C7) — Filter, PBT and IF-shift family walk
+  'set_filter_width',
+  'set_filter_shape',
+  'set_if_shift',
+  'set_pbt_inner',
+  'set_pbt_outer',
 ]);
+
+/** Pinned so a removal (or an undocumented addition) shows up in review. */
+export const CLAIMED_INTENTS_COUNT = 34;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.
