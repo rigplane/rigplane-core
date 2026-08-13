@@ -831,6 +831,83 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       expect(props.xitActive).toBe(true);
       expect(props.xitOffset).toBe(150);
     });
+
+    // MOR-1574: unlike every other batch-A/batch-B family (`toAgcProps`'
+    // `agcAvailable`, `toRfFrontEndProps`' `digiSelAvailable`/
+    // `ipPlusAvailable`), `toRitXitProps` shipped with NO fieldStatus gate at
+    // all — `hasRit`/`hasXit` checked capability presence only, so a
+    // connected radio that declares the `rit`/`xit` capability but has never
+    // actually reported `ritOn`/`ritFreq`/`ritTx` (the live ic7300 fixture's
+    // exact shape — all three `observed: false`/`availability: "missing"`)
+    // still rendered a confirmed-looking "RIT OFF" reading. Mirrors the
+    // `toAgcProps` fix's own idiom exactly: gate `hasRit`/`hasXit` on field
+    // availability the same way `hasAgc` gates on `agcAvailable`, and gate
+    // the numeric offsets to the standard `NaN` sentinel the same way
+    // `agcMode` does. `ritActive`/`xitActive` keep the plain-`boolean`
+    // non-fabrication contract from the test above (see its own comment for
+    // why the type cannot widen) — they stay protected behind the now-honest
+    // `hasRit`/`hasXit` visibility gate instead.
+    it('does not present an unobserved RIT/XIT as a confirmed reading (MOR-1574)', () => {
+      const props = toRitXitProps(
+        makeState({
+          ritOn: false,
+          ritFreq: 0,
+          ritTx: false,
+          fieldStatus: {
+            ritOn: fieldStatus('missing', false),
+            ritFreq: fieldStatus('missing', false),
+            ritTx: fieldStatus('missing', false),
+          },
+        }),
+        { capabilities: ['rit', 'xit'] } as any,
+      );
+      expect(props.hasRit).toBe(false);
+      expect(props.hasXit).toBe(false);
+      expect(props.ritOffset).toBeNaN();
+      expect(props.xitOffset).toBeNaN();
+    });
+
+    it('discriminates: the SAME capabilities with fieldStatus forced observed reports the real reading (MOR-1574)', () => {
+      const props = toRitXitProps(
+        makeState({
+          ritOn: true,
+          ritFreq: 250,
+          ritTx: true,
+          fieldStatus: {
+            ritOn: fieldStatus('available'),
+            ritFreq: fieldStatus('available'),
+            ritTx: fieldStatus('available'),
+          },
+        }),
+        { capabilities: ['rit', 'xit'] } as any,
+      );
+      expect(props.hasRit).toBe(true);
+      expect(props.hasXit).toBe(true);
+      expect(props.ritActive).toBe(true);
+      expect(props.ritOffset).toBe(250);
+      expect(props.xitActive).toBe(true);
+      expect(props.xitOffset).toBe(250);
+    });
+
+    it('treats a stale RIT/XIT reading as unavailable, same as missing (MOR-1574)', () => {
+      const props = toRitXitProps(
+        makeState({
+          ritOn: true,
+          ritFreq: 250,
+          ritTx: true,
+          fieldStatus: {
+            ritOn: fieldStatus('stale'),
+            ritFreq: fieldStatus('stale'),
+            ritTx: fieldStatus('stale'),
+          },
+        }),
+        { capabilities: ['rit', 'xit'] } as any,
+      );
+      expect(props.hasRit).toBe(false);
+      expect(props.hasXit).toBe(false);
+      expect(props.ritOffset).toBeNaN();
+      expect(props.xitOffset).toBeNaN();
+    });
   });
 
   describe('toModeProps modes catalog', () => {

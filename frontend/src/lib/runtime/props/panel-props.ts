@@ -471,6 +471,20 @@ export interface RitXitProps {
   // `mode ?? 'USB'` gate literal (plan §7 LOW item) — never a
   // plausible-looking *on* reading no one confirmed. `ritOffset`/
   // `xitOffset` still fix to the standard `NaN` sentinel.
+  //
+  // MOR-1574: A12 above fixed the fabricated *default* but left NO
+  // fieldStatus gate at all — a radio that declares the `rit`/`xit`
+  // capability but has never actually reported `ritOn`/`ritFreq`/`ritTx`
+  // (the live ic7300 fixture's exact shape) still passed `hasRit`/`hasXit`
+  // on capability presence alone, so the conservative-`false` reading above
+  // rendered as a CONFIRMED "RIT OFF" instead of an honest "unknown".
+  // `hasRit`/`hasXit` now gate on field availability too, mirroring
+  // `toAgcProps`' `hasAgc: hasCap(caps, 'agc') && agcAvailable` exactly —
+  // `ritActive`/`xitActive` stay the same plain-boolean raw values (still
+  // protected by the now-honest visibility gate, same as `digiSel`/
+  // `ipPlus` in `toRfFrontEndProps`), and `ritOffset`/`xitOffset` fix to
+  // `NaN` whenever their backing field is not available, same idiom as
+  // `agcMode`.
   ritActive: boolean;
   ritOffset: number;
   xitActive: boolean;
@@ -483,13 +497,16 @@ export function toRitXitProps(
   state: ServerState | null,
   caps: Capabilities | null,
 ): RitXitProps {
+  const ritOnAvailable = topFieldAvailable(state, 'ritOn');
+  const ritFreqAvailable = topFieldAvailable(state, 'ritFreq');
+  const ritTxAvailable = topFieldAvailable(state, 'ritTx');
   return {
     ritActive: state?.ritOn ?? false,
-    ritOffset: state?.ritFreq ?? Number.NaN,
+    ritOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
     xitActive: state?.ritTx ?? false,
-    xitOffset: state?.ritFreq ?? Number.NaN,
-    hasRit: hasCap(caps, 'rit'),
-    hasXit: hasCap(caps, 'xit'),
+    xitOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
+    hasRit: hasCap(caps, 'rit') && ritOnAvailable,
+    hasXit: hasCap(caps, 'xit') && ritTxAvailable,
   };
 }
 
