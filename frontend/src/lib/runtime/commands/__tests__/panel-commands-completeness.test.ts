@@ -1,10 +1,15 @@
 /**
  * MOR-1556 (C2) — conformance completeness ledger.
  *
- * 67 of panel-commands.ts's 87 distinct dispatched intent names have no
- * conformance assertion (MOR-1428/MOR-1555 claims 20), and nothing made
- * that visible — the exact failure shape the whole MOR-1426 program exists
- * to kill (green tests, dead controls). This meta-test is the visibility:
+ * A large share of panel-commands.ts's distinct dispatched intent names
+ * have no conformance assertion — see `WAIVED_INTENTS_COUNT` (waived) and
+ * `CLAIMED_INTENTS_COUNT` (claimed) in the two ledger files below for the
+ * CURRENT split; their sum is the total distinct intent-name universe this
+ * suite enforces, so it never needs a hardcoded figure here that a future
+ * family walk would make stale. Until MOR-1560/1561 landed, nothing made
+ * that gap visible — the exact failure shape the whole MOR-1426 program
+ * exists to kill (green tests, dead controls). This meta-test is the
+ * visibility:
  * every intent name the command layer can emit, and every
  * `dispatchKeyboardRadioAction` case label, must be either claimed
  * (`../../adapters/__tests__/conformance/claimed.ts`) or explicitly waived
@@ -45,8 +50,9 @@
  * DYNAMIC NAME, VERIFIED AND HANDLED EXPLICITLY: one call site,
  * `onModInputChange`, computes its name at runtime via
  * `modInputCommand(dataMode)` — not a literal, so `INTENT_CALL_RE`
- * correctly skips it and it is not counted toward 87/67/20. Its 4-value
- * domain is pinned separately by `$lib/radio/mod-input.test.ts`; the
+ * correctly skips it and it is not counted toward the claimed/waived totals
+ * below. Its 4-value domain is pinned separately by
+ * `$lib/radio/mod-input.test.ts`; the
  * `describe('dynamic mod-input call site...')` block below asserts the
  * source still contains EXACTLY one such non-literal call, so a second
  * one introduced later fails loudly instead of silently escaping both
@@ -67,6 +73,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   CLAIMED_INTENTS,
+  CLAIMED_INTENTS_COUNT,
   CLAIMED_KEYBOARD_ACTIONS,
 } from '../../adapters/__tests__/conformance/claimed';
 import {
@@ -202,7 +209,7 @@ completenessSuite({
   claimed: CLAIMED_INTENTS,
   waived: WAIVED_INTENTS,
   waivedCount: WAIVED_INTENTS_COUNT,
-  claimedCount: 29,
+  claimedCount: CLAIMED_INTENTS_COUNT,
 });
 
 completenessSuite({
