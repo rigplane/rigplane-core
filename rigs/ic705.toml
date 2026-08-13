@@ -45,7 +45,16 @@ features = [
     # RF front end
     "attenuator",
     "preamp",
-    "digisel",       # wfview: DIGI-SEL Shift (0x14 0x13) only — no 0x16 0x4E toggle in IC-705.rig
+    # NOTE: no "digisel" capability (0x16 0x4E DIGI-SEL toggle) on IC-705 —
+    # wfview's IC-705.rig only exposes DIGI-SEL Shift (0x14 0x13, see
+    # get_digisel_shift/set_digisel_shift in [commands] below), never the
+    # 0x16 0x4E on/off command this capability string gates. Declaring
+    # "digisel" here made IcomRadio.set_preamp(level>0) run a get_digisel()
+    # pre-flight that sent an unanswerable 0x16 0x4E frame and blocked for
+    # a full CI-V timeout on every call (MOR-1540). Provenance: wfview/
+    # hamlib-doc-sourced (repo's ic705-research.md is no longer vendored
+    # here) — IC-705 is NOT on the live bench, so this is doc-level
+    # confidence, not live-validated.
     # Antenna
     "antenna",
     "rx_antenna",    # wfview: RX Antenna 0x16 0x53 (IC-7300.rig omits this command)
