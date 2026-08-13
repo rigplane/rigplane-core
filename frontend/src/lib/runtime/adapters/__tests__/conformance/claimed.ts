@@ -27,7 +27,18 @@
  * block, not guessed.
  */
 
-/** Intent names claimed by MOR-1428's IC-7300 fixture conformance suite. */
+/**
+ * Intent names claimed by MOR-1428's IC-7300 fixture conformance suite,
+ * plus MOR-1560's (C6) DSP family walk
+ * (`../mor1560-dsp-family-conformance.isolated.test.ts`) — 9 intents:
+ * `set_nr_level`, `set_nb_level`, `set_nb_depth`, `set_nb_width`,
+ * `set_auto_notch`, `set_manual_notch`, `set_manual_notch_width`,
+ * `set_notch_filter`, `set_agc_time_constant`. Every one of the 9 is
+ * claimed via `expectRefusal` (not `expectFrames`) — the real IC-7300
+ * fixture never observed any of these DSP sub-parameter leaves, so honest
+ * fail-closed refusal IS the conformant behavior on this profile (see that
+ * file's header for the fixture-derived evidence per intent).
+ */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
   'set_filter',
@@ -49,6 +60,16 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_scope_span',
   'set_scope_speed',
   'set_scope_ref',
+  // MOR-1560 (C6) — DSP family walk
+  'set_nr_level',
+  'set_nb_level',
+  'set_nb_depth',
+  'set_nb_width',
+  'set_auto_notch',
+  'set_manual_notch',
+  'set_manual_notch_width',
+  'set_notch_filter',
+  'set_agc_time_constant',
 ]);
 
 /**

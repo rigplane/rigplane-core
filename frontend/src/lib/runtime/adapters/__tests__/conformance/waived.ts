@@ -50,7 +50,6 @@ function tag(names: readonly string[], waiver: Waiver): Record<string, Waiver> {
   return Object.fromEntries(names.map((name) => [name, waiver]));
 }
 
-const DSP = { reason: 'DSP family walk not yet landed', owner: 'MOR-1560' } as const;
 const FILTER = { reason: 'Filter/PBT family walk not yet landed', owner: 'MOR-1561' } as const;
 const TX = { reason: 'TX-chain family walk not yet landed', owner: 'MOR-1564' } as const;
 const VOX_CW = { reason: 'VOX/CW family walk not yet landed', owner: 'MOR-1565' } as const;
@@ -59,18 +58,17 @@ const SWEEPER = { reason: 'Remainder-sweeper family walk not yet landed', owner:
 const KEYBOARD = { reason: 'Keyboard action-fan-out walk not yet landed', owner: 'MOR-1563' } as const;
 
 /**
- * The 67 intents with no conformance assertion, tagged with the family
- * child that owns closing them. MOR-1562 (C8, adapter-seam parity)
+ * The (67 - 9 = 58) intents with no conformance assertion, tagged with the
+ * family child that owns closing them. MOR-1562 (C8, adapter-seam parity)
  * intentionally claims ZERO entries here — its scope is
  * `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
+ *
+ * MOR-1560 (C6)'s 9 DSP intents landed and were moved to `CLAIMED_INTENTS`
+ * in `./claimed.ts` — see `../mor1560-dsp-family-conformance.isolated.test.ts`.
  */
 export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
-  // MOR-1560 (C6) — DSP: NR/NB/notch/AGC time constant — 9
-  ...tag([
-    'set_nr_level', 'set_nb_level', 'set_nb_depth', 'set_nb_width',
-    'set_auto_notch', 'set_manual_notch', 'set_manual_notch_width',
-    'set_notch_filter', 'set_agc_time_constant',
-  ], DSP),
+  // MOR-1560 (C6) — DSP: NR/NB/notch/AGC time constant — CLAIMED, see
+  // `./claimed.ts` and `../mor1560-dsp-family-conformance.isolated.test.ts`.
   // MOR-1561 (C7) — Filter, PBT and IF-shift — 5
   ...tag([
     'set_filter_width', 'set_filter_shape', 'set_if_shift',
@@ -106,7 +104,7 @@ export const WAIVED_INTENTS: Readonly<Record<string, Waiver>> = {
 };
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const WAIVED_INTENTS_COUNT = 67;
+export const WAIVED_INTENTS_COUNT = 58;
 
 /**
  * The 28 `dispatchKeyboardRadioAction` case labels with no conformance
