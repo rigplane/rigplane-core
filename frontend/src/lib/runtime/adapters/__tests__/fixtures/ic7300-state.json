@@ -601,12 +601,6 @@
       "observed": false,
       "storePath": "receiver.main.operator_controls.nb_level"
     },
-    "main.notchFilter": {
-      "availability": "missing",
-      "freshness": "unknown",
-      "observed": false,
-      "storePath": "receiver.main.operator_controls.notch_filter"
-    },
     "main.nr": {
       "availability": "available",
       "freshness": "fresh",
@@ -937,6 +931,12 @@
       "freshness": "unknown",
       "observed": false,
       "storePath": "global.operator_controls.nb_width"
+    },
+    "notchFilter": {
+      "availability": "missing",
+      "freshness": "unknown",
+      "observed": false,
+      "storePath": "global.operator_controls.notch_filter"
     },
     "overflow": {
       "availability": "missing",
@@ -1554,7 +1554,6 @@
     "narrow": false,
     "nb": true,
     "nbLevel": 0,
-    "notchFilter": 0,
     "nr": true,
     "nrLevel": 0,
     "pbtInner": 128,
@@ -1594,6 +1593,7 @@
   "monitorOn": false,
   "nbDepth": 0,
   "nbWidth": 0,
+  "notchFilter": 0,
   "observationSeq": 851011,
   "overflow": false,
   "powerLevel": 0.011764705882352941,

@@ -50,20 +50,22 @@ const FIXTURES_DIR = resolve(CONFORMANCE_DIR, '../fixtures');
 // re-captured — removing it while the fixture is unchanged must turn this
 // guard red again (see PR body for the reproduction).
 //
-// MOR-1575: the ic7300 `notchFilter` drift this allow-list carried is now
-// closed. `ic7300-state.json` was corrected to the current-schema
-// receiver-scoped shape (`main.notchFilter` / `fieldStatus['main.notchFilter']`,
-// storePath `receiver.main.operator_controls.notch_filter`) — the same
-// mapping `_civ_rx.py`'s `_OBSERVABLE_CMD14_FIELDS[0x0D]` and
-// `rigs/ic7300.toml`'s field-policy membership list have used since MOR-1548
-// (PR #2466). No live hardware re-capture was run for this correction: the
-// underlying raw fact was never observed either before or after (raw `0`,
-// `availability: "missing"` both times) — only its JSON key location was
-// wrong, carried over from a fixture frozen before MOR-1548 landed. Moving
-// an always-unobserved fact to its schema-correct path adds no invented
-// data. The empty `KNOWN_STALE_FIELDS` object is kept (not deleted) so a
-// future drift only needs a new entry added, not this scaffolding rebuilt.
-const KNOWN_STALE_FIELDS: Record<string, { stateTopLevel: string[]; fieldStatus: string[] }> = {};
+// MOR-1575: confirmed production (backend routing + frontend gate) has been
+// correct and mutually consistent since MOR-1548 (PR #2466, `eabd506b`) —
+// `notch_filter` is receiver-scoped end to end, radio-agnostic (no 7300/7610
+// branch), matching `_civ_rx.py`'s `_OBSERVABLE_CMD14_FIELDS[0x0D]` and
+// `rigs/ic7300.toml`'s field-policy membership list. This fixture entry is
+// NOT the production bug MOR-1575 was filed against — it is the same
+// pre-existing capture-vs-schema drift this allow-list already tracked,
+// held here (NOT hand-edited) pending a genuine bench re-capture: the
+// capture predates the MOR-1492 membership wave, so at capture time
+// `notch_filter` had no acquisition membership and was never polled
+// (honestly missing then); today `ic7300.toml` polls it every ~25s, so a
+// real re-capture at HEAD may show it observed — only the bench can settle
+// that, not a hand-authored fieldStatus entry. See MOR-1558/MOR-1410.
+const KNOWN_STALE_FIELDS: Record<string, { stateTopLevel: string[]; fieldStatus: string[] }> = {
+  ic7300: { stateTopLevel: ['notchFilter'], fieldStatus: ['notchFilter'] },
+};
 
 interface FieldInfo {
   name: string;
