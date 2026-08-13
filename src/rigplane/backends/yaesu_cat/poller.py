@@ -524,6 +524,7 @@ class YaesuCatPoller:
             SetTwinPeak,
             SetVox,
             SetTunerStatus,
+            VfoEqualize,
             VfoSwap,
         )
 
@@ -543,7 +544,27 @@ class YaesuCatPoller:
                 code = 0 if vfo.upper() in ("A", "MAIN") else 1
                 await radio.set_vfo_select(code)
             case VfoSwap():
-                await radio.vfo_a_to_b()
+                profile = getattr(radio, "profile", None)
+                if profile is None or profile.swap_ab_code is None:
+                    model = getattr(
+                        profile, "model", getattr(radio, "model", "unknown")
+                    )
+                    raise NotImplementedError(
+                        f"VfoSwap unsupported on {model}: "
+                        "profile declares no swap_ab_code"
+                    )
+                await radio.swap_vfo_ab(0)
+            case VfoEqualize():
+                profile = getattr(radio, "profile", None)
+                if profile is None or profile.equal_ab_code is None:
+                    model = getattr(
+                        profile, "model", getattr(radio, "model", "unknown")
+                    )
+                    raise NotImplementedError(
+                        f"VfoEqualize unsupported on {model}: "
+                        "profile declares no equal_ab_code"
+                    )
+                await radio.equalize_vfo_ab(0)
 
             # ── PTT ──
             case PttOn():
