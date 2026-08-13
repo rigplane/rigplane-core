@@ -119,6 +119,31 @@
  * checked for and NOT found, unlike `set_monitor_gain` above (that
  * finding's own CW-sidetone leg, `onSidetoneLevelChange`, is a different
  * intent and stays claimed via C10, not this walk).
+ *
+ * Plus MOR-1566's (C12) scope-remainder/VFO-topology family walk
+ * (`../mor1566-scope-vfo-family-conformance.isolated.test.ts`) — 12 intents:
+ * `set_scope_mode`, `set_scope_edge`, `set_scope_dual`, `set_scope_during_tx`,
+ * `set_scope_center_type`, `set_scope_vbw`, `set_scope_rbw`,
+ * `switch_scope_receiver`, `set_dual_watch`, `set_main_sub_tracking`,
+ * `quick_dualwatch`, `quick_split`. UNLIKE C6/C7/C10/C11, NOT skewed toward
+ * refusal: 7 of the 12 genuinely DISPATCH on the real IC-7300 fixture (every
+ * `scopeControls.*` leaf this family reads is observed except `rbw`, and the
+ * fixture's own current values fall inside every handler's declared domain).
+ * The 5 refusals are all STRUCTURAL gates (`hasPhysicalSub` failing on this
+ * single-receiver, no-`dual_rx` profile, or `caps.receivers < 2`
+ * short-circuiting before any field check) except `set_scope_rbw`, the one
+ * genuinely-unobserved field-status leaf in this family (discrimination-case
+ * verified in that file). Mode/edge/centerType domains are walked against
+ * the exact tables the production UI itself uses (`MODE_BUTTONS`, `CHOICES`)
+ * — a MOR-1576-class check performed and NOT found (UI and handler-gate
+ * domains agree everywhere in this family). Also extends conformance
+ * coverage of `vfo_swap`/`vfo_equalize`/`set_scope_hold` (already claimed by
+ * MOR-1563/C9's keyboard walk) to their real non-keyboard UI call sites
+ * (`VfoControlPanel.svelte`'s swap/equalize buttons,
+ * `SemanticRadioSurfaces.svelte`'s `SCOPE_TOGGLE_INTENT['hold']`) — gate
+ * re-confirmed identical, not a MOR-1576-class split; `vfo_swap`/
+ * `vfo_equalize`'s structural-only, no-field-observation gate reconfirms
+ * MOR-1578 leg 1 at the handler itself, not just its keyboard wrapper.
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
@@ -184,10 +209,23 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_twin_peak',
   'cw_auto_tune',
   'set_dash_ratio',
+  // MOR-1566 (C12) — scope-remainder/VFO-topology family walk
+  'set_scope_mode',
+  'set_scope_edge',
+  'set_scope_dual',
+  'set_scope_during_tx',
+  'set_scope_center_type',
+  'set_scope_vbw',
+  'set_scope_rbw',
+  'switch_scope_receiver',
+  'set_dual_watch',
+  'set_main_sub_tracking',
+  'quick_dualwatch',
+  'quick_split',
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 58;
+export const CLAIMED_INTENTS_COUNT = 70;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.
