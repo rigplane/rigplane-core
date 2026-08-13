@@ -1924,22 +1924,37 @@ describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
     expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
-  it('requires fresh positive current mode, width and supported DATA facts', () => {
+  // MOR-1576: this used to also require fresh positive `main.filterWidth`
+  // (both unavailable and value 0/NaN cases) — that was a receiver-identity
+  // proxy check, not a functional need, since the write never reads a
+  // confirmed prior `filterWidth`; it resolves the quantization rule from
+  // `mode`/`dataMode` alone and validates the passed `width` PARAMETER
+  // (see the separate "rejects ... unsafe candidates" case below, which
+  // still covers `attempt(0)`/`attempt(NaN)` on the parameter itself).
+  it('requires fresh current mode and supported DATA facts; filterWidth observation is no longer required', () => {
     const attempt = () => makeFilterHandlers().onFilterWidthCommit(2400, 0, 31);
-    for (const path of ['main.mode', 'main.filterWidth', 'main.dataMode']) {
+    for (const path of ['main.mode', 'main.dataMode']) {
       h.unavailable.add(path); attempt(); h.unavailable.clear();
     }
     for (const [field, value] of [
-      ['mode', ''], ['filterWidth', 0], ['filterWidth', Number.NaN], ['dataMode', -1],
+      ['mode', ''], ['dataMode', -1],
     ] as const) {
       h.state = { ...a06State(), main: { ...a06State().main, [field]: value } } as ServerState;
       attempt();
     }
+    // main.filterWidth unavailable/stale no longer blocks the commit.
+    h.state = a06State();
+    h.unavailable.add('main.filterWidth');
+    attempt();
+    h.unavailable.clear();
     h.state = a06State();
     h.caps = { ...a06Caps(), capabilities: ['filter_width'] } as unknown as Record<string, unknown>;
     h.unavailable.add('main.dataMode');
     attempt();
-    expect(exactCalls()).toEqual([['set_filter_width', { width: 2400, receiver: 0 }]]);
+    expect(exactCalls()).toEqual([
+      ['set_filter_width', { width: 2400, receiver: 0 }],
+      ['set_filter_width', { width: 2400, receiver: 0 }],
+    ]);
   });
 
   it('rejects missing capability, unresolved/fixed/default-only rules and unsafe candidates', () => {
