@@ -3140,8 +3140,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=0x07,
         )
 
-    async def get_agc(self, receiver: int = RECEIVER_MAIN) -> AgcMode:
-        """Read AGC mode."""
+    async def get_agc(self, receiver: int = RECEIVER_MAIN) -> int:
+        """Read AGC mode.
+
+        Returns the raw profile-declared value (see the radio's ``[agc]
+        modes`` in its TOML profile), not an ``AgcMode`` enum member.
+        ``AgcMode`` is the IC-7610/generic Icom FAST/MID/SLOW shape — a
+        radio with a differently-shaped domain (e.g. the X6200's
+        OFF=0/FAST=1/SLOW=2/AUTO=3) would otherwise raise on OFF (0 is not
+        a member) or be silently mislabeled for SLOW/AUTO (index 2/3 mean
+        something else there). Label mapping is data-side (``[agc]
+        labels``), mirroring ``set_agc``'s MOR-1522 fix (MOR-1529).
+        """
         self._require_receiver(receiver, operation="get_agc")
         self._require_cmd29_route(0x16, 0x12, receiver=receiver, operation="get_agc")
         cmd29 = self._profile.supports_cmd29(0x16, 0x12)
@@ -3152,7 +3162,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=0x12,
             bcd_bytes=1,
         )
-        return AgcMode(value)
+        agc_modes = self._profile.agc_modes
+        if agc_modes is not None and value not in agc_modes:
+            raise ValueError(
+                f"AGC mode {value} reported by radio is not in declared domain "
+                f"{sorted(agc_modes)} for {self._profile.model}"
+            )
+        return value
 
     async def set_agc(self, mode: AgcMode | int, receiver: int = RECEIVER_MAIN) -> None:
         """Set AGC mode.

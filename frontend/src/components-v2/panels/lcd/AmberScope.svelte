@@ -2,6 +2,7 @@
   import { deriveAmberScopeProps } from '$lib/runtime/adapters/panel-adapters';
   import {
     toTxProps, toRitXitProps, toVfoOpsProps, toDspProps, toFilterProps,
+    formatPreLabel,
   } from '$lib/runtime/props/panel-props';
   import AmberFrequency from './AmberFrequency.svelte';
   import AmberAfScope from './AmberAfScope.svelte';
@@ -40,19 +41,19 @@
     return '';
   }
 
-  // AGC mode labels (mirrors AmberCockpit)
-  const AGC_LABELS: Record<number, string> = {
-    0: 'OFF', 1: 'FAST', 2: 'MID', 3: 'SLOW',
-    4: 'A-F', 5: 'A-M', 6: 'A-S',
-  };
-  function agcLabelFor(agcMode: number): string {
-    return AGC_LABELS[agcMode] ?? `${agcMode}`;
-  }
-
   let scopeProps = $derived(deriveAmberScopeProps());
   let radioState = $derived(scopeProps.radioState);
   let caps = $derived(scopeProps.caps);
   let hasCap = $derived(scopeProps.hasCapability);
+
+  // MOR-1529: AGC mode labels come from the profile-declared capabilities
+  // payload (`[agc].labels` per radio, e.g. ic7300/ic7610 FAST/MID/SLOW vs
+  // X6200 OFF/FAST/SLOW/AUTO — index 2/3 differ from the IC-7610 shape this
+  // file used to hardcode unconditionally, mirrors AmberCockpit). Falls back
+  // to the plain numeric value when the profile declares no label for it.
+  function agcLabelFor(agcMode: number): string {
+    return caps?.agcLabels?.[String(agcMode)] ?? `${agcMode}`;
+  }
 
   let tx = $derived(toTxProps(radioState, null));
   let ritXit = $derived(toRitXitProps(radioState, null));
@@ -129,8 +130,12 @@
     }] : []),
     ...(hasCap('preamp') && rxAvailable('preamp') ? [{
       id: 'pre' as const,
-      label: (rx?.preamp ?? 0) === 0 ? 'IPO'
-           : (rx?.preamp ?? 0) === 1 ? 'AMP1' : 'AMP2',
+      // MOR-1529: profile-declared `[preamp].labels` (e.g. FTX-1's
+      // IPO/AMP1) instead of hardcoding that Yaesu vocabulary for every
+      // radio — most Icom profiles declare no preamp labels at all, so
+      // this falls back to `formatPreLabel`'s generic OFF/P{n}, matching
+      // `toRfFrontEndProps`'s `preOptions` for the same radios.
+      label: formatPreLabel(rx?.preamp ?? 0, caps?.preLabels ?? {}),
       active: true,
     }] : []),
   ]);

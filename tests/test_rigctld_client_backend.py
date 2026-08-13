@@ -13,6 +13,7 @@ from rigplane.backends.rigctld_client import RigctldClientRadio, RigctldTranspor
 from rigplane.backends.rigctld_client.radio import (
     _float_to_level_255,
     _level_255_to_float,
+    _preamp_level_to_db,
 )
 from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
@@ -252,6 +253,30 @@ async def test_rigctld_preamp_attenuator_nb_nr() -> None:
             assert await radio.get_nr() is False
             await radio.set_nr(True)
             assert await radio.get_nr() is True
+        finally:
+            await radio.disconnect()
+
+
+def test_preamp_level_to_db_rejects_out_of_domain_level() -> None:
+    """MOR-1529: an unrecognized preamp level must fail loud, not be
+    silently coerced to OFF (0 dB) — this backend has no ``RigProfile`` to
+    validate against (it talks to an already-running external rigctld
+    daemon), so its own fixed 0/1/2 mapping must reject anything else."""
+    for legal in (0, 1, 2):
+        assert _preamp_level_to_db(legal) in {"0", "10", "20"}
+    with pytest.raises(ValueError, match=r"preamp level must be one of"):
+        _preamp_level_to_db(3)
+    with pytest.raises(ValueError, match=r"preamp level must be one of"):
+        _preamp_level_to_db(-1)
+
+
+async def test_rigctld_set_preamp_out_of_domain_raises_not_silently_off() -> None:
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            with pytest.raises(ValueError, match=r"preamp level must be one of"):
+                await radio.set_preamp(3)
         finally:
             await radio.disconnect()
 
