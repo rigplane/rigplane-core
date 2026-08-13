@@ -1,0 +1,31 @@
+/**
+ * Default armed-state affordance (MOR-1536) — the generic "in flight,
+ * awaiting poll confirmation" signal from `panel-adapters.ts`'s
+ * ARMED-SIGNAL CONTRACT (MOR-1519). This is the shared seat: every
+ * `ControlButton`/`HardwareButton` consumer across desktop-v2 that renders
+ * `data-armed` (via the `armed` prop, `ControlButton.svelte`) picks this up
+ * for free, instead of each panel re-authoring its own copy of the rule
+ * (MOR-1519's first consumer, `ModePanel.svelte`, originally did exactly
+ * that — MOR-1536 promotes it here ahead of adding more consumers).
+ *
+ * `opacity` is the PRIMARY, font-independent visual channel (review F2,
+ * MOR-1519: this build's vendored Roboto Mono has no italic face, and
+ * `app.css` sets `font-synthesis: none`, so an italic-only affordance would
+ * compute but never actually render). `text-decoration: underline` is the
+ * structural backstop that survives regardless of font.
+ *
+ * This file is imported once, as a side effect, from `ControlButton.svelte`
+ * — the one place `data-armed` is ever rendered onto the DOM — so it loads
+ * wherever a `ControlButton`/`HardwareButton` is used, without every caller
+ * needing its own import.
+ *
+ * A skin MAY override this default (e.g. an LCD skin substituting a glow or
+ * blink for its own non-`v2-control-button` markup) — this is a default,
+ * not a hard requirement on every skin. The hard requirement is only that
+ * SOME visual channel exists for `data-armed='true'`, per the ARMED-SIGNAL
+ * CONTRACT doc block in `panel-adapters.ts`.
+ */
+.v2-control-button[data-armed='true'] {
+  opacity: 0.75;
+  text-decoration: underline;
+}

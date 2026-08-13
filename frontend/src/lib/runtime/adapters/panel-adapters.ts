@@ -522,6 +522,101 @@ export function getModeArmed(): ArmedFact<string> {
   return armedFact<string>('set_mode', 'mode', receiver, 'mode');
 }
 
+// ── Armed-signal adoption long tail (MOR-1536) ──
+/**
+ * Shared active-receiver split for the accessors below — the exact same
+ * `state.active === 'SUB'` read `getModeArmed` above performs inline, and
+ * the same one every `activeRx(state)`-based prop mapper in `panel-props.ts`
+ * uses for AGC/filter/preamp/attenuator/data-mode/notch. `null` only when
+ * there is no state yet (cold start).
+ *
+ * KNOWN BOUND (same class `getModeArmed` already documents): a handler that
+ * targets a receiver other than `state.active` at dispatch time (the
+ * focus-echo window, `consumePendingFocus()`) makes an accessor built on
+ * this helper degrade to no-feedback for that one click. None of the
+ * handlers this helper serves (`onAgcModeChange`, `onFilterChange`,
+ * `onPreChange`, `onAttChange`, `onDataModeChange`, `onNotchModeChange`)
+ * consume the focus-echo pending target the way `onModeChange` does, so in
+ * practice they are not exposed to it today — noted for completeness, not
+ * because a live gap is known.
+ */
+function activeReceiverOrNull(): 0 | 1 | null {
+  const state = runtime.state;
+  if (!state) return null;
+  return state.active === 'SUB' ? 1 : 0;
+}
+
+/** AGC mode buttons' armed fact (`set_agc`). No `receiver` param — same
+ *  single-active-receiver read `toAgcProps`'s `activeRx(state)` uses. */
+export function getAgcArmed(): ArmedFact<number> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<number>('set_agc', 'mode', receiver, 'agc');
+}
+
+/** Filter-select (FIL1/2/3) armed fact (`set_filter`). This is the exact
+ *  same `latestPendingParam('set_filter', 'filter', receiver, 'filter')`
+ *  call `getPendingFilterSelection(receiver)` above already makes — this
+ *  wrapper only supplies the no-receiver-arg, `ArmedFact`-shaped read
+ *  `FilterPanel.svelte` needs (parity with `getModeArmed`'s shape), not a
+ *  second implementation. */
+export function getFilterArmed(): ArmedFact<number> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<number>('set_filter', 'filter', receiver, 'filter');
+}
+
+/** Preamp-level armed fact (`set_preamp`). Same underlying primitive as
+ *  `getPendingPreampLevel(receiver)` above, `ArmedFact`-shaped. */
+export function getPreampArmed(): ArmedFact<number> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<number>('set_preamp', 'level', receiver, 'preamp');
+}
+
+/** Attenuator armed fact (`set_attenuator`, param `db`, confirmed field
+ *  `att`) — `makeRfFrontEndHandlers().onAttChange` dispatches `db`, not
+ *  `level`. Wired only for `RfFrontEnd.svelte`'s 2-value HardwareButton
+ *  toggle (the live-bench IC-7300/FTX-1 shape, both `attValues.length ===
+ *  2`, `rigs/ic7300.toml`/`rigs/ftx1.toml`); the `>2`-value
+ *  `AttenuatorControl.svelte` branch is unwired (see PR body). */
+export function getAttenuatorArmed(): ArmedFact<number> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<number>('set_attenuator', 'db', receiver, 'att');
+}
+
+/** Data-mode armed fact (`set_data_mode`) — `ModePanel.svelte`'s DATA
+ *  button/grid, distinct from `getModeArmed` above (a different intent
+ *  entirely; a mode change and a data-mode change can be in flight at the
+ *  same time and must not be conflated). */
+export function getDataModeArmed(): ArmedFact<number> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<number>('set_data_mode', 'mode', receiver, 'dataMode');
+}
+
+/** Auto-notch armed fact (`set_auto_notch`). Notch mode is written as TWO
+ *  independent boolean commands (`set_auto_notch`/`set_manual_notch`,
+ *  `makeDspHandlers().onNotchModeChange`), never a single `notchMode`
+ *  intent — combining them into one derived fact would be exactly the
+ *  re-derivation the ARMED-SIGNAL CONTRACT forbids, so this stays two
+ *  accessors, one per real command, same as the two real buttons
+ *  (`DspPanel.svelte`'s NOTCH and A-NOTCH). */
+export function getAutoNotchArmed(): ArmedFact<boolean> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<boolean>('set_auto_notch', 'on', receiver, 'autoNotch');
+}
+
+/** Manual-notch armed fact (`set_manual_notch`) — see `getAutoNotchArmed`'s
+ *  doc comment for why this is a separate accessor, not a combined one. */
+export function getManualNotchArmed(): ArmedFact<boolean> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<boolean>('set_manual_notch', 'on', receiver, 'manualNotch');
+}
+
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
 const _vfoHandlers = makeVfoHandlers();

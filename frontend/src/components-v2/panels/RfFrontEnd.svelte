@@ -5,11 +5,24 @@
   import { HardwareButton } from '$lib/Button';
   import { shouldShowPanel } from './rf-frontend-utils';
   import { getShortcutHint } from '../layout/shortcut-hints';
+  import { t } from '$lib/i18n';
 
-  import { deriveRfFrontEndProps, getRfFrontEndHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    deriveRfFrontEndProps, getRfFrontEndHandlers, getPreampArmed, getAttenuatorArmed,
+  } from '$lib/runtime/adapters/panel-adapters';
 
   const handlers = getRfFrontEndHandlers();
   let p = $derived(deriveRfFrontEndProps());
+  // MOR-1536: freshest in-flight `set_preamp`/`set_attenuator` targets,
+  // DISPLAY ONLY (see `panel-adapters.ts`'s ARMED-SIGNAL CONTRACT). `pre`/
+  // `att` below stay the sole selection source — armed only marks the
+  // button the pending command is racing toward, never a substitute for
+  // the confirmed reading. Attenuator: wired for the 2-value HardwareButton
+  // toggle below only — the `>2`-value `AttenuatorControl` branch is
+  // unwired (see PR body).
+  let preArmed = $derived(getPreampArmed());
+  let attArmed = $derived(getAttenuatorArmed());
+  const armedIdBase = $props.id();
 
   let rfGain = $derived(p.rfGain);
   let squelch = $derived(p.squelch);
@@ -81,16 +94,22 @@
 
     {#if showAtt}
       {#if attValues.length <= 2}
+        {@const attArmedId = `${armedIdBase}-att`}
         <HardwareButton
           active={att > 0}
           indicator="edge-left"
           color="amber"
           title={attShortcut}
           shortcutHint={attShortcut}
+          armed={attArmed.armed}
+          describedBy={attArmed.armed ? attArmedId : undefined}
           onclick={() => onAttChange(att > 0 ? 0 : attValues[attValues.length - 1])}
         >
           ATT
         </HardwareButton>
+        {#if attArmed.armed}
+          <span id={attArmedId} class="sr-only">{t('core.rfFrontEnd.att.pendingAnnouncement')}</span>
+        {/if}
       {:else}
         <div class="control-row" data-shortcut-hint={attShortcut ?? undefined} title={attShortcut ?? undefined}>
           <span class="control-label">ATT</span>
@@ -104,6 +123,8 @@
         <span class="control-label">PRE</span>
         <div class="button-group">
           {#each preOptions as option}
+            {@const isPreArmed = preArmed.armed && preArmed.value === option.value}
+            {@const preArmedId = `${armedIdBase}-pre-${option.value}`}
             <HardwareButton
               active={pre === option.value}
               indicator="edge-left"
@@ -111,10 +132,15 @@
               disabled={preDisabled}
               title={preDisabled ? preDisabledReason : preShortcut}
               shortcutHint={preShortcut}
+              armed={isPreArmed}
+              describedBy={isPreArmed ? preArmedId : undefined}
               onclick={() => onPreChange(option.value)}
             >
               {option.label}
             </HardwareButton>
+            {#if isPreArmed}
+              <span id={preArmedId} class="sr-only">{t('core.rfFrontEnd.preamp.pendingAnnouncement')}</span>
+            {/if}
           {/each}
         </div>
       </div>
@@ -215,5 +241,13 @@
   .button-group > :global(button) {
     flex: 1 1 0;
     min-width: 0;
+  }
+
+  /* MOR-1536 — same convention as `ModePanel.svelte`'s `.sr-only`: visually
+     hidden, `position: absolute` removes it from the flex layout so it
+     never consumes visible space. */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 </style>

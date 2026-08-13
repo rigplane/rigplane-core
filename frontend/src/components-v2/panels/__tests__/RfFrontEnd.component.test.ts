@@ -43,9 +43,16 @@ const mockHandlers = {
   onIpPlusToggle: vi.fn(),
 };
 
+// MOR-1536: RfFrontEnd now also reads the preamp/attenuator armed signals —
+// default unarmed here, this file's tests are not about that behavior
+// (covered by `mor1536-armed-adoption.test.ts`).
+const unarmed = { armed: false, value: null };
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveRfFrontEndProps: () => mockProps,
   getRfFrontEndHandlers: () => mockHandlers,
+  getPreampArmed: () => unarmed,
+  getAttenuatorArmed: () => unarmed,
 }));
 
 import RfFrontEnd from '../RfFrontEnd.svelte';

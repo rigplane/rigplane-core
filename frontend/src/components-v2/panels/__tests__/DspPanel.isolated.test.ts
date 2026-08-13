@@ -35,9 +35,16 @@ const mockHandlers = {
   onAgcTimeChange: vi.fn(),
 };
 
+// MOR-1536: DspPanel now also reads the notch armed signal — default
+// unarmed here, this file's tests are not about that behavior (covered by
+// `mor1536-armed-adoption.test.ts`).
+const unarmed = { armed: false, value: null };
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveDspProps: () => mockProps,
   getDspHandlers: () => mockHandlers,
+  getAutoNotchArmed: () => unarmed,
+  getManualNotchArmed: () => unarmed,
 }));
 
 import DspPanel from '../DspPanel.svelte';

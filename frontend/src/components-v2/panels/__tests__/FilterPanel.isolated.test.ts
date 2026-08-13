@@ -36,9 +36,15 @@ const mockHandlers = {
   onPbtReset: vi.fn(),
 };
 
+// MOR-1536: FilterPanel now also reads the filter-select armed signal —
+// default unarmed here, this file's tests are not about that behavior
+// (covered by `mor1536-armed-adoption.test.ts`).
+const unarmed = { armed: false, value: null };
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveFilterProps: () => mockProps,
   getFilterHandlers: () => mockHandlers,
+  getFilterArmed: () => unarmed,
 }));
 
 import FilterPanel from '../FilterPanel.svelte';
