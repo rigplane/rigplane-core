@@ -281,6 +281,14 @@ describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
       expect(label).toBe(status === fresh ? 'XIT' : undefined);
     }
   });
+
+  it('does not let stale RIT steal inline XIT label priority', () => {
+    const state = stateFor('ritTx', true, fresh) as any;
+    state.ritOn = true;
+    state.fieldStatus.ritOn = stale;
+
+    expect(mountCockpit(state).querySelector('.rit-label')?.textContent).toBe('XIT');
+  });
 });
 
 // ── RIT-offset consumer-boundary guard (AmberCockpit only — AmberScope never

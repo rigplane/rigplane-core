@@ -418,7 +418,7 @@
       <!-- RIT / XIT offset (inline within cockpit, collapses when inactive) -->
       {#if (ritXit.hasRit && ritXit.ritActive) || (ritXit.hasXit && ritXit.xitActive)}
         <div class="lcd-rit-row">
-          <span class="rit-label">{ritXit.ritActive ? 'RIT' : 'XIT'}</span>
+          <span class="rit-label">{ritXit.hasRit && ritXit.ritActive ? 'RIT' : 'XIT'}</span>
           <span class="rit-value">{ritOffsetLabel}</span>
         </div>
       {/if}
