@@ -1683,18 +1683,26 @@ def _find_port_pid(port: int) -> str | None:
         return None
 
 
-def check_ports_available(ports: list[int]) -> None:
-    """Check that each port can be bound; raise RuntimeError with details if not.
+def check_ports_available(bindings: list[tuple[str, int]]) -> None:
+    """Check that each (host, port) binding can be bound; raise RuntimeError if not.
 
     Args:
-        ports: List of TCP port numbers to check.
+        bindings: List of (host, port) pairs to probe. The probed host MUST
+            match the host the real listener will bind to — on some
+            platforms a wildcard ("0.0.0.0") probe with SO_REUSEADDR can
+            false-negative (bind succeeds) against an orphan already bound
+            to a specific interface such as "127.0.0.1", and vice versa
+            (MOR-1437 review, measured on macOS). When a listener's real
+            bind host can vary by mode, probe every host it could use — a
+            hit on any one aborts.
 
     Raises:
-        RuntimeError: If any port is already in use, with PID info when available.
+        RuntimeError: If any binding is already in use, with PID info when
+            available.
     """
     import socket as _sock
 
-    for port in ports:
+    for host, port in bindings:
         with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
             # Allow binding even if port is in TIME_WAIT from a recent shutdown.
             # Only fail if another process is actively listening.
@@ -1702,12 +1710,13 @@ def check_ports_available(ports: list[int]) -> None:
             if hasattr(_sock, "SO_REUSEPORT"):
                 s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEPORT, 1)
             try:
-                s.bind(("", port))
+                s.bind((host, port))
             except OSError:
                 pid = _find_port_pid(port)
                 pid_info = f" (PID {pid})" if pid else ""
+                host_label = host or "0.0.0.0"
                 raise RuntimeError(
-                    f"Port {port} already in use{pid_info}. "
+                    f"Port {port} already in use{pid_info} (bind host {host_label}). "
                     f"Run `lsof -i :{port}` to find the process holding it."
                 )
 
@@ -1884,20 +1893,30 @@ async def _run(args: argparse.Namespace) -> int:
     if args.command in ("web", "station"):
         # Declared listeners are checked before the radio connects (MOR-1437):
         # a bind failure here must abort before any serial/LAN session or
-        # poller starts. rigctld is included whenever it is enabled (the
-        # default) — `--no-rigctld` is the explicit opt-out that skips its
-        # port entirely.
-        ports_to_check = [args.web_port]
+        # poller starts. Each probe binds the SAME host the real listener
+        # will use — a host-mismatched probe can false-negative on some
+        # platforms and let an orphan slip through undetected (see
+        # check_ports_available docstring). rigctld is included whenever it
+        # is enabled (the default) — `--no-rigctld` is the explicit opt-out
+        # for `web` that skips its port entirely (station has no such flag —
+        # rigctld is always on there; see _cmd_web). rigctld's real bind
+        # host depends on managed_runtime ("127.0.0.1" vs "0.0.0.0",
+        # mirroring _cmd_web's `rigctld_host`) — but an orphan could be
+        # squatting on either host regardless of this run's mode, so both
+        # are probed and a hit on either aborts.
+        bindings: list[tuple[str, int]] = [(args.web_host, args.web_port)]
         if getattr(args, "web_rigctld", False):
-            ports_to_check.append(getattr(args, "web_rigctld_port", 4532))
+            rigctld_port = getattr(args, "web_rigctld_port", 4532)
+            bindings.append(("0.0.0.0", rigctld_port))
+            bindings.append(("127.0.0.1", rigctld_port))
         try:
-            check_ports_available(ports_to_check)
+            check_ports_available(bindings)
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
     elif args.command == "serve":
         try:
-            check_ports_available([args.serve_port])
+            check_ports_available([(args.serve_host, args.serve_port)])
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -3785,8 +3804,18 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
     # Start rigctld if requested. MOR-1437: any bind failure (including a
     # busy port — the common orphaned-instance case) aborts startup rather
     # than degrading silently, since starting anyway risks serial
-    # multiple-access with whatever already holds the port. `--no-rigctld`
-    # remains the explicit opt-out.
+    # multiple-access with whatever already holds the port. `web` has the
+    # explicit `--no-rigctld` opt-out; `station` does not — it always runs
+    # rigctld (see `_apply_managed_runtime_defaults`), so its only lever is
+    # relocating the port with `--rigctld-port` or stopping the other
+    # process (a `--no-rigctld` for `station` is a scope decision for a
+    # follow-up, not added here).
+    rigctld_opt_out_hint = (
+        "station has no --no-rigctld opt-out; relocate the port with "
+        "--rigctld-port, or stop the other process"
+        if getattr(args, "command", None) == "station"
+        else "pass --no-rigctld to disable the embedded server"
+    )
     rigctld_server = None
     rigctld_addr: str | None = None
     if getattr(args, "web_rigctld", False):
@@ -3824,12 +3853,12 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
                     "rigctld failed to bind %s:%d: %s "
                     "(another rigctld — likely an orphaned rigplane instance — "
                     "is probably already running; run `lsof -i :%d` to find it, "
-                    "or pass --no-rigctld to disable the embedded server). "
-                    "Startup aborted.",
+                    "or %s). Startup aborted.",
                     rigctld_host,
                     rigctld_port,
                     exc,
                     rigctld_port,
+                    rigctld_opt_out_hint,
                 )
             else:
                 logger.error(

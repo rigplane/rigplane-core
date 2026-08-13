@@ -1611,7 +1611,7 @@ class TestCheckPortsAvailable:
             s.bind(("", 0))
             port = s.getsockname()[1]
         # Port is free now — should not raise.
-        check_ports_available([port])
+        check_ports_available([("", port)])
 
     def test_occupied_port_raises_runtime_error(self):
         import socket
@@ -1624,7 +1624,7 @@ class TestCheckPortsAvailable:
             with pytest.raises(
                 RuntimeError, match=f"Port {occupied_port} already in use"
             ):
-                check_ports_available([occupied_port])
+                check_ports_available([("", occupied_port)])
 
     def test_error_message_includes_port_number(self):
         import socket
@@ -1635,7 +1635,7 @@ class TestCheckPortsAvailable:
             s.listen(1)
             port = s.getsockname()[1]
             try:
-                check_ports_available([port])
+                check_ports_available([("", port)])
             except RuntimeError as exc:
                 assert str(port) in str(exc)
             else:
@@ -1654,8 +1654,26 @@ class TestCheckPortsAvailable:
             s.listen(1)
             port = s.getsockname()[1]
             with pytest.raises(RuntimeError, match="lsof") as exc_info:
-                check_ports_available([port])
+                check_ports_available([("", port)])
             assert f"lsof -i :{port}" in str(exc_info.value)
+
+    def test_host_mismatched_probe_does_not_false_negative(self):
+        """MOR-1437 R1: a probe must bind the SAME host as the real orphan,
+        or a wildcard probe can succeed over a loopback-bound listener
+        (measured on macOS) — the wildcard-vs-127.0.0.1 case that let a
+        station instance connect to the radio in the pre-fix code.
+        """
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+
+            # Host-matched probe correctly detects the conflict.
+            with pytest.raises(RuntimeError, match=f"Port {port} already in use"):
+                check_ports_available([("127.0.0.1", port)])
 
     def test_web_command_preflight_blocks_on_occupied_port(self, capsys):
         """_run() exits 1 with error before connecting to radio when port is occupied."""
@@ -1785,3 +1803,63 @@ class TestCheckPortsAvailable:
         assert result == 0
         mock_radio.__aenter__.assert_called_once()
         cmd_web.assert_awaited_once_with(mock_radio, args)
+
+    def test_station_preflight_blocks_on_occupied_rigctld_port_at_managed_host(
+        self, capsys
+    ):
+        """MOR-1437 R1: station always runs managed (web_host forced to
+        127.0.0.1, rigctld always on, no --no-rigctld opt-out) — the real
+        rigctld listener binds 127.0.0.1 in this mode (see _cmd_web's
+        ``rigctld_host``). A wildcard-only preflight probe can
+        false-negative against an orphan already bound to 127.0.0.1 (macOS
+        SO_REUSEADDR quirk), letting the radio connect anyway — exactly the
+        serial multiple-access window this ticket exists to close. The
+        preflight must probe the host the real listener will actually use
+        (and the other host too, since an orphan could be on either).
+        """
+        import asyncio
+        import socket
+
+        from rigplane.cli import _run
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as free_probe:
+            free_probe.bind(("127.0.0.1", 0))
+            free_web_port = free_probe.getsockname()[1]
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            occupied_rigctld_port = s.getsockname()[1]
+
+            args = _build_parser().parse_args(
+                [
+                    "--host",
+                    "1.2.3.4",
+                    "station",
+                    "--port",
+                    str(free_web_port),
+                    "--rigctld-port",
+                    str(occupied_rigctld_port),
+                    # Sidestep the unrelated managed-mode auth requirement so
+                    # this test isolates the preflight/port-check path.
+                    "--auth-token",
+                    "test-token",
+                ]
+            )
+            assert args.web_host == "127.0.0.1"
+            assert args.web_rigctld is True
+
+            mock_radio = MagicMock()
+            mock_radio.__aenter__ = AsyncMock(return_value=mock_radio)
+            mock_radio.__aexit__ = AsyncMock(return_value=False)
+            with patch("rigplane.cli.create_radio", return_value=mock_radio):
+                result = asyncio.run(_run(args))
+
+        # No serial/LAN session and no pollers — radio never connected.
+        mock_radio.__aenter__.assert_not_called()
+        mock_radio.__aexit__.assert_not_called()
+        assert result == 1
+        captured = capsys.readouterr()
+        assert str(occupied_rigctld_port) in captured.err
+        assert "lsof" in captured.err.lower()
