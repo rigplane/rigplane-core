@@ -1,0 +1,11 @@
+{
+  "capturedAt": "2026-08-11",
+  "radioModel": "IC-7300",
+  "receivers": 1,
+  "stateContractVersion": 1,
+  "providerGeneration": 1,
+  "backendHeadSha": "e0b19814",
+  "source": "local bench instance",
+  "retroactive": true,
+  "retroactiveNote": "retroactive — reconstructed from the loader provenance header in ic7300-profile.ts, not emitted at capture time (MOR-1557; capture-profile.mjs did not yet write a sidecar when this fixture was captured)"
+}
