@@ -33,17 +33,34 @@
  * (`fieldStatus['scopeControls.rbw'].observed === false`) — discrimination
  * case below proves that refusal is load-bearing, not vacuous.
  *
- * DECLARED-PARAM SHAPES, DATA-DRIVEN: `mode`/`edge`/`centerType` are walked
- * over the EXACT domain tables the production UI itself renders from —
- * `MODE_BUTTONS` (`components/spectrum/spectrum-toolbar-logic.ts`) for mode,
- * `CHOICES` (`semantic/ScopeControlsSurface.svelte`'s module script) for
- * edge/centerType/rbw/receiver — imported below, never hand-copied, so a
- * production domain edit moves this walk's boundary values with it. Every
- * one of these domains is asserted to equal `acceptsScopeValue`'s hardcoded
- * `min`/`max` args in `panel-commands.ts` (0-3 mode, 1-4 edge, 0-2
- * centerType, 0-2 rbw, 0-1 receiver) — a MOR-1576-class check performed and
- * NOT found: UI domain and handler-gate domain agree on every leaf in this
- * family.
+ * DECLARED-PARAM SHAPES, DATA-DRIVEN: `mode`/`edge`/`centerType`/`rbw`/
+ * `receiver` domains are all read off the EXACT tables the production UI
+ * itself renders from — `MODE_BUTTONS` (`components/spectrum/
+ * spectrum-toolbar-logic.ts`) for mode, `CHOICES` (`semantic/
+ * ScopeControlsSurface.svelte`'s module script) for edge/centerType/rbw/
+ * receiver — imported below, never hand-copied, so a production domain edit
+ * moves this walk's boundary values with it. NOT UNIFORMLY PINNED, though:
+ * `mode`/`edge`/`centerType` are BEHAVIORALLY pinned — a full boundary-value
+ * dispatch walk covers every declared value, so a narrower production domain
+ * would turn one of those dispatch cases red. `rbw` and `receiver`'s upper
+ * bound are only STRUCTURALLY pinned (`choiceDomain(...)` asserted to equal
+ * the literal array) — `rbw` refuses on the field-observation gate for every
+ * value in its domain, so its declared max (2) is never actually exercised
+ * as a dispatch; `receiver`'s upper bound (1) refuses on `hasPhysicalSub`
+ * before the domain check would even matter. Both splits are named at their
+ * own `it` blocks below, not just here.
+ *
+ * ONE UI-SIDE CONDITION THE HANDLER LACKS (non-blocking, named for the
+ * record): `set_scope_edge` is UI-unreachable at THIS fixture's own current
+ * mode (`mode=0`, CTR) — both toolbar surfaces gate EDGE's visibility on
+ * `isEdgeApplicable` (`spectrum-toolbar-logic.ts:44-46`: FIX(1)/S-F(3) only),
+ * while `onEdgeChange` itself carries no such mode-conditional check at all
+ * and dispatches for any in-range edge value regardless of the current mode
+ * (walked below as-is). This is NOT a MOR-1576 finding: it is
+ * pre-adjudicated as intentional in `radio-view-model.ts:851-856` — "EDGE's
+ * applicability is UI-only, gated on the current MODE value ... that is a
+ * rendering decision, not a fact-availability distinction" — so the handler
+ * deliberately has no business reason to mirror a pure-presentation gate.
  *
  * RED-FIRST EVIDENCE (MOR-1566 build process, not part of this diff, first
  * as a deliberately wrong claim, then fixed): the `quick_split` dispatch case
@@ -73,20 +90,35 @@
  * see `./conformance/claimed.ts`. That walk exercised them ONLY through
  * `dispatchKeyboardRadioAction`'s `vfo_swap`/`vfo_equalize`/
  * `scope_toggle_hold` cases (`panel-commands.ts:1520-1525`, `:1559-1565`).
- * Each of those cases calls the IDENTICAL handler this walk's own family
- * uses (`makeVfoHandlers().onSwap`/`.onEqual`, `makeScopeControlsHandlers()
- * .onHoldChange`) with no additional gate of its own — so per MOR-1576, the
- * gate cannot differ. But a REAL, DIFFERENT, non-keyboard UI call site does
- * exist for each — `VfoControlPanel.svelte:51-52`/`RadioLayout.svelte:413,
- * 420` wire `vfoHandlers.onSwap`/`.onEqual` directly to click handlers, and
- * `SemanticRadioSurfaces.svelte:356,1113` wires `scopeIntents.onHoldChange`
- * through `SCOPE_TOGGLE_INTENT` to `ScopeControlsSurface.svelte`'s HOLD
- * toggle button. This walk's own 3 cases below claim conformance coverage of
- * THOSE call sites directly (never exercised as `expectFrames` targets
- * before), while confirming — not re-deriving — MOR-1578 leg 1's finding
- * that `onSwap`/`onEqual`'s gate is purely structural (`vfoScheme !==
- * 'single'`) with NO field-observation leaf read at all, unlike every other
- * intent in this family.
+ * NOT UNIFORM across the three: `vfo_swap`/`vfo_equalize`'s keyboard cases
+ * are bare calls (`makeVfoHandlers().onSwap(); return true;`) with NO
+ * additional gate of their own — the handler's own structural check
+ * (`vfoScheme !== 'single'`) is the only gate in play, so per MOR-1576 it
+ * cannot differ from a direct call. `scope_toggle_hold`'s keyboard case is
+ * DIFFERENT: it DOES pre-gate, via `keyboardScopeField` (`:1371-1376`:
+ * `scopeControls.hold` non-null + `isFieldAvailable`) plus its own
+ * `caps.scope===true && has('scope') && typeof hold === 'boolean'` check
+ * (`:1561`), before ever calling `onHoldChange`. That pre-gate is strictly
+ * SUBSUMED by — not independent of — `onHoldChange`'s own gate
+ * (`currentScopeContext()` re-checks the identical `caps.scope`/`has('scope')`
+ * pair, and `acceptsScopeValue` re-checks the identical `isFieldAvailable` +
+ * boolean-typed-current condition): whenever the pre-gate passes, the
+ * handler's own gate passes too, so the conclusion still holds — no
+ * MOR-1576-class split. But the correction cuts the other way for coverage:
+ * the non-keyboard call site is strictly LOOSER (no pre-gate at all, only
+ * `onHoldChange`'s own gate applies), so MOR-1563's keyboard-only coverage
+ * genuinely did not exercise the FULL admissible set `onHoldChange` itself
+ * allows — this walk's direct call does. Real, DIFFERENT, non-keyboard UI
+ * call sites exist for all three: `VfoControlPanel.svelte:51-52`/
+ * `RadioLayout.svelte:413,420` wire `vfoHandlers.onSwap`/`.onEqual` directly
+ * to click handlers, and `SemanticRadioSurfaces.svelte:356,1113` wires
+ * `scopeIntents.onHoldChange` through `SCOPE_TOGGLE_INTENT` to
+ * `ScopeControlsSurface.svelte`'s HOLD toggle button. This walk's own 3
+ * cases below claim conformance coverage of THOSE call sites directly (never
+ * exercised as `expectFrames` targets before), while confirming — not
+ * re-deriving — MOR-1578 leg 1's finding that `onSwap`/`onEqual`'s gate is
+ * purely structural (`vfoScheme !== 'single'`) with NO field-observation
+ * leaf read at all, unlike every other intent in this family.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -189,7 +221,7 @@ describe('IC-7300 fixture — scope-remainder/VFO-topology family conformance (M
     expectFrames(() => makeScopeControlsHandlers().onVbwChange(true), [['set_scope_vbw', { narrow: true }]]);
   });
 
-  describe("set_scope_rbw — the ONE genuinely-unobserved scope leaf in this family (discrimination evidence, see file header); domain is CHOICES['rbw'] = [0,1,2], matching acceptsScopeValue's hardcoded 0-2, but observation blocks dispatch regardless of value", () => {
+  describe("set_scope_rbw — the ONE genuinely-unobserved scope leaf in this family (discrimination evidence, see file header); domain is CHOICES['rbw'] = [0,1,2], matching acceptsScopeValue's hardcoded 0-2 STRUCTURALLY only — observation blocks dispatch for every value, so the domain's max (2) is never behaviorally exercised (see file header)", () => {
     it('rbw domain is [0,1,2]; scopeControls.rbw is UNOBSERVED (the lone gap in this family)', () => {
       expect(choiceDomain('rbw')).toEqual([0, 1, 2]);
       expect(IC7300_STATE.fieldStatus?.['scopeControls.rbw']?.observed).toBe(false);
@@ -200,7 +232,7 @@ describe('IC-7300 fixture — scope-remainder/VFO-topology family conformance (M
     });
   });
 
-  describe('switch_scope_receiver — receiver=0 DISPATCHES (own leaf observed, no sub required); receiver=1 REFUSES (hasPhysicalSub fails, same structural gate as set_scope_dual)', () => {
+  describe("switch_scope_receiver — receiver=0 DISPATCHES (own leaf observed, no sub required); receiver=1 REFUSES (hasPhysicalSub fails, same structural gate as set_scope_dual) — so the declared domain's upper bound (1) is pinned STRUCTURALLY (choiceDomain below) but never behaviorally exercised as a dispatch (see file header)", () => {
     it('scopeControls.receiver is observed and in-range', () => {
       expect(choiceDomain('receiver')).toEqual([0, 1]);
       expect(IC7300_STATE.fieldStatus?.['scopeControls.receiver']?.observed).toBe(true);

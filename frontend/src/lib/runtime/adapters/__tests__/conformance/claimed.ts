@@ -135,15 +135,23 @@
  * genuinely-unobserved field-status leaf in this family (discrimination-case
  * verified in that file). Mode/edge/centerType domains are walked against
  * the exact tables the production UI itself uses (`MODE_BUTTONS`, `CHOICES`)
- * — a MOR-1576-class check performed and NOT found (UI and handler-gate
- * domains agree everywhere in this family). Also extends conformance
+ * and BEHAVIORALLY pinned via a full boundary-value dispatch walk — a
+ * MOR-1576-class check performed and NOT found; `rbw`/`receiver`'s upper
+ * bound are pinned against those same tables STRUCTURALLY only (both refuse
+ * on a different gate before their domain's max value would ever dispatch —
+ * see that file's own header for the split). Also extends conformance
  * coverage of `vfo_swap`/`vfo_equalize`/`set_scope_hold` (already claimed by
  * MOR-1563/C9's keyboard walk) to their real non-keyboard UI call sites
  * (`VfoControlPanel.svelte`'s swap/equalize buttons,
- * `SemanticRadioSurfaces.svelte`'s `SCOPE_TOGGLE_INTENT['hold']`) — gate
- * re-confirmed identical, not a MOR-1576-class split; `vfo_swap`/
- * `vfo_equalize`'s structural-only, no-field-observation gate reconfirms
- * MOR-1578 leg 1 at the handler itself, not just its keyboard wrapper.
+ * `SemanticRadioSurfaces.svelte`'s `SCOPE_TOGGLE_INTENT['hold']`) — NOT
+ * uniform: `vfo_swap`/`vfo_equalize`'s keyboard cases are bare handler calls
+ * with no gate of their own, while `scope_toggle_hold`'s keyboard case DOES
+ * pre-gate (`keyboardScopeField`), but that pre-gate is strictly subsumed by
+ * `onHoldChange`'s own gate — so still not a MOR-1576-class split, and the
+ * non-keyboard call site is the strictly LOOSER one MOR-1563 never directly
+ * exercised (see that file's own header). `vfo_swap`/`vfo_equalize`'s
+ * structural-only, no-field-observation gate reconfirms MOR-1578 leg 1 at
+ * the handler itself, not just its keyboard wrapper.
  */
 export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_mode',
