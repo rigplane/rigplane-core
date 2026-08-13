@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
@@ -447,6 +448,53 @@ describe('TX meters — IC-7300 profile anchors (MOR-1527)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cal-fixture sync guard (MOR-1535) — `IC7300_TX_METER_CALS.power` above
+// mirrors only 4 of `rigs/ic7300.toml`'s 13 real `[[meters.power.calibration]]`
+// knots (raw 0/143/213/255), with nothing previously catching that mirror
+// drifting from the TOML if a future profile edit changes one of those 4
+// anchors. This reads the real TOML directly rather than inventing a new
+// generated-fixture pipeline — a minimal inline parser for the tables'
+// uniform `raw = N` / `actual = N` / `label = "..."` knot format.
+// ---------------------------------------------------------------------------
+
+interface TomlCalKnot {
+  raw: number;
+  actual: number;
+  label: string;
+}
+
+function parseTomlCalibrationTable(tomlSource: string, meterKey: string): TomlCalKnot[] {
+  const header = `[[meters.${meterKey}.calibration]]`;
+  return tomlSource
+    .split(header)
+    .slice(1)
+    .map((block) => {
+      const body = block.split(/\n\[/)[0];
+      const raw = body.match(/raw\s*=\s*(-?\d+)/)?.[1];
+      const actual = body.match(/actual\s*=\s*(-?[\d.]+)/)?.[1];
+      const label = body.match(/label\s*=\s*"([^"]*)"/)?.[1];
+      if (raw === undefined || actual === undefined || label === undefined) {
+        throw new Error(`Unparseable [[meters.${meterKey}.calibration]] knot while reading rigs/ic7300.toml`);
+      }
+      return { raw: Number(raw), actual: Number(actual), label };
+    });
+}
+
+describe('IC7300_TX_METER_CALS.power sync guard (MOR-1535)', () => {
+  it('every mirrored power knot matches its real rigs/ic7300.toml anchor exactly', () => {
+    const tomlSource = readFileSync('../rigs/ic7300.toml', 'utf8');
+    const realKnots = parseTomlCalibrationTable(tomlSource, 'power');
+    expect(realKnots.length).toBeGreaterThanOrEqual(IC7300_TX_METER_CALS.power.length);
+
+    for (const mirrored of IC7300_TX_METER_CALS.power) {
+      const real = realKnots.find((k) => k.raw === mirrored.raw);
+      expect(real, `no real anchor at raw=${mirrored.raw} in rigs/ic7300.toml`).toBeDefined();
+      expect(mirrored).toEqual(real);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // S-meter (unchanged by MOR-1470 — pinned here against regressions)
 // ---------------------------------------------------------------------------
 
@@ -473,8 +521,8 @@ describe('formatSMeter / sLevel — uncalibrated fallback (MOR-1451)', () => {
     setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
-  it('formatSMeter renders the plain raw number, not a fabricated S-unit', () => {
-    expect(formatSMeter(53)).toBe('53');
+  it('formatSMeter renders the raw-tagged number, not a fabricated S-unit and not a naked number (MOR-1535: the same honesty gap MOR-1527 fixed for the other six formatters)', () => {
+    expect(formatSMeter(53)).toBe('53 raw');
   });
 
   it('sLevel degrades to a neutral raw-proportional bar position', () => {

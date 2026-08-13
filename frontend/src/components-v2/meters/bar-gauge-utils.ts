@@ -46,6 +46,35 @@ export function getSegmentZone(
  * @param hex    - Source color, e.g. '#14A665'
  * @param blend  - Fraction of source color to keep (default 0.12)
  */
+/** Width of the `displayValue` SVG-text column, in the 0-300 viewBox
+ *  (VALUE_X=260 in `BarGauge.svelte`, budget runs to the viewBox edge). */
+const VALUE_COLUMN_WIDTH = 40;
+
+/** Approximate glyph width of the Roboto Mono value text, as a fraction of
+ *  its font-size — used only to size the step-down guard below, not for
+ *  pixel-perfect layout. */
+const CHAR_WIDTH_EM = 0.6;
+
+/** Smallest step-down font size before text stops being legible. */
+const MIN_VALUE_FONT_SIZE = 6;
+
+/**
+ * Font size for `BarGauge`'s `displayValue` text, stepped down from
+ * `baseFontSize` when the string is too long to fit the fixed ~40px value
+ * column at that size (MOR-1535). SVG text neither wraps nor ellipsizes on
+ * overflow — it clips silently — so a value like MOR-1527's raw-tagged
+ * fallback ("158 raw", 7 chars) would otherwise lose characters at the
+ * non-compact VALUE_FS=11 (~6-char budget). Short strings (the common
+ * case: "35W", "S9+40") are unaffected — this only ever shrinks text that
+ * would have clipped, never grows it past `baseFontSize`.
+ */
+export function valueFontSize(displayValue: string, baseFontSize: number): number {
+  const chars = displayValue.length;
+  if (chars === 0) return baseFontSize;
+  const fitted = VALUE_COLUMN_WIDTH / (chars * CHAR_WIDTH_EM);
+  return Math.max(MIN_VALUE_FONT_SIZE, Math.min(baseFontSize, fitted));
+}
+
 export function dimColor(hex: string, blend = 0.12): string {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);

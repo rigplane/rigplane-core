@@ -240,13 +240,16 @@ function calibratedSmeterToRaw(actual: number): number {
 
 /**
  * Formats calibrated S-meter value (dB relative to S9) as an S-unit string.
- * Falls back to the plain raw-scale number (no "S" claim) when the radio
- * has no s_meter calibration table — never a reading borrowed from a
- * different radio's curve (MOR-1451).
+ * Falls back to the honest raw-tagged reading (`formatRaw`, e.g. "53 raw";
+ * MOR-1527) when the radio has no s_meter calibration table — never a
+ * reading borrowed from a different radio's curve (MOR-1451), and never a
+ * naked number indistinguishable from a real S-unit claim (MOR-1535: this
+ * was the last of the seven meter formatters still returning the naked
+ * pre-MOR-1527 fallback).
  */
 export function formatSMeter(actual: number): string {
   if (!isSmeterCalibrated()) {
-    return String(Math.round(Math.max(0, Math.min(RAW_SCALE_MAX, actual))));
+    return formatRaw(actual);
   }
   const knots = getSmeterKnots();
   const minActual = knots[0][1];

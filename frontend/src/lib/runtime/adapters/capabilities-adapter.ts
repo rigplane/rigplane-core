@@ -33,8 +33,9 @@ export interface MeterCalPoint {
 /**
  * Calibration knot points for a meter (e.g. `'s_meter'`, `'power'`,
  * `'swr'`). Returns `null` when capabilities haven't loaded or when the
- * radio doesn't expose calibration for this meter — callers should fall
- * back to hardcoded IC-7610 defaults in that case.
+ * radio doesn't expose calibration for this meter — callers degrade to an
+ * honest raw-scale reading (`meter-utils.ts`'s `formatRaw`), never a
+ * hardcoded fallback curve borrowed from another radio (MOR-1291/MOR-1451).
  */
 export function getMeterCalibration(meterType: string): MeterCalPoint[] | null {
   return _getMeterCalibration(meterType);
@@ -42,7 +43,8 @@ export function getMeterCalibration(meterType: string): MeterCalPoint[] | null {
 
 /**
  * Redline raw value for a meter (e.g. `'alc'`). Returns `null` when no
- * capability data is available — callers fall back to hardcoded defaults.
+ * capability data is available — callers degrade to an honest raw-scale
+ * reading, never a hardcoded fallback (MOR-1291).
  */
 export function getMeterRedline(meterType: string): number | null {
   return _getMeterRedline(meterType);

@@ -449,8 +449,12 @@ class TestPaMeterCalibration:
     @pytest.mark.parametrize("meter_key,raw,expected_actual", _PA_METER_ANCHORS)
     def test_anchor_round_trip(self, rig, meter_key, raw, expected_actual):
         """Interpolating at a documented hamlib anchor returns that
-        anchor's engineering value — table-driven directly against
-        ``rig.meter_calibrations``, not a hand-copied expectation."""
+        anchor's engineering value. ``_PA_METER_ANCHORS`` hand-transcribes
+        each anchor from ``rigs/ic7300.toml`` (by design, as a regression
+        pin -- not read dynamically from the TOML), but the interpolation
+        itself runs through the real ``rig.meter_calibrations`` parsed from
+        that same file, so a profile edit that drifts from these literals
+        is what this parametrization catches."""
         actual, calibrated = interpolate_meter(raw, rig.meter_calibrations, meter_key)
         assert calibrated is True
         assert actual == pytest.approx(expected_actual)
