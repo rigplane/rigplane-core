@@ -133,6 +133,28 @@ function stateWithAgc(agc: number, preamp = 0): ServerState {
 
 const X6200_AGC_LABELS = { '0': 'OFF', '1': 'FAST', '2': 'SLOW', '3': 'AUTO' };
 
+// MOR-1547 — mirrors `rigs/ftx1.toml`'s `[agc.labels]`. Modes 4/5/6 (the
+// auto-selected speeds) were shortened from "A-FAST"/"A-MID"/"A-SLOW" to
+// "A-F"/"A-M"/"A-S": the 6-character body pushed the "AGC "-prefixed
+// `AmberIndStrip` chip to 10 characters — wider than any other chip sharing
+// the strip (the next-widest, "DIGI-SEL", has no "AGC "-style prefix and
+// tops out at 8) — which wrapped the DSP zone to a second row that the
+// strip's `overflow: hidden` then clipped. "A-F"/"A-M"/"A-S" keeps the
+// "Auto-" disambiguator (avoids colliding with the overloaded ham-radio
+// abbreviations AM = Amplitude Modulation / AF = Audio Frequency that a bare
+// "AF"/"AM"/"AS" would invite) while landing the widest FTX-1 label body at
+// 3 characters — inside the existing FAST/SLOW (4-character body) budget
+// every other shipped `[agc.labels]` table already fits within.
+const FTX1_AGC_LABELS = {
+  '0': 'OFF',
+  '1': 'FAST',
+  '2': 'MID',
+  '3': 'SLOW',
+  '4': 'A-F',
+  '5': 'A-M',
+  '6': 'A-S',
+};
+
 beforeEach(() => {
   components = [];
   vi.clearAllMocks();
@@ -165,6 +187,34 @@ describe('AmberScope AGC label sourcing (MOR-1529)', () => {
     const target = mountScope(stateWithAgc(9), caps);
     const chip = agcChip(target);
     expect(chip?.textContent?.trim()).toBe('AGC 9');
+  });
+});
+
+describe('AmberScope AGC chip width budget (MOR-1547)', () => {
+  // AmberIndStrip's DSP-zone strip is a `flex-wrap: wrap` row with
+  // `overflow: hidden` (AmberIndStrip.svelte:68-128) — a chip wide enough to
+  // push the strip past its available width wraps a second row that
+  // `overflow: hidden` then silently clips. "AGC FAST"/"AGC SLOW" (8
+  // characters) is the established budget every currently-shipped
+  // `[agc.labels]` table (ic7300/ic7610/ic705/ic9700/x6200/ftx1 modes 0-3)
+  // already renders inside without wrapping; this pins that FTX-1's own
+  // auto-mode labels (4/5/6) stay within it too.
+  it.each([0, 1, 2, 3, 4, 5, 6])(
+    'keeps the AGC chip for FTX-1 mode %i within the single-row width budget',
+    (mode) => {
+      const caps = { agcLabels: FTX1_AGC_LABELS } as unknown as Capabilities;
+      const target = mountScope(stateWithAgc(mode), caps);
+      const chip = agcChip(target);
+      const text = chip?.textContent?.trim() ?? '';
+      expect(text.length).toBeLessThanOrEqual('AGC FAST'.length);
+    },
+  );
+
+  it('renders the exact shortened auto-mode labels (A-F/A-M/A-S), not the old A-FAST/A-MID/A-SLOW', () => {
+    const caps = { agcLabels: FTX1_AGC_LABELS } as unknown as Capabilities;
+    expect(agcChip(mountScope(stateWithAgc(4), caps))?.textContent?.trim()).toBe('AGC A-F');
+    expect(agcChip(mountScope(stateWithAgc(5), caps))?.textContent?.trim()).toBe('AGC A-M');
+    expect(agcChip(mountScope(stateWithAgc(6), caps))?.textContent?.trim()).toBe('AGC A-S');
   });
 });
 

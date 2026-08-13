@@ -188,6 +188,86 @@ async def test_agc_set_probe_never_lands_on_off_for_a_domain_that_declares_it():
     assert check.evidence["changed"] == 1
 
 
+async def test_write_only_agc_probe_derives_from_declared_domain_not_hardcoded_fast():
+    """MOR-1547: ``_WRITE_ONLY_TEST_VALUES[AGC_FLIP]`` hardcoded IC-7610
+    ``AgcMode.FAST`` (1) as the write-only probe value, reachable whenever a
+    profile's ``[validation] write_only_controls`` includes "agc" (only
+    X6200 declares that section today, MOR-208). A domain that excludes 1
+    (e.g. X6200's real ``[agc] modes`` OFF/FAST/SLOW/AUTO = 0/1/2/3 happens
+    to include 1, so use a synthetic domain that does not, mirroring the R1
+    regression fixture) would get an illegal write under the old hardcode.
+    The probe must derive from the radio's own declared domain (mirroring
+    ``_check_agc_set``'s MOR-1529 fix) and must never land on OFF (0).
+    """
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio, store = _stateful_agc_mock(start=5, domain=(0, 2, 4, 5, 6))
+    entry = CapabilityDeclarationEntry(
+        check_id="agc.set",
+        capability="agc",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="write-only agc probe",
+    )
+    spec = CheckSpec(
+        check_id="agc.set",
+        capability="agc",
+        kind=CheckKind.WRITE_ONLY_OBSERVE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="write-only agc probe",
+        set_op="set_agc",
+        value_rule=ValueRule.AGC_FLIP,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.PASS
+    assert store["value"] != int(AgcMode.FAST)  # 1 not in domain
+    assert store["value"] in (0, 2, 4, 5, 6)
+    assert store["value"] != 0  # non-OFF preference (MOR-1529 R1 hazard)
+
+
+async def test_generic_rmvr_agc_flip_derives_from_declared_domain_not_hardcoded_slow():
+    """MOR-1547: ``_VALUE_RULE_FNS[AGC_FLIP]`` hardcoded IC-7610
+    ``AgcMode.SLOW``/``FAST`` (3/1) as the generic RMVR mutation, unreachable
+    for check_id "agc.set" today (the named ``_check_agc_set`` handler always
+    wins) but latent for any other check_id sharing this value_rule — same
+    hazard class MOR-1529 fixed for the named handler. A domain that excludes
+    3 must not get an illegal probe when reached through the generic
+    ``_check_from_spec`` RMVR path.
+    """
+    from rigplane.validation.hardware import _check_from_spec
+
+    radio, store = _stateful_agc_mock(start=5, domain=(0, 2, 4, 5, 6))
+    entry = CapabilityDeclarationEntry(
+        check_id="agc_alt.set",
+        capability="agc",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="generic agc flip",
+    )
+    spec = CheckSpec(
+        check_id="agc_alt.set",
+        capability="agc",
+        kind=CheckKind.RMVR_SAFE_WRITE,
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        failure_domain=FailureDomain.READBACK,
+        summary="generic agc flip",
+        get_op="get_agc",
+        set_op="set_agc",
+        value_rule=ValueRule.AGC_FLIP,
+    )
+    result = await _check_from_spec(
+        radio, entry, spec, allow_writes=True, per_check_timeout=5.0
+    )
+    assert result.status is CheckStatus.PASS
+    assert result.evidence["changed"] != int(AgcMode.SLOW)  # 3 not in domain
+    assert result.evidence["changed"] in (0, 2, 4, 6)  # candidates != current(5)
+    assert result.evidence["changed"] != 0  # non-OFF preference
+    assert store["value"] == 5  # restored
+
+
 def _digisel_preamp_mock(*, preamp_start: int = 0, digisel_on: bool = True):
     """A stateful preamp mock that ALSO exposes get/set_digisel.
 

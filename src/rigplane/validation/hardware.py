@@ -1790,6 +1790,45 @@ def _declared_agc_modes(radio: Radio) -> tuple[int, ...] | None:
     return None
 
 
+def _agc_probe_value(radio: Radio, *, avoid: int | None) -> int:
+    """Derive a safe, non-OFF AGC probe value from the radio's OWN declared
+    ``[agc] modes`` domain when discoverable, instead of always assuming the
+    IC-7610-shaped ``AgcMode.FAST``/``SLOW`` constants (1/3) are legal for
+    every radio — true for every currently-shipped profile by coincidence,
+    but not by design (e.g. would break for a hypothetical profile whose
+    domain excludes both). Shared by every AGC-mutation probe: the named
+    RMVR handler (``_check_agc_set``), the generic RMVR dispatch fallback,
+    and the write-only set-and-observe fallback (MOR-1529 / MOR-1547).
+
+    ``avoid``, when given, is the current value the probe must differ from
+    (an RMVR flip); ``None`` means there is no current reading to avoid (a
+    write-only probe with no read-first).
+
+    R1: prefers a non-OFF (0) candidate over ``avoid`` regardless. The live
+    FTX-1 declares ``[agc] modes = [0..6]`` — picking the first declared
+    value != current would land on 0 (AGC OFF) for every current value
+    except 0 itself. This probe is documented non-destructive/RX-safe
+    (MOR-659): momentarily disabling AGC on a bench radio is audible and
+    operator-affecting, unlike flipping between two settable AGC speeds (the
+    old hardcoded SLOW/FAST probe never did this). Landing on FAST instead
+    keeps the probe inside "change AGC speed", never "turn AGC off".
+    """
+    modes = _declared_agc_modes(radio)
+    if modes:
+        candidates = (
+            [m for m in modes if m != avoid] if avoid is not None else list(modes)
+        )
+        non_off = [m for m in candidates if m != 0]
+        if candidates:
+            return (non_off or candidates)[0]
+    # No declared domain reachable (e.g. a bare test double) — fall back to
+    # the two values every currently-shipped ``[agc] modes`` table happens
+    # to include.
+    if avoid is None:
+        return int(AgcMode.FAST)
+    return int(AgcMode.SLOW) if avoid != AgcMode.SLOW else int(AgcMode.FAST)
+
+
 async def _check_agc_set(
     radio: Radio,
     entry: CapabilityDeclarationEntry,
@@ -1801,41 +1840,12 @@ async def _check_agc_set(
     if gate is not None:
         return gate
     dsp = cast(DspControlCapable, radio)
-
-    def _make_changed(current: int) -> int:
-        # MOR-1529: derive the probe from the radio's OWN declared domain
-        # when discoverable, instead of always assuming the IC-7610-shaped
-        # AgcMode.FAST/SLOW constants (1/3) are legal for every radio —
-        # true for every currently-shipped profile by coincidence, but not
-        # by design (e.g. would break for a hypothetical profile whose
-        # domain excludes both).
-        #
-        # R1: prefer a non-OFF (0) candidate. The live FTX-1 declares
-        # ``[agc] modes = [0..6]`` — picking the first declared value
-        # != current would land on 0 (AGC OFF) for every current value
-        # except 0 itself. This RMVR probe is documented non-destructive/
-        # RX-safe (MOR-659): momentarily disabling AGC on a bench radio is
-        # audible and operator-affecting, unlike flipping between two
-        # settable AGC speeds (the old hardcoded SLOW/FAST probe never did
-        # this). Landing on 1 (FAST) instead keeps the probe inside
-        # "change AGC speed", never "turn AGC off".
-        modes = _declared_agc_modes(radio)
-        if modes:
-            candidates = [m for m in modes if m != current]
-            non_off = [m for m in candidates if m != 0]
-            if candidates:
-                return (non_off or candidates)[0]
-        # No declared domain reachable (e.g. a bare test double) — fall
-        # back to the two values every currently-shipped ``[agc] modes``
-        # table happens to include.
-        return int(AgcMode.SLOW) if current != AgcMode.SLOW else int(AgcMode.FAST)
-
     return await _read_modify_verify_restore(
         radio,
         entry,
         read=lambda: dsp.get_agc(0),
         write=lambda value: dsp.set_agc(value, 0),
-        make_changed=_make_changed,
+        make_changed=lambda current: _agc_probe_value(radio, avoid=current),
         per_check_timeout=per_check_timeout,
     )
 
@@ -1894,6 +1904,13 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     ValueRule.STEP_LEVEL_255: 100,
     ValueRule.NUDGE_FILTER: 2800,
     ValueRule.PREAMP_CYCLE: 1,
+    # MOR-1547: radio-unaware fallback only — reachable when a connected
+    # radio's declared ``[agc] modes`` domain cannot be discovered at all
+    # (e.g. a bare test double with no ``_profile``/``_config``). When a
+    # domain IS discoverable, ``_set_and_observe`` overrides this with
+    # ``_agc_probe_value`` (MOR-1529's non-OFF-preferring derivation) before
+    # ever consulting this dict, mirroring the ``STEP_LEVEL_255`` range
+    # override just below.
     ValueRule.AGC_FLIP: int(AgcMode.FAST),
     ValueRule.TONE_FREQ_CYCLE: 88.5,
     ValueRule.VFO_AB_FLIP: "A",
@@ -1929,6 +1946,11 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     ValueRule.STEP_LEVEL_255: lambda v: 200 if v < 128 else 50,
     ValueRule.NUDGE_FILTER: _nudge_filter,
     ValueRule.PREAMP_CYCLE: lambda v: 1 if v == 0 else 0,
+    # MOR-1547: radio-unaware fallback only — unreachable for check_id
+    # "agc.set" today (the named ``_check_agc_set`` handler always wins) and
+    # overridden by ``_check_from_spec`` with ``_agc_probe_value`` whenever a
+    # connected radio's declared ``[agc] modes`` domain IS discoverable, same
+    # override pattern as the ``STEP_LEVEL_255`` range branch below.
     ValueRule.AGC_FLIP: lambda m: (
         int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
     ),
@@ -1999,6 +2021,12 @@ async def _set_and_observe(
         )
 
     test_value = _WRITE_ONLY_TEST_VALUES.get(spec.value_rule)
+    if spec.value_rule == ValueRule.AGC_FLIP:
+        # MOR-1547: derive from the connected radio's own declared domain
+        # instead of the hardcoded IC-7610 ``AgcMode.FAST`` fallback above —
+        # reachable whenever a profile's ``[validation] write_only_controls``
+        # includes "agc" (only X6200 declares that section today).
+        test_value = _agc_probe_value(radio, avoid=None)
     if test_value is None:
         return _base_result(
             entry,
@@ -2125,6 +2153,16 @@ async def _check_from_spec(
             "value_rule": str(spec.value_rule),
             "kind": str(spec.kind),
         }
+        # MOR-1547 — AGC_FLIP must derive from the connected radio's own
+        # declared ``[agc] modes`` domain instead of the hardcoded IC-7610
+        # SLOW/FAST fallback in ``_VALUE_RULE_FNS`` above. Unreachable for
+        # check_id "agc.set" today (the named ``_check_agc_set`` handler
+        # always wins) but latent for any other check_id sharing this
+        # value_rule, same hazard class MOR-1529 fixed for the named handler.
+        if spec.value_rule == ValueRule.AGC_FLIP:
+            make_changed = lambda current: _agc_probe_value(  # noqa: E731
+                radio, avoid=current
+            )
         # MOR-695 — level controls (STEP_LEVEL_255) must nudge inside the
         # control's settable band, not the fixed 0-255 ICOM scale. Resolve the
         # band from the radio profile and SKIP an out-of-band original rather
