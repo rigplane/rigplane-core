@@ -3090,18 +3090,23 @@ class TestToneTsqlParity:
 
 
 class TestToneTsqlDualRxCmd29Guard:
-    """MOR-1528: tone/TSQL methods must reject SUB routing without cmd29.
+    """MOR-1528/MOR-1538: tone/TSQL receiver=1 routing on cmd29-less dual-RX.
 
     IC-9700 is dual-RX (``receiver_count=2``) but declares no cmd29 routes
-    (``[cmd29] routes = []``). Before this fix, ``receiver=1`` calls on the
+    (``[cmd29] routes = []``). Before MOR-1528, ``receiver=1`` calls on the
     four tone/TSQL method pairs built a direct, receiver-unaware CI-V frame
     instead of raising — silently writing/reading MAIN while the caller
-    believed it was targeting SUB. Sibling guarded commands (e.g.
-    ``set_rf_gain``) already raise via ``_require_cmd29_route``; these
-    methods now match that contract. ``receiver=0`` (MAIN) and IC-7610 (has
-    cmd29 routes) behavior must stay byte-identical — see
-    ``TestToneTsqlParity`` above, which exercises the IC-7610 fixture on
-    both receivers and stays green.
+    believed it was targeting SUB. MOR-1528 made these raise, matching
+    ``_require_cmd29_route``-guarded siblings (e.g. ``set_rf_gain``).
+
+    MOR-1538 upgrades the raise to a working path: IC-9700 also declares
+    ``vfo.main_select``/``sub_select`` (0x07 0xD0/0xD1), so ``receiver=1``
+    now reaches SUB via the same VFO-switch fallback already used by
+    ``set_freq``/``set_mode``/``set_data_mode`` (select SUB, run the plain
+    non-cmd29 command, restore the previously active receiver) instead of
+    raising. ``receiver=0`` (MAIN) and IC-7610 (has cmd29 routes) behavior
+    stay byte-identical — see ``TestToneTsqlParity`` above, which exercises
+    the IC-7610 fixture on both receivers and stays green.
     """
 
     @pytest.fixture
@@ -3115,30 +3120,103 @@ class TestToneTsqlDualRxCmd29Guard:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("method_name", "args"),
+        ("method_name", "request_tail", "response_civ", "expected"),
         [
-            ("get_repeater_tone", ()),
-            ("set_repeater_tone", (True,)),
-            ("get_repeater_tsql", ()),
-            ("set_repeater_tsql", (True,)),
-            ("get_tone_freq", ()),
-            ("set_tone_freq", (88.5,)),
-            ("get_tsql_freq", ()),
-            ("set_tsql_freq", (110.9,)),
+            (
+                "get_repeater_tone",
+                b"\x16\x42\xfd",
+                build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x16, sub=0x42, data=b"\x01"),
+                True,
+            ),
+            (
+                "get_repeater_tsql",
+                b"\x16\x43\xfd",
+                build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x16, sub=0x43, data=b"\x00"),
+                False,
+            ),
+            (
+                "get_tone_freq",
+                b"\x1b\x00\xfd",
+                build_civ_frame(
+                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x00, data=b"\x00\x88\x05"
+                ),
+                88.5,
+            ),
+            (
+                "get_tsql_freq",
+                b"\x1b\x01\xfd",
+                build_civ_frame(
+                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x01, data=b"\x01\x10\x09"
+                ),
+                110.9,
+            ),
         ],
     )
-    async def test_sub_receiver_raises_without_cmd29_route(
+    async def test_sub_receiver_get_uses_vfo_select_fallback(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        request_tail: bytes,
+        response_civ: bytes,
+        expected: bool | float,
+    ) -> None:
+        """MOR-1538: SUB GETs reach SUB via VFO-select instead of raising."""
+        ack = _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA2, _CMD_ACK))
+        mock_transport.queue_response_on_send(1, ack)
+        mock_transport.queue_response_on_send(2, _wrap_civ_in_udp(response_civ))
+        mock_transport.queue_response_on_send(3, ack)
+
+        method = getattr(ic9700_radio, method_name)
+        result = await method(receiver=1)
+
+        if isinstance(expected, float):
+            assert result == pytest.approx(expected)
+        else:
+            assert result is expected
+
+        frames = mock_transport.sent_packets
+        assert frames[0].endswith(b"\x07\xd1\xfd")  # select SUB
+        assert frames[1].endswith(request_tail)  # plain GET, no cmd29/receiver byte
+        assert frames[2].endswith(b"\x07\xd0\xfd")  # restore MAIN
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "args", "expected_tail"),
+        [
+            ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
+            ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
+            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x88\x05\xfd"),
+            ("set_tsql_freq", (110.9,), b"\x1b\x01\x01\x10\x09\xfd"),
+        ],
+    )
+    async def test_sub_receiver_set_uses_vfo_select_fallback(
         self,
         ic9700_radio: IcomRadio,
         mock_transport: MockTransport,
         method_name: str,
         args: tuple,
+        expected_tail: bytes,
     ) -> None:
+        """MOR-1538: SUB SETs reach SUB via VFO-select instead of raising.
+
+        Per-send ACK release — see
+        ``test_icom_receiver_tier.TestSetVfoSlot.
+        test_ic9700_sub_uses_select_restore_pattern`` for the 3.11-vs-3.12+
+        scheduling rationale (release each ACK only after its own send).
+        """
+        ack = _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA2, _CMD_ACK))
+        mock_transport.queue_response_on_send(1, ack)
+        mock_transport.queue_response_on_send(2, ack)
+        mock_transport.queue_response_on_send(3, ack)
+
         method = getattr(ic9700_radio, method_name)
-        with pytest.raises(CommandError, match="no cmd29 route"):
-            await method(*args, receiver=1)
-        # No wire write occurred — the guard must fire before any send.
-        assert mock_transport.sent_packets == []
+        await method(*args, receiver=1)
+
+        frames = mock_transport.sent_packets
+        assert frames[0].endswith(b"\x07\xd1\xfd")  # select SUB
+        assert frames[1].endswith(expected_tail)  # plain SET, no cmd29/receiver byte
+        assert frames[2].endswith(b"\x07\xd0\xfd")  # restore MAIN
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
