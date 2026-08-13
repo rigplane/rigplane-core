@@ -2916,6 +2916,89 @@ class TestToneTsqlParity:
         )
 
 
+class TestToneTsqlDualRxCmd29Guard:
+    """MOR-1528: tone/TSQL methods must reject SUB routing without cmd29.
+
+    IC-9700 is dual-RX (``receiver_count=2``) but declares no cmd29 routes
+    (``[cmd29] routes = []``). Before this fix, ``receiver=1`` calls on the
+    four tone/TSQL method pairs built a direct, receiver-unaware CI-V frame
+    instead of raising — silently writing/reading MAIN while the caller
+    believed it was targeting SUB. Sibling guarded commands (e.g.
+    ``set_rf_gain``) already raise via ``_require_cmd29_route``; these
+    methods now match that contract. ``receiver=0`` (MAIN) and IC-7610 (has
+    cmd29 routes) behavior must stay byte-identical — see
+    ``TestToneTsqlParity`` above, which exercises the IC-7610 fixture on
+    both receivers and stays green.
+    """
+
+    @pytest.fixture
+    def ic9700_radio(self, mock_transport: MockTransport):
+        r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        yield r
+        r._connected = False  # reset _conn_state so __del__ stays quiet
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "args"),
+        [
+            ("get_repeater_tone", ()),
+            ("set_repeater_tone", (True,)),
+            ("get_repeater_tsql", ()),
+            ("set_repeater_tsql", (True,)),
+            ("get_tone_freq", ()),
+            ("set_tone_freq", (88.5,)),
+            ("get_tsql_freq", ()),
+            ("set_tsql_freq", (110.9,)),
+        ],
+    )
+    async def test_sub_receiver_raises_without_cmd29_route(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        args: tuple,
+    ) -> None:
+        method = getattr(ic9700_radio, method_name)
+        with pytest.raises(CommandError, match="no cmd29 route"):
+            await method(*args, receiver=1)
+        # No wire write occurred — the guard must fire before any send.
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "args", "expected_tail"),
+        [
+            ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
+            ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
+            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x88\x05\xfd"),
+            ("set_tsql_freq", (110.9,), b"\x1b\x01\x01\x10\x09\xfd"),
+        ],
+    )
+    async def test_main_receiver_still_sends_direct_frame(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        args: tuple,
+        expected_tail: bytes,
+    ) -> None:
+        method = getattr(ic9700_radio, method_name)
+        await method(*args, receiver=0)
+        assert mock_transport.sent_packets[-1].endswith(expected_tail)
+
+    @pytest.mark.asyncio
+    async def test_main_receiver_get_repeater_tone_still_works(
+        self, ic9700_radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        civ = build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x16, sub=0x42, data=b"\x01")
+        mock_transport.queue_response(_wrap_civ_in_udp(civ))
+        assert await ic9700_radio.get_repeater_tone(receiver=0) is True
+        assert mock_transport.sent_packets[-1].endswith(b"\x16\x42\xfd")
+
+
 class TestCodecProfileOverride:
     """Per-profile codec_preference overrides the global default (#797)."""
 
