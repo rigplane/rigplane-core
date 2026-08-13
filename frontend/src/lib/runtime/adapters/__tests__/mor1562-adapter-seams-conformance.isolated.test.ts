@@ -308,17 +308,18 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
     });
   });
 
-  // MOR-1574 (filed off this walk): unlike toAgcProps/toRfFrontEndProps,
-  // `toRitXitProps` (panel-props.ts:482-494) has NO fieldStatus gate on
-  // ritOn/ritFreq/ritTx — pinned CURRENT baseline, not an endorsement;
-  // update once MOR-1574 lands.
-  it('deriveRitXitProps: pins the current un-gated reading — production honesty gap tracked as MOR-1574', () => {
+  // MOR-1574 (filed off this walk, now landed): `toRitXitProps`
+  // (panel-props.ts) gates `hasRit`/`hasXit` on field availability the same
+  // way `toAgcProps`/`toRfFrontEndProps` already did — an unobserved
+  // ritOn/ritFreq/ritTx (this stand's exact shape) no longer reads back as a
+  // confirmed "RIT/XIT OFF"; the panel now hides instead.
+  it('deriveRitXitProps: honest RIT/XIT refusal — capability declared, fields never observed on this stand', () => {
     expect(IC7300_STATE.fieldStatus?.ritOn?.observed).toBe(false);
     expect(IC7300_STATE.fieldStatus?.ritFreq?.observed).toBe(false);
     expect(IC7300_STATE.fieldStatus?.ritTx?.observed).toBe(false);
     expect(deriveRitXitProps()).toEqual({
-      ritActive: false, ritOffset: 0, xitActive: false, xitOffset: 0,
-      hasRit: true, hasXit: true,
+      ritActive: false, ritOffset: Number.NaN, xitActive: false, xitOffset: Number.NaN,
+      hasRit: false, hasXit: false,
     });
   });
 });
