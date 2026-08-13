@@ -137,6 +137,43 @@ class TestInfoEndpoint:
         data = _parse_json_body(writer)
         assert "dual_rx" not in data["capabilities"]["tags"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("IC-705", {"vfo_swap", "vfo_equalize"}),
+            ("IC-7300", {"vfo_swap", "vfo_equalize"}),
+            ("IC-7610", {"vfo_swap", "vfo_equalize"}),
+            ("IC-9700", {"vfo_swap", "vfo_equalize"}),
+            ("FTX-1", set()),
+            ("TX-500", set()),
+            ("X6100", set()),
+            ("X6200", set()),
+        ],
+    )
+    async def test_info_projects_exact_profile_vfo_primitives(self, model, expected):
+        radio = _make_radio(model)
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_info(writer)  # noqa: SLF001
+
+        tags = set(_parse_json_body(writer)["capabilities"]["tags"])
+        assert tags & {"vfo_swap", "vfo_equalize"} == expected
+
+    @pytest.mark.asyncio
+    async def test_info_projects_vfo_primitives_independently_for_matching_scheme(self):
+        radio = _make_radio("IC-7300")
+        radio.profile = replace(radio.profile, equal_ab_code=None)
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_info(writer)  # noqa: SLF001
+
+        tags = set(_parse_json_body(writer)["capabilities"]["tags"])
+        assert "vfo_swap" in tags
+        assert "vfo_equalize" not in tags
+
 
 # ── /api/v1/capabilities tests ─────────────────────────────────
 
@@ -298,6 +335,44 @@ class TestCapabilitiesEndpoint:
         await srv._serve_capabilities(writer)  # noqa: SLF001
         data = _parse_json_body(writer)
         assert data["antennas"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("IC-705", {"vfo_swap", "vfo_equalize"}),
+            ("IC-7300", {"vfo_swap", "vfo_equalize"}),
+            ("IC-7610", {"vfo_swap", "vfo_equalize"}),
+            ("IC-9700", {"vfo_swap", "vfo_equalize"}),
+            ("FTX-1", set()),
+            ("TX-500", set()),
+            ("X6100", set()),
+            ("X6200", set()),
+        ],
+    )
+    async def test_capabilities_projects_exact_profile_vfo_primitives(
+        self, model, expected
+    ):
+        radio = _make_radio(model)
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        tags = set(_parse_json_body(writer)["capabilities"])
+        assert tags & {"vfo_swap", "vfo_equalize"} == expected
+
+    @pytest.mark.asyncio
+    async def test_capabilities_rejects_mismatched_vfo_scheme_primitives(self):
+        radio = _make_radio("IC-7300")
+        radio.profile = replace(radio.profile, vfo_scheme="main_sub")
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        tags = set(_parse_json_body(writer)["capabilities"])
+        assert not tags & {"vfo_swap", "vfo_equalize"}
 
 
 def _yaesu(cls=YaesuCatRadio):

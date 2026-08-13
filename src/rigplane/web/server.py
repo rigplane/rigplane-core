@@ -598,6 +598,29 @@ def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     return _runtime_capabilities_impl(radio)
 
 
+def _profile_vfo_capability_tags(profile: "RadioProfile") -> set[str]:
+    """Project only primitives declared for the profile's VFO scheme."""
+    if profile.vfo_scheme == "ab":
+        return {
+            tag
+            for tag, primitive in (
+                ("vfo_swap", profile.swap_ab_code),
+                ("vfo_equalize", profile.equal_ab_code),
+            )
+            if primitive is not None
+        }
+    if profile.vfo_scheme == "main_sub":
+        return {
+            tag
+            for tag, primitive in (
+                ("vfo_swap", profile.swap_main_sub_code),
+                ("vfo_equalize", profile.equal_main_sub_code),
+            )
+            if primitive is not None
+        }
+    return set()
+
+
 def _supports_scope(radio: "Radio | None") -> bool:
     return "scope" in runtime_capabilities(radio)
 
@@ -2843,9 +2866,11 @@ class WebServer:
             getattr(self._radio, "model", None) if self._radio is not None else None
         )
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
-        caps = _runtime_capabilities(self._radio)
-        has_dual_rx = "dual_rx" in caps
         profile = self._get_profile()
+        caps = _runtime_capabilities(self._radio) | _profile_vfo_capability_tags(
+            profile
+        )
+        has_dual_rx = "dual_rx" in caps
         raw_connected = (
             getattr(self._radio, "connected", False) if self._radio else False
         )
@@ -3299,7 +3324,6 @@ class WebServer:
                 {"Content-Type": "application/json"},
             )
             return
-        caps = _runtime_capabilities(self._radio)
         tx_audio = browser_tx_audio_facts(self._radio)
         _raw_model = (
             getattr(self._radio, "model", None) if self._radio is not None else None
@@ -3308,6 +3332,9 @@ class WebServer:
             _raw_model if isinstance(_raw_model, str) else self._config.radio_model
         )
         profile = self._get_profile()
+        caps = _runtime_capabilities(self._radio) | _profile_vfo_capability_tags(
+            profile
+        )
 
         freq_ranges = [
             {
