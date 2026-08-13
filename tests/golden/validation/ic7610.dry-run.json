@@ -98,6 +98,11 @@
       "declaration": "unsupported_pending_evidence"
     },
     {
+      "check_id": "digisel_shift.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
       "check_id": "discovery.identify",
       "status": "skip",
       "declaration": "supported"
