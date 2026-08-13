@@ -340,6 +340,46 @@ class TestIcomGetFilterWidthRouting:
         hz = await radio.get_filter_width(receiver=0)
         assert hz == 6000
 
+    @pytest.mark.asyncio
+    async def test_ic9700_sub_receiver_raises_without_cmd29_route(self) -> None:
+        """MOR-1528: IC-9700 SUB (receiver=1) must not silently read MAIN.
+
+        IC-9700 is dual-RX (receiver_count=2) but declares no cmd29 routes.
+        Before this fix, ``get_filter_width(receiver=1)`` built the same
+        direct (receiver-unaware) frame as ``receiver=0`` and returned
+        whatever the radio happened to report for its currently-addressed
+        receiver — attributed to SUB. This must now raise instead.
+        """
+        from rigplane.exceptions import CommandError
+
+        radio = _connected_icom(model="IC-9700")
+        radio._send_civ_expect = AsyncMock()  # type: ignore[method-assign]
+        radio._radio_state.sub.mode = "USB"
+
+        with pytest.raises(CommandError, match="no cmd29 route"):
+            await radio.get_filter_width(receiver=1)
+
+        radio._send_civ_expect.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ic7610_sub_receiver_still_cmd29_wrapped(self) -> None:
+        """IC-7610 declares the cmd29 route: SUB stays wrapped, unaffected."""
+        radio = _connected_icom(model="IC-7610")
+        captured: dict[str, bytes] = {}
+
+        async def fake_expect(civ: bytes, **_: object) -> CivFrame:
+            captured["civ"] = civ
+            return CivFrame(
+                to_addr=0xE0, from_addr=0x98, command=0x1A, sub=0x03, data=b"\x20"
+            )
+
+        radio._send_civ_expect = fake_expect  # type: ignore[method-assign]
+        radio._radio_state.sub.mode = "USB"
+
+        hz = await radio.get_filter_width(receiver=1)
+        assert captured["civ"].hex() == "fefe98e029011a03fd"
+        assert hz == 1600
+
 
 class TestIcomSetFilterWidthRouting:
     """set_filter_width: unified 1-byte BCD segmented index for all Icom rigs.
@@ -388,6 +428,39 @@ class TestIcomSetFilterWidthRouting:
 
         radio.send_civ.assert_awaited_once_with(
             0x1A, sub=0x03, data=b"\x29", wait_response=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_ic9700_sub_receiver_raises_without_cmd29_route(self) -> None:
+        """MOR-1528: IC-9700 SUB (receiver=1) must not silently write MAIN.
+
+        IC-9700 is dual-RX (receiver_count=2) but declares no cmd29 routes.
+        Before this fix, ``set_filter_width(receiver=1)`` sent the same
+        direct (receiver-unaware) frame as ``receiver=0``, writing MAIN's
+        filter width while the caller believed SUB was targeted.
+        """
+        from rigplane.exceptions import CommandError
+
+        radio = _connected_icom(model="IC-9700")
+        radio.send_civ = AsyncMock()  # type: ignore[method-assign]
+        radio._radio_state.sub.mode = "USB"
+
+        with pytest.raises(CommandError, match="no cmd29 route"):
+            await radio.set_filter_width(2400, receiver=1)
+
+        radio.send_civ.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ic7610_sub_receiver_still_cmd29_wrapped(self) -> None:
+        """IC-7610 declares the cmd29 route: SUB stays wrapped, unaffected."""
+        radio = _connected_icom(model="IC-7610")
+        radio.send_civ = AsyncMock()  # type: ignore[method-assign]
+        radio._radio_state.sub.mode = "USB"
+
+        await radio.set_filter_width(1500, receiver=1)
+
+        radio.send_civ.assert_awaited_once_with(
+            0x29, data=b"\x01\x1a\x03\x19", wait_response=False
         )
 
 
