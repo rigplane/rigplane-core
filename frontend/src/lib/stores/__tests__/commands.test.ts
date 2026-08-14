@@ -127,6 +127,14 @@ describe('command lifecycle store', () => {
     expect(store.getCommandLifecycle('confirmed', 4)).not.toHaveProperty('confirmedValue');
   });
 
+  it('rejects confirmation before delivery acknowledgement', () => {
+    store.beginCommand({ id: 'pre-ack', name: 'set_filter', params: { filter: 2 }, originalEpoch: 4 });
+
+    store.confirmCommand('pre-ack', 4, 4);
+
+    expect(store.getCommandLifecycle('pre-ack', 4)?.status).toBe('pending');
+  });
+
   it.each([
     ['confirmed', (id: string) => store.confirmCommand(id, 5, 5)],
     ['timed-out', () => vi.advanceTimersByTime(25)],
@@ -169,6 +177,21 @@ describe('command lifecycle store', () => {
 
     expect(store.getCommandLifecycles()).toHaveLength(100);
     expect(store.getCommandLifecycle('pending-0', 9)?.status).toBe('pending');
+    expect(store.getCommandLifecycle('overflow', 9)).toBeUndefined();
+  });
+
+  it('rejects the 101st acknowledged record without evicting live correlation', () => {
+    for (let i = 0; i < 100; i += 1) {
+      store.beginCommand({ id: `acknowledged-${i}`, name: 'set_freq', params: { freq: i }, originalEpoch: 9 });
+      store.acknowledgeCommand(`acknowledged-${i}`, 9, 9);
+    }
+
+    expect(() => store.beginCommand({
+      id: 'overflow', name: 'set_freq', params: { freq: 101 }, originalEpoch: 9,
+    })).toThrow(/capacity/i);
+
+    expect(store.getCommandLifecycles()).toHaveLength(100);
+    expect(store.getCommandLifecycle('acknowledged-0', 9)?.status).toBe('acknowledged');
     expect(store.getCommandLifecycle('overflow', 9)).toBeUndefined();
   });
 });

@@ -68,7 +68,7 @@ function startLiveDeadline(command: CommandLifecycle): void {
 }
 function reserveRecordSlot(): void {
   if (commands.length < MAX_RETAINED_COMMANDS) return;
-  const terminal = commands.findIndex((command) => command.status !== 'pending');
+  const terminal = commands.findIndex((command) => command.status !== 'pending' && command.status !== 'acknowledged');
   if (terminal < 0) throw new Error('Command lifecycle capacity exhausted');
   clearRecordTimer(commands[terminal]); commands.splice(terminal, 1);
 }
@@ -77,7 +77,7 @@ function transition(
   status: 'acknowledged' | 'failed' | 'confirmed', eventEpoch: number, error?: string,
 ): void {
   const command = commands.find((item) => item.id === id && item.originalEpoch === originalEpoch
-    && (item.status === 'pending'
+    && ((item.status === 'pending' && status !== 'confirmed')
       || (item.status === 'acknowledged' && (status === 'failed' || status === 'confirmed'))));
   if (!command) return;
   command.status = status; command.eventEpoch = eventEpoch; command.updatedAt = Date.now();
