@@ -44,7 +44,10 @@ from rigplane.runtime._poller_types import (
 )
 
 __all__ = [
+    "DeferredTxCommandLane",
     "RfState",
+    "TxInterlockDeferredOutcome",
+    "TxInterlockDeferredResult",
     "TxInterlockDecision",
     "TxInterlockDisposition",
     "classify_tx_interlock",
@@ -69,6 +72,15 @@ class RfState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class TxInterlockDeferredOutcome(StrEnum):
+    """A state transition produced by the one-slot deferred command lane."""
+
+    HELD = "held"
+    RELEASED = "released"
+    EXPIRED = "expired"
+    SUPERSEDED = "superseded"
+
+
 @dataclass(frozen=True, slots=True)
 class TxInterlockDecision:
     """A disposition plus whether a seat may attempt the write immediately."""
@@ -76,6 +88,114 @@ class TxInterlockDecision:
     disposition: TxInterlockDisposition
     allowed: bool
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TxInterlockDeferredResult:
+    """A pure lane result for the enforcement seat to act on or report.
+
+    The lane never executes ``command`` and never emits lifecycle events.  For
+    supersession or expiry while accepting a replacement, ``replacement`` is
+    the newly held command; it has its own fresh three-second TTL.
+    """
+
+    outcome: TxInterlockDeferredOutcome
+    command: object
+    expires_at: float
+    replacement: object | None = None
+
+
+@dataclass(slots=True)
+class _DeferredTxCommand:
+    command: object
+    deferred_at: float
+    expires_at: float
+    quiet_since: float | None = None
+
+
+class DeferredTxCommandLane:
+    """Pure, single-slot timing policy for commands classified as ``DEFER``.
+
+    Seats supply their monotonic clock and observed RF state.  This class does
+    not know about radios, tasks, execution, or lifecycle transports: it only
+    decides whether the one held command remains held, may be released, has
+    expired, or was explicitly superseded.
+    """
+
+    _TTL_SECONDS = 3.0
+    _QUIET_SECONDS = 1.0
+
+    def __init__(self) -> None:
+        self._entry: _DeferredTxCommand | None = None
+
+    @property
+    def pending(self) -> object | None:
+        """Return the held command, if any, without exposing lane internals."""
+
+        return self._entry.command if self._entry is not None else None
+
+    def defer(self, command: object, *, now: float) -> TxInterlockDeferredResult:
+        """Hold a ``DEFER`` command, explicitly replacing a prior held command.
+
+        The original command's TTL is never carried forward.  If it was already
+        expired when a new command arrives, expiry is reported truthfully while
+        the new command starts a separate fresh hold.
+        """
+
+        decision = evaluate_tx_interlock(command, rf_state=RfState.TX)
+        if decision.disposition is not TxInterlockDisposition.DEFER:
+            raise ValueError("only commands with DEFER disposition may enter the lane")
+
+        replacement = _DeferredTxCommand(
+            command=command,
+            deferred_at=now,
+            expires_at=now + self._TTL_SECONDS,
+        )
+        previous = self._entry
+        self._entry = replacement
+        if previous is None:
+            return self._result(TxInterlockDeferredOutcome.HELD, replacement)
+        if now >= previous.expires_at:
+            return TxInterlockDeferredResult(
+                TxInterlockDeferredOutcome.EXPIRED,
+                previous.command,
+                previous.expires_at,
+                replacement=command,
+            )
+        return TxInterlockDeferredResult(
+            TxInterlockDeferredOutcome.SUPERSEDED,
+            previous.command,
+            previous.expires_at,
+            replacement=command,
+        )
+
+    def observe(
+        self, *, rf_state: RfState, now: float
+    ) -> TxInterlockDeferredResult | None:
+        """Advance the held command against one RF observation and clock value."""
+
+        entry = self._entry
+        if entry is None:
+            return None
+        if now >= entry.expires_at:
+            self._entry = None
+            return self._result(TxInterlockDeferredOutcome.EXPIRED, entry)
+        if rf_state is not RfState.RX:
+            entry.quiet_since = None
+            return self._result(TxInterlockDeferredOutcome.HELD, entry)
+        if entry.quiet_since is None:
+            entry.quiet_since = now
+            return self._result(TxInterlockDeferredOutcome.HELD, entry)
+        if now - entry.quiet_since < self._QUIET_SECONDS:
+            return self._result(TxInterlockDeferredOutcome.HELD, entry)
+        self._entry = None
+        return self._result(TxInterlockDeferredOutcome.RELEASED, entry)
+
+    @staticmethod
+    def _result(
+        outcome: TxInterlockDeferredOutcome, entry: _DeferredTxCommand
+    ) -> TxInterlockDeferredResult:
+        return TxInterlockDeferredResult(outcome, entry.command, entry.expires_at)
 
 
 # These structural exemptions are intentionally checked before all disruptive
