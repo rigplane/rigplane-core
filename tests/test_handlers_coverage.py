@@ -82,6 +82,7 @@ from rigplane.web.radio_poller import (
     SetScopeRbw,
     SetScopeVbw,
     SetSplit,
+    Speak,
     SetSquelch,
     SetVox,
     SwitchScopeReceiver,
@@ -326,6 +327,35 @@ def _control_handler(
         server=server,
         session_id=session_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_enqueue_command_speak_requires_declared_speech_capability() -> None:
+    queue = _QueueRecorder()
+    radio = _capable_radio()
+    radio.capabilities = set()
+    radio.profile = resolve_radio_profile(model="FTX-1")
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    with pytest.raises(ValueError, match="missing capability: speech"):
+        await handler._enqueue_command("speak", {})
+
+    assert queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_enqueue_command_speak_enqueues_for_declared_speech_profile() -> None:
+    queue = _QueueRecorder()
+    radio = _capable_radio()
+    radio.capabilities = set()
+    radio.profile = resolve_radio_profile(model="IC-7610")
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    result = await handler._enqueue_command("speak", {})
+
+    assert result == {"mode": 0}
+    assert len(queue.items) == 1
+    assert queue.items == [Speak(mode=0)]
 
 
 @pytest.mark.asyncio

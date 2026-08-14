@@ -2597,6 +2597,7 @@ class ControlHandler:
                 return {"level": level}
             case "speak":
                 mode = int(params.get("mode", 0))
+                self._ensure_capability("speech", "speak")
                 q.put(Speak(mode))
                 return {"mode": mode}
             case "set_dial_lock":
