@@ -38,11 +38,11 @@
  * — `onToggleRxAnt` is the SOLE call site for both names (the
  * `state.txAntenna` value picks which name it would dispatch), so both
  * names refuse identically here, before that branch is ever reached; (3) 6
- * genuinely DISPATCH: all 4 scan intents and `speak` dispatch UNCONDITIONALLY
- * — no capability check (not even `hasCapability('scan')`, though `scan` IS
- * declared on this profile) and no field-observation gate at all, the same
- * ungated shape MOR-1578 already flagged for `vfo_swap`/`vfo_equalize`
- * (leg 1) — cited here as the same class, not re-filed; `set_powerstat`
+ * genuinely DISPATCH: all 4 scan intents require the declared `scan`
+ * capability but no observed scan state; `speak` dispatches unconditionally,
+ * the same ungated shape MOR-1578 already flagged for `vfo_swap`/
+ * `vfo_equalize` (leg 1) — cited here as the same class, not re-filed;
+ * `set_powerstat`
  * DOES check a capability (`power_control`, declared) but has no field
  * gate either (RED-FIRST target, see below). `memory_clear` (via
  * `onClear`) is the one DISPATCH that goes through `currentMemorySnapshot()`'s
@@ -153,16 +153,16 @@ interface IntentCase {
 const CASES: readonly IntentCase[] = [
   { label: 'scan_start', run: () => makeScanHandlers().onScanStart(1),
     frames: [['scan_start', { type: 1 }]],
-    gate: 'no gate at all beyond Number.isSafeInteger(type) — no scan-capability check despite scan being declared (MOR-1578-class, see header)' },
+    gate: 'scan capability declared; type is an integer; no observed scan state required' },
   { label: 'scan_stop', run: () => makeScanHandlers().onScanStop(),
     frames: [['scan_stop', {}]],
-    gate: 'no gate at all — unconditional (MOR-1578-class)' },
+    gate: 'scan capability declared; no observed scan state required' },
   { label: 'scan_set_df_span', run: () => makeScanHandlers().onDfSpanChange(5),
     frames: [['scan_set_df_span', { span: 5 }]],
-    gate: 'no gate at all beyond Number.isSafeInteger(span) (MOR-1578-class)' },
+    gate: 'scan capability declared; span is an integer; no observed scan state required' },
   { label: 'scan_set_resume', run: () => makeScanHandlers().onResumeChange(2),
     frames: [['scan_set_resume', { mode: 2 }]],
-    gate: 'no gate at all beyond Number.isSafeInteger(mode) (MOR-1578-class)' },
+    gate: 'scan capability declared; mode is an integer; no observed scan state required' },
   { label: 'set_dial_lock', run: () => makeSystemHandlers().onDialLock(true),
     frames: [],
     gate: 'currentA03cContext() resolves (state/caps present, receiver count matches vfoScheme) before the top-level dialLock unobserved gate fires (dial_lock capability IS declared) — discrimination evidence in file header' },
@@ -249,6 +249,39 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
       }
     });
   }
+
+  describe('C13 scan commands', () => {
+    const withoutScan: ReadonlyArray<readonly [string, () => void]> = [
+      ['scan_start', () => makeScanHandlers().onScanStart(1)],
+      ['scan_stop', () => makeScanHandlers().onScanStop()],
+      ['scan_set_df_span', () => makeScanHandlers().onDfSpanChange(5)],
+      ['scan_set_resume', () => makeScanHandlers().onResumeChange(2)],
+    ];
+
+    for (const [name, run] of withoutScan) {
+      it(`${name}: REFUSES without scan capability`, () => {
+        h.caps = { ...fixtureCaps(profile), capabilities: [] };
+        expectRefusal(run);
+      });
+    }
+
+    it('dispatches all four exact frames with scan capability and absent radio state', () => {
+      h.caps = { ...fixtureCaps(profile), capabilities: ['scan'] };
+      h.state = null;
+      const scan = makeScanHandlers();
+      expectFrames(() => {
+        scan.onScanStart(1);
+        scan.onScanStop();
+        scan.onDfSpanChange(5);
+        scan.onResumeChange(2);
+      }, [
+        ['scan_start', { type: 1 }],
+        ['scan_stop', {}],
+        ['scan_set_df_span', { span: 5 }],
+        ['scan_set_resume', { mode: 2 }],
+      ]);
+    });
+  });
 
   describe('EXTENSION — set_rit_frequency: the other 2 call sites for the same wire intent (RIT and XIT share one offset register, per panel-commands.ts:377 comment)', () => {
     it('onXitOffsetChange(100): REFUSES — same ritFreq-unobserved gate as onRitOffsetChange above', () => {

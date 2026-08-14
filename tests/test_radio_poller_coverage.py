@@ -1006,6 +1006,14 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
             SetDataMode(1, receiver=0),
             FieldPath.active("main", "freq_mode", "data_mode"),
         ),
+        (
+            SetFilterWidth(3500, receiver=0),
+            FieldPath.active("main", "freq_mode", "filter_width"),
+        ),
+        (
+            SetFilterWidth(1800, receiver=1),
+            FieldPath.active("sub", "freq_mode", "filter_width"),
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1119,6 +1127,195 @@ async def test_execute_set_freq_readback_coalesces_with_pending_cadence_request(
     pending = scheduler.pending_requests()
     assert len(pending) == 1  # coalesced, not a second entry
     assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_set_filter_width_readback_coalesces_and_uses_ic7300_acquisition_path() -> (
+    None
+):
+    path = FieldPath.active("main", "freq_mode", "filter_width")
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+    scheduler.ensure_fresh(
+        (path,), max_age=1.5, priority=AcquisitionPriority.BACKGROUND, reason="cadence"
+    )
+    await poller._execute(SetFilterWidth(3500, receiver=0))  # noqa: SLF001
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert len(pending) == 1 and pending[0].paths == (path,)
+    assert pending[0].priority is AcquisitionPriority.USER
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert any(
+        args == (0x1A,) and kwargs["sub"] == 0x03
+        for args, kwargs in radio.send_civ.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_failed_set_filter_width_does_not_queue_readback() -> None:
+    path = FieldPath.active("main", "freq_mode", "filter_width")
+    radio = _make_radio(active="MAIN")
+    radio.set_filter_width.side_effect = RuntimeError("write failed")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+    with pytest.raises(RuntimeError, match="write failed"):
+        await poller._execute(SetFilterWidth(3500, receiver=0))  # noqa: SLF001
+    assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.parametrize(("receiver", "slot"), ((0, "main"), (1, "sub")))
+@pytest.mark.asyncio
+async def test_execute_set_mode_invalidates_stale_width_and_queues_readback(
+    receiver: int, slot: str
+) -> None:
+    mode_path = FieldPath.active(slot, "freq_mode", "mode")
+    width_path = FieldPath.active(slot, "freq_mode", "filter_width")
+    native_width_path = FieldPath.active(str(receiver), "freq_mode", "filter_width")
+    store = StateStore()
+    store.apply_current(
+        Observation(
+            path=native_width_path,
+            value=500,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=1.0,
+        )
+    )
+    radio = _make_radio(active="MAIN", model="IC-7610")
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_set_mode(*_: object, **__: object) -> None:
+        started.set()
+        await release.wait()
+
+    radio.set_mode.side_effect = delayed_set_mode
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(mode_path, width_path)
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    task = asyncio.create_task(  # noqa: SLF001
+        poller._execute(SetMode("USB", filter_width=1, receiver=receiver))
+    )
+    await started.wait()
+    assert str(native_width_path) not in store.snapshot().as_dict()
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    assert payload["fieldStatus"][f"{slot}.filterWidth"]["availability"] == "missing"
+    release.set()
+    await task
+    assert {path for item in scheduler.pending_requests() for path in item.paths} == {
+        mode_path,
+        width_path,
+    }
+    assert all(
+        item.priority is AcquisitionPriority.USER
+        for item in scheduler.pending_requests()
+    )
+    store.apply_current(
+        Observation(
+            path=native_width_path,
+            value=3600,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=2.0,
+        )
+    )
+    assert store.snapshot().field(native_width_path).value == 3600
+
+
+@pytest.mark.asyncio
+async def test_execute_set_mode_ic7300_queues_command_response_width_readback() -> None:
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    mode_path = FieldPath.active("main", "freq_mode", "mode")
+    width_path = FieldPath.active("main", "freq_mode", "filter_width")
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "filter_width"),
+            value=500,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=1.0,
+        )
+    )
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_set_mode(*_: object, **__: object) -> None:
+        started.set()
+        await release.wait()
+
+    radio.set_mode.side_effect = delayed_set_mode
+    task = asyncio.create_task(poller._execute(SetMode("USB", filter_width=1)))  # noqa: SLF001
+    await started.wait()
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "mode"),
+            value="USB",
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=2.0,
+        )
+    )
+    assert "receiver.0.active.freq_mode.filter_width" not in store.snapshot().as_dict()
+    release.set()
+    await task
+
+    assert {path for item in scheduler.pending_requests() for path in item.paths} == {
+        mode_path,
+        width_path,
+    }
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert any(args == (0x26,) for args, _ in radio.send_civ.await_args_list)
+    assert any(
+        args == (0x1A,) and kwargs["sub"] == 0x03
+        for args, kwargs in radio.send_civ.await_args_list
+    )
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "filter_width"),
+            value=3600,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=3.0,
+        )
+    )
+    assert (
+        store.snapshot().field("receiver.0.active.freq_mode.filter_width").value == 3600
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_failed_set_mode_keeps_width_unknown_and_skips_readback() -> None:
+    mode_path = FieldPath.active("main", "freq_mode", "mode")
+    width_path = FieldPath.active("main", "freq_mode", "filter_width")
+    native_width_path = FieldPath.active("0", "freq_mode", "filter_width")
+    store = StateStore()
+    store.apply_current(
+        Observation(
+            path=native_width_path,
+            value=500,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=1.0,
+        )
+    )
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    radio.set_mode.side_effect = RuntimeError("write failed")
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(mode_path, width_path)
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    with pytest.raises(RuntimeError, match="write failed"):
+        await poller._execute(SetMode("USB", filter_width=1))  # noqa: SLF001
+    assert str(native_width_path) not in store.snapshot().as_dict()
+    assert scheduler.pending_requests() == ()
 
 
 @pytest.mark.asyncio
@@ -1440,6 +1637,110 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
     radio.restore_scope_session_state.assert_awaited_once_with((False, False))
     with pytest.raises(CommandError, match="receiver=2"):
         await poller._execute(SwitchScopeReceiver(2))  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", [VfoSwap, VfoEqualize])
+@pytest.mark.parametrize("queued", [False, True], ids=("direct", "queued"))
+async def test_unknown_profileless_vfo_commands_fail_before_mutation(
+    command: type[VfoSwap] | type[VfoEqualize], queued: bool
+) -> None:
+    """Unknown profile-less VFO commands must never inherit a foreign primitive."""
+    radio = _make_radio()
+    radio.profile = None
+    radio.model = "Unknown Rig"
+    radio.capabilities = {"dual_rx"}
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    poller = RadioPoller(radio, CommandQueue())
+    timestamp_before = poller._last_user_write_ts  # noqa: SLF001
+
+    if queued:
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        poller._queue.put_ordered(command(), future=future)  # noqa: SLF001
+        poller.start()
+        with pytest.raises(NotImplementedError, match="unknown.*profile"):
+            await asyncio.wait_for(future, timeout=1)
+        poller.stop()
+    else:
+        with pytest.raises(NotImplementedError, match="unknown.*profile"):
+            await poller._execute(command())  # noqa: SLF001
+
+    assert poller._last_user_write_ts == timestamp_before  # noqa: SLF001
+    radio.swap_vfo_ab.assert_not_awaited()
+    radio.equalize_vfo_ab.assert_not_awaited()
+    radio.swap_main_sub.assert_not_awaited()
+    radio.equalize_main_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unknown_profileless_set_freq_keeps_base_receiver_guard() -> None:
+    """Unknown profile-less non-VFO commands retain the base fallback behavior."""
+    radio = _make_radio()
+    radio.profile = None
+    radio.model = "Unknown Rig"
+    radio.capabilities = set()
+    poller = RadioPoller(radio, CommandQueue())
+
+    with pytest.raises(CommandError, match="receiver=1"):
+        await poller._execute(SetFreq(14_074_000, receiver=1))  # noqa: SLF001
+
+    radio.set_freq.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "command", "method"),
+    [
+        ("IC-7300", VfoSwap, "swap_vfo_ab"),
+        ("IC-7300", VfoEqualize, "equalize_vfo_ab"),
+        ("IC-7610", VfoSwap, "swap_main_sub"),
+        ("IC-7610", VfoEqualize, "equalize_main_sub"),
+    ],
+)
+async def test_profileless_known_model_vfo_commands_resolve_registry_primitive(
+    model: str,
+    command: type[VfoSwap] | type[VfoEqualize],
+    method: str,
+) -> None:
+    """Legacy doubles resolve their exact VFO primitive only from the registry."""
+    radio = _make_radio(model=model)
+    radio.profile = None
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    poller = RadioPoller(radio, CommandQueue())
+
+    await poller._execute(command())  # noqa: SLF001
+
+    expected = getattr(radio, method)
+    if method.endswith("_ab"):
+        expected.assert_awaited_once_with(0)
+    else:
+        expected.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["FTX-1", "TX-500", "X6100", "X6200"])
+@pytest.mark.parametrize("command", [VfoSwap, VfoEqualize])
+async def test_undeclared_profile_vfo_commands_fail_before_mutation(
+    model: str, command: type[VfoSwap] | type[VfoEqualize]
+) -> None:
+    """A shipped profile without the primitive cannot acknowledge the command."""
+    radio = _make_radio(model=model)
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    poller = RadioPoller(radio, CommandQueue())
+    timestamp_before = poller._last_user_write_ts  # noqa: SLF001
+
+    with pytest.raises(NotImplementedError, match="no matching primitive"):
+        await poller._execute(command())  # noqa: SLF001
+
+    assert poller._last_user_write_ts == timestamp_before  # noqa: SLF001
+    radio.swap_vfo_ab.assert_not_awaited()
+    radio.equalize_vfo_ab.assert_not_awaited()
+    radio.swap_main_sub.assert_not_awaited()
+    radio.equalize_main_sub.assert_not_awaited()
 
 
 @pytest.mark.asyncio

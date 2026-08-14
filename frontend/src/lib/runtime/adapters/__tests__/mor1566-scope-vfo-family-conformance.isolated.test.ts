@@ -85,40 +85,11 @@
  * then reverted with `git checkout --` (not `git stash`) after observing the
  * failure, restoring the green state before this file was committed.
  *
- * EXTENSION (per this ticket's instruction): `vfo_swap`/`vfo_equalize`/
- * `set_scope_hold` were already CLAIMED by MOR-1563's (C9) keyboard walk —
- * see `./conformance/claimed.ts`. That walk exercised them ONLY through
- * `dispatchKeyboardRadioAction`'s `vfo_swap`/`vfo_equalize`/
- * `scope_toggle_hold` cases (`panel-commands.ts:1520-1525`, `:1559-1565`).
- * NOT UNIFORM across the three: `vfo_swap`/`vfo_equalize`'s keyboard cases
- * are bare calls (`makeVfoHandlers().onSwap(); return true;`) with NO
- * additional gate of their own — the handler's own structural check
- * (`vfoScheme !== 'single'`) is the only gate in play, so per MOR-1576 it
- * cannot differ from a direct call. `scope_toggle_hold`'s keyboard case is
- * DIFFERENT: it DOES pre-gate, via `keyboardScopeField` (`:1371-1376`:
- * `scopeControls.hold` non-null + `isFieldAvailable`) plus its own
- * `caps.scope===true && has('scope') && typeof hold === 'boolean'` check
- * (`:1561`), before ever calling `onHoldChange`. That pre-gate is strictly
- * SUBSUMED by — not independent of — `onHoldChange`'s own gate
- * (`currentScopeContext()` re-checks the identical `caps.scope`/`has('scope')`
- * pair, and `acceptsScopeValue` re-checks the identical `isFieldAvailable` +
- * boolean-typed-current condition): whenever the pre-gate passes, the
- * handler's own gate passes too, so the conclusion still holds — no
- * MOR-1576-class split. But the correction cuts the other way for coverage:
- * the non-keyboard call site is strictly LOOSER (no pre-gate at all, only
- * `onHoldChange`'s own gate applies), so MOR-1563's keyboard-only coverage
- * genuinely did not exercise the FULL admissible set `onHoldChange` itself
- * allows — this walk's direct call does. Real, DIFFERENT, non-keyboard UI
- * call sites exist for all three: `VfoControlPanel.svelte:51-52`/
- * `RadioLayout.svelte:413,420` wire `vfoHandlers.onSwap`/`.onEqual` directly
- * to click handlers, and `SemanticRadioSurfaces.svelte:356,1113` wires
- * `scopeIntents.onHoldChange` through `SCOPE_TOGGLE_INTENT` to
- * `ScopeControlsSurface.svelte`'s HOLD toggle button. This walk's own 3
- * cases below claim conformance coverage of THOSE call sites directly (never
- * exercised as `expectFrames` targets before), while confirming — not
- * re-deriving — MOR-1578 leg 1's finding that `onSwap`/`onEqual`'s gate is
- * purely structural (`vfoScheme !== 'single'`) with NO field-observation
- * leaf read at all, unlike every other intent in this family.
+ * EXTENSION (MOR-1650): the captured IC-7300 capability fixture remains
+ * byte-faithful. The direct-handler probes below explicitly add the exact
+ * declared primitive tag they exercise to a synthetic copy of that fixture.
+ * This keeps the fixture truthful while making the declared-support
+ * precondition explicit for `vfo_swap` and `vfo_equalize`.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -133,6 +104,7 @@ import { makeScopeControlsHandlers, makeVfoHandlers } from '../../commands/panel
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { MODE_BUTTONS } from '../../../../components/spectrum/spectrum-toolbar-logic';
 import { CHOICES } from '../../../../semantic/ScopeControlsSurface.svelte';
+import type { Capabilities } from '$lib/types/capabilities';
 
 const profile = PROFILES.ic7300;
 const IC7300_STATE = profile.state;
@@ -143,6 +115,11 @@ const scope = IC7300_STATE.scopeControls!;
 function choiceDomain(field: string): number[] {
   const entry = CHOICES.find(([f]) => f === field);
   return entry ? entry[2].map(([v]) => v as number) : [];
+}
+
+function withDeclaredVfoPrimitive(tag: 'vfo_swap' | 'vfo_equalize'): Capabilities {
+  const caps = fixtureCaps(profile);
+  return { ...caps, capabilities: [...caps.capabilities, tag] };
 }
 
 describe('IC-7300 fixture — scope-remainder/VFO-topology family conformance (MOR-1566)', () => {
@@ -273,14 +250,16 @@ describe('IC-7300 fixture — scope-remainder/VFO-topology family conformance (M
     expectFrames(() => makeVfoHandlers().onQuickSplit(), [['quick_split', {}]]);
   });
 
-  describe('EXTENSION — vfo_swap/vfo_equalize/set_scope_hold: real non-keyboard UI call sites, gate re-confirmed (see file header)', () => {
-    it("vfo_swap via makeVfoHandlers().onSwap() — VfoControlPanel.svelte's A<->B button call site: DISPATCHES with empty params, gate is structural-only (vfoScheme !== 'single'), MOR-1578 leg 1", () => {
-      expect(IC7300_CAPABILITIES.vfoScheme).not.toBe('single');
+  describe('EXTENSION — declared VFO primitive direct-handler probes (see file header)', () => {
+    it("vfo_swap via makeVfoHandlers().onSwap() — VfoControlPanel.svelte's A<->B button call site: DISPATCHES with empty params when the synthetic probe declares vfo_swap", () => {
+      h.caps = withDeclaredVfoPrimitive('vfo_swap');
+      expect(h.caps.capabilities).toContain('vfo_swap');
       expectFrames(() => makeVfoHandlers().onSwap(), [['vfo_swap', {}]]);
     });
 
-    it("vfo_equalize via makeVfoHandlers().onEqual() — VfoControlPanel.svelte's A=B button call site: DISPATCHES with empty params, same structural-only gate", () => {
-      expect(IC7300_CAPABILITIES.vfoScheme).not.toBe('single');
+    it("vfo_equalize via makeVfoHandlers().onEqual() — VfoControlPanel.svelte's A=B button call site: DISPATCHES with empty params when the synthetic probe declares vfo_equalize", () => {
+      h.caps = withDeclaredVfoPrimitive('vfo_equalize');
+      expect(h.caps.capabilities).toContain('vfo_equalize');
       expectFrames(() => makeVfoHandlers().onEqual(), [['vfo_equalize', {}]]);
     });
 

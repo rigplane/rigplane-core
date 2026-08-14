@@ -9,15 +9,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.dsp.tap_registry import TapRegistry
 from rigplane.radio_state import RadioState, ReceiverState
 from rigplane.web.handlers.control import ControlHandler
+
+_DEFAULT_RADIO = object()
 
 
 def _make_handler(
     *,
     radio_state: RadioState | None = None,
-    radio: Any = None,
+    radio: Any = _DEFAULT_RADIO,
+    audio_fft_available: bool = True,
+    active_observation: str = "fresh",
 ) -> ControlHandler:
     """Build a ControlHandler with a fake server and WebSocket."""
     ws = MagicMock()
@@ -36,15 +46,34 @@ def _make_handler(
             cw_pitch=600,
         )
 
+    state_store = StateStore()
+    if active_observation != "missing":
+        state_store.apply(
+            Observation(
+                path=FieldPath.global_("slow_state", "active"),
+                value=radio_state.active,
+                source=SourceMetadata(source="state_poller", provider="test"),
+                timestamp_monotonic=1.0,
+                max_age=0.5 if active_observation == "stale" else None,
+            )
+        )
+        if active_observation == "stale":
+            state_store.mark_stale_due(now=2.0)
+
     server = SimpleNamespace(
         _audio_broadcaster=broadcaster,
         _radio_state=radio_state,
+        _audio_fft_scope=object() if audio_fft_available else None,
         command_queue=command_queue,
+        command_state_store=state_store,
     )
+
+    if radio is _DEFAULT_RADIO:
+        radio = SimpleNamespace(capabilities={"cw", "audio"}, has_usb_audio=True)
 
     handler = ControlHandler(
         ws=ws,
-        radio=radio if radio is not None else MagicMock(),
+        radio=radio,
         server_version="test",
         radio_model="IC-7610",
         server=server,
@@ -56,8 +85,41 @@ class TestCwAutoTuneWiring:
     """Test cw_auto_tune command dispatch in ControlHandler."""
 
     async def test_cw_auto_tune_in_commands_set(self) -> None:
-        """cw_auto_tune is listed in _COMMANDS."""
+        """cw_auto_tune is an RX correction, not a TX-class command."""
         assert "cw_auto_tune" in ControlHandler._COMMANDS
+        assert "cw_auto_tune" not in ControlHandler._TX_COMMANDS
+
+    @pytest.mark.parametrize(
+        ("radio", "audio_fft_available"),
+        [
+            (None, True),
+            (SimpleNamespace(capabilities={"audio"}, has_usb_audio=True), True),
+            (SimpleNamespace(capabilities={"cw"}, has_usb_audio=True), True),
+            (SimpleNamespace(capabilities={"cw", "audio"}, has_usb_audio=True), False),
+        ],
+        ids=("missing-radio", "missing-cw", "missing-audio", "missing-fft"),
+    )
+    async def test_missing_rx_analysis_prerequisite_rejects_before_side_effects(
+        self, radio: Any, audio_fft_available: bool
+    ) -> None:
+        """CW auto-tune needs CW, RX audio, and an active server FFT source."""
+        handler = _make_handler(
+            radio=radio,
+            audio_fft_available=audio_fft_available,
+        )
+        registry = MagicMock()
+        handler._server._audio_broadcaster._tap_registry = registry
+
+        with (
+            patch("rigplane.cw_auto_tuner.CwAutoTuner") as tuner,
+            pytest.raises(RuntimeError, match="CW auto-tune requires RX audio FFT"),
+        ):
+            await handler._cw_auto_tune()
+
+        tuner.return_value.start_collection.assert_not_called()
+        registry.register.assert_not_called()
+        handler._server._audio_broadcaster.ensure_relay.assert_not_awaited()
+        handler._server.command_queue.put.assert_not_called()
 
     async def test_timeout_returns_not_detected(self) -> None:
         """If no audio arrives within 3s, return detected=None."""
@@ -77,11 +139,19 @@ class TestCwAutoTuneWiring:
 
         assert result == {"detected": None, "applied": False}
 
-    async def test_successful_detection(self) -> None:
-        """Detected tone returns Hz, delta, and applied flag."""
+    @pytest.mark.parametrize(
+        ("active", "receiver", "expected_freq"),
+        [("MAIN", 0, 14_074_050), ("SUB", 1, 7_030_050)],
+    )
+    async def test_successful_detection_routes_observed_active_receiver(
+        self, active: str, receiver: int, expected_freq: int
+    ) -> None:
+        """Correction source and target are the observed active receiver."""
         handler = _make_handler(
             radio_state=RadioState(
                 main=ReceiverState(freq=14_074_000),
+                sub=ReceiverState(freq=7_030_000),
+                active=active,
                 cw_pitch=600,
             ),
         )
@@ -108,7 +178,42 @@ class TestCwAutoTuneWiring:
         q = handler._server.command_queue
         q.put.assert_called_once()
         cmd = q.put.call_args[0][0]
-        assert cmd.freq == 14_074_000 + 50
+        assert cmd.freq == expected_freq
+        assert cmd.receiver == receiver
+
+    @pytest.mark.parametrize(
+        ("active", "active_observation"),
+        [("MAIN", "missing"), ("MAIN", "stale"), ("UNKNOWN", "fresh")],
+    )
+    async def test_unavailable_active_receiver_rejects_before_side_effects(
+        self, active: str, active_observation: str
+    ) -> None:
+        """Missing, stale, or invalid active-RX evidence fails closed."""
+        handler = _make_handler(
+            radio_state=RadioState(
+                main=ReceiverState(freq=14_074_000),
+                sub=ReceiverState(freq=7_030_000),
+                active=active,
+                cw_pitch=600,
+            ),
+            active_observation=active_observation,
+        )
+        registry = MagicMock()
+        handler._server._audio_broadcaster._tap_registry = registry
+
+        with patch("rigplane.cw_auto_tuner.CwAutoTuner") as tuner:
+            tuner.return_value.start_collection.side_effect = lambda callback: callback(
+                None
+            )
+            with pytest.raises(
+                RuntimeError, match="CW auto-tune requires observed active RX"
+            ):
+                await handler._cw_auto_tune()
+
+        tuner.return_value.start_collection.assert_not_called()
+        registry.register.assert_not_called()
+        handler._server._audio_broadcaster.ensure_relay.assert_not_awaited()
+        handler._server.command_queue.put.assert_not_called()
 
     async def test_detection_none_returns_not_applied(self) -> None:
         """Detected=None (silence) returns applied=False."""

@@ -12,8 +12,8 @@
  * in a DIFFERENT switch (`makeKeyboardHandlers().dispatch`) and are a
  * deliberate scope boundary per `waived.ts`'s header, not covered here.
  *
- * FINDING (fixture-derived split): of the 28, 19 genuinely DISPATCH on this
- * IC-7300 fixture and 9 genuinely REFUSE. Every refusal below is an honest
+ * FINDING (fixture-derived split): of the 28, 17 genuinely DISPATCH on this
+ * IC-7300 fixture and 11 genuinely REFUSE. Every refusal below is an honest
  * fail-closed gate — an unobserved top-level/receiver field, or a
  * single-receiver/no-dual_rx structural gate — never a test artifact. Each
  * case's `gate` string names the exact reason, cross-checked against the
@@ -44,10 +44,10 @@
  * this was a genuinely reachable, user-visible dead control on this
  * profile before the fix — not a theoretical gap.
  *
- * MOR-1578 (filed, cited below where this walk's own rows happen to touch
- * it — not this walk's finding, no production code changed here): (1)
- * `vfo_swap`/`vfo_equalize` dispatch completely unconditionally, no
- * field-observation gate at all (confirmed by the two cases below); (2)
+ * MOR-1604: `vfo_swap`/`vfo_equalize` now dispatch only when the capability
+ * payload declares their exact primitive tag. The byte-faithful IC-7300
+ * capture declares neither, so both correctly refuse without consulting
+ * active receiver, slot, or VFO readback. (2)
  * `switch_active_vfo` reads `context.state.active` RAW, bypassing the
  * observation-gated tautological-MAIN resolution every other action here
  * goes through; (3) `mode-psk`/`mode-pskr` bindings declare `{ mode: 'PSK'
@@ -218,10 +218,10 @@ const CASES: readonly KeyboardCase[] = [
     gate: 'declared rf-level-down binding ({delta:-5}); main.rfGain observed; delta scaled against '
       + 'caps.controls.rf_gain raw domain (MOR-1577, fixed)' },
   { action: 'toggle_monitor', frames: [], gate: 'top-level monitorOn unobserved' },
-  { action: 'vfo_swap', frames: [['vfo_swap', {}]],
-    gate: 'vfoScheme !== "single" — unconditional, no field-observation gate at all (MOR-1578)' },
-  { action: 'vfo_equalize', frames: [['vfo_equalize', {}]],
-    gate: 'vfoScheme !== "single" — unconditional, no field-observation gate at all (MOR-1578)' },
+  { action: 'vfo_swap', frames: [],
+    gate: 'captured IC-7300 capability payload omits exact vfo_swap primitive tag (MOR-1604)' },
+  { action: 'vfo_equalize', frames: [],
+    gate: 'captured IC-7300 capability payload omits exact vfo_equalize primitive tag (MOR-1604)' },
   { action: 'switch_active_vfo', frames: [],
     gate: 'single receiver / no dual_rx — target computes to SUB, nothing to switch to (reads context.state.active RAW, MOR-1578)' },
   { action: 'set_active_vfo', params: { vfo: 'MAIN' }, frames: [['set_vfo', { vfo: 'MAIN' }]],

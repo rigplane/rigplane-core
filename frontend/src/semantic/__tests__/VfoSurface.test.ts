@@ -564,7 +564,9 @@ describe('accessibility basics', () => {
   });
 
   it('focus order follows DOM order: enabled buttons appear in source-array order', () => {
-    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    const target = mountSurface({
+      viewModel: topologyFixtures['2/main_sub'], onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
+    });
     const focusable = Array.from(target.querySelectorAll<HTMLButtonElement>('button:not([disabled])'));
     // MAIN A is active (no select button); expect MAIN B, SUB A, SUB B selects,
     // then the split and dualWatch toggles, then MOR-1321's four ops — facts
@@ -913,7 +915,7 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     }
   });
 
-  it('puts the identity reason on every op button\'s own title and aria-describedby while A/B identity is unknown', () => {
+  it('keeps quick operations identity-gated while caller-admitted equalize and swap remain live', () => {
     const model: RadioViewModel = validateRadioViewModel({
       ...topologyFixtures['1/ab'],
       vfos: topologyFixtures['1/ab'].vfos.map((vfo, index) => ({
@@ -924,7 +926,9 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
         isActiveSlot: index === 0,
       })),
     });
-    const target = mountSurface({ viewModel: model });
+    const onEqualizeVfos = vi.fn();
+    const onSwapVfos = vi.fn();
+    const target = mountSurface({ viewModel: model, onEqualizeVfos, onSwapVfos });
     // MOR-1481 rework (R2): the ops row is not a resolver button — no button
     // here "selects a VFO", so its reason must NOT be the resolver buttons'
     // `relativeSelectionHelp` literal (false here: it is a different claim,
@@ -932,7 +936,16 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     // catalog text instead.
     const falseResolverLiteral = 'Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.';
     const expected = 'The radio has not confirmed which VFO is A and which is B yet — press Select VFO A or Select VFO B first.';
-    for (const op of ['equalize', 'swap', 'quick-split', 'quick-dual-watch'] as const) {
+    for (const op of ['equalize', 'swap'] as const) {
+      const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
+      expect(button.disabled, op).toBe(false);
+      expect(button.title, op).toBe('');
+      expect(button.hasAttribute('aria-describedby'), op).toBe(false);
+      button.click();
+    }
+    expect(onEqualizeVfos).toHaveBeenCalledOnce();
+    expect(onSwapVfos).toHaveBeenCalledOnce();
+    for (const op of ['quick-split', 'quick-dual-watch'] as const) {
       const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
       expect(button.disabled, op).toBe(true);
       expect(button.title, op).toBe(expected);
@@ -943,6 +956,15 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     // catalog text, not the resolver literal (its gaps are hoverable).
     const opsRow = target.querySelector('[data-testid="vfo-ops"]')!;
     expect(opsRow.getAttribute('title')).toBe(expected);
+  });
+
+  it('refuses equalize and swap when the caller has not admitted the matching primitive', () => {
+    const target = mountSurface({ viewModel: base });
+    for (const op of ['equalize', 'swap'] as const) {
+      const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
+      expect(button.disabled, op).toBe(true);
+      button.click();
+    }
   });
 
   // MOR-1481 rework (R2): the catalog key resolves per-locale, not just an
@@ -964,7 +986,7 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     try {
       const target = mountSurface({ viewModel: model });
       const expectedRu = 'Радио ещё не подтвердило, какой VFO — A, а какой — B. Сначала нажмите Select VFO A или Select VFO B.';
-      const button = target.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!;
+      const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
       expect(button.title).toBe(expectedRu);
       expect(describedText(target, button)).toBe(expectedRu);
     } finally {
@@ -1104,8 +1126,8 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     });
     const targetA = mountSurface({ viewModel: model });
     const targetB = mountSurface({ viewModel: model });
-    const idA = targetA.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!.getAttribute('aria-describedby');
-    const idB = targetB.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!.getAttribute('aria-describedby');
+    const idA = targetA.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!.getAttribute('aria-describedby');
+    const idB = targetB.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!.getAttribute('aria-describedby');
     expect(idA).not.toBeNull();
     expect(idB).not.toBeNull();
     expect(idA).not.toBe(idB);

@@ -17,9 +17,9 @@ from ...core.command_service import (
     _raw_int_level_from_param,
     command_intent_from_request,
 )
-from ...core.state_pipeline_contracts import CommandIntent, CommandSource
-from ...core.state_store import StateStore
-from ...profiles import RadioProfile
+from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
+from ...core.state_store import FreshnessState, StateStore
+from ...profiles import RadioProfile, resolve_radio_profile
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -158,6 +158,7 @@ if TYPE_CHECKING:
 from ...capabilities import (
     CAP_AF_LEVEL,
     CAP_ANTENNA,
+    CAP_AUDIO,
     CAP_BAND_EDGE,
     CAP_BREAK_IN,
     CAP_CW,
@@ -178,6 +179,7 @@ __all__ = ["ControlHandler", "RadioNotReadyError"]
 
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
+_VFO_CAPABILITY_TAGS = frozenset({"vfo_swap", "vfo_equalize"})
 
 # MOR-624: maps the per-DATA-group MOD-input SET command name (as sent by the
 # frontend auto-restore) to its allowed teardown arm name (MOR-993).
@@ -669,7 +671,38 @@ class ControlHandler:
         await self._ws.send_text(encode_json(msg))
 
     def _capabilities(self) -> set[str]:
-        return set(runtime_capabilities(self._radio))
+        caps = set(runtime_capabilities(self._radio)) - _VFO_CAPABILITY_TAGS
+        if self._radio is None:
+            return caps
+
+        profile = getattr(self._radio, "profile", None)
+        if not isinstance(profile, RadioProfile):
+            radio_model = getattr(self._radio, "model", None)
+            for model in (radio_model, self._radio_model):
+                if not isinstance(model, str) or not model.strip():
+                    continue
+                try:
+                    profile = resolve_radio_profile(model=model)
+                except KeyError:
+                    continue
+                break
+
+        if not isinstance(profile, RadioProfile):
+            return caps
+        primitives: tuple[tuple[str, int | None], ...]
+        if profile.vfo_scheme == "ab":
+            primitives = (
+                ("vfo_swap", profile.swap_ab_code),
+                ("vfo_equalize", profile.equal_ab_code),
+            )
+        elif profile.vfo_scheme == "main_sub":
+            primitives = (
+                ("vfo_swap", profile.swap_main_sub_code),
+                ("vfo_equalize", profile.equal_main_sub_code),
+            )
+        else:
+            primitives = ()
+        return caps | {tag for tag, primitive in primitives if primitive is not None}
 
     def _ensure_receiver_supported(self, receiver: int) -> None:
         if self._radio is None:
@@ -1773,6 +1806,31 @@ class ControlHandler:
 
         if self._server is None:
             raise RuntimeError("server not available")
+        if (
+            not {CAP_CW, CAP_AUDIO}.issubset(runtime_capabilities(self._radio))
+            or getattr(self._server, "_audio_fft_scope", None) is None
+        ):
+            raise RuntimeError("CW auto-tune requires RX audio FFT")
+
+        state_store = getattr(self._server, "command_state_store", None)
+        if not isinstance(state_store, StateStore):
+            raise RuntimeError("CW auto-tune requires observed active RX")
+        try:
+            active_field = state_store.snapshot().field(
+                FieldPath.global_("slow_state", "active")
+            )
+        except KeyError:
+            raise RuntimeError("CW auto-tune requires observed active RX") from None
+        active = active_field.value
+        if active_field.freshness is not FreshnessState.FRESH or active not in (
+            "MAIN",
+            "SUB",
+        ):
+            raise RuntimeError("CW auto-tune requires observed active RX")
+
+        state = self._server._radio_state
+        receiver = 1 if active == "SUB" else 0
+        freq = state.sub.freq if receiver else state.main.freq
 
         broadcaster = self._server._audio_broadcaster
         tuner = CwAutoTuner()
@@ -1804,15 +1862,13 @@ class ControlHandler:
             return {"detected": None, "applied": False}
 
         # Read current CW pitch from state, compute VFO shift
-        state = self._server._radio_state
         cw_pitch = state.cw_pitch if state.cw_pitch else 600
         delta = hz - cw_pitch
 
         if abs(delta) > 5:
             # Shift VFO frequency to zero-beat
-            freq = state.main.freq
             q = self._server.command_queue
-            q.put(SetFreq(freq + delta))
+            q.put(SetFreq(freq + delta, receiver=receiver))
 
         return {
             "detected": hz,
@@ -1946,11 +2002,37 @@ class ControlHandler:
                 vfo = str(params.get("vfo", "A"))
                 q.put(SelectVfo(vfo))
                 return {"vfo": vfo}
-            case "vfo_swap":
-                q.put(VfoSwap())
-                return {}
-            case "vfo_equalize":
-                q.put(VfoEqualize())
+            case "vfo_swap" | "vfo_equalize":
+                profile = getattr(radio, "profile", None)
+                if not isinstance(profile, RadioProfile):
+                    model = getattr(radio, "model", None)
+                    try:
+                        profile = (
+                            resolve_radio_profile(model=model)
+                            if isinstance(model, str) and model.strip()
+                            else None
+                        )
+                    except KeyError:
+                        profile = None
+                declared_code = None
+                if isinstance(profile, RadioProfile):
+                    if profile.vfo_scheme == "ab":
+                        declared_code = (
+                            profile.swap_ab_code
+                            if name == "vfo_swap"
+                            else profile.equal_ab_code
+                        )
+                    elif profile.vfo_scheme == "main_sub":
+                        declared_code = (
+                            profile.swap_main_sub_code
+                            if name == "vfo_swap"
+                            else profile.equal_main_sub_code
+                        )
+                if declared_code is None:
+                    raise ValueError(
+                        f"command {name!r} is not supported by active profile"
+                    )
+                q.put(VfoSwap() if name == "vfo_swap" else VfoEqualize())
                 return {}
             case "set_data_mode":
                 dm = int(params["mode"])

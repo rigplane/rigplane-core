@@ -237,7 +237,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
         'tx', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
         'cw', 'break_in', 'apf', 'twin_peak', 'rx_antenna',
         'split', 'dual_rx', 'dual_watch', 'main_sub_tracking',
-        'bsr', 'preamp', 'attenuator', 'ip_plus',
+        'bsr', 'preamp', 'attenuator', 'ip_plus', 'scan', 'vfo_swap', 'vfo_equalize',
       ],
       stateContractVersion: 1,
       providerGeneration: 31,
@@ -590,6 +590,24 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_antenna_1', { on: false }],
       ['set_antenna_2', { on: true }],
       ['set_rx_antenna_ant1', { on: true }],
+      ['scan_start', { type: 0x22 }],
+      ['scan_stop', {}],
+      ['scan_set_df_span', { span: 25_000 }],
+      ['scan_set_resume', { mode: 0xd2 }],
+    ]);
+    expectIntentTransport();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('dispatches all explicit scan commands with scan capability and no observed scan state', () => {
+    h.state = null;
+    const scan = makeScanHandlers();
+    scan.onScanStart(0x22);
+    scan.onScanStop();
+    scan.onDfSpanChange(25_000);
+    scan.onResumeChange(0xd2);
+
+    expect(exactCalls()).toEqual([
       ['scan_start', { type: 0x22 }],
       ['scan_stop', {}],
       ['scan_set_df_span', { span: 25_000 }],
@@ -1038,6 +1056,47 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setAudioConfig).toHaveBeenNthCalledWith(3, { focus: 'sub' });
   });
 
+  it('gates blind VFO primitives by their exact declared tags across panel and keyboard paths', () => {
+    h.unavailable.add('active');
+    h.unavailable.add('main.freqHz');
+    h.unavailable.add('main.mode');
+    h.unavailable.add('main.activeSlot');
+    h.unavailable.add('main.vfoA.freqHz');
+    h.unavailable.add('main.vfoB.freqHz');
+
+    for (const [tags, expected] of [
+      [[], []],
+      [['vfo_swap'], [['vfo_swap', {}]]],
+      [['vfo_equalize'], [['vfo_equalize', {}]]],
+      [['vfo_swap', 'vfo_equalize'], [['vfo_swap', {}], ['vfo_equalize', {}]]],
+    ] as const) {
+      h.caps = { ...h.caps!, capabilities: tags };
+      h.sendCommand.mockClear();
+      resetCommandLifecycle();
+      makeVfoHandlers().onSwap();
+      makeVfoHandlers().onEqual();
+      expect(exactCalls()).toEqual(expected);
+
+      h.sendCommand.mockClear();
+      resetCommandLifecycle();
+      expect(dispatchKeyboardRadioAction({ action: 'vfo_swap' })).toBe(true);
+      expect(dispatchKeyboardRadioAction({ action: 'vfo_equalize' })).toBe(true);
+      expect(exactCalls()).toEqual(expected);
+    }
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    h.caps = { ...h.caps!, capabilities: ['vfo_swap', 'vfo_equalize'], providerGeneration: 99 };
+    makeVfoHandlers().onSwap();
+    expect(dispatchKeyboardRadioAction({ action: 'vfo_equalize' })).toBe(true);
+    h.caps = { ...h.caps!, providerGeneration: 31, receivers: 1, vfoScheme: 'main_sub' };
+    makeVfoHandlers().onEqual();
+    expect(dispatchKeyboardRadioAction({ action: 'vfo_swap' })).toBe(true);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.setAudioConfig).not.toHaveBeenCalled();
+  });
+
   it('preserves pending mode focus and local audio focus without patching radio truth', () => {
     const panel = document.createElement('div');
     panel.scrollIntoView = vi.fn();
@@ -1060,7 +1119,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   it('keeps physical MAIN orthogonal to one-RX A/B Selected/Unselected topology', () => {
     h.state = oneReceiverAbState();
     h.caps = {
-      capabilities: ['split', 'tx', 'vox'], receivers: 1, vfoScheme: 'ab',
+      capabilities: ['split', 'tx', 'vox', 'vfo_swap', 'vfo_equalize'], receivers: 1, vfoScheme: 'ab',
       stateContractVersion: 1, providerGeneration: 31,
     };
     const vfo = makeVfoHandlers();
