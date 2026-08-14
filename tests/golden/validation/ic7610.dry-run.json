@@ -328,6 +328,11 @@
       "declaration": "supported"
     },
     {
+      "check_id": "speech.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
       "check_id": "split.set",
       "status": "skip",
       "declaration": "supported"
