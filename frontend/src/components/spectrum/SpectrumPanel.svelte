@@ -15,7 +15,11 @@
   import { runtime } from '../../lib/runtime/frontend-runtime';
   import { type DxSpot } from '../../lib/types/protocol';
   import { getTuningStep } from '../../lib/stores/tuning.svelte';
-  import { getFilterHandlers, getVfoHandlers } from '../../lib/runtime/adapters/panel-adapters';
+  import {
+    getFilterHandlers,
+    getFilterWidthCommandLifecycle,
+    getVfoHandlers,
+  } from '../../lib/runtime/adapters/panel-adapters';
   import {
     snapSpectrumFilterWidth,
     toSpectrumAuthority,
@@ -58,6 +62,10 @@
 
   const vfoHandlers = getVfoHandlers();
   const filterHandlers = getFilterHandlers();
+  // This lifecycle is presentation-only: it never replaces radio-confirmed
+  // state. It preserves the release target while the existing command
+  // lifecycle is busy, then returns to the confirmed radio observation.
+  let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
   // --- Component state ---
   let scopeConnected = $derived(runtime.scope.hardwareScopeConnected);
   let scopeDemandOn = $state(true);
@@ -104,7 +112,7 @@
   }>;
 
   let resizeCapture = $state<GestureCapture | null>(null);
-  let resizeCandidate: number | null = null;
+  let resizeCandidate = $state<number | null>(null);
   let dragCapture = $state<GestureCapture | null>(null);
   let dragSurface: HTMLElement | null = null;
   let dragCandidate: number | null = null;
@@ -142,7 +150,33 @@
       && spectrumAuthority.ifShiftHz !== null,
   );
   let rxMode = $derived(confirmedPassband ? spectrumAuthority!.mode! : '');
-  let passbandHz = $derived(confirmedPassband ? spectrumAuthority!.filterWidthHz! : 0);
+  let lifecyclePassbandHz = $derived(
+    resizeCapture === null
+      && filterWidthLifecycle.busy
+      && filterWidthLifecycle.presentation?.receiver === spectrumAuthority?.receiver
+      && typeof filterWidthLifecycle.target === 'number'
+      && Number.isFinite(filterWidthLifecycle.target)
+      ? filterWidthLifecycle.target
+      : null,
+  );
+  let activeResizePassbandHz = $derived(
+    resizeCapture !== null
+      && resizeCandidate !== null
+      && spectrumAuthority !== null
+      && spectrumAuthority.providerGeneration === resizeCapture.authority.providerGeneration
+      && spectrumAuthority.receiver === resizeCapture.authority.receiver
+      && spectrumAuthority.digest === resizeCapture.authority.digest
+      ? resizeCandidate
+      : null,
+  );
+  // The active drag gets an immediate local projection. Once released, only
+  // the command lifecycle's busy target may hold that projection; confirmed
+  // radio state remains the source of truth for every other state.
+  let passbandHz = $derived(
+    confirmedPassband
+      ? (activeResizePassbandHz ?? lifecyclePassbandHz ?? spectrumAuthority!.filterWidthHz!)
+      : 0,
+  );
   let passbandShiftHz = $derived(confirmedPassband ? spectrumAuthority!.ifShiftHz! : 0);
   let canResizePassband = $derived(
     confirmedPassband

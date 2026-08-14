@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -170,6 +171,11 @@ const authorityHarness = vi.hoisted(() => {
     }),
   };
 });
+const authorityRefreshState = new SvelteMap<string, number>([['value', 0]]);
+
+function refreshSpectrumAuthority(): void {
+  authorityRefreshState.set('value', (authorityRefreshState.get('value') ?? 0) + 1);
+}
 
 const handlerHarness = vi.hoisted(() => {
   const vfo = Object.freeze({ onFreqChange: vi.fn() });
@@ -181,6 +187,61 @@ const handlerHarness = vi.hoisted(() => {
     getFilterHandlers: vi.fn(() => filter),
   };
 });
+
+type TestFilterWidthLifecycle = Readonly<{
+  confirmed: number | null;
+  target: number | null;
+  phase: 'unavailable' | 'idle' | 'pending' | 'acknowledged' | 'confirmed';
+  busy: boolean;
+  outcome: { phase: 'confirmed' | 'failed' | 'timed-out' | 'cancelled'; error?: string } | null;
+  presentation: {
+    lifecycleId: string;
+    transitionId: string;
+    receiver: 0 | 1;
+    sessionEpoch: number;
+    target: number;
+    status: 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'timed-out' | 'cancelled';
+  } | null;
+}>;
+
+const idleFilterWidthLifecycle: TestFilterWidthLifecycle = Object.freeze({
+  confirmed: 2_400,
+  target: null,
+  phase: 'idle',
+  busy: false,
+  outcome: null,
+  presentation: null,
+});
+const filterWidthLifecycleState = new SvelteMap<string, TestFilterWidthLifecycle>([
+  ['value', idleFilterWidthLifecycle],
+]);
+
+function setFilterWidthLifecycle(
+  overrides: Partial<TestFilterWidthLifecycle>,
+): void {
+  filterWidthLifecycleState.set('value', Object.freeze({
+    ...idleFilterWidthLifecycle,
+    ...overrides,
+  }));
+}
+
+function pendingFilterWidthLifecycle(target: number, receiver: 0 | 1 = 0) {
+  return {
+    confirmed: 2_400,
+    target,
+    phase: 'acknowledged' as const,
+    busy: true,
+    outcome: null,
+    presentation: {
+      lifecycleId: `width-${target}`,
+      transitionId: `width-${target}-acknowledged`,
+      receiver,
+      sessionEpoch: 17,
+      target,
+      status: 'acknowledged' as const,
+    },
+  };
+}
 
 const passbandHarness = vi.hoisted(() => ({
   rawWidth: 2_700 as number | null,
@@ -219,10 +280,12 @@ vi.mock('$lib/runtime/adapters/scope-adapter', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/adapters/scope-adapter')>();
   return {
     ...actual,
-    toSpectrumAuthority: (...args: Parameters<typeof actual.toSpectrumAuthority>) =>
-      authorityHarness.state.useProductionSelector
+    toSpectrumAuthority: (...args: Parameters<typeof actual.toSpectrumAuthority>) => {
+      authorityRefreshState.get('value');
+      return authorityHarness.state.useProductionSelector
         ? actual.toSpectrumAuthority(...args)
-        : authorityHarness.toSpectrumAuthority(...args),
+        : authorityHarness.toSpectrumAuthority(...args);
+    },
     snapSpectrumFilterWidth: authorityHarness.snapSpectrumFilterWidth,
   };
 });
@@ -233,6 +296,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
     ...actual,
     getVfoHandlers: handlerHarness.getVfoHandlers,
     getFilterHandlers: handlerHarness.getFilterHandlers,
+    getFilterWidthCommandLifecycle: () => filterWidthLifecycleState.get('value')!,
   };
 });
 
@@ -285,11 +349,16 @@ vi.mock('../passband-geometry', () => ({
     spanHz: number,
     widthPx: number,
     tunePx?: number,
-  ) => passbandHz > 0 && spanHz > 0 && widthPx > 0 ? {
-    leftPx: (tunePx ?? widthPx / 2) - 10,
-    rightPx: (tunePx ?? widthPx / 2) + 10,
-    widthPx: 20,
-  } : null),
+  ) => {
+    if (passbandHz <= 0 || spanHz <= 0 || widthPx <= 0) return null;
+    const projectedWidth = passbandHz / 100;
+    const center = tunePx ?? widthPx / 2;
+    return {
+      leftPx: center - projectedWidth / 2,
+      rightPx: center + projectedWidth / 2,
+      widthPx: projectedWidth,
+    };
+  }),
 }));
 
 vi.mock('../../../../components-v2/panels/filter-controls', () => ({
@@ -482,6 +551,7 @@ beforeEach(() => {
   runtimeHarness.state.currentCaps = Object.freeze({ source: 'test-capabilities' });
   authorityHarness.state.current = authority();
   authorityHarness.state.useProductionSelector = false;
+  setFilterWidthLifecycle({});
   passbandHarness.rawWidth = 2_700;
   passbandHarness.getFilterWidthFromRightEdgePx.mockImplementation(() => passbandHarness.rawWidth);
   spectrumRendererHarness.lastOptions = null;
@@ -845,6 +915,93 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(authorityHarness.snapSpectrumFilterWidth).toHaveBeenCalledWith(2_700, captured.rule);
     expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledOnce();
     expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_700, 0, 17);
+  });
+
+  it('projects each resize move immediately and keeps only the busy lifecycle target after release (MOR-1649)', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    const overlay = () => waterfall.querySelector<HTMLElement>('.passband-overlay')!;
+
+    expect(overlay().style.width).toBe('24%');
+    pointer(zone, 'pointerdown', 42, 100);
+    passbandHarness.rawWidth = 2_500;
+    pointer(waterfall, 'pointermove', 42, 120);
+    expect(overlay().style.width).toBe('25%');
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+
+    passbandHarness.rawWidth = 2_700;
+    pointer(waterfall, 'pointermove', 42, 130);
+    expect(overlay().style.width).toBe('27%');
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+
+    setFilterWidthLifecycle(pendingFilterWidthLifecycle(2_700));
+    flushSync();
+    pointer(waterfall, 'pointerup', 42, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledOnce();
+    expect(overlay().style.width).toBe('27%');
+
+    authorityHarness.state.current = authority({ filterWidthHz: 2_700 });
+    refreshSpectrumAuthority();
+    setFilterWidthLifecycle({ confirmed: 2_700, phase: 'confirmed', presentation: {
+      lifecycleId: 'width-2700', transitionId: 'width-2700-confirmed', receiver: 0,
+      sessionEpoch: 17, target: 2_700, status: 'confirmed',
+    } });
+    flushSync();
+    expect(overlay().style.width).toBe('27%');
+
+    authorityHarness.state.current = authority();
+    refreshSpectrumAuthority();
+    for (const outcome of ['failed', 'timed-out', 'cancelled'] as const) {
+      setFilterWidthLifecycle({
+        target: null,
+        phase: 'idle',
+        busy: false,
+        outcome: { phase: outcome },
+        presentation: {
+          lifecycleId: `width-2700-${outcome}`,
+          transitionId: `width-2700-${outcome}`,
+          receiver: 0,
+          sessionEpoch: 17,
+          target: 2_700,
+          status: outcome,
+        },
+      });
+      flushSync();
+      expect(overlay().style.width).toBe('24%');
+    }
+  });
+
+  it('does not project a busy width lifecycle for another receiver', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    setFilterWidthLifecycle(pendingFilterWidthLifecycle(2_700, 1));
+    flushSync();
+
+    expect(waterfall.querySelector<HTMLElement>('.passband-overlay')?.style.width).toBe('24%');
+  });
+
+  it('abandons an active resize projection after receiver authority drifts', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    const overlay = () => waterfall.querySelector<HTMLElement>('.passband-overlay')!;
+
+    pointer(zone, 'pointerdown', 43, 100);
+    passbandHarness.rawWidth = 2_700;
+    pointer(waterfall, 'pointermove', 43, 130);
+    expect(overlay().style.width).toBe('27%');
+
+    authorityHarness.state.current = authority({ receiver: 1 });
+    refreshSpectrumAuthority();
+    flushSync();
+    expect(overlay().style.width).toBe('24%');
+
+    pointer(waterfall, 'pointerup', 43, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
   });
 
   it('renders and resizes a fresh PBT-only IC-7300 passband via the production selector (MOR-1649)', () => {
