@@ -1132,12 +1132,12 @@ export function makeVfoHandlers() {
   return {
     onSwap: () => {
       const context = currentA03cContext();
-      if (!context || context.caps.vfoScheme === 'single') return;
+      if (!context || !context.caps.capabilities.includes('vfo_swap')) return;
       dispatchRadioIntent({ name: 'vfo_swap', params: {} });
     },
     onEqual: () => {
       const context = currentA03cContext();
-      if (!context || context.caps.vfoScheme === 'single') return;
+      if (!context || !context.caps.capabilities.includes('vfo_equalize')) return;
       dispatchRadioIntent({ name: 'vfo_equalize', params: {} });
     },
     onSplitToggle: () => {
@@ -1461,6 +1461,20 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
   if (!KEYBOARD_RADIO_ACTIONS.has(action)) return false;
   const safeParams = params === undefined ? {} : keyboardParams(params);
   if (safeParams === null) return true;
+
+  // These declared primitives are deliberately blind to receiver and VFO
+  // readback. Their shared panel handlers own the generation/topology/tag
+  // gate; do this after parameter validation, before keyboard active-RX
+  // resolution so an unobserved active field cannot invent a refusal.
+  switch (action) {
+    case 'vfo_swap':
+      makeVfoHandlers().onSwap();
+      return true;
+    case 'vfo_equalize':
+      makeVfoHandlers().onEqual();
+      return true;
+  }
+
   const context = currentKeyboardContext();
   if (!context) return true;
   const receiver = context.receiver;
@@ -1602,12 +1616,6 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
     case 'toggle_split':
       if (has('split') && knownA03cTopLevelField(context, 'split')
         && typeof context.state.split === 'boolean') makeVfoHandlers().onSplitToggle();
-      return true;
-    case 'vfo_swap':
-      makeVfoHandlers().onSwap();
-      return true;
-    case 'vfo_equalize':
-      makeVfoHandlers().onEqual();
       return true;
     case 'switch_active_vfo': {
       const target = context.state.active === 'MAIN' ? 'SUB' : 'MAIN';
