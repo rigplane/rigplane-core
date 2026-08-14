@@ -120,15 +120,24 @@ class TestProfileParity:
                 "xfc",
                 # System
                 "system_settings",
+                # MOR-1655: IC-7610 speech is declared by the downstream
+                # profile change. Keep it in the static topology contract so
+                # this test remains an exact guard before and after that
+                # one-capability transition.
+                "speech",
             }
         )
-        assert profile.capabilities == expected
+        assert profile.capabilities - {"speech"} == expected - {"speech"}
+        # A0: the current 48-member topology plus the sole permitted future
+        # addition must be the exact static 49-member contract.
+        assert profile.capabilities | {"speech"} == expected
 
     def test_capabilities_count(self, profile):
         # MOR-661: dropped repeater_tone + tsql (48 → 46).
         # MOR-678: added mod_input_routing (46 → 47).
         # MOR-1544: added digisel_shift (47 → 48).
-        assert len(profile.capabilities) == 48
+        # MOR-1655: speech is the only allowed transition (48 → 49).
+        assert len(profile.capabilities) == 48 + ("speech" in profile.capabilities)
 
     def test_cmd29_routes_exact(self, profile):
         expected = frozenset(
