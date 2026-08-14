@@ -29,8 +29,10 @@ or requested target confirmed state.
 | Command ingress | `runtime/_poller_types.py:CommandQueue` preserves ordered entries but replaces same-type commands in a coalesced tail; `web/radio_poller.py` drains the surviving entry. | Schedule only after that concrete surviving entry's backend write succeeds, never after UI intent, queued acceptance, a held command, a replaced coalesced entry, or a failure. |
 | Existing immediate reconciliation | `web/radio_poller.py` owns `_POST_WRITE_READBACK_FIELDS` and `_request_post_write_readback()`. The table maps `SetFreq`, `SetMode`, `SetRfGain`, `SetSquelch`, `SetAttenuator`, `SetPreamp`, `SetFilter`, `SetDataMode`, and `SetFilterWidth` to canonical `FieldPath`s; the helper queues `ensure_fresh(..., max_age=1e-9, priority=USER, reason="post_write_readback")` after `_execute`. | The proposed delayed contract must extend or replace this current Icom-oriented jump-queue deliberately. It must not add a second, competing immediate read for a mapped write. |
 | Icom readback | The current Icom `RadioPoller` performs the immediate post-write scheduler request above; CI-V observations subsequently enter StateStore/CommandService rather than being a write response. | Icom supplies a real software-only default-path witness, but not a universal settle-time proof. The child must compare current immediate behavior with a trailing request under fake time. |
+| Yaesu same-cycle readback | `backends/yaesu_cat/poller.py:_medium_loop()` drains the successful command batch and then immediately calls `_poll_medium()` under the same serialized cycle. The observation path emits MAIN/SUB frequency and mode (plus PTT/target and supported filter width) as `yaesu_poll_response`. | Yaesu already has a provider-owned immediate readback opportunity. The generic trailing coordinator is **disabled for Yaesu** initially; it must not coexist with and duplicate this medium poll. A future policy may replace the relevant medium reads only after the fake-Yaesu witness below proves the replacement is equivalent and bounded. |
 | Acquisition | `core/acquisition_scheduler.py` groups paths by request key, coalesces existing requests, keeps the higher priority, and merges paths/reasons. Its cadence and priming paths also have bounded/rotating work rules. | Reconciliation enters that scheduler as normal USER work; no bypass or parallel transport read. |
 | rigctld correlation | `backends/rigctld_client/radio.py` retains pending command readback correlations, annotates the next matching external readback, then discards unmatched expectations; `core/command_service.py` normalizes that correlation before StateStore reconciliation. | A trailing coordinator must neither duplicate nor steal that immediate correlated-readback ownership. Its initial policy is explicitly **disabled for rigctld** until a dedicated fake-rigctld compatibility slice proves coexistence. |
+| Frontend tuning accumulation | `frontend/src/lib/runtime/commands/tuning-accumulator.ts` keeps one latest target per receiver, emits at 60 ms pacing, expires after 4 s quiet, and invalidates on control-session epoch or capabilities-generation changes. | The server coordinator keys only successful executed writes; it never imports the frontend accumulator's timer or treats each gesture as a write. Each surviving backend write replaces the same receiver/path target. Its provider generation independently fences reconnects, while frontend session/generation invalidation prevents stale gestures from creating later writes. |
 | Read storms | Bursty tuning/slider traffic plus per-write reads can amplify serial traffic. | Use a trailing-edge, latest-target timer rather than one timer/read per write. |
 | Canonical state | StateStore has a provider/generation fence for ordered observations. | Carry the generation in the reconciliation key; a stale or replaced provider cannot satisfy a pending target. |
 
@@ -41,13 +43,14 @@ Provider assessment is concrete rather than deferred:
   test must prove that replacing its immediate request with one trailing
   request preserves the affected `FieldPath` mapping and never creates both
   requests for one executed write.
-- **Yaesu:** the repository has Yaesu CAT observation/profile tests but no
-  matching `_POST_WRITE_READBACK_FIELDS` ingress or generic settle-time
-  declaration. Therefore the generic coordinator may support a profile/data
-  override *mechanically*, but its effective Yaesu policy is `disabled` until
-  a fake-Yaesu provider test supplies an exact writable command, canonical
-  path bundle, and observed settle witness. This is an implementation-ready
-  software gate, not a hardware deferral.
+- **Yaesu:** the provider already drains a successful command batch and emits
+  freq/mode observations from the immediately following medium poll in the
+  same cycle. Its effective generic-coordinator policy is therefore
+  `disabled`, not "coexist". A fake Yaesu poller test must enqueue a successful
+  frequency/mode write, run one medium cycle, and prove exactly one provider
+  poll emits the latest target's canonical observation, with zero generic
+  coordinator submission. Replacing that provider poll remains a later owner
+  choice and must prove the same witness plus no duplicate CAT read.
 - **rigctld:** external rigctld already owns command/readback correlation.
   Generic coordinator support must start `disabled`; a separate fake-rigctld
   test may enable it only if it proves that a trailing read does not consume,
@@ -83,6 +86,14 @@ but it does not fabricate a combined Store value.
    unbounded poll loop.
 6. A read error or timeout clears coordinator busy state and records a
    diagnostic outcome; it does not alter confirmed StateStore data.
+
+The latest target is the target of the last **executed backend write**, not the
+frontend's latest gesture. The tuning accumulator can emit several paced
+targets from one receiver's 4 s burst; command-queue coalescing can then replace
+some of those before execution. Only each surviving successful write advances
+the coordinator write generation and resets the trailing deadline. The
+frontend's 60 ms pace and 4 s quiet window are presentation/ingress controls,
+not coordinator constants.
 
 A reverse/restore write is simply a newer target and supersedes the prior
 target. Out-of-band physical changes remain canonical observations; a mismatch
@@ -127,7 +138,9 @@ fake providers/scheduler seams, not physical equipment:
 | Read error | Busy/outcome bookkeeping terminates without a Store patch or retry loop. |
 | Reconnect/generation change | Old-generation timers and completions are ignored/cancelled. |
 | Shutdown | Timers cancel and no post-shutdown scheduler request occurs. |
-| Provider policy | Icom default, Yaesu override candidate, and unsupported rigctld behavior are independently represented rather than silently sharing timing. |
+| Provider policy | Icom trailing candidate, Yaesu generic-coordinator disabled/provider-poll retained, and rigctld disabled are independently represented rather than silently sharing timing. |
+| Yaesu no-duplicate path | One fake medium cycle drains a successful freq/mode batch and emits the latest canonical observations once; the generic coordinator receives zero submissions. A replacement experiment must suppress the same-cycle provider read before enabling a trailing one. |
+| Accumulator handoff | Multiple 60 ms frontend emissions followed by command-queue replacement produce reconciliation registrations only for successful surviving writes; receiver, provider-generation, and write-generation keys cannot inherit an expired 4 s burst. |
 
 ## Bounded implementation decomposition
 
@@ -142,14 +155,22 @@ to prevent a cross-layer refactor masquerading as one change.
 | C: scheduler bridge proof | `src/rigplane/core/acquisition_scheduler.py`, `tests/test_acquisition_scheduler.py` | Expose only the minimal USER request/budget seam needed by A and prove scheduler coalescing still happens. Both paths overlap stale #1717. |
 | D: lifecycle projection | `frontend/src/lib/stores/commands.svelte.ts`, `frontend/src/lib/stores/__tests__/commands.test.ts` | Derive a non-authoritative pending outcome; no Store patch. This exact pair is outside stale #1717's file list. |
 | E: provider policy declarations | `src/rigplane/profiles/__init__.py`, `src/rigplane/profiles/rig_loader.py`, `tests/test_rig_loader.py` | Parse a disabled-by-default provider/profile override and prove invalid policy is rejected. All three paths overlap stale #1717. |
-| F: provider evidence, one at a time | `tests/test_yaesu_cat_observation_adapter.py` plus one new provider-focused fake test (exact path chosen by its issue) | Enable Yaesu only after its fake evidence; rigctld needs a separate child because `backends/rigctld_client/radio.py` and its tests also overlap stale #1717. |
+| F: Yaesu no-duplicate evidence | `src/rigplane/backends/yaesu_cat/poller.py`, `tests/test_yaesu_cat_poller.py` | Fake one successful command-batch drain followed by the same-cycle medium poll; assert latest freq/mode observations appear once and generic coordinator submission stays disabled. These exact paths do not overlap stale #1717. |
+| G: rigctld compatibility decision | `src/rigplane/backends/rigctld_client/radio.py`, `src/rigplane/backends/rigctld_client/observations.py`, `tests/test_rigctld_client_observation_adapter.py` | **Not implementation-ready until owner choice 4.** If authorized, prove a trailing read cannot consume, relabel, or race existing correlation. The latter two paths overlap stale #1717; `radio.py` does not. Resolve overlap ownership before dispatch. |
 
 Stale PR #1717 actually overlaps `src/rigplane/web/radio_poller.py`,
 `src/rigplane/core/acquisition_scheduler.py`, `src/rigplane/profiles/__init__.py`,
 `src/rigplane/profiles/rig_loader.py`, `tests/test_radio_poller_coverage.py`,
-`tests/test_acquisition_scheduler.py`, and `tests/test_rig_loader.py`; it also
-owns rigctld-client and Yaesu-observation paths relevant to a later provider
-slice. Do not overwrite, duplicate, or silently absorb that branch's work.
+`tests/test_acquisition_scheduler.py`, and `tests/test_rig_loader.py`. For the
+provider slices, its exact overlaps are
+`src/rigplane/backends/yaesu_cat/observations.py` with
+`tests/test_yaesu_cat_observation_adapter.py`, and
+`src/rigplane/backends/rigctld_client/observations.py` with
+`tests/test_rigctld_client_observation_adapter.py`. It does **not** own
+`src/rigplane/backends/rigctld_client/radio.py`,
+`src/rigplane/backends/yaesu_cat/poller.py`, or
+`tests/test_yaesu_cat_poller.py`. Do not overwrite, duplicate, or silently
+absorb that branch's work.
 Reconcile whether it is integrated, superseded, or needs a normal reanchor and
 independent review before B, C, E, or a rigctld provider child begins. A and D
 remain independently ownable only after their issue checks current paths.
