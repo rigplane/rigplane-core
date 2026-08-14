@@ -571,6 +571,9 @@ _POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] 
     SetDataMode: lambda cmd: (
         FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "data_mode"),
     ),
+    SetFilterWidth: lambda cmd: (
+        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "filter_width"),
+    ),
 }
 
 # ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore
