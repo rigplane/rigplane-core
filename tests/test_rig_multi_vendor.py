@@ -363,6 +363,15 @@ class TestMultiVendorProfiles:
             .capabilities
         )
 
+    def test_ic7300_speech_is_the_42nd_profile_capability(self):
+        """MOR-1609: speech is the sole post-A0 IC-7300 capability."""
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        profile = rig.to_profile()
+
+        assert "speech" in profile.capabilities
+        assert len(profile.capabilities) == 42
+        assert rig.commands["set_speech"].bytes == (0x13,)
+
     def test_ftx1_without_announcement_routes_does_not_advertise_speech(self):
         """MOR-1609: speech is not inferred from vendor or model identity."""
         rig = load_rig(RIGS_DIR / "ftx1.toml")
