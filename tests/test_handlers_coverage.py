@@ -748,6 +748,54 @@ async def test_enqueue_command_variants(
         assert getattr(cmd, key) == value
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [0, 128, 255])
+async def test_enqueue_manual_notch_position_accepts_raw_bounds_unchanged(
+    value: int,
+) -> None:
+    """Manual-notch position is a raw CI-V 0-255 value, not a frequency."""
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_capable_radio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    result = await handler._enqueue_command(
+        "set_notch_filter", {"value": value, "receiver": 1}
+    )
+
+    assert result == {"value": value, "receiver": 1}
+    assert queue.items == [SetNotchFilter(value, receiver=1)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [-1, 256, 3000])
+async def test_websocket_manual_notch_position_rejects_out_of_range_before_enqueue(
+    value: int,
+) -> None:
+    """Invalid raw manual-notch positions fail on the WebSocket ingress path."""
+    queue = _QueueRecorder()
+    ws = SimpleNamespace(send_text=AsyncMock())
+    handler = _control_handler(
+        ws=ws,
+        radio=_capable_radio(),
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    await handler._dispatch_command(
+        "notch-position", "set_notch_filter", {"value": value}
+    )
+
+    response = decode_json(ws.send_text.await_args.args[0])
+    assert response == {
+        "type": "response",
+        "id": "notch-position",
+        "ok": False,
+        "error": "command_failed",
+        "message": "manual-notch position must be between 0 and 255",
+    }
+    assert queue.items == []
+
+
 async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
     """Yaesu CAT backend → SetPower(unit='watts'); Icom default → 'raw_255'.
 
