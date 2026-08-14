@@ -183,10 +183,13 @@ export function toSpectrumAuthority(
   const filterWidthHz = positiveInteger(widthFact) ? widthFact : null;
   const dataMode = nonnegativeInteger(dataFact) ? dataFact : null;
   // Native IF shift remains an independently observed raw fact. PBT-only
-  // radios instead expose a semantic shift derived from their two PBT facts.
+  // radios instead expose a semantic shift derived from their two fresh PBT
+  // facts; no raw IF-shift observation exists for that radio shape.
   const ifShiftFact = caps.capabilities.includes('if_shift')
     ? knownReading(state, `${key}.ifShift`, passband?.ifShift)
-    : knownSemanticReading(passband?.ifShift);
+    : strictlySeen(state, `${key}.pbtInner`) && strictlySeen(state, `${key}.pbtOuter`)
+      ? knownSemanticReading(passband?.ifShift)
+      : null;
   const supportsData = caps.capabilities.includes('data_mode');
   const rule = mode !== null && modeFact === mode && filterWidthHz !== null
     && (!supportsData || dataMode !== null) && caps.capabilities.includes('filter_width')

@@ -118,6 +118,8 @@ const runtimeHarness = vi.hoisted(() => {
   const state = {
     capturedHardwareFrame: null as ((frame: TestScopeFrame) => void) | null,
     capturedDxMessage: null as ((message: unknown) => void) | null,
+    currentState: Object.freeze({ source: 'test-state' }) as unknown,
+    currentCaps: Object.freeze({ source: 'test-capabilities' }) as unknown,
     mockScopeConnected: true,
     tuningStep: 1_000,
     nextLeaseId: 0,
@@ -125,8 +127,8 @@ const runtimeHarness = vi.hoisted(() => {
     dxUnsubscribe: vi.fn(),
   };
   const runtime = {
-    state: Object.freeze({ source: 'test-state' }),
-    caps: Object.freeze({ source: 'test-capabilities' }),
+    get state() { return state.currentState; },
+    get caps() { return state.currentCaps; },
     scope: {
       get hardwareScopeConnected() { return state.mockScopeConnected; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
@@ -152,10 +154,10 @@ const runtimeHarness = vi.hoisted(() => {
 const mockRuntime = runtimeHarness.runtime;
 
 const authorityHarness = vi.hoisted(() => {
-  const state = { current: null as any };
+  const state = { current: null as any, useProductionSelector: false };
   return {
     state,
-    toSpectrumAuthority: vi.fn(() => state.current),
+    toSpectrumAuthority: vi.fn((_state: unknown, _caps: unknown) => state.current),
     snapSpectrumFilterWidth: vi.fn((raw: number, rule: any) => {
       if (!rule) return null;
       if (rule.kind === 'table') {
@@ -217,7 +219,10 @@ vi.mock('$lib/runtime/adapters/scope-adapter', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/adapters/scope-adapter')>();
   return {
     ...actual,
-    toSpectrumAuthority: authorityHarness.toSpectrumAuthority,
+    toSpectrumAuthority: (...args: Parameters<typeof actual.toSpectrumAuthority>) =>
+      authorityHarness.state.useProductionSelector
+        ? actual.toSpectrumAuthority(...args)
+        : authorityHarness.toSpectrumAuthority(...args),
     snapSpectrumFilterWidth: authorityHarness.snapSpectrumFilterWidth,
   };
 });
@@ -293,7 +298,8 @@ vi.mock('../../../../components-v2/panels/filter-controls', () => ({
 
 vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/runtime/props/panel-props')>(),
-  resolveFilterModeConfig: vi.fn(() => null),
+  resolveFilterModeConfig: vi.fn((caps: { filterConfig?: Record<string, unknown> }, mode: string) =>
+    caps.filterConfig?.[mode] ?? null),
 }));
 
 // ---------------------------------------------------------------------------
@@ -315,6 +321,7 @@ import {
   indicatorTone,
 } from '../../../components-v2/layout/StatusBar.svelte';
 import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw';
+import { IC7300_CAPABILITIES, IC7300_STATE } from '../../../lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -368,6 +375,33 @@ function authority(overrides: Partial<Omit<TestAuthority, 'digest'>> = {}): Test
     ...overrides,
   };
   return Object.freeze({ ...core, digest: JSON.stringify(core) });
+}
+
+function freshPbtOnlyIc7300State() {
+  const captured = structuredClone(IC7300_STATE);
+  const { ifShift: _rawIfShift, ...mainWithoutRawIfShift } = captured.main!;
+  const fieldStatus = { ...captured.fieldStatus };
+  delete fieldStatus['main.ifShift'];
+  const fresh = (path: string) => ({
+    observed: true, freshness: 'fresh', availability: 'available', storePath: path,
+  });
+  return {
+    ...captured,
+    main: {
+      ...mainWithoutRawIfShift,
+      mode: 'AM',
+      filterWidth: 10_000,
+      pbtInner: 128,
+      pbtOuter: 128,
+    },
+    fieldStatus: {
+      ...fieldStatus,
+      'main.mode': fresh('main.mode'),
+      'main.filterWidth': fresh('main.filterWidth'),
+      'main.pbtInner': fresh('main.pbtInner'),
+      'main.pbtOuter': fresh('main.pbtOuter'),
+    },
+  };
 }
 
 function emitFrame(overrides: Partial<TestScopeFrame> = {}): TestScopeFrame {
@@ -444,7 +478,10 @@ beforeEach(() => {
   runtimeHarness.state.nextLeaseId = 0;
   runtimeHarness.state.hardwareUnsubscribe = vi.fn();
   runtimeHarness.state.dxUnsubscribe = vi.fn();
+  runtimeHarness.state.currentState = Object.freeze({ source: 'test-state' });
+  runtimeHarness.state.currentCaps = Object.freeze({ source: 'test-capabilities' });
   authorityHarness.state.current = authority();
+  authorityHarness.state.useProductionSelector = false;
   passbandHarness.rawWidth = 2_700;
   passbandHarness.getFilterWidthFromRightEdgePx.mockImplementation(() => passbandHarness.rawWidth);
   spectrumRendererHarness.lastOptions = null;
@@ -810,11 +847,10 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_700, 0, 17);
   });
 
-  it('renders and resizes a centered PBT-derived passband authority (MOR-1649)', () => {
-    // SpectrumPanel consumes semantic authority only. This is the centered
-    // PBT-only output from scope-adapter: no native IF-shift field is needed.
-    const pbtOnlyAuthority = authority({ ifShiftHz: 0, pbtInnerHz: 0, pbtOuterHz: 0 });
-    authorityHarness.state.current = pbtOnlyAuthority;
+  it('renders and resizes a fresh PBT-only IC-7300 passband via the production selector (MOR-1649)', () => {
+    runtimeHarness.state.currentState = freshPbtOnlyIc7300State();
+    runtimeHarness.state.currentCaps = IC7300_CAPABILITIES;
+    authorityHarness.state.useProductionSelector = true;
     const target = mountPanel();
     emitFrame();
     const { waterfall } = prepareGeometry(target);
@@ -825,7 +861,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     pointer(zone!, 'pointerdown', 41, 100);
     pointer(waterfall, 'pointermove', 41, 130);
     pointer(waterfall, 'pointerup', 41, 130);
-    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_700, 0, 17);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_800, 0, 1);
   });
 
   it('normalizes fixed-frame resize X around the captured carrier rather than sample center', () => {

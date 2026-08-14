@@ -26,6 +26,7 @@ import {
 } from '../scope-adapter';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import { deriveIfShift, pbtRawToHz } from '$lib/radio/filter-controls';
+import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
 
 const fresh: FieldStatus = {
   storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available',
@@ -110,6 +111,34 @@ function withStatus(base: ServerState, path: string, status: FieldStatus | undef
   if (status) statuses[path] = { ...status, storePath: path };
   else delete statuses[path];
   return { ...base, fieldStatus: statuses } as ServerState;
+}
+
+function freshStatus(path: string): FieldStatus {
+  return { ...fresh, storePath: path };
+}
+
+function freshPbtOnlyIc7300State(): ServerState {
+  const captured = structuredClone(IC7300_STATE);
+  const { ifShift: _rawIfShift, ...mainWithoutRawIfShift } = captured.main!;
+  const fieldStatus = { ...captured.fieldStatus };
+  delete fieldStatus['main.ifShift'];
+  return {
+    ...captured,
+    main: {
+      ...mainWithoutRawIfShift,
+      mode: 'AM',
+      filterWidth: 10_000,
+      pbtInner: 128,
+      pbtOuter: 128,
+    },
+    fieldStatus: {
+      ...fieldStatus,
+      'main.mode': freshStatus('main.mode'),
+      'main.filterWidth': freshStatus('main.filterWidth'),
+      'main.pbtInner': freshStatus('main.pbtInner'),
+      'main.pbtOuter': freshStatus('main.pbtOuter'),
+    },
+  } as ServerState;
 }
 
 afterEach(() => {
@@ -333,28 +362,42 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(result?.ifShiftHz).not.toBeNull();
   });
 
-  it('keeps a fresh centered PBT-only passband without a raw ifShift observation (MOR-1649)', () => {
-    const { ifShift: _rawIfShift, ...pbtOnlyMain } = receiver(14_074_000);
-    const pbtOnlyState = withStatus(state({
-      main: { ...pbtOnlyMain, pbtInner: 128, pbtOuter: 128 } as ServerState['main'],
-    }), 'main.ifShift', undefined);
-    const pbtOnlyCaps = caps({
-      capabilities: ['scope', 'dual_rx', 'filter_width', 'data_mode', 'pbt'],
-    });
+  it('keeps a fresh centered PBT-only IC-7300 passband without raw IF-shift authority (MOR-1649)', () => {
+    const pbtOnlyState = freshPbtOnlyIc7300State();
 
-    expect(toSpectrumAuthority(pbtOnlyState, pbtOnlyCaps)).toMatchObject({
+    expect(IC7300_CAPABILITIES).toMatchObject({
+      model: 'IC-7300', receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected',
+    });
+    expect(IC7300_CAPABILITIES.capabilities).toContain('pbt');
+    expect(IC7300_CAPABILITIES.capabilities).not.toContain('dual_rx');
+    expect(IC7300_CAPABILITIES.capabilities).not.toContain('if_shift');
+    expect(pbtOnlyState.fieldStatus?.['main.ifShift']).toBeUndefined();
+    expect(toSpectrumAuthority(pbtOnlyState, IC7300_CAPABILITIES)).toMatchObject({
       ifShiftHz: 0,
       pbtInnerHz: 0,
       pbtOuterHz: 0,
     });
   });
 
-  it('keeps native IF shift gated by its own raw observation (MOR-1649)', () => {
+  it.each([
+    ['main.pbtInner', stale], ['main.pbtOuter', stale],
+    ['main.pbtInner', undefined], ['main.pbtOuter', undefined],
+  ] as const)('hides PBT-derived shift when %s is stale or missing (MOR-1649)', (path, status) => {
+    const result = toSpectrumAuthority(
+      withStatus(freshPbtOnlyIc7300State(), path, status), IC7300_CAPABILITIES,
+    );
+
+    expect(result?.ifShiftHz).toBeNull();
+  });
+
+  it('keeps native FTX-1-style IF shift gated by its own raw observation (MOR-1649)', () => {
     const nativeCaps = caps({
       capabilities: ['scope', 'dual_rx', 'filter_width', 'data_mode', 'if_shift'],
     });
+    const nativeState = state({ main: { ...receiver(14_074_000), ifShift: 250 } });
 
-    expect(toSpectrumAuthority(withStatus(state(), 'main.ifShift', undefined), nativeCaps)?.ifShiftHz)
+    expect(toSpectrumAuthority(nativeState, nativeCaps)?.ifShiftHz).toBe(250);
+    expect(toSpectrumAuthority(withStatus(nativeState, 'main.ifShift', undefined), nativeCaps)?.ifShiftHz)
       .toBeNull();
   });
 });
