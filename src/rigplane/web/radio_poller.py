@@ -1310,6 +1310,14 @@ class RadioPoller:
         if build_paths is None:
             return
         paths = build_paths(cmd)
+        if type(cmd) is SetMode and CAP_FILTER_WIDTH in self._caps:
+            filter_width = FieldPath.active(
+                _post_write_receiver_id(cmd), "freq_mode", "filter_width"
+            )
+            if self._acquisition_scheduler._profile.capability_for(
+                filter_width
+            ).can_poll:
+                paths = (*paths, filter_width)
         if not paths:
             return
         scheduler.ensure_fresh(
@@ -2050,6 +2058,14 @@ class RadioPoller:
             case SetMode(mode=mode, filter_width=fw, receiver=rx):
                 self._last_user_write_ts = time.monotonic()
                 self._ensure_receiver_supported(rx, operation="set_mode")
+                if CAP_FILTER_WIDTH in self._caps:
+                    self._state_store.discard(
+                        (
+                            FieldPath.active(
+                                "sub" if rx else "main", "freq_mode", "filter_width"
+                            ),
+                        )
+                    )
                 current = self._current_active()
                 if rx != 0 and self._profile.supports_cmd29(0x06):
                     await radio.set_mode(mode, fw, receiver=rx)
