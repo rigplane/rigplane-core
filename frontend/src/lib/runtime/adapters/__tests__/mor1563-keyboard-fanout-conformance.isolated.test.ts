@@ -14,11 +14,11 @@
  *
  * FINDING (fixture-derived split): of the 28, 17 genuinely DISPATCH on this
  * IC-7300 fixture and 11 genuinely REFUSE. Every refusal below is an honest
- * fail-closed gate — an unobserved top-level/receiver field, or a
- * single-receiver/no-dual_rx structural gate — never a test artifact. Each
- * case's `gate` string names the exact reason, cross-checked against the
- * fixture's own `fieldStatus`/`capabilities.keyboard.bindings` data, never
- * invented.
+ * fail-closed gate: an unobserved top-level/receiver field, a missing exact
+ * `vfo_swap`/`vfo_equalize` capability tag, or a single-receiver/no-dual_rx
+ * structural gate — never a test artifact. Each case's `gate` string names
+ * the exact reason, cross-checked against the fixture's own
+ * `fieldStatus`/`capabilities.keyboard.bindings` data, never invented.
  *
  * MOR-1577 (filed a prior review round, FIXED this round):
  * `capabilities.keyboard.bindings` declares FOUR bindings for
