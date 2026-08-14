@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from dataclasses import astuple, replace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,7 +17,9 @@ from rigplane.radio_protocol import AudioCapable
 from rigplane.runtime.radio import IcomRadio
 from rigplane.types import AudioCodec
 from rigplane.web.handlers.audio import browser_tx_audio_facts
-from rigplane.web.server import WebServer
+from rigplane.web.handlers import ControlHandler
+from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.websocket import WebSocketConnection
 
 
 class _FakeWriter:
@@ -136,6 +139,40 @@ class TestInfoEndpoint:
         await srv._serve_info(writer)  # noqa: SLF001
         data = _parse_json_body(writer)
         assert "dual_rx" not in data["capabilities"]["tags"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_runtime_model_fails_closed_for_reserved_vfo_tags_across_consumers(
+        self,
+    ):
+        """An unknown attached radio cannot inherit configured VFO primitives."""
+        reserved = {"vfo_swap", "vfo_equalize"}
+        radio = _make_radio("IC-7300", caps=reserved)
+        radio.model = "UNKNOWN-RADIO"
+        del radio.profile
+        server = WebServer(radio, WebConfig(radio_model="IC-7300"))
+
+        info_writer = _FakeWriter()
+        await server._serve_info(info_writer)  # noqa: SLF001
+        info = _parse_json_body(info_writer)
+
+        capabilities_writer = _FakeWriter()
+        await server._serve_capabilities(capabilities_writer)  # noqa: SLF001
+        capabilities = _parse_json_body(capabilities_writer)
+
+        ws = MagicMock(spec=WebSocketConnection)
+        sent: list[str] = []
+
+        async def send_text(payload: str) -> None:
+            sent.append(payload)
+
+        ws.send_text = send_text
+        handler = ControlHandler(ws, radio, "0.0.0-test", radio.model)
+        await handler._send_hello()  # noqa: SLF001
+        hello = json.loads(sent.pop())
+
+        assert not (reserved & set(info["capabilities"]["tags"]))
+        assert not (reserved & set(capabilities["capabilities"]))
+        assert not (reserved & set(hello["capabilities"]))
 
 
 # ── /api/v1/capabilities tests ─────────────────────────────────
