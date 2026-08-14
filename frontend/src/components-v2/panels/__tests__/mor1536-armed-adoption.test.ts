@@ -66,7 +66,7 @@ const mockFilterHandlers = {
 };
 const mockFilterArmed: { armed: boolean; value: number | null } = { armed: false, value: null };
 const mockFilterWidthLifecycle = {
-  confirmed: 2400, target: null, phase: 'idle' as const, busy: false, outcome: null,
+  confirmed: 2400, target: null, phase: 'idle' as const, busy: false, outcome: null, presentation: null,
 };
 
 const mockRfProps = {

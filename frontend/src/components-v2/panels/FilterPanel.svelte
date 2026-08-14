@@ -24,7 +24,8 @@
   // The lifecycle is presentation-only. `filterWidth` remains the sole
   // canonical/confirmed source for all displayed and selected widths.
   let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
-  let lastPendingWidthTarget = $state<number | null>(null);
+  let lastFilterWidthTransitionId = $state<string | null>(null);
+  let filterWidthLiveStatus = $state('');
   const filterArmedIdBase = $props.id();
 
   let currentMode = $derived(p.currentMode);
@@ -145,27 +146,40 @@
     return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
   }
 
-  $effect(() => {
-    if (filterWidthLifecycle.busy && filterWidthLifecycle.target !== null) {
-      lastPendingWidthTarget = filterWidthLifecycle.target;
-    } else if (filterWidthLifecycle.outcome === null) {
-      lastPendingWidthTarget = null;
-    }
-  });
+  let lifecycleTarget = $derived(
+    filterWidthLifecycle.busy ? (filterWidthLifecycle.presentation?.target ?? filterWidthLifecycle.target) : null
+  );
 
-  let lifecycleTarget = $derived(filterWidthLifecycle.target ?? lastPendingWidthTarget);
-  let filterWidthLiveStatus = $derived.by(() => {
-    const target = lifecycleTarget === null ? formatWidthDisplay(filterWidth) : formatWidthDisplay(lifecycleTarget);
-    const confirmed = formatWidthDisplay(filterWidth);
-    if (filterWidthLifecycle.busy) {
-      return t('core.filter.width.pendingAnnouncement', { target });
-    }
-    switch (filterWidthLifecycle.outcome?.phase) {
-      case 'confirmed': return t('core.filter.width.confirmedAnnouncement', { confirmed });
-      case 'failed': return t('core.filter.width.failedAnnouncement', { target, confirmed });
-      case 'timed-out': return t('core.filter.width.timedOutAnnouncement', { target, confirmed });
-      case 'cancelled': return t('core.filter.width.cancelledAnnouncement', { target, confirmed });
-      default: return '';
+  $effect(() => {
+    const lifecycle = filterWidthLifecycle.presentation;
+    if (lifecycle === null) {
+      lastFilterWidthTransitionId = null;
+      filterWidthLiveStatus = '';
+    } else if (lifecycle.transitionId !== lastFilterWidthTransitionId) {
+      // Capture both radio-confirmed state and the exact DTO target once per
+      // immutable transition identity. Retained reads and later canonical
+      // polls cannot rewrite/reannounce this historical transition.
+      const target = formatWidthDisplay(lifecycle.target);
+      const confirmed = formatWidthDisplay(filterWidth);
+      lastFilterWidthTransitionId = lifecycle.transitionId;
+      switch (lifecycle.status) {
+        case 'pending':
+        case 'acknowledged':
+          filterWidthLiveStatus = t('core.filter.width.pendingAnnouncement', { target });
+          break;
+        case 'confirmed':
+          filterWidthLiveStatus = t('core.filter.width.confirmedAnnouncement', { confirmed });
+          break;
+        case 'failed':
+          filterWidthLiveStatus = t('core.filter.width.failedAnnouncement', { target, confirmed });
+          break;
+        case 'timed-out':
+          filterWidthLiveStatus = t('core.filter.width.timedOutAnnouncement', { target, confirmed });
+          break;
+        case 'cancelled':
+          filterWidthLiveStatus = t('core.filter.width.cancelledAnnouncement', { target, confirmed });
+          break;
+      }
     }
   });
 
