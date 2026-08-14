@@ -16,6 +16,50 @@ from rigplane.rig_loader import load_rig
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 IC7300_PATH = RIGS_DIR / "ic7300.toml"
 
+EXPECTED_41_BASELINE = {
+    "audio",
+    "af_level",
+    "rf_gain",
+    "squelch",
+    "attenuator",
+    "preamp",
+    "ip_plus",
+    "antenna",
+    "nb",
+    "nr",
+    "notch",
+    "apf",
+    "twin_peak",
+    "pbt",
+    "filter_width",
+    "filter_shape",
+    "tx",
+    "split",
+    "vox",
+    "compressor",
+    "monitor",
+    "ssb_tx_bw",
+    "cw",
+    "break_in",
+    "rit",
+    "xit",
+    "tuner",
+    "meters",
+    "scope",
+    "repeater_tone",
+    "tsql",
+    "data_mode",
+    "power_control",
+    "dial_lock",
+    "scan",
+    "bsr",
+    "agc",
+    "tuning_step",
+    "band_edge",
+    "xfc",
+    "system_settings",
+}
+
 
 @pytest.fixture()
 def rig():
@@ -191,8 +235,8 @@ class TestCapabilities:
     def test_has_ip_plus(self, profile):
         assert "ip_plus" in profile.capabilities
 
-    def test_capabilities_count(self, profile):
-        assert len(profile.capabilities) == 41
+    def test_capabilities_match_pre_speech_baseline(self, profile):
+        assert profile.capabilities - {"speech"} == EXPECTED_41_BASELINE
 
 
 # ── Command overrides ──────────────────────────────────────────

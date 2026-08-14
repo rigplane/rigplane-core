@@ -598,32 +598,6 @@ def _runtime_capabilities(radio: "Radio | None") -> set[str]:
     return _runtime_capabilities_impl(radio)
 
 
-_VFO_CAPABILITY_TAGS = frozenset({"vfo_swap", "vfo_equalize"})
-
-
-def _profile_vfo_capability_tags(profile: "RadioProfile") -> set[str]:
-    """Project only primitives declared for the profile's VFO scheme."""
-    if profile.vfo_scheme == "ab":
-        return {
-            tag
-            for tag, primitive in (
-                ("vfo_swap", profile.swap_ab_code),
-                ("vfo_equalize", profile.equal_ab_code),
-            )
-            if primitive is not None
-        }
-    if profile.vfo_scheme == "main_sub":
-        return {
-            tag
-            for tag, primitive in (
-                ("vfo_swap", profile.swap_main_sub_code),
-                ("vfo_equalize", profile.equal_main_sub_code),
-            )
-            if primitive is not None
-        }
-    return set()
-
-
 def _supports_scope(radio: "Radio | None") -> bool:
     return "scope" in runtime_capabilities(radio)
 
@@ -1000,29 +974,44 @@ class WebServer:
             )
         return fallback
 
-    def _trusted_vfo_capability_tags(self) -> set[str]:
-        """Resolve VFO tags without the generic profile fallback."""
+    def _projected_runtime_capabilities(self) -> set[str]:
+        """Return runtime tags with VFO primitives trusted only from a profile."""
         from ..profiles import RadioProfile, resolve_radio_profile
 
-        if self._radio is None:
-            return set()
-        raw_profile = getattr(self._radio, "profile", None)
-        if isinstance(raw_profile, RadioProfile):
-            return _profile_vfo_capability_tags(raw_profile)
-        radio_model = getattr(self._radio, "model", None)
-        candidates = [
-            model
-            for model in (radio_model, self._config.radio_model)
-            if isinstance(model, str) and model != _RADIO_MODEL_UNSPECIFIED
-        ]
-        for candidate in candidates:
-            try:
-                return _profile_vfo_capability_tags(
-                    resolve_radio_profile(model=candidate)
-                )
-            except KeyError:
-                continue
-        return set()
+        vfo_tags = {"vfo_swap", "vfo_equalize"}
+        caps = _runtime_capabilities(self._radio) - vfo_tags
+        profile = getattr(self._radio, "profile", None) if self._radio else None
+        if not isinstance(profile, RadioProfile):
+            raw_model = (
+                getattr(self._radio, "model", None) if self._radio is not None else None
+            )
+            candidates = (
+                (raw_model,)
+                if isinstance(raw_model, str) and raw_model.strip()
+                else (self._config.radio_model,)
+            )
+            for model in candidates:
+                try:
+                    profile = resolve_radio_profile(model=model)
+                except KeyError:
+                    continue
+                break
+        if not isinstance(profile, RadioProfile):
+            return caps
+        primitives: tuple[tuple[str, int | None], ...]
+        if profile.vfo_scheme == "ab":
+            primitives = (
+                ("vfo_swap", profile.swap_ab_code),
+                ("vfo_equalize", profile.equal_ab_code),
+            )
+        elif profile.vfo_scheme == "main_sub":
+            primitives = (
+                ("vfo_swap", profile.swap_main_sub_code),
+                ("vfo_equalize", profile.equal_main_sub_code),
+            )
+        else:
+            primitives = ()
+        return caps | {tag for tag, primitive in primitives if primitive is not None}
 
     def _bootstrap_state_acquisition(self) -> None:
         """Attach shared StateStore-backed acquisition services when profiled."""
@@ -2893,11 +2882,9 @@ class WebServer:
             getattr(self._radio, "model", None) if self._radio is not None else None
         )
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
-        profile = self._get_profile()
-        caps = (
-            _runtime_capabilities(self._radio) - _VFO_CAPABILITY_TAGS
-        ) | self._trusted_vfo_capability_tags()
+        caps = self._projected_runtime_capabilities()
         has_dual_rx = "dual_rx" in caps
+        profile = self._get_profile()
         raw_connected = (
             getattr(self._radio, "connected", False) if self._radio else False
         )
@@ -3351,6 +3338,7 @@ class WebServer:
                 {"Content-Type": "application/json"},
             )
             return
+        caps = self._projected_runtime_capabilities()
         tx_audio = browser_tx_audio_facts(self._radio)
         _raw_model = (
             getattr(self._radio, "model", None) if self._radio is not None else None
@@ -3359,9 +3347,6 @@ class WebServer:
             _raw_model if isinstance(_raw_model, str) else self._config.radio_model
         )
         profile = self._get_profile()
-        caps = (
-            _runtime_capabilities(self._radio) - _VFO_CAPABILITY_TAGS
-        ) | self._trusted_vfo_capability_tags()
 
         freq_ranges = [
             {

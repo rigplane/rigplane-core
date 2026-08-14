@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from dataclasses import astuple, replace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,7 +17,9 @@ from rigplane.radio_protocol import AudioCapable
 from rigplane.runtime.radio import IcomRadio
 from rigplane.types import AudioCodec
 from rigplane.web.handlers.audio import browser_tx_audio_facts
-from rigplane.web.server import WebServer
+from rigplane.web.handlers import ControlHandler
+from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.websocket import WebSocketConnection
 
 
 class _FakeWriter:
@@ -67,10 +70,12 @@ def _make_radio(model: str = "IC-7610", caps: set[str] | None = None):
     return radio
 
 
-async def _endpoint_vfo_tags(radio) -> tuple[set[str], set[str], set[str]]:
+async def _endpoint_vfo_tags(
+    radio, config: WebConfig | None = None
+) -> tuple[set[str], set[str], set[str]]:
     from rigplane.web.handlers import ControlHandler
 
-    srv = WebServer(radio)
+    srv = WebServer(radio, config)
     info_writer = _FakeWriter()
     capabilities_writer = _FakeWriter()
     ws_payloads: list[str] = []
@@ -168,6 +173,40 @@ class TestInfoEndpoint:
         assert "dual_rx" not in data["capabilities"]["tags"]
 
     @pytest.mark.asyncio
+    async def test_unknown_runtime_model_fails_closed_for_reserved_vfo_tags_across_consumers(
+        self,
+    ):
+        """An unknown attached radio cannot inherit configured VFO primitives."""
+        reserved = {"vfo_swap", "vfo_equalize"}
+        radio = _make_radio("IC-7300", caps=reserved)
+        radio.model = "UNKNOWN-RADIO"
+        del radio.profile
+        server = WebServer(radio, WebConfig(radio_model="IC-7300"))
+
+        info_writer = _FakeWriter()
+        await server._serve_info(info_writer)  # noqa: SLF001
+        info = _parse_json_body(info_writer)
+
+        capabilities_writer = _FakeWriter()
+        await server._serve_capabilities(capabilities_writer)  # noqa: SLF001
+        capabilities = _parse_json_body(capabilities_writer)
+
+        ws = MagicMock(spec=WebSocketConnection)
+        sent: list[str] = []
+
+        async def send_text(payload: str) -> None:
+            sent.append(payload)
+
+        ws.send_text = send_text
+        handler = ControlHandler(ws, radio, "0.0.0-test", radio.model)
+        await handler._send_hello()  # noqa: SLF001
+        hello = json.loads(sent.pop())
+
+        assert not (reserved & set(info["capabilities"]["tags"]))
+        assert not (reserved & set(capabilities["capabilities"]))
+        assert not (reserved & set(hello["capabilities"]))
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("model", "expected"),
         [
@@ -181,52 +220,45 @@ class TestInfoEndpoint:
             ("X6200", set()),
         ],
     )
-    async def test_info_projects_exact_profile_vfo_primitives(self, model, expected):
-        radio = _make_radio(model)
-        srv = WebServer(radio)
-        writer = _FakeWriter()
-
-        await srv._serve_info(writer)  # noqa: SLF001
-
-        tags = set(_parse_json_body(writer)["capabilities"]["tags"])
-        assert tags & {"vfo_swap", "vfo_equalize"} == expected
+    async def test_vfo_tags_match_across_consumers_for_real_profiles(
+        self, model, expected
+    ):
+        assert await _endpoint_vfo_tags(_make_radio(model)) == (
+            expected,
+            expected,
+            expected,
+        )
 
     @pytest.mark.asyncio
-    async def test_vfo_tags_project_primitives_independently_for_matching_scheme(self):
+    async def test_vfo_tags_keep_partial_and_mismatched_schemes_in_parity(self):
         radio = _make_radio("IC-7300")
         radio.profile = replace(radio.profile, equal_ab_code=None)
+        assert await _endpoint_vfo_tags(radio) == (
+            {"vfo_swap"},
+            {"vfo_swap"},
+            {"vfo_swap"},
+        )
 
-        expected = {"vfo_swap"}
-        assert await _endpoint_vfo_tags(radio) == (expected, expected, expected)
-
-    @pytest.mark.asyncio
-    async def test_vfo_tags_ignore_runtime_injection_on_unsupported_profile(self):
-        radio = _make_radio("X6100", {"vfo_swap", "vfo_equalize"})
-
-        assert await _endpoint_vfo_tags(radio) == (set(), set(), set())
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("radio_kind", ["unknown", "missing", "none"])
-    async def test_vfo_tags_fail_closed_without_exact_profile(self, radio_kind):
-        if radio_kind == "none":
-            radio = None
-        else:
-            radio = _make_radio("X6100", set())
-            del radio.profile
-            if radio_kind == "unknown":
-                radio.model = "UNKNOWN-RADIO"
-            else:
-                del radio.model
-
-        assert await _endpoint_vfo_tags(radio) == (set(), set(), set())
-
-    @pytest.mark.asyncio
-    async def test_vfo_tags_resolve_known_profile_when_not_attached(self):
         radio = _make_radio("IC-7300")
-        del radio.profile
+        radio.profile = replace(radio.profile, vfo_scheme="main_sub")
+        assert await _endpoint_vfo_tags(radio) == (set(), set(), set())
 
+    @pytest.mark.asyncio
+    async def test_vfo_tags_reject_injection_and_only_fallback_when_runtime_absent(self):
+        injected = _make_radio("X6100", {"vfo_swap", "vfo_equalize"})
+        assert await _endpoint_vfo_tags(injected) == (set(), set(), set())
+
+        absent_runtime = _make_radio("IC-7300")
+        del absent_runtime.profile
+        del absent_runtime.model
         expected = {"vfo_swap", "vfo_equalize"}
-        assert await _endpoint_vfo_tags(radio) == (expected, expected, expected)
+        assert await _endpoint_vfo_tags(
+            absent_runtime, WebConfig(radio_model="IC-7300")
+        ) == (
+            expected,
+            expected,
+            expected,
+        )
 
 
 # ── /api/v1/capabilities tests ─────────────────────────────────
