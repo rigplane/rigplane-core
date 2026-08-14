@@ -2185,6 +2185,8 @@ class ControlHandler:
             case "set_notch_filter":
                 level = int(params["value"])
                 rx = int(params.get("receiver", 0))
+                if not 0 <= level <= 255:
+                    raise ValueError("manual-notch position must be between 0 and 255")
                 self._ensure_capability("notch", "set_notch_filter")
                 self._ensure_receiver_supported(rx)
                 q.put(SetNotchFilter(level, receiver=rx))
