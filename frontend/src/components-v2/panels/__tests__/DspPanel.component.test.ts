@@ -219,3 +219,76 @@ describe('DspPanel manual-notch position (MOR-1633)', () => {
     expect(mockHandlers.onNotchFreqChange).toHaveBeenNthCalledWith(3, 255);
   });
 });
+
+describe('DspPanel mobile notch dialog (MOR-1631)', () => {
+  function openNotchModal(t: HTMLElement): void {
+    vi.useFakeTimers();
+    try {
+      const notchBtn = Array.from(t.querySelectorAll<HTMLButtonElement>('.dsp-btn-wrap button')).find(
+        (b) => b.textContent?.trim() === 'NOTCH',
+      );
+      notchBtn?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(600);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  function modeButton(t: HTMLElement, mode: string): HTMLButtonElement {
+    const button = Array.from(t.querySelectorAll<HTMLButtonElement>('[aria-label="Notch filter settings"] button')).find(
+      (candidate) => candidate.textContent?.trim() === mode,
+    );
+    expect(button).toBeDefined();
+    return button!;
+  }
+
+  it('uses the actual mobile tuning-strip bottom bound without a duplicated fixed height', () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    const tuningStrip = document.createElement('nav');
+    tuningStrip.className = 'm-tuning-strip';
+    tuningStrip.getBoundingClientRect = () => ({ top: 610 } as DOMRect);
+    document.body.appendChild(tuningStrip);
+
+    try {
+      const t = mountPanel({ notchMode: 'manual', notchFreq: 128 });
+      openNotchModal(t);
+      const dialog = t.querySelector<HTMLElement>('[aria-label="Notch filter settings"]');
+      expect(dialog?.style.top).toBe('8px');
+      expect(dialog?.style.bottom).toBe('calc(100dvh + 8px - 610px)');
+      expect(dialog?.textContent).toContain('Notch Position');
+      expect(dialog?.querySelector('[aria-label="Notch Position"]')).not.toBeNull();
+    } finally {
+      tuningStrip.remove();
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+    }
+  });
+
+  it.each([
+    ['off', 'OFF'],
+    ['auto', 'AUTO'],
+    ['manual', 'MAN'],
+  ] as const)('renders only confirmed %s mode as selected', (notchMode, selectedLabel) => {
+    const t = mountPanel({ notchMode });
+    openNotchModal(t);
+
+    for (const mode of ['OFF', 'AUTO', 'MAN']) {
+      expect(modeButton(t, mode).dataset.active).toBe(String(mode === selectedLabel));
+    }
+    expect(t.querySelector('[aria-label="Notch Position"]') !== null).toBe(notchMode === 'manual');
+  });
+
+  it('does not optimistically select a requested mode before the confirmed radio state changes', () => {
+    const t = mountPanel({ notchMode: 'off' });
+    openNotchModal(t);
+
+    modeButton(t, 'MAN').click();
+    flushSync();
+
+    expect(mockHandlers.onNotchModeChange).toHaveBeenCalledExactlyOnceWith('manual');
+    expect(modeButton(t, 'OFF').dataset.active).toBe('true');
+    expect(modeButton(t, 'MAN').dataset.active).toBe('false');
+    expect(t.querySelector('[aria-label="Notch Position"]')).toBeNull();
+  });
+});
