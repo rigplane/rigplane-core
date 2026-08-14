@@ -253,11 +253,31 @@ export function resolveSequenceStart(
   ) ?? null;
 }
 
+/**
+ * Returns every multi-key binding that can continue from this first key.
+ *
+ * A keyboard leader is a prefix, not a unique binding identifier: profiles
+ * may intentionally declare `g a`, `g r`, and `g f`. Keeping the complete
+ * candidate set lets the handler wait for the second key before choosing one.
+ */
+export function resolveSequenceStarts(
+  event: { key: string; ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean },
+  config: KeyboardConfig | null | undefined = DEFAULT_KEYBOARD_CONFIG,
+): KeyboardBindingConfig[] {
+  const normalized = normalizeKeyboardConfig(config);
+  return normalized.bindings.filter(
+    (binding) => binding.sequence.length > 1 && binding.sequence[0] === event.key && modifiersMatch(binding, event),
+  );
+}
+
 export function resolveSequenceContinuation(
-  binding: KeyboardBindingConfig,
+  bindings: KeyboardBindingConfig | KeyboardBindingConfig[],
   event: { key: string },
 ): KeyboardActionConfig | null {
-  if (binding.sequence.length < 2 || binding.sequence[1] !== event.key) {
+  const binding = (Array.isArray(bindings) ? bindings : [bindings]).find(
+    (candidate) => candidate.sequence.length >= 2 && candidate.sequence[1] === event.key,
+  );
+  if (!binding) {
     return null;
   }
   return {

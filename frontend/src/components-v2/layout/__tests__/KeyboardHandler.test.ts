@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 
 import KeyboardHandler from '../KeyboardHandler.svelte';
-import type { KeyboardConfig, KeyboardActionConfig } from '../keyboard-map';
+import {
+  resolveSequenceContinuation,
+  resolveSequenceStarts,
+  type KeyboardConfig,
+  type KeyboardActionConfig,
+} from '../keyboard-map';
 import VfoSurface from '../../../semantic/VfoSurface.svelte';
 import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 
@@ -71,6 +76,7 @@ describe('KeyboardHandler', () => {
     components.forEach((component) => unmount(component));
     document.body.innerHTML = '';
     document.body.removeAttribute('data-shortcut-hints');
+    vi.useRealTimers();
   });
 
   it('dispatches a configured single-key action', () => {
@@ -94,6 +100,104 @@ describe('KeyboardHandler', () => {
     expect(onAction).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'focus_target', params: { target: 'vfo' } }),
     );
+  });
+
+  describe('shared-prefix leader sequences (MOR-1636)', () => {
+    const sharedPrefixConfig: KeyboardConfig = {
+      ...config,
+      bindings: [
+        ...config.bindings,
+        {
+          id: 'focus-af',
+          section: 'Focus',
+          label: 'Focus AF',
+          sequence: ['g', 'a'],
+          action: 'focus_target',
+          params: { target: 'af' },
+        },
+        {
+          id: 'focus-rf',
+          section: 'Focus',
+          label: 'Focus RF',
+          sequence: ['g', 'r'],
+          action: 'focus_target',
+          params: { target: 'rf' },
+        },
+        {
+          id: 'focus-filter',
+          section: 'Focus',
+          label: 'Focus Filter',
+          sequence: ['g', 'f'],
+          action: 'focus_target',
+          params: { target: 'filter' },
+        },
+      ],
+    };
+
+    it('keeps every same-prefix candidate available to the continuation resolver', () => {
+      const starts = resolveSequenceStarts({ key: 'g' }, sharedPrefixConfig);
+
+      expect(starts.map((binding) => binding.id)).toEqual([
+        'focus-vfo', 'focus-af', 'focus-rf', 'focus-filter',
+      ]);
+      expect(resolveSequenceContinuation(starts, { key: 'f' })).toEqual(
+        expect.objectContaining({ id: 'focus-filter', params: { target: 'filter' } }),
+      );
+    });
+
+    it.each([
+      ['a', 'af'],
+      ['r', 'rf'],
+      ['f', 'filter'],
+    ])('dispatches g then %s to the declared focus target', (suffix, target) => {
+      const onAction = vi.fn();
+      mountHandler({ config: sharedPrefixConfig, onAction });
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'g' }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: suffix, bubbles: true, cancelable: true }));
+
+      expect(onAction).toHaveBeenCalledTimes(1);
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'focus_target', params: { target } }),
+      );
+    });
+
+    it('clears the pending leader and dispatches nothing for an invalid suffix', () => {
+      const onAction = vi.fn();
+      const target = mountHandler({ config: sharedPrefixConfig, onAction });
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'g' }));
+      flushSync();
+      expect(target.querySelector('.keyboard-leader-pill')).not.toBeNull();
+
+      const invalid = new KeyboardEvent('keydown', { key: 'x', bubbles: true, cancelable: true });
+      window.dispatchEvent(invalid);
+      flushSync();
+
+      expect(invalid.defaultPrevented).toBe(false);
+      expect(onAction).not.toHaveBeenCalled();
+      expect(target.querySelector('.keyboard-leader-pill')).toBeNull();
+    });
+
+    it('clears every pending candidate on leader timeout and dispatches nothing', () => {
+      vi.useFakeTimers();
+      const onAction = vi.fn();
+      const target = mountHandler({ config: sharedPrefixConfig, onAction });
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'g' }));
+      flushSync();
+      expect(target.querySelector('.keyboard-leader-pill')).not.toBeNull();
+
+      vi.advanceTimersByTime(sharedPrefixConfig.leaderTimeoutMs);
+      flushSync();
+      expect(target.querySelector('.keyboard-leader-pill')).toBeNull();
+
+      const continuation = new KeyboardEvent('keydown', { key: 'f', bubbles: true, cancelable: true });
+      window.dispatchEvent(continuation);
+
+      expect(continuation.defaultPrevented).toBe(false);
+      expect(onAction).not.toHaveBeenCalled();
+    });
   });
 
   it('renders the help overlay for the help shortcut', () => {
