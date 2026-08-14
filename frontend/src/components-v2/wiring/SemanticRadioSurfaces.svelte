@@ -335,12 +335,17 @@
   const scanIntents = semanticHandlers.scan;
   /**
    * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
-   * `makeCwPanelHandlers` rather than forked. `onAutoTune` is deliberately NOT
-   * wired: `cw_auto_tune` is a transmit-causing action and the surface offers no
-   * control for it (MOR-1244 ATU-TUNE precedent). Nothing here keys — exactly
-   * one `<RxTxSurface>` stays the key/unkey authority (decomposition R9).
+   * `makeCwPanelHandlers` rather than forked. MOR-1606 wires its existing
+   * RX-assisted frequency-correction intent only when the same CW + audio +
+   * audio-FFT facts that guard the handler are present. Nothing here keys —
+   * exactly one `<RxTxSurface>` stays the key/unkey authority (decomposition R9).
    */
   const cwIntents = semanticHandlers.cw;
+  let autoTuneAvailable = $derived(
+    runtime.caps?.capabilities.includes('cw') === true
+      && runtime.caps?.capabilities.includes('audio') === true
+      && runtime.caps?.audioFftAvailable === true,
+  );
   const CW_LEVEL_INTENT: Record<CwLevelField, (value: number) => void> = {
     keyerSpeed: cwIntents.onKeySpeedChange, pitchHz: cwIntents.onCwPitchChange,
     breakInDelay: cwIntents.onBreakInDelayChange,
@@ -1065,11 +1070,13 @@
     {#if view?.cwKeyer}
       <CwKeyerSurface
         {view}
+        {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
         onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
         onApfOn={(on) => cwIntents.onApfChange(on ? 1 : 0)}
         onTwinPeakToggle={() => cwIntents.onTwinPeakToggle()}
         onReversePaddleToggle={() => cwIntents.onReversePaddleToggle()}
+        onAutoTune={cwIntents.onAutoTune}
       />
     {/if}
   {/snippet}
