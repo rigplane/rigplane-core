@@ -31,7 +31,7 @@ import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
-import { confirmCommand, getCommandLifecycles, isCommandLifecycleSuperseded } from '$lib/stores/commands.svelte';
+import { getCommandLifecycles, isCommandLifecycleSuperseded } from '$lib/stores/commands.svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 
@@ -243,14 +243,10 @@ export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
   return typeof value === 'number' ? value : null;
 }
 
-// ── Filter Width command lifecycle (MOR-1664) ──
 export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged';
 export type FilterWidthCommandOutcome = 'failed' | 'timed-out' | 'cancelled';
 export interface FilterWidthCommandLifecycleView {
-  confirmed: number | null;
-  target: number | null;
-  phase: FilterWidthCommandPhase;
-  busy: boolean;
+  confirmed: number | null; target: number | null; phase: FilterWidthCommandPhase; busy: boolean;
   outcome: { phase: FilterWidthCommandOutcome; error?: string } | null;
 }
 
@@ -262,19 +258,16 @@ function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; fieldPat
   if (typeof width !== 'number' || !Number.isFinite(width)) return null;
   const fieldPath = receiver === 0 ? 'main.filterWidth' : 'sub.filterWidth';
   const fieldStatus = state.fieldStatus?.[fieldPath];
-  if (fieldStatus?.observed !== true
-    || fieldStatus.freshness !== 'fresh'
-    || fieldStatus.availability !== 'available'
+  if (fieldStatus?.observed !== true || fieldStatus.freshness !== 'fresh' || fieldStatus.availability !== 'available'
     || typeof fieldStatus.lastObservedMonotonic !== 'number'
     || !Number.isFinite(fieldStatus.lastObservedMonotonic)) return null;
   return { receiver, width, fieldPath, fieldStatus };
 }
 
-/** The later array record wins a same-millisecond dispatch tie. */
 function latestFilterWidthLifecycle(receiver: 0 | 1) {
   let latest: ReturnType<typeof getCommandLifecycles>[number] | null = null;
   for (const command of getCommandLifecycles()) {
-    if (command.name !== 'set_filter_width' || (command.params.receiver === 1 ? 1 : 0) !== receiver
+  if (command.name !== 'set_filter_width' || (command.params.receiver === 1 ? 1 : 0) !== receiver
       || typeof command.params.width !== 'number' || !Number.isFinite(command.params.width)
       || isCommandLifecycleSuperseded(command)) continue;
     if (!latest || command.createdAt >= latest.createdAt) latest = command;
@@ -287,32 +280,13 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
   if (!observed) return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null };
 
   const command = latestFilterWidthLifecycle(observed.receiver);
-  if (!command || command.status === 'confirmed') {
-    return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
-  }
+  if (!command || command.status === 'confirmed') return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
   if (command.status === 'failed' || command.status === 'timed-out' || command.status === 'cancelled') {
-    return {
-      confirmed: observed.width, target: null, phase: 'idle', busy: false,
-      outcome: { phase: command.status, error: command.error },
-    };
+    return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: { phase: command.status, error: command.error } };
   }
 
   const target = command.params.width as number;
-  if (command.status === 'acknowledged') {
-    // ACK alone is never confirmation; legacy records without markers fail closed.
-    const marker = observed.fieldStatus?.lastObservedMonotonic;
-    const ackMarkers = command.ackFieldObservationTimes;
-    const matching = observed.width === target && typeof marker === 'number' && Number.isFinite(marker);
-    const ackMarker = ackMarkers?.[observed.fieldPath];
-    const cold = ackMarkers !== undefined && Object.keys(ackMarkers).length === 0;
-    if (cold && typeof marker === 'number' && Number.isFinite(marker)) {
-      command.ackFieldObservationTimes = { [observed.fieldPath]: marker };
-    } else if (matching && typeof ackMarker === 'number' && Number.isFinite(ackMarker) && marker > ackMarker) {
-      confirmCommand(command.id, command.originalEpoch, command.eventEpoch ?? command.originalEpoch);
-      return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
-    }
-    return { confirmed: observed.width, target, phase: 'acknowledged', busy: true, outcome: null };
-  }
+  if (command.status === 'acknowledged') return { confirmed: observed.width, target, phase: 'acknowledged', busy: true, outcome: null };
   return { confirmed: observed.width, target, phase: 'pending', busy: true, outcome: null };
 }
 
