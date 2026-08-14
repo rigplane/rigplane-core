@@ -1,6 +1,6 @@
 import { getRadioState } from './radio.svelte';
 
-export type CommandLifecycleStatus = 'pending' | 'acknowledged' | 'failed' | 'cancelled' | 'timed-out';
+export type CommandLifecycleStatus = 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'cancelled' | 'timed-out';
 export interface CommandLifecycle {
   id: string; name: string; params: Readonly<Record<string, unknown>>;
   originalEpoch: number; eventEpoch?: number; createdAt: number; updatedAt: number;
@@ -27,6 +27,8 @@ export interface BeginCommandInput {
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000;
+/** Terminal outcomes remain available for one bounded presentation announcement. */
+const OUTCOME_RETENTION_MS = 1_000;
 const MAX_RETAINED_COMMANDS = 100;
 let commands = $state<CommandLifecycle[]>([]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -38,6 +40,32 @@ function clearRecordTimer(command: CommandLifecycle): void {
   if (timer !== undefined) clearTimeout(timer);
   timers.delete(recordKey);
 }
+function retireRecord(command: CommandLifecycle): void {
+  const index = commands.indexOf(command);
+  if (index >= 0) commands.splice(index, 1);
+}
+function retainTerminalOutcome(command: CommandLifecycle): void {
+  clearRecordTimer(command);
+  timers.set(key(command.id, command.originalEpoch), setTimeout(() => {
+    const current = getCommandLifecycle(command.id, command.originalEpoch);
+    if (current === command && current.status !== 'pending' && current.status !== 'acknowledged') retireRecord(current);
+    timers.delete(key(command.id, command.originalEpoch));
+  }, OUTCOME_RETENTION_MS));
+}
+/**
+ * Both submission and post-ack confirmation use this bounded, per-record
+ * deadline. A delivery acknowledgement restarts it instead of leaving the
+ * lifecycle dependent on an adapter's non-reactive clock.
+ */
+function startLiveDeadline(command: CommandLifecycle): void {
+  clearRecordTimer(command);
+  timers.set(key(command.id, command.originalEpoch), setTimeout(() => {
+    const current = getCommandLifecycle(command.id, command.originalEpoch);
+    if (!current || (current.status !== 'pending' && current.status !== 'acknowledged')) return;
+    current.status = 'timed-out'; current.updatedAt = Date.now();
+    retainTerminalOutcome(current);
+  }, command.timeoutMs));
+}
 function reserveRecordSlot(): void {
   if (commands.length < MAX_RETAINED_COMMANDS) return;
   const terminal = commands.findIndex((command) => command.status !== 'pending');
@@ -46,15 +74,20 @@ function reserveRecordSlot(): void {
 }
 function transition(
   id: string, originalEpoch: number,
-  status: 'acknowledged' | 'failed', eventEpoch: number, error?: string,
+  status: 'acknowledged' | 'failed' | 'confirmed', eventEpoch: number, error?: string,
 ): void {
   const command = commands.find((item) => item.id === id && item.originalEpoch === originalEpoch
-    && (item.status === 'pending' || (status === 'failed' && item.status === 'acknowledged')));
+    && (item.status === 'pending'
+      || (item.status === 'acknowledged' && (status === 'failed' || status === 'confirmed'))));
   if (!command) return;
   command.status = status; command.eventEpoch = eventEpoch; command.updatedAt = Date.now();
   if (error) command.error = error;
-  if (status === 'acknowledged') command.ackObservationSeq = getRadioState()?.observationSeq;
-  clearRecordTimer(command);
+  if (status === 'acknowledged') {
+    command.ackObservationSeq = getRadioState()?.observationSeq;
+    startLiveDeadline(command);
+  } else {
+    retainTerminalOutcome(command);
+  }
 }
 
 export function beginCommand(input: BeginCommandInput): CommandLifecycle {
@@ -64,12 +97,7 @@ export function beginCommand(input: BeginCommandInput): CommandLifecycle {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const command: CommandLifecycle = { ...input, timeoutMs, createdAt: now, updatedAt: now, status: 'pending' };
   commands.push(command);
-  timers.set(key(command.id, command.originalEpoch), setTimeout(() => {
-    const current = getCommandLifecycle(command.id, command.originalEpoch);
-    if (current?.status !== 'pending') return;
-    current.status = 'timed-out'; current.updatedAt = Date.now();
-    timers.delete(key(current.id, current.originalEpoch));
-  }, timeoutMs));
+  startLiveDeadline(command);
   return command;
 }
 export const getCommandLifecycles = (): readonly CommandLifecycle[] => commands;
@@ -80,11 +108,14 @@ export const acknowledgeCommand = (id: string, epoch: number, eventEpoch: number
   transition(id, epoch, 'acknowledged', eventEpoch);
 export const failCommand = (id: string, epoch: number, eventEpoch: number, error = 'Command failed'): void =>
   transition(id, epoch, 'failed', eventEpoch, error);
+/** Downstream observation adapters may call this only after qualifying radio truth. */
+export const confirmCommand = (id: string, epoch: number, eventEpoch: number): void =>
+  transition(id, epoch, 'confirmed', eventEpoch);
 export function cancelPendingCommands(epoch: number, error = 'session-disconnected'): void {
   for (const command of commands) {
-    if (command.originalEpoch !== epoch || command.status !== 'pending') continue;
+    if (command.originalEpoch !== epoch || (command.status !== 'pending' && command.status !== 'acknowledged')) continue;
     command.status = 'cancelled'; command.updatedAt = Date.now(); command.error = error;
-    clearRecordTimer(command);
+    retainTerminalOutcome(command);
   }
 }
 export function resetCommandLifecycle(): void {
