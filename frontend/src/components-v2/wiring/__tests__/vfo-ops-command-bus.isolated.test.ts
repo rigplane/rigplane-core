@@ -39,7 +39,10 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => ({
     receivers: 2, vfoScheme: 'main_sub',
-    capabilities: ['dual_rx', 'dual_watch', 'split', 'main_sub_tracking'],
+    capabilities: [
+      'dual_rx', 'dual_watch', 'split', 'main_sub_tracking',
+      'vfo_swap', 'vfo_equalize',
+    ],
   })),
   capabilitiesMatchGeneration: vi.fn(() => true),
   getControlRange: vi.fn(() => null),
