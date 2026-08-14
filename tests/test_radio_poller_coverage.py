@@ -1006,6 +1006,14 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
             SetDataMode(1, receiver=0),
             FieldPath.active("main", "freq_mode", "data_mode"),
         ),
+        (
+            SetFilterWidth(3500, receiver=0),
+            FieldPath.active("main", "freq_mode", "filter_width"),
+        ),
+        (
+            SetFilterWidth(1800, receiver=1),
+            FieldPath.active("sub", "freq_mode", "filter_width"),
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1119,6 +1127,45 @@ async def test_execute_set_freq_readback_coalesces_with_pending_cadence_request(
     pending = scheduler.pending_requests()
     assert len(pending) == 1  # coalesced, not a second entry
     assert pending[0].priority is AcquisitionPriority.USER
+
+
+@pytest.mark.asyncio
+async def test_execute_set_filter_width_readback_coalesces_and_uses_ic7300_acquisition_path() -> (
+    None
+):
+    path = FieldPath.active("main", "freq_mode", "filter_width")
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+    scheduler.ensure_fresh(
+        (path,), max_age=1.5, priority=AcquisitionPriority.BACKGROUND, reason="cadence"
+    )
+    await poller._execute(SetFilterWidth(3500, receiver=0))  # noqa: SLF001
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert len(pending) == 1 and pending[0].paths == (path,)
+    assert pending[0].priority is AcquisitionPriority.USER
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert any(
+        args == (0x1A,) and kwargs["sub"] == 0x03
+        for args, kwargs in radio.send_civ.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_failed_set_filter_width_does_not_queue_readback() -> None:
+    path = FieldPath.active("main", "freq_mode", "filter_width")
+    radio = _make_radio(active="MAIN")
+    radio.set_filter_width.side_effect = RuntimeError("write failed")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+    with pytest.raises(RuntimeError, match="write failed"):
+        await poller._execute(SetFilterWidth(3500, receiver=0))  # noqa: SLF001
+    assert scheduler.pending_requests() == ()
 
 
 @pytest.mark.asyncio
