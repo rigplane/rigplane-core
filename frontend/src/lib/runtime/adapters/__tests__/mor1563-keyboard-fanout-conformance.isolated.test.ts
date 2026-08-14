@@ -223,7 +223,7 @@ const CASES: readonly KeyboardCase[] = [
   { action: 'vfo_equalize', frames: [],
     gate: 'captured IC-7300 capability payload omits exact vfo_equalize primitive tag (MOR-1604)' },
   { action: 'switch_active_vfo', frames: [],
-    gate: 'single receiver / no dual_rx — target computes to SUB, nothing to switch to (reads context.state.active RAW, MOR-1578)' },
+    gate: 'single receiver / no dual_rx — no observed dual-RX receiver exists to toggle (MOR-1601)' },
   { action: 'set_active_vfo', params: { vfo: 'MAIN' }, frames: [['set_vfo', { vfo: 'MAIN' }]],
     gate: 'state.main exists — activateReceiver dispatches unconditionally once the receiver resolves' },
   { action: 'toggle_dial_lock', frames: [], gate: 'top-level dialLock unobserved' },
