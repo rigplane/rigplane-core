@@ -45,16 +45,21 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
   it('reads the real accessor through $derived without mutation and shows canonical confirmed truth', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     h.state = observed(2400);
-    expect(render().dataset).toMatchObject({ phase: 'idle', confirmed: '2400', target: '' });
+    const probe = render();
+    const refresh = (mounted[0] as { refresh: () => void }).refresh;
+    expect(probe.dataset).toMatchObject({ phase: 'idle', confirmed: '2400', target: '' });
 
     h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, createdAt: 1, originalEpoch: 7, status: 'acknowledged' }];
-    expect(render().dataset).toMatchObject({ phase: 'acknowledged', confirmed: '2400', target: '3000' });
+    refresh(); flushSync();
+    expect(probe.dataset).toMatchObject({ phase: 'acknowledged', confirmed: '2400', target: '3000' });
 
     h.state = observed(3000); h.commands[0].status = 'confirmed';
-    expect(render().dataset).toMatchObject({ phase: 'confirmed', confirmed: '3000', target: '', outcome: 'confirmed' });
+    refresh(); flushSync();
+    expect(probe.dataset).toMatchObject({ phase: 'confirmed', confirmed: '3000', target: '', outcome: 'confirmed' });
 
     h.commands = [];
-    expect(render().dataset).toMatchObject({ phase: 'idle', confirmed: '3000', outcome: '' });
+    refresh(); flushSync();
+    expect(probe.dataset).toMatchObject({ phase: 'idle', confirmed: '3000', outcome: '' });
     expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation|mutation.*derived/i);
   });
 
