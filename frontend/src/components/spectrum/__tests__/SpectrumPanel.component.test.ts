@@ -810,6 +810,24 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_700, 0, 17);
   });
 
+  it('renders and resizes a centered PBT-derived passband authority (MOR-1649)', () => {
+    // SpectrumPanel consumes semantic authority only. This is the centered
+    // PBT-only output from scope-adapter: no native IF-shift field is needed.
+    const pbtOnlyAuthority = authority({ ifShiftHz: 0, pbtInnerHz: 0, pbtOuterHz: 0 });
+    authorityHarness.state.current = pbtOnlyAuthority;
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone');
+
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(zone).not.toBeNull();
+    pointer(zone!, 'pointerdown', 41, 100);
+    pointer(waterfall, 'pointermove', 41, 130);
+    pointer(waterfall, 'pointerup', 41, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_700, 0, 17);
+  });
+
   it('normalizes fixed-frame resize X around the captured carrier rather than sample center', () => {
     authorityHarness.state.current = authority({ frequencyHz: 14_025_000 });
     const target = mountPanel();

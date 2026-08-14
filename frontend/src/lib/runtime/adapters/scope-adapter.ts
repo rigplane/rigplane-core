@@ -132,6 +132,13 @@ function knownReading<T>(
   return strictlySeen(state, path) && field?.reading.status === 'known' ? field.reading.value : null;
 }
 
+function knownSemanticReading<T>(
+  field: { readonly reading: { readonly status: 'known'; readonly value: T } | { readonly status: 'unknown' } }
+    | undefined,
+): T | null {
+  return field?.reading.status === 'known' ? field.reading.value : null;
+}
+
 function activeVfoPath(receiver: 'MAIN' | 'SUB', slot: { readonly kind: string; readonly id?: string }): string {
   const key = receiver === 'SUB' ? 'sub' : 'main';
   return slot.kind === 'slotted' && (slot.id === 'A' || slot.id === 'B')
@@ -175,6 +182,11 @@ export function toSpectrumAuthority(
   const dataFact = knownReading(state, `${key}.dataMode`, passband?.dataMode);
   const filterWidthHz = positiveInteger(widthFact) ? widthFact : null;
   const dataMode = nonnegativeInteger(dataFact) ? dataFact : null;
+  // Native IF shift remains an independently observed raw fact. PBT-only
+  // radios instead expose a semantic shift derived from their two PBT facts.
+  const ifShiftFact = caps.capabilities.includes('if_shift')
+    ? knownReading(state, `${key}.ifShift`, passband?.ifShift)
+    : knownSemanticReading(passband?.ifShift);
   const supportsData = caps.capabilities.includes('data_mode');
   const rule = mode !== null && modeFact === mode && filterWidthHz !== null
     && (!supportsData || dataMode !== null) && caps.capabilities.includes('filter_width')
@@ -188,8 +200,7 @@ export function toSpectrumAuthority(
     filterWidthHz,
     filterShape: finiteNumber(knownReading(state, `${key}.filterShape`, passband?.filterShape))
       ? knownReading(state, `${key}.filterShape`, passband?.filterShape) as number : null,
-    ifShiftHz: finiteNumber(knownReading(state, `${key}.ifShift`, passband?.ifShift))
-      ? knownReading(state, `${key}.ifShift`, passband?.ifShift) as number : null,
+    ifShiftHz: finiteNumber(ifShiftFact) ? ifShiftFact : null,
     pbtInnerHz: finiteNumber(knownReading(state, `${key}.pbtInner`, passband?.pbtInner))
       ? knownReading(state, `${key}.pbtInner`, passband?.pbtInner) as number : null,
     pbtOuterHz: finiteNumber(knownReading(state, `${key}.pbtOuter`, passband?.pbtOuter))

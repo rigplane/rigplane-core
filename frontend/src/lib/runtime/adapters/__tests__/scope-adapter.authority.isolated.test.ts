@@ -332,6 +332,31 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(result?.ifShiftHz).toBe(expectedIfShiftHz);
     expect(result?.ifShiftHz).not.toBeNull();
   });
+
+  it('keeps a fresh centered PBT-only passband without a raw ifShift observation (MOR-1649)', () => {
+    const { ifShift: _rawIfShift, ...pbtOnlyMain } = receiver(14_074_000);
+    const pbtOnlyState = withStatus(state({
+      main: { ...pbtOnlyMain, pbtInner: 128, pbtOuter: 128 } as ServerState['main'],
+    }), 'main.ifShift', undefined);
+    const pbtOnlyCaps = caps({
+      capabilities: ['scope', 'dual_rx', 'filter_width', 'data_mode', 'pbt'],
+    });
+
+    expect(toSpectrumAuthority(pbtOnlyState, pbtOnlyCaps)).toMatchObject({
+      ifShiftHz: 0,
+      pbtInnerHz: 0,
+      pbtOuterHz: 0,
+    });
+  });
+
+  it('keeps native IF shift gated by its own raw observation (MOR-1649)', () => {
+    const nativeCaps = caps({
+      capabilities: ['scope', 'dual_rx', 'filter_width', 'data_mode', 'if_shift'],
+    });
+
+    expect(toSpectrumAuthority(withStatus(state(), 'main.ifShift', undefined), nativeCaps)?.ifShiftHz)
+      .toBeNull();
+  });
 });
 
 describe('MOR-1409 A06a1 deterministic filter-width snapping', () => {
