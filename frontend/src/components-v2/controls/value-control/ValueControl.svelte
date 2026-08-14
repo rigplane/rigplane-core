@@ -31,6 +31,8 @@
     showAllTicks?: boolean;
     /** Discrete renderer: how step marks are drawn (default ruler). */
     tickStyle?: 'ruler' | 'led' | 'notch';
+    /** HBar-only: keep the rendered value parent-controlled until it changes. */
+    optimistic?: boolean;
     // Behavior
     onChange: (value: number) => void;
     debounceMs?: number;
@@ -68,6 +70,7 @@
     tickLabels = [],
     showAllTicks = true,
     tickStyle = 'ruler',
+    optimistic = true,
     onChange,
     debounceMs = 50,
     disabled = false,
@@ -122,6 +125,10 @@
     tickStyle,
   });
 
+  // This is intentionally not part of commonProps: skin and non-HBar renderer
+  // contracts remain unchanged.
+  let hbarProps = $derived({ ...commonProps, optimistic });
+
   // Resolve skin component for the current renderer type (undefined = use built-in)
   let skinComponent = $derived(
     skin
@@ -141,7 +148,7 @@
     <SkinRenderer {...commonProps} />
   {/if}
 {:else if renderer === 'hbar'}
-  <HBarRenderer {...commonProps} />
+  <HBarRenderer {...hbarProps} />
 {:else if renderer === 'bipolar'}
   <BipolarRenderer {...commonProps} />
 {:else if renderer === 'knob'}
