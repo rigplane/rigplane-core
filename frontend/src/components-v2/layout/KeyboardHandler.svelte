@@ -4,7 +4,7 @@
     normalizeKeyboardConfig,
     resolveAction,
     resolveSequenceContinuation,
-    resolveSequenceStart,
+    resolveSequenceStarts,
     shouldIgnoreEvent,
     isDigitKey,
     isFrequencyDisplayFocused,
@@ -27,7 +27,7 @@
   }: Props = $props();
 
   let keyboardConfig = $derived(normalizeKeyboardConfig(config));
-  let pendingSequence = $state<KeyboardBindingConfig | null>(null);
+  let pendingSequences = $state<KeyboardBindingConfig[]>([]);
   let leaderLabel = $state<string | null>(null);
   let helpOpen = $state(false);
   let leaderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -46,7 +46,7 @@
   let groupedBindings = $derived(groupBindings(keyboardConfig.bindings));
 
   function clearLeaderState(): void {
-    pendingSequence = null;
+    pendingSequences = [];
     leaderLabel = null;
     if (leaderTimer) {
       clearTimeout(leaderTimer);
@@ -130,7 +130,7 @@
       // leader sequence, or the pill stays armed and a later keystroke
       // (once focus leaves the now-focused, ignored-tag entry input) can
       // complete an unintended leader sequence.
-      if (pendingSequence) clearLeaderState();
+      if (pendingSequences.length) clearLeaderState();
       event.preventDefault();
       return;
     }
@@ -146,7 +146,7 @@
     // second key), but skipping clearLeaderState() would leave the leader
     // pill armed and swallow the NEXT keystroke for up to leaderTimeoutMs.
     if (event.key === 'Tab') {
-      if (pendingSequence) clearLeaderState();
+      if (pendingSequences.length) clearLeaderState();
       return;
     }
 
@@ -155,8 +155,8 @@
       return;
     }
 
-    if (pendingSequence) {
-      const continuation = resolveSequenceContinuation(pendingSequence, event);
+    if (pendingSequences.length) {
+      const continuation = resolveSequenceContinuation(pendingSequences, event);
       clearLeaderState();
       if (continuation) {
         event.preventDefault();
@@ -165,11 +165,11 @@
       return;
     }
 
-    const sequenceStart = resolveSequenceStart(event, keyboardConfig);
-    if (sequenceStart) {
+    const sequenceStarts = resolveSequenceStarts(event, keyboardConfig);
+    if (sequenceStarts.length) {
       event.preventDefault();
-      pendingSequence = sequenceStart;
-      leaderLabel = formatShortcut(sequenceStart);
+      pendingSequences = sequenceStarts;
+      leaderLabel = formatShortcut(sequenceStarts[0]);
       leaderTimer = setTimeout(() => {
         clearLeaderState();
       }, keyboardConfig.leaderTimeoutMs);
