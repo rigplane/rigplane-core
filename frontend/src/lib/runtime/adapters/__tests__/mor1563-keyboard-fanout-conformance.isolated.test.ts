@@ -44,13 +44,13 @@
  * this was a genuinely reachable, user-visible dead control on this
  * profile before the fix — not a theoretical gap.
  *
- * MOR-1604: (1) `vfo_swap`/`vfo_equalize` now dispatch only when the capability
+ * MOR-1604/MOR-1601: (1) `vfo_swap`/`vfo_equalize` now dispatch only when the capability
  * payload declares their exact primitive tag. The byte-faithful IC-7300
  * capture declares neither, so both correctly refuse without consulting
- * active receiver, slot, or VFO readback. (2)
- * `switch_active_vfo` reads `context.state.active` RAW, bypassing the
- * observation-gated tautological-MAIN resolution every other action here
- * goes through; (3) `mode-psk`/`mode-pskr` bindings declare `{ mode: 'PSK'
+ * active receiver, slot, or VFO readback. (2) `switch_active_vfo` dispatches
+ * only with a declared dual-RX MAIN/SUB topology and a fresh observed active
+ * receiver fact; this single-receiver fixture has neither dual-RX support
+ * nor an observed receiver to toggle. (3) `mode-psk`/`mode-pskr` bindings declare `{ mode: 'PSK'
  * }`/`{ mode: 'PSK-R' }`, but this fixture's `caps.modes` is `['USB','LSB',
  * 'CW','CW-R','AM','FM','RTTY','RTTY-R']` — no PSK/PSK-R — so those two
  * refuse here too, adjacent to (not the same case as) `mode_select` below,
