@@ -123,6 +123,8 @@ features = [
     "xfc",
     # System
     "system_settings",
+    # Built-in CI-V 0x13 announcement readback (get_speech below).
+    "speech",
 ]
 
 [state_acquisition]
