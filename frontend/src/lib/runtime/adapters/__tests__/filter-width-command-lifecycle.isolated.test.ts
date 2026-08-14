@@ -215,10 +215,13 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     runtimeState.state = state({ active: 'SUB', sub: { filterWidth: 3000 }, fieldStatus: { 'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 74 } } });
     emitAcceptedState(runtimeState.state);
     expect(store.getCommandLifecycle('real-ack', 9)?.status).toBe('confirmed');
-    expect(getLiveView()).toMatchObject({ confirmed: 3000, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } });
+    const retained = getLiveView().presentation;
+    expect(getLiveView()).toMatchObject({ confirmed: 3000, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' }, presentation: {
+      receiver: 1, sessionEpoch: 9, target: 3000, status: 'confirmed',
+    } });
     vi.advanceTimersByTime(5_000);
     expect(store.getCommandLifecycle('real-ack', 9)).toBeUndefined();
-    expect(getLiveView()).toMatchObject({ confirmed: 3000, phase: 'idle', busy: false, outcome: null });
+    expect(getLiveView()).toMatchObject({ confirmed: 3000, phase: 'idle', busy: false, outcome: null, presentation: null });
     commandRadio.current = null;
     store.beginCommand({ id: 'cold-ack', name: 'set_filter_width', params: { width: 2800, receiver: 0 }, originalEpoch: 9 });
     store.acknowledgeCommand('cold-ack', 9, 10);
@@ -233,7 +236,9 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     emitAcceptedState(runtimeState.state);
     expect(getLiveView()).toMatchObject({ confirmed: 2800, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } });
     expect(store.getCommandLifecycle('cold-ack', 9)?.status).toBe('confirmed');
+    expect(getLiveView().presentation?.lifecycleId).not.toBe(retained?.lifecycleId);
     store.resetCommandLifecycle();
+    expect(getLiveView().presentation).toBeNull();
   });
   it('never resurfaces a superseded receiver lifecycle after its newer outcome retires', async () => {
     vi.useFakeTimers();
@@ -253,12 +258,13 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     });
     store.failCommand(newer.id, newer.originalEpoch, 7, 'newer rejected');
     expect(store.isCommandLifecycleSuperseded(old)).toBe(true);
+    expect(getLiveView().presentation).toMatchObject({ target: 2800, status: 'failed' });
 
     vi.advanceTimersByTime(3_000);
     store.acknowledgeCommand(old.id, old.originalEpoch, 7);
     vi.advanceTimersByTime(2_000);
     expect(store.getCommandLifecycle(newer.id, newer.originalEpoch)).toBeUndefined();
-    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: null });
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: null, presentation: null });
 
     store.failCommand(old.id, old.originalEpoch, 7, 'late failure');
     expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: null });
@@ -274,14 +280,17 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     });
     expect(store.isCommandLifecycleSuperseded(sub)).toBe(false);
     expect(getLiveView()).toMatchObject({ confirmed: 1800, target: 2100, phase: 'pending', busy: true });
+    const subPresentation = getLiveView().presentation;
 
     store.resetCommandLifecycle();
+    expect(getLiveView().presentation).toBeNull();
     const fresh = store.beginCommand({
-      id: 'fresh-main', name: 'set_filter_width', params: { width: 2600, receiver: 0 }, originalEpoch: 8,
+      id: 'sub', name: 'set_filter_width', params: { width: 2600, receiver: 0 }, originalEpoch: 8,
     });
     expect(store.isCommandLifecycleSuperseded(fresh)).toBe(false);
     runtimeState.state = state({ main: { filterWidth: 2400 }, sub: { filterWidth: 1800 } });
     expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2600, phase: 'pending', busy: true });
+    expect(getLiveView().presentation?.lifecycleId).not.toBe(subPresentation?.lifecycleId);
     store.resetCommandLifecycle();
   });
   it('projects a fresh frozen presentation DTO with stable lifecycle and transition identities', () => {
@@ -310,17 +319,48 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(acknowledged).toMatchObject({ lifecycleId: pending.lifecycleId, target: 3000, status: 'acknowledged' });
     expect(acknowledged.transitionId).not.toBe(pending.transitionId);
 
+    const transitionIds = [pending.transitionId, acknowledged.transitionId];
     for (const status of ['confirmed', 'failed', 'timed-out', 'cancelled'] as const) {
       lifecycle.commands[0].status = status;
       lifecycle.commands[0].error = status === 'failed' ? 'x'.repeat(300) : undefined;
       expect(getFilterWidthCommandLifecycle().presentation).toMatchObject({
         lifecycleId: pending.lifecycleId, receiver: 0, sessionEpoch: 7, target: 3000, status,
       });
-      expect(getFilterWidthCommandLifecycle().presentation?.transitionId).not.toBe(acknowledged.transitionId);
+      const transitionId = getFilterWidthCommandLifecycle().presentation?.transitionId;
+      expect(transitionId).not.toBe(acknowledged.transitionId);
+      transitionIds.push(transitionId!);
     }
+    expect(new Set(transitionIds)).toHaveLength(6);
     expect(getFilterWidthCommandLifecycle().presentation).not.toHaveProperty('error');
     lifecycle.commands[0].status = 'failed'; lifecycle.commands[0].error = 'x'.repeat(300);
     expect(getFilterWidthCommandLifecycle().presentation?.error).toHaveLength(256);
+  });
+  it('keeps real-store terminal snapshots until GC and gives every transition a unique identity', async () => {
+    vi.useFakeTimers(); vi.doUnmock('$lib/stores/commands.svelte'); vi.resetModules();
+    const store = await import('$lib/stores/commands.svelte');
+    const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
+    const transitions: string[] = [];
+    const start = (id: string, width: number, timeoutMs?: number) => {
+      runtimeState.state = state(); emitAcceptedState(runtimeState.state); store.resetCommandLifecycle();
+      return store.beginCommand({ id, name: 'set_filter_width', params: { width }, originalEpoch: 12, timeoutMs });
+    };
+    const assertRetainedThenGc = (target: number, status: string) => {
+      const presentation = getLiveView().presentation;
+      expect(presentation).toMatchObject({ target, status, sessionEpoch: 12, receiver: 0 });
+      transitions.push(presentation!.transitionId); vi.advanceTimersByTime(5_000);
+      expect(getLiveView().presentation).toBeNull();
+    };
+
+    const confirmed = start('confirmed', 3000, 50);
+    transitions.push(getLiveView().presentation!.transitionId);
+    store.acknowledgeCommand(confirmed.id, 12, 12); transitions.push(getLiveView().presentation!.transitionId);
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } }); emitAcceptedState(runtimeState.state);
+    assertRetainedThenGc(3000, 'confirmed');
+    const failed = start('failed', 2800); store.failCommand(failed.id, 12, 12, 'rejected'); assertRetainedThenGc(2800, 'failed');
+    start('cancelled', 2600); store.cancelPendingCommands(12); assertRetainedThenGc(2600, 'cancelled');
+    start('timed-out', 2400, 1); vi.advanceTimersByTime(1); assertRetainedThenGc(2400, 'timed-out');
+    expect(new Set(transitions)).toHaveLength(6);
+    store.resetCommandLifecycle();
   });
   it('isolates receivers and gives reused command ids in a later session a distinct identity', () => {
     runtimeState.state = state({ active: 'MAIN', sub: { filterWidth: 2100 }, fieldStatus: {
