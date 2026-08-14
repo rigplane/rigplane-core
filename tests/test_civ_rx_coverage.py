@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -80,12 +81,13 @@ def transport() -> MockTransport:
 
 
 @pytest.fixture  # type: ignore[untyped-decorator]
-def radio(transport: MockTransport) -> IcomRadio:
+def radio(transport: MockTransport) -> Generator[IcomRadio, None, None]:
     r = IcomRadio("192.168.1.100")
     r._civ_transport = transport
     r._ctrl_transport = transport
     r._connected = True
-    return r
+    yield r
+    r._connected = False
 
 
 def _make_frame(

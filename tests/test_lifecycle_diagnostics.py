@@ -49,6 +49,9 @@ def test_radio_gc_when_disconnected_does_not_log_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """When a Radio is collected after disconnect, no WARN is emitted."""
+    # Collect cyclic garbage from prior tests before caplog starts observing this
+    # test's warning boundary.
+    gc.collect()
     with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
         radio = IcomRadio("192.168.1.1")
         assert radio._conn_state == RadioConnectionState.DISCONNECTED
