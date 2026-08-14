@@ -105,6 +105,55 @@ Known capability strings (grouped by area):
 
 **System:** `power_control`, `dial_lock`, `scan`, `bsr`, `main_sub_tracking`, `lcd_backlight`
 
+## `[tx_interlock]` — Profile Tightening Metadata
+
+Optional section reserved for evidence-backed, profile-driven tightening of the
+shared TX interlock policy. It is metadata only: it does not replace the
+runtime policy or grant a profile permission to loosen a command's base
+disposition.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `disposition_overrides` | inline table (string → string) | no | A mapping from one stable command-family identifier to the only permitted override value, `"defer"`. |
+
+### `disposition_overrides` grammar
+
+Each key is a command-family identifier exported by the shared TX interlock
+policy. Keys containing `-` must be TOML-quoted. Each value must be the
+lowercase string `"defer"`; no other override value is valid.
+
+The current stable family identifiers and their fixed base dispositions are:
+
+| Base disposition | Family identifiers |
+|------------------|--------------------|
+| `always-pass` | `ptt-off`, `power-off`, `scan-stop`, `tuner-off` |
+| `tx-safe` | `power-on` |
+| `block` | `ptt-on`, `raw-civ`, `scan-start`, `antenna-switch`, `tuner-engage` |
+| `defer` | `frequency`, `mode`, `band`, `vfo-select`, `vfo-topology`, `memory`, `rit-xit` |
+
+Only a known family whose fixed base disposition is `tx-safe` may appear in
+`disposition_overrides`, and its value must be `"defer"`. This is a one-way
+tightening: it causes a TX-SAFE family to use the existing deferred handling;
+it cannot create a new disposition or override any other base disposition.
+
+Structural `always-pass` families and hard `block` families are
+non-negotiable. A profile must not list them, alter them, or make them less
+restrictive. Existing `defer` families also must not be listed because they
+are already deferred. A profile loader must reject an unknown family,
+non-string value, unsupported disposition, or mapping for an ineligible base
+disposition rather than silently accepting it.
+
+Example (generic only):
+
+```toml
+[tx_interlock]
+disposition_overrides = { "power-on" = "defer" }
+```
+
+No profile schema key represents an unknown-RF-state fail-open exception.
+Such an exception is intentionally omitted until explicit, radio-specific
+provider/profile evidence establishes a separately documented contract.
+
 ## `[state_acquisition]` — State Capability And Policy Metadata
 
 Optional section. Defines provider-specific state acquisition behavior as data
