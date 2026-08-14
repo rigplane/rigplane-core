@@ -6,7 +6,12 @@
   import { getShortcutHint, joinShortcutHints } from '../layout/shortcut-hints';
   import { t } from '$lib/i18n';
 
-  import { deriveFilterProps, getFilterHandlers, getFilterArmed } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    deriveFilterProps,
+    getFilterHandlers,
+    getFilterArmed,
+    getFilterWidthCommandLifecycle,
+  } from '$lib/runtime/adapters/panel-adapters';
 
   const handlers = getFilterHandlers();
   let p = $derived(deriveFilterProps());
@@ -16,6 +21,10 @@
   // pending command is racing toward, never a substitute for the confirmed
   // reading.
   let filterArmed = $derived(getFilterArmed());
+  // The lifecycle is presentation-only. `filterWidth` remains the sole
+  // canonical/confirmed source for all displayed and selected widths.
+  let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
+  let lastPendingWidthTarget = $state<number | null>(null);
   const filterArmedIdBase = $props.id();
 
   let currentMode = $derived(p.currentMode);
@@ -118,7 +127,7 @@
   const filterSettingsShortcut = getShortcutHint('open_filter_settings');
 
   $effect(() => {
-    if (!modalOpen) {
+    if (!modalOpen || (!filterWidthLifecycle.busy && filterWidthLifecycle.outcome !== null)) {
       draftWidths = [...visibleWidths];
     }
   });
@@ -135,6 +144,30 @@
     const formatted = formatFilterWidth(hz);
     return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
   }
+
+  $effect(() => {
+    if (filterWidthLifecycle.busy && filterWidthLifecycle.target !== null) {
+      lastPendingWidthTarget = filterWidthLifecycle.target;
+    } else if (filterWidthLifecycle.outcome === null) {
+      lastPendingWidthTarget = null;
+    }
+  });
+
+  let lifecycleTarget = $derived(filterWidthLifecycle.target ?? lastPendingWidthTarget);
+  let filterWidthLiveStatus = $derived.by(() => {
+    const target = lifecycleTarget === null ? formatWidthDisplay(filterWidth) : formatWidthDisplay(lifecycleTarget);
+    const confirmed = formatWidthDisplay(filterWidth);
+    if (filterWidthLifecycle.busy) {
+      return t('core.filter.width.pendingAnnouncement', { target });
+    }
+    switch (filterWidthLifecycle.outcome?.phase) {
+      case 'confirmed': return t('core.filter.width.confirmedAnnouncement', { confirmed });
+      case 'failed': return t('core.filter.width.failedAnnouncement', { target, confirmed });
+      case 'timed-out': return t('core.filter.width.timedOutAnnouncement', { target, confirmed });
+      case 'cancelled': return t('core.filter.width.cancelledAnnouncement', { target, confirmed });
+      default: return '';
+    }
+  });
 
   function openSettings(): void {
     draftWidths = [...visibleWidths];
@@ -164,19 +197,33 @@
 
 {#if isTableMode}
   <div class="panel-body">
-    <ValueControl
-      label="WIDTH"
-      value={hzToTableIndex(filterWidth)}
-      min={0}
-      max={(filterConfig?.table?.length ?? 1) - 1}
-      step={1}
-      unit="Hz"
-      renderer="hbar"
-      accentColor="var(--v2-accent-cyan)"
-      displayFn={(idx) => formatWidthDisplay(tableIndexToHz(idx))}
-      onChange={(idx) => onFilterWidthChange(tableIndexToHz(idx))}
-      variant="hardware-illuminated"
-    />
+    <div
+      class="filter-width-control"
+      data-filter-width-lifecycle
+      role="group"
+      aria-label="Filter width"
+      aria-busy={filterWidthLifecycle.busy}
+    >
+      <ValueControl
+        label="WIDTH"
+        value={hzToTableIndex(filterWidth)}
+        min={0}
+        max={(filterConfig?.table?.length ?? 1) - 1}
+        step={1}
+        unit="Hz"
+        renderer="hbar"
+        accentColor="var(--v2-accent-cyan)"
+        displayFn={(idx) => formatWidthDisplay(tableIndexToHz(idx))}
+        onChange={(idx) => onFilterWidthChange(tableIndexToHz(idx))}
+        variant="hardware-illuminated"
+      />
+      {#if filterWidthLifecycle.busy && lifecycleTarget !== null}
+        <span class="bw-pending-target" data-pending-width-target>
+          PENDING {formatWidthDisplay(lifecycleTarget)}
+        </span>
+      {/if}
+    </div>
+    <span class="sr-only" aria-live="polite" aria-atomic="true" data-filter-width-live>{filterWidthLiveStatus}</span>
 
     {#if hasIfShift}
       <ValueControl
@@ -244,10 +291,22 @@
       </button>
     </div>
 
-    <div class="bw-row">
+    <div
+      class="bw-row"
+      data-filter-width-lifecycle
+      role="group"
+      aria-label="Filter width"
+      aria-busy={filterWidthLifecycle.busy}
+    >
       <span class="bw-label">BW</span>
-      <span class="bw-value">{formatWidthDisplay(filterWidth)}</span>
+      <span class="bw-value" data-confirmed-width>{formatWidthDisplay(filterWidth)}</span>
+      {#if filterWidthLifecycle.busy && lifecycleTarget !== null}
+        <span class="bw-pending-target" data-pending-width-target>
+          PENDING {formatWidthDisplay(lifecycleTarget)}
+        </span>
+      {/if}
     </div>
+    <span class="sr-only" aria-live="polite" aria-atomic="true" data-filter-width-live>{filterWidthLiveStatus}</span>
 
     {#if hasIfShift}
       <ValueControl
@@ -478,6 +537,21 @@
   .bw-value {
     font-size: 14px;
     font-weight: 700;
+  }
+
+  .bw-pending-target {
+    border: 1px dashed var(--v2-accent-cyan);
+    border-radius: 2px;
+    padding: 1px 4px;
+    color: var(--v2-accent-cyan);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .filter-width-control {
+    display: grid;
+    gap: 4px;
   }
 
   /* Extra separation for stacked illuminated sliders */

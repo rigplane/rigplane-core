@@ -40,11 +40,19 @@ const mockHandlers = {
 // default unarmed here, this file's tests are not about that behavior
 // (covered by `mor1536-armed-adoption.test.ts`).
 const unarmed = { armed: false, value: null };
+const widthLifecycle = {
+  confirmed: 2400,
+  target: null as number | null,
+  phase: 'idle',
+  busy: false,
+  outcome: null as { phase: 'confirmed' | 'failed' | 'timed-out' | 'cancelled'; error?: string } | null,
+};
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveFilterProps: () => mockProps,
   getFilterHandlers: () => mockHandlers,
   getFilterArmed: () => unarmed,
+  getFilterWidthCommandLifecycle: () => widthLifecycle,
 }));
 
 import FilterPanel from '../FilterPanel.svelte';
@@ -143,6 +151,13 @@ beforeEach(() => {
   mockHandlers.onPbtInnerChange = vi.fn();
   mockHandlers.onPbtOuterChange = vi.fn();
   mockHandlers.onPbtReset = vi.fn();
+  Object.assign(widthLifecycle, {
+    confirmed: 2400,
+    target: null,
+    phase: 'idle',
+    busy: false,
+    outcome: null,
+  });
 });
 
 afterEach(() => {
@@ -184,6 +199,53 @@ describe('panel structure', () => {
     const ifShiftSlider = sliders[0];
     expect(ifShiftSlider.getAttribute('aria-valuemin')).toBe('-1200');
     expect(ifShiftSlider.getAttribute('aria-valuemax')).toBe('1200');
+  });
+});
+
+describe('Filter Width lifecycle presentation (MOR-1665)', () => {
+  it('keeps the canonical BW readout distinct from a pending target and marks the group busy', () => {
+    Object.assign(widthLifecycle, { target: 3000, phase: 'acknowledged', busy: true });
+    const t = mountPanel();
+
+    const group = t.querySelector<HTMLElement>('[data-filter-width-lifecycle]');
+    expect(group?.getAttribute('aria-busy')).toBe('true');
+    expect(t.querySelector('[data-confirmed-width]')?.textContent).toBe('2.4kHz');
+    expect(t.querySelector('[data-pending-width-target]')?.textContent).toContain('3kHz');
+    expect(t.querySelector('[data-filter-width-live]')?.textContent).toContain('not yet confirmed');
+  });
+
+  it.each([
+    ['confirmed', 'confirmed'],
+    ['failed', 'not applied'],
+    ['timed-out', 'timed out'],
+    ['cancelled', 'cancelled'],
+  ] as const)('announces the terminal %s outcome once without changing canonical BW', (phase, message) => {
+    Object.assign(widthLifecycle, {
+      target: null,
+      phase: phase === 'confirmed' ? 'confirmed' : 'idle',
+      busy: false,
+      outcome: { phase },
+    });
+    const t = mountPanel();
+
+    expect(t.querySelector<HTMLElement>('[data-filter-width-lifecycle]')?.getAttribute('aria-busy')).toBe('false');
+    expect(t.querySelector('[data-confirmed-width]')?.textContent).toBe('2.4kHz');
+    expect(t.querySelector('[data-pending-width-target]')).toBeNull();
+    expect(t.querySelector('[data-filter-width-live]')?.textContent).toContain(message);
+  });
+
+  it('keeps a table-mode slider on canonical state while separately marking its pending target', () => {
+    Object.assign(widthLifecycle, { target: 3000, phase: 'pending', busy: true });
+    const t = mountPanel({
+      filterConfig: {
+        defaults: [2400, 2400, 2400], fixed: false, minHz: 1800, maxHz: 3000, stepHz: 1,
+        table: [1800, 2400, 3000],
+      } as typeof mockProps.filterConfig,
+    });
+
+    expect(t.querySelector<HTMLElement>('[data-filter-width-lifecycle]')?.getAttribute('aria-busy')).toBe('true');
+    expect(t.querySelector<HTMLElement>('[role="slider"]')?.getAttribute('aria-valuenow')).toBe('1');
+    expect(t.querySelector('[data-pending-width-target]')?.textContent).toContain('3kHz');
   });
 });
 
