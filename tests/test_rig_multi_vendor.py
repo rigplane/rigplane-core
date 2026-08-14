@@ -334,6 +334,52 @@ class TestMultiVendorProfiles:
                 f"{model_toml} regression: filter_width must remain advertised."
             )
 
+    @pytest.mark.parametrize(
+        ("filename", "speech_routes"),
+        [
+            ("ic705.toml", ("get_speech", "set_speech")),
+            ("ic7300.toml", ("set_speech",)),
+        ],
+    )
+    def test_icom_speech_capability_matches_builtin_announcement_routes(
+        self, filename, speech_routes, tmp_path
+    ):
+        """MOR-1609: profile speech is limited to CI-V 0x13 announcements."""
+        rig_path = RIGS_DIR / filename
+        rig = load_rig(rig_path)
+
+        assert "speech" in rig.to_profile().capabilities
+        for route in speech_routes:
+            assert rig.commands[route].bytes == (0x13,)
+
+        # Mutation probe: removing this profile declaration leaves the route
+        # but removes the capability that makes it eligible for speech gating.
+        without_speech = rig_path.read_text().replace('    "speech",\n', "", 1)
+        assert without_speech != rig_path.read_text()
+        assert (
+            "speech"
+            not in load_rig(_write_toml(tmp_path, without_speech, filename))
+            .to_profile()
+            .capabilities
+        )
+
+    def test_ic7300_speech_is_the_42nd_profile_capability(self):
+        """MOR-1609: speech is the sole post-A0 IC-7300 capability."""
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        profile = rig.to_profile()
+
+        assert "speech" in profile.capabilities
+        assert len(profile.capabilities) == 42
+        assert rig.commands["set_speech"].bytes == (0x13,)
+
+    def test_ftx1_without_announcement_routes_does_not_advertise_speech(self):
+        """MOR-1609: speech is not inferred from vendor or model identity."""
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+
+        assert "speech" not in rig.to_profile().capabilities
+        assert "get_speech" not in rig.commands
+        assert "set_speech" not in rig.commands
+
     def test_tx500_protocol_kenwood_cat(self):
         rig = load_rig(RIGS_DIR / "tx500.toml")
         assert rig.protocol_type == "kenwood_cat"

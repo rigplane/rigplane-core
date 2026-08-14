@@ -101,6 +101,7 @@ features = [
     "dtcs",
     "csql",
     "voice_tx",      # wfview: Voice TX 0x28 (Max=8) — D-STAR voice; not on IC-7300.rig
+    "speech",
     # Data
     "data_mode",
     # System
