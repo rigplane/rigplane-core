@@ -244,7 +244,9 @@ class TestInfoEndpoint:
         assert await _endpoint_vfo_tags(radio) == (set(), set(), set())
 
     @pytest.mark.asyncio
-    async def test_vfo_tags_reject_injection_and_only_fallback_when_runtime_absent(self):
+    async def test_vfo_tags_reject_injection_and_only_fallback_when_runtime_absent(
+        self,
+    ):
         injected = _make_radio("X6100", {"vfo_swap", "vfo_equalize"})
         assert await _endpoint_vfo_tags(injected) == (set(), set(), set())
 
