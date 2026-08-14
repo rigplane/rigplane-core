@@ -42,12 +42,25 @@ type FakeState = {
   observationSeq?: number;
 };
 
-const state: { commands: FakeCommand[] } = { commands: [] };
+const state: { commands: FakeCommand[]; superseded: Set<FakeCommand>; useActual: boolean } = {
+  commands: [],
+  superseded: new Set(),
+  useActual: false,
+};
 const runtimeState: { state: FakeState | null } = { state: null };
 
-vi.mock('$lib/stores/commands.svelte', () => ({
-  getCommandLifecycles: () => state.commands,
-}));
+vi.mock('$lib/stores/commands.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/stores/commands.svelte')>();
+  return {
+    ...actual,
+    getCommandLifecycles: () => state.useActual ? actual.getCommandLifecycles() : state.commands,
+    isCommandLifecycleSuperseded: (command: Parameters<typeof actual.isCommandLifecycleSuperseded>[0]) => (
+      state.useActual
+        ? actual.isCommandLifecycleSuperseded(command)
+        : state.superseded.has(command as FakeCommand)
+    ),
+  };
+});
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: { get state() { return runtimeState.state; }, get caps() { return null; } },
 }));
@@ -63,7 +76,18 @@ import {
   getDataModeArmed, getAutoNotchArmed, getManualNotchArmed,
 } from '../panel-adapters';
 
-afterEach(() => { runtimeState.state = null; });
+const actualCommandStore = await vi.importActual<typeof import('$lib/stores/commands.svelte')>(
+  '$lib/stores/commands.svelte',
+);
+
+afterEach(() => {
+  actualCommandStore.resetCommandLifecycle();
+  runtimeState.state = null;
+  state.commands = [];
+  state.superseded.clear();
+  state.useActual = false;
+  vi.useRealTimers();
+});
 
 type Fixture = {
   label: string;
@@ -156,3 +180,105 @@ for (const fx of fixtures) {
     });
   });
 }
+
+describe.each([
+  {
+    label: 'auto-notch',
+    accessor: getAutoNotchArmed,
+    intentName: 'set_auto_notch',
+    confirmedField: 'autoNotch',
+  },
+  {
+    label: 'manual-notch',
+    accessor: getManualNotchArmed,
+    intentName: 'set_manual_notch',
+    confirmedField: 'manualNotch',
+  },
+] as const)('$label chronological same-key selection (MOR-1672)', ({ accessor, intentName, confirmedField }) => {
+  const command = (status: string, target: boolean, createdAt: number): FakeCommand => ({
+    name: intentName,
+    status,
+    createdAt,
+    updatedAt: createdAt,
+    params: { on: target, receiver: 0 },
+  });
+
+  it.each(['failed', 'cancelled', 'timed-out', 'confirmed'])(
+    'does not resurrect an older pending target after the newer command becomes %s',
+    (terminalStatus) => {
+      runtimeState.state = {
+        active: 'MAIN',
+        main: { [confirmedField]: false },
+        sub: {},
+      };
+      state.commands = [
+        command('pending', true, 10),
+        command(terminalStatus, false, 20),
+      ];
+
+      expect(accessor()).toEqual({ armed: false, value: null });
+    },
+  );
+
+  it('keeps the newest active same-key target armed', () => {
+    runtimeState.state = {
+      active: 'MAIN',
+      main: { [confirmedField]: false },
+      sub: {},
+    };
+    state.commands = [
+      command('pending', false, 10),
+      command('pending', true, 20),
+    ];
+
+    expect(accessor()).toEqual({ armed: true, value: true });
+  });
+
+  it('uses insertion order as the tie-break when same-key commands share a clock tick', () => {
+    runtimeState.state = {
+      active: 'MAIN',
+      main: { [confirmedField]: false },
+      sub: {},
+    };
+    state.commands = [
+      command('pending', true, 20),
+      command('failed', false, 20),
+    ];
+
+    expect(accessor()).toEqual({ armed: false, value: null });
+  });
+
+  it('stays unarmed after the newer terminal record ages out of the actual lifecycle store', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    runtimeState.state = {
+      active: 'MAIN',
+      main: { [confirmedField]: false },
+      sub: {},
+    };
+    state.useActual = true;
+
+    actualCommandStore.beginCommand({
+      id: `${intentName}-older`,
+      name: intentName,
+      params: { on: true, receiver: 0 },
+      originalEpoch: 1,
+      timeoutMs: 60_000,
+    });
+    vi.setSystemTime(1_001);
+    actualCommandStore.beginCommand({
+      id: `${intentName}-newer`,
+      name: intentName,
+      params: { on: false, receiver: 0 },
+      originalEpoch: 1,
+      timeoutMs: 60_000,
+    });
+    actualCommandStore.failCommand(`${intentName}-newer`, 1, 1, 'expected test failure');
+
+    expect(accessor()).toEqual({ armed: false, value: null });
+
+    vi.advanceTimersByTime(5_001);
+    expect(actualCommandStore.getCommandLifecycles()).toHaveLength(1);
+    expect(accessor()).toEqual({ armed: false, value: null });
+  });
+});
