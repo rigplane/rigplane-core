@@ -51,11 +51,12 @@ const h = vi.hoisted(() => ({
   txRelease: vi.fn(),
 }));
 
-vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
-vi.mock('$lib/runtime/commands/radio-intents', async () => {
-  const { sendCommand } = await import('$lib/transport/ws-client');
-  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
-});
+vi.mock('$lib/transport/ws-client', () => ({
+  sendCommand: vi.fn(),
+  getControlSession: () => ({ epoch: 1 }),
+  onCommandDelivery: vi.fn(),
+  onControlSessionTransition: vi.fn(),
+}));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     get rxEnabled() { return h.rxEnabled; },
@@ -101,6 +102,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';
+import { getCommandLifecycle, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
@@ -218,6 +220,7 @@ beforeEach(() => {
   h.snapshot = { ...IDLE };
   h.listeners.clear();
   vi.mocked(sendCommand).mockClear();
+  resetCommandLifecycle();
   h.txStart.mockClear();
   h.txRelease.mockClear();
 });
@@ -226,6 +229,7 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   document.body.innerHTML = '';
+  resetCommandLifecycle();
 });
 
 /* ── (a) THE NO-KEY-PATH PIN ───────────────────────────────────── */
@@ -274,6 +278,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
       if (control instanceof HTMLInputElement) {
         control.value = control.max;
         control.dispatchEvent(new Event('input', { bubbles: true }));
+        control.dispatchEvent(new Event('change', { bubbles: true }));
       } else press(control);
     }
     flushSync();
@@ -286,6 +291,36 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     for (const forbidden of KEY_CLASS_COMMANDS) expect(commands()).not.toContain(forbidden);
     // The App TX authority is never asked for a lease either — the ONE
     // `<RxTxSurface>` above is untouched by everything this surface does.
+    expect(h.txStart).not.toHaveBeenCalled();
+    expect(h.txRelease).not.toHaveBeenCalled();
+  });
+
+  it('commits one IC-7300-shaped Break-in Delay intent only on release', () => {
+    const ic7300Caps = {
+      ...liveCaps(CW_TAGS), model: 'IC-7300', receivers: 1, vfoScheme: 'ab',
+    } as Capabilities;
+    h.caps = ic7300Caps;
+    setCapabilities(ic7300Caps);
+    useState(liveState());
+    render();
+    const input = el('breakInDelay')!.querySelector('input') as HTMLInputElement;
+    for (const value of [80, 96, 111]) {
+      input.value = String(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith(
+      'set_break_in_delay', { level: 111 }, expect.any(String),
+    );
+    const commandId = vi.mocked(sendCommand).mock.calls[0]![2] as string;
+    expect(getCommandLifecycle(commandId, 1)).toMatchObject({
+      id: commandId, name: 'set_break_in_delay', params: { level: 111 }, status: 'pending',
+    });
+    expect(input.value).toBe('64');
+    expect(el('breakInDelay-value')!.textContent!.trim()).toBe('64');
     expect(h.txStart).not.toHaveBeenCalled();
     expect(h.txRelease).not.toHaveBeenCalled();
   });
@@ -356,7 +391,7 @@ describe('break-in is gated on the ONE txPermit, end to end', () => {
     render();
     press(el('break-in-full')!);
     flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_break_in', { mode: 2 });
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_break_in', { mode: 2 }, expect.any(String));
   });
 });
 
@@ -372,7 +407,7 @@ describe('APF and TPF are receiver-scoped and follow the active VFO', () => {
     expect(el('apf-value')!.textContent!.trim()).toBe('2');
     press(el('apf-off')!);
     flushSync();
-    expect(sendCommand).toHaveBeenCalledWith('set_apf', { mode: 0, receiver: 1 });
+    expect(sendCommand).toHaveBeenCalledWith('set_apf', { mode: 0, receiver: 1 }, expect.any(String));
   });
 
   it('reads MAIN facts and commands MAIN when MAIN is active', () => {
@@ -380,7 +415,7 @@ describe('APF and TPF are receiver-scoped and follow the active VFO', () => {
     expect(el('apf-value')!.textContent!.trim()).toBe('0');
     press(el('apf-on')!);
     flushSync();
-    expect(sendCommand).toHaveBeenCalledWith('set_apf', { mode: 1, receiver: 0 });
+    expect(sendCommand).toHaveBeenCalledWith('set_apf', { mode: 1, receiver: 0 }, expect.any(String));
   });
 });
 

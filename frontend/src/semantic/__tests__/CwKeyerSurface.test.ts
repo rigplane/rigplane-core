@@ -95,6 +95,7 @@ const press = (el: HTMLElement) => el.dispatchEvent(new MouseEvent('click', { bu
 const slide = (el: HTMLInputElement, value: number) => {
   el.value = String(value);
   el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
 };
 
 /* ── (a) the surface is not a key path ────────────────────────── */
@@ -200,6 +201,59 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       'reversePaddle', 'apf:false', 'apf:true', 'twinPeak',
     ]);
     r.dispose();
+  });
+});
+
+/* ── MOR-1648 — Break-in Delay commits only on release ─────────── */
+
+describe('Break-in Delay is a canonical-only release gesture (MOR-1648)', () => {
+  it('emits nothing during a drag and one bounded integer on release', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { onLevelChange });
+    const input = r.input('breakInDelay')!;
+    for (const value of [80, 96, 111]) {
+      input.value = String(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    expect(onLevelChange).not.toHaveBeenCalled();
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('breakInDelay', 111);
+    expect(input.value).toBe('64');
+    expect(r.text('breakInDelay-value')).toBe('64');
+    r.dispose();
+  });
+
+  it('rounds and clamps a programmatic final candidate before dispatch', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { onLevelChange });
+    const input = r.input('breakInDelay')!;
+    Object.defineProperty(input, 'valueAsNumber', { configurable: true, value: 300.4 });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('breakInDelay', 255);
+    r.dispose();
+  });
+
+  it('cancels a gesture and suppresses its trailing change', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { onLevelChange });
+    const input = r.input('breakInDelay')!;
+    input.value = '111';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('pointercancel', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onLevelChange).not.toHaveBeenCalled();
+    expect(input.value).toBe('64');
+    r.dispose();
+  });
+
+  it('emits nothing when unmounted after intermediate drag input', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { onLevelChange });
+    const input = r.input('breakInDelay')!;
+    input.value = '111';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    r.dispose();
+    expect(onLevelChange).not.toHaveBeenCalled();
   });
 });
 
