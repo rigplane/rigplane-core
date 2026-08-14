@@ -15,6 +15,7 @@ const mockProps = {
   hasBreakIn: true,
   hasApf: true,
   hasTwinPeak: true,
+  autoTuneAvailable: false,
 };
 
 const mockHandlers = {
@@ -54,6 +55,7 @@ beforeEach(() => {
     apfMode: 0, twinPeak: false, currentMode: 'CW',
     apfDisabled: false, tpfDisabled: false,
     hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
+    autoTuneAvailable: false,
   });
   Object.values(mockHandlers).forEach((fn) => fn.mockClear());
 });
@@ -110,10 +112,16 @@ describe('CwPanel component rendering', () => {
     expect(buttons.some((b) => b.textContent?.trim() === 'TPF')).toBe(true);
   });
 
-  it('renders AUTO TUNE button (software CW auto-tune, #675)', () => {
+  it('does not render AUTO TUNE when RX-assisted correction is unavailable', () => {
     const t = mountPanel();
     const buttons = Array.from(t.querySelectorAll('button'));
-    expect(buttons.some((b) => b.textContent?.trim() === 'AUTO TUNE')).toBe(true);
+    expect(buttons.some((b) => b.textContent?.trim() === 'AUTO TUNE')).toBe(false);
+  });
+
+  it('renders AUTO TUNE when RX-assisted correction is available and delegates exactly once', () => {
+    const t = mountPanel({ autoTuneAvailable: true });
+    findButton(t, 'AUTO TUNE').click();
+    expect(mockHandlers.onAutoTune).toHaveBeenCalledTimes(1);
   });
 
   it('unmounts cleanly', () => {
