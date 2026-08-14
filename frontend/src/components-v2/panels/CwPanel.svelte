@@ -30,6 +30,7 @@
   let showBreakIn = $derived(p.hasBreakIn);
   let showApf = $derived(p.hasApf);
   let showTwinPeak = $derived(p.hasTwinPeak);
+  let showAutoTune = $derived(p.autoTuneAvailable);
   let breakInActive = $derived(isBreakInActive(breakIn));
   let apfActive = $derived(isApfActive(apfMode));
   let breakInLabel = $derived(formatBreakIn(breakIn));
@@ -126,11 +127,13 @@
       />
     {/if}
 
-    <div class="toggle-row">
-      <HardwareButton indicator="edge-left" color="green" onclick={() => onAutoTune()}>
-        AUTO TUNE
-      </HardwareButton>
-    </div>
+    {#if showAutoTune}
+      <div class="toggle-row">
+        <HardwareButton indicator="edge-left" color="green" onclick={() => onAutoTune()}>
+          AUTO TUNE
+        </HardwareButton>
+      </div>
+    {/if}
   </div>
 {/if}
 

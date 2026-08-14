@@ -735,6 +735,7 @@ export interface CwProps {
   hasBreakIn: boolean;
   hasApf: boolean;
   hasTwinPeak: boolean;
+  autoTuneAvailable: boolean;
 }
 
 export function toCwProps(
@@ -771,6 +772,9 @@ export function toCwProps(
     hasBreakIn: hasCap(caps, 'break_in'),
     hasApf: hasCap(caps, 'apf'),
     hasTwinPeak: hasCap(caps, 'twin_peak'),
+    autoTuneAvailable: hasCap(caps, 'cw')
+      && hasCap(caps, 'audio')
+      && caps?.audioFftAvailable === true,
   };
 }
 
