@@ -31,7 +31,7 @@ import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
-import { getCommandLifecycles } from '$lib/stores/commands.svelte';
+import { getCommandLifecycles, isCommandLifecycleSuperseded } from '$lib/stores/commands.svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 
@@ -241,6 +241,56 @@ export function getActiveFrequencyHz(): number | null {
 export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
   const value = latestPendingParam('set_freq', 'freq', receiver, 'freqHz');
   return typeof value === 'number' ? value : null;
+}
+
+export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged' | 'confirmed';
+export type FilterWidthCommandOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled';
+export interface FilterWidthCommandLifecycleView {
+  confirmed: number | null; target: number | null; phase: FilterWidthCommandPhase; busy: boolean;
+  outcome: { phase: FilterWidthCommandOutcome; error?: string } | null;
+}
+
+function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; fieldPath: string; fieldStatus: NonNullable<ServerState['fieldStatus']>[string] | undefined } | null {
+  const state = runtime.state;
+  if (!state) return null;
+  const receiver: 0 | 1 = state.active === 'SUB' ? 1 : 0;
+  const width = (receiver === 0 ? state.main : state.sub)?.filterWidth;
+  if (typeof width !== 'number' || !Number.isFinite(width)) return null;
+  const fieldPath = receiver === 0 ? 'main.filterWidth' : 'sub.filterWidth';
+  const fieldStatus = state.fieldStatus?.[fieldPath];
+  if (fieldStatus?.observed !== true || fieldStatus.freshness !== 'fresh' || fieldStatus.availability !== 'available'
+    || typeof fieldStatus.lastObservedMonotonic !== 'number'
+    || !Number.isFinite(fieldStatus.lastObservedMonotonic)) return null;
+  return { receiver, width, fieldPath, fieldStatus };
+}
+
+function latestFilterWidthLifecycle(receiver: 0 | 1) {
+  let latest: ReturnType<typeof getCommandLifecycles>[number] | null = null;
+  for (const command of getCommandLifecycles()) {
+  if (command.name !== 'set_filter_width' || (command.params.receiver === 1 ? 1 : 0) !== receiver
+      || typeof command.params.width !== 'number' || !Number.isFinite(command.params.width)
+      || isCommandLifecycleSuperseded(command)) continue;
+    if (!latest || command.createdAt >= latest.createdAt) latest = command;
+  }
+  return latest;
+}
+
+export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleView {
+  const observed = activeFilterWidthReceiver();
+  if (!observed) return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null };
+
+  const command = latestFilterWidthLifecycle(observed.receiver);
+  if (!command) return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
+  if (command.status === 'confirmed') {
+    return { confirmed: observed.width, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } };
+  }
+  if (command.status === 'failed' || command.status === 'timed-out' || command.status === 'cancelled') {
+    return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: { phase: command.status, error: command.error } };
+  }
+
+  const target = command.params.width as number;
+  if (command.status === 'acknowledged') return { confirmed: observed.width, target, phase: 'acknowledged', busy: true, outcome: null };
+  return { confirmed: observed.width, target, phase: 'pending', busy: true, outcome: null };
 }
 
 // ── Pending discrete-control targets (MOR-1441 leg 2) ──

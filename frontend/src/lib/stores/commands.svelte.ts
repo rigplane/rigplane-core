@@ -1,4 +1,5 @@
-import { getRadioState } from './radio.svelte';
+import { getRadioState, subscribeRadioState } from './radio.svelte';
+import type { ServerState } from '../types/state';
 
 export type CommandLifecycleStatus = 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'cancelled' | 'timed-out';
 export interface CommandLifecycle {
@@ -20,6 +21,8 @@ export interface CommandLifecycle {
    * value) and would leave the sequence guard permanently unable to fire.
    */
   ackObservationSeq?: number;
+  /** Bounded correlation markers; absent legacy records must fail closed. */
+  ackFieldObservationTimes?: Readonly<Record<string, number>>;
 }
 export interface BeginCommandInput {
   id: string; name: string; params: Readonly<Record<string, unknown>>;
@@ -34,9 +37,17 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  */
 const OUTCOME_RETENTION_MS = 5_000;
 const MAX_RETAINED_COMMANDS = 100;
+const ACK_CORRELATION_PATHS = ['main.filterWidth', 'sub.filterWidth'] as const;
 let commands = $state<CommandLifecycle[]>([]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const supersededRecordKeys = new Set<string>();
+let filterWidthReconciliationStarted = false;
 const key = (id: string, epoch: number): string => `${epoch}:${id}`;
+
+const receiverScope = (command: Pick<CommandLifecycle, 'params'>): 0 | 1 =>
+  command.params.receiver === 1 ? 1 : 0;
+
+export const isCommandLifecycleSuperseded = (command: CommandLifecycle): boolean => supersededRecordKeys.has(key(command.id, command.originalEpoch));
 
 function clearRecordTimer(command: CommandLifecycle): void {
   const recordKey = key(command.id, command.originalEpoch);
@@ -47,6 +58,7 @@ function clearRecordTimer(command: CommandLifecycle): void {
 function retireRecord(command: CommandLifecycle): void {
   const index = commands.indexOf(command);
   if (index >= 0) commands.splice(index, 1);
+  supersededRecordKeys.delete(key(command.id, command.originalEpoch));
 }
 function retainTerminalOutcome(command: CommandLifecycle): void {
   clearRecordTimer(command);
@@ -74,7 +86,7 @@ function reserveRecordSlot(): void {
   if (commands.length < MAX_RETAINED_COMMANDS) return;
   const terminal = commands.findIndex((command) => command.status !== 'pending' && command.status !== 'acknowledged');
   if (terminal < 0) throw new Error('Command lifecycle capacity exhausted');
-  clearRecordTimer(commands[terminal]); commands.splice(terminal, 1);
+  clearRecordTimer(commands[terminal]); retireRecord(commands[terminal]);
 }
 function transition(
   id: string, originalEpoch: number,
@@ -87,11 +99,52 @@ function transition(
   command.status = status; command.eventEpoch = eventEpoch; command.updatedAt = Date.now();
   if (error) command.error = error;
   if (status === 'acknowledged') {
-    command.ackObservationSeq = getRadioState()?.observationSeq;
+    const radio = getRadioState(); command.ackObservationSeq = radio?.observationSeq;
+    const observations: Record<string, number> = {};
+    for (const path of ACK_CORRELATION_PATHS) {
+      const field = radio?.fieldStatus?.[path];
+      const marker = field?.lastObservedMonotonic;
+      if (typeof marker === 'number' && Number.isFinite(marker)) observations[path] = marker;
+    }
+    command.ackFieldObservationTimes = observations;
     startLiveDeadline(command);
+    if (command.name === 'set_filter_width') startFilterWidthReconciliation();
   } else {
     retainTerminalOutcome(command);
   }
+}
+
+/** Accepted state, not a presentation read, reconciles Filter Width. */
+function reconcileFilterWidthCommands(state: ServerState | null): void {
+  if (!state) return;
+  for (const command of commands) {
+    if (command.name !== 'set_filter_width' || command.status !== 'acknowledged' || isCommandLifecycleSuperseded(command)) continue;
+
+    const receiver = receiverScope(command);
+    const path = receiver === 1 ? 'sub.filterWidth' : 'main.filterWidth';
+    const field = state.fieldStatus?.[path];
+    const marker = field?.lastObservedMonotonic;
+    const width = (receiver === 1 ? state.sub : state.main)?.filterWidth;
+    const target = command.params.width;
+    if (field?.observed !== true || field.freshness !== 'fresh' || field.availability !== 'available' || typeof marker !== 'number' || !Number.isFinite(marker)
+      || typeof width !== 'number' || !Number.isFinite(width)
+      || typeof target !== 'number' || !Number.isFinite(target)) continue;
+
+    const boundaries = command.ackFieldObservationTimes;
+    if (boundaries === undefined) continue;
+    const boundary = boundaries[path];
+    if (typeof boundary !== 'number' || !Number.isFinite(boundary)) {
+      command.ackFieldObservationTimes = { ...boundaries, [path]: marker };
+      continue;
+    }
+    if (marker > boundary && width === target) transition(command.id, command.originalEpoch, 'confirmed', command.eventEpoch ?? command.originalEpoch);
+  }
+}
+
+function startFilterWidthReconciliation(): void {
+  if (filterWidthReconciliationStarted) return;
+  filterWidthReconciliationStarted = true;
+  subscribeRadioState(reconcileFilterWidthCommands);
 }
 
 export function beginCommand(input: BeginCommandInput): CommandLifecycle {
@@ -100,6 +153,10 @@ export function beginCommand(input: BeginCommandInput): CommandLifecycle {
   const now = Date.now();
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const command: CommandLifecycle = { ...input, timeoutMs, createdAt: now, updatedAt: now, status: 'pending' };
+  const scope = receiverScope(command);
+  for (const existing of commands) if (existing.name === command.name && receiverScope(existing) === scope) {
+    supersededRecordKeys.add(key(existing.id, existing.originalEpoch));
+  }
   commands.push(command);
   startLiveDeadline(command);
   return command;
@@ -124,5 +181,5 @@ export function cancelPendingCommands(epoch: number, error = 'session-disconnect
 }
 export function resetCommandLifecycle(): void {
   for (const timer of timers.values()) clearTimeout(timer);
-  timers.clear(); commands = [];
+  timers.clear(); commands = []; supersededRecordKeys.clear();
 }
