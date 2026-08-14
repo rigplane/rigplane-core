@@ -1229,6 +1229,69 @@ async def test_execute_set_mode_invalidates_stale_width_and_queues_readback(
 
 
 @pytest.mark.asyncio
+async def test_execute_set_mode_ic7300_queues_command_response_width_readback() -> None:
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    mode_path = FieldPath.active("main", "freq_mode", "mode")
+    width_path = FieldPath.active("main", "freq_mode", "filter_width")
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "filter_width"),
+            value=500,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=1.0,
+        )
+    )
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_set_mode(*_: object, **__: object) -> None:
+        started.set()
+        await release.wait()
+
+    radio.set_mode.side_effect = delayed_set_mode
+    task = asyncio.create_task(poller._execute(SetMode("USB", filter_width=1)))  # noqa: SLF001
+    await started.wait()
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "mode"),
+            value="USB",
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=2.0,
+        )
+    )
+    assert "receiver.0.active.freq_mode.filter_width" not in store.snapshot().as_dict()
+    release.set()
+    await task
+
+    assert {path for item in scheduler.pending_requests() for path in item.paths} == {
+        mode_path,
+        width_path,
+    }
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert any(args == (0x26,) for args, _ in radio.send_civ.await_args_list)
+    assert any(
+        args == (0x1A,) and kwargs["sub"] == 0x03
+        for args, kwargs in radio.send_civ.await_args_list
+    )
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "filter_width"),
+            value=3600,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=3.0,
+        )
+    )
+    assert (
+        store.snapshot().field("receiver.0.active.freq_mode.filter_width").value == 3600
+    )
+
+
+@pytest.mark.asyncio
 async def test_execute_failed_set_mode_keeps_width_unknown_and_skips_readback() -> None:
     mode_path = FieldPath.active("main", "freq_mode", "mode")
     width_path = FieldPath.active("main", "freq_mode", "filter_width")

@@ -1314,7 +1314,8 @@ class RadioPoller:
             filter_width = FieldPath.active(
                 _post_write_receiver_id(cmd), "freq_mode", "filter_width"
             )
-            if scheduler._profile.capability_for(filter_width).can_poll:
+            capability = scheduler._profile.capability_for(filter_width)
+            if capability.can_poll or capability.command_response_observable:
                 paths = (*paths, filter_width)
         if not paths:
             return
