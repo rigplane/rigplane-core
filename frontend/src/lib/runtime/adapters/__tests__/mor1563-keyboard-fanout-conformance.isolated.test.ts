@@ -44,7 +44,7 @@
  * this was a genuinely reachable, user-visible dead control on this
  * profile before the fix — not a theoretical gap.
  *
- * MOR-1604: `vfo_swap`/`vfo_equalize` now dispatch only when the capability
+ * MOR-1604: (1) `vfo_swap`/`vfo_equalize` now dispatch only when the capability
  * payload declares their exact primitive tag. The byte-faithful IC-7300
  * capture declares neither, so both correctly refuse without consulting
  * active receiver, slot, or VFO readback. (2)
