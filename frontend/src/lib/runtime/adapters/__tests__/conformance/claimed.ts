@@ -51,15 +51,16 @@
  * unobserved) — see that file's header for the full finding and red-first
  * evidence.
  *
- * Plus 4 intents claimed by MOR-1563's (C9) keyboard action fan-out walk
+ * Plus 2 intents claimed by MOR-1563's (C9) keyboard action fan-out walk
  * (`../mor1563-keyboard-fanout-conformance.isolated.test.ts`) — per
  * `./waived.ts`'s own convention (a landed `expectFrames` moves the intent
  * here even when the claiming test isn't that intent's OWN family walk):
- * `set_data_mode` (`cycle_data_mode` keyboard case), `vfo_swap`/
- * `vfo_equalize` (their own like-named keyboard cases), `set_scope_hold`
- * (`scope_toggle_hold` keyboard case). Removed from the MOR-1566/MOR-1567
- * waiver tags in `./waived.ts` — those family walks extend coverage on
- * these four (more call sites, more profiles), they do not initiate it.
+ * `set_data_mode` (`cycle_data_mode` keyboard case) and `set_scope_hold`
+ * (`scope_toggle_hold` keyboard case). C9's `vfo_swap` and
+ * `vfo_equalize` rows now correctly refuse because this byte-faithful
+ * captured profile lacks their exact declared tags; refusals do not make an
+ * intent claimed. The C12 synthetic declared-tag probes below own the two
+ * corresponding positive frame claims.
  *
  * Plus MOR-1564's (C10) TX-chain family walk
  * (`../mor1564-tx-family-conformance.isolated.test.ts`) — 8 intents:
@@ -140,18 +141,14 @@
  * bound are pinned against those same tables STRUCTURALLY only (both refuse
  * on a different gate before their domain's max value would ever dispatch —
  * see that file's own header for the split). Also extends conformance
- * coverage of `vfo_swap`/`vfo_equalize`/`set_scope_hold` (already claimed by
- * MOR-1563/C9's keyboard walk) to their real non-keyboard UI call sites
- * (`VfoControlPanel.svelte`'s swap/equalize buttons,
- * `SemanticRadioSurfaces.svelte`'s `SCOPE_TOGGLE_INTENT['hold']`) — NOT
- * uniform: `vfo_swap`/`vfo_equalize`'s keyboard cases are bare handler calls
- * with no gate of their own, while `scope_toggle_hold`'s keyboard case DOES
- * pre-gate (`keyboardScopeField`), but that pre-gate is strictly subsumed by
- * `onHoldChange`'s own gate — so still not a MOR-1576-class split, and the
- * non-keyboard call site is the strictly LOOSER one MOR-1563 never directly
- * exercised (see that file's own header). `vfo_swap`/`vfo_equalize`'s
- * structural-only, no-field-observation gate reconfirms MOR-1578 leg 1 at
- * the handler itself, not just its keyboard wrapper.
+ * coverage of `vfo_swap`/`vfo_equalize`/`set_scope_hold` at their real
+ * non-keyboard UI call sites (`VfoControlPanel.svelte`'s swap/equalize
+ * buttons and `SemanticRadioSurfaces.svelte`'s
+ * `SCOPE_TOGGLE_INTENT['hold']`). C12's synthetic capability probes own the
+ * positive VFO primitive claims: each adds only its exact declared tag to a
+ * copy of the byte-faithful capture, then asserts the matching frame. C9
+ * owns the captured missing-tag refusals; `set_scope_hold` remains a C9
+ * claim and C12 extension coverage.
  *
  * Plus MOR-1567's (C13) remainder-sweeper family walk — the CLOSING walk of
  * the MOR-1426 Tier-2 program, `WAIVED_INTENTS` now empty — 17 intents:
@@ -161,17 +158,15 @@
  * `set_digisel`/`set_ip_plus`, `memory_clear`, and the 3 orphaned RIT/XIT
  * intents `waived.ts`'s history documents as a genuine gap in MOR-1426's
  * per-family prose — `set_rit_status`/`set_rit_tx_status`/
- * `set_rit_frequency`. Skewed for THREE reasons, not one: 8 refuse on an
- * unobserved field this fixture never confirmed; the 4 antenna intents
+ * `set_rit_frequency`. Seven dispatch: the 4 scan intents, `speak` when its
+ * independent `speech` capability is declared, `set_powerstat` on its
+ * `power_control` capability gate, and `memory_clear` through its resolved
+ * snapshot. The other 10 refuse: 6 on an unobserved field this fixture never
+ * confirmed, and the 4 antenna intents
  * refuse on a STRUCTURAL gate (`caps.antennas===1<2`, fires before the
  * also-unobserved field check — `set_rx_antenna_ant1`/`set_rx_antenna_ant2`
- * additionally share ONE call site, `onToggleRxAnt`); the remaining 6
- * genuinely DISPATCH — the 4 scan intents and `speak` UNCONDITIONALLY (no
- * capability check at all, the same ungated shape MOR-1578 leg 1 already
- * flagged for `vfo_swap`/`vfo_equalize`, cited as the same class here), and
- * `set_powerstat` on a capability-only gate with no field check (RED-FIRST
- * target, see that file's header). `memory_clear` is the one dispatch
- * resolved through a real multi-field snapshot (`currentMemorySnapshot()`).
+ * additionally share ONE call site, `onToggleRxAnt`). `speak` is independently
+ * capability-gated and neither requires nor implies either VFO primitive.
  * MOR-1574 is cited (not re-derived) as CONTRAST, now historical: the
  * READ-path `toRitXitProps` (MOR-1562/C8) HAD no fieldStatus gate on
  * `ritOn`/`ritFreq`/`ritTx` at all — closed by MOR-1574/PR #2488, which
@@ -220,8 +215,6 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_pbt_outer',
   // MOR-1563 (C9) — keyboard action fan-out walk (see comment above)
   'set_data_mode',
-  'vfo_swap',
-  'vfo_equalize',
   'set_scope_hold',
   // MOR-1564 (C10) — TX-chain family walk
   'set_rf_power',
@@ -258,6 +251,9 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_main_sub_tracking',
   'quick_dualwatch',
   'quick_split',
+  // C12 synthetic declared-tag probes own these positive claims.
+  'vfo_swap',
+  'vfo_equalize',
   // MOR-1567 (C13) — remainder-sweeper family walk (closing walk)
   'scan_start',
   'scan_stop',

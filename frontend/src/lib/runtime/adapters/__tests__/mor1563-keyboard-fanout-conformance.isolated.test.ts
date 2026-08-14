@@ -36,7 +36,7 @@
  * `direction`-style bindings still work unchanged (explicit `delta` wins
  * when both are present) — kept as two separately-labeled
  * HANDLER-CAPABILITY PROBES further down (NOT profile behavior, not
- * counted in the 19/9 split) proving the fallback path is intact.
+ * counted in the 17/11 split) proving the fallback path is intact.
  * STRENGTHENED (round-2 review): `af-level-up`/`rf-level-up` carry
  * `modifiers: ['CTRL']`/`['CTRL','SHIFT']` — `keyboard-map.ts`'s
  * `modifiersMatch()` (line ~206) resolves plain ArrowUp to `step-up`
