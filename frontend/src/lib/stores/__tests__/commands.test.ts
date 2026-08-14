@@ -100,7 +100,7 @@ describe('command lifecycle store', () => {
     store.failCommand('late-failure', 4, 4, 'backend rejected');
 
     expect(store.getCommandLifecycle('late-failure', 4)).toMatchObject({ status: 'failed', error: 'backend rejected' });
-    vi.advanceTimersByTime(999);
+    vi.advanceTimersByTime(4_999);
     expect(store.getCommandLifecycle('late-failure', 4)?.status).toBe('failed');
     vi.advanceTimersByTime(1);
     expect(store.getCommandLifecycle('late-failure', 4)).toBeUndefined();
@@ -146,8 +146,24 @@ describe('command lifecycle store', () => {
     complete(id);
 
     expect(store.getCommandLifecycle(id, 5)?.status).toBe(_status);
-    vi.advanceTimersByTime(1_000);
+    vi.advanceTimersByTime(5_000);
     expect(store.getCommandLifecycle(id, 5)).toBeUndefined();
+  });
+
+  it('keeps staggered command outcomes through the normal transport observation window, then expires them', () => {
+    store.beginCommand({ id: 'first', name: 'set_freq', params: { freq: 1 }, originalEpoch: 6 });
+    vi.advanceTimersByTime(4_500);
+    store.beginCommand({ id: 'second', name: 'set_freq', params: { freq: 2 }, originalEpoch: 6 });
+    vi.advanceTimersByTime(4_500);
+    store.beginCommand({ id: 'third', name: 'set_freq', params: { freq: 3 }, originalEpoch: 6 });
+
+    expect(store.getCommandLifecycles()).toHaveLength(3);
+    expect(store.getCommandLifecycle('first', 6)?.status).toBe('timed-out');
+    expect(store.getCommandLifecycle('second', 6)?.status).toBe('pending');
+    expect(store.getCommandLifecycle('third', 6)?.status).toBe('pending');
+
+    vi.advanceTimersByTime(1_000);
+    expect(store.getCommandLifecycle('first', 6)).toBeUndefined();
   });
 
   it('bounds retained lifecycle records and cleans up oldest terminal entries first', () => {

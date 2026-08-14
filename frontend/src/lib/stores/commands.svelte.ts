@@ -27,8 +27,12 @@ export interface BeginCommandInput {
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000;
-/** Terminal outcomes remain available for one bounded presentation announcement. */
-const OUTCOME_RETENTION_MS = 1_000;
+/**
+ * Terminal outcomes remain available for a five-second bounded presentation
+ * announcement. This also preserves a normal 5s transport observation window
+ * when independently submitted commands time out at staggered times.
+ */
+const OUTCOME_RETENTION_MS = 5_000;
 const MAX_RETAINED_COMMANDS = 100;
 let commands = $state<CommandLifecycle[]>([]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
