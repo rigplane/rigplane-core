@@ -23,33 +23,19 @@
  * param shapes — a mismatched shape THROWS, not just silently diverges) —
  * every frame claimed below is asserted against that exact shape.
  *
- * SKEWED TOWARD REFUSAL, but for THREE distinct reasons, not one: (1) 8
- * genuinely REFUSE on an unobserved field this fixture never confirmed —
- * `dialLock`, `rxAntenna1`/`rxAntenna2`/`txAntenna` (antenna family, though
- * STRUCTURAL gates fire first — see below), `main.digisel`,
- * `main.ipplus`, `ritOn`, `ritTx`, `ritFreq` — same honest fail-closed shape
- * as C6/C7/C10/C11's walks; (2) `set_antenna_1`/`set_antenna_2`/
- * `set_rx_antenna_ant1`/`set_rx_antenna_ant2` all REFUSE on
- * `caps.antennas === 1 < 2`, a STRUCTURAL gate that fires before the
- * (also-unobserved) field check ever runs; `set_rx_antenna_ant1`/
- * `set_rx_antenna_ant2` additionally sit behind a SECOND, independent
- * structural gate on this fixture — the `rx_antenna` capability itself is
- * undeclared (confirmed in `mor1562-adapter-seams-conformance.isolated.test.ts:289`)
- * — `onToggleRxAnt` is the SOLE call site for both names (the
- * `state.txAntenna` value picks which name it would dispatch), so both
- * names refuse identically here, before that branch is ever reached; (3) 6
- * genuinely DISPATCH: all 4 scan intents require the declared `scan`
- * capability but no observed scan state; `speak` requires the declared
- * `speech` capability but no state or VFO primitive, so it remains a blind
- * command only when the profile declares support; `set_powerstat`
- * DOES check a capability (`power_control`, declared) but has no field
- * gate either (RED-FIRST target, see below). `memory_clear` (via
- * `onClear`) is the one DISPATCH that goes through `currentMemorySnapshot()`'s
- * structural resolution (receiver/slot identity must resolve), but it only
- * requires the resolved snapshot object to be non-null — it does NOT
- * itself check the snapshot's `frequencyHz`/`mode` contents. `onStore` is
- * the sibling handler that does check those contents (against the
- * caller's values), see its own case below.
+ * PARTITION: 10 genuinely REFUSE and 7 genuinely DISPATCH. Six refusals are
+ * honest field-status gates: `dialLock`, `main.digisel`, `main.ipplus`,
+ * `ritOn`, `ritTx`, and `ritFreq` are unobserved on this fixture. The four
+ * antenna intents refuse on the structural `caps.antennas === 1 < 2` gate;
+ * `set_rx_antenna_ant1`/`set_rx_antenna_ant2` also lack the independent
+ * `rx_antenna` capability and share `onToggleRxAnt`, so neither can reach its
+ * `state.txAntenna` branch. The seven dispatches are all four scan intents
+ * (declared `scan`, no observed scan state), `speak` (declared `speech`, no
+ * state or VFO primitive), `set_powerstat` (declared `power_control`), and
+ * `memory_clear`. `memory_clear` alone resolves `currentMemorySnapshot()`;
+ * it requires a non-null resolved snapshot but does not inspect its
+ * `frequencyHz`/`mode` contents. `onStore` is the sibling that checks those
+ * contents against caller values.
  *
  * MOR-1574 CONTRAST (RIT/XIT, cited per this ticket's instruction — now
  * HISTORICAL): MOR-1574 was the ADAPTER-SEAM finding that `toRitXitProps`

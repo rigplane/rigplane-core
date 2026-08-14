@@ -14,11 +14,11 @@
  *
  * FINDING (fixture-derived split): of the 28, 17 genuinely DISPATCH on this
  * IC-7300 fixture and 11 genuinely REFUSE. Every refusal below is an honest
- * fail-closed gate — an unobserved top-level/receiver field, or a
- * single-receiver/no-dual_rx structural gate — never a test artifact. Each
- * case's `gate` string names the exact reason, cross-checked against the
- * fixture's own `fieldStatus`/`capabilities.keyboard.bindings` data, never
- * invented.
+ * fail-closed gate: an unobserved top-level/receiver field, a missing exact
+ * `vfo_swap`/`vfo_equalize` capability tag, or a single-receiver/no-dual_rx
+ * structural gate — never a test artifact. Each case's `gate` string names
+ * the exact reason, cross-checked against the fixture's own
+ * `fieldStatus`/`capabilities.keyboard.bindings` data, never invented.
  *
  * MOR-1577 (filed a prior review round, FIXED this round):
  * `capabilities.keyboard.bindings` declares FOUR bindings for
@@ -36,7 +36,7 @@
  * `direction`-style bindings still work unchanged (explicit `delta` wins
  * when both are present) — kept as two separately-labeled
  * HANDLER-CAPABILITY PROBES further down (NOT profile behavior, not
- * counted in the 19/9 split) proving the fallback path is intact.
+ * counted in the 17/11 split) proving the fallback path is intact.
  * STRENGTHENED (round-2 review): `af-level-up`/`rf-level-up` carry
  * `modifiers: ['CTRL']`/`['CTRL','SHIFT']` — `keyboard-map.ts`'s
  * `modifiersMatch()` (line ~206) resolves plain ArrowUp to `step-up`
@@ -44,7 +44,7 @@
  * this was a genuinely reachable, user-visible dead control on this
  * profile before the fix — not a theoretical gap.
  *
- * MOR-1604: `vfo_swap`/`vfo_equalize` now dispatch only when the capability
+ * MOR-1604: (1) `vfo_swap`/`vfo_equalize` now dispatch only when the capability
  * payload declares their exact primitive tag. The byte-faithful IC-7300
  * capture declares neither, so both correctly refuse without consulting
  * active receiver, slot, or VFO readback. (2)
