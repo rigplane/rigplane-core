@@ -35,6 +35,7 @@
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
+    optimistic?: boolean;
   }
 
   let {
@@ -60,6 +61,7 @@
     unit = '',
     shortcutHint = null,
     title = null,
+    optimistic = true,
   }: Props = $props();
 
   let containerEl: HTMLDivElement | null = $state(null);
@@ -92,12 +94,15 @@
   });
 
   // Derived values
-  let fillPercent = $derived(getFillPercent(localValue, min, max));
+  // A controlled HBar may request a target without presenting it as accepted.
+  // The canonical parent prop remains both render source and interaction base.
+  let renderedValue = $derived(optimistic ? localValue : value);
+  let fillPercent = $derived(getFillPercent(renderedValue, min, max));
   let effectiveDefault = $derived(defaultValue ?? min);
   let effectiveFill = $derived(fillGradient
     ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
     : (fillColor ?? accentColor));
-  let displayValue = $derived(displayFn ? displayFn(localValue) : `${localValue}${unit ? '\u00a0' + unit : ''}`);
+  let displayValue = $derived(displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
   
   // Adaptive wheel multiplier based on range (normalize to ~255 baseline)
   let adaptiveWheelMultiplier = $derived(Math.max(1, Math.ceil((max - min) / 255)));
@@ -111,7 +116,7 @@
   });
 
   function emitChange(newValue: number, immediate = false) {
-    if (newValue !== localValue) {
+    if (optimistic && newValue !== localValue) {
       localValue = newValue;
     }
     if (newValue !== value) {
@@ -165,11 +170,11 @@
     const effectiveStep = e.shiftKey ? step / fineStepDivisor : step * wheelMultiplier;
     const direction = e.deltaY > 0 ? -1 : 1;
     const newValue = clamp(
-      snapToStep(localValue + direction * effectiveStep, effectiveStep, min),
+      snapToStep(renderedValue + direction * effectiveStep, effectiveStep, min),
       min,
       max,
     );
-    localValue = newValue;
+    if (optimistic) localValue = newValue;
     markWheelActive();
     onChange(newValue);
   }
@@ -177,7 +182,7 @@
   function handleKeyDown(e: KeyboardEvent) {
     if (disabled) return;
 
-    const newValue = handleKeyboardStep(localValue, e.key, step, fineStepDivisor, min, max, e.shiftKey);
+    const newValue = handleKeyboardStep(renderedValue, e.key, step, fineStepDivisor, min, max, e.shiftKey);
     if (newValue !== null) {
       e.preventDefault();
       emitChange(newValue);
