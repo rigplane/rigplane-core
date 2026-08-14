@@ -30,6 +30,22 @@
   let manualNotchArmed = $derived(getManualNotchArmed());
   let autoNotchArmed = $derived(getAutoNotchArmed());
   const notchArmedIdBase = $props.id();
+  // MOR-1672: the dialog uses the same two truthful command strands as the
+  // top-level buttons.  A mode is still selected only from `notchMode`; these
+  // facts merely identify the requested choice while radio confirmation is
+  // delayed.  OFF is a grouped target only when both real false writes are in
+  // flight, never after one partial strand.
+  let autoNotchChoicePending = $derived(autoNotchArmed.armed && autoNotchArmed.value === true);
+  let manualNotchChoicePending = $derived(manualNotchArmed.armed && manualNotchArmed.value === true);
+  let offNotchChoicePending = $derived(
+    autoNotchArmed.armed
+      && autoNotchArmed.value === false
+      && manualNotchArmed.armed
+      && manualNotchArmed.value === false,
+  );
+  let hasNotchChoicePending = $derived(
+    autoNotchChoicePending || manualNotchChoicePending || offNotchChoicePending,
+  );
 
   let nrMode = $derived(p.nrMode);
   let nrLevel = $derived(p.nrLevel);
@@ -402,16 +418,42 @@
     <div class="menu-title">Notch</div>
     <div class="dsp-modal-block dsp-mode-grid">
       {#each notchOptions as option}
-        <HardwareButton
-          active={notchMode === option.value}
-          indicator="edge-left"
-          color="cyan"
-          onclick={() => handleNotchModalMode(option.value)}
+        {@const mode = option.value as 'off' | 'auto' | 'manual'}
+        {@const isPending = mode === 'off'
+          ? offNotchChoicePending
+          : mode === 'auto'
+            ? autoNotchChoicePending
+            : manualNotchChoicePending}
+        {@const pendingId = `${notchArmedIdBase}-dialog-${mode}`}
+        <div
+          class="notch-mode-choice"
+          data-notch-mode-choice={mode}
+          data-notch-pending-target={isPending ? mode : undefined}
+          role="group"
+          aria-label={`Notch mode ${option.label}`}
+          aria-busy={isPending}
         >
-          {option.label}
-        </HardwareButton>
+          <HardwareButton
+            active={notchMode === option.value}
+            indicator="edge-left"
+            color="cyan"
+            armed={isPending}
+            describedBy={isPending ? pendingId : undefined}
+            onclick={() => handleNotchModalMode(option.value)}
+          >
+            {option.label}
+          </HardwareButton>
+          {#if isPending}
+            <span id={pendingId} class="sr-only">{t('core.dsp.notch.pendingAnnouncement')}</span>
+          {/if}
+        </div>
       {/each}
     </div>
+    {#if hasNotchChoicePending}
+      <span class="sr-only" aria-live="polite" aria-atomic="true" data-notch-mode-live>
+        {t('core.dsp.notch.pendingAnnouncement')}
+      </span>
+    {/if}
     {#if notchMode === 'manual'}
       <ValueControl
         label="Notch Position"
@@ -538,6 +580,17 @@
   }
 
   .dsp-mode-grid > :global(button) {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .notch-mode-choice {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .notch-mode-choice > :global(button) {
     flex: 1 1 0;
     min-width: 0;
   }
