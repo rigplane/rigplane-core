@@ -1288,7 +1288,10 @@ export function makeSystemHandlers() {
       if (!context || !context.caps.capabilities.includes('power_control')) return;
       dispatchRadioIntent({ name: 'set_powerstat', params: { on: false } });
     },
-    onSpeak: () => dispatchRadioIntent({ name: 'speak', params: { mode: 0 } }),
+    onSpeak: () => {
+      if (!hasCapability('speech')) return;
+      dispatchRadioIntent({ name: 'speak', params: { mode: 0 } });
+    },
   };
 }
 
