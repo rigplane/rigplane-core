@@ -4,8 +4,9 @@
  * SAFETY-CRITICAL. Break-in KEYS THE TRANSMITTER, so every test below names
  * the mutation it kills:
  *   (a) the surface becoming a second key path — it must emit SETTING intents
- *       only, and never a key/unkey or a transmit-causing action
- *       (`cw_auto_tune`), exactly one `<RxTxSurface>` stays the authority
+ *       only, and never a key/unkey or a transmit-causing action; RX frequency
+ *       correction remains a non-TX setting intent, while exactly one
+ *       `<RxTxSurface>` stays the authority
  *       (MOR-1262 decomposition R9);
  *   (b) break-in enabled under a permit that is not positively `'allowed'` —
  *       `denied` AND `unknown`, each pinned independently, on the widget AND
@@ -72,6 +73,7 @@ type Handlers = {
   onApfOn?: (on: boolean) => void;
   onTwinPeakToggle?: () => void;
   onReversePaddleToggle?: () => void;
+  onAutoTune?: () => void;
 };
 
 function render(view: RadioViewModel, handlers: Handlers = {}) {
@@ -136,8 +138,8 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   it('never mentions keying, PTT, the TX controller or a permit derivation', () => {
     for (const forbidden of [
       'ptt', 'Ptt', 'PTT', 'requestKey', 'onRequestKey', 'onRequestUnkey', 'tx-controller',
-      'TxAuthoritySnapshot', 'keyBlockedReasons', 'getFrequencyPermit', 'txBands', 'auto_tune',
-      'onAutoTune', 'AutoTune', 'sendCommand', '$lib/transport', '$lib/utils/tx-permit',
+      'TxAuthoritySnapshot', 'keyBlockedReasons', 'getFrequencyPermit', 'txBands', 'sendCommand',
+      '$lib/transport', '$lib/utils/tx-permit',
     ]) {
       expect(CODE).not.toContain(forbidden);
     }
@@ -149,16 +151,45 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
       'view', 'onBreakInMode', 'onLevelChange', 'onApfOn', 'onTwinPeakToggle',
-      'onReversePaddleToggle',
+      'onReversePaddleToggle', 'autoTuneAvailable', 'onAutoTune',
     ]);
   });
 
-  // Kills: adding an AUTO TUNE affordance. `cw_auto_tune` is transmit-causing;
-  // the MOR-1244 ATU-TUNE precedent is state carried, control never.
-  it('renders no AUTO TUNE control', () => {
-    const r = render(base());
-    expect(r.root()!.textContent!.toUpperCase()).not.toContain('TUNE');
-    r.dispose();
+  it('renders an available RX frequency-correction control and emits exactly once', () => {
+    const onAutoTune = vi.fn();
+    const component = mount(CwKeyerSurface, {
+      target,
+      props: { view: base(), autoTuneAvailable: true, onAutoTune },
+    });
+    flushSync();
+    const control = target.querySelector<HTMLElement>('[data-testid="cw-keyer-auto-tune"]');
+    expect(control).not.toBeNull();
+    expect(control!.textContent).toContain('RX frequency correction');
+    press(control!);
+    expect(onAutoTune).toHaveBeenCalledExactlyOnceWith();
+    unmount(component);
+  });
+
+  it('omits the RX frequency-correction control when unavailable or callback-free', () => {
+    const unavailableCallback = vi.fn();
+    const unavailable = mount(CwKeyerSurface, {
+      target,
+      props: { view: base(), autoTuneAvailable: false, onAutoTune: unavailableCallback },
+    });
+    flushSync();
+    expect(target.querySelector('[data-testid="cw-keyer-auto-tune"]')).toBeNull();
+    expect(unavailableCallback).not.toHaveBeenCalled();
+    unmount(unavailable);
+
+    const callbackFree = mount(CwKeyerSurface, {
+      target,
+      props: { view: base(), autoTuneAvailable: true },
+    });
+    flushSync();
+    const control = target.querySelector<HTMLElement>('[data-testid="cw-keyer-auto-tune"]');
+    expect(control).not.toBeNull();
+    expect(() => press(control!)).not.toThrow();
+    unmount(callbackFree);
   });
 
   // Kills: rendering an empty CW panel for a radio with no keyer.

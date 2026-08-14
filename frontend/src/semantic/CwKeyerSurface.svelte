@@ -12,10 +12,9 @@
       keys it: exactly one `<RxTxSurface>` remains the key/unkey authority
       (MOR-1262 decomposition R9). Every intent below is a SETTING intent
       (`set_break_in`, `set_cw_pitch`, …); nothing here takes a TX lease, sends
-      a PTT command or asks for a carrier. `CwPanel.svelte`'s AUTO TUNE button
-      (`cw_auto_tune`) is deliberately ABSENT for the same reason ATU TUNE is
-      absent from the facts (MOR-1244 precedent): state may be carried, a
-      transmit-causing control may not. Pinned behaviourally, not asserted.
+      a PTT command or asks for a carrier. RX frequency correction is a
+      non-TX setting intent when its explicit availability is supplied; it
+      carries no key, tuner, break-in, or TX-authority semantics.
 
   (2) BREAK-IN OBEYS THE ONE PERMIT, FAIL-CLOSED. Arming break-in is gated on
       `view.txPermit` — the model's SINGLE authoritative live-TX-target permit,
@@ -133,9 +132,12 @@
     onApfOn?: (on: boolean) => void;
     onTwinPeakToggle?: () => void;
     onReversePaddleToggle?: () => void;
+    autoTuneAvailable?: boolean;
+    onAutoTune?: () => void;
   }
   let {
     view, onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
+    autoTuneAvailable = false, onAutoTune,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
@@ -193,6 +195,9 @@
   }
   function toggleReversePaddle(): void {
     if (cw && usable(cw.reversePaddle)) onReversePaddleToggle?.();
+  }
+  function requestRxFrequencyCorrection(): void {
+    if (autoTuneAvailable) onAutoTune?.();
   }
 </script>
 
@@ -254,6 +259,13 @@
         </label>
       {/if}
     {/each}
+
+    {#if autoTuneAvailable}
+      <button
+        type="button" class="cw-keyer-toggle" data-testid="cw-keyer-auto-tune"
+        onclick={requestRxFrequencyCorrection}
+      >RX frequency correction</button>
+    {/if}
 
     {#if cw.reversePaddle.availability.structural}
       <button
