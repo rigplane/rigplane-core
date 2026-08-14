@@ -998,6 +998,7 @@ class WebServer:
                 break
         if not isinstance(profile, RadioProfile):
             return caps
+        primitives: tuple[tuple[str, int | None], ...]
         if profile.vfo_scheme == "ab":
             primitives = (
                 ("vfo_swap", profile.swap_ab_code),
