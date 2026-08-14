@@ -21,35 +21,14 @@
  * `twin_peak`) IS declared on this profile — the same MOR-988 §3.2
  * fail-closed shape MOR-1560's DSP walk already established: capability
  * present, sub-parameter never confirmed on the bench, so the handler
- * refuses. `cw_auto_tune` is the sole exception: `onAutoTune`'s gate
- * (`hasCapability('cw') && knownActiveReceiver() !== null`) genuinely
- * DISPATCHES on this profile — but NOT because it skips field-status
- * checks entirely. CORRECTION (verifier-caught, first draft of this file
- * claimed the gate "never inspects any field-status leaf", which is FALSE):
- * `knownActiveReceiver()` (`panel-commands.ts:52`) DOES read one leaf —
- * `isFieldAvailable(state, 'active')` — and `active` is itself unobserved
- * on this fixture (pinned below). The reason the gate still resolves a
- * receiver despite that is MOR-1418's single-receiver carve-out
- * (`panel-commands.ts:44-51`, `:53-55`): with `caps.receivers === 1`, an
- * unobserved `active` falls through to a hardcoded `'MAIN'` instead of
- * blocking. This carve-out is profile-specific, not a property of
- * `cw_auto_tune`'s gate shape — on a dual-RX profile with `active`
- * unobserved and no explicit target, `knownActiveReceiver()` returns
- * `undefined` → `null`, and `onAutoTune` REFUSES (verified: with
- * `caps.receivers = 2` and a `sub` receiver present, keeping `active`
- * unobserved, `onAutoTune` refuses — not walked as its own case here since
- * this suite is IC-7300-only, but stated for the record so this profile's
- * dispatch isn't mistaken for a property of the intent itself).
- *
- * RISK (MOR-1578 leg 4): `cw_auto_tune` is a TRANSMIT-CAUSING action.
- * `SemanticRadioSurfaces.svelte:336-340` deliberately leaves `onAutoTune`
- * UNWIRED — its own comment cites the MOR-1244 ATU-TUNE precedent for
- * withholding transmit-causing controls from that surface. `CwPanel.svelte`
- * (`:130-132`, the `AUTO TUNE` `HardwareButton`) wires it directly with no
- * such guard. Both paths reach the identical `onAutoTune()` handler and the
- * identical `cw_auto_tune` gate; the asymmetry is in which UI SURFACE
- * exposes the control, not in the gate this walk conformance-tests. Pinned
- * per this ticket's instruction to report, not fix.
+ * refuses. `cw_auto_tune` is the sole exception: it is an empty-params RX
+ * frequency-correction intent. Its gate requires `cw` and `audio` tags,
+ * `audioFftAvailable === true`, and an observed active receiver frequency.
+ * The IC-7300 fixture satisfies those RX-analysis prerequisites: its single
+ * receiver makes an unobserved `active` tautologically MAIN (MOR-1418), and
+ * `main.freqHz` is observed. On dual-RX profiles, both `active` and the
+ * selected receiver frequency remain required through the same receiver-field
+ * authority.
  *
  * Every refusal/dispatch below is read directly off the real IC-7300
  * fixture's `fieldStatus`/`capabilities`, never invented.
@@ -288,17 +267,16 @@ describe('IC-7300 fixture — VOX/CW family conformance (MOR-1565)', () => {
     expectRefusal(() => makeCwPanelHandlers().onTwinPeakToggle());
   });
 
-  describe('cw_auto_tune — the one genuine DISPATCH in this family (RED-FIRST evidence in file header; MOR-1578 leg 4 risk finding, see file header)', () => {
-    it("gate reads exactly one field-status leaf, 'active' — unobserved on this fixture, but MOR-1418's single-receiver carve-out (caps.receivers===1) neutralizes it, so onAutoTune still resolves a receiver and dispatches (see file header CORRECTION — the gate is NOT field-status-check-free)", () => {
+  describe('cw_auto_tune — the one genuine RX correction dispatch in this family', () => {
+    it('has cw/audio/FFT plus an observed MAIN frequency; single-RX active resolves tautologically to MAIN', () => {
       expect(IC7300_CAPABILITIES.capabilities).toContain('cw');
+      expect(IC7300_CAPABILITIES.capabilities).toContain('audio');
+      expect(IC7300_CAPABILITIES.audioFftAvailable).toBe(true);
       expect(IC7300_CAPABILITIES.vfoScheme).toBe('ab');
       expect(IC7300_CAPABILITIES.receivers).toBe(1);
       expect(IC7300_STATE.main).toBeTruthy();
-      // Pins the carve-out itself, not just its downstream effect: `active`
-      // genuinely IS unobserved on this fixture — the dispatch below only
-      // happens because MOR-1418's single-receiver fallback bypasses this,
-      // not because the gate has no field-status leaf to check at all.
       expect(IC7300_STATE.fieldStatus?.active?.observed).toBe(false);
+      expect(IC7300_STATE.fieldStatus?.['main.freqHz']?.observed).toBe(true);
     });
 
     it('DISPATCHES cw_auto_tune with an empty params object', () => {

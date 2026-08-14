@@ -44,13 +44,13 @@
  * this was a genuinely reachable, user-visible dead control on this
  * profile before the fix — not a theoretical gap.
  *
- * MOR-1604: (1) `vfo_swap`/`vfo_equalize` now dispatch only when the capability
+ * MOR-1604/MOR-1601: (1) `vfo_swap`/`vfo_equalize` now dispatch only when the capability
  * payload declares their exact primitive tag. The byte-faithful IC-7300
  * capture declares neither, so both correctly refuse without consulting
- * active receiver, slot, or VFO readback. (2)
- * `switch_active_vfo` reads `context.state.active` RAW, bypassing the
- * observation-gated tautological-MAIN resolution every other action here
- * goes through; (3) `mode-psk`/`mode-pskr` bindings declare `{ mode: 'PSK'
+ * active receiver, slot, or VFO readback. (2) `switch_active_vfo` dispatches
+ * only with a declared dual-RX MAIN/SUB topology and a fresh observed active
+ * receiver fact; this single-receiver fixture has neither dual-RX support
+ * nor an observed receiver to toggle. (3) `mode-psk`/`mode-pskr` bindings declare `{ mode: 'PSK'
  * }`/`{ mode: 'PSK-R' }`, but this fixture's `caps.modes` is `['USB','LSB',
  * 'CW','CW-R','AM','FM','RTTY','RTTY-R']` — no PSK/PSK-R — so those two
  * refuse here too, adjacent to (not the same case as) `mode_select` below,
@@ -223,7 +223,7 @@ const CASES: readonly KeyboardCase[] = [
   { action: 'vfo_equalize', frames: [],
     gate: 'captured IC-7300 capability payload omits exact vfo_equalize primitive tag (MOR-1604)' },
   { action: 'switch_active_vfo', frames: [],
-    gate: 'single receiver / no dual_rx — target computes to SUB, nothing to switch to (reads context.state.active RAW, MOR-1578)' },
+    gate: 'single receiver / no dual_rx — no observed dual-RX receiver exists to toggle (MOR-1601)' },
   { action: 'set_active_vfo', params: { vfo: 'MAIN' }, frames: [['set_vfo', { vfo: 'MAIN' }]],
     gate: 'state.main exists — activateReceiver dispatches unconditionally once the receiver resolves' },
   { action: 'toggle_dial_lock', frames: [], gate: 'top-level dialLock unobserved' },
