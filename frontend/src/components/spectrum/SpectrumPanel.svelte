@@ -159,14 +159,22 @@
       ? filterWidthLifecycle.target
       : null,
   );
+  let activeResizePassbandHz = $derived(
+    resizeCapture !== null
+      && resizeCandidate !== null
+      && spectrumAuthority !== null
+      && spectrumAuthority.providerGeneration === resizeCapture.authority.providerGeneration
+      && spectrumAuthority.receiver === resizeCapture.authority.receiver
+      && spectrumAuthority.digest === resizeCapture.authority.digest
+      ? resizeCandidate
+      : null,
+  );
   // The active drag gets an immediate local projection. Once released, only
   // the command lifecycle's busy target may hold that projection; confirmed
   // radio state remains the source of truth for every other state.
   let passbandHz = $derived(
     confirmedPassband
-      ? (resizeCapture !== null && resizeCandidate !== null
-          ? resizeCandidate
-          : lifecyclePassbandHz ?? spectrumAuthority!.filterWidthHz!)
+      ? (activeResizePassbandHz ?? lifecyclePassbandHz ?? spectrumAuthority!.filterWidthHz!)
       : 0,
   );
   let passbandShiftHz = $derived(confirmedPassband ? spectrumAuthority!.ifShiftHz! : 0);

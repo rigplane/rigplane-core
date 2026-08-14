@@ -983,6 +983,27 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(waterfall.querySelector<HTMLElement>('.passband-overlay')?.style.width).toBe('24%');
   });
 
+  it('abandons an active resize projection after receiver authority drifts', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    const overlay = () => waterfall.querySelector<HTMLElement>('.passband-overlay')!;
+
+    pointer(zone, 'pointerdown', 43, 100);
+    passbandHarness.rawWidth = 2_700;
+    pointer(waterfall, 'pointermove', 43, 130);
+    expect(overlay().style.width).toBe('27%');
+
+    authorityHarness.state.current = authority({ receiver: 1 });
+    refreshSpectrumAuthority();
+    flushSync();
+    expect(overlay().style.width).toBe('24%');
+
+    pointer(waterfall, 'pointerup', 43, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+
   it('renders and resizes a fresh PBT-only IC-7300 passband via the production selector (MOR-1649)', () => {
     runtimeHarness.state.currentState = freshPbtOnlyIc7300State();
     runtimeHarness.state.currentCaps = IC7300_CAPABILITIES;
