@@ -26,21 +26,33 @@ or requested target confirmed state.
 
 | Concern | Current evidence | Design consequence |
 | --- | --- | --- |
-| Command ingress | Coalescers and accumulators can discard or replace an earlier intent before it executes. | Schedule only after the concrete backend write succeeds, never after UI intent, queued acceptance, a held command, coalescing, or failure. |
-| Icom writes | An actual write success is the useful causal boundary for post-write observation. | Icom is the first evidence source, not proof that all providers share one settle time. |
-| Acquisition | The scheduler already owns `ensure_fresh(priority=USER)`, single-flight, fairness, and serial budgeting. | Reconciliation enters that scheduler as normal USER work; no bypass or parallel transport read. |
+| Command ingress | `runtime/_poller_types.py:CommandQueue` preserves ordered entries but replaces same-type commands in a coalesced tail; `web/radio_poller.py` drains the surviving entry. | Schedule only after that concrete surviving entry's backend write succeeds, never after UI intent, queued acceptance, a held command, a replaced coalesced entry, or a failure. |
+| Existing immediate reconciliation | `web/radio_poller.py` owns `_POST_WRITE_READBACK_FIELDS` and `_request_post_write_readback()`. The table maps `SetFreq`, `SetMode`, `SetRfGain`, `SetSquelch`, `SetAttenuator`, `SetPreamp`, `SetFilter`, `SetDataMode`, and `SetFilterWidth` to canonical `FieldPath`s; the helper queues `ensure_fresh(..., max_age=1e-9, priority=USER, reason="post_write_readback")` after `_execute`. | The proposed delayed contract must extend or replace this current Icom-oriented jump-queue deliberately. It must not add a second, competing immediate read for a mapped write. |
+| Icom readback | The current Icom `RadioPoller` performs the immediate post-write scheduler request above; CI-V observations subsequently enter StateStore/CommandService rather than being a write response. | Icom supplies a real software-only default-path witness, but not a universal settle-time proof. The child must compare current immediate behavior with a trailing request under fake time. |
+| Acquisition | `core/acquisition_scheduler.py` groups paths by request key, coalesces existing requests, keeps the higher priority, and merges paths/reasons. Its cadence and priming paths also have bounded/rotating work rules. | Reconciliation enters that scheduler as normal USER work; no bypass or parallel transport read. |
+| rigctld correlation | `backends/rigctld_client/radio.py` retains pending command readback correlations, annotates the next matching external readback, then discards unmatched expectations; `core/command_service.py` normalizes that correlation before StateStore reconciliation. | A trailing coordinator must neither duplicate nor steal that immediate correlated-readback ownership. Its initial policy is explicitly **disabled for rigctld** until a dedicated fake-rigctld compatibility slice proves coexistence. |
 | Read storms | Bursty tuning/slider traffic plus per-write reads can amplify serial traffic. | Use a trailing-edge, latest-target timer rather than one timer/read per write. |
 | Canonical state | StateStore has a provider/generation fence for ordered observations. | Carry the generation in the reconciliation key; a stale or replaced provider cannot satisfy a pending target. |
 
-Provider boundaries remain explicit:
+Provider assessment is concrete rather than deferred:
 
-- **Icom:** validate initial timing and affected-field mapping with fake-provider
-  evidence before any provider-specific policy is adopted.
-- **Yaesu:** do not inherit Icom timing or side-effect assumptions. A profile
-  override requires independent evidence and a bounded fake-provider test.
-- **rigctld:** no rollout is authorized by this spike. Its external-process
-  provider boundary, polling behavior, and command/read semantics need their
-  own compatibility and failure analysis.
+- **Icom:** the existing table and immediate `ensure_fresh` path are sufficient
+  software evidence to make Icom the first default candidate. A fake-clock
+  test must prove that replacing its immediate request with one trailing
+  request preserves the affected `FieldPath` mapping and never creates both
+  requests for one executed write.
+- **Yaesu:** the repository has Yaesu CAT observation/profile tests but no
+  matching `_POST_WRITE_READBACK_FIELDS` ingress or generic settle-time
+  declaration. Therefore the generic coordinator may support a profile/data
+  override *mechanically*, but its effective Yaesu policy is `disabled` until
+  a fake-Yaesu provider test supplies an exact writable command, canonical
+  path bundle, and observed settle witness. This is an implementation-ready
+  software gate, not a hardware deferral.
+- **rigctld:** external rigctld already owns command/readback correlation.
+  Generic coordinator support must start `disabled`; a separate fake-rigctld
+  test may enable it only if it proves that a trailing read does not consume,
+  relabel, or race the existing correlation queue. No physical rigctld or
+  bench evidence is required for that decision.
 
 The contract is public-core generic. It contains no device-specific support
 workflow, local-host detail, bench claim, or assertion about FTX-1.
@@ -86,8 +98,13 @@ guess a broad read set from a command name.
 
 - At most one pending trailing timer exists for a reconciliation key.
 - A superseded timer cannot submit a read for its prior write generation.
-- All reads remain scheduler USER work and preserve its single-flight,
-  fairness, and serial-budget policy relative to other users.
+- All reads remain scheduler USER work. This is not a claim that USER work is
+  magically fair: the coordinator has its own bounded fairness contract — at
+  most one queued trailing request per reconciliation key, at most one grace
+  retry, and a per-drain serial budget that round-robins distinct live keys.
+  When that budget is exhausted, the next key is retained for the next drain;
+  a continuously rewritten key cannot prevent an older live key from being
+  selected. Scheduler coalescing still applies after selection.
 - The coordinator is bounded by a documented attempt count and deadline;
   reconnect and shutdown leave no runnable stale timer.
 - Metrics/logging distinguish registered, superseded, fired, scheduler-denied,
@@ -105,7 +122,7 @@ fake providers/scheduler seams, not physical equipment:
 | --- | --- |
 | Slider/VFO burst | Many successful writes for one key yield one trailing latest-target read, never one read per write. |
 | Same-key supersession | Earlier timer cannot fire or confirm after a newer target/write generation. |
-| Cross-key fairness | Bundles share normal USER scheduling and do not starve unrelated acquisition work. |
+| Cross-key fairness | With a finite serial budget, a continuously updated key cannot starve an older distinct live key; each is selected in bounded round-robin order before scheduler coalescing. |
 | Fresh mismatch | At most one explicitly configured grace/retry occurs; final timeout leaves confirmed Store state unchanged. |
 | Read error | Busy/outcome bookkeeping terminates without a Store patch or retry loop. |
 | Reconnect/generation change | Old-generation timers and completions are ignored/cancelled. |
@@ -120,16 +137,22 @@ to prevent a cross-layer refactor masquerading as one change.
 
 | Child | Owned seam (maximum three files) | Acceptance boundary |
 | --- | --- | --- |
-| A: coordinator core | coordinator module, its fake-clock test, narrow integration seam | Keying, trailing supersession, bounded retry, reconnect/shutdown cancellation. |
-| B: scheduler bridge | scheduler integration, focused scheduler test, metrics seam | USER priority only; no bypass; fairness and serial-budget witnesses. |
-| C: Icom mapping | Icom mapping seam, fake-provider test, profile/data declaration | Proven affected-field bundle and default timing; no universal provider claim. |
-| D: Store/lifecycle projection | one derived outcome seam, its test, one consumer adapter | No optimistic Store write; consumers retain MOR-1641 pending/confirmed distinction. |
-| E: provider expansion | one provider declaration, fake test, documentation/update seam | Yaesu or rigctld only after its own evidence and compatibility decision. |
+| A: coordinator core | `src/rigplane/web/post_write_reconciliation.py` (new), `tests/test_post_write_reconciliation.py` (new) | Keying, trailing supersession, bounded retry, reconnect/shutdown cancellation, and the round-robin budget as a pure fake-clock unit. |
+| B: Icom poller integration | `src/rigplane/web/radio_poller.py`, `tests/test_radio_poller_coverage.py` | Route only successful mapped Icom writes through A; assert exactly one of immediate or trailing request, never both. This overlaps stale #1717's `radio_poller.py` and test ownership, so requires its ownership reconciliation first. |
+| C: scheduler bridge proof | `src/rigplane/core/acquisition_scheduler.py`, `tests/test_acquisition_scheduler.py` | Expose only the minimal USER request/budget seam needed by A and prove scheduler coalescing still happens. Both paths overlap stale #1717. |
+| D: lifecycle projection | `frontend/src/lib/stores/commands.svelte.ts`, `frontend/src/lib/stores/__tests__/commands.test.ts` | Derive a non-authoritative pending outcome; no Store patch. This exact pair is outside stale #1717's file list. |
+| E: provider policy declarations | `src/rigplane/profiles/__init__.py`, `src/rigplane/profiles/rig_loader.py`, `tests/test_rig_loader.py` | Parse a disabled-by-default provider/profile override and prove invalid policy is rejected. All three paths overlap stale #1717. |
+| F: provider evidence, one at a time | `tests/test_yaesu_cat_observation_adapter.py` plus one new provider-focused fake test (exact path chosen by its issue) | Enable Yaesu only after its fake evidence; rigctld needs a separate child because `backends/rigctld_client/radio.py` and its tests also overlap stale #1717. |
 
-The exact ownership of stale PR #1717 must be reconciled before any child that
-touches its paths. Do not overwrite, duplicate, or silently absorb that
-branch's work; establish whether it is integrated, superseded, or needs a
-normal reanchor and independent review first.
+Stale PR #1717 actually overlaps `src/rigplane/web/radio_poller.py`,
+`src/rigplane/core/acquisition_scheduler.py`, `src/rigplane/profiles/__init__.py`,
+`src/rigplane/profiles/rig_loader.py`, `tests/test_radio_poller_coverage.py`,
+`tests/test_acquisition_scheduler.py`, and `tests/test_rig_loader.py`; it also
+owns rigctld-client and Yaesu-observation paths relevant to a later provider
+slice. Do not overwrite, duplicate, or silently absorb that branch's work.
+Reconcile whether it is integrated, superseded, or needs a normal reanchor and
+independent review before B, C, E, or a rigctld provider child begins. A and D
+remain independently ownable only after their issue checks current paths.
 
 ## Owner decisions still required
 
