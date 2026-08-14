@@ -340,6 +340,7 @@ class TestMultiVendorProfiles:
             ("ic705.toml", ("get_speech", "set_speech")),
             ("ic7300.toml", ("set_speech",)),
             ("ic7610.toml", ("get_speech",)),
+            ("ic9700.toml", ("set_speech",)),
         ],
     )
     def test_icom_speech_capability_matches_builtin_announcement_routes(
