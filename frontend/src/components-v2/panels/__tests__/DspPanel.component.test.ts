@@ -161,3 +161,61 @@ describe('DspPanel NB modal depth/width gating (MOR-502)', () => {
     expect(modal?.textContent).toContain('NB Level');
   });
 });
+
+describe('DspPanel manual-notch position (MOR-1633)', () => {
+  function openNotchModal(t: HTMLElement): void {
+    vi.useFakeTimers();
+    try {
+      const notchBtn = Array.from(t.querySelectorAll<HTMLButtonElement>('.dsp-btn-wrap button')).find(
+        (b) => b.textContent?.trim() === 'NOTCH',
+      );
+      notchBtn?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(600);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  function manualNotchPosition(t: HTMLElement): HTMLElement {
+    const slider = t.querySelector<HTMLElement>('[aria-label="Notch Position"]');
+    expect(slider).not.toBeNull();
+    return slider!;
+  }
+
+  it.each([0, 128, 255])('renders raw manual-notch position %i without Hz conversion', (notchFreq) => {
+    const t = mountPanel({ notchMode: 'manual', notchFreq });
+    openNotchModal(t);
+    const slider = manualNotchPosition(t);
+
+    expect(slider.getAttribute('aria-valuemin')).toBe('0');
+    expect(slider.getAttribute('aria-valuemax')).toBe('255');
+    expect(slider.getAttribute('aria-valuenow')).toBe(String(notchFreq));
+    const control = slider.closest('.vc-hbar');
+    expect(control?.querySelector('.vc-label')?.textContent).toBe('Notch Position');
+    expect(control?.querySelector('.vc-value')?.textContent).toBe(String(notchFreq));
+    expect(t.textContent).not.toContain('Hz');
+  });
+
+  it('emits raw manual-notch boundaries and midpoint unchanged', () => {
+    const t = mountPanel({ notchMode: 'manual', notchFreq: 127 });
+    openNotchModal(t);
+    const slider = manualNotchPosition(t);
+
+    vi.useFakeTimers();
+    try {
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      vi.advanceTimersByTime(50);
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+      vi.advanceTimersByTime(50);
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+      vi.advanceTimersByTime(50);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(mockHandlers.onNotchFreqChange).toHaveBeenNthCalledWith(1, 128);
+    expect(mockHandlers.onNotchFreqChange).toHaveBeenNthCalledWith(2, 0);
+    expect(mockHandlers.onNotchFreqChange).toHaveBeenNthCalledWith(3, 255);
+  });
+});

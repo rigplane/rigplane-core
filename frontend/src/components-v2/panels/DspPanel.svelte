@@ -406,12 +406,11 @@
     </div>
     {#if notchModalMode === 'manual'}
       <ValueControl
-        label="Notch Freq"
+        label="Notch Position"
         value={notchFreq}
         min={0}
-        max={3000}
+        max={255}
         step={1}
-        unit="Hz"
         renderer="hbar"
         accentColor="var(--v2-accent-cyan)"
         onChange={onNotchFreqChange}
