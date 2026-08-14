@@ -339,12 +339,14 @@ class TestMultiVendorProfiles:
         [
             ("ic705.toml", ("get_speech", "set_speech")),
             ("ic7300.toml", ("set_speech",)),
+            ("ic7610.toml", ("get_speech",)),
+            ("ic9700.toml", ("set_speech",)),
         ],
     )
     def test_icom_speech_capability_matches_builtin_announcement_routes(
         self, filename, speech_routes, tmp_path
     ):
-        """MOR-1609: profile speech is limited to CI-V 0x13 announcements."""
+        """MOR-1610: profile speech is limited to CI-V 0x13 announcements."""
         rig_path = RIGS_DIR / filename
         rig = load_rig(rig_path)
 
