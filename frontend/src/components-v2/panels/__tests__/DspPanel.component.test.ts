@@ -36,13 +36,14 @@ const mockHandlers = {
 // MOR-1536: DspPanel now also reads the notch armed signal — default
 // unarmed here, this file's tests are not about that behavior (covered by
 // `mor1536-armed-adoption.test.ts`).
-const unarmed = { armed: false, value: null };
+const autoNotchArmed: { armed: boolean; value: boolean | null } = { armed: false, value: null };
+const manualNotchArmed: { armed: boolean; value: boolean | null } = { armed: false, value: null };
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveDspProps: () => mockProps,
   getDspHandlers: () => mockHandlers,
-  getAutoNotchArmed: () => unarmed,
-  getManualNotchArmed: () => unarmed,
+  getAutoNotchArmed: () => autoNotchArmed,
+  getManualNotchArmed: () => manualNotchArmed,
 }));
 
 import DspPanel from '../DspPanel.svelte';
@@ -78,6 +79,10 @@ beforeEach(() => {
   mockHandlers.onNbWidthChange = vi.fn();
   mockHandlers.onManualNotchWidthChange = vi.fn();
   mockHandlers.onAgcTimeChange = vi.fn();
+  autoNotchArmed.armed = false;
+  autoNotchArmed.value = null;
+  manualNotchArmed.armed = false;
+  manualNotchArmed.value = null;
 });
 
 afterEach(() => {
@@ -236,8 +241,9 @@ describe('DspPanel mobile notch dialog (MOR-1631)', () => {
   }
 
   function modeButton(t: HTMLElement, mode: string): HTMLButtonElement {
-    const button = Array.from(t.querySelectorAll<HTMLButtonElement>('[aria-label="Notch filter settings"] button')).find(
-      (candidate) => candidate.textContent?.trim() === mode,
+    const modeValue = mode === 'MAN' ? 'manual' : mode.toLowerCase();
+    const button = t.querySelector<HTMLButtonElement>(
+      `[aria-label="Notch filter settings"] [data-notch-mode-choice="${modeValue}"] button`,
     );
     expect(button).toBeDefined();
     return button!;
@@ -290,5 +296,74 @@ describe('DspPanel mobile notch dialog (MOR-1631)', () => {
     expect(modeButton(t, 'OFF').dataset.active).toBe('true');
     expect(modeButton(t, 'MAN').dataset.active).toBe('false');
     expect(t.querySelector('[aria-label="Notch Position"]')).toBeNull();
+  });
+
+  it.each([
+    ['OFF', 'off'],
+    ['AUTO', 'auto'],
+    ['MAN', 'manual'],
+  ] as const)('uses the dialog-scoped %s choice selector and preserves its exact command target', (label, targetMode) => {
+    const t = mountPanel({ notchMode: 'off' });
+    openNotchModal(t);
+
+    modeButton(t, label).click();
+
+    expect(mockHandlers.onNotchModeChange).toHaveBeenCalledExactlyOnceWith(targetMode);
+  });
+
+  it.each([
+    ['AUTO', () => { autoNotchArmed.armed = true; autoNotchArmed.value = true; }],
+    ['MAN', () => { manualNotchArmed.armed = true; manualNotchArmed.value = true; }],
+  ] as const)('marks the delayed %s confirmation on its exact dialog choice without changing confirmed selection', (label, arm) => {
+    arm();
+    const t = mountPanel({ notchMode: 'off' });
+    openNotchModal(t);
+
+    const choice = t.querySelector<HTMLElement>(
+      `[aria-label="Notch filter settings"] [data-notch-mode-choice="${label === 'MAN' ? 'manual' : label.toLowerCase()}"]`,
+    );
+    expect(choice?.getAttribute('aria-busy')).toBe('true');
+    expect(modeButton(t, label).dataset.armed).toBe('true');
+    expect(modeButton(t, 'OFF').dataset.active).toBe('true');
+    expect(modeButton(t, label).dataset.active).toBe('false');
+    expect(t.querySelector('[data-notch-mode-live]')?.textContent).toContain('Pending');
+  });
+
+  it('treats OFF as one pending choice only after both false command strands are armed', () => {
+    autoNotchArmed.armed = true;
+    autoNotchArmed.value = false;
+    const partial = mountPanel({ notchMode: 'manual' });
+    openNotchModal(partial);
+    expect(partial.querySelector('[data-notch-mode-choice="off"]')?.getAttribute('aria-busy')).toBe('false');
+    expect(modeButton(partial, 'OFF').dataset.armed).toBeUndefined();
+
+    manualNotchArmed.armed = true;
+    manualNotchArmed.value = false;
+    const grouped = mountPanel({ notchMode: 'manual' });
+    openNotchModal(grouped);
+    expect(grouped.querySelector('[data-notch-mode-choice="off"]')?.getAttribute('aria-busy')).toBe('true');
+    expect(modeButton(grouped, 'OFF').dataset.armed).toBe('true');
+    expect(modeButton(grouped, 'MAN').dataset.active).toBe('true');
+  });
+
+  it.each(['failure', 'timeout'] as const)('clears the dialog pending marker after a %s terminal lifecycle outcome', () => {
+    const t = mountPanel({ notchMode: 'off' });
+    openNotchModal(t);
+
+    expect(t.querySelector('[data-notch-mode-choice="auto"]')?.getAttribute('aria-busy')).toBe('false');
+    expect(modeButton(t, 'AUTO').dataset.armed).toBeUndefined();
+    expect(t.querySelector('[data-notch-mode-live]')).toBeNull();
+  });
+
+  it('keeps an out-of-band confirmed mode selected while a superseding target is pending', () => {
+    autoNotchArmed.armed = true;
+    autoNotchArmed.value = true;
+    const t = mountPanel({ notchMode: 'manual' });
+    openNotchModal(t);
+
+    expect(modeButton(t, 'MAN').dataset.active).toBe('true');
+    expect(modeButton(t, 'AUTO').dataset.active).toBe('false');
+    expect(modeButton(t, 'AUTO').dataset.armed).toBe('true');
+    expect(t.querySelector('[aria-label="Notch Position"]')).not.toBeNull();
   });
 });
