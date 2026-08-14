@@ -451,6 +451,12 @@ function latestPendingParam(
   for (const command of getCommandLifecycles()) {
     if (command.name !== intentName) continue;
     if (command.params.receiver !== receiver) continue;
+    // Supersession is durable for the older record even after the newer
+    // terminal record's bounded presentation retention expires. Never let a
+    // superseded lifecycle become the newest selectable pending command.
+    // Identity-less legacy/test-double records have no supersession key.
+    if (command.id !== undefined && command.originalEpoch !== undefined
+      && isCommandLifecycleSuperseded(command)) continue;
     const value = command.params[paramKey];
     if (value === undefined) continue;
     if (!latest || command.createdAt >= latest.createdAt) {
