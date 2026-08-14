@@ -156,3 +156,71 @@ for (const fx of fixtures) {
     });
   });
 }
+
+describe.each([
+  {
+    label: 'auto-notch',
+    accessor: getAutoNotchArmed,
+    intentName: 'set_auto_notch',
+    confirmedField: 'autoNotch',
+  },
+  {
+    label: 'manual-notch',
+    accessor: getManualNotchArmed,
+    intentName: 'set_manual_notch',
+    confirmedField: 'manualNotch',
+  },
+] as const)('$label chronological same-key selection (MOR-1672)', ({ accessor, intentName, confirmedField }) => {
+  const command = (status: string, target: boolean, createdAt: number): FakeCommand => ({
+    name: intentName,
+    status,
+    createdAt,
+    updatedAt: createdAt,
+    params: { on: target, receiver: 0 },
+  });
+
+  it.each(['failed', 'cancelled', 'timed-out', 'confirmed'])(
+    'does not resurrect an older pending target after the newer command becomes %s',
+    (terminalStatus) => {
+      runtimeState.state = {
+        active: 'MAIN',
+        main: { [confirmedField]: false },
+        sub: {},
+      };
+      state.commands = [
+        command('pending', true, 10),
+        command(terminalStatus, false, 20),
+      ];
+
+      expect(accessor()).toEqual({ armed: false, value: null });
+    },
+  );
+
+  it('keeps the newest active same-key target armed', () => {
+    runtimeState.state = {
+      active: 'MAIN',
+      main: { [confirmedField]: false },
+      sub: {},
+    };
+    state.commands = [
+      command('pending', false, 10),
+      command('pending', true, 20),
+    ];
+
+    expect(accessor()).toEqual({ armed: true, value: true });
+  });
+
+  it('uses insertion order as the tie-break when same-key commands share a clock tick', () => {
+    runtimeState.state = {
+      active: 'MAIN',
+      main: { [confirmedField]: false },
+      sub: {},
+    };
+    state.commands = [
+      command('pending', true, 20),
+      command('failed', false, 20),
+    ];
+
+    expect(accessor()).toEqual({ armed: false, value: null });
+  });
+});

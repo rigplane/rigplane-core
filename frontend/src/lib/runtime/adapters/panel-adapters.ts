@@ -450,7 +450,6 @@ function latestPendingParam(
   } | null = null;
   for (const command of getCommandLifecycles()) {
     if (command.name !== intentName) continue;
-    if (command.status !== 'pending' && command.status !== 'acknowledged') continue;
     if (command.params.receiver !== receiver) continue;
     const value = command.params[paramKey];
     if (value === undefined) continue;
@@ -461,7 +460,11 @@ function latestPendingParam(
       };
     }
   }
-  if (!latest) return undefined;
+  // Select chronologically first, then inspect liveness. A newer terminal
+  // same-key record is a barrier: filtering terminal records during the scan
+  // would let an older superseded pending record resurface after the newer
+  // command fails, times out, confirms, or is cancelled (MOR-1672).
+  if (!latest || (latest.status !== 'pending' && latest.status !== 'acknowledged')) return undefined;
   if (latest.status !== 'acknowledged') return latest.value;
 
   // Grace backstop: fires regardless of what the sequence guard below would
@@ -533,11 +536,11 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
  *  - A re-click while armed re-arms at the new target: `latestPendingParam`'s
  *    freshest-`createdAt`-wins tie-break already handles this, no separate
  *    "already armed" state to fight.
- *  - `armed` NEVER survives a terminal failure. A command that reaches
- *    `'failed'`/`'cancelled'`/`'timed-out'` fails `latestPendingParam`'s own
- *    `status !== 'pending' && status !== 'acknowledged'` scan guard and is
- *    excluded from consideration the instant it transitions — `armed` clears
- *    immediately, it must never present a failed command as still in flight.
+ *  - `armed` NEVER survives a terminal outcome. `latestPendingParam` first
+ *    selects the newest same-key record chronologically, then requires that
+ *    exact record to be pending/acknowledged. Thus a newer failed, cancelled,
+ *    timed-out, or confirmed record clears armed immediately and cannot let an
+ *    older superseded command resurface as if it were still in flight.
  *
  * Contract for skins consuming this signal:
  *  - MAY style `armed` however fits: desktop-v2 renders it as a `data-armed`
