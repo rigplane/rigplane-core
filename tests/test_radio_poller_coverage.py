@@ -1168,6 +1168,156 @@ async def test_execute_failed_set_filter_width_does_not_queue_readback() -> None
     assert scheduler.pending_requests() == ()
 
 
+@pytest.mark.parametrize(("receiver", "slot"), ((0, "main"), (1, "sub")))
+@pytest.mark.asyncio
+async def test_execute_set_mode_invalidates_stale_width_and_queues_readback(
+    receiver: int, slot: str
+) -> None:
+    mode_path = FieldPath.active(slot, "freq_mode", "mode")
+    width_path = FieldPath.active(slot, "freq_mode", "filter_width")
+    native_width_path = FieldPath.active(str(receiver), "freq_mode", "filter_width")
+    store = StateStore()
+    store.apply_current(
+        Observation(
+            path=native_width_path,
+            value=500,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=1.0,
+        )
+    )
+    radio = _make_radio(active="MAIN", model="IC-7610")
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_set_mode(*_: object, **__: object) -> None:
+        started.set()
+        await release.wait()
+
+    radio.set_mode.side_effect = delayed_set_mode
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(mode_path, width_path)
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    task = asyncio.create_task(  # noqa: SLF001
+        poller._execute(SetMode("USB", filter_width=1, receiver=receiver))
+    )
+    await started.wait()
+    assert str(native_width_path) not in store.snapshot().as_dict()
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    assert payload["fieldStatus"][f"{slot}.filterWidth"]["availability"] == "missing"
+    release.set()
+    await task
+    assert {path for item in scheduler.pending_requests() for path in item.paths} == {
+        mode_path,
+        width_path,
+    }
+    assert all(
+        item.priority is AcquisitionPriority.USER
+        for item in scheduler.pending_requests()
+    )
+    store.apply_current(
+        Observation(
+            path=native_width_path,
+            value=3600,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=2.0,
+        )
+    )
+    assert store.snapshot().field(native_width_path).value == 3600
+
+
+@pytest.mark.asyncio
+async def test_execute_set_mode_ic7300_queues_command_response_width_readback() -> None:
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    mode_path = FieldPath.active("main", "freq_mode", "mode")
+    width_path = FieldPath.active("main", "freq_mode", "filter_width")
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    store = StateStore()
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "filter_width"),
+            value=500,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=1.0,
+        )
+    )
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_set_mode(*_: object, **__: object) -> None:
+        started.set()
+        await release.wait()
+
+    radio.set_mode.side_effect = delayed_set_mode
+    task = asyncio.create_task(poller._execute(SetMode("USB", filter_width=1)))  # noqa: SLF001
+    await started.wait()
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "mode"),
+            value="USB",
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=2.0,
+        )
+    )
+    assert "receiver.0.active.freq_mode.filter_width" not in store.snapshot().as_dict()
+    release.set()
+    await task
+
+    assert {path for item in scheduler.pending_requests() for path in item.paths} == {
+        mode_path,
+        width_path,
+    }
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert any(args == (0x26,) for args, _ in radio.send_civ.await_args_list)
+    assert any(
+        args == (0x1A,) and kwargs["sub"] == 0x03
+        for args, kwargs in radio.send_civ.await_args_list
+    )
+    store.apply_current(
+        Observation(
+            path=FieldPath.active("0", "freq_mode", "filter_width"),
+            value=3600,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=3.0,
+        )
+    )
+    assert (
+        store.snapshot().field("receiver.0.active.freq_mode.filter_width").value == 3600
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_failed_set_mode_keeps_width_unknown_and_skips_readback() -> None:
+    mode_path = FieldPath.active("main", "freq_mode", "mode")
+    width_path = FieldPath.active("main", "freq_mode", "filter_width")
+    native_width_path = FieldPath.active("0", "freq_mode", "filter_width")
+    store = StateStore()
+    store.apply_current(
+        Observation(
+            path=native_width_path,
+            value=500,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=1.0,
+        )
+    )
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    radio.set_mode.side_effect = RuntimeError("write failed")
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(mode_path, width_path)
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    with pytest.raises(RuntimeError, match="write failed"):
+        await poller._execute(SetMode("USB", filter_width=1))  # noqa: SLF001
+    assert str(native_width_path) not in store.snapshot().as_dict()
+    assert scheduler.pending_requests() == ()
+
+
 @pytest.mark.asyncio
 async def test_execute_unmapped_write_does_not_queue_a_readback() -> None:
     """A write command with no entry in ``_POST_WRITE_READBACK_FIELDS`` (e.g.
