@@ -54,6 +54,7 @@ const state = (over: Partial<FakeState> = {}): FakeState => ({
 });
 describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   afterEach(() => {
+    vi.useRealTimers();
     lifecycle.commands = [];
     lifecycle.confirms = [];
     runtimeState.state = null;
@@ -125,14 +126,12 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
     expect(lifecycle.confirms).toEqual([]);
   });
-
   it('does not treat a missing exact field marker in a non-empty ACK map as an empty boundary', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'sub.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
     expect(lifecycle.confirms).toEqual([]);
   });
-
   it('keeps a fresh non-matching observation canonical while the acknowledged target remains pending', () => {
     runtimeState.state = state({ main: { filterWidth: 2400 }, observationSeq: 5, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4, ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
@@ -141,7 +140,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     });
     expect(lifecycle.confirms).toEqual([]);
   });
-
   it('does not let an accessor read confirm SUB independently of MAIN', () => {
     runtimeState.state = state({
       active: 'SUB', main: { filterWidth: 3000 }, sub: { filterWidth: 2800 }, observationSeq: 5,
@@ -156,7 +154,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     });
     expect(lifecycle.confirms).toEqual([]);
   });
-
   it('projects only the newest same-receiver target, so older late events cannot overwrite it', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, observationSeq: 5 });
     lifecycle.commands = [
@@ -168,7 +165,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     });
     expect(lifecycle.confirms).toEqual([]);
   });
-
   it('lets a newer terminal record suppress an older pending target', () => {
     runtimeState.state = state();
     lifecycle.commands = [
@@ -180,7 +176,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       outcome: { phase: 'failed', error: 'rejected' },
     });
   });
-
   it.each([
     ['failed', 'backend rejected'],
     ['timed-out', undefined],
@@ -192,8 +187,8 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: { phase: status, error },
     });
   });
-
   it('captures only finite public-field ACK markers through the real command store seam', async () => {
+    vi.useFakeTimers();
     vi.doUnmock('$lib/stores/commands.svelte');
     vi.resetModules();
     const fields = Object.fromEntries(Array.from({ length: 198 }, (_, index) => [
@@ -213,31 +208,33 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(acknowledged).not.toHaveProperty('radioState');
     expect(acknowledged).not.toHaveProperty('fieldStatus');
     expect(acknowledged).not.toHaveProperty('main');
+    const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
     runtimeState.state = state({ active: 'SUB', sub: { filterWidth: 3000 }, fieldStatus: { 'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 73 } } });
     emitAcceptedState(runtimeState.state);
     expect(store.getCommandLifecycle('real-ack', 9)?.status).toBe('acknowledged');
     runtimeState.state = state({ active: 'SUB', sub: { filterWidth: 3000 }, fieldStatus: { 'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 74 } } });
     emitAcceptedState(runtimeState.state);
     expect(store.getCommandLifecycle('real-ack', 9)?.status).toBe('confirmed');
-
+    expect(getLiveView()).toMatchObject({ confirmed: 3000, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } });
+    vi.advanceTimersByTime(5_000);
+    expect(store.getCommandLifecycle('real-ack', 9)).toBeUndefined();
+    expect(getLiveView()).toMatchObject({ confirmed: 3000, phase: 'idle', busy: false, outcome: null });
     commandRadio.current = null;
     store.beginCommand({ id: 'cold-ack', name: 'set_filter_width', params: { width: 2800, receiver: 0 }, originalEpoch: 9 });
     store.acknowledgeCommand('cold-ack', 9, 10);
     expect(store.getCommandLifecycle('cold-ack', 9)).toMatchObject({
       status: 'acknowledged', ackObservationSeq: undefined, ackFieldObservationTimes: {},
     });
-    const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
     runtimeState.state = state({ main: { filterWidth: 2400 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     emitAcceptedState(runtimeState.state);
     expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2800, phase: 'acknowledged', busy: true });
     expect(store.getCommandLifecycle('cold-ack', 9)?.ackFieldObservationTimes).toEqual({ 'main.filterWidth': 5 });
     runtimeState.state = state({ main: { filterWidth: 2800 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6 } } });
     emitAcceptedState(runtimeState.state);
-    expect(getLiveView()).toMatchObject({ confirmed: 2800, target: null, phase: 'idle', busy: false });
+    expect(getLiveView()).toMatchObject({ confirmed: 2800, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } });
     expect(store.getCommandLifecycle('cold-ack', 9)?.status).toBe('confirmed');
     store.resetCommandLifecycle();
   });
-
   it('never resurfaces a superseded receiver lifecycle after its newer outcome retires', async () => {
     vi.useFakeTimers();
     vi.doUnmock('$lib/stores/commands.svelte');

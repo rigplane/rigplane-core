@@ -243,8 +243,8 @@ export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
   return typeof value === 'number' ? value : null;
 }
 
-export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged';
-export type FilterWidthCommandOutcome = 'failed' | 'timed-out' | 'cancelled';
+export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged' | 'confirmed';
+export type FilterWidthCommandOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled';
 export interface FilterWidthCommandLifecycleView {
   confirmed: number | null; target: number | null; phase: FilterWidthCommandPhase; busy: boolean;
   outcome: { phase: FilterWidthCommandOutcome; error?: string } | null;
@@ -280,7 +280,10 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
   if (!observed) return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null };
 
   const command = latestFilterWidthLifecycle(observed.receiver);
-  if (!command || command.status === 'confirmed') return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
+  if (!command) return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
+  if (command.status === 'confirmed') {
+    return { confirmed: observed.width, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } };
+  }
   if (command.status === 'failed' || command.status === 'timed-out' || command.status === 'cancelled') {
     return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: { phase: command.status, error: command.error } };
   }
