@@ -39,10 +39,9 @@
  * `state.txAntenna` value picks which name it would dispatch), so both
  * names refuse identically here, before that branch is ever reached; (3) 6
  * genuinely DISPATCH: all 4 scan intents require the declared `scan`
- * capability but no observed scan state; `speak` dispatches unconditionally,
- * the same ungated shape MOR-1578 already flagged for `vfo_swap`/
- * `vfo_equalize` (leg 1) — cited here as the same class, not re-filed;
- * `set_powerstat`
+ * capability but no observed scan state; `speak` requires the declared
+ * `speech` capability but no state or VFO primitive, so it remains a blind
+ * command only when the profile declares support; `set_powerstat`
  * DOES check a capability (`power_control`, declared) but has no field
  * gate either (RED-FIRST target, see below). `memory_clear` (via
  * `onClear`) is the one DISPATCH that goes through `currentMemorySnapshot()`'s
@@ -171,7 +170,7 @@ const CASES: readonly IntentCase[] = [
     gate: 'currentA03cContext() resolves; power_control capability declared; no field-observation gate beyond that — RED-FIRST target, see file header' },
   { label: 'speak', run: () => makeSystemHandlers().onSpeak(),
     frames: [['speak', { mode: 0 }]],
-    gate: 'no gate at all — unconditional, not even a capability check (MOR-1578-class)' },
+    gate: 'speech capability declared; no radio-state, model-name, or VFO-primitive gate' },
   { label: 'set_antenna_1', run: () => makeAntennaHandlers().onSelectAnt1(),
     frames: [],
     gate: 'caps.antennas=1 < 2 structural gate (fires before the also-unobserved rxAntenna1 field check)' },
@@ -207,7 +206,12 @@ const CASES: readonly IntentCase[] = [
 describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', () => {
   beforeEach(() => {
     h.state = fixtureState(profile);
-    h.caps = fixtureCaps(profile);
+    // This historical state/capability capture predates the static speech
+    // topology. Declare the capability explicitly for every dispatch row.
+    h.caps = {
+      ...fixtureCaps(profile),
+      capabilities: [...fixtureCaps(profile).capabilities, 'speech'],
+    };
     h.sendCommand.mockClear();
   });
 
@@ -227,6 +231,7 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
     expect(IC7300_CAPABILITIES.capabilities).toEqual(expect.arrayContaining([
       'scan', 'power_control', 'dial_lock', 'rit', 'xit',
     ]));
+    expect(h.caps?.capabilities).toContain('speech');
     for (const field of ['dialLock', 'ritOn', 'ritTx', 'ritFreq', 'rxAntenna1', 'rxAntenna2', 'txAntenna']) {
       expect(IC7300_STATE.fieldStatus?.[field as keyof typeof IC7300_STATE.fieldStatus]?.observed).toBe(false);
     }
@@ -280,6 +285,20 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
         ['scan_set_df_span', { span: 5 }],
         ['scan_set_resume', { mode: 2 }],
       ]);
+    });
+  });
+
+  describe('C13 speak command', () => {
+    it('REFUSES without speech capability, with zero lifecycle/frame even when state is absent', () => {
+      h.caps = { ...fixtureCaps(profile), capabilities: [] };
+      h.state = null;
+      expectRefusal(() => makeSystemHandlers().onSpeak());
+    });
+
+    it('dispatches exactly with declared speech and absent state, independently of VFO primitives', () => {
+      h.caps = { ...fixtureCaps(profile), capabilities: ['speech'] };
+      h.state = null;
+      expectFrames(() => makeSystemHandlers().onSpeak(), [['speak', { mode: 0 }]]);
     });
   });
 

@@ -1720,7 +1720,7 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
   beforeEach(() => {
     h.state = state();
     h.caps = {
-      capabilities: ['scope', 'dual_rx', 'dial_lock', 'power_control'],
+      capabilities: ['scope', 'dual_rx', 'dial_lock', 'power_control', 'speech'],
       scope: true,
       stateContractVersion: 1,
       providerGeneration: 31,
@@ -1787,6 +1787,15 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
 
+    // `speak` is capability-only: missing support must create neither an
+    // outbound frame nor a command lifecycle, independently of radio state.
+    system.onSpeak();
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+
+    // Declared support remains deliberately blind to radio state: this is a
+    // command, not a state-derived toggle.
+    h.caps = { ...h.caps!, capabilities: ['speech'] };
     h.state = null;
     system.onSpeak();
     expect(exactCalls()).toEqual([['speak', { mode: 0 }]]);
