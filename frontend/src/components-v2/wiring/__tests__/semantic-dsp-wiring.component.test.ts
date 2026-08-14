@@ -359,7 +359,7 @@ describe('every dsp intent reaches its own command-bus handler', () => {
   it.each([
     ['nrLevel', 5, () => h.nrLevel], ['nbLevel', 30, () => h.nbLevel],
     ['nbDepth', 3, () => h.nbDepth], ['nbWidth', 100, () => h.nbWidth],
-    ['notchFreq', 1200, () => h.notchFreq], ['manualNotchWidth', 2, () => h.manualNotchWidth],
+    ['notchFreq', 128, () => h.notchFreq], ['manualNotchWidth', 2, () => h.manualNotchWidth],
     ['agcTimeConstant', 4, () => h.agcTime],
   ] as const)('routes the "%s" level with its raw value', (field, value, spy) => {
     render();

@@ -59,7 +59,7 @@
     ['nrLevel', 'NR level', 0, 15, 1],
     ['nbDepth', 'NB depth', 1, 10, 1],
     ['nbWidth', 'NB width', 0, 255, 1],
-    ['notchFreq', 'Notch freq', 0, 3000, 1],
+    ['notchFreq', 'Notch position', 0, 255, 1],
     ['manualNotchWidth', 'Notch width', 0, 2, 1, (v: number) => NOTCH_WIDTH_LABELS[v] ?? String(v)],
     ['agcTimeConstant', 'AGC time', 0, 9, 1, formatAgcTime],
   ] as const;
