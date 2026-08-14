@@ -9,8 +9,10 @@
  *   (a) NO KEY PATH. With everything ARMED — break-in structurally available,
  *       `txPermit` `allowed`, every control enabled — exercising EVERY control
  *       on the surface must produce only the legal SETTING commands and ZERO
- *       commands of the key/unkey class (`ptt`, `cw_auto_tune`,
- *       `set_tuner_status`). Exactly one `<RxTxSurface>` remains the key/unkey
+ *       commands of the key/unkey class (`ptt`, `set_tuner_status`). The
+ *       RX-assisted frequency correction is intentionally distinct: it
+ *       delegates to the existing fail-closed `cw_auto_tune` intent and never
+ *       asks the App TX authority for a lease. Exactly one `<RxTxSurface>` remains the key/unkey
  *       authority (MOR-1262 decomposition R9), and it is untouched here.
  *   (b) The break-in gate survives the real adapter: a radio whose TX target is
  *       unobserved (permit `unknown`) reaches the surface with the control
@@ -110,10 +112,9 @@ import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 /**
  * The command names that KEY or cause a carrier. Not one of these may leave
  * this surface, in any state, through any control. `set_tuner_status` is here
- * because value 2 starts an ATU tune cycle (the MOR-1244 carrier), and
- * `cw_auto_tune` is `CwPanel`'s own transmit-causing button.
+ * because value 2 starts an ATU tune cycle (the MOR-1244 carrier).
  */
-const KEY_CLASS_COMMANDS = ['ptt', 'cw_auto_tune', 'set_tuner_status'] as const;
+const KEY_CLASS_COMMANDS = ['ptt', 'set_tuner_status'] as const;
 
 const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
@@ -163,7 +164,7 @@ function liveState(over: Partial<ServerState> = {}, mode = 'CW'): ServerState {
   } as unknown as ServerState;
 }
 
-const liveCaps = (tags: readonly string[]): Capabilities => ({
+const liveCaps = (tags: readonly string[], audioFftAvailable = false): Capabilities => ({
   model: 'fixture', scope: false, audio: false, tx: true,
   capabilities: tags, receivers: 2, vfoScheme: 'main_sub', freqRanges: [],
   // A radio that declares no modes is not a radio that exists, and the
@@ -174,7 +175,7 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
-  scopeSource: null, audioFftAvailable: false,
+  scopeSource: null, audioFftAvailable,
   stateContractVersion: 1, providerGeneration: 0,
 } as unknown as Capabilities);
 
@@ -254,8 +255,8 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
    * Run in both mutex halves because APF (CW/CW-R) and TPF (RTTY/RTTY-R) can
    * never be live at once, so one render cannot exercise both live.
    *
-   * MUTATION KILLED: wiring a key intent onto ANY control here (`cmd('ptt')`,
-   * `tx.start(...)`, `onAutoTune`, an ATU tune). Sliders are driven to their
+   * MUTATION KILLED: wiring a key intent onto ANY setting control here (`cmd('ptt')`,
+   * `tx.start(...)`, an ATU tune). Sliders are driven to their
    * maximum, so even a "key at full scale" mutant is exercised.
    */
   it.each([
@@ -335,6 +336,49 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     h.state = liveState({ ptt: true } as Partial<ServerState>);
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
+  });
+});
+
+/* ── (a2) RX-ASSISTED FREQUENCY CORRECTION — EXISTING SAFE INTENT ─────── */
+
+describe('RX-assisted frequency correction wires only the existing safe capability facts', () => {
+  /**
+   * RED-FIRST: on the parent revision this control is absent because the
+   * semantic wiring deliberately omits both props. This exact composed-tree
+   * witness therefore fails before the wiring change, instead of merely
+   * proving CwKeyerSurface can render a prop supplied by a unit-test fixture.
+   */
+  it('renders only with CW + audio + audio FFT and delegates 1:1 without TX authority', () => {
+    const caps = liveCaps([...CW_TAGS, 'audio'], true);
+    h.caps = caps;
+    setCapabilities(caps);
+    render();
+
+    const correction = el('auto-tune');
+    expect(correction).not.toBeNull();
+    expect(correction!.textContent).toContain('RX frequency correction');
+    press(correction!);
+    flushSync();
+
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('cw_auto_tune', {}, expect.any(String));
+    expect(h.txStart).not.toHaveBeenCalled();
+    expect(h.txRelease).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['audio FFT is absent', [...CW_TAGS, 'audio'], false],
+    ['audio capability is absent', CW_TAGS, true],
+    ['CW capability is absent', ['tx', 'audio'], true],
+  ] as const)('renders no correction control when %s', (_reason, tags, audioFftAvailable) => {
+    const caps = liveCaps(tags, audioFftAvailable);
+    h.caps = caps;
+    setCapabilities(caps);
+    render();
+
+    expect(el('auto-tune')).toBeNull();
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(h.txStart).not.toHaveBeenCalled();
+    expect(h.txRelease).not.toHaveBeenCalled();
   });
 });
 
