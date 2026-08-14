@@ -397,6 +397,19 @@
   }
 
   /**
+   * MOR-1652 — equalize and swap are caller-admitted primitive intents. They
+   * do not need an observed A/B identity because this surface neither chooses
+   * a direction nor derives source/target; an omitted callback remains inert.
+   */
+  function equalizeVfos(): void {
+    onEqualizeVfos?.();
+  }
+
+  function swapVfos(): void {
+    onSwapVfos?.();
+  }
+
+  /**
    * MOR-1321 — the OPERATIONAL half of the gate, and it applies to the quick
    * triggers only. `quick_split` / `quick_dualwatch` end with the corresponding
    * fact turned ON, so firing one while that fact is unobserved would ask the
@@ -658,8 +671,8 @@
       Button text is the accessible name; no `aria-label` duplicates it.
     -->
     {#if hasVfoPair}
-      {@const equalizeReason = identityOnlyReasonText()}
-      {@const swapReason = identityOnlyReasonText()}
+      {@const equalizeReason = undefined}
+      {@const swapReason = undefined}
       {@const quickSplitReason = quickSplitReasonText()}
       {@const quickDualWatchReason = quickDualWatchReasonText()}
       <div
@@ -669,12 +682,12 @@
       >
         <button type="button" class="vfo-op" data-vfo-equalize
           title={equalizeReason} aria-describedby={reasonId('equalize', equalizeReason)}
-          disabled={relativeIdentityUnknown} onclick={() => { if (!relativeIdentityUnknown) onEqualizeVfos?.(); }}>
+          disabled={!onEqualizeVfos} onclick={equalizeVfos}>
           {t('core.vfo.ops.equalize')}
         </button>
         <button type="button" class="vfo-op" data-vfo-swap
           title={swapReason} aria-describedby={reasonId('swap', swapReason)}
-          disabled={relativeIdentityUnknown} onclick={() => { if (!relativeIdentityUnknown) onSwapVfos?.(); }}>
+          disabled={!onSwapVfos} onclick={swapVfos}>
           {t('core.vfo.ops.swap')}
         </button>
         <button
