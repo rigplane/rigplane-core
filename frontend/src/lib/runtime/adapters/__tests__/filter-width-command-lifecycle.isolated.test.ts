@@ -18,12 +18,14 @@ type FakeCommand = {
   status: 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'cancelled' | 'timed-out';
   error?: string;
   ackObservationSeq?: number;
+  ackFieldObservationTimes?: Record<string, number>;
 };
 type FakeState = {
   active: 'MAIN' | 'SUB';
   main: Record<string, unknown>;
   sub: Record<string, unknown>;
   observationSeq?: number;
+  fieldStatus?: Record<string, { observed?: boolean; freshness?: string; availability?: string; lastObservedMonotonic?: number | null }>;
 };
 
 const lifecycle = { commands: [] as FakeCommand[], confirms: [] as [string, number, number][] };
@@ -46,7 +48,8 @@ const command = (over: Partial<FakeCommand> = {}): FakeCommand => ({
   originalEpoch: 7, eventEpoch: 7, createdAt: 1, status: 'pending', ...over,
 });
 const state = (over: Partial<FakeState> = {}): FakeState => ({
-  active: 'MAIN', main: { filterWidth: 2400 }, sub: {}, observationSeq: 4, ...over,
+  active: 'MAIN', main: { filterWidth: 2400 }, sub: {}, observationSeq: 4,
+  fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 } }, ...over,
 });
 
 describe('Filter Width command lifecycle projection (MOR-1664)', () => {
@@ -74,7 +77,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
 
   it('does not let a matching snapshot already present at ACK confirm the command', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, observationSeq: 4 });
-    lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4 })];
+    lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4, ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toEqual({
       confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
@@ -82,17 +85,58 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   });
 
   it('confirms the newest acknowledged target only after a fresh matching observation', () => {
-    runtimeState.state = state({ main: { filterWidth: 3000 }, observationSeq: 5 });
-    lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4 })];
+    runtimeState.state = state({ main: { filterWidth: 3000 }, observationSeq: 5, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4, ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toEqual({
       confirmed: 3000, target: null, phase: 'idle', busy: false, outcome: null,
     });
     expect(lifecycle.confirms).toEqual([['width-1', 7, 7]]);
   });
 
+  it('does not let an unrelated global observation advance confirm a cached matching width', () => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, observationSeq: 99,
+      fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 } } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4, ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
+    expect(lifecycle.confirms).toEqual([]);
+  });
+
+  it('does not confirm a matching width from a reverse or stale field marker', () => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 3 } } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ target: 3000, phase: 'acknowledged', busy: true });
+    expect(lifecycle.confirms).toEqual([]);
+  });
+
+  it.each([
+    ['missing status', undefined],
+    ['unobserved status', { observed: false, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 }],
+    ['stale status', { observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5 }],
+    ['unavailable status', { observed: true, freshness: 'fresh', availability: 'stale', lastObservedMonotonic: 5 }],
+  ])('does not confirm from %s evidence', (_case, fieldStatus) => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: fieldStatus === undefined ? {} : { 'main.filterWidth': fieldStatus } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ target: 3000, phase: 'acknowledged', busy: true });
+    expect(lifecycle.confirms).toEqual([]);
+  });
+
+  it('does not let a legacy record without an ACK field boundary confirm', () => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
+    lifecycle.commands = [command({ status: 'acknowledged' })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ target: 3000, phase: 'acknowledged', busy: true });
+    expect(lifecycle.confirms).toEqual([]);
+  });
+
+  it('uses the first finite field marker after an empty new-format ACK boundary', () => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: {} })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: null, phase: 'idle', busy: false });
+    expect(lifecycle.confirms).toEqual([['width-1', 7, 7]]);
+  });
+
   it('keeps a fresh non-matching observation canonical while the acknowledged target remains pending', () => {
-    runtimeState.state = state({ main: { filterWidth: 2400 }, observationSeq: 5 });
-    lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4 })];
+    runtimeState.state = state({ main: { filterWidth: 2400 }, observationSeq: 5, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4, ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toEqual({
       confirmed: 2400, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
@@ -102,9 +146,11 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it('correlates confirmation with the active SUB receiver rather than MAIN', () => {
     runtimeState.state = state({
       active: 'SUB', main: { filterWidth: 3000 }, sub: { filterWidth: 2800 }, observationSeq: 5,
+      fieldStatus: { 'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } },
     });
     lifecycle.commands = [command({
       id: 'sub-width', params: { width: 2800, receiver: 1 }, status: 'acknowledged', ackObservationSeq: 4,
+      ackFieldObservationTimes: { 'sub.filterWidth': 4 },
     })];
     expect(getFilterWidthCommandLifecycle()).toEqual({
       confirmed: 2800, target: null, phase: 'idle', busy: false, outcome: null,

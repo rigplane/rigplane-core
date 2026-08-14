@@ -20,6 +20,14 @@ export interface CommandLifecycle {
    * value) and would leave the sequence guard permanently unable to fire.
    */
   ackObservationSeq?: number;
+  /**
+   * Bounded ACK-time field-observation markers.  These are correlation
+   * metadata only: they deliberately retain neither radio values nor field
+   * provenance.  An empty object means the current command-store contract
+   * captured no finite markers; an absent property is a legacy record and
+   * must not be used for confirmation.
+   */
+  ackFieldObservationTimes?: Readonly<Record<string, number>>;
 }
 export interface BeginCommandInput {
   id: string; name: string; params: Readonly<Record<string, unknown>>;
@@ -34,6 +42,7 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  */
 const OUTCOME_RETENTION_MS = 5_000;
 const MAX_RETAINED_COMMANDS = 100;
+const MAX_ACK_FIELD_OBSERVATION_TIMES = 100;
 let commands = $state<CommandLifecycle[]>([]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const key = (id: string, epoch: number): string => `${epoch}:${id}`;
@@ -87,7 +96,14 @@ function transition(
   command.status = status; command.eventEpoch = eventEpoch; command.updatedAt = Date.now();
   if (error) command.error = error;
   if (status === 'acknowledged') {
-    command.ackObservationSeq = getRadioState()?.observationSeq;
+    const radio = getRadioState();
+    command.ackObservationSeq = radio?.observationSeq;
+    const observations: Record<string, number> = {};
+    for (const [path, field] of Object.entries(radio?.fieldStatus ?? {}).slice(0, MAX_ACK_FIELD_OBSERVATION_TIMES)) {
+      const marker = field.lastObservedMonotonic;
+      if (typeof marker === 'number' && Number.isFinite(marker)) observations[path] = marker;
+    }
+    command.ackFieldObservationTimes = observations;
     startLiveDeadline(command);
   } else {
     retainTerminalOutcome(command);

@@ -260,13 +260,14 @@ export interface FilterWidthCommandLifecycleView {
   outcome: { phase: FilterWidthCommandOutcome; error?: string } | null;
 }
 
-function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; observationSeq?: number } | null {
+function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; fieldPath: string; fieldStatus: NonNullable<ServerState['fieldStatus']>[string] | undefined } | null {
   const state = runtime.state;
   if (!state) return null;
   const receiver: 0 | 1 = state.active === 'SUB' ? 1 : 0;
   const width = (receiver === 0 ? state.main : state.sub)?.filterWidth;
   if (typeof width !== 'number' || !Number.isFinite(width)) return null;
-  return { receiver, width, observationSeq: state.observationSeq };
+  const fieldPath = receiver === 0 ? 'main.filterWidth' : 'sub.filterWidth';
+  return { receiver, width, fieldPath, fieldStatus: state.fieldStatus?.[fieldPath] };
 }
 
 /** The later array record wins a same-millisecond dispatch tie. */
@@ -297,11 +298,21 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
 
   const target = command.params.width as number;
   if (command.status === 'acknowledged') {
-    // ACK alone is never confirmation. Require both the command's ack-time
-    // observation boundary and a strictly newer matching observation before
-    // completing this exact id/original-epoch record through the store API.
-    if (command.ackObservationSeq !== undefined && observed.observationSeq !== undefined
-      && observed.observationSeq > command.ackObservationSeq && observed.width === target) {
+    // ACK alone is never confirmation. A qualifying field observation must
+    // be fresh, available and observed, and must carry a finite marker newer
+    // than the marker captured for this exact public field at ACK.  A new
+    // record that had no finite marker for this field at ACK may use its first
+    // finite post-ACK marker; legacy records without the map never confirm.
+    const marker = observed.fieldStatus?.lastObservedMonotonic;
+    const ackMarkers = command.ackFieldObservationTimes;
+    const ackMarker = ackMarkers?.[observed.fieldPath];
+    const isQualifying = observed.fieldStatus?.observed === true
+      && observed.fieldStatus.freshness === 'fresh'
+      && observed.fieldStatus.availability === 'available'
+      && typeof marker === 'number' && Number.isFinite(marker)
+      && ackMarkers !== undefined
+      && (ackMarker === undefined || marker > ackMarker);
+    if (isQualifying && observed.width === target) {
       confirmCommand(command.id, command.originalEpoch, command.eventEpoch ?? command.originalEpoch);
       return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
     }
