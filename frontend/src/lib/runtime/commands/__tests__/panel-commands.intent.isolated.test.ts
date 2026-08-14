@@ -1497,6 +1497,23 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.unavailable.add('active');
     refuse();
     h.unavailable.clear();
+    h.state = { ...state(), fieldStatus: {} } as ServerState;
+    refuse();
+    h.state = {
+      ...state(),
+      fieldStatus: { active: { ...freshStatus, observed: false } },
+    } as ServerState;
+    refuse();
+    h.state = {
+      ...state(),
+      fieldStatus: { active: { ...freshStatus, freshness: 'stale' } },
+    } as ServerState;
+    refuse();
+    h.state = {
+      ...state(),
+      fieldStatus: { active: { storePath: 'active', observed: true, freshness: 'fresh' } },
+    } as unknown as ServerState;
+    refuse();
     h.state = { ...state(), active: 'UNKNOWN' as never };
     refuse();
     h.state = { ...state(), providerGeneration: 32 };

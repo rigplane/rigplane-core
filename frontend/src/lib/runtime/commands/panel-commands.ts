@@ -1625,7 +1625,7 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       // active receiver is an observed, fresh fact on a declared dual-RX
       // MAIN/SUB topology. Never infer MAIN from an unobserved raw value.
       if (context.caps.receivers < 2 || !has('dual_rx') || !context.state.sub
-        || !knownA03cTopLevelField(context, 'active')) return true;
+        || !observedAvailableField(context.state, 'active')) return true;
       const active = context.state.active;
       if (active !== 'MAIN' && active !== 'SUB') return true;
       const target = active === 'MAIN' ? 'SUB' : 'MAIN';
