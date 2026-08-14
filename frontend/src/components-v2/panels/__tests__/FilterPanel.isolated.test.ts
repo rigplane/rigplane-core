@@ -233,6 +233,13 @@ describe('panel structure', () => {
 });
 
 describe('Filter Width lifecycle presentation (MOR-1665)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  const tableConfig = {
+    defaults: [2400, 2400, 2400], fixed: false, minHz: 1800, maxHz: 3000, stepHz: 1,
+    table: [1800, 2400, 3000],
+  } as typeof mockProps.filterConfig;
+
   it('keeps the canonical BW readout distinct from a pending target and marks the group busy', () => {
     setWidthLifecycle({
       target: 3000, phase: 'acknowledged', busy: true,
@@ -268,22 +275,67 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     expect(t.querySelector('[data-filter-width-live]')?.textContent).toContain(message);
   });
 
-  it('keeps a table-mode slider on canonical state while separately marking its pending target', () => {
-    setWidthLifecycle({
-      target: 3000, phase: 'pending', busy: true,
-      presentation: presentation('table-command', 'pending', 3000),
-    });
-    const t = mountPanel({
-      filterConfig: {
-        defaults: [2400, 2400, 2400], fixed: false, minHz: 1800, maxHz: 3000, stepHz: 1,
-        table: [1800, 2400, 3000],
-      } as typeof mockProps.filterConfig,
-    });
+  it.each(['keyboard', 'pointer'] as const)(
+    'keeps table visuals canonical through raw %s input, pending, and accepted state',
+    (input) => {
+      const t = mountPanel({ filterConfig: tableConfig });
+      const slider = t.querySelector<HTMLElement>('[role="slider"]')!;
+      const hbar = t.querySelector<HTMLElement>('.vc-hbar')!;
+      if (input === 'keyboard') {
+        slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+        vi.advanceTimersByTime(60);
+      } else {
+        slider.setPointerCapture = vi.fn();
+        vi.spyOn(hbar, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+        slider.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 100, pointerId: 1 }));
+      }
+      flushSync();
 
-    expect(t.querySelector<HTMLElement>('[data-filter-width-lifecycle]')?.getAttribute('aria-busy')).toBe('true');
-    expect(t.querySelector<HTMLElement>('[role="slider"]')?.getAttribute('aria-valuenow')).toBe('1');
-    expect(t.querySelector('[data-pending-width-target]')?.textContent).toContain('3kHz');
-  });
+      expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledWith(3000);
+      expect(t.querySelector('.vc-value')?.textContent).toBe('2.4kHz');
+      expect(hbar.getAttribute('style')).toContain('--vc-fill-percent: 50%');
+      expect(slider.getAttribute('aria-valuenow')).toBe('1');
+      expect(t.querySelector('[data-pending-width-target]')).toBeNull();
+
+      setWidthLifecycle({
+        target: 3000, phase: 'pending', busy: true,
+        presentation: presentation(`table-${input}`, 'pending', 3000),
+      });
+      flushSync();
+      expect(t.querySelector('[data-pending-width-target]')?.textContent).toContain('3kHz');
+      expect(t.querySelector('.vc-value')?.textContent).toBe('2.4kHz');
+
+      setMockProps({ filterWidth: 3000 });
+      setWidthLifecycle({
+        confirmed: 3000, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' },
+        presentation: presentation(`table-${input}`, 'confirmed', 3000),
+      });
+      flushSync();
+      expect(t.querySelector('.vc-value')?.textContent).toBe('3kHz');
+      expect(hbar.getAttribute('style')).toContain('--vc-fill-percent: 100%');
+      expect(slider.getAttribute('aria-valuenow')).toBe('2');
+      expect(t.querySelector('[data-pending-width-target]')).toBeNull();
+    },
+  );
+
+  it.each(['failed', 'timed-out', 'cancelled'] as const)(
+    'keeps table visuals canonical when a raw target is %s',
+    (status) => {
+      const t = mountPanel({ filterConfig: tableConfig });
+      const slider = t.querySelector<HTMLElement>('[role="slider"]')!;
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      vi.advanceTimersByTime(60);
+      setWidthLifecycle({
+        target: null, phase: 'idle', busy: false, outcome: { phase: status },
+        presentation: presentation(`table-${status}`, status, 3000),
+      });
+      flushSync();
+      expect(t.querySelector('.vc-value')?.textContent).toBe('2.4kHz');
+      expect(t.querySelector('.vc-hbar')?.getAttribute('style')).toContain('--vc-fill-percent: 50%');
+      expect(slider.getAttribute('aria-valuenow')).toBe('1');
+      expect(t.querySelector('[data-pending-width-target]')).toBeNull();
+    },
+  );
 
   it('uses the exact new lifecycle target instead of a stale prior pending target', () => {
     const t = mountPanel();
@@ -348,7 +400,6 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
   });
 
   it('restores an open modal draft to canonical state on one failed transition', () => {
-    vi.useFakeTimers();
     const t = mountPanel();
     (t.querySelector('.settings-button') as HTMLButtonElement).click();
     flushSync();
@@ -365,7 +416,6 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     flushSync();
     expect(activeSlider.getAttribute('aria-valuenow')).toBe('2400');
     expect(t.querySelector('[data-filter-width-live]')?.textContent).toContain('2.5kHz was not applied');
-    vi.useRealTimers();
   });
 });
 

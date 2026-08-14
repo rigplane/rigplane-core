@@ -226,6 +226,7 @@
         step={1}
         unit="Hz"
         renderer="hbar"
+        optimistic={false}
         accentColor="var(--v2-accent-cyan)"
         displayFn={(idx) => formatWidthDisplay(tableIndexToHz(idx))}
         onChange={(idx) => onFilterWidthChange(tableIndexToHz(idx))}
