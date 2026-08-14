@@ -33,20 +33,53 @@ const mockHandlers = {
   onAgcTimeChange: vi.fn(),
 };
 
-// MOR-1536: DspPanel now also reads the notch armed signal — default
-// unarmed here, this file's tests are not about that behavior (covered by
-// `mor1536-armed-adoption.test.ts`).
-const autoNotchArmed: { armed: boolean; value: boolean | null } = { armed: false, value: null };
-const manualNotchArmed: { armed: boolean; value: boolean | null } = { armed: false, value: null };
-
-vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
-  deriveDspProps: () => mockProps,
-  getDspHandlers: () => mockHandlers,
-  getAutoNotchArmed: () => autoNotchArmed,
-  getManualNotchArmed: () => manualNotchArmed,
+const runtimeState = vi.hoisted(() => ({
+  state: null as {
+    active: 'MAIN' | 'SUB';
+    main: Record<string, unknown>;
+    sub: Record<string, unknown>;
+    observationSeq?: number;
+  } | null,
+  notify: () => {},
 }));
+const mockProjection = vi.hoisted(() => ({ notify: () => {} }));
+
+vi.mock('$lib/runtime/frontend-runtime', async () => {
+  const { createSubscriber } = await import('svelte/reactivity');
+  let update = () => {};
+  const subscribe = createSubscriber((notify) => { update = notify; return () => {}; });
+  runtimeState.notify = () => update();
+  return {
+    runtime: {
+      get state() { subscribe(); return runtimeState.state; },
+      get caps() { return null; },
+    },
+  };
+});
+
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
+  const { createSubscriber } = await import('svelte/reactivity');
+  let update = () => {};
+  const subscribe = createSubscriber((notify) => { update = notify; return () => {}; });
+  mockProjection.notify = () => update();
+  return {
+    ...actual,
+    deriveDspProps: () => {
+      subscribe();
+      return { ...mockProps };
+    },
+    getDspHandlers: () => mockHandlers,
+  };
+});
 
 import DspPanel from '../DspPanel.svelte';
+import {
+  acknowledgeCommand,
+  beginCommand,
+  failCommand,
+  resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -61,6 +94,7 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
 }
 
 beforeEach(() => {
+  resetCommandLifecycle();
   components = [];
   Object.assign(mockProps, {
     nrMode: 0, nrLevel: 5, nbActive: false, nbLevel: 128,
@@ -79,14 +113,19 @@ beforeEach(() => {
   mockHandlers.onNbWidthChange = vi.fn();
   mockHandlers.onManualNotchWidthChange = vi.fn();
   mockHandlers.onAgcTimeChange = vi.fn();
-  autoNotchArmed.armed = false;
-  autoNotchArmed.value = null;
-  manualNotchArmed.armed = false;
-  manualNotchArmed.value = null;
+  runtimeState.state = {
+    active: 'MAIN',
+    main: { autoNotch: false, manualNotch: false },
+    sub: {},
+    observationSeq: 1,
+  };
 });
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
+  resetCommandLifecycle();
+  runtimeState.state = null;
+  vi.useRealTimers();
   document.body.innerHTML = '';
 });
 
@@ -226,6 +265,22 @@ describe('DspPanel manual-notch position (MOR-1633)', () => {
 });
 
 describe('DspPanel mobile notch dialog (MOR-1631)', () => {
+  let lifecycleSerial = 0;
+
+  function beginNotchCommand(
+    strand: 'auto' | 'manual', on: boolean, timeoutMs = 5_000,
+  ) {
+    const name = strand === 'auto' ? 'set_auto_notch' : 'set_manual_notch';
+    lifecycleSerial += 1;
+    return beginCommand({
+      id: `${name}-${lifecycleSerial}`,
+      name,
+      params: { on, receiver: 0 },
+      originalEpoch: 1,
+      timeoutMs,
+    });
+  }
+
   function openNotchModal(t: HTMLElement): void {
     vi.useFakeTimers();
     try {
@@ -312,12 +367,13 @@ describe('DspPanel mobile notch dialog (MOR-1631)', () => {
   });
 
   it.each([
-    ['AUTO', () => { autoNotchArmed.armed = true; autoNotchArmed.value = true; }],
-    ['MAN', () => { manualNotchArmed.armed = true; manualNotchArmed.value = true; }],
-  ] as const)('marks the delayed %s confirmation on its exact dialog choice without changing confirmed selection', (label, arm) => {
-    arm();
+    ['AUTO', 'auto'],
+    ['MAN', 'manual'],
+  ] as const)('marks the delayed %s confirmation on its exact dialog choice without changing confirmed selection', (label, strand) => {
     const t = mountPanel({ notchMode: 'off' });
     openNotchModal(t);
+    beginNotchCommand(strand, true);
+    flushSync();
 
     const choice = t.querySelector<HTMLElement>(
       `[aria-label="Notch filter settings"] [data-notch-mode-choice="${label === 'MAN' ? 'manual' : label.toLowerCase()}"]`,
@@ -330,36 +386,119 @@ describe('DspPanel mobile notch dialog (MOR-1631)', () => {
   });
 
   it('treats OFF as one pending choice only after both false command strands are armed', () => {
-    autoNotchArmed.armed = true;
-    autoNotchArmed.value = false;
-    const partial = mountPanel({ notchMode: 'manual' });
-    openNotchModal(partial);
-    expect(partial.querySelector('[data-notch-mode-choice="off"]')?.getAttribute('aria-busy')).toBe('false');
-    expect(modeButton(partial, 'OFF').dataset.armed).toBeUndefined();
+    const t = mountPanel({ notchMode: 'manual' });
+    openNotchModal(t);
 
-    manualNotchArmed.armed = true;
-    manualNotchArmed.value = false;
-    const grouped = mountPanel({ notchMode: 'manual' });
-    openNotchModal(grouped);
-    expect(grouped.querySelector('[data-notch-mode-choice="off"]')?.getAttribute('aria-busy')).toBe('true');
-    expect(modeButton(grouped, 'OFF').dataset.armed).toBe('true');
-    expect(modeButton(grouped, 'MAN').dataset.active).toBe('true');
+    beginNotchCommand('auto', false);
+    flushSync();
+    expect(t.querySelector('[data-notch-mode-choice="off"]')?.getAttribute('aria-busy')).toBe('false');
+    expect(modeButton(t, 'OFF').dataset.armed).toBeUndefined();
+
+    beginNotchCommand('manual', false);
+    flushSync();
+    expect(t.querySelector('[data-notch-mode-choice="off"]')?.getAttribute('aria-busy')).toBe('true');
+    expect(modeButton(t, 'OFF').dataset.armed).toBe('true');
+    expect(modeButton(t, 'MAN').dataset.active).toBe('true');
   });
 
-  it.each(['failure', 'timeout'] as const)('clears the dialog pending marker after a %s terminal lifecycle outcome', () => {
+  it('does not resurrect an older AUTO target after its newer same-key command fails and is retained', () => {
+    const t = mountPanel({ notchMode: 'off' });
+    openNotchModal(t);
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+
+    beginNotchCommand('auto', true, 60_000);
+    flushSync();
+    expect(modeButton(t, 'AUTO').dataset.armed).toBe('true');
+
+    vi.setSystemTime(1_001);
+    const newer = beginNotchCommand('auto', false, 60_000);
+    flushSync();
+    expect(modeButton(t, 'AUTO').dataset.armed).toBeUndefined();
+    expect(modeButton(t, 'OFF').dataset.armed).toBeUndefined();
+
+    failCommand(newer.id, newer.originalEpoch, 1, 'expected component-test failure');
+    flushSync();
+    expect(modeButton(t, 'AUTO').dataset.armed).toBeUndefined();
+    expect(t.querySelector('[data-notch-mode-live]')).toBeNull();
+
+    vi.advanceTimersByTime(5_001);
+    flushSync();
+    expect(modeButton(t, 'AUTO').dataset.armed).toBeUndefined();
+  });
+
+  it('does not resurrect an older MAN target after its newer same-key command times out', () => {
+    const t = mountPanel({ notchMode: 'off' });
+    openNotchModal(t);
+    vi.useFakeTimers();
+
+    beginNotchCommand('manual', true, 60_000);
+    flushSync();
+    expect(modeButton(t, 'MAN').dataset.armed).toBe('true');
+
+    beginNotchCommand('manual', false, 100);
+    flushSync();
+    expect(modeButton(t, 'MAN').dataset.armed).toBeUndefined();
+
+    vi.advanceTimersByTime(101);
+    flushSync();
+    expect(modeButton(t, 'MAN').dataset.armed).toBeUndefined();
+    expect(t.querySelector('[data-notch-mode-live]')).toBeNull();
+  });
+
+  it('moves pending feedback to the newest same-key target without reviving the superseded target', () => {
     const t = mountPanel({ notchMode: 'off' });
     openNotchModal(t);
 
-    expect(t.querySelector('[data-notch-mode-choice="auto"]')?.getAttribute('aria-busy')).toBe('false');
+    beginNotchCommand('auto', true);
+    flushSync();
+    expect(modeButton(t, 'AUTO').dataset.armed).toBe('true');
+
+    beginNotchCommand('auto', false);
+    flushSync();
     expect(modeButton(t, 'AUTO').dataset.armed).toBeUndefined();
+    expect(modeButton(t, 'OFF').dataset.armed).toBeUndefined();
+
+    beginNotchCommand('manual', false);
+    flushSync();
+    expect(modeButton(t, 'OFF').dataset.armed).toBe('true');
+    expect(modeButton(t, 'AUTO').dataset.armed).toBeUndefined();
+  });
+
+  it('clears pending and selects an out-of-band confirmed AUTO observation', () => {
+    const t = mountPanel({ notchMode: 'off' });
+    openNotchModal(t);
+    const command = beginNotchCommand('auto', true);
+    flushSync();
+    expect(modeButton(t, 'AUTO').dataset.armed).toBe('true');
+    expect(modeButton(t, 'OFF').dataset.active).toBe('true');
+
+    acknowledgeCommand(command.id, command.originalEpoch, 1);
+    flushSync();
+    expect(modeButton(t, 'AUTO').dataset.armed).toBe('true');
+
+    runtimeState.state = {
+      active: 'MAIN',
+      main: { autoNotch: true, manualNotch: false },
+      sub: {},
+      observationSeq: 2,
+    };
+    mockProps.notchMode = 'auto';
+    runtimeState.notify();
+    mockProjection.notify();
+    flushSync();
+
+    expect(modeButton(t, 'AUTO').dataset.armed).toBeUndefined();
+    expect(modeButton(t, 'AUTO').dataset.active).toBe('true');
+    expect(modeButton(t, 'OFF').dataset.active).toBe('false');
     expect(t.querySelector('[data-notch-mode-live]')).toBeNull();
   });
 
   it('keeps an out-of-band confirmed mode selected while a superseding target is pending', () => {
-    autoNotchArmed.armed = true;
-    autoNotchArmed.value = true;
     const t = mountPanel({ notchMode: 'manual' });
     openNotchModal(t);
+    beginNotchCommand('auto', true);
+    flushSync();
 
     expect(modeButton(t, 'MAN').dataset.active).toBe('true');
     expect(modeButton(t, 'AUTO').dataset.active).toBe('false');
