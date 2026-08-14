@@ -30,11 +30,13 @@ type FakeState = {
 
 const lifecycle = { commands: [] as FakeCommand[], confirms: [] as [string, number, number][] };
 const runtimeState: { state: FakeState | null } = { state: null };
+const commandRadio = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 
 vi.mock('$lib/stores/commands.svelte', () => ({
   getCommandLifecycles: () => lifecycle.commands,
   confirmCommand: (id: string, epoch: number, eventEpoch: number) => lifecycle.confirms.push([id, epoch, eventEpoch]),
 }));
+vi.mock('$lib/stores/radio.svelte', () => ({ getRadioState: () => commandRadio.current }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: { get state() { return runtimeState.state; }, get caps() { return null; } },
 }));
@@ -57,6 +59,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     lifecycle.commands = [];
     lifecycle.confirms = [];
     runtimeState.state = null;
+    commandRadio.current = null;
   });
 
   it('stays unavailable rather than fabricating a pending or confirmed value without observed width', () => {
@@ -113,10 +116,14 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     ['unobserved status', { observed: false, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 }],
     ['stale status', { observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5 }],
     ['unavailable status', { observed: true, freshness: 'fresh', availability: 'stale', lastObservedMonotonic: 5 }],
-  ])('does not confirm from %s evidence', (_case, fieldStatus) => {
+    ['missing marker', { observed: true, freshness: 'fresh', availability: 'available' }],
+    ['non-finite marker', { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: Number.NaN }],
+  ])('makes the full projection unavailable from %s evidence', (_case, fieldStatus) => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: fieldStatus === undefined ? {} : { 'main.filterWidth': fieldStatus } });
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
-    expect(getFilterWidthCommandLifecycle()).toMatchObject({ target: 3000, phase: 'acknowledged', busy: true });
+    expect(getFilterWidthCommandLifecycle()).toEqual({
+      confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null,
+    });
     expect(lifecycle.confirms).toEqual([]);
   });
 
@@ -132,6 +139,13 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: {} })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: null, phase: 'idle', busy: false });
     expect(lifecycle.confirms).toEqual([['width-1', 7, 7]]);
+  });
+
+  it('does not treat a missing exact field marker in a non-empty ACK map as an empty boundary', () => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'sub.filterWidth': 4 } })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
+    expect(lifecycle.confirms).toEqual([]);
   });
 
   it('keeps a fresh non-matching observation canonical while the acknowledged target remains pending', () => {
@@ -192,5 +206,38 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getFilterWidthCommandLifecycle()).toEqual({
       confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: { phase: status, error },
     });
+  });
+
+  it('captures only finite public-field ACK markers through the real command store seam', async () => {
+    vi.doUnmock('$lib/stores/commands.svelte');
+    vi.resetModules();
+    commandRadio.current = {
+      observationSeq: 41,
+      main: { filterWidth: 3000 },
+      fieldStatus: {
+        'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 73 },
+        'main.mode': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: Number.NaN },
+      },
+    };
+    const store = await import('$lib/stores/commands.svelte');
+    store.beginCommand({ id: 'real-ack', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, originalEpoch: 9 });
+    store.acknowledgeCommand('real-ack', 9, 10);
+    const acknowledged = store.getCommandLifecycle('real-ack', 9);
+    expect(acknowledged).toMatchObject({
+      status: 'acknowledged', ackObservationSeq: 41,
+      ackFieldObservationTimes: { 'main.filterWidth': 73 },
+    });
+    expect(acknowledged?.ackFieldObservationTimes).toEqual({ 'main.filterWidth': 73 });
+    expect(acknowledged).not.toHaveProperty('radioState');
+    expect(acknowledged).not.toHaveProperty('fieldStatus');
+    expect(acknowledged).not.toHaveProperty('main');
+
+    commandRadio.current = null;
+    store.beginCommand({ id: 'cold-ack', name: 'set_filter_width', params: { width: 2800, receiver: 0 }, originalEpoch: 9 });
+    store.acknowledgeCommand('cold-ack', 9, 10);
+    expect(store.getCommandLifecycle('cold-ack', 9)).toMatchObject({
+      status: 'acknowledged', ackObservationSeq: undefined, ackFieldObservationTimes: {},
+    });
+    store.resetCommandLifecycle();
   });
 });

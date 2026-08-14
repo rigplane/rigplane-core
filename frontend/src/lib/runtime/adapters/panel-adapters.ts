@@ -267,7 +267,13 @@ function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; fieldPat
   const width = (receiver === 0 ? state.main : state.sub)?.filterWidth;
   if (typeof width !== 'number' || !Number.isFinite(width)) return null;
   const fieldPath = receiver === 0 ? 'main.filterWidth' : 'sub.filterWidth';
-  return { receiver, width, fieldPath, fieldStatus: state.fieldStatus?.[fieldPath] };
+  const fieldStatus = state.fieldStatus?.[fieldPath];
+  if (fieldStatus?.observed !== true
+    || fieldStatus.freshness !== 'fresh'
+    || fieldStatus.availability !== 'available'
+    || typeof fieldStatus.lastObservedMonotonic !== 'number'
+    || !Number.isFinite(fieldStatus.lastObservedMonotonic)) return null;
+  return { receiver, width, fieldPath, fieldStatus };
 }
 
 /** The later array record wins a same-millisecond dispatch tie. */
@@ -306,12 +312,11 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
     const marker = observed.fieldStatus?.lastObservedMonotonic;
     const ackMarkers = command.ackFieldObservationTimes;
     const ackMarker = ackMarkers?.[observed.fieldPath];
-    const isQualifying = observed.fieldStatus?.observed === true
-      && observed.fieldStatus.freshness === 'fresh'
-      && observed.fieldStatus.availability === 'available'
-      && typeof marker === 'number' && Number.isFinite(marker)
+    const isEmptyNewFormatBoundary = ackMarkers !== undefined && Object.keys(ackMarkers).length === 0;
+    const isQualifying = typeof marker === 'number' && Number.isFinite(marker)
       && ackMarkers !== undefined
-      && (ackMarker === undefined || marker > ackMarker);
+      && (isEmptyNewFormatBoundary
+        || (typeof ackMarker === 'number' && Number.isFinite(ackMarker) && marker > ackMarker));
     if (isQualifying && observed.width === target) {
       confirmCommand(command.id, command.originalEpoch, command.eventEpoch ?? command.originalEpoch);
       return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
