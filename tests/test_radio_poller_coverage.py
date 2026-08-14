@@ -63,6 +63,7 @@ from rigplane.web.radio_poller import (
     SetAfLevel,
     SetAgc,
     SetAttenuator,
+    SetBreakInDelay,
     SetData1ModInput,
     SetDataMode,
     SetDigiSel,
@@ -1014,6 +1015,10 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
             SetFilterWidth(1800, receiver=1),
             FieldPath.active("sub", "freq_mode", "filter_width"),
         ),
+        (
+            SetBreakInDelay(140),
+            FieldPath.global_("operator_controls", "break_in_delay"),
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1165,6 +1170,51 @@ async def test_execute_failed_set_filter_width_does_not_queue_readback() -> None
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
     with pytest.raises(RuntimeError, match="write failed"):
         await poller._execute(SetFilterWidth(3500, receiver=0))  # noqa: SLF001
+    assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_break_in_delay_uses_ic7300_readback_route() -> None:
+    path = FieldPath.global_("operator_controls", "break_in_delay")
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._execute(SetBreakInDelay(140))  # noqa: SLF001
+
+    radio.set_break_in_delay.assert_awaited_once_with(140)
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    assert pending[0].paths == (path,)
+    assert pending[0].priority is AcquisitionPriority.USER
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    radio.send_civ.assert_any_await(
+        0x14,
+        sub=0x0F,
+        data=b"",
+        wait_response=False,
+        priority=Priority.BACKGROUND,
+        wait_dispatch=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_failed_set_break_in_delay_does_not_queue_readback() -> None:
+    path = FieldPath.global_("operator_controls", "break_in_delay")
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    radio.set_break_in_delay.side_effect = RuntimeError("write failed")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        await poller._execute(SetBreakInDelay(140))  # noqa: SLF001
+
     assert scheduler.pending_requests() == ()
 
 
