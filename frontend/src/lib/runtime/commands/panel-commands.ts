@@ -526,7 +526,9 @@ export function makeCwPanelHandlers() {
       dispatchRadioIntent({ name: 'set_twin_peak', params: { on: !rx.twinPeakFilter, receiver } });
     },
     onAutoTune: () => {
-      if (!hasCapability('cw') || knownActiveReceiver() === null) return;
+      const caps = getCapabilities();
+      if (!hasCapability('cw') || !hasCapability('audio') || caps?.audioFftAvailable !== true
+        || knownActiveReceiver('freqHz') === null) return;
       dispatchRadioIntent({ name: 'cw_auto_tune', params: {} });
     },
     onWpmChange: (speed: number) => {
