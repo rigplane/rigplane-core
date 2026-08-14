@@ -245,9 +245,21 @@ export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
 
 export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged' | 'confirmed';
 export type FilterWidthCommandOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled';
+export interface FilterWidthLifecyclePresentation {
+  /** Opaque correlation value; consumers must compare it, never parse it. */
+  readonly lifecycleId: string;
+  /** Opaque correlation value for this lifecycle status transition. */
+  readonly transitionId: string;
+  readonly receiver: 0 | 1;
+  readonly sessionEpoch: number;
+  readonly target: number;
+  readonly status: 'pending' | 'acknowledged' | FilterWidthCommandOutcome;
+  readonly error?: string;
+}
 export interface FilterWidthCommandLifecycleView {
   confirmed: number | null; target: number | null; phase: FilterWidthCommandPhase; busy: boolean;
   outcome: { phase: FilterWidthCommandOutcome; error?: string } | null;
+  presentation: Readonly<FilterWidthLifecyclePresentation> | null;
 }
 
 function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; fieldPath: string; fieldStatus: NonNullable<ServerState['fieldStatus']>[string] | undefined } | null {
@@ -275,22 +287,43 @@ function latestFilterWidthLifecycle(receiver: 0 | 1) {
   return latest;
 }
 
+function filterWidthPresentation(
+  command: NonNullable<ReturnType<typeof latestFilterWidthLifecycle>>, receiver: 0 | 1,
+): Readonly<FilterWidthLifecyclePresentation> {
+  const target = command.params.width as number;
+  const lifecycleId = JSON.stringify([command.originalEpoch, command.id]);
+  const terminal = command.status === 'confirmed' || command.status === 'failed'
+    || command.status === 'timed-out' || command.status === 'cancelled';
+  const error = terminal && typeof command.error === 'string' && command.error.length > 0
+    ? command.error.slice(0, 256) : undefined;
+  return Object.freeze({
+    lifecycleId,
+    transitionId: JSON.stringify([command.originalEpoch, command.id, command.status]),
+    receiver,
+    sessionEpoch: command.originalEpoch,
+    target,
+    status: command.status,
+    ...(error === undefined ? {} : { error }),
+  });
+}
+
 export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleView {
   const observed = activeFilterWidthReceiver();
-  if (!observed) return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null };
+  if (!observed) return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null, presentation: null };
 
   const command = latestFilterWidthLifecycle(observed.receiver);
-  if (!command) return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
+  if (!command) return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null, presentation: null };
+  const presentation = filterWidthPresentation(command, observed.receiver);
   if (command.status === 'confirmed') {
-    return { confirmed: observed.width, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } };
+    return { confirmed: observed.width, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' }, presentation };
   }
   if (command.status === 'failed' || command.status === 'timed-out' || command.status === 'cancelled') {
-    return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: { phase: command.status, error: command.error } };
+    return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: { phase: command.status, error: command.error }, presentation };
   }
 
   const target = command.params.width as number;
-  if (command.status === 'acknowledged') return { confirmed: observed.width, target, phase: 'acknowledged', busy: true, outcome: null };
-  return { confirmed: observed.width, target, phase: 'pending', busy: true, outcome: null };
+  if (command.status === 'acknowledged') return { confirmed: observed.width, target, phase: 'acknowledged', busy: true, outcome: null, presentation };
+  return { confirmed: observed.width, target, phase: 'pending', busy: true, outcome: null, presentation };
 }
 
 // ── Pending discrete-control targets (MOR-1441 leg 2) ──

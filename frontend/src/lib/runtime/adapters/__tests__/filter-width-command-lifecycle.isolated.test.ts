@@ -64,21 +64,21 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it('stays unavailable rather than fabricating a pending or confirmed value without observed width', () => {
     runtimeState.state = state({ main: {} });
     lifecycle.commands = [command()];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null,
     });
   });
   it('keeps canonical observed width separate from a submitted target', () => {
     runtimeState.state = state();
     lifecycle.commands = [command()];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2400, target: 3000, phase: 'pending', busy: true, outcome: null,
     });
   });
   it('keeps a fresh matching observation acknowledged when a caller only reads the pure accessor', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, observationSeq: 5, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4, ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
     expect(lifecycle.confirms).toEqual([]);
@@ -106,7 +106,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   ])('makes the full projection unavailable from %s evidence', (_case, fieldStatus) => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: fieldStatus === undefined ? {} : { 'main.filterWidth': fieldStatus } });
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null,
     });
     expect(lifecycle.confirms).toEqual([]);
@@ -135,7 +135,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it('keeps a fresh non-matching observation canonical while the acknowledged target remains pending', () => {
     runtimeState.state = state({ main: { filterWidth: 2400 }, observationSeq: 5, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4, ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2400, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
     expect(lifecycle.confirms).toEqual([]);
@@ -149,7 +149,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       id: 'sub-width', params: { width: 2800, receiver: 1 }, status: 'acknowledged', ackObservationSeq: 4,
       ackFieldObservationTimes: { 'sub.filterWidth': 4 },
     })];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2800, target: 2800, phase: 'acknowledged', busy: true, outcome: null,
     });
     expect(lifecycle.confirms).toEqual([]);
@@ -160,7 +160,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       command({ id: 'older', createdAt: 1, status: 'acknowledged', ackObservationSeq: 4 }),
       command({ id: 'newer', createdAt: 2, params: { width: 2800, receiver: 0 }, status: 'pending' }),
     ];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 3000, target: 2800, phase: 'pending', busy: true, outcome: null,
     });
     expect(lifecycle.confirms).toEqual([]);
@@ -171,7 +171,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       command({ id: 'older', createdAt: 1 }),
       command({ id: 'newer', createdAt: 2, params: { width: 2800, receiver: 0 }, status: 'failed', error: 'rejected' }),
     ];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2400, target: null, phase: 'idle', busy: false,
       outcome: { phase: 'failed', error: 'rejected' },
     });
@@ -183,7 +183,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   ] as const)('clears busy and retains a bounded %s outcome without changing confirmed truth', (status, error) => {
     runtimeState.state = state({ main: { filterWidth: 2400 } });
     lifecycle.commands = [command({ status, error })];
-    expect(getFilterWidthCommandLifecycle()).toEqual({
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: { phase: status, error },
     });
   });
@@ -283,5 +283,67 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     runtimeState.state = state({ main: { filterWidth: 2400 }, sub: { filterWidth: 1800 } });
     expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2600, phase: 'pending', busy: true });
     store.resetCommandLifecycle();
+  });
+  it('projects a fresh frozen presentation DTO with stable lifecycle and transition identities', () => {
+    runtimeState.state = state();
+    lifecycle.commands = [command({ id: 'quoted|id', originalEpoch: 7, status: 'pending' })];
+
+    const first = getFilterWidthCommandLifecycle().presentation;
+    const second = getFilterWidthCommandLifecycle().presentation;
+    expect(first).toEqual({
+      lifecycleId: '[7,"quoted|id"]', transitionId: '[7,"quoted|id","pending"]',
+      receiver: 0, sessionEpoch: 7, target: 3000, status: 'pending',
+    });
+    expect(first).not.toBe(second);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(first?.lifecycleId).toBe(second?.lifecycleId);
+    expect(first?.transitionId).toBe(second?.transitionId);
+    expect(first).not.toHaveProperty('params');
+    expect(first).not.toHaveProperty('fieldStatus');
+  });
+  it('changes only the transition identity across lifecycle statuses and retains terminal targets', () => {
+    runtimeState.state = state();
+    lifecycle.commands = [command({ status: 'pending' })];
+    const pending = getFilterWidthCommandLifecycle().presentation!;
+    lifecycle.commands[0].status = 'acknowledged';
+    const acknowledged = getFilterWidthCommandLifecycle().presentation!;
+    expect(acknowledged).toMatchObject({ lifecycleId: pending.lifecycleId, target: 3000, status: 'acknowledged' });
+    expect(acknowledged.transitionId).not.toBe(pending.transitionId);
+
+    for (const status of ['confirmed', 'failed', 'timed-out', 'cancelled'] as const) {
+      lifecycle.commands[0].status = status;
+      lifecycle.commands[0].error = status === 'failed' ? 'x'.repeat(300) : undefined;
+      expect(getFilterWidthCommandLifecycle().presentation).toMatchObject({
+        lifecycleId: pending.lifecycleId, receiver: 0, sessionEpoch: 7, target: 3000, status,
+      });
+      expect(getFilterWidthCommandLifecycle().presentation?.transitionId).not.toBe(acknowledged.transitionId);
+    }
+    expect(getFilterWidthCommandLifecycle().presentation).not.toHaveProperty('error');
+    lifecycle.commands[0].status = 'failed'; lifecycle.commands[0].error = 'x'.repeat(300);
+    expect(getFilterWidthCommandLifecycle().presentation?.error).toHaveLength(256);
+  });
+  it('isolates receivers and gives reused command ids in a later session a distinct identity', () => {
+    runtimeState.state = state({ active: 'MAIN', sub: { filterWidth: 2100 }, fieldStatus: {
+      'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+      'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+    } });
+    lifecycle.commands = [
+      command({ id: 'same', originalEpoch: 7, params: { width: 3000, receiver: 0 } }),
+      command({ id: 'same', originalEpoch: 8, createdAt: 2, params: { width: 2100, receiver: 1 } }),
+    ];
+    const main = getFilterWidthCommandLifecycle().presentation!;
+    runtimeState.state = state({ active: 'SUB', sub: { filterWidth: 2100 }, fieldStatus: {
+      'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+      'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+    } });
+    const sub = getFilterWidthCommandLifecycle().presentation!;
+    expect(main).toMatchObject({ receiver: 0, target: 3000, sessionEpoch: 7 });
+    expect(sub).toMatchObject({ receiver: 1, target: 2100, sessionEpoch: 8 });
+    expect(sub.lifecycleId).not.toBe(main.lifecycleId);
+    runtimeState.state = state({ active: 'MAIN', sub: { filterWidth: 2100 }, fieldStatus: {
+      'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+      'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+    } });
+    expect(getFilterWidthCommandLifecycle().presentation?.transitionId).toBe(main.transitionId);
   });
 });
