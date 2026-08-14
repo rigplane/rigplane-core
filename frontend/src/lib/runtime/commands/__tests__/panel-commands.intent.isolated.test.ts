@@ -234,7 +234,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.caps = {
       capabilities: [
         'pbt', 'agc', 'rit', 'xit', 'nr', 'nb', 'notch', 'af_level',
-        'tx', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
+        'tx', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain', 'audio',
         'cw', 'break_in', 'apf', 'twin_peak', 'rx_antenna',
         'split', 'dual_rx', 'dual_watch', 'main_sub_tracking',
         'bsr', 'preamp', 'attenuator', 'ip_plus', 'scan', 'vfo_swap', 'vfo_equalize',
@@ -254,6 +254,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
         pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
         nb_depth: { raw_min: 0, raw_max: 9, raw_center: 0, display_min: 1, display_max: 10 },
       },
+      audioFftAvailable: true,
     };
     h.sendCommand.mockClear();
     h.patchActiveReceiver.mockClear();
@@ -543,6 +544,36 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expectIntentTransport();
     expect(h.patchActiveReceiver).not.toHaveBeenCalled();
     expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('refuses CW auto-tune when the RX analysis source is unavailable', () => {
+    h.caps = {
+      capabilities: ['cw', 'audio'], audioFftAvailable: false,
+      receivers: 2, vfoScheme: 'main_sub',
+    };
+
+    makeCwPanelHandlers().onAutoTune();
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('requires the audio tag and observed active RX frequency for CW auto-tune', () => {
+    h.caps = {
+      capabilities: ['cw'], audioFftAvailable: true,
+      receivers: 2, vfoScheme: 'main_sub',
+    };
+    makeCwPanelHandlers().onAutoTune();
+
+    h.caps = {
+      capabilities: ['cw', 'audio'], audioFftAvailable: true,
+      receivers: 2, vfoScheme: 'main_sub',
+    };
+    h.unavailable.add('main.freqHz');
+    makeCwPanelHandlers().onAutoTune();
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
   });
 
   it('routes complete TX auxiliaries without PTT coupling or optimistic truth', () => {
