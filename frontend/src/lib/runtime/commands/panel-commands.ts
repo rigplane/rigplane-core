@@ -1621,9 +1621,16 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
         && typeof context.state.split === 'boolean') makeVfoHandlers().onSplitToggle();
       return true;
     case 'switch_active_vfo': {
-      const target = context.state.active === 'MAIN' ? 'SUB' : 'MAIN';
+      // MOR-1601: toggling a physical receiver is meaningful only when the
+      // active receiver is an observed, fresh fact on a declared dual-RX
+      // MAIN/SUB topology. Never infer MAIN from an unobserved raw value.
+      if (context.caps.receivers < 2 || !has('dual_rx') || !context.state.sub
+        || !observedAvailableField(context.state, 'active')) return true;
+      const active = context.state.active;
+      if (active !== 'MAIN' && active !== 'SUB') return true;
+      const target = active === 'MAIN' ? 'SUB' : 'MAIN';
       if (target === 'MAIN') makeVfoHandlers().onMainVfoClick();
-      else if (context.caps.receivers >= 2 && has('dual_rx') && context.state.sub) makeVfoHandlers().onSubVfoClick();
+      else makeVfoHandlers().onSubVfoClick();
       return true;
     }
     case 'set_active_vfo':

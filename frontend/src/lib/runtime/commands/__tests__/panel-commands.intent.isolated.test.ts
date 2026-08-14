@@ -1486,6 +1486,63 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setAudioConfig).toHaveBeenCalledExactlyOnceWith({ focus: 'main' });
   });
 
+  it('toggles only a fresh observed active receiver on a declared dual-RX MAIN/SUB topology (MOR-1601)', () => {
+    const refuse = () => {
+      expect(dispatchKeyboardRadioAction({ action: 'switch_active_vfo' })).toBe(true);
+      expect(h.sendCommand).not.toHaveBeenCalled();
+      expect(h.setAudioConfig).not.toHaveBeenCalled();
+      expect(getCommandLifecycles()).toHaveLength(0);
+    };
+
+    h.unavailable.add('active');
+    refuse();
+    h.unavailable.clear();
+    h.state = { ...state(), fieldStatus: {} } as ServerState;
+    refuse();
+    h.state = {
+      ...state(),
+      fieldStatus: { active: { ...freshStatus, observed: false } },
+    } as ServerState;
+    refuse();
+    h.state = {
+      ...state(),
+      fieldStatus: { active: { ...freshStatus, freshness: 'stale' } },
+    } as ServerState;
+    refuse();
+    h.state = {
+      ...state(),
+      fieldStatus: { active: { storePath: 'active', observed: true, freshness: 'fresh' } },
+    } as unknown as ServerState;
+    refuse();
+    h.state = { ...state(), active: 'UNKNOWN' as never };
+    refuse();
+    h.state = { ...state(), providerGeneration: 32 };
+    refuse();
+    h.state = state();
+    h.caps = { ...h.caps!, capabilities: (h.caps!.capabilities as string[]).filter((cap) => cap !== 'dual_rx') };
+    refuse();
+    h.caps = { ...h.caps!, capabilities: [...(h.caps!.capabilities as string[]), 'dual_rx'], receivers: 1, vfoScheme: 'ab' };
+    h.state = oneReceiverAbState();
+    refuse();
+
+    h.caps = {
+      ...h.caps!, receivers: 2, vfoScheme: 'main_sub', providerGeneration: 31,
+      capabilities: [...(h.caps!.capabilities as string[]), 'dual_rx'],
+    };
+    h.state = state('MAIN');
+    expect(dispatchKeyboardRadioAction({ action: 'switch_active_vfo' })).toBe(true);
+    h.state = state('SUB');
+    expect(dispatchKeyboardRadioAction({ action: 'switch_active_vfo' })).toBe(true);
+
+    expect(exactCalls()).toEqual([
+      ['set_vfo', { vfo: 'SUB' }],
+      ['set_vfo', { vfo: 'MAIN' }],
+    ]);
+    expectIntentTransport();
+    expect(h.setAudioConfig).toHaveBeenNthCalledWith(1, { focus: 'sub' });
+    expect(h.setAudioConfig).toHaveBeenNthCalledWith(2, { focus: 'main' });
+  });
+
   it('contains hostile params for every newly recognized keyboard action without touching radio or audio state', () => {
     const actions = [
       'toggle_rit', 'toggle_xit', 'clear_rit_xit', 'adjust_af_level', 'adjust_rf_gain',
