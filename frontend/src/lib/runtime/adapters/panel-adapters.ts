@@ -31,7 +31,7 @@ import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
-import { getCommandLifecycles } from '$lib/stores/commands.svelte';
+import { confirmCommand, getCommandLifecycles } from '$lib/stores/commands.svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 
@@ -241,6 +241,73 @@ export function getActiveFrequencyHz(): number | null {
 export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
   const value = latestPendingParam('set_freq', 'freq', receiver, 'freqHz');
   return typeof value === 'number' ? value : null;
+}
+
+// ── Filter Width command lifecycle (MOR-1664) ──
+/**
+ * A presentation-neutral projection for the Filter Width surface. `confirmed`
+ * always comes from radio-observed state; `target` is only an unconfirmed
+ * command request. The adapter is also the narrow observer that completes an
+ * acknowledged lifecycle record once a later matching observation arrives.
+ */
+export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged';
+export type FilterWidthCommandOutcome = 'failed' | 'timed-out' | 'cancelled';
+export interface FilterWidthCommandLifecycleView {
+  confirmed: number | null;
+  target: number | null;
+  phase: FilterWidthCommandPhase;
+  busy: boolean;
+  outcome: { phase: FilterWidthCommandOutcome; error?: string } | null;
+}
+
+function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; observationSeq?: number } | null {
+  const state = runtime.state;
+  if (!state) return null;
+  const receiver: 0 | 1 = state.active === 'SUB' ? 1 : 0;
+  const width = (receiver === 0 ? state.main : state.sub)?.filterWidth;
+  if (typeof width !== 'number' || !Number.isFinite(width)) return null;
+  return { receiver, width, observationSeq: state.observationSeq };
+}
+
+/** The later array record wins a same-millisecond dispatch tie. */
+function latestFilterWidthLifecycle(receiver: 0 | 1) {
+  let latest: ReturnType<typeof getCommandLifecycles>[number] | null = null;
+  for (const command of getCommandLifecycles()) {
+    if (command.name !== 'set_filter_width' || command.params.receiver !== receiver
+      || typeof command.params.width !== 'number' || !Number.isFinite(command.params.width)) continue;
+    if (!latest || command.createdAt >= latest.createdAt) latest = command;
+  }
+  return latest;
+}
+
+export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleView {
+  const observed = activeFilterWidthReceiver();
+  if (!observed) return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null };
+
+  const command = latestFilterWidthLifecycle(observed.receiver);
+  if (!command || command.status === 'confirmed') {
+    return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
+  }
+  if (command.status === 'failed' || command.status === 'timed-out' || command.status === 'cancelled') {
+    return {
+      confirmed: observed.width, target: null, phase: 'idle', busy: false,
+      outcome: { phase: command.status, error: command.error },
+    };
+  }
+
+  const target = command.params.width as number;
+  if (command.status === 'acknowledged') {
+    // ACK alone is never confirmation. Require both the command's ack-time
+    // observation boundary and a strictly newer matching observation before
+    // completing this exact id/original-epoch record through the store API.
+    if (command.ackObservationSeq !== undefined && observed.observationSeq !== undefined
+      && observed.observationSeq > command.ackObservationSeq && observed.width === target) {
+      confirmCommand(command.id, command.originalEpoch, command.eventEpoch ?? command.originalEpoch);
+      return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
+    }
+    return { confirmed: observed.width, target, phase: 'acknowledged', busy: true, outcome: null };
+  }
+  return { confirmed: observed.width, target, phase: 'pending', busy: true, outcome: null };
 }
 
 // ── Pending discrete-control targets (MOR-1441 leg 2) ──
