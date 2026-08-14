@@ -836,6 +836,7 @@ Command = (
     | SetMode
     | SendCiv
     | SetFilter
+    | SetFilterShape
     | SetFilterWidth
     | SetPower
     | SetRfGain
@@ -942,6 +943,7 @@ Command = (
     | SetCivTransceive
     | SetCivOutputAnt
     | SetAfMute
+    | SetTunerStatus
     | SetTuningStep
     | SetXfcStatus
     | SetTxFreqMonitor
