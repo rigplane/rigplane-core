@@ -65,6 +65,9 @@ const mockFilterHandlers = {
   onPbtInnerChange: vi.fn(), onPbtOuterChange: vi.fn(), onPbtReset: vi.fn(),
 };
 const mockFilterArmed: { armed: boolean; value: number | null } = { armed: false, value: null };
+const mockFilterWidthLifecycle = {
+  confirmed: 2400, target: null, phase: 'idle' as const, busy: false, outcome: null, presentation: null,
+};
 
 const mockRfProps = {
   rfGain: 1, squelch: 0, att: 0, pre: 0, digiSel: false, ipPlus: false,
@@ -103,6 +106,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveFilterProps: () => mockFilterProps,
   getFilterHandlers: () => mockFilterHandlers,
   getFilterArmed: () => mockFilterArmed,
+  getFilterWidthCommandLifecycle: () => mockFilterWidthLifecycle,
   deriveRfFrontEndProps: () => mockRfProps,
   getRfFrontEndHandlers: () => mockRfHandlers,
   getPreampArmed: () => mockPreArmed,
