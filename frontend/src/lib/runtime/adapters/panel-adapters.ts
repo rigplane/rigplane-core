@@ -31,7 +31,7 @@ import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
-import { confirmCommand, getCommandLifecycles } from '$lib/stores/commands.svelte';
+import { confirmCommand, getCommandLifecycles, isCommandLifecycleSuperseded } from '$lib/stores/commands.svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 
@@ -281,7 +281,8 @@ function latestFilterWidthLifecycle(receiver: 0 | 1) {
   let latest: ReturnType<typeof getCommandLifecycles>[number] | null = null;
   for (const command of getCommandLifecycles()) {
     if (command.name !== 'set_filter_width' || command.params.receiver !== receiver
-      || typeof command.params.width !== 'number' || !Number.isFinite(command.params.width)) continue;
+      || typeof command.params.width !== 'number' || !Number.isFinite(command.params.width)
+      || isCommandLifecycleSuperseded(command)) continue;
     if (!latest || command.createdAt >= latest.createdAt) latest = command;
   }
   return latest;

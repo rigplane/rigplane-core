@@ -35,6 +35,7 @@ const commandRadio = vi.hoisted(() => ({ current: null as Record<string, unknown
 vi.mock('$lib/stores/commands.svelte', () => ({
   getCommandLifecycles: () => lifecycle.commands,
   confirmCommand: (id: string, epoch: number, eventEpoch: number) => lifecycle.confirms.push([id, epoch, eventEpoch]),
+  isCommandLifecycleSuperseded: () => false,
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({ getRadioState: () => commandRadio.current }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
@@ -238,6 +239,56 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(store.getCommandLifecycle('cold-ack', 9)).toMatchObject({
       status: 'acknowledged', ackObservationSeq: undefined, ackFieldObservationTimes: {},
     });
+    store.resetCommandLifecycle();
+  });
+
+  it('never resurfaces a superseded receiver lifecycle after its newer outcome retires', async () => {
+    vi.useFakeTimers();
+    vi.doUnmock('$lib/stores/commands.svelte');
+    vi.resetModules();
+    runtimeState.state = state({ main: { filterWidth: 2400 }, sub: { filterWidth: 1800 } });
+    const store = await import('$lib/stores/commands.svelte');
+    const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
+
+    const old = store.beginCommand({
+      id: 'old-main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, originalEpoch: 7, timeoutMs: 10_000,
+    });
+    expect(store.isCommandLifecycleSuperseded(old)).toBe(false);
+    vi.advanceTimersByTime(1_000);
+    const newer = store.beginCommand({
+      id: 'new-main', name: 'set_filter_width', params: { width: 2800, receiver: 0 }, originalEpoch: 7, timeoutMs: 10_000,
+    });
+    store.failCommand(newer.id, newer.originalEpoch, 7, 'newer rejected');
+    expect(store.isCommandLifecycleSuperseded(old)).toBe(true);
+
+    vi.advanceTimersByTime(3_000);
+    store.acknowledgeCommand(old.id, old.originalEpoch, 7);
+    vi.advanceTimersByTime(2_000);
+    expect(store.getCommandLifecycle(newer.id, newer.originalEpoch)).toBeUndefined();
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: null });
+
+    store.failCommand(old.id, old.originalEpoch, 7, 'late failure');
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: null });
+    vi.advanceTimersByTime(5_000);
+    expect(store.getCommandLifecycle(old.id, old.originalEpoch)).toBeUndefined();
+
+    const sub = store.beginCommand({
+      id: 'sub', name: 'set_filter_width', params: { width: 2100, receiver: 1 }, originalEpoch: 7,
+    });
+    runtimeState.state = state({
+      active: 'SUB', main: { filterWidth: 2400 }, sub: { filterWidth: 1800 },
+      fieldStatus: { 'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 } },
+    });
+    expect(store.isCommandLifecycleSuperseded(sub)).toBe(false);
+    expect(getLiveView()).toMatchObject({ confirmed: 1800, target: 2100, phase: 'pending', busy: true });
+
+    store.resetCommandLifecycle();
+    const fresh = store.beginCommand({
+      id: 'fresh-main', name: 'set_filter_width', params: { width: 2600, receiver: 0 }, originalEpoch: 8,
+    });
+    expect(store.isCommandLifecycleSuperseded(fresh)).toBe(false);
+    runtimeState.state = state({ main: { filterWidth: 2400 }, sub: { filterWidth: 1800 } });
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2600, phase: 'pending', busy: true });
     store.resetCommandLifecycle();
   });
 });

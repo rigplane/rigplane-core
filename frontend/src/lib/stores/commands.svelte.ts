@@ -45,7 +45,19 @@ const MAX_RETAINED_COMMANDS = 100;
 const MAX_ACK_FIELD_OBSERVATION_TIMES = 100;
 let commands = $state<CommandLifecycle[]>([]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const supersededRecordKeys = new Set<string>();
 const key = (id: string, epoch: number): string => `${epoch}:${id}`;
+
+/** Command-bus receiver parameters are normalized to MAIN (0) or SUB (1). */
+const receiverScope = (command: Pick<CommandLifecycle, 'params'>): 0 | 1 =>
+  command.params.receiver === 1 ? 1 : 0;
+
+/**
+ * Factual, bounded record-lifetime supersession marker for projections that
+ * must not revive an older command after a newer matching record has retired.
+ */
+export const isCommandLifecycleSuperseded = (command: CommandLifecycle): boolean =>
+  supersededRecordKeys.has(key(command.id, command.originalEpoch));
 
 function clearRecordTimer(command: CommandLifecycle): void {
   const recordKey = key(command.id, command.originalEpoch);
@@ -56,6 +68,7 @@ function clearRecordTimer(command: CommandLifecycle): void {
 function retireRecord(command: CommandLifecycle): void {
   const index = commands.indexOf(command);
   if (index >= 0) commands.splice(index, 1);
+  supersededRecordKeys.delete(key(command.id, command.originalEpoch));
 }
 function retainTerminalOutcome(command: CommandLifecycle): void {
   clearRecordTimer(command);
@@ -83,7 +96,7 @@ function reserveRecordSlot(): void {
   if (commands.length < MAX_RETAINED_COMMANDS) return;
   const terminal = commands.findIndex((command) => command.status !== 'pending' && command.status !== 'acknowledged');
   if (terminal < 0) throw new Error('Command lifecycle capacity exhausted');
-  clearRecordTimer(commands[terminal]); commands.splice(terminal, 1);
+  clearRecordTimer(commands[terminal]); retireRecord(commands[terminal]);
 }
 function transition(
   id: string, originalEpoch: number,
@@ -116,6 +129,12 @@ export function beginCommand(input: BeginCommandInput): CommandLifecycle {
   const now = Date.now();
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const command: CommandLifecycle = { ...input, timeoutMs, createdAt: now, updatedAt: now, status: 'pending' };
+  const scope = receiverScope(command);
+  for (const existing of commands) {
+    if (existing.name === command.name && receiverScope(existing) === scope) {
+      supersededRecordKeys.add(key(existing.id, existing.originalEpoch));
+    }
+  }
   commands.push(command);
   startLiveDeadline(command);
   return command;
@@ -140,5 +159,5 @@ export function cancelPendingCommands(epoch: number, error = 'session-disconnect
 }
 export function resetCommandLifecycle(): void {
   for (const timer of timers.values()) clearTimeout(timer);
-  timers.clear(); commands = [];
+  timers.clear(); commands = []; supersededRecordKeys.clear();
 }
