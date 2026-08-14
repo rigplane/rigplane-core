@@ -305,7 +305,7 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
     const matching = observed.width === target && typeof marker === 'number' && Number.isFinite(marker);
     const ackMarker = ackMarkers?.[observed.fieldPath];
     const cold = ackMarkers !== undefined && Object.keys(ackMarkers).length === 0;
-    if (cold && matching) {
+    if (cold && typeof marker === 'number' && Number.isFinite(marker)) {
       command.ackFieldObservationTimes = { [observed.fieldPath]: marker };
     } else if (matching && typeof ackMarker === 'number' && Number.isFinite(ackMarker) && marker > ackMarker) {
       confirmCommand(command.id, command.originalEpoch, command.eventEpoch ?? command.originalEpoch);

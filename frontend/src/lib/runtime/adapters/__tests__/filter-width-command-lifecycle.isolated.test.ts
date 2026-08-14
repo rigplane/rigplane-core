@@ -1,20 +1,8 @@
-/**
- * MOR-1664 — Filter Width lifecycle projection.
- *
- * The adapter is the only place this child may join a command record with
- * radio-observed truth.  It must keep the observed width canonical and make
- * an explicitly unconfirmed target visible only while the newest matching
- * record is live.
- */
+/** MOR-1664 — Filter Width lifecycle projection. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-type FakeCommand = {
-  id: string;
-  name: string;
-  params: Record<string, unknown>;
-  originalEpoch: number;
-  eventEpoch?: number;
-  createdAt: number;
+type FakeCommand = { id: string; name: string; params: Record<string, unknown>;
+  originalEpoch: number; eventEpoch?: number; createdAt: number;
   status: 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'cancelled' | 'timed-out';
   error?: string;
   ackObservationSeq?: number;
@@ -135,10 +123,10 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(lifecycle.confirms).toEqual([]);
   });
 
-  it('uses a cold matching marker as a boundary, then confirms only the next one', () => {
-    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
+  it('uses the first qualified cold marker as a boundary, then confirms only a newer matching marker', () => {
+    runtimeState.state = state({ main: { filterWidth: 2400 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: {} })];
-    expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 2400, target: 3000, phase: 'acknowledged', busy: true });
     expect(lifecycle.commands[0].ackFieldObservationTimes).toEqual({ 'main.filterWidth': 5 });
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6 } } });
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: null, phase: 'idle', busy: false });
@@ -239,6 +227,13 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(store.getCommandLifecycle('cold-ack', 9)).toMatchObject({
       status: 'acknowledged', ackObservationSeq: undefined, ackFieldObservationTimes: {},
     });
+    const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
+    runtimeState.state = state({ main: { filterWidth: 2400 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2800, phase: 'acknowledged', busy: true });
+    expect(store.getCommandLifecycle('cold-ack', 9)?.ackFieldObservationTimes).toEqual({ 'main.filterWidth': 5 });
+    runtimeState.state = state({ main: { filterWidth: 2800 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6 } } });
+    expect(getLiveView()).toMatchObject({ confirmed: 2800, target: null, phase: 'idle', busy: false });
+    expect(store.getCommandLifecycle('cold-ack', 9)?.status).toBe('confirmed');
     store.resetCommandLifecycle();
   });
 
