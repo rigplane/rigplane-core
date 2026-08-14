@@ -26,8 +26,10 @@ from rigplane.runtime._poller_types import (
 )
 from rigplane.runtime.tx_interlock import (
     RfState,
+    TxInterlockCommandFamily,
     TxInterlockDisposition,
     classify_tx_interlock,
+    get_tx_interlock_command_family_metadata,
     evaluate_tx_interlock,
 )
 
@@ -101,3 +103,39 @@ def test_cw_and_modulation_input_controls_are_tx_safe() -> None:
     ):
         assert classify_tx_interlock(command) is TxInterlockDisposition.TX_SAFE
         assert evaluate_tx_interlock(command, rf_state=RfState.UNKNOWN).allowed is True
+
+
+def test_command_family_metadata_pins_typed_policy_without_classifying_defaults() -> (
+    None
+):
+    cases = (
+        (PttOff(), TxInterlockCommandFamily.PTT_OFF),
+        (SetPowerstat(on=False), TxInterlockCommandFamily.POWER_OFF),
+        (SetPowerstat(on=True), TxInterlockCommandFamily.POWER_ON),
+        (ScanStop(), TxInterlockCommandFamily.SCAN_STOP),
+        (SetTunerStatus(0), TxInterlockCommandFamily.TUNER_OFF),
+        (PttOn(), TxInterlockCommandFamily.PTT_ON),
+        (SendCiv(command=0x00), TxInterlockCommandFamily.RAW_CIV),
+        (ScanStart(), TxInterlockCommandFamily.SCAN_START),
+        (SetAntenna1(on=True), TxInterlockCommandFamily.ANTENNA_SWITCH),
+        (SetTunerStatus(1), TxInterlockCommandFamily.TUNER_ENGAGE),
+        (SetTunerStatus(2), TxInterlockCommandFamily.TUNER_ENGAGE),
+        (SetFreq(7_100_000), TxInterlockCommandFamily.FREQUENCY),
+        (SetMode("USB"), TxInterlockCommandFamily.MODE),
+        (SetBand(4), TxInterlockCommandFamily.BAND),
+        (SelectVfo("MAIN"), TxInterlockCommandFamily.VFO_SELECT),
+        (VfoSwap(), TxInterlockCommandFamily.VFO_TOPOLOGY),
+        (SetSplit(on=True), TxInterlockCommandFamily.VFO_TOPOLOGY),
+        (MemoryToVfo(channel=1), TxInterlockCommandFamily.MEMORY),
+        (SetRitTxStatus(on=True), TxInterlockCommandFamily.RIT_XIT),
+    )
+
+    for command, family in cases:
+        metadata = get_tx_interlock_command_family_metadata(command)
+
+        assert metadata is not None
+        assert metadata.family is family
+        assert metadata.base_disposition is classify_tx_interlock(command)
+
+    assert get_tx_interlock_command_family_metadata(SetTunerStatus(3)) is None
+    assert get_tx_interlock_command_family_metadata(SetCwPitch(600)) is None
