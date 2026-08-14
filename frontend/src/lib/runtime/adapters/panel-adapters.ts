@@ -244,12 +244,6 @@ export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
 }
 
 // ── Filter Width command lifecycle (MOR-1664) ──
-/**
- * A presentation-neutral projection for the Filter Width surface. `confirmed`
- * always comes from radio-observed state; `target` is only an unconfirmed
- * command request. The adapter is also the narrow observer that completes an
- * acknowledged lifecycle record once a later matching observation arrives.
- */
 export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged';
 export type FilterWidthCommandOutcome = 'failed' | 'timed-out' | 'cancelled';
 export interface FilterWidthCommandLifecycleView {
@@ -280,7 +274,7 @@ function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; fieldPat
 function latestFilterWidthLifecycle(receiver: 0 | 1) {
   let latest: ReturnType<typeof getCommandLifecycles>[number] | null = null;
   for (const command of getCommandLifecycles()) {
-    if (command.name !== 'set_filter_width' || command.params.receiver !== receiver
+    if (command.name !== 'set_filter_width' || (command.params.receiver === 1 ? 1 : 0) !== receiver
       || typeof command.params.width !== 'number' || !Number.isFinite(command.params.width)
       || isCommandLifecycleSuperseded(command)) continue;
     if (!latest || command.createdAt >= latest.createdAt) latest = command;
@@ -305,20 +299,15 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
 
   const target = command.params.width as number;
   if (command.status === 'acknowledged') {
-    // ACK alone is never confirmation. A qualifying field observation must
-    // be fresh, available and observed, and must carry a finite marker newer
-    // than the marker captured for this exact public field at ACK.  A new
-    // record that had no finite marker for this field at ACK may use its first
-    // finite post-ACK marker; legacy records without the map never confirm.
+    // ACK alone is never confirmation; legacy records without markers fail closed.
     const marker = observed.fieldStatus?.lastObservedMonotonic;
     const ackMarkers = command.ackFieldObservationTimes;
+    const matching = observed.width === target && typeof marker === 'number' && Number.isFinite(marker);
     const ackMarker = ackMarkers?.[observed.fieldPath];
-    const isEmptyNewFormatBoundary = ackMarkers !== undefined && Object.keys(ackMarkers).length === 0;
-    const isQualifying = typeof marker === 'number' && Number.isFinite(marker)
-      && ackMarkers !== undefined
-      && (isEmptyNewFormatBoundary
-        || (typeof ackMarker === 'number' && Number.isFinite(ackMarker) && marker > ackMarker));
-    if (isQualifying && observed.width === target) {
+    const cold = ackMarkers !== undefined && Object.keys(ackMarkers).length === 0;
+    if (cold && matching) {
+      command.ackFieldObservationTimes = { [observed.fieldPath]: marker };
+    } else if (matching && typeof ackMarker === 'number' && Number.isFinite(ackMarker) && marker > ackMarker) {
       confirmCommand(command.id, command.originalEpoch, command.eventEpoch ?? command.originalEpoch);
       return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null };
     }

@@ -47,7 +47,7 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewMo
 import { getFilterWidthCommandLifecycle } from '../panel-adapters';
 
 const command = (over: Partial<FakeCommand> = {}): FakeCommand => ({
-  id: 'width-1', name: 'set_filter_width', params: { width: 3000, receiver: 0 },
+  id: 'width-1', name: 'set_filter_width', params: { width: 3000 },
   originalEpoch: 7, eventEpoch: 7, createdAt: 1, status: 'pending', ...over,
 });
 const state = (over: Partial<FakeState> = {}): FakeState => ({
@@ -135,9 +135,12 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(lifecycle.confirms).toEqual([]);
   });
 
-  it('uses the first finite field marker after an empty new-format ACK boundary', () => {
+  it('uses a cold matching marker as a boundary, then confirms only the next one', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: {} })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
+    expect(lifecycle.commands[0].ackFieldObservationTimes).toEqual({ 'main.filterWidth': 5 });
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6 } } });
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: null, phase: 'idle', busy: false });
     expect(lifecycle.confirms).toEqual([['width-1', 7, 7]]);
   });
@@ -212,23 +215,20 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it('captures only finite public-field ACK markers through the real command store seam', async () => {
     vi.doUnmock('$lib/stores/commands.svelte');
     vi.resetModules();
-    commandRadio.current = {
-      observationSeq: 41,
-      main: { filterWidth: 3000 },
-      fieldStatus: {
-        'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 73 },
-        'main.mode': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: Number.NaN },
-      },
-    };
+    const fields = Object.fromEntries(Array.from({ length: 198 }, (_, index) => [
+      index === 142 ? 'sub.filterWidth' : `other.${index}`,
+      { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: index === 142 ? 73 : Number.NaN },
+    ]));
+    commandRadio.current = { observationSeq: 41, fieldStatus: fields };
     const store = await import('$lib/stores/commands.svelte');
-    store.beginCommand({ id: 'real-ack', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, originalEpoch: 9 });
+    store.beginCommand({ id: 'real-ack', name: 'set_filter_width', params: { width: 3000, receiver: 1 }, originalEpoch: 9 });
     store.acknowledgeCommand('real-ack', 9, 10);
     const acknowledged = store.getCommandLifecycle('real-ack', 9);
     expect(acknowledged).toMatchObject({
       status: 'acknowledged', ackObservationSeq: 41,
-      ackFieldObservationTimes: { 'main.filterWidth': 73 },
+      ackFieldObservationTimes: { 'sub.filterWidth': 73 },
     });
-    expect(acknowledged?.ackFieldObservationTimes).toEqual({ 'main.filterWidth': 73 });
+    expect(acknowledged?.ackFieldObservationTimes).toEqual({ 'sub.filterWidth': 73 });
     expect(acknowledged).not.toHaveProperty('radioState');
     expect(acknowledged).not.toHaveProperty('fieldStatus');
     expect(acknowledged).not.toHaveProperty('main');
@@ -251,7 +251,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
 
     const old = store.beginCommand({
-      id: 'old-main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, originalEpoch: 7, timeoutMs: 10_000,
+      id: 'old-main', name: 'set_filter_width', params: { width: 3000 }, originalEpoch: 7, timeoutMs: 10_000,
     });
     expect(store.isCommandLifecycleSuperseded(old)).toBe(false);
     vi.advanceTimersByTime(1_000);

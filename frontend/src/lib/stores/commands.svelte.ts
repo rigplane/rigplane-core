@@ -20,13 +20,7 @@ export interface CommandLifecycle {
    * value) and would leave the sequence guard permanently unable to fire.
    */
   ackObservationSeq?: number;
-  /**
-   * Bounded ACK-time field-observation markers.  These are correlation
-   * metadata only: they deliberately retain neither radio values nor field
-   * provenance.  An empty object means the current command-store contract
-   * captured no finite markers; an absent property is a legacy record and
-   * must not be used for confirmation.
-   */
+  /** Bounded correlation markers; absent legacy records must fail closed. */
   ackFieldObservationTimes?: Readonly<Record<string, number>>;
 }
 export interface BeginCommandInput {
@@ -42,7 +36,8 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  */
 const OUTCOME_RETENTION_MS = 5_000;
 const MAX_RETAINED_COMMANDS = 100;
-const MAX_ACK_FIELD_OBSERVATION_TIMES = 100;
+/** Public fields consumed by the filter-width lifecycle projection. */
+const ACK_CORRELATION_PATHS = ['main.filterWidth', 'sub.filterWidth'] as const;
 let commands = $state<CommandLifecycle[]>([]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const supersededRecordKeys = new Set<string>();
@@ -52,10 +47,7 @@ const key = (id: string, epoch: number): string => `${epoch}:${id}`;
 const receiverScope = (command: Pick<CommandLifecycle, 'params'>): 0 | 1 =>
   command.params.receiver === 1 ? 1 : 0;
 
-/**
- * Factual, bounded record-lifetime supersession marker for projections that
- * must not revive an older command after a newer matching record has retired.
- */
+/** Keeps a superseded record from resurfacing after newer retirement. */
 export const isCommandLifecycleSuperseded = (command: CommandLifecycle): boolean =>
   supersededRecordKeys.has(key(command.id, command.originalEpoch));
 
@@ -112,8 +104,9 @@ function transition(
     const radio = getRadioState();
     command.ackObservationSeq = radio?.observationSeq;
     const observations: Record<string, number> = {};
-    for (const [path, field] of Object.entries(radio?.fieldStatus ?? {}).slice(0, MAX_ACK_FIELD_OBSERVATION_TIMES)) {
-      const marker = field.lastObservedMonotonic;
+    for (const path of ACK_CORRELATION_PATHS) {
+      const field = radio?.fieldStatus?.[path];
+      const marker = field?.lastObservedMonotonic;
       if (typeof marker === 'number' && Number.isFinite(marker)) observations[path] = marker;
     }
     command.ackFieldObservationTimes = observations;
