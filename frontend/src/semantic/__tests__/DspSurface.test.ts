@@ -274,6 +274,36 @@ describe('level intents reach the caller with the field and the raw value', () =
   });
 });
 
+// ── 4b. Manual-notch position is the CI-V raw 0..255 domain ───────────────
+
+describe('manual-notch position stays in the documented raw domain', () => {
+  it.each([0, 128, 255])('renders and emits raw notch position %i unchanged', (position) => {
+    const onLevelChange = vi.fn();
+    const view = {
+      ...base(),
+      dsp: {
+        ...base().dsp!,
+        notchFreq: {
+          ...base().dsp!.notchFreq,
+          reading: { status: 'known' as const, value: position },
+        },
+      },
+    } as RadioViewModel;
+
+    withSurface(view, (s) => {
+      const input = s.input('notchFreq')!;
+      expect(s.control('notchFreq')!.textContent).toContain('Notch position');
+      expect(input.min).toBe('0');
+      expect(input.max).toBe('255');
+      expect(input.valueAsNumber).toBe(position);
+      input.value = String(position);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('notchFreq', position);
+    }, { onLevelChange });
+  });
+});
+
 // ── 5. Range-parameterisation: nbLevel takes its ceiling from caps-echo props ─
 
 describe('nbLevel is range-parameterised by the caps-echoed nbLevelMax/nbLevelPercent props', () => {

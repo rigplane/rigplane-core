@@ -89,21 +89,31 @@
 
   /** Local NR mode for modal (supports 2 when server only reports on/off). */
   let nrModalMode = $state(0);
-  let notchModalMode = $state<'off' | 'auto' | 'manual'>('off');
-
   function computeModalStyle(anchor: HTMLElement | undefined): string {
-    if (!anchor) {
-      return 'top: 8px; left: 8px; width: 220px;';
-    }
-    const rect = anchor.getBoundingClientRect();
     const menuWidth = 220;
-    let left = rect.left;
+    let left = anchor?.getBoundingClientRect().left ?? 8;
     if (left + menuWidth > window.innerWidth - 8) {
       left = window.innerWidth - 8 - menuWidth;
     }
     if (left < 8) {
       left = 8;
     }
+
+    // MobileRadioLayout owns the tuning strip's size (including the device
+    // safe-area inset). Read its actual viewport boundary instead of copying
+    // that layout constant here, so this dialog remains above the live strip.
+    const mobileTuningStrip = window.innerWidth < 640
+      ? document.querySelector<HTMLElement>('.m-tuning-strip')
+      : null;
+    if (mobileTuningStrip) {
+      const stripTop = mobileTuningStrip.getBoundingClientRect().top;
+      return `top: 8px; left: ${left}px; width: ${menuWidth}px; bottom: calc(100dvh - ${stripTop}px + 8px); overflow-y: auto;`;
+    }
+
+    if (!anchor) {
+      return 'top: 8px; left: 8px; width: 220px;';
+    }
+    const rect = anchor.getBoundingClientRect();
     const top = rect.bottom + 6;
     return `top: ${top}px; left: ${left}px; width: ${menuWidth}px;`;
   }
@@ -117,7 +127,6 @@
     } else if (kind === 'agc') {
       agcModalStyle = computeModalStyle(agcAnchorEl);
     } else {
-      notchModalMode = notchMode;
       notchModalStyle = computeModalStyle(notchAnchorEl);
     }
     openModal = kind;
@@ -143,7 +152,6 @@
 
   function handleNotchModalMode(v: string | number): void {
     const m = v as 'off' | 'auto' | 'manual';
-    notchModalMode = m;
     onNotchModeChange(m);
   }
 
@@ -395,7 +403,7 @@
     <div class="dsp-modal-block dsp-mode-grid">
       {#each notchOptions as option}
         <HardwareButton
-          active={notchModalMode === option.value}
+          active={notchMode === option.value}
           indicator="edge-left"
           color="cyan"
           onclick={() => handleNotchModalMode(option.value)}
@@ -404,14 +412,13 @@
         </HardwareButton>
       {/each}
     </div>
-    {#if notchModalMode === 'manual'}
+    {#if notchMode === 'manual'}
       <ValueControl
-        label="Notch Freq"
+        label="Notch Position"
         value={notchFreq}
         min={0}
-        max={3000}
+        max={255}
         step={1}
-        unit="Hz"
         renderer="hbar"
         accentColor="var(--v2-accent-cyan)"
         onChange={onNotchFreqChange}
