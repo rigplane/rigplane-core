@@ -1168,23 +1168,27 @@ async def test_execute_failed_set_filter_width_does_not_queue_readback() -> None
     assert scheduler.pending_requests() == ()
 
 
+@pytest.mark.parametrize(("receiver", "slot"), ((0, "main"), (1, "sub")))
 @pytest.mark.asyncio
-async def test_execute_set_mode_invalidates_stale_width_and_queues_readback() -> None:
-    mode_path = FieldPath.active("main", "freq_mode", "mode")
-    width_path = FieldPath.active("main", "freq_mode", "filter_width")
+async def test_execute_set_mode_invalidates_stale_width_and_queues_readback(
+    receiver: int, slot: str
+) -> None:
+    mode_path = FieldPath.active(slot, "freq_mode", "mode")
+    width_path = FieldPath.active(slot, "freq_mode", "filter_width")
+    native_width_path = FieldPath.active(str(receiver), "freq_mode", "filter_width")
     store = StateStore()
     store.apply_current(
         Observation(
-            path=width_path,
+            path=native_width_path,
             value=500,
             source=SourceMetadata(source="poll_response", provider="test"),
             timestamp_monotonic=1.0,
         )
     )
-    radio = _make_radio(active="MAIN", model="IC-7300")
+    radio = _make_radio(active="MAIN", model="IC-7610")
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def delayed_set_mode(*_: object) -> None:
+    async def delayed_set_mode(*_: object, **__: object) -> None:
         started.set()
         await release.wait()
 
@@ -1194,9 +1198,15 @@ async def test_execute_set_mode_invalidates_stale_width_and_queues_readback() ->
     )
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
-    task = asyncio.create_task(poller._execute(SetMode("USB", filter_width=1)))  # noqa: SLF001
+    task = asyncio.create_task(  # noqa: SLF001
+        poller._execute(SetMode("USB", filter_width=1, receiver=receiver))
+    )
     await started.wait()
-    assert str(width_path) not in store.snapshot().as_dict()
+    assert str(native_width_path) not in store.snapshot().as_dict()
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=2
+    )
+    assert payload["fieldStatus"][f"{slot}.filterWidth"]["availability"] == "missing"
     release.set()
     await task
     assert {path for item in scheduler.pending_requests() for path in item.paths} == {
@@ -1209,23 +1219,24 @@ async def test_execute_set_mode_invalidates_stale_width_and_queues_readback() ->
     )
     store.apply_current(
         Observation(
-            path=width_path,
+            path=native_width_path,
             value=3600,
             source=SourceMetadata(source="poll_response", provider="test"),
             timestamp_monotonic=2.0,
         )
     )
-    assert store.snapshot().field(width_path).value == 3600
+    assert store.snapshot().field(native_width_path).value == 3600
 
 
 @pytest.mark.asyncio
 async def test_execute_failed_set_mode_keeps_width_unknown_and_skips_readback() -> None:
     mode_path = FieldPath.active("main", "freq_mode", "mode")
     width_path = FieldPath.active("main", "freq_mode", "filter_width")
+    native_width_path = FieldPath.active("0", "freq_mode", "filter_width")
     store = StateStore()
     store.apply_current(
         Observation(
-            path=width_path,
+            path=native_width_path,
             value=500,
             source=SourceMetadata(source="poll_response", provider="test"),
             timestamp_monotonic=1.0,
@@ -1240,7 +1251,7 @@ async def test_execute_failed_set_mode_keeps_width_unknown_and_skips_readback() 
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     with pytest.raises(RuntimeError, match="write failed"):
         await poller._execute(SetMode("USB", filter_width=1))  # noqa: SLF001
-    assert str(width_path) not in store.snapshot().as_dict()
+    assert str(native_width_path) not in store.snapshot().as_dict()
     assert scheduler.pending_requests() == ()
 
 

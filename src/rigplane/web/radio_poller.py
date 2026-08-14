@@ -1314,9 +1314,7 @@ class RadioPoller:
             filter_width = FieldPath.active(
                 _post_write_receiver_id(cmd), "freq_mode", "filter_width"
             )
-            if self._acquisition_scheduler._profile.capability_for(
-                filter_width
-            ).can_poll:
+            if scheduler._profile.capability_for(filter_width).can_poll:
                 paths = (*paths, filter_width)
         if not paths:
             return
@@ -2060,11 +2058,7 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_mode")
                 if CAP_FILTER_WIDTH in self._caps:
                     self._state_store.discard(
-                        (
-                            FieldPath.active(
-                                "sub" if rx else "main", "freq_mode", "filter_width"
-                            ),
-                        )
+                        (FieldPath.active(str(rx), "freq_mode", "filter_width"),)
                     )
                 current = self._current_active()
                 if rx != 0 and self._profile.supports_cmd29(0x06):
