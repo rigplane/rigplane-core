@@ -159,6 +159,32 @@
   function setLevel(field: CwLevelField, value: number): void {
     if (cw && usable(cw[field])) onLevelChange?.(field, value);
   }
+  let breakInDelayCancelled = false;
+  function restoreBreakInDelay(target: HTMLInputElement): void {
+    const reading = cw?.breakInDelay.reading;
+    target.value = String(reading?.status === 'known' ? reading.value : Number(target.min));
+  }
+  function noteBreakInDelayInput(): void {
+    breakInDelayCancelled = false;
+  }
+  function commitBreakInDelay(target: HTMLInputElement): void {
+    if (breakInDelayCancelled) {
+      breakInDelayCancelled = false;
+      restoreBreakInDelay(target);
+      return;
+    }
+    const candidate = target.valueAsNumber;
+    const min = Number(target.min);
+    const max = Number(target.max);
+    if (Number.isFinite(candidate) && Number.isFinite(min) && Number.isFinite(max)) {
+      setLevel('breakInDelay', Math.min(max, Math.max(min, Math.round(candidate))));
+    }
+    restoreBreakInDelay(target);
+  }
+  function cancelBreakInDelay(target: HTMLInputElement): void {
+    breakInDelayCancelled = true;
+    restoreBreakInDelay(target);
+  }
   function setApf(on: boolean): void {
     if (cw && usable(cw.apf) && !mutexed('apf')) onApfOn?.(on);
   }
@@ -214,7 +240,15 @@
             type="range" {min} {max} {step}
             value={f.reading.status === 'known' ? f.reading.value : min}
             disabled={!usable(f)}
-            oninput={(event) => setLevel(field, event.currentTarget.valueAsNumber)}
+            oninput={field === 'breakInDelay'
+              ? () => noteBreakInDelayInput()
+              : (event) => setLevel(field, event.currentTarget.valueAsNumber)}
+            onchange={field === 'breakInDelay'
+              ? (event) => commitBreakInDelay(event.currentTarget)
+              : undefined}
+            onpointercancel={field === 'breakInDelay'
+              ? (event) => cancelBreakInDelay(event.currentTarget)
+              : undefined}
           />
           <output data-testid={`cw-keyer-${field}-value`}>{textOf(f)} {unit}</output>
         </label>
