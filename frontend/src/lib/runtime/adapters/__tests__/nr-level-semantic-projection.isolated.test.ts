@@ -10,18 +10,11 @@ import {
 import { toRadioViewModel } from '../radio-view-model-adapter';
 
 const EXACT_NR_DOMAIN: ControlDomain = {
-  mapping: 'identity',
-  raw_min: 0,
-  raw_max: 10,
-  raw_step: 1,
-  raw_origin: 0,
-  display_min: '0' as never,
-  display_max: '10' as never,
-  display_step: '1' as never,
-  display_origin: '0' as never,
+  mapping: 'identity', raw_min: 0, raw_max: 10, raw_step: 1, raw_origin: 0,
+  display_min: '0' as never, display_max: '10' as never,
+  display_step: '1' as never, display_origin: '0' as never,
   display_unit: 'level',
-  quantization: 'reject',
-  restoration: 'exact',
+  quantization: 'reject', restoration: 'exact',
 };
 
 const EXACT_DISPLAY_DOMAIN = { min: 0, max: 10, step: 1, origin: 0 };
@@ -45,25 +38,11 @@ function fieldStatus(availability: FieldAvailability): FieldStatus {
 
 function receiver(overrides: Partial<ReceiverState> = {}): ReceiverState {
   return {
-    freqHz: 14_074_000,
-    mode: 'USB',
-    filter: 1,
-    dataMode: 0,
-    att: 0,
-    preamp: 0,
-    nb: true,
-    nbLevel: 7,
-    nr: true,
-    afLevel: 128,
-    rfGain: 255,
-    squelch: 0,
-    sMeter: 0,
-    autoNotch: false,
-    manualNotch: true,
-    notchFilter: 77,
-    manualNotchWidth: 2,
-    agc: 2,
-    agcTimeConstant: 9,
+    freqHz: 14_074_000, mode: 'USB', filter: 1, dataMode: 0,
+    att: 0, preamp: 0, nb: true, nbLevel: 7, nr: true,
+    afLevel: 128, rfGain: 255, squelch: 0, sMeter: 0,
+    autoNotch: false, manualNotch: true, notchFilter: 77,
+    manualNotchWidth: 2, agc: 2, agcTimeConstant: 9,
     ...overrides,
   };
 }
@@ -159,6 +138,14 @@ function projectionOf(dsp: DspViewModel): unknown {
   return (dsp as DspViewModel & { nrLevelProjection?: unknown }).nrLevelProjection;
 }
 
+function payloadWithProjection(projection: unknown): unknown {
+  const payload = structuredClone(model(4, caps(EXACT_NR_DOMAIN))) as unknown as {
+    dsp: Record<string, unknown>;
+  };
+  payload.dsp.nrLevelProjection = projection;
+  return payload;
+}
+
 describe('NR-level semantic projection (MOR-1736)', () => {
   it.each([0, 1, 4, 10])('carries exact FTX-1 raw/display %i through adapter and validator', (raw) => {
     const dsp = model(raw, caps(EXACT_NR_DOMAIN)).dsp!;
@@ -213,31 +200,17 @@ describe('NR-level semantic projection (MOR-1736)', () => {
 
   it('leaves NR toggle, NB, notch, and AGC facts unchanged', () => {
     const dsp = model(4, caps(EXACT_NR_DOMAIN)).dsp!;
-    expect({
-      nrActive: dsp.nrActive,
-      nbActive: dsp.nbActive,
-      nbLevel: dsp.nbLevel,
-      nbDepth: dsp.nbDepth,
-      nbWidth: dsp.nbWidth,
-      notchMode: dsp.notchMode,
-      notchFreq: dsp.notchFreq,
-      manualNotchWidth: dsp.manualNotchWidth,
-      agcMode: dsp.agcMode,
-      agcModes: dsp.agcModes,
-      agcTimeConstant: dsp.agcTimeConstant,
-    }).toEqual({
-      nrActive: { reading: { status: 'known', value: true }, availability: { structural: true, operational: true } },
-      nbActive: { reading: { status: 'known', value: true }, availability: { structural: true, operational: true } },
-      nbLevel: { reading: { status: 'known', value: 7 }, availability: { structural: true, operational: true } },
-      nbDepth: { reading: { status: 'known', value: 5 }, availability: { structural: true, operational: true } },
-      nbWidth: { reading: { status: 'known', value: 3 }, availability: { structural: true, operational: true } },
-      notchMode: { reading: { status: 'known', value: 'manual' }, availability: { structural: true, operational: true } },
-      notchFreq: { reading: { status: 'known', value: 77 }, availability: { structural: true, operational: true } },
-      manualNotchWidth: { reading: { status: 'known', value: 2 }, availability: { structural: true, operational: true } },
-      agcMode: { reading: { status: 'known', value: 2 }, availability: { structural: true, operational: true } },
-      agcModes: [1, 2, 3],
-      agcTimeConstant: { reading: { status: 'known', value: 9 }, availability: { structural: true, operational: true } },
-    });
+    const facts = [dsp.nrActive, dsp.nbActive, dsp.nbLevel, dsp.nbDepth, dsp.nbWidth,
+      dsp.notchMode, dsp.notchFreq, dsp.manualNotchWidth, dsp.agcMode, dsp.agcTimeConstant];
+    expect(facts.map((fact) => fact.reading)).toEqual([
+      { status: 'known', value: true }, { status: 'known', value: true },
+      { status: 'known', value: 7 }, { status: 'known', value: 5 },
+      { status: 'known', value: 3 }, { status: 'known', value: 'manual' },
+      { status: 'known', value: 77 }, { status: 'known', value: 2 },
+      { status: 'known', value: 2 }, { status: 'known', value: 9 },
+    ]);
+    expect(facts.every((fact) => fact.availability.structural && fact.availability.operational)).toBe(true);
+    expect(dsp.agcModes).toEqual([1, 2, 3]);
   });
 
   it('keeps the projection optional for old semantic payloads', () => {
@@ -252,10 +225,54 @@ describe('NR-level semantic projection (MOR-1736)', () => {
     ['extra projection member', { value: 4, domain: EXACT_DISPLAY_DOMAIN, adjustable: true, extra: true }],
     ['extra domain member', { value: 4, domain: { ...EXACT_DISPLAY_DOMAIN, extra: true }, adjustable: true }],
   ])('strictly rejects %s whenever the projection is present', (_label, projection) => {
-    const malformed = structuredClone(model(4, caps(EXACT_NR_DOMAIN))) as unknown as {
-      dsp: Record<string, unknown>;
-    };
-    malformed.dsp.nrLevelProjection = projection;
-    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.dsp\.nrLevelProjection/);
+    expect(() => validateRadioViewModel(payloadWithProjection(projection)))
+      .toThrow(/\$\.dsp\.nrLevelProjection/);
+  });
+
+  it.each([
+    ['projection', Object.create({ value: 4, domain: EXACT_DISPLAY_DOMAIN, adjustable: true, extra: true })],
+    ['domain', { value: 4, domain: Object.create(EXACT_DISPLAY_DOMAIN), adjustable: true }],
+  ])('rejects prototype-inherited %s fields', (_label, projection) => {
+    expect(() => validateRadioViewModel(payloadWithProjection(projection)))
+      .toThrow(/\$\.dsp\.nrLevelProjection/);
+  });
+
+  it('rejects accessors without invoking them', () => {
+    let calls = 0;
+    const projection = Object.defineProperty(
+      { domain: EXACT_DISPLAY_DOMAIN, adjustable: true }, 'value',
+      { enumerable: true, get: () => { calls += 1; throw new Error('getter trap'); } },
+    );
+    expect(() => validateRadioViewModel(payloadWithProjection(projection)))
+      .toThrow(/\$\.dsp\.nrLevelProjection/);
+    const setterDomain = Object.defineProperty(
+      { ...EXACT_DISPLAY_DOMAIN }, 'step', { enumerable: true, set: () => { calls += 1; } },
+    );
+    expect(() => validateRadioViewModel(payloadWithProjection(
+      { value: 4, domain: setterDomain, adjustable: true },
+    ))).toThrow(/\$\.dsp\.nrLevelProjection/);
+    expect(calls).toBe(0);
+  });
+
+  it.each([
+    ['symbol extra', () => ({ value: 4, domain: EXACT_DISPLAY_DOMAIN, adjustable: true, [Symbol('extra')]: true })],
+    ['hidden extra', () => Object.defineProperty(
+      { value: 4, domain: EXACT_DISPLAY_DOMAIN, adjustable: true }, 'extra', { value: true },
+    )],
+    ['hidden required field', () => Object.defineProperty(
+      { domain: EXACT_DISPLAY_DOMAIN, adjustable: true }, 'value', { value: 4 },
+    )],
+  ])('rejects %s', (_label, projection) => {
+    expect(() => validateRadioViewModel(payloadWithProjection(projection())))
+      .toThrow(/\$\.dsp\.nrLevelProjection/);
+  });
+
+  it('converts a proxy reflection trap into normal validator rejection', () => {
+    const projection = new Proxy(
+      { value: 4, domain: EXACT_DISPLAY_DOMAIN, adjustable: true },
+      { ownKeys: () => { throw new Error('proxy ownKeys trap'); } },
+    );
+    expect(() => validateRadioViewModel(payloadWithProjection(projection)))
+      .toThrow(/\$\.dsp\.nrLevelProjection/);
   });
 });

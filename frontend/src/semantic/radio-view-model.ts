@@ -1447,9 +1447,40 @@ const NOTCH_MODES = ['off', 'auto', 'manual'] as const;
 
 type NrLevelDisplayDomain = NonNullable<NrLevelProjection['domain']>;
 
+function exactOwnDataRecord(
+  value: unknown, keys: readonly string[], path: string,
+): Record<string, unknown> {
+  let snapshot: Record<string, unknown> | null = null;
+  try {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)
+      && Object.getPrototypeOf(value) === Object.prototype) {
+      const ownKeys = Reflect.ownKeys(value);
+      if (ownKeys.length === keys.length
+        && ownKeys.every((key) => typeof key === 'string' && keys.includes(key))) {
+        const candidate: Record<string, unknown> = {};
+        let valid = true;
+        for (const key of keys) {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) {
+            valid = false;
+            break;
+          }
+          candidate[key] = descriptor.value;
+        }
+        if (valid) snapshot = candidate;
+      }
+    }
+  } catch {
+    snapshot = null;
+  }
+  if (snapshot === null) invalid(path, `a plain object with exact own data properties [${keys.join(', ')}]`);
+  return snapshot;
+}
+
 function validateNrLevelDisplayDomain(value: unknown, path: string): NrLevelDisplayDomain {
-  const v = record(value, path);
-  exactKeys(v, ['min', 'max', 'step', 'origin'] satisfies readonly (keyof NrLevelDisplayDomain)[], path);
+  const v = exactOwnDataRecord(
+    value, ['min', 'max', 'step', 'origin'] satisfies readonly (keyof NrLevelDisplayDomain)[], path,
+  );
   return {
     min: num(v.min, `${path}.min`),
     max: num(v.max, `${path}.max`),
@@ -1459,8 +1490,9 @@ function validateNrLevelDisplayDomain(value: unknown, path: string): NrLevelDisp
 }
 
 function validateNrLevelProjection(value: unknown, path: string): NrLevelProjection {
-  const v = record(value, path);
-  exactKeys(v, ['value', 'domain', 'adjustable'] satisfies readonly (keyof NrLevelProjection)[], path);
+  const v = exactOwnDataRecord(
+    value, ['value', 'domain', 'adjustable'] satisfies readonly (keyof NrLevelProjection)[], path,
+  );
   return {
     value: nullableNumber(v.value, `${path}.value`),
     domain: v.domain === null ? null : validateNrLevelDisplayDomain(v.domain, `${path}.domain`),
