@@ -175,6 +175,30 @@ disposition_overrides = {{ "{family}" = "defer" }}
         with pytest.raises(RigLoadError, match=r"\[tx_interlock\] must be a table"):
             load_rig(p)
 
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            """
+[tx_interlock.disposition_overrides]
+"power-on" = "defer"
+""",
+            """
+[tx_interlock]
+disposition_overrides."power-on" = "defer"
+""",
+        ],
+    )
+    def test_tx_interlock_rejects_non_inline_override_encodings(
+        self, tmp_path, declaration
+    ):
+        p = _write_toml(tmp_path, _MINIMAL_TOML + declaration)
+
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[tx_interlock\]\.disposition_overrides must use inline table syntax",
+        ):
+            load_rig(p)
+
     def test_load_minimal_power_max_watts(self, tmp_path):
         p = _write_toml(
             tmp_path,

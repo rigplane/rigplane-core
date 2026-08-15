@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import tomllib
 import warnings
 from dataclasses import dataclass, field
@@ -1058,6 +1059,32 @@ def _parse_state_acquisition(
 _TX_INTERLOCK_METADATA_BY_FAMILY = {
     metadata.family: metadata for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
 }
+_TX_INTERLOCK_TABLE_HEADER = re.compile(r"^\[\s*tx_interlock\s*\]\s*(?:#.*)?$")
+_TX_INTERLOCK_NESTED_OVERRIDES_HEADER = re.compile(
+    r"^\[\s*tx_interlock\s*\.\s*disposition_overrides\s*\]\s*(?:#.*)?$"
+)
+_TX_INTERLOCK_DOTTED_OVERRIDES_KEY = re.compile(r"^disposition_overrides\s*\.")
+
+
+def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
+    """Reject TOML encodings that erase the documented inline-table boundary."""
+
+    in_tx_interlock = False
+    for raw_line in source.splitlines():
+        line = raw_line.lstrip()
+        if _TX_INTERLOCK_NESTED_OVERRIDES_HEADER.fullmatch(line):
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides "
+                "must use inline table syntax"
+            )
+        if line.startswith("["):
+            in_tx_interlock = bool(_TX_INTERLOCK_TABLE_HEADER.fullmatch(line))
+            continue
+        if in_tx_interlock and _TX_INTERLOCK_DOTTED_OVERRIDES_KEY.match(line):
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides "
+                "must use inline table syntax"
+            )
 
 
 def _parse_tx_interlock_disposition_overrides(
@@ -1134,9 +1161,12 @@ def load_rig(path: Path) -> RigConfig:
 
     try:
         raw = path.read_bytes()
-        data = tomllib.loads(raw.decode())
+        source = raw.decode()
+        data = tomllib.loads(source)
     except Exception as exc:
         raise RigLoadError(f"{filename}: failed to parse TOML: {exc}") from exc
+
+    _validate_tx_interlock_override_syntax(filename, source)
 
     # Validate required sections
     for section in _REQUIRED_SECTIONS:
