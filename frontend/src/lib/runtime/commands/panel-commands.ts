@@ -28,8 +28,9 @@ import { relativeVfoIdentityUnknown, resolveFilterModeConfig } from '../props/pa
 import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import {
-  mapIfShiftToPbt, nbDepthDisplayToRaw, nrDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
+  mapIfShiftToPbt, nbDepthDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
   quantizeFilterWidthToRule,
+  resolveNrLevelContract,
 } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
@@ -569,8 +570,8 @@ export function makeDspHandlers() {
     onNrLevelChange: (level: number) => {
       const receiver = knownReceiverField('nrLevel');
       if (!hasCapability('nr') || receiver === null || !Number.isFinite(level)) return;
-      // MOR-490: slider is 0-15 (front-panel scale); wire is 0-255 BCD.
-      const raw = nrDisplayToRaw(level);
+      const raw = resolveNrLevelContract(getCapabilities()).displayToRaw(level);
+      if (raw === null) return;
       dispatchRadioIntent({ name: 'set_nr_level', params: { level: raw, receiver } });
     },
     onNbToggle: (on: boolean) => {

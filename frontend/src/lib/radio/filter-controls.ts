@@ -8,8 +8,11 @@
 // PBT raw <-> display conversion
 // Reads range from capabilities if available, falls back to IC-7610 defaults
 import { getControlRange } from '$lib/stores/capabilities.svelte';
+import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
+import { exactDecimalInteger } from '$lib/types/exact-decimal';
 import type {
-  Capabilities, ControlRange as CapabilityControlRange, FilterModeConfig, FilterSegmentConfig,
+  Capabilities, ControlDomain, ControlRange as CapabilityControlRange,
+  FilterModeConfig, FilterSegmentConfig,
 } from '$lib/types/capabilities';
 
 export const FILTER_BIPOLAR_MIN = -1200;
@@ -160,6 +163,87 @@ function controlRange(key: string, fallback: ControlRange): ControlRange {
  *  exported rather than the conversion functions staying un-parameterisable. */
 export type ControlDisplayRange = ControlRange;
 
+export type NrLevelContract = Readonly<{
+  rawToDisplay: (raw: number) => number | null;
+  displayToRaw: (display: number) => number | null;
+}>;
+
+const nrLevelContracts = new WeakMap<ControlDisplayRange, NrLevelContract>();
+const INVALID_NR_LEVEL_CONTRACT: NrLevelContract = {
+  rawToDisplay: () => null,
+  displayToRaw: () => null,
+};
+
+function exactNrLevelDomain(control: unknown): ControlDomain | null {
+  if (control === null || typeof control !== 'object') return null;
+  const record = control as Record<string, unknown>;
+  const exactKeys = [
+    'mapping', 'raw_step', 'raw_origin', 'display_step', 'display_origin',
+    'quantization', 'restoration', 'display_center', 'lookup',
+  ];
+  return exactKeys.some((key) => key in record) ? control as ControlDomain : null;
+}
+
+function legacyNrLevelRange(control: unknown): ControlDisplayRange | null {
+  if (!isLegacyControlRange(control)
+    || !Number.isSafeInteger(control.raw_min) || !Number.isSafeInteger(control.raw_max)
+    || control.raw_min >= control.raw_max) return null;
+  const hasDisplayMin = control.display_min !== undefined;
+  const hasDisplayMax = control.display_max !== undefined;
+  if (hasDisplayMin !== hasDisplayMax) return null;
+  if (!hasDisplayMin) return CONTROL_DEFAULTS.nr_level;
+  if (!Number.isFinite(control.display_min) || !Number.isFinite(control.display_max)
+    || (control.display_max as number) <= (control.display_min as number)) return null;
+  return {
+    rawMin: control.raw_min,
+    rawMax: control.raw_max,
+    displayMin: control.display_min as number,
+    displayMax: control.display_max as number,
+  };
+}
+
+function exactNrLevelContract(domain: ControlDomain): NrLevelContract {
+  return {
+    rawToDisplay: (raw) => {
+      const exact = decodeControlDomain(domain, raw);
+      if (exact === null) return null;
+      const display = Number(exact);
+      return Number.isSafeInteger(display)
+        && exactDecimalInteger(display) === exact
+        && encodeControlDomain(domain, exact) === raw
+        ? display : null;
+    },
+    displayToRaw: (display) => {
+      if (!Number.isSafeInteger(display)) return null;
+      const exact = exactDecimalInteger(display);
+      const raw = encodeControlDomain(domain, exact);
+      return raw !== null && decodeControlDomain(domain, raw) === exact ? raw : null;
+    },
+  };
+}
+
+function legacyNrLevelContract(range: ControlDisplayRange): NrLevelContract {
+  return {
+    rawToDisplay: (raw) => controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range),
+    displayToRaw: (display) => controlDisplayToRaw('nr_level', display, CONTROL_DEFAULTS.nr_level, range),
+  };
+}
+
+/** Resolve NR display/readback and command encoding from one model-neutral contract. */
+export function resolveNrLevelContract(
+  caps: Capabilities | null | undefined,
+): NrLevelContract {
+  const controls = caps?.controls;
+  if (!controls || !Object.prototype.hasOwnProperty.call(controls, 'nr_level')) {
+    return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
+  }
+  const control = controls.nr_level;
+  const exact = exactNrLevelDomain(control);
+  if (exact) return exactNrLevelContract(exact);
+  const legacy = legacyNrLevelRange(control);
+  return legacy ? legacyNrLevelContract(legacy) : INVALID_NR_LEVEL_CONTRACT;
+}
+
 /**
  * Derives a `ControlDisplayRange` explicitly from a `Capabilities` object's
  * own `controls[key]` entry (MOR-1290, following the `pbtRangeFromCaps`
@@ -207,7 +291,9 @@ export function controlRangeFromCapsOrDefault(
 ): ControlDisplayRange {
   const fallback = CONTROL_DEFAULTS[key];
   if (!fallback) throw new Error(`controlRangeFromCapsOrDefault: no CONTROL_DEFAULTS entry for '${key}'`);
-  return controlRangeFromCaps(key, caps) ?? fallback;
+  const range = { ...(controlRangeFromCaps(key, caps) ?? fallback) };
+  if (key === 'nr_level') nrLevelContracts.set(range, resolveNrLevelContract(caps));
+  return range;
 }
 
 /**
@@ -229,8 +315,10 @@ export function controlRawToDisplay(
 }
 
 /** Convert a slider display value to the raw CI-V wire value for `key`. */
-export function controlDisplayToRaw(key: string, display: number, fallback: ControlRange): number {
-  const { rawMin, rawMax, displayMin, displayMax } = controlRange(key, fallback);
+export function controlDisplayToRaw(
+  key: string, display: number, fallback: ControlRange, range?: ControlDisplayRange,
+): number {
+  const { rawMin, rawMax, displayMin, displayMax } = range ?? controlRange(key, fallback);
   const span = displayMax - displayMin;
   if (span <= 0) return rawMin;
   const raw = Math.round(((display - displayMin) / span) * (rawMax - rawMin) + rawMin);
@@ -239,7 +327,11 @@ export function controlDisplayToRaw(key: string, display: number, fallback: Cont
 
 /** Convert a raw 0-255 NR wire value to the 0-15 display value. `range`
  *  (MOR-1290) is strictly additive — see `controlRawToDisplay`. */
-export function nrRawToDisplay(raw: number, range?: ControlDisplayRange): number {
+export function nrRawToDisplay(raw: number): number;
+export function nrRawToDisplay(raw: number, range: ControlDisplayRange): number | undefined;
+export function nrRawToDisplay(raw: number, range?: ControlDisplayRange): number | undefined {
+  const contract = range ? nrLevelContracts.get(range) : undefined;
+  if (contract) return contract.rawToDisplay(raw) ?? undefined;
   return controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range);
 }
 
