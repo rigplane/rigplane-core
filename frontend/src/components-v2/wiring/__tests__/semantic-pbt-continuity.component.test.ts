@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { EMPTY_PBT_PRESENTATION, projectPbtPresentation } from '../../../semantic/pbt-presentation-continuity';
+import { topologyFixtures, withFilterPassband } from '../../../semantic/fixtures/topologies';
 
 const h = vi.hoisted(() => ({
   session: { state: 'connected', epoch: 1 }, listeners: new Set<(next: { state: string; epoch: number }) => void>(),
@@ -24,9 +26,9 @@ import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 
 const fresh = (marker: number) => ({ storePath: 'x', observed: true, freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: marker });
 const caps = (generation = 7): Capabilities => ({ model: 'fixture', scope: false, audio: false, tx: false, capabilities: ['pbt', 'dual_rx'], receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: ['USB'], filters: [1], controls: { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 } }, audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] }, webrtc: { available: false, enabled: false }, txBands: [], scopeSource: null, audioFftAvailable: false, stateContractVersion: 1, providerGeneration: generation } as unknown as Capabilities);
-const state = (inner: number | null, outer: number | null, marker = 1, generation = 7, active: 'MAIN' | 'SUB' = 'MAIN', freshness: 'fresh' | 'stale' = 'fresh'): ServerState => {
+const state = (inner: number | null, outer: number | null, marker = 1, generation = 7, active: 'MAIN' | 'SUB' = 'MAIN', freshness: 'fresh' | 'stale' = 'fresh', observedMarker = marker): ServerState => {
   const receiver = (pbtInner: number | null, pbtOuter: number | null) => ({ freqHz: 14250000, mode: 'USB', filter: 1, dataMode: 0, sMeter: 0, att: 0, preamp: 0, nb: false, nr: false, afLevel: 0, rfGain: 0, squelch: 0, activeSlot: 'A', vfoA: { freqHz: 14250000, mode: 'USB', filterNum: 1 }, vfoB: { freqHz: 14300000, mode: 'USB', filterNum: 1 }, pbtInner, pbtOuter });
-  const field = (name: string) => inner === null && name.endsWith('pbtInner') ? { ...fresh(marker), freshness } : outer === null && name.endsWith('pbtOuter') ? { ...fresh(marker), freshness } : { ...fresh(marker), freshness };
+  const field = (name: string) => inner === null && name.endsWith('pbtInner') ? { ...fresh(observedMarker), freshness } : outer === null && name.endsWith('pbtOuter') ? { ...fresh(observedMarker), freshness } : { ...fresh(observedMarker), freshness };
   return { revision: marker, stateRevision: marker, freshnessRevision: marker, observationSeq: marker, updatedAt: '2026-08-15T00:00:00Z', stateContractVersion: 1, providerGeneration: generation, active, split: false, dualWatch: false, ptt: false, tunerStatus: 0, connection: { rigConnected: true, radioReady: true, controlConnected: true }, txTarget: { status: 'unknown', reason: 'fixture' }, main: receiver(inner, outer), sub: receiver(inner, outer), fieldStatus: Object.fromEntries(['active', 'main.freqHz', 'main.mode', 'main.filter', 'main.activeSlot', 'sub.freqHz', 'sub.mode', 'sub.filter', 'sub.activeSlot', 'main.pbtInner', 'main.pbtOuter', 'sub.pbtInner', 'sub.pbtOuter'].map((name) => [name, field(name)])) } as unknown as ServerState;
 };
 let target: HTMLDivElement; let component: ReturnType<typeof mount> | null = null;
@@ -56,5 +58,24 @@ describe('mounted PBT continuity is fenced by the live control session (MOR-1706
     expect(setCapabilities({ ...caps(), capabilities: ['dual_rx'] } as Capabilities)).toBe(true); accept(state(null, null, 3)); flushSync(); expect(value('pbtInner')).toBeNull();
     expect(setCapabilities(caps(8))).toBe(true); accept(state(900, -900, 1, 8)); flushSync(); const current = value('pbtInner'); expect(current).not.toBeNull();
     accept(state(null, null, 2, 8)); flushSync(); expect(value('pbtInner')).toBe(current);
+  });
+
+  it('keeps operational truth for an exact equal refresh, while the pure reducer stays conservative on conflict', () => {
+    render(); const initial = value('pbtInner');
+    accept(state(100, -200, 2, 7, 'MAIN', 'fresh', 1)); flushSync();
+    const input = target.querySelector<HTMLInputElement>('[data-testid="filter-pbtInner"] input');
+    expect(value('pbtInner')).toBe(initial); expect(input?.disabled).toBe(false);
+    const baseline = withFilterPassband(topologyFixtures['1/single']);
+    baseline.filterPassband!.pbtInner = { reading: { status: 'known', value: 100 }, availability: { structural: true, operational: true } };
+    const canonical = { ...baseline, filterPassband: { ...baseline.filterPassband!, pbtInner: { reading: { status: 'known' as const, value: 999 }, availability: { structural: true, operational: true } } } };
+    const first = projectPbtPresentation(EMPTY_PBT_PRESENTATION, baseline, { boundary: { providerGeneration: 1, receiver: 'MAIN', controlSession: 'connected', epoch: 1 }, fields: { pbtInner: { status: 'fresh', marker: { source: 'field', value: 1 } }, pbtOuter: { status: 'fresh', marker: { source: 'field', value: 1 } } } });
+    const conflict = projectPbtPresentation(first.state, canonical, { boundary: { providerGeneration: 1, receiver: 'MAIN', controlSession: 'connected', epoch: 1 }, fields: { pbtInner: { status: 'fresh', marker: { source: 'field', value: 1 } }, pbtOuter: { status: 'fresh', marker: { source: 'field', value: 1 } } } });
+    expect(conflict.view.filterPassband!.pbtInner.availability.operational).toBe(false); expect(h.commands).not.toHaveBeenCalled(); expect(h.tx).not.toHaveBeenCalled();
+  });
+
+  it('does not carry a generation-seven floor into generation-eight marker one', () => {
+    accept(state(100, -200, 100)); render(); transition('disconnected', 1); expect(value('pbtInner')).toBeNull();
+    expect(setCapabilities(caps(8))).toBe(true); accept(state(900, -900, 1, 8)); flushSync();
+    expect(value('pbtInner')).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled(); expect(h.tx).not.toHaveBeenCalled();
   });
 });
