@@ -44,40 +44,23 @@ redaction-specific support workflows belong in `rigplane-pro`; private
 validation matrices and decision records stay in Strategy. See
 `docs/internals/hamlib-provider-rollout.md`.
 
-## GitHub Project workflow
+## Linear planning and GitHub execution
 
-Use the GitHub Project as the development control plane for non-trivial work.
+For the Linear-authoritative RigPlane programs, Linear is the authoritative
+control plane. It owns the backlog, scope, parent/child relations,
+dependencies, priority, milestones, acceptance criteria, and status. Resolve
+the Linear owner and its acceptance criteria before starting non-trivial work.
 
-- Project: `RigPlane Core Roadmap`
-- URL: https://github.com/orgs/rigplane/projects/2
-- Repository: `rigplane/rigplane-core`
+GitHub is the execution plane: branch, commit, PR, diff, checks, independent
+review, and merge evidence. Do not create a GitHub planning issue before
+resolving the Linear owner. A GitHub issue is optional and allowed only for
+atomic, concrete PR-bound scope that links its existing Linear issue; it must
+not duplicate planning or dependency tracking.
 
-Default rule for agents:
-
-- Do not start non-trivial implementation from chat context alone.
-- Work from a GitHub issue that has acceptance criteria.
-- Add the issue to `RigPlane Core Roadmap` if it is missing.
-- Keep Project fields current while working:
-  - `Status`: `Todo`, `In Progress`, `Done`
-  - `WorkType`: `epic`, `feature`, `spike`, `bug`, `debt`, `docs`, `release`
-  - `Area`: `api`, `protocol`, `transport`, `rigctld`, `audio`,
-    `radio-models`, `web-ui`, `cli`, `docs`, `ci`, `release`, `architecture`
-  - `Priority`: `P0`, `P1`, `P2`, `P3`
-  - `Phase`: `inbox`, `spec`, `alpha`, `beta`, `stable`, `post-release`,
-    `backlog`
-  - `Owner`: `human`, `codex`, `mixed`
-  - `Risk`: `low`, `medium`, `high`
-  - `Size`: `S`, `M`, `L`
-- Treat issue bodies as the source of truth for requirements, acceptance
-  criteria, compatibility decisions, and test expectations.
-- Treat Project fields as routing/status metadata only.
-- After finishing a task, report the completed status and propose the next best
-  candidate issue from the roadmap/issue queue instead of stopping at "done".
-- Before opening a PR, confirm the linked issue is in the Project and update
-  `Status` to `In Progress` or `Done` as appropriate.
-
-See `docs/internals/github-project-workflow.md` for the exact CLI and UI
-workflow.
+Planning-only GitHub issues must be retired: record the Linear issue that owns
+their scope and close them as superseded, without transferring planning status
+back to GitHub. See `docs/internals/github-project-workflow.md` for the
+execution-plane checklist and migration rule.
 
 ## Multi-agent Git hygiene
 

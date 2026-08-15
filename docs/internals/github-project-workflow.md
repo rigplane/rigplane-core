@@ -2,269 +2,91 @@
 robots: noindex, follow
 ---
 
-# GitHub Project Workflow
-
-RigPlane Core uses GitHub Issues plus GitHub Projects as the lightweight
-control plane for planning, agent handoff, and implementation tracking.
-
-The goal is to reduce context loss during agent-assisted development while
-keeping public open-core issues and PRs easy to understand.
+# GitHub Execution Workflow
 
-## Project
-
-- Project: `RigPlane Core Roadmap`
-- URL: https://github.com/orgs/rigplane/projects/2
-- Owner: `rigplane`
-- Number: `2`
-- Repo: `rigplane/rigplane-core`
-
-The project is linked to the repository. Agents should use it for non-trivial
-work items, especially epics, features, spikes, release work, protocol/API
-changes, review fixes, and cross-cutting maintenance.
+RigPlane's Linear-authoritative programs use Linear for planning and GitHub for
+bounded implementation evidence. This document defines the GitHub execution
+plane; it does not create a second backlog or roadmap.
 
-## Source of Truth
+## Control-plane boundary
 
-Issues are the source of truth for:
+Linear is authoritative for:
 
-- problem statement;
-- acceptance criteria;
-- API, CLI, protocol, config, and compatibility expectations;
-- constraints and non-goals;
-- test plan;
-- links to specs, plans, PRs, and follow-up issues.
-
-Project fields are only routing metadata:
-
-- current state;
-- type of work;
-- subsystem area;
-- priority;
-- phase;
-- owner class;
-- rough size and risk.
+- backlog and scope;
+- parent/child relations and dependencies;
+- priority and milestones;
+- acceptance criteria and status.
 
-Do not hide requirements in Project fields. Put requirements in the issue body.
+GitHub is authoritative for:
 
-## Field Taxonomy
+- implementation branches and commits;
+- pull requests and diffs;
+- checks, independent review, and merge evidence.
 
-Use these project fields consistently:
+Resolve the Linear owner before any non-trivial implementation, and work from
+its current acceptance criteria. Do not infer scope, priority, dependencies, or
+completion from GitHub labels, Projects, issue state, or a merged PR.
 
-| Field | Values | Meaning |
-| --- | --- | --- |
-| `Status` | `Todo`, `In Progress`, `Done` | Execution state. Keep this current. |
-| `WorkType` | `epic`, `feature`, `spike`, `bug`, `debt`, `docs`, `release` | Shape of work. |
-| `Area` | `api`, `protocol`, `transport`, `rigctld`, `audio`, `radio-models`, `web-ui`, `cli`, `docs`, `ci`, `release`, `architecture` | Main subsystem or product area. |
-| `Priority` | `P0`, `P1`, `P2`, `P3` | Delivery priority. |
-| `Phase` | `inbox`, `spec`, `alpha`, `beta`, `stable`, `post-release`, `backlog` | Product/release phase or planning bucket. |
-| `Owner` | `human`, `codex`, `mixed` | Who is expected to drive the next step. |
-| `Risk` | `low`, `medium`, `high` | API, protocol, release, hardware, or support risk. |
-| `Size` | `S`, `M`, `L` | Rough implementation size. |
+## Agent intake checklist
 
-Labels still matter. Use repo labels for broad search and GitHub-native
-filtering, such as `area:audio`, `area:api`, `area:web-ui`, `type:bug`,
-`type:feature`, `priority:P1`, `epic`, and `testing`.
-Use Project fields for board and roadmap views.
+Before creating a branch, PR, or optional GitHub issue, an agent must:
 
-## Project Views
+1. Identify the existing Linear issue and read its current acceptance criteria.
+2. Confirm that the Linear issue is ready and that its dependencies permit work.
+3. Check for an existing GitHub PR or branch for the same Linear issue.
+4. Define the smallest concrete PR-bound scope and owned paths.
+5. Create a GitHub issue only when that atomic execution scope benefits from a
+   GitHub-native discussion; link the existing Linear issue in it.
 
-GitHub exposes Project views through GraphQL for reading, but the currently
-available public mutations do not include creating or editing Project views.
-Configure saved views in the GitHub UI and keep this document as the canonical
-view spec.
+Do not create a GitHub planning issue before resolving the Linear owner. A
+GitHub issue is optional, never a substitute for the Linear item, and must not
+carry a separate plan, dependency graph, priority, milestone, acceptance
+criteria, or status.
 
-Recommended views:
+## Planning-only GitHub issues
 
-| View | Layout | Filter | Group / Sort | Purpose |
-| --- | --- | --- | --- | --- |
-| `Roadmap` | Table | `WorkType:epic` | Group by `Phase`, sort by `Priority` | Public epic overview. |
-| `Agent Queue` | Table | `Status:Todo Owner:codex, mixed -WorkType:epic` | Group by `Area` | Issues that agents can pick up. |
-| `Current Work` | Board | `Status:Todo, In Progress` | Group by `Status` | Small execution board. |
-| `Review / Closing` | Table | `Status:In Progress` | Show linked PRs and sub-issue progress | Work that needs review, merge, or closure. |
-| `Blocked / Risk` | Table | `Risk:high` | Group by `Area` | High-risk items needing human attention. |
-| `API / Protocol` | Table | `Area:api, protocol, transport, rigctld` | Group by `Status` | Compatibility-sensitive work. |
-| `Web / UX` | Table | `Area:web-ui, cli, docs` | Group by `Status` | Public user-facing surfaces. |
+Planning-only GitHub issues are legacy execution artifacts and must be retired,
+not maintained. First identify and link the existing Linear issue that owns the
+scope. Then add a concise retirement note naming that Linear issue and close the
+GitHub issue as superseded. If no Linear owner exists, create or obtain the
+Linear item first; do not continue GitHub planning while it is unresolved.
 
-## Creating Views in GitHub UI
+## PR workflow
 
-The CLI/API can create projects and fields, but saved views must currently be
-created by hand.
+Every non-trivial PR must link its Linear issue, directly or through an allowed
+atomic GitHub execution issue. Keep PR text focused on the implementation,
+checks, review, and merge evidence.
 
-Use this path:
+Before opening a PR:
 
-1. Open https://github.com/orgs/rigplane/projects/2.
-2. Click `+ New view` in the view tab row.
-3. Choose the layout:
-   - `Table` for roadmap, queues, focused lists;
-   - `Board` for `Current Work`.
-4. Paste the filter text from the table above into the filter bar.
-5. Open the view menu (`...`) and set grouping:
-   - `Group by` → choose the listed field;
-   - `Sort by` → choose `Priority` where listed.
-6. Use the view tab menu to rename the view.
-7. Repeat for the recommended views.
+1. Fetch and inspect the repository state; use a fresh issue branch/worktree,
+   never shared `main`.
+2. Confirm the Linear acceptance criteria still match the bounded change.
+3. Run the focused verification appropriate to the changed paths and check the
+   diff for unintended changes.
+4. Ensure public/open-core boundaries are preserved and redact private bench or
+   environment details from public artifacts.
 
-GitHub persists view configuration server-side once saved in the UI.
+Before merging a non-trivial PR:
 
-## Agent Intake Rules
+1. Use a fresh independent reviewer who did not author the change.
+2. Review the exact current 40-hex head SHA and post a normal comment beginning
+   `Agent Review: PASS <full-40-hex-head-SHA>` only after a PASS result.
+3. Confirm the PR is non-draft, all required checks are green, and the exact-head
+   `Agent Review Gate` is green.
+4. Merge with the expected head SHA guarded by the platform.
+5. Re-read Linear acceptance criteria and reconcile Linear status deliberately;
+   a merged PR or closed GitHub issue alone is not acceptance.
 
-Before starting non-trivial work, an agent must:
+`main` remains protected. A `BLOCKED` review identifies the problem, required
+fixes, and verification; refresh review and checks after changing the head.
+Cancelled required checks must be rerun and reach a terminal green result before
+merge.
 
-1. Check whether an issue already exists.
-2. If no issue exists, create one with acceptance criteria.
-3. Add the issue to `RigPlane Core Roadmap`.
-4. Set Project fields enough for routing.
-5. Work from the issue, not from memory.
+## Optional GitHub execution issues
 
-Small direct fixes can skip project ceremony only when the change is obvious,
-local, and low-risk. If a PR would need a paragraph of explanation, create or
-use an issue.
-
-## Recommended Status Flow
-
-Use this simple state machine:
-
-```text
-Inbox idea -> issue created -> Project Status=Todo
-Spec/design work starts -> Status=In Progress, Phase=spec
-Implementation starts -> Status=In Progress
-PR ready/merged -> Status=Done when acceptance criteria are satisfied
-```
-
-GitHub Projects currently has the default `Status` options `Todo`,
-`In Progress`, and `Done`. More granular states such as `Blocked` or `Review`
-can be expressed with labels or issue comments until the Project views need
-that extra structure.
-
-## CLI Setup
-
-The local GitHub token needs `project` scope:
-
-```bash
-gh auth status
-gh auth refresh -s project
-```
-
-List projects:
-
-```bash
-gh project list --owner rigplane
-```
-
-View this project:
-
-```bash
-gh project view 2 --owner rigplane
-gh project field-list 2 --owner rigplane
-gh project item-list 2 --owner rigplane
-```
-
-Add an issue:
-
-```bash
-gh project item-add 2 \
-  --owner rigplane \
-  --url https://github.com/rigplane/rigplane-core/issues/1430
-```
-
-The command returns a Project item ID. Use that ID with `gh project item-edit`
-to set field values.
-
-## Editing Fields From CLI
-
-`gh project item-edit` requires:
-
-- project ID;
-- item ID;
-- field ID;
-- option ID for single-select fields.
-
-Fetch field IDs and option IDs:
-
-```bash
-gh project field-list 2 --owner rigplane --format json
-```
-
-Then edit one field per invocation:
-
-```bash
-gh project item-edit \
-  --project-id PVT_kwDOEMw05M4BWz12 \
-  --id <PROJECT_ITEM_ID> \
-  --field-id <FIELD_ID> \
-  --single-select-option-id <OPTION_ID>
-```
-
-GitHub's Project API can conflict when creating fields in parallel. Create or
-modify Project fields serially.
-
-## Issue Creation Standards
-
-Every implementation issue should contain:
-
-- concise summary;
-- acceptance criteria as checkboxes;
-- implementation notes or constraints;
-- compatibility impact:
-  - public API;
-  - CLI;
-  - config files;
-  - rigctld wire behavior;
-  - docs;
-- test plan.
-
-Epics should additionally contain:
-
-- product or architecture intent;
-- scope and non-goals;
-- risks;
-- suggested child issues;
-- completion criteria.
-
-Spikes should contain:
-
-- question to answer;
-- time-box;
-- exact deliverable;
-- decision criteria.
-
-## PR Rules
-
-Every non-trivial PR should link an issue.
-
-Before opening or finalizing a PR:
-
-1. Confirm the linked issue is in the Project.
-2. Confirm the issue acceptance criteria still match the implementation.
-3. Update Project `Status` to `In Progress` while implementation is active.
-4. When merged and accepted, update `Status` to `Done`.
-5. Close the issue with a comment that maps delivered work to acceptance
-   criteria, unless the PR uses an explicit `Closes #N` / `Fixes #N` keyword.
-
-If the implementation discovers new scope, create follow-up issues instead of
-silently expanding the original issue.
-
-## Agent Queue
-
-Agents should prefer issues with:
-
-- `Status=Todo`;
-- clear acceptance criteria;
-- `Owner=codex` or `Owner=mixed`;
-- known `Area`;
-- `Risk` and `Size` filled in for medium/large work.
-
-Agents should avoid starting:
-
-- `epic` items directly unless asked to decompose or implement the epic;
-- issues without acceptance criteria;
-- issues whose compatibility impact is unknown;
-- `P0` work without confirming urgency and blast radius.
-
-## Bootstrap Items
-
-The project was bootstrapped with the currently open issues:
-
-- `#1430`: `WorkType=bug`, `Area=audio`, `Priority=P1`, `Phase=inbox`,
-  `Owner=codex`, `Risk=medium`, `Size=S`.
-- `#727`: `WorkType=feature`, `Area=radio-models`, `Priority=P3`,
-  `Phase=backlog`, `Owner=mixed`, `Risk=medium`, `Size=S`.
+When an atomic GitHub issue is justified, keep it limited to the concrete
+PR-bound execution slice. Link the Linear issue, reference the intended PR, and
+avoid duplicating Linear planning data. Close it only as implementation evidence
+after the relevant PR merges; Linear remains the source for acceptance and
+status.
