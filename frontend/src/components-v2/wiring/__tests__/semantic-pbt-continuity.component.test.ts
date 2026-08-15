@@ -7,21 +7,13 @@ const h = vi.hoisted(() => ({
   session: { state: 'connected', epoch: 1 }, listeners: new Set<(next: { state: string; epoch: number }) => void>(),
   commands: vi.fn(), tx: vi.fn(),
 }));
-vi.mock('$lib/transport/ws-client', () => ({
-  sendCommand: h.commands, getControlSession: () => h.session,
-  onControlSessionTransition: (listener: (next: { state: string; epoch: number }) => void) => { h.listeners.add(listener); return () => h.listeners.delete(listener); },
-  onCommandDelivery: () => () => undefined,
-}));
-vi.mock('$lib/runtime', async () => {
-  const radio = await import('$lib/stores/radio.svelte'); const caps = await import('$lib/stores/capabilities.svelte');
-  return { runtime: {
-    get state() { return radio.getRadioState(); }, get caps() { return caps.getCapabilities(); },
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; }, get connectionAudio() { return false; },
-    get defaultScopeStatus() { return { source: null, available: false, resourceSelected: false, demand: 0, lifecycle: 'inactive', transport: 'disconnected', frameSeen: false }; },
-    get scope() { return { hardwareScopeConnected: false }; }, get radioPowerOn() { return true; },
-    get controlSession() { return h.session; },
-    subscribeControlSession(listener: (next: { state: string; epoch: number }) => void) { h.listeners.add(listener); return () => h.listeners.delete(listener); },
-  } };
+vi.mock('$lib/transport/ws-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/transport/ws-client')>();
+  return {
+    ...actual, sendCommand: h.commands, getControlSession: () => h.session,
+    onControlSessionTransition: (listener: (next: { state: string; epoch: number }) => void) => { h.listeners.add(listener); return () => h.listeners.delete(listener); },
+    onCommandDelivery: () => () => undefined,
+  };
 });
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () => ({ snapshot: () => ({ phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null }), subscribe: () => () => undefined, start: h.tx, release: h.tx, setIntent: vi.fn(), resetFault: vi.fn() }) }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({ deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }), getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }) }));
@@ -40,19 +32,21 @@ const state = (inner: number | null, outer: number | null, marker = 1, generatio
 let target: HTMLDivElement; let component: ReturnType<typeof mount> | null = null;
 const render = () => { target = document.createElement('div'); document.body.append(target); component = mount(SemanticRadioSurfaces, { target }); flushSync(); };
 const value = (field: 'pbtInner' | 'pbtOuter') => target.querySelector<HTMLInputElement>(`[data-testid="filter-${field}"] input`)?.value ?? null;
-const transition = (state: string, epoch: number) => { h.session = { state, epoch }; for (const listener of h.listeners) listener(h.session); flushSync(); };
+const transition = (state: string, epoch: number, flush = true) => { h.session = { state, epoch }; for (const listener of h.listeners) listener(h.session); if (flush) flushSync(); };
 const accept = (next: ServerState) => expect(setRadioState(next)).toBe(true);
 
-beforeEach(() => { h.session = { state: 'connected', epoch: 1 }; h.commands.mockClear(); h.tx.mockClear(); resetRadioState(); clearCapabilities(); expect(setCapabilities(caps())).toBe(true); accept(state(100, -200)); });
-afterEach(() => { component && unmount(component); component = null; document.body.innerHTML = ''; resetRadioState(); clearCapabilities(); });
+beforeEach(() => { h.session = { state: 'connected', epoch: 1 }; h.listeners.clear(); h.commands.mockClear(); h.tx.mockClear(); resetRadioState(); clearCapabilities(); expect(setCapabilities(caps())).toBe(true); accept(state(100, -200)); });
+afterEach(() => { component && unmount(component); component = null; expect(h.listeners.size).toBe(0); document.body.innerHTML = ''; resetRadioState(); clearCapabilities(); });
 
 describe('mounted PBT continuity is fenced by the live control session (MOR-1706)', () => {
-  it('retains independent fresh values through transient loss, clears on disconnect/epoch/receiver, and recovers only fresh truth', () => {
+  it('retains independent fresh values through transient loss, then synchronously clears coalesced same-epoch reconnects', () => {
     render(); const initialInner = value('pbtInner'), initialOuter = value('pbtOuter'); expect(initialInner).not.toBeNull(); expect(initialOuter).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled();
+    const staleInput = target.querySelector<HTMLInputElement>('[data-testid="filter-pbtInner"] input'); expect(staleInput).not.toBeNull();
     accept(state(null, -200, 2)); flushSync(); expect(value('pbtInner')).toBe(initialInner); expect(value('pbtOuter')).toBe(initialOuter);
-    transition('disconnected', 1); resetRadioState(); flushSync(); expect(value('pbtInner')).toBeNull(); expect(value('pbtOuter')).toBeNull();
+    expect(h.listeners.size).toBe(1); transition('disconnected', 1, false); transition('connected', 1, false); flushSync(); expect(value('pbtInner')).toBeNull(); expect(value('pbtOuter')).toBeNull();
+    staleInput!.value = '500'; staleInput!.dispatchEvent(new Event('input', { bubbles: true })); flushSync(); expect(h.commands).not.toHaveBeenCalled(); expect(h.tx).not.toHaveBeenCalled();
     transition('connected', 1); expect(value('pbtInner')).toBeNull(); accept(state(300, -400, 3)); flushSync(); expect(value('pbtInner')).not.toBeNull();
-    resetRadioState(); transition('connected', 2); expect(value('pbtInner')).toBeNull(); accept(state(500, -600, 4)); flushSync(); expect(value('pbtOuter')).not.toBeNull();
+    transition('connected', 2); expect(value('pbtInner')).toBeNull(); accept(state(500, -600, 4)); flushSync(); expect(value('pbtOuter')).not.toBeNull();
     accept(state(null, null, 5, 7, 'SUB', 'stale')); flushSync(); expect(value('pbtInner')).toBeNull();
     accept(state(700, -800, 6, 7, 'SUB')); flushSync(); expect(value('pbtInner')).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled(); expect(h.tx).not.toHaveBeenCalled();
   });
@@ -61,6 +55,6 @@ describe('mounted PBT continuity is fenced by the live control session (MOR-1706
     render(); const initial = value('pbtInner'); expect(initial).not.toBeNull(); accept(state(null, null, 2)); flushSync(); expect(value('pbtInner')).toBe(initial);
     expect(setCapabilities({ ...caps(), capabilities: ['dual_rx'] } as Capabilities)).toBe(true); accept(state(null, null, 3)); flushSync(); expect(value('pbtInner')).toBeNull();
     expect(setCapabilities(caps(8))).toBe(true); accept(state(900, -900, 1, 8)); flushSync(); const current = value('pbtInner'); expect(current).not.toBeNull();
-    expect(setRadioState(state(100, -200, 99, 7))).toBe(false); flushSync(); expect(value('pbtInner')).toBe(current);
+    accept(state(null, null, 2, 8)); flushSync(); expect(value('pbtInner')).toBe(current);
   });
 });

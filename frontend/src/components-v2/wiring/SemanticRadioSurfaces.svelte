@@ -453,11 +453,23 @@
     toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
   );
   let pbtPresentation: PbtPresentationState = $state(EMPTY_PBT_PRESENTATION);
+  // A disconnect makes every currently-held PBT observation prior-session
+  // evidence. The next connected render may be coalesced with it, so retain
+  // a local observation floor rather than letting that old state revive.
+  let pbtObservationFloor = $state(-1);
   let view = $state<RadioViewModel | null>(null);
   const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
   const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
   let controlSession = $state(readControlSession?.() ?? { state: 'disconnected', epoch: -1 });
-  const unsubscribePbtSession = subscribeControlSession?.((next) => { controlSession = next; });
+  const unsubscribePbtSession = subscribeControlSession?.((next) => {
+    if (next.state !== 'connected' || next.epoch !== controlSession.epoch) {
+      pbtPresentation = EMPTY_PBT_PRESENTATION;
+      pbtObservationFloor = Math.max(pbtObservationFloor, ...Object.entries(runtime.state?.fieldStatus ?? {})
+        .filter(([path]) => path.endsWith('.pbtInner') || path.endsWith('.pbtOuter'))
+        .map(([, status]) => status.lastObservedMonotonic ?? -1));
+    }
+    controlSession = next;
+  });
   onDestroy(() => unsubscribePbtSession?.());
   const pbtEvidence = (): PbtPresentationEvidence => {
     const state = runtime.state, session = controlSession, generation = state?.providerGeneration;
@@ -473,16 +485,32 @@
       const status = state?.fieldStatus?.[path];
       const observedAt = status?.lastObservedMonotonic;
       return status?.observed && status.freshness === 'fresh' && status.availability === 'available'
-        && Number.isSafeInteger(observedAt)
+        && typeof observedAt === 'number' && Number.isSafeInteger(observedAt)
+        && observedAt > pbtObservationFloor
         ? { status: 'fresh' as const, marker: { source: 'field' as const, value: observedAt as number } }
         : { status: status?.freshness === 'stale' ? 'stale' as const : 'unavailable' as const };
     };
     return { boundary, fields: { pbtInner: field('pbtInner'), pbtOuter: field('pbtOuter') } };
   };
   $effect(() => {
-    const projected = canonicalView === null
+    const evidence = pbtEvidence();
+    const pbtCanonical = canonicalView?.filterPassband && (
+      evidence.fields.pbtInner.status !== 'fresh' || evidence.fields.pbtOuter.status !== 'fresh'
+    ) ? {
+      ...canonicalView,
+      filterPassband: {
+        ...canonicalView.filterPassband,
+        ...(evidence.fields.pbtInner.status !== 'fresh' ? {
+          pbtInner: { reading: { status: 'unknown' as const }, availability: { ...canonicalView.filterPassband.pbtInner.availability, operational: false } },
+        } : {}),
+        ...(evidence.fields.pbtOuter.status !== 'fresh' ? {
+          pbtOuter: { reading: { status: 'unknown' as const }, availability: { ...canonicalView.filterPassband.pbtOuter.availability, operational: false } },
+        } : {}),
+      },
+    } : canonicalView;
+    const projected = pbtCanonical === null
       ? { state: EMPTY_PBT_PRESENTATION, view: null }
-      : projectPbtPresentation(untrack(() => pbtPresentation), canonicalView, pbtEvidence());
+      : projectPbtPresentation(untrack(() => pbtPresentation), pbtCanonical, evidence);
     pbtPresentation = projected.state;
     view = projected.view;
   });
