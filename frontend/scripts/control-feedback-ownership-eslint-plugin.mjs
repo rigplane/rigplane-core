@@ -19,6 +19,10 @@ function literalSource(node) {
 function resolveModule(specifier, filename, cwd) {
   const clean = specifier.split(/[?#]/, 1)[0];
   const root = frontendRoot(filename, cwd);
+  if (clean.startsWith('/@fs/')) {
+    const target = clean.slice('/@fs/'.length);
+    return path.isAbsolute(target) ? path.resolve(target) : null;
+  }
   if (clean === '$lib') return path.resolve(root, 'src/lib');
   if (clean.startsWith('$lib/')) {
     const tail = clean.slice(5).replace(/^\/+/, '');
