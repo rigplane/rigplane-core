@@ -19,8 +19,8 @@ function text([coefficient, scale]: Decimal): ExactDecimal {
   const digits = (coefficient < 0n ? -coefficient : coefficient).toString();
   if (scale === 0) return `${negative}${digits}` as ExactDecimal;
   const padded = digits.padStart(scale + 1, '0');
-  const result = `${negative}${padded.slice(0, -scale)}.${padded.slice(-scale)}`.replace(/\.0+$/, '');
-  return result as ExactDecimal;
+  const fraction = padded.slice(-scale).replace(/0+$/, '');
+  return `${negative}${padded.slice(0, -scale)}${fraction ? `.${fraction}` : ''}` as ExactDecimal;
 }
 
 function align(values: readonly Decimal[]): bigint[] {
@@ -76,6 +76,41 @@ function inAxis(value: Decimal, values: readonly [Decimal, Decimal, Decimal, Dec
   return compare(value, values[0]) >= 0 && compare(value, values[1]) <= 0 && lattice(value, values[3], values[2]) !== null;
 }
 
+function inRange(value: Decimal, values: readonly [Decimal, Decimal, Decimal, Decimal]): boolean {
+  return compare(value, values[0]) >= 0 && compare(value, values[1]) <= 0;
+}
+
+type LookupPoint = Readonly<{ raw: number; display: ExactDecimal }>;
+
+function lookup(domain: ControlDomain, values: readonly [Decimal, Decimal, Decimal, Decimal]): readonly LookupPoint[] | null {
+  const candidate = (domain as unknown as { lookup?: unknown }).lookup;
+  if (!Array.isArray(candidate) || candidate.length === 0) return null;
+  const points: LookupPoint[] = [];
+  let rawDirection = 0;
+  let displayDirection = 0;
+  for (const item of candidate) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    if (Object.keys(record).length !== 2 || !('raw' in record) || !('display' in record)
+      || typeof record.raw !== 'number' || !Number.isSafeInteger(record.raw) || typeof record.display !== 'string') return null;
+    const raw = record.raw;
+    const displayText = record.display;
+    const display = decimal(displayText);
+    if (!display || rawIndex(domain, raw) === null || !inAxis(display, values)) return null;
+    const previous = points.at(-1);
+    if (previous) {
+      const nextRawDirection = raw > previous.raw ? 1 : raw < previous.raw ? -1 : 0;
+      const nextDisplayDirection = compare(display, decimal(previous.display)!);
+      if (nextRawDirection === 0 || nextDisplayDirection === 0 || (rawDirection && rawDirection !== nextRawDirection)
+        || (displayDirection && displayDirection !== nextDisplayDirection)) return null;
+      rawDirection = nextRawDirection;
+      displayDirection = nextDisplayDirection;
+    }
+    points.push({ raw, display: displayText as ExactDecimal });
+  }
+  return points;
+}
+
 function scalarIndex(domain: ControlDomain): readonly [bigint, bigint] | null {
   const rawMin = rawIndex(domain, domain.raw_min);
   const rawOrigin = rawIndex(domain, domain.raw_origin);
@@ -93,44 +128,60 @@ function sameCardinality(domain: ControlDomain, values: readonly [Decimal, Decim
 }
 
 function isIdentity(domain: ControlDomain, values: readonly [Decimal, Decimal, Decimal, Decimal]): boolean {
+  if (rawIndex(domain, domain.raw_min) === null || rawIndex(domain, domain.raw_max) === null) return false;
   return [domain.raw_min, domain.raw_max, domain.raw_step, domain.raw_origin]
     .every((raw, index) => compare([BigInt(raw), 0], values[index]!) === 0);
 }
 
-function domainIsExact(domain: ControlDomain): boolean {
+function centeredAligned(domain: ControlDomain, values: readonly [Decimal, Decimal, Decimal, Decimal]): boolean {
+  if (domain.mapping !== 'centered') return false;
+  const rawMin = rawIndex(domain, domain.raw_min);
+  const rawCenter = rawIndex(domain, domain.raw_center);
+  const displayCenter = decimal(domain.display_center);
+  const displayOffset = displayCenter ? lattice(displayCenter, values[0], values[2]) : null;
+  return rawMin !== null && rawCenter !== null && displayCenter !== null && inAxis(displayCenter, values)
+    && displayOffset !== null && rawCenter - rawMin === displayOffset && sameCardinality(domain, values);
+}
+
+function validDomain(domain: ControlDomain, values: readonly [Decimal, Decimal, Decimal, Decimal]): boolean {
+  if (domain.mapping === 'identity') return isIdentity(domain, values);
+  if (domain.mapping === 'linear') {
+    const indices = scalarIndex(domain);
+    const originIndex = lattice(values[3], values[0], values[2]);
+    return !!indices && originIndex !== null && indices[1] - indices[0] === originIndex && sameCardinality(domain, values);
+  }
+  if (domain.mapping === 'centered') return centeredAligned(domain, values);
+  return domain.mapping === 'lookup' && lookup(domain, values) !== null;
+}
+
+function domainIsExact(domain: ControlDomain, values: readonly [Decimal, Decimal, Decimal, Decimal]): boolean {
   if (domain.restoration !== 'exact') return false;
   if (domain.mapping !== 'lookup') return true;
   const min = rawIndex(domain, domain.raw_min);
   const max = rawIndex(domain, domain.raw_max);
-  if (min === null || max === null || BigInt(domain.lookup.length) !== max - min + 1n) return false;
-  const raws = new Set<number>();
-  const displays = new Set<string>();
-  return domain.lookup.every((point) => Number.isSafeInteger(point.raw) && rawIndex(domain, point.raw) !== null
-    && decimal(point.display) !== null && !raws.has(point.raw) && !displays.has(point.display)
-    && (raws.add(point.raw), displays.add(point.display), true));
+  const points = lookup(domain, values);
+  return min !== null && max !== null && points !== null && BigInt(points.length) === max - min + 1n;
 }
 
 /** Returns a canonical display value, or null when the domain/input is unusable. */
 export function decodeControlDomain(domain: ControlDomain, raw: number): ExactDecimal | null {
   const values = axis(domain);
   const index = rawIndex(domain, raw);
-  if (!values || index === null) return null;
+  if (!values || index === null || !validDomain(domain, values)) return null;
   if (domain.mapping === 'identity') return isIdentity(domain, values) ? text([BigInt(raw), 0]) : null;
   if (domain.mapping === 'lookup') {
-    const matches = domain.lookup.filter((point) => point.raw === raw && decimal(point.display) && inAxis(decimal(point.display)!, values));
-    return matches.length === 1 ? matches[0]!.display : null;
+    const matches = lookup(domain, values);
+    if (!matches) return null;
+    const match = matches.find((point) => point.raw === raw);
+    return match?.display ?? null;
   }
   if (domain.mapping === 'linear') {
-    const indices = scalarIndex(domain);
-    const originIndex = lattice(values[3], values[0], values[2]);
-    if (!indices || originIndex === null || indices[1] - indices[0] !== originIndex || !sameCardinality(domain, values)) return null;
     const result = add(values[3], index, values[2]);
     return inAxis(result, values) ? text(result) : null;
   }
   if (domain.mapping === 'centered') {
-    const center = rawIndex(domain, domain.raw_center);
-    const displayCenter = decimal(domain.display_center);
-    if (center === null || !displayCenter || !inAxis(displayCenter, values) || !sameCardinality(domain, values)) return null;
+    const center = rawIndex(domain, domain.raw_center)!;
+    const displayCenter = decimal(domain.display_center)!;
     const result = add(displayCenter, index - center, values[2]);
     return inAxis(result, values) ? text(result) : null;
   }
@@ -141,7 +192,7 @@ export function decodeControlDomain(domain: ControlDomain, raw: number): ExactDe
 export function quantizeControlDomain(domain: ControlDomain, display: ExactDecimal): ExactDecimal | null {
   const values = axis(domain);
   const value = decimal(display);
-  if (!values || !value) return null;
+  if (!values || !value || !inRange(value, values) || !validDomain(domain, values)) return null;
   const [item, origin, step] = align([value, values[3], values[2]]);
   const difference = item - origin;
   const quotient = floorDivide(difference, step);
@@ -161,10 +212,10 @@ export function quantizeControlDomain(domain: ControlDomain, display: ExactDecim
 
 /** Inverts an exactly restorable domain; unavailable restoration deliberately returns null. */
 export function encodeControlDomain(domain: ControlDomain, display: ExactDecimal): number | null {
-  if (!domainIsExact(domain)) return null;
-  const quantized = quantizeControlDomain(domain, display);
   const values = axis(domain);
-  if (!quantized || !values) return null;
+  if (!values || !validDomain(domain, values) || !domainIsExact(domain, values)) return null;
+  const quantized = quantizeControlDomain(domain, display);
+  if (!quantized) return null;
   if (domain.mapping === 'identity') {
     if (!isIdentity(domain, values)) return null;
     const value = decimal(quantized);
@@ -173,21 +224,21 @@ export function encodeControlDomain(domain: ControlDomain, display: ExactDecimal
     return rawIndex(domain, raw) === null ? null : raw;
   }
   if (domain.mapping === 'lookup') {
-    const matches = domain.lookup.filter((point) => point.display === quantized);
+    const points = lookup(domain, values);
+    if (!points) return null;
+    const matches = points.filter((point) => point.display === quantized);
     return matches.length === 1 ? matches[0]!.raw : null;
   }
   const target = decimal(quantized)!;
   let raw: bigint;
   if (domain.mapping === 'linear') {
-    const indices = scalarIndex(domain);
-    const originIndex = lattice(values[3], values[0], values[2]);
     const displayIndex = lattice(target, values[3], values[2]);
-    if (!indices || originIndex === null || displayIndex === null || indices[1] - indices[0] !== originIndex || !sameCardinality(domain, values)) return null;
+    if (displayIndex === null) return null;
     raw = BigInt(domain.raw_origin) + displayIndex * BigInt(domain.raw_step);
   } else if (domain.mapping === 'centered') {
     const center = rawIndex(domain, domain.raw_center);
     const displayCenter = decimal(domain.display_center);
-    if (center === null || !displayCenter || !sameCardinality(domain, values)) return null;
+    if (center === null || !displayCenter) return null;
     const offset = lattice(target, displayCenter, values[2]);
     if (offset === null) return null;
     raw = BigInt(domain.raw_center) + offset * BigInt(domain.raw_step);
