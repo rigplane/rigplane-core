@@ -75,7 +75,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       const fields = {};
       let track = false, aggregate = false, spreadRoots = frozen();
       for (const part of raw.properties || []) {
-        if (part.type === 'SpreadElement') { const spread = argument(part.argument, env); if (spread.abrupt) return spread; Object.assign(fields, spread.fields || {}); spreadRoots = frozen([...spreadRoots, ...spread.roots]); track ||= !!spread.track; aggregate ||= !spread.fields && !!spread.track; continue; }
+        if (part.type === 'SpreadElement') { const spread = argument(part.argument, env); if (spread.abrupt) return spread; Object.assign(fields, spread.fields || {}); spreadRoots = frozen([...spreadRoots, ...(spread.roots || [])]); track ||= !!spread.track; aggregate ||= !spread.fields && !!spread.track; continue; }
         if (part.computed) { const key = evaluate(part.key, env); if (key.abrupt) return key; }
         const value = argument(part.value, env); if (value.abrupt) return value; fields[part.key.name || part.key.value] = value;
       }

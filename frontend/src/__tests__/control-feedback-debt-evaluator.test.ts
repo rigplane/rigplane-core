@@ -200,6 +200,12 @@ describe('ordered debt evaluator (MOR-1720)', () => {
     expect(nested.map((fact) => fact.roots.length)).toEqual([1]);
   });
 
+  it('treats absent object-spread provenance as immutable empty roots', () => {
+    expect(() => effects('const safe = 0; function empty() {} sink({ ...null }); sink({ ...0 }); sink({ ...safe }); sink({ ...empty() });')).not.toThrow();
+    const mixed = effects('function f(value) { delete value.x; } f({ ...props, ...null }); f({ ...0, ...props }); f({ x: { ...props, ...0 } });');
+    expect(mixed.map((fact) => [fact.kind, fact.roots.length, Object.isFrozen(fact.roots)])).toEqual([['mutation', 1, true], ['mutation', 1, true], ['mutation', 1, true]]);
+  });
+
   it('attaches only active effect roots to zero-argument recursive cycles', () => {
     const direct = effects('function direct() { props.x = 1; direct(); } direct();').filter((fact) => fact.kind === 'cycle')[0];
     const mutual = effects('function a() { b(); } function b() { props.x = 1; a(); } a();').filter((fact) => fact.kind === 'cycle')[0];
