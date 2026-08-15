@@ -281,6 +281,101 @@ describe('HBarRenderer', () => {
 });
 
 describe('BipolarRenderer', () => {
+  it('uses keyboardStep for origin-anchored bipolar keyboard gestures', () => {
+    const onChange = vi.fn();
+    const target = mountControl({
+      value: 0,
+      min: -9999,
+      max: 9999,
+      step: 1,
+      defaultValue: 0,
+      keyboardStep: 50,
+      label: 'RIT',
+      renderer: 'bipolar',
+      debounceMs: 0,
+      onChange,
+    });
+    const slider = getSlider(target);
+
+    expect(onChange).not.toHaveBeenCalled();
+
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(onChange.mock.calls).toEqual([[50], [0], [-50]]);
+
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(onChange.mock.calls.slice(-3)).toEqual([[-9999], [9999], [9999]]);
+  });
+
+  it('keeps pointer and wheel interaction on the radio lattice', () => {
+    const onChange = vi.fn();
+    const target = mountControl({
+      value: 0,
+      min: -9999,
+      max: 9999,
+      step: 1,
+      defaultValue: 0,
+      keyboardStep: 50,
+      label: 'RIT',
+      renderer: 'bipolar',
+      debounceMs: 0,
+      onChange,
+    });
+    const slider = getSlider(target);
+    const container = target.querySelector('.vc-bipolar') as HTMLDivElement;
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+    Object.assign(slider, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() });
+
+    slider.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, clientX: 50.01, bubbles: true }));
+    slider.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+
+    expect(onChange.mock.calls.flat().every((value) => Number.isInteger(value))).toBe(true);
+  });
+
+  it.each([0, -50, Number.NaN, 2.5])('falls back to the declared lattice for invalid keyboardStep %s', (keyboardStep) => {
+    const onChange = vi.fn();
+    const target = mountControl({
+      value: 0,
+      min: -9999,
+      max: 9999,
+      step: 5,
+      defaultValue: 0,
+      keyboardStep,
+      label: 'RIT',
+      renderer: 'bipolar',
+      debounceMs: 0,
+      onChange,
+    });
+
+    getSlider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+
+    expect(onChange).toHaveBeenCalledWith(5);
+  });
+
+  it('does not emit NaN for a non-finite keyboardStep', () => {
+    const onChange = vi.fn();
+    const target = mountControl({
+      value: 0,
+      min: -9999,
+      max: 9999,
+      step: 5,
+      defaultValue: 0,
+      keyboardStep: Infinity,
+      label: 'RIT',
+      renderer: 'bipolar',
+      debounceMs: 0,
+      onChange,
+    });
+
+    getSlider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+
+    expect(onChange).toHaveBeenCalledWith(5);
+    expect(onChange.mock.calls.flat().every(Number.isFinite)).toBe(true);
+  });
+
   it('renders polarity markers', () => {
     const target = mountControl({
       value: 0,

@@ -10,6 +10,8 @@
     min: number;
     max: number;
     step: number;
+    /** Larger increment for keyboard gestures; step remains the radio value lattice. */
+    keyboardStep?: number;
     defaultValue?: number;
     fineStepDivisor?: number;
     label: string;
@@ -57,6 +59,7 @@
     min,
     max,
     step,
+    keyboardStep,
     defaultValue,
     fineStepDivisor = 10,
     label,
@@ -99,6 +102,7 @@
     min,
     max,
     step,
+    keyboardStep,
     defaultValue,
     fineStepDivisor,
     label,
