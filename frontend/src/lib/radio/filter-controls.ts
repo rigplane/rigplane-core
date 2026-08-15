@@ -9,7 +9,7 @@
 // Reads range from capabilities if available, falls back to IC-7610 defaults
 import { getControlRange } from '$lib/stores/capabilities.svelte';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
-import { exactDecimalInteger } from '$lib/types/exact-decimal';
+import { exactDecimalInteger, exactDecimalNumber } from '$lib/types/exact-decimal';
 import type {
   Capabilities, ControlDomain, ControlRange as CapabilityControlRange,
   FilterModeConfig, FilterSegmentConfig,
@@ -166,14 +166,31 @@ export type ControlDisplayRange = ControlRange;
 export type NrLevelContract = Readonly<{
   rawToDisplay: (raw: number) => number | null;
   displayToRaw: (display: number) => number | null;
+  displayDomain: NrLevelDisplayDomain | null;
+  acceptsRaw: (raw: number) => boolean;
   hasNr: boolean;
   receivers: number | null;
+}>;
+
+export type NrLevelDisplayDomain = Readonly<{
+  min: number;
+  max: number;
+  step: number;
+  origin: number;
+}>;
+
+export type NrLevelProjection = Readonly<{
+  value: number | null;
+  domain: NrLevelDisplayDomain | null;
+  adjustable: boolean;
 }>;
 
 const nrLevelContracts = new WeakMap<ControlDisplayRange, NrLevelContract>();
 const INVALID_NR_LEVEL_CONTRACT: NrLevelContract = {
   rawToDisplay: () => null,
   displayToRaw: () => null,
+  displayDomain: null,
+  acceptsRaw: () => false,
   hasNr: false,
   receivers: null,
 };
@@ -235,8 +252,17 @@ function legacyNrLevelRange(control: unknown): ControlDisplayRange | null {
 function exactNrLevelContract(
   domain: ControlDomain, hasNr: boolean, receivers: number,
 ): NrLevelContract {
+  const displayDomain = exactNrLevelDisplayDomain(domain);
   return {
     hasNr, receivers,
+    displayDomain,
+    acceptsRaw: (raw) => {
+      try {
+        return displayDomain !== null && decodeControlDomain(domain, raw) !== null;
+      } catch {
+        return false;
+      }
+    },
     rawToDisplay: (raw) => {
       try {
         const exact = decodeControlDomain(domain, raw);
@@ -263,11 +289,40 @@ function exactNrLevelContract(
   };
 }
 
+function exactNrLevelDisplayDomain(domain: ControlDomain): NrLevelDisplayDomain | null {
+  try {
+    const values = [
+      domain.display_min,
+      domain.display_max,
+      domain.display_step,
+      domain.display_origin,
+    ].map((exact) => {
+      const value = Number(exact);
+      return Number.isFinite(value) && exactDecimalNumber(value) === exact ? value : null;
+    });
+    if (values.some((value) => value === null)) return null;
+    const probe = decodeControlDomain(domain, domain.raw_origin);
+    if (probe === null || encodeControlDomain(domain, probe) !== domain.raw_origin) return null;
+    const [min, max, step, origin] = values as number[];
+    return { min: min!, max: max!, step: step!, origin: origin! };
+  } catch {
+    return null;
+  }
+}
+
 function legacyNrLevelContract(
   range: ControlDisplayRange, hasNr = false, receivers: number | null = null,
 ): NrLevelContract {
   return {
     hasNr, receivers,
+    displayDomain: {
+      min: range.displayMin,
+      max: range.displayMax,
+      step: 1,
+      origin: range.displayMin,
+    },
+    acceptsRaw: (raw) =>
+      Number.isSafeInteger(raw) && raw >= range.rawMin && raw <= range.rawMax,
     rawToDisplay: (raw) => controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range),
     displayToRaw: (display) => controlDisplayToRaw('nr_level', display, CONTROL_DEFAULTS.nr_level, range),
   };
@@ -308,6 +363,26 @@ export function resolveNrLevelContract(
   } catch {
     return INVALID_NR_LEVEL_CONTRACT;
   }
+}
+
+/** Project NR-level readback without changing the legacy renderer-facing value. */
+export function projectNrLevel(
+  caps: Capabilities | null | undefined,
+  raw: number | null | undefined,
+  readable: boolean,
+): NrLevelProjection {
+  const contract = resolveNrLevelContract(caps);
+  const domain = contract.displayDomain;
+  if (!readable || raw === null || raw === undefined || !contract.acceptsRaw(raw)) {
+    return { value: null, domain, adjustable: false };
+  }
+  const value = contract.rawToDisplay(raw);
+  const valid = domain !== null && value !== null;
+  return {
+    value: valid ? value : null,
+    domain,
+    adjustable: valid && contract.hasNr,
+  };
 }
 
 /**
