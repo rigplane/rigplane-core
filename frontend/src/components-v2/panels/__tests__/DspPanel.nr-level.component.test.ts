@@ -59,7 +59,7 @@ function caps(nrLevel?: unknown): Capabilities {
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm'] },
     webrtc: { available: false, enabled: false }, txBands: null,
     stateContractVersion: 1, providerGeneration: 0,
-    controls: nrLevel === undefined ? {} : { nr_level: nrLevel } as Capabilities['controls'],
+    controls: nrLevel === undefined ? {} : { nr_level: nrLevel } as unknown as Capabilities['controls'],
   };
 }
 
@@ -150,8 +150,14 @@ describe('DspPanel exact NR-level projection (MOR-1735)', () => {
     const target = mountPanel();
     openNrModal(target);
 
-    nrLevel(target)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-    expect(handlers.onNrLevelChange).toHaveBeenCalledWith(4);
+    vi.useFakeTimers();
+    try {
+      nrLevel(target)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      vi.advanceTimersByTime(50);
+      expect(handlers.onNrLevelChange).toHaveBeenCalledWith(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
