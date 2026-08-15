@@ -1,11 +1,11 @@
 /** Normalized import boundary for pure ControlFeedback consumers (MOR-1712). */
 import path from 'node:path';
 
-function frontendRoot(filename, cwd) {
-  const absolute = path.resolve(filename);
-  const marker = `${path.sep}src${path.sep}`;
+function frontendRoot(filename, cwd, pathApi = path) {
+  const absolute = pathApi.resolve(filename);
+  const marker = `${pathApi.sep}src${pathApi.sep}`;
   const index = absolute.lastIndexOf(marker);
-  return index < 0 ? path.resolve(cwd) : absolute.slice(0, index);
+  return index < 0 ? pathApi.resolve(cwd) : absolute.slice(0, index);
 }
 
 function literalSource(node) {
@@ -16,23 +16,23 @@ function literalSource(node) {
   return null;
 }
 
-function resolveModule(specifier, filename, cwd) {
-  const clean = specifier.split(/[?#]/, 1)[0];
-  const root = frontendRoot(filename, cwd);
+export function resolveModuleForPath(specifier, filename, cwd, pathApi = path) {
+  const clean = specifier.replaceAll('\\', '/').split(/[?#]/, 1)[0];
+  const root = frontendRoot(filename, cwd, pathApi);
   if (clean.startsWith('/@fs/')) {
-    const target = path.normalize(clean.slice('/@fs/'.length));
-    return path.resolve(path.isAbsolute(target) ? target : `${path.sep}${target}`);
+    const target = pathApi.normalize(clean.slice('/@fs/'.length));
+    return pathApi.resolve(pathApi.isAbsolute(target) ? target : `${pathApi.sep}${target}`);
   }
-  if (clean === '$lib') return path.resolve(root, 'src/lib');
+  if (clean === '$lib') return pathApi.resolve(root, 'src/lib');
   if (clean.startsWith('$lib/')) {
     const tail = clean.slice(5).replace(/^\/+/, '');
-    return path.resolve(root, 'src/lib', tail);
+    return pathApi.resolve(root, 'src/lib', tail);
   }
-  if (clean.startsWith('.')) return path.resolve(path.dirname(filename), clean);
+  if (clean.startsWith('.')) return pathApi.resolve(pathApi.dirname(filename), clean);
   if (clean === '/src' || clean.startsWith('/src/')) {
-    return path.resolve(root, clean.replace(/^\/+/, ''));
+    return pathApi.resolve(root, clean.replace(/^\/+/, ''));
   }
-  if (path.isAbsolute(clean)) return path.resolve(clean);
+  if (pathApi.isAbsolute(clean)) return pathApi.resolve(clean);
   return null;
 }
 
@@ -58,7 +58,7 @@ const normalizedImportBoundary = {
     function checkStatic(node) {
       const source = literalSource(node.source);
       if (source === null) return;
-      const resolved = resolveModule(source, filename, cwd);
+      const resolved = resolveModuleForPath(source, filename, cwd);
       if (resolved !== null && isWithin(resolved, runtimeRoot)) {
         context.report({ node, messageId: 'runtime', data: { source } });
       }
@@ -70,7 +70,7 @@ const normalizedImportBoundary = {
         context.report({ node, messageId: 'dynamic' });
         return;
       }
-      const resolved = resolveModule(source, filename, cwd);
+      const resolved = resolveModuleForPath(source, filename, cwd);
       if (resolved !== null && isWithin(resolved, runtimeRoot)) {
         context.report({ node, messageId: 'runtime', data: { source } });
       }

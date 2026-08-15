@@ -2,6 +2,7 @@ import { ESLint } from 'eslint';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { resolveModuleForPath } from '../../scripts/control-feedback-ownership-eslint-plugin.mjs';
 
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '../../..');
 const RULE = 'control-feedback-ownership/normalized-import-boundary';
@@ -51,6 +52,21 @@ const FORBIDDEN = [
 ] as const;
 
 describe('normalized ControlFeedback ownership boundary (MOR-1712)', () => {
+  it('normalizes Vite mixed Windows separators before ownership resolution', () => {
+    const win = path.win32;
+    const filename = 'C:\\workspace\\frontend\\src\\primitives\\control-feedback\\Probe.ts';
+    const root = 'C:\\workspace\\frontend';
+
+    expect(resolveModuleForPath('$lib/\\runtime\\frontend-runtime', filename, root, win))
+      .toBe(win.resolve(root, 'src/lib/runtime/frontend-runtime'));
+    expect(resolveModuleForPath('/src\\lib\\runtime\\frontend-runtime', filename, root, win))
+      .toBe(win.resolve(root, 'src/lib/runtime/frontend-runtime'));
+    expect(resolveModuleForPath('$lib/\\types\\state', filename, root, win))
+      .toBe(win.resolve(root, 'src/lib/types/state'));
+    expect(resolveModuleForPath('/src\\lib\\types\\state', filename, root, win))
+      .toBe(win.resolve(root, 'src/lib/types/state'));
+  });
+
   it.each(FILES)('rejects every runtime ownership form from %s', async (filePath) => {
     for (const [code, label] of FORBIDDEN) expect(await messages(code, filePath), label).toContain(RULE);
   });
