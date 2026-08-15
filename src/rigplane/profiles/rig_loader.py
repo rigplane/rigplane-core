@@ -35,6 +35,7 @@ from rigplane.profiles import (
     BandInfo,
     ControlDomainSpec,
     ControlLookupPoint,
+    EncodedControlChoice,
     ControlSpec,
     FilterWidthRule,
     FilterWidthSegment,
@@ -57,7 +58,7 @@ VALID_CONTROL_STYLES = {
     "toggle_and_level",
     "level_is_toggle",
 }
-VALID_CONTROL_MAPPINGS = {"identity", "linear", "centered", "lookup"}
+VALID_CONTROL_MAPPINGS = {"identity", "linear", "centered", "lookup", "encoded"}
 VALID_CONTROL_QUANTIZATION = {
     "nearest_ties_down",
     "nearest_ties_up",
@@ -85,6 +86,7 @@ _CONTROL_KEYS = {
     "quantization",
     "restoration",
     "lookup",
+    "choices",
 }
 _EXPLICIT_CONTROL_DOMAIN_KEYS = {
     "raw_step",
@@ -96,6 +98,7 @@ _EXPLICIT_CONTROL_DOMAIN_KEYS = {
     "quantization",
     "restoration",
     "lookup",
+    "choices",
 }
 VALID_RULE_KINDS = {"mutex", "disables", "requires", "value_limit"}
 VALID_KEYBOARD_MODIFIERS = {"SHIFT", "CTRL", "ALT", "META"}
@@ -119,7 +122,10 @@ class RigLoadError(Exception):
 
 
 _LookupPoint = tuple[int, Decimal]
-_ScalarControlDomain = dict[str, str | int | Decimal | tuple[_LookupPoint, ...]]
+_EncodedChoice = tuple[int, Decimal | str]
+_ScalarControlDomain = dict[
+    str, str | int | Decimal | tuple[_LookupPoint, ...] | tuple[_EncodedChoice, ...]
+]
 
 
 def _public_decimal(value: Decimal) -> str:
@@ -218,6 +224,55 @@ def _parse_control_lookup(
     return tuple(points)
 
 
+def _parse_encoded_control_choices(
+    raw_choices: object, prefix: str
+) -> tuple[_EncodedChoice, ...]:
+    if not isinstance(raw_choices, list) or not raw_choices:
+        raise RigLoadError(f"{prefix}.choices must be a non-empty array")
+
+    choices: list[_EncodedChoice] = []
+    numeric_values: list[Decimal] = []
+    labeled_choices: list[tuple[int, str, str]] = []
+    for index, choice in enumerate(raw_choices):
+        choice_prefix = f"{prefix}.choices[{index}]"
+        if not isinstance(choice, dict) or set(choice) not in (
+            {"raw", "label"},
+            {"raw", "display"},
+        ):
+            raise RigLoadError(
+                f"{choice_prefix} must contain exactly raw and one of label or display"
+            )
+        raw_value = int(
+            _control_number(choice["raw"], f"{choice_prefix}.raw", integer=True)
+        )
+        if "label" in choice:
+            label = choice["label"]
+            if not isinstance(label, str) or not label.strip():
+                raise RigLoadError(f"{choice_prefix}.label must be a non-empty string")
+            choices.append((raw_value, label))
+            labeled_choices.append((raw_value, label, choice_prefix))
+        else:
+            display = _control_decimal(choice["display"], f"{choice_prefix}.display")
+            choices.append((raw_value, display))
+            numeric_values.append(display)
+
+    raw_values = [choice[0] for choice in choices]
+    if len(set(raw_values)) != len(raw_values):
+        raise RigLoadError(f"{prefix}.choices raw values must be unique")
+    if len(set(numeric_values)) != len(numeric_values):
+        raise RigLoadError(f"{prefix}.choices display values must be unique")
+    if len(labeled_choices) != 1:
+        raise RigLoadError(
+            f"{prefix}.choices must contain exactly one default label choice"
+        )
+    default_raw, default_label, default_prefix = labeled_choices[0]
+    if default_raw != 0:
+        raise RigLoadError(f"{default_prefix}.label default must use raw code 0")
+    if default_label != "Default":
+        raise RigLoadError(f'{default_prefix}.label must be exactly "Default"')
+    return tuple(choices)
+
+
 def _parse_control_spec(
     filename: str, control_name: str, raw: object
 ) -> tuple[ControlSpec | None, _ScalarControlDomain | None]:
@@ -268,6 +323,23 @@ def _parse_control_spec(
         raise RigLoadError(
             f"{prefix}.mapping must be one of {sorted(VALID_CONTROL_MAPPINGS)!r}"
         )
+    if mapping != "encoded" and "choices" in raw:
+        raise RigLoadError(f"{prefix}.choices requires encoded mapping")
+    if mapping == "encoded":
+        if "choices" not in raw:
+            raise RigLoadError(f"{prefix}.choices is required for encoded mapping")
+        encoded_only = {"mapping", "choices", "style"}
+        unsupported = sorted(set(raw) - encoded_only)
+        if unsupported:
+            raise RigLoadError(
+                f"{prefix}.encoded mapping does not accept key(s): {unsupported!r}"
+            )
+        choices = _parse_encoded_control_choices(raw["choices"], prefix)
+        encoded_domain: _ScalarControlDomain = {"mapping": mapping, "choices": choices}
+        encoded_public_spec: ControlSpec | None = (
+            {"style": style} if style is not None else None
+        )
+        return encoded_public_spec, encoded_domain
     if mapping == "lookup" and "lookup" not in raw:
         raise RigLoadError(f"{prefix}.lookup is required for lookup mapping")
     if mapping != "lookup" and "lookup" in raw:
@@ -531,6 +603,30 @@ class RigConfig:
                 {name: spec.copy() for name, spec in (self.controls or {}).items()},
             )
             for name, domain in self._control_domains.items():
+                if domain["mapping"] == "encoded":
+                    published_encoded_domain: dict[str, object] = {
+                        "mapping": "encoded",
+                        "choices": [
+                            (
+                                cast(EncodedControlChoice, {"raw": raw, "label": value})
+                                if isinstance(value, str)
+                                else cast(
+                                    EncodedControlChoice,
+                                    {"raw": raw, "display": _public_decimal(value)},
+                                )
+                            )
+                            for raw, value in cast(
+                                tuple[_EncodedChoice, ...], domain["choices"]
+                            )
+                        ],
+                    }
+                    legacy = published_controls.get(name)
+                    if legacy is not None and "style" in legacy:
+                        published_encoded_domain["style"] = legacy["style"]
+                    published_controls[name] = cast(
+                        ControlDomainSpec, published_encoded_domain
+                    )
+                    continue
                 published_domain: dict[str, object] = {
                     "mapping": cast(str, domain["mapping"]),
                     "raw_min": cast(int, domain["raw_min"]),
