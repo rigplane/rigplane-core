@@ -55,7 +55,7 @@ VALID_CONTROL_STYLES = {
     "toggle_and_level",
     "level_is_toggle",
 }
-VALID_CONTROL_MAPPINGS = {"identity", "linear", "centered"}
+VALID_CONTROL_MAPPINGS = {"identity", "linear", "centered", "lookup"}
 VALID_CONTROL_QUANTIZATION = {
     "nearest_ties_down",
     "nearest_ties_up",
@@ -116,7 +116,8 @@ class RigLoadError(Exception):
     """Raised when a rig TOML file is invalid or malformed."""
 
 
-_ScalarControlDomain = dict[str, str | int | Decimal]
+_LookupPoint = tuple[int, Decimal]
+_ScalarControlDomain = dict[str, str | int | Decimal | tuple[_LookupPoint, ...]]
 
 
 def _control_number(value: object, path: str, *, integer: bool = False) -> int | float:
@@ -147,6 +148,64 @@ def _on_control_lattice(
     )
     numerator = (value_num * origin_den - origin_num * value_den) * step_den
     return numerator % (value_den * origin_den * step_num) == 0
+
+
+def _parse_control_lookup(
+    raw_lookup: object,
+    prefix: str,
+    raw_range: tuple[int, int, int, int],
+    display_range: tuple[Decimal, Decimal, Decimal, Decimal],
+    restoration: str,
+) -> tuple[_LookupPoint, ...]:
+    if not isinstance(raw_lookup, list) or not raw_lookup:
+        raise RigLoadError(f"{prefix}.lookup must be a non-empty array")
+    raw_min, raw_max, raw_step, raw_origin = raw_range
+    display_min, display_max, display_step, display_origin = display_range
+    points: list[_LookupPoint] = []
+    for index, point in enumerate(raw_lookup):
+        point_prefix = f"{prefix}.lookup[{index}]"
+        if not isinstance(point, dict) or set(point) != {"raw", "display"}:
+            raise RigLoadError(
+                f"{point_prefix} must be a table containing exactly raw and display"
+            )
+        raw_value = int(
+            _control_number(point["raw"], f"{point_prefix}.raw", integer=True)
+        )
+        display_value = _control_decimal(point["display"], f"{point_prefix}.display")
+        if not raw_min <= raw_value <= raw_max:
+            raise RigLoadError(f"{point_prefix}.raw must be inside its declared range")
+        if not _on_control_lattice(raw_value, raw_origin, raw_step):
+            raise RigLoadError(f"{point_prefix}.raw must lie on its declared lattice")
+        if not display_min <= display_value <= display_max:
+            raise RigLoadError(
+                f"{point_prefix}.display must be inside its declared range"
+            )
+        if not _on_control_lattice(display_value, display_origin, display_step):
+            raise RigLoadError(
+                f"{point_prefix}.display must lie on its declared lattice"
+            )
+        points.append((raw_value, display_value))
+
+    axes: tuple[tuple[str, list[int | Decimal]], ...] = (
+        ("raw", [point[0] for point in points]),
+        ("display", [point[1] for point in points]),
+    )
+    for name, values in axes:
+        if len(set(values)) != len(values):
+            raise RigLoadError(f"{prefix}.lookup {name} values must be unique")
+        increasing = all(first < second for first, second in zip(values, values[1:]))
+        decreasing = all(first > second for first, second in zip(values, values[1:]))
+        if len(values) > 1 and not (increasing or decreasing):
+            raise RigLoadError(
+                f"{prefix}.lookup {name} values must be strictly monotonic"
+            )
+
+    expected_raw_points = (raw_max - raw_min) // raw_step + 1
+    if restoration == "exact" and len(points) != expected_raw_points:
+        raise RigLoadError(
+            f"{prefix}.lookup exact restoration requires complete raw lattice coverage"
+        )
+    return tuple(points)
 
 
 def _parse_control_spec(
@@ -195,12 +254,14 @@ def _parse_control_spec(
         raise RigLoadError(f"{prefix}.mapping is required for an explicit domain")
 
     mapping = raw["mapping"]
-    if mapping == "lookup" or "lookup" in raw:
-        raise RigLoadError(f"{prefix}.lookup mappings are deferred to MOR-1708")
     if not isinstance(mapping, str) or mapping not in VALID_CONTROL_MAPPINGS:
         raise RigLoadError(
             f"{prefix}.mapping must be one of {sorted(VALID_CONTROL_MAPPINGS)!r}"
         )
+    if mapping == "lookup" and "lookup" not in raw:
+        raise RigLoadError(f"{prefix}.lookup is required for lookup mapping")
+    if mapping != "lookup" and "lookup" in raw:
+        raise RigLoadError(f"{prefix}.lookup requires lookup mapping")
     required = {
         "raw_min",
         "raw_max",
@@ -271,6 +332,15 @@ def _parse_control_spec(
             f"{prefix}.restoration must be one of {sorted(VALID_CONTROL_RESTORATION)!r}"
         )
 
+    lookup = None
+    if mapping == "lookup":
+        lookup = _parse_control_lookup(
+            raw["lookup"],
+            prefix,
+            (raw_min, raw_max, raw_step, raw_origin),
+            (display_min, display_max, display_step, display_origin),
+            restoration,
+        )
     if mapping == "identity":
         raw_domain = tuple(
             Decimal(value) for value in (raw_min, raw_max, raw_step, raw_origin)
@@ -319,6 +389,9 @@ def _parse_control_spec(
     if mapping == "centered":
         domain["raw_center"] = raw_center
         domain["display_center"] = display_center
+    if mapping == "lookup":
+        assert lookup is not None
+        domain["lookup"] = lookup
     public_spec: ControlSpec | None = {"style": style} if style is not None else None
     return public_spec, domain
 
