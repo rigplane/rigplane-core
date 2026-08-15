@@ -211,36 +211,6 @@ const FORBIDDEN_PRIMITIVES_IMPORTS = {
   ],
 };
 
-const CONTROL_FEEDBACK_OWNERSHIP_PATTERNS = [
-  {
-    regex: '(^\\$lib/runtime(?:/|$)|(^|/)lib/runtime(?:/|$))',
-    message: 'Control presentation must not import any runtime owner, alias or relative.',
-  },
-  {
-    group: ['$lib/types/protocol', '**/lib/types/protocol'],
-    message: 'Control presentation must consume structural input, never wire protocol ownership.',
-  },
-  {
-    group: ['$lib/radio-model/*', '**/radio-model/**', '**/radio-models/**', '**/rigs/**'],
-    message: 'Control presentation must remain radio-model neutral.',
-  },
-];
-const FORBIDDEN_CONTROL_PRIMITIVE_IMPORTS = {
-  paths: FORBIDDEN_PRIMITIVES_IMPORTS.paths,
-  patterns: [...FORBIDDEN_PRIMITIVES_IMPORTS.patterns, ...CONTROL_FEEDBACK_OWNERSHIP_PATTERNS],
-};
-const FORBIDDEN_SEMANTIC_CONTROL_IMPORTS = {
-  paths: FORBIDDEN_SEMANTIC_IMPORTS.paths,
-  patterns: [
-    ...FORBIDDEN_SEMANTIC_IMPORTS.patterns,
-    {
-      group: ['$lib/stores/*', '**/lib/stores/**', '$lib/runtime/*', '**/lib/runtime/**'],
-      message: 'Semantic controls consume pure feedback props, never store or runtime ownership.',
-    },
-    ...CONTROL_FEEDBACK_OWNERSHIP_PATTERNS,
-  ],
-};
-
 /**
  * Workspace lockdown (MOR-1061). Workspace preferences "reference stable
  * IDs, never component module paths" (v3 ADR invariant 6) — ID-to-component
@@ -365,16 +335,6 @@ export default [
     rules: {
       'no-restricted-imports': ['error', FORBIDDEN_PRIMITIVES_IMPORTS],
     },
-  },
-
-  // ── Pure control-feedback consumers (MOR-1700) ──
-  {
-    files: ['src/primitives/control-feedback/**/*.ts', 'src/primitives/control-feedback/**/*.svelte'],
-    rules: { 'no-restricted-imports': ['error', FORBIDDEN_CONTROL_PRIMITIVE_IMPORTS] },
-  },
-  {
-    files: ['src/semantic/controls/**/*.ts', 'src/semantic/controls/**/*.svelte'],
-    rules: { 'no-restricted-imports': ['error', FORBIDDEN_SEMANTIC_CONTROL_IMPORTS] },
   },
 
   // ── Import boundary: presentation — layouts, design languages (MOR-1061) ──

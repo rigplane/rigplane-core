@@ -1,4 +1,4 @@
-/** Pure consumer projection for state-backed control feedback (MOR-1700). */
+/** Pure consumer projection for state-backed control feedback (MOR-1711). */
 
 export type PresentationPhase =
   | 'unavailable' | 'idle' | 'submitted' | 'queued' | 'dispatched'
