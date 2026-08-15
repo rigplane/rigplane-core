@@ -166,13 +166,18 @@ export type ControlDisplayRange = ControlRange;
 export type NrLevelContract = Readonly<{
   rawToDisplay: (raw: number) => number | null;
   displayToRaw: (display: number) => number | null;
+  hasNr: boolean;
+  receivers: number | null;
 }>;
 
 const nrLevelContracts = new WeakMap<ControlDisplayRange, NrLevelContract>();
 const INVALID_NR_LEVEL_CONTRACT: NrLevelContract = {
   rawToDisplay: () => null,
   displayToRaw: () => null,
+  hasNr: false,
+  receivers: null,
 };
+const NR_CAPS_KEYS = ['capabilities', 'receivers', 'controls'] as const;
 const EXACT_NR_LEVEL_KEYS = [
   'mapping', 'raw_step', 'raw_origin', 'display_step', 'display_origin',
   'quantization', 'restoration', 'display_center', 'lookup',
@@ -182,23 +187,24 @@ const NR_LEVEL_METADATA_KEYS = [
   'display_unit', 'style', ...EXACT_NR_LEVEL_KEYS,
 ] as const;
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+function snapshotNrRecord(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function snapshotNrLevelControl(control: unknown): Record<string, unknown> | null {
-  if (!isPlainRecord(control)) return null;
-  const ownKeys = Reflect.ownKeys(control);
-  const ownsMapping = ownKeys.includes('mapping');
-  if (Reflect.has(control, 'mapping') !== ownsMapping) return null;
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const ownKeys = Reflect.ownKeys(value);
   const snapshot: Record<string, unknown> = {};
-  for (const key of NR_LEVEL_METADATA_KEYS) {
-    if (!ownKeys.includes(key)) continue;
-    const descriptor = Object.getOwnPropertyDescriptor(control, key);
-    if (!descriptor || !('value' in descriptor)) return null;
-    snapshot[key] = descriptor.value;
+  for (const key of keys) {
+    const owns = ownKeys.includes(key);
+    if (Reflect.has(value, key) !== owns) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!owns) {
+      if (descriptor !== undefined) return null;
+    } else {
+      if (!descriptor || !('value' in descriptor)) return null;
+      const read = Reflect.get(value, key);
+      if (!Object.is(read, descriptor.value)) return null;
+      snapshot[key] = read;
+    }
   }
   return snapshot;
 }
@@ -226,8 +232,11 @@ function legacyNrLevelRange(control: unknown): ControlDisplayRange | null {
   };
 }
 
-function exactNrLevelContract(domain: ControlDomain): NrLevelContract {
+function exactNrLevelContract(
+  domain: ControlDomain, hasNr: boolean, receivers: number,
+): NrLevelContract {
   return {
+    hasNr, receivers,
     rawToDisplay: (raw) => {
       try {
         const exact = decodeControlDomain(domain, raw);
@@ -254,8 +263,11 @@ function exactNrLevelContract(domain: ControlDomain): NrLevelContract {
   };
 }
 
-function legacyNrLevelContract(range: ControlDisplayRange): NrLevelContract {
+function legacyNrLevelContract(
+  range: ControlDisplayRange, hasNr = false, receivers: number | null = null,
+): NrLevelContract {
   return {
+    hasNr, receivers,
     rawToDisplay: (raw) => controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range),
     displayToRaw: (display) => controlDisplayToRaw('nr_level', display, CONTROL_DEFAULTS.nr_level, range),
   };
@@ -269,25 +281,30 @@ export function resolveNrLevelContract(
     if (caps === null || caps === undefined) {
       return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
     }
-    if (!isPlainRecord(caps)) return INVALID_NR_LEVEL_CONTRACT;
-    const controls = caps.controls;
-    if (controls === undefined) return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
-    if (!isPlainRecord(controls)) return INVALID_NR_LEVEL_CONTRACT;
-    const ownKeys = Reflect.ownKeys(controls);
-    const ownsNrLevel = ownKeys.includes('nr_level');
-    if (Reflect.has(controls, 'nr_level') !== ownsNrLevel) return INVALID_NR_LEVEL_CONTRACT;
-    const descriptor = Object.getOwnPropertyDescriptor(controls, 'nr_level');
-    if (!ownsNrLevel) {
-      if (descriptor !== undefined) return INVALID_NR_LEVEL_CONTRACT;
-      return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
+    const snapshot = snapshotNrRecord(caps, NR_CAPS_KEYS);
+    if (!snapshot || !Array.isArray(snapshot.capabilities)
+      || Object.getPrototypeOf(snapshot.capabilities) !== Array.prototype
+      || !Number.isSafeInteger(snapshot.receivers) || (snapshot.receivers as number) < 1) {
+      return INVALID_NR_LEVEL_CONTRACT;
     }
-    if (!descriptor || !('value' in descriptor)) return INVALID_NR_LEVEL_CONTRACT;
-    const control = snapshotNrLevelControl(descriptor.value);
+    const capabilities = Array.from(snapshot.capabilities);
+    if (!capabilities.every((name) => typeof name === 'string')) return INVALID_NR_LEVEL_CONTRACT;
+    const hasNr = capabilities.includes('nr');
+    const receivers = snapshot.receivers as number;
+    if (snapshot.controls === undefined) {
+      return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level, hasNr, receivers);
+    }
+    const controls = snapshotNrRecord(snapshot.controls, ['nr_level']);
+    if (!controls) return INVALID_NR_LEVEL_CONTRACT;
+    if (!Object.hasOwn(controls, 'nr_level')) {
+      return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level, hasNr, receivers);
+    }
+    const control = snapshotNrRecord(controls.nr_level, NR_LEVEL_METADATA_KEYS);
     if (!control) return INVALID_NR_LEVEL_CONTRACT;
     const exact = exactNrLevelDomain(control);
-    if (exact) return exactNrLevelContract(exact);
+    if (exact) return exactNrLevelContract(exact, hasNr, receivers);
     const legacy = legacyNrLevelRange(control);
-    return legacy ? legacyNrLevelContract(legacy) : INVALID_NR_LEVEL_CONTRACT;
+    return legacy ? legacyNrLevelContract(legacy, hasNr, receivers) : INVALID_NR_LEVEL_CONTRACT;
   } catch {
     return INVALID_NR_LEVEL_CONTRACT;
   }

@@ -41,7 +41,9 @@ import { getSharedTuningAccumulator } from './tuning-accumulator';
 
 type Receiver = 0 | 1;
 
-function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver | null {
+function knownActiveReceiver(
+  field?: string, target?: 'MAIN' | 'SUB', receiverCount?: number | null,
+): Receiver | null {
   const state = getRadioState();
   if (!state) return null;
   // MOR-1418: on a single-receiver radio, `active` (MAIN/SUB) is
@@ -51,12 +53,12 @@ function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver 
   // Dual-RX radios are unaffected: `active` observation is still required
   // whenever it is actually observed (or on any radio with receivers > 1).
   const activeObserved = isFieldAvailable(state, 'active');
-  const singleReceiver = getCapabilities()?.receivers === 1;
+  const receivers = receiverCount === undefined ? getCapabilities()?.receivers : receiverCount;
+  const singleReceiver = receivers === 1;
   const receiverName = target
     ?? (activeObserved ? state.active : singleReceiver ? 'MAIN' : undefined);
   if (receiverName !== 'MAIN' && receiverName !== 'SUB') return null;
   if (receiverName === 'SUB') {
-    const receivers = getCapabilities()?.receivers;
     if (!Number.isSafeInteger(receivers) || (receivers as number) < 2 || !state.sub) return null;
   } else if (!state.main) return null;
   const receiver = receiverName === 'SUB' ? 1 : 0;
@@ -68,8 +70,8 @@ function hasCapability(name: string): boolean {
   return getCapabilities()?.capabilities.includes(name) ?? false;
 }
 
-function knownReceiverField(field: string): Receiver | null {
-  const receiver = knownActiveReceiver(field);
+function knownReceiverField(field: string, receiverCount?: number | null): Receiver | null {
+  const receiver = knownActiveReceiver(field, undefined, receiverCount);
   if (receiver === null) return null;
   const state = getRadioState();
   const target = receiver === 1 ? state?.sub : state?.main;
@@ -571,9 +573,10 @@ export function makeDspHandlers() {
       let receiver: Receiver;
       let raw: number;
       try {
-        const resolvedReceiver = knownReceiverField('nrLevel');
-        if (!hasCapability('nr') || resolvedReceiver === null || !Number.isFinite(level)) return;
-        const resolvedRaw = resolveNrLevelContract(getCapabilities()).displayToRaw(level);
+        const contract = resolveNrLevelContract(getCapabilities());
+        const resolvedReceiver = knownReceiverField('nrLevel', contract.receivers);
+        if (!contract.hasNr || resolvedReceiver === null || !Number.isFinite(level)) return;
+        const resolvedRaw = contract.displayToRaw(level);
         if (resolvedRaw === null) return;
         receiver = resolvedReceiver;
         raw = resolvedRaw;
