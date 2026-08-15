@@ -53,7 +53,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     if (fn.node.type === 'FunctionExpression' && fn.node.id) env[fn.node.id.name] = { fn, value: { track: false } };
     for (let index = 0; index < (fn.node.params || []).length; index += 1) { const param = fn.node.params[index], spreadCovers = unknownSpread >= 0 && index >= unknownSpread; bind(param, param.type === 'RestElement' ? { items: args.slice(index), track: spreadCovers || merge(args.slice(index)).track } : spreadCovers ? { track: true } : args[index] || { missing: true }, env); }
     const result = fn.node.body?.type === 'BlockStatement' ? block(fn.node.body.body, env) : { value: evaluate(fn.node.body, env) };
-    active.delete(fn.node); return result.value || { ...known(undefined), undefined: true };
+    active.delete(fn.node); return result.abrupt ? { ...(result.value || known(undefined)), abrupt: true } : result.value || { ...known(undefined), undefined: true };
   };
   const argument = (node, env) => {
     const raw = unwrapExpression(node);
@@ -95,7 +95,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     if (node.type === 'CallExpression' || node.type === 'NewExpression' || node.type === 'OptionalCallExpression') {
       const callee = evaluate(node.callee, env, inChain), fn = callable(node.callee, env), args = [];
       if (callee.abrupt || (node.optional && isKnown(callee) && callee.value == null) || inChain && callee.chainShortCircuit) return callee;
-      for (const part of node.arguments || []) { const value = argument(part, env); if (value.spread && value.items) args.push(...value.items); else args.push(value); }
+      for (const part of node.arguments || []) { const value = argument(part, env); if (value.abrupt) return value; if (value.spread && value.items) args.push(...value.items); else args.push(value); }
       if (fn) return invoke(fn, args);
       const value = merge([callee, ...args]); if (value.track) emit('escape', node); return value;
     }
@@ -143,10 +143,10 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       const fn = callable(declaration.init, env), value = declaration.init ? evaluate(declaration.init, env) : { missing: true };
       if (declaration.id.type === 'Identifier') env[declaration.id.name] = { fn, value }; else bind(declaration.id, value, env);
     }
-    else if (node.type === 'ReturnStatement') { const value = node.argument ? evaluate(node.argument, env) : { ...known(undefined), undefined: true }; if (value.track) emit('return', node); return { complete: true, value }; }
+    else if (node.type === 'ReturnStatement') { const value = node.argument ? evaluate(node.argument, env) : { ...known(undefined), undefined: true }; if (value.abrupt) return { complete: true, abrupt: true, value }; if (value.track) emit('return', node); return { complete: true, value }; }
     else if (node.type === 'ThrowStatement') return { complete: true, abrupt: true, value: evaluate(node.argument, env) };
     else if (node.type === 'BlockStatement') return block(node.body, scope(env));
-    else if (node.type === 'ExpressionStatement') evaluate(node.expression, env);
+    else if (node.type === 'ExpressionStatement') { const value = evaluate(node.expression, env); if (value.abrupt) return { complete: true, abrupt: true, value }; }
     else if (node.type === 'IfStatement') {
       const test = evaluate(node.test, env);
       if (isKnown(test)) {
