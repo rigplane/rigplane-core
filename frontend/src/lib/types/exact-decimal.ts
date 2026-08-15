@@ -1,11 +1,9 @@
 declare const exactDecimal: unique symbol;
 
 /** A canonical, lossless fixed-point decimal string. */
-// The number intersection preserves source compatibility for legacy consumers of
-// ControlRange while runtime values are always strings produced below.
-export type ExactDecimal = string & number & { readonly [exactDecimal]: 'ExactDecimal' };
+export type ExactDecimal = string & { readonly [exactDecimal]: 'ExactDecimal' };
 
-const CANONICAL = /^(?:0|-[1-9][0-9]*|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/;
+const CANONICAL = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/;
 
 type Parts = readonly [coefficient: bigint, scale: number];
 
@@ -35,7 +33,7 @@ function canonicalize(sign: string, digits: string, scale: number): ExactDecimal
 }
 
 export function exactDecimalString(value: unknown): ExactDecimal | null {
-  if (typeof value !== 'string' || !CANONICAL.test(value)) return null;
+  if (typeof value !== 'string' || value === '-0' || !CANONICAL.test(value)) return null;
   return value as ExactDecimal;
 }
 

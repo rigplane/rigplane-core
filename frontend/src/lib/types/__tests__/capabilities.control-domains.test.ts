@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ExactDecimal } from '../exact-decimal';
 import type { ControlDomain, LookupControlDomain, ScalarControlDomain } from '../capabilities';
 import { validateCapabilities } from '../capabilities';
 
@@ -17,6 +18,17 @@ function controlDomainTypeContract(linear: ScalarControlDomain, lookup: LookupCo
   lookup.lookup[0]!.display = 1;
 }
 void controlDomainTypeContract;
+function exactDecimalTypeContract(value: ExactDecimal): void {
+  const stringValue: string = value;
+  void stringValue;
+  // @ts-expect-error exact display strings are never numeric values
+  const numberValue: number = value;
+  // @ts-expect-error branded strings must not collapse to never
+  const impossible: never = value;
+  void numberValue;
+  void impossible;
+}
+void exactDecimalTypeContract;
 const baseCapabilities = {
   model: 'Test Radio',
   scope: false,
@@ -135,7 +147,15 @@ describe('normalized control capability domains', () => {
     });
     expect(parsed.display_max).toBe(huge);
   });
-  it.each(['+1', '1e3', ' 1', '01', '1.0', '-0', '1.', ''])('rejects noncanonical string display %s', (display) => {
+  it('accepts negative display axes and nonzero origins as canonical strings', () => {
+    const parsed = parse({
+      ...linearDomain,
+      display_min: '-1', display_max: '1', display_step: '0.2', display_origin: '-0.2',
+    });
+    expect(parsed.display_min).toBe('-1');
+    expect(parsed.display_origin).toBe('-0.2');
+  });
+  it.each(['+1', '1e3', ' 1', '01', '1.0', '-0', '-0.0', '1.', ''])('rejects noncanonical string display %s', (display) => {
     expect(() => parse({ ...linearDomain, display_min: display, display_max: '1', display_step: '0.2', display_origin: '0' })).toThrow(TypeError);
   });
   it('rejects mixed number and string display domains, including lookup values', () => {
@@ -182,6 +202,22 @@ describe('normalized control capability domains', () => {
       expect(parsed.lookup[1]!.display).toBe('0.2');
       expect(Object.isFrozen(parsed.lookup[0])).toBe(true);
     }
+  });
+  it('accepts negative fractional lookup values', () => {
+    const parsed = parse({
+      ...linearDomain, raw_max: 2, raw_step: 1, mapping: 'lookup', restoration: 'exact',
+      display_min: '-0.1', display_max: '0.1', display_step: '0.1', display_origin: '-0.1',
+      lookup: [{ raw: 0, display: '-0.1' }, { raw: 1, display: '0' }, { raw: 2, display: '0.1' }],
+    });
+    expect(parsed.mapping).toBe('lookup');
+    if (parsed.mapping === 'lookup') expect(parsed.lookup[0]!.display).toBe('-0.1');
+  });
+  it('accepts tiny negative fixed-point display values', () => {
+    const parsed = parse({
+      ...linearDomain, raw_max: 2, raw_step: 1,
+      display_min: '-0.0001', display_max: '0.0001', display_step: '0.0001', display_origin: '-0.0001',
+    });
+    expect(parsed.display_min).toBe('-0.0001');
   });
   it('rejects large-index lookup values that are only approximately on lattice', () => {
     expect(() => parse({
