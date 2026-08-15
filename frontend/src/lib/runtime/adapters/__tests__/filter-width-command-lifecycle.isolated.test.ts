@@ -47,9 +47,14 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () => null }));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: () => null }));
 
-import { getFilterWidthCommandLifecycle } from '../panel-adapters';
-import { beginCommand } from '$lib/stores/commands.svelte';
-import { currentControlSessionEpoch, dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
+import { FILTER_WIDTH_FEEDBACK_DESCRIPTOR, getFilterWidthCommandLifecycle } from '../panel-adapters';
+import {
+  FILTER_WIDTH_COMMAND_DESCRIPTOR, STATE_BACKED_COMMAND_DESCRIPTORS,
+  beginCommand, getStateBackedCommandDescriptor,
+} from '$lib/stores/commands.svelte';
+import {
+  RADIO_INTENT_NAMES, currentControlSessionEpoch, dispatchRadioIntent,
+} from '$lib/runtime/commands/radio-intents';
 function emitAcceptedState(value: FakeState | null): void {
   commandRadio.current = value;
   for (const handler of commandRadio.listeners) handler(value);
@@ -79,6 +84,19 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     controlSession.epoch = 8;
     expect(currentControlSessionEpoch()).toBe(8);
     expect(command()).toMatchObject({ originalEpoch: 8, eventEpoch: 8 });
+  });
+  it('shares one canonical registered Filter Width descriptor and exact paths', () => {
+    expect(FILTER_WIDTH_FEEDBACK_DESCRIPTOR).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
+    expect(getStateBackedCommandDescriptor('set_filter_width')).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
+    expect(STATE_BACKED_COMMAND_DESCRIPTORS.size).toBe(1);
+    expect(RADIO_INTENT_NAMES).toContain(FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName);
+    const main = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 0 } }))!;
+    const sub = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 2100, receiver: 1 } }))!;
+    expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.fieldPath(main)).toBe('main.filterWidth');
+    expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.fieldPath(sub)).toBe('sub.filterWidth');
+    expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 2 } }))).toBeNull();
+    expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.target(command({ params: { width: 3000.5 } }))).toBeNull();
+    expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.repeatPolicy).toBe('latest-target-wins');
   });
   it('stays unavailable rather than fabricating a pending or confirmed value without observed width', () => {
     runtimeState.state = state({ main: {} });
@@ -198,6 +216,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   });
   it('captures only finite public-field ACK markers through the real command store seam', async () => {
     vi.useFakeTimers();
+    controlSession.epoch = 9;
     vi.doUnmock('$lib/stores/commands.svelte');
     vi.resetModules();
     const fields = Object.fromEntries(Array.from({ length: 198 }, (_, index) => [
@@ -261,12 +280,16 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       id: 'old-main', name: 'set_filter_width', params: { width: 3000 }, originalEpoch: 7, timeoutMs: 10_000,
     });
     expect(store.isCommandLifecycleSuperseded(old)).toBe(false);
+    const repeated = store.beginCommand({
+      id: 'repeat-main', name: 'set_filter_width', params: { width: 3000 }, originalEpoch: 7, timeoutMs: 10_000,
+    });
+    expect(store.isCommandLifecycleSuperseded(old)).toBe(true);
     vi.advanceTimersByTime(1_000);
     const newer = store.beginCommand({
       id: 'new-main', name: 'set_filter_width', params: { width: 2800, receiver: 0 }, originalEpoch: 7, timeoutMs: 10_000,
     });
     store.failCommand(newer.id, newer.originalEpoch, 7, 'newer rejected');
-    expect(store.isCommandLifecycleSuperseded(old)).toBe(true);
+    expect(store.isCommandLifecycleSuperseded(repeated)).toBe(true);
     expect(getLiveView().presentation).toMatchObject({ target: 2800, status: 'failed' });
 
     vi.advanceTimersByTime(3_000);
@@ -291,15 +314,23 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getLiveView()).toMatchObject({ confirmed: 1800, target: 2100, phase: 'pending', busy: true });
     const subPresentation = getLiveView().presentation;
 
-    store.resetCommandLifecycle();
-    expect(getLiveView().presentation).toBeNull();
+    store.cancelPendingCommands(7);
+    expect(store.getCommandLifecycle('sub', 7)?.status).toBe('cancelled');
+    controlSession.epoch = 8;
+    expect(getLiveView()).toMatchObject({ confirmed: 1800, phase: 'idle', outcome: null, presentation: null });
     const fresh = store.beginCommand({
-      id: 'sub', name: 'set_filter_width', params: { width: 2600, receiver: 0 }, originalEpoch: 8,
+      id: 'sub', name: 'set_filter_width', params: { width: 2600, receiver: 1 }, originalEpoch: 8,
     });
     expect(store.isCommandLifecycleSuperseded(fresh)).toBe(false);
-    runtimeState.state = state({ main: { filterWidth: 2400 }, sub: { filterWidth: 1800 } });
-    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2600, phase: 'pending', busy: true });
+    expect(getLiveView()).toMatchObject({ confirmed: 1800, target: 2600, phase: 'pending', busy: true });
     expect(getLiveView().presentation?.lifecycleId).not.toBe(subPresentation?.lifecycleId);
+    emitAcceptedState(runtimeState.state); store.acknowledgeCommand('sub', 8, 8);
+    runtimeState.state = state({ active: 'SUB', sub: { filterWidth: 2600 }, fieldStatus: {
+      'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 },
+    } }); emitAcceptedState(runtimeState.state);
+    expect(store.getCommandLifecycle('sub', 8)?.status).toBe('confirmed');
+    expect(getLiveView()).toMatchObject({ confirmed: 2600, phase: 'confirmed', outcome: { phase: 'confirmed' } });
+    expect(store.getCommandLifecycle('sub', 7)?.status).toBe('cancelled');
     store.resetCommandLifecycle();
   });
   it('projects a fresh frozen presentation DTO with stable lifecycle and transition identities', () => {
@@ -346,6 +377,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   });
   it('keeps real-store terminal snapshots until GC and gives every transition a unique identity', async () => {
     vi.useFakeTimers(); vi.doUnmock('$lib/stores/commands.svelte'); vi.resetModules();
+    controlSession.epoch = 12;
     const store = await import('$lib/stores/commands.svelte');
     const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
     const transitions: string[] = [];
@@ -380,7 +412,9 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       command({ id: 'same', originalEpoch: 7, params: { width: 3000, receiver: 0 } }),
       command({ id: 'same', originalEpoch: 8, createdAt: 2, params: { width: 2100, receiver: 1 } }),
     ];
+    controlSession.epoch = 7;
     const main = getFilterWidthCommandLifecycle().presentation!;
+    controlSession.epoch = 8;
     runtimeState.state = state({ active: 'SUB', sub: { filterWidth: 2100 }, fieldStatus: {
       'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
       'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
@@ -393,6 +427,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
       'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
     } });
-    expect(getFilterWidthCommandLifecycle().presentation?.transitionId).toBe(main.transitionId);
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({ phase: 'idle', presentation: null });
   });
 });
