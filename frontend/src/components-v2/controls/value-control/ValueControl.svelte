@@ -33,6 +33,11 @@
     tickStyle?: 'ruler' | 'led' | 'notch';
     /** HBar-only: keep the rendered value parent-controlled until it changes. */
     optimistic?: boolean;
+    /** HBar-only presentation data; lifecycle ownership remains with the caller. */
+    feedbackPhase?: string | null;
+    feedbackBusy?: boolean;
+    feedbackDescription?: string | null;
+    feedbackStatus?: string | null;
     // Behavior
     onChange: (value: number) => void;
     debounceMs?: number;
@@ -71,6 +76,10 @@
     showAllTicks = true,
     tickStyle = 'ruler',
     optimistic = true,
+    feedbackPhase = null,
+    feedbackBusy,
+    feedbackDescription = null,
+    feedbackStatus = null,
     onChange,
     debounceMs = 50,
     disabled = false,
@@ -127,7 +136,14 @@
 
   // This is intentionally not part of commonProps: skin and non-HBar renderer
   // contracts remain unchanged.
-  let hbarProps = $derived({ ...commonProps, optimistic });
+  let hbarProps = $derived({
+    ...commonProps,
+    optimistic,
+    feedbackPhase,
+    feedbackBusy,
+    feedbackDescription,
+    feedbackStatus,
+  });
 
   // Resolve skin component for the current renderer type (undefined = use built-in)
   let skinComponent = $derived(

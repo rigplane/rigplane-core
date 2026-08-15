@@ -36,6 +36,10 @@
     shortcutHint?: string | null;
     title?: string | null;
     optimistic?: boolean;
+    feedbackPhase?: string | null;
+    feedbackBusy?: boolean;
+    feedbackDescription?: string | null;
+    feedbackStatus?: string | null;
   }
 
   let {
@@ -62,7 +66,13 @@
     shortcutHint = null,
     title = null,
     optimistic = true,
+    feedbackPhase = null,
+    feedbackBusy,
+    feedbackDescription = null,
+    feedbackStatus = null,
   }: Props = $props();
+
+  const feedbackDescriptionId = $props.id();
 
   let containerEl: HTMLDivElement | null = $state(null);
   let isDragging = $state(false);
@@ -226,6 +236,9 @@
     aria-valuemax={max}
     aria-valuenow={value}
     aria-disabled={disabled}
+    aria-busy={feedbackBusy}
+    aria-describedby={feedbackDescription ? feedbackDescriptionId : undefined}
+    data-command-phase={feedbackPhase ?? undefined}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
@@ -258,6 +271,18 @@
       <div class="vc-thumb" aria-hidden="true"></div>
     {/if}
   </div>
+  {#if feedbackDescription}
+    <span id={feedbackDescriptionId} class="sr-only">{feedbackDescription}</span>
+  {/if}
+  {#if feedbackStatus}
+    <span
+      class="sr-only"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-control-feedback-status
+    >{feedbackStatus}</span>
+  {/if}
 </div>
 
 <style>
@@ -289,6 +314,11 @@
   .vc-value {
     color: var(--vc-text-value, var(--v2-text-bright));
     font-family: 'Roboto Mono', monospace;
+  }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 
   .disabled {
