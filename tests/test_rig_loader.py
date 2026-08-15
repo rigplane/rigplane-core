@@ -178,8 +178,11 @@ disposition_overrides = {{ "{family}" = "defer" }}
         with pytest.raises(RigLoadError, match=message):
             load_rig(p)
 
-    def test_tx_interlock_section_must_be_table(self, tmp_path):
-        p = _write_toml(tmp_path, 'tx_interlock = "invalid"\n' + _MINIMAL_TOML)
+    @pytest.mark.parametrize(
+        "value", ['"invalid"', "[{}]", "[{disposition_overrides={}}]"]
+    )
+    def test_tx_interlock_section_must_be_table(self, tmp_path, value):
+        p = _write_toml(tmp_path, f"tx_interlock = {value}\n" + _MINIMAL_TOML)
 
         with pytest.raises(RigLoadError, match=r"\[tx_interlock\] must be a table"):
             load_rig(p)
@@ -241,11 +244,10 @@ disposition_overrides = {{ "{family}" = "defer" }}
 
     @pytest.mark.parametrize("key", ["tx_interlock", '"tx_interlock"'])
     def test_tx_interlock_rejects_root_outer_inline_table(self, tmp_path, key):
-        p = _write_toml(
-            tmp_path,
-            f'{key} = {{ disposition_overrides = {{ "power-on" = "defer" }} }}\n'
-            + _MINIMAL_TOML,
+        content = (
+            f'{key}={{disposition_overrides={{"power-on"="defer"}}}}\n' + _MINIMAL_TOML
         )
+        p = _write_toml(tmp_path, content)
 
         with pytest.raises(RigLoadError, match="must use inline table syntax"):
             load_rig(p)

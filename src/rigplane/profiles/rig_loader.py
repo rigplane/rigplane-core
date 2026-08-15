@@ -1178,7 +1178,7 @@ def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
                 outer_inline = (
                     current_table == ()
                     and key_path == ("tx_interlock",)
-                    and any(token[0] == "{" for token in tokens[equals + 1 :])
+                    and tokens[equals + 1][0] == "{"
                 )
                 if dotted_in_table or dotted_at_root or outer_inline:
                     raise RigLoadError(
