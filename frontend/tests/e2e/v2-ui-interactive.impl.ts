@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PAGE_URL = process.env.RIGPLANE_V2_URL;
+const FTX1_RIT_E2E = process.env.RIGPLANE_FTX1_RIT_E2E === '1';
 const PAGE_ORIGIN = PAGE_URL ? new URL(PAGE_URL).origin : 'http://127.0.0.1:8080';
 const STATE_URL = `${PAGE_ORIGIN}/api/v1/state`;
 const CAPABILITIES_URL = `${PAGE_ORIGIN}/api/v1/capabilities`;
@@ -294,6 +295,36 @@ async function drainCommands(page: Page): Promise<WsCommandRecord[]> {
 
 async function clearCommands(page: Page): Promise<void> {
   await drainCommands(page);
+}
+
+async function sendWebSocketCommand(
+  page: Page,
+  name: string,
+  params: Record<string, unknown>,
+): Promise<void> {
+  await page.evaluate(({ commandName, commandParams }) => {
+    const win = window as Window & { __WS_INSTANCES__?: WebSocket[] };
+    const socket = win.__WS_INSTANCES__?.find((item) => item.readyState === WebSocket.OPEN);
+    if (!socket) throw new Error('control WebSocket is not open');
+    socket.send(JSON.stringify({
+      type: 'cmd',
+      id: `ftx1-rit-${Date.now()}-${Math.random()}`,
+      name: commandName,
+      params: commandParams,
+    }));
+  }, { commandName: name, commandParams: params });
+}
+
+async function setFakeRitState(
+  page: Page,
+  state: { ritOn: boolean; ritTx: boolean; ritFreq: number },
+): Promise<void> {
+  await sendWebSocketCommand(page, 'set_rit_status', { on: state.ritOn });
+  await sendWebSocketCommand(page, 'set_rit_tx_status', { on: state.ritTx });
+  await sendWebSocketCommand(page, 'set_rit_frequency', { freq: state.ritFreq });
+  const expected = { ritOn: state.ritOn, ritTx: state.ritTx, ritFreq: state.ritFreq };
+  await expect.poll(async () => page.request.get(STATE_URL).then((response) => response.json()))
+    .toMatchObject(expected);
 }
 
 async function requestJsonWithRetry<T>(
@@ -1306,9 +1337,56 @@ async function writeReport(
 
 test.describe.configure({ mode: 'serial' });
 
+test('FTX-1 exact RIT lattice in Chromium', async ({ page }) => {
+  test.skip(!FTX1_RIT_E2E, 'Set RIGPLANE_FTX1_RIT_E2E=1 for the dedicated fake target.');
+  expect(PAGE_URL, 'RIGPLANE_V2_URL must point at the isolated fake WebServer').toBeTruthy();
+
+  await installWebSocketInterceptor(page);
+  await page.goto(PAGE_URL ?? '', { waitUntil: 'domcontentloaded' });
+  const slider = page.locator('[data-testid="ritxit-offset"] input');
+  await expect(slider).toBeVisible();
+  await expect(slider).toBeEnabled();
+  await expect(slider).toHaveAttribute('min', '-9999');
+  await expect(slider).toHaveAttribute('max', '9999');
+  await expect(slider).toHaveAttribute('step', '1');
+  await expect(slider).toHaveValue('0');
+  await clearCommands(page);
+  expect((await drainCommands(page)).filter((command) => command.name === 'set_rit_frequency'))
+    .toHaveLength(0);
+
+  const sequence = [50, 0, -50, 0, -9999, 9999];
+  const keys = ['ArrowRight', 'ArrowLeft', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
+  try {
+    for (const setup of [
+      { label: 'RIT-leading', ritOn: true, ritTx: false, ritFreq: 0 },
+      { label: 'XIT-leading', ritOn: false, ritTx: true, ritFreq: 0 },
+    ]) {
+      await setFakeRitState(page, setup);
+      await expect(slider).toHaveValue('0');
+      await clearCommands(page);
+
+      for (const [index, key] of keys.entries()) {
+        await slider.press(key);
+        await expect(slider, `${setup.label} ${key}`).toHaveValue(String(sequence[index]));
+      }
+
+      const commands = (await drainCommands(page))
+        .filter((command) => command.name === 'set_rit_frequency');
+      const frequencies = commands.map((command) => command.params.freq);
+      expect(frequencies, setup.label).toEqual(sequence);
+      expect(frequencies.every((freq) => Number.isSafeInteger(freq)
+        && Number(freq) >= -9999 && Number(freq) <= 9999)).toBe(true);
+      expect(frequencies).not.toContain(-10000);
+      expect(frequencies).not.toContain(10000);
+    }
+  } finally {
+    await setFakeRitState(page, { ritOn: false, ritTx: false, ritFreq: 0 });
+  }
+});
+
 test('v2 interactive audit against the live backend', async ({ page, request }) => {
   test.skip(
-    !PAGE_URL,
+    FTX1_RIT_E2E || !PAGE_URL,
     'Set RIGPLANE_V2_URL=http://host:port?ui=v2 to run the live backend audit.',
   );
 
