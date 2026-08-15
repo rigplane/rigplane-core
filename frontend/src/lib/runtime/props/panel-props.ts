@@ -12,13 +12,14 @@
  */
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
-import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
+import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
   deriveIfShift,
   nbDepthRawToDisplay,
   nrRawToDisplay,
   pbtRawToHz,
 } from '$lib/radio/filter-controls';
+import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
@@ -33,7 +34,11 @@ function activeReceiverKey(state: ServerState): 'main' | 'sub' {
 }
 
 function hasCap(caps: Capabilities | null, name: string): boolean {
-  return caps?.capabilities?.includes(name) ?? false;
+  try {
+    return caps?.capabilities?.includes(name) ?? false;
+  } catch {
+    return false;
+  }
 }
 
 function topFieldAvailable(state: ServerState | null, field: string): boolean {
@@ -491,6 +496,30 @@ export interface RitXitProps {
   xitOffset: number;
   hasRit: boolean;
   hasXit: boolean;
+  /** Exact RIT control contract, when supplied by a normalized capability payload. */
+  ritDomain: ControlDomain | null | undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validatedRitDomain(caps: Capabilities | null): ControlDomain | null | undefined {
+  try {
+    const controls = caps?.controls;
+    if (controls === undefined) return undefined;
+    if (!isRecord(controls)) return null;
+    if (!Object.hasOwn(controls, 'rit')) return undefined;
+    const candidate = controls.rit;
+    if (!isRecord(candidate)) return null;
+    const domain = candidate as ControlDomain;
+    if (!['identity', 'linear', 'centered', 'lookup'].includes(domain.mapping)
+      || !Number.isSafeInteger(domain.raw_origin)) return null;
+    const display = decodeControlDomain(domain, domain.raw_origin);
+    return display !== null && encodeControlDomain(domain, display) === domain.raw_origin ? domain : null;
+  } catch {
+    return null;
+  }
 }
 
 export function toRitXitProps(
@@ -500,7 +529,7 @@ export function toRitXitProps(
   const ritOnAvailable = topFieldAvailable(state, 'ritOn');
   const ritFreqAvailable = topFieldAvailable(state, 'ritFreq');
   const ritTxAvailable = topFieldAvailable(state, 'ritTx');
-  return {
+  const props = {
     ritActive: state?.ritOn ?? false,
     ritOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
     xitActive: state?.ritTx ?? false,
@@ -508,6 +537,11 @@ export function toRitXitProps(
     hasRit: hasCap(caps, 'rit') && ritOnAvailable,
     hasXit: hasCap(caps, 'xit') && ritTxAvailable,
   };
+  Object.defineProperty(props, 'ritDomain', {
+    value: validatedRitDomain(caps),
+    enumerable: false,
+  });
+  return props as RitXitProps;
 }
 
 /* ── Mode Panel ──────────────────────────────────────────────── */
