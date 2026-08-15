@@ -188,9 +188,7 @@
   function handleKeyDown(e: KeyboardEvent) {
     if (disabled) return;
 
-    const keyboardIncrement = keyboardStep && keyboardStep > 0
-      ? (e.shiftKey ? keyboardStep / fineStepDivisor : keyboardStep)
-      : null;
+    const keyboardIncrement = getKeyboardIncrement(e.shiftKey);
     const newValue = keyboardIncrement === null
       ? handleKeyboardStep(localValue, e.key, step, fineStepDivisor, min, max, e.shiftKey)
       : handleBipolarKeyboardStep(localValue, e.key, keyboardIncrement);
@@ -198,6 +196,22 @@
       e.preventDefault();
       emitChange(newValue, false, keyboardIncrement !== null);
     }
+  }
+
+  function getKeyboardIncrement(shiftKey: boolean): number | null {
+    if (keyboardStep === undefined) return null;
+    if (!isLatticeCompatible(keyboardStep)) return isLatticeCompatible(step) ? step : null;
+
+    const increment = shiftKey ? keyboardStep / fineStepDivisor : keyboardStep;
+    return isLatticeCompatible(increment) ? increment : step;
+  }
+
+  function isLatticeCompatible(increment: number): boolean {
+    return Number.isFinite(increment)
+      && increment > 0
+      && Number.isFinite(step)
+      && step > 0
+      && Number.isInteger(increment / step);
   }
 
   function handleBipolarKeyboardStep(currentValue: number, key: string, increment: number): number | null {

@@ -335,6 +335,47 @@ describe('BipolarRenderer', () => {
     expect(onChange.mock.calls.flat().every((value) => Number.isInteger(value))).toBe(true);
   });
 
+  it.each([0, -50, Number.NaN, 2.5])('falls back to the declared lattice for invalid keyboardStep %s', (keyboardStep) => {
+    const onChange = vi.fn();
+    const target = mountControl({
+      value: 0,
+      min: -9999,
+      max: 9999,
+      step: 5,
+      defaultValue: 0,
+      keyboardStep,
+      label: 'RIT',
+      renderer: 'bipolar',
+      debounceMs: 0,
+      onChange,
+    });
+
+    getSlider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+
+    expect(onChange).toHaveBeenCalledWith(5);
+  });
+
+  it('does not emit NaN for a non-finite keyboardStep', () => {
+    const onChange = vi.fn();
+    const target = mountControl({
+      value: 0,
+      min: -9999,
+      max: 9999,
+      step: 5,
+      defaultValue: 0,
+      keyboardStep: Infinity,
+      label: 'RIT',
+      renderer: 'bipolar',
+      debounceMs: 0,
+      onChange,
+    });
+
+    getSlider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+
+    expect(onChange).toHaveBeenCalledWith(5);
+    expect(onChange.mock.calls.flat().every(Number.isFinite)).toBe(true);
+  });
+
   it('renders polarity markers', () => {
     const target = mountControl({
       value: 0,
