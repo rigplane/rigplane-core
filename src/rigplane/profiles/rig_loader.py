@@ -33,6 +33,7 @@ __all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
 from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
 from rigplane.profiles import (
     BandInfo,
+    ControlDomainSpec,
     ControlLookupPoint,
     ControlSpec,
     FilterWidthRule,
@@ -119,6 +120,14 @@ class RigLoadError(Exception):
 
 _LookupPoint = tuple[int, Decimal]
 _ScalarControlDomain = dict[str, str | int | Decimal | tuple[_LookupPoint, ...]]
+
+
+def _public_decimal(value: Decimal) -> str:
+    """Render an exact Decimal as the frontend's canonical fixed-point string."""
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return "0" if rendered in {"0", "-0"} else rendered
 
 
 def _control_number(value: object, path: str, *, integer: bool = False) -> int | float:
@@ -513,39 +522,56 @@ class RigConfig:
             )
             for r in self.freq_ranges
         )
-        controls = self.controls
+        controls = cast(
+            dict[str, ControlSpec | ControlDomainSpec] | None, self.controls
+        )
         if self._control_domains:
-            published_controls: dict[str, ControlSpec] = {
-                name: spec.copy() for name, spec in (self.controls or {}).items()
-            }
+            published_controls = cast(
+                dict[str, ControlSpec | ControlDomainSpec],
+                {name: spec.copy() for name, spec in (self.controls or {}).items()},
+            )
             for name, domain in self._control_domains.items():
-                published_domain: ControlSpec = {
+                published_domain: dict[str, object] = {
                     "mapping": cast(str, domain["mapping"]),
                     "raw_min": cast(int, domain["raw_min"]),
                     "raw_max": cast(int, domain["raw_max"]),
                     "raw_step": cast(int, domain["raw_step"]),
                     "raw_origin": cast(int, domain["raw_origin"]),
-                    "display_min": float(cast(Decimal, domain["display_min"])),
-                    "display_max": float(cast(Decimal, domain["display_max"])),
-                    "display_step": float(cast(Decimal, domain["display_step"])),
-                    "display_origin": float(cast(Decimal, domain["display_origin"])),
+                    "display_min": _public_decimal(
+                        cast(Decimal, domain["display_min"])
+                    ),
+                    "display_max": _public_decimal(
+                        cast(Decimal, domain["display_max"])
+                    ),
+                    "display_step": _public_decimal(
+                        cast(Decimal, domain["display_step"])
+                    ),
+                    "display_origin": _public_decimal(
+                        cast(Decimal, domain["display_origin"])
+                    ),
                     "display_unit": cast(str, domain["display_unit"]),
                     "quantization": cast(str, domain["quantization"]),
                     "restoration": cast(str, domain["restoration"]),
                 }
                 if published_domain["mapping"] == "centered":
                     published_domain["raw_center"] = cast(int, domain["raw_center"])
-                    published_domain["display_center"] = float(
+                    published_domain["display_center"] = _public_decimal(
                         cast(Decimal, domain["display_center"])
                     )
                 if published_domain["mapping"] == "lookup":
                     published_domain["lookup"] = [
-                        ControlLookupPoint(raw=raw, display=float(display))
+                        ControlLookupPoint(raw=raw, display=_public_decimal(display))
                         for raw, display in cast(
                             tuple[_LookupPoint, ...], domain["lookup"]
                         )
                     ]
-                published_controls.setdefault(name, {}).update(published_domain)
+                legacy = published_controls.get(name)
+                if legacy is not None and "style" in legacy:
+                    published_domain["style"] = legacy["style"]
+                # The loader has already established the mapping-specific
+                # shape above; this cast keeps the public discriminated union
+                # explicit without weakening its legacy counterpart.
+                published_controls[name] = cast(ControlDomainSpec, published_domain)
             controls = published_controls
 
         return RadioProfile(

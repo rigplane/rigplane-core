@@ -19,7 +19,13 @@ from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
     TxInterlockDisposition,
 )
-from rigplane.profiles import BandInfo, FreqRangeInfo, RadioProfile, get_radio_profile
+from rigplane.profiles import (
+    BandInfo,
+    ControlSpec,
+    FreqRangeInfo,
+    RadioProfile,
+    get_radio_profile,
+)
 from rigplane.rig_loader import RigConfig, RigLoadError, discover_rigs, load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
@@ -736,15 +742,15 @@ lookup = [
                 "raw_max": 10,
                 "raw_step": 2,
                 "raw_origin": 0,
-                "display_min": -1.0 if mapping == "centered" else 0.0,
-                "display_max": 10.0 if mapping == "identity" else 1.0,
-                "display_step": 2.0 if mapping == "identity" else 0.2,
-                "display_origin": 0.0,
+                "display_min": "-1" if mapping == "centered" else "0",
+                "display_max": "10" if mapping == "identity" else "1",
+                "display_step": "2" if mapping == "identity" else "0.2",
+                "display_origin": "0",
                 "display_unit": "dimensionless" if mapping == "identity" else "ratio",
                 "quantization": "nearest_ties_up",
                 "restoration": "exact",
                 **(
-                    {"raw_center": 0, "display_center": 0.0}
+                    {"raw_center": 0, "display_center": "0"}
                     if mapping == "centered"
                     else {}
                 ),
@@ -754,6 +760,10 @@ lookup = [
         assert ("raw_center" in public["test_control"]) is (mapping == "centered")
         assert ("display_center" in public["test_control"]) is (mapping == "centered")
         assert json.loads(json.dumps(public)) == public
+        second = rig.to_profile().controls
+        assert second is not public
+        assert second is not None
+        assert second["test_control"] is not public["test_control"]
 
     @pytest.mark.parametrize(
         ("old", "new", "message"),
@@ -831,26 +841,26 @@ lookup = [
                 "raw_max": 10,
                 "raw_step": 2,
                 "raw_origin": 0,
-                "display_min": 0.0,
-                "display_max": 1.0,
-                "display_step": 0.2,
-                "display_origin": 0.0,
+                "display_min": "0",
+                "display_max": "1",
+                "display_step": "0.2",
+                "display_origin": "0",
                 "display_unit": "ratio",
                 "quantization": "nearest_ties_up",
                 "restoration": "exact",
                 "lookup": [
-                    {"raw": 0, "display": 0.0},
-                    {"raw": 2, "display": 0.2},
-                    {"raw": 4, "display": 0.4},
-                    {"raw": 6, "display": 0.6},
-                    {"raw": 8, "display": 0.8},
-                    {"raw": 10, "display": 1.0},
+                    {"raw": 0, "display": "0"},
+                    {"raw": 2, "display": "0.2"},
+                    {"raw": 4, "display": "0.4"},
+                    {"raw": 6, "display": "0.6"},
+                    {"raw": 8, "display": "0.8"},
+                    {"raw": 10, "display": "1"},
                 ],
             }
         }
         assert rig.controls == {"test_control": {"style": "stepped"}}
         assert rig.to_profile().controls == public
-        assert json.loads(json.dumps(public)) == public
+        assert json.loads(json.dumps(public, allow_nan=False)) == public
         assert "raw_center" not in public["test_control"]
         assert "display_center" not in public["test_control"]
 
@@ -981,11 +991,69 @@ lookup = [
             assert rig._control_domains is None, path.name
             assert rig.to_profile().controls == rig.controls, path.name
 
+    def test_legacy_control_spec_remains_runtime_callable_with_its_exact_shape(self):
+        legacy = ControlSpec(
+            style="stepped",
+            raw_min=0,
+            raw_max=10,
+            raw_center=5,
+            display_min=0,
+            display_max=10,
+            display_unit="dimensionless",
+        )
+
+        assert legacy == {
+            "style": "stepped",
+            "raw_min": 0,
+            "raw_max": 10,
+            "raw_center": 5,
+            "display_min": 0,
+            "display_max": 10,
+            "display_unit": "dimensionless",
+        }
+
     def test_malformed_domain_rejects_before_profile_production(self, tmp_path):
         malformed = self._LINEAR.replace("raw_step = 2", "raw_step = 0")
 
         with pytest.raises(RigLoadError, match="raw_step"):
             self._load(tmp_path, malformed)
+
+    @pytest.mark.parametrize(
+        "maximum",
+        [
+            "9" * 400,
+            "9007199254740993",
+            "0.00000000000000000000000000000000000000000000000001",
+            "-0.00000000000000000000000000000000000000000000000001",
+        ],
+    )
+    def test_public_domain_displays_are_lossless_canonical_fixed_point(
+        self, tmp_path, maximum
+    ):
+        if maximum.startswith("-"):
+            magnitude = maximum.removeprefix("-")
+            declaration = self._LINEAR.replace(
+                "display_min = 0.0", f"display_min = {maximum}"
+            )
+            declaration = declaration.replace(
+                "display_step = 0.2", f"display_step = {magnitude}"
+            )
+            declaration = declaration.replace("display_max = 1.0", "display_max = 0")
+            expected_field = "display_min"
+        else:
+            declaration = self._LINEAR.replace(
+                "display_max = 1.0", f"display_max = {maximum}"
+            )
+            declaration = declaration.replace(
+                "display_step = 0.2", f"display_step = {maximum}"
+            )
+            expected_field = "display_max"
+        declaration = declaration.replace("display_origin = 0.0", "display_origin = 0")
+        public = self._load(tmp_path, declaration).to_profile().controls
+        assert public is not None
+        control = public["test_control"]
+        assert json.loads(json.dumps(control, allow_nan=False)) == control
+        assert control[expected_field] == maximum
 
 
 # ── RadioProfile building ───────────────────────────────────────

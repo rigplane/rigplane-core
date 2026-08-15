@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Required, TypedDict
+from typing import Literal, Never, NotRequired, Required, TypedDict
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.tx_interlock_contract import (
@@ -20,6 +20,7 @@ from rigplane.core.tx_interlock_contract import (
 
 __all__ = [
     "ControlLookupPoint",
+    "ControlDomainSpec",
     "ControlSpec",
     "FilterWidthSegment",
     "FilterWidthRule",
@@ -39,28 +40,76 @@ class ControlLookupPoint(TypedDict):
     """One normalized lookup point for a profile control domain."""
 
     raw: int
-    display: float
+    display: str
 
 
 class ControlSpec(TypedDict, total=False):
-    """Specification for a single radio control (from TOML ``[controls.*]``)."""
+    """Legacy control specification (from TOML ``[controls.*]``).
+
+    This remains callable for consumers that construct legacy controls at
+    runtime. Explicit scalar domains use ``ControlDomainSpec`` instead.
+    """
 
     style: str
-    mapping: str
+    raw_min: int
+    raw_max: int
+    raw_center: int
+    display_min: int
+    display_max: int
+    display_unit: str
+
+
+class _ControlDomainBase(TypedDict):
+    """Fields shared by all normalized public control domains."""
+
     raw_min: int
     raw_max: int
     raw_step: int
     raw_origin: int
-    raw_center: int
-    display_min: float
-    display_max: float
-    display_step: float
-    display_origin: float
-    display_center: float
+    display_min: str
+    display_max: str
+    display_step: str
+    display_origin: str
     display_unit: str
     quantization: str
     restoration: str
+    style: NotRequired[str]
+
+
+class IdentityControlDomainSpec(_ControlDomainBase):
+    mapping: Required[Literal["identity"]]
+    raw_center: NotRequired[Never]
+    display_center: NotRequired[Never]
+    lookup: NotRequired[Never]
+
+
+class LinearControlDomainSpec(_ControlDomainBase):
+    mapping: Required[Literal["linear"]]
+    raw_center: NotRequired[Never]
+    display_center: NotRequired[Never]
+    lookup: NotRequired[Never]
+
+
+class CenteredControlDomainSpec(_ControlDomainBase):
+    mapping: Required[Literal["centered"]]
+    raw_center: int
+    display_center: str
+    lookup: NotRequired[Never]
+
+
+class LookupControlDomainSpec(_ControlDomainBase):
+    mapping: Required[Literal["lookup"]]
     lookup: list[ControlLookupPoint]
+    raw_center: NotRequired[Never]
+    display_center: NotRequired[Never]
+
+
+ControlDomainSpec = (
+    IdentityControlDomainSpec
+    | LinearControlDomainSpec
+    | CenteredControlDomainSpec
+    | LookupControlDomainSpec
+)
 
 
 class MeterCalibrationPoint(TypedDict):
@@ -225,7 +274,7 @@ class RadioProfile:
     # Hamlib rig_model integer (from rigs_list.h). Used by the validate
     # ``--provider hamlib`` path to launch stock rigctld with ``-m <id>``.
     hamlib_model_id: int = 2028
-    controls: dict[str, ControlSpec] | None = None
+    controls: dict[str, ControlSpec | ControlDomainSpec] | None = None
     meter_calibrations: dict[str, list[MeterCalibrationPoint]] | None = None
     meter_redlines: dict[str, int] | None = None
     rules: tuple[RuleSpec, ...] = ()
