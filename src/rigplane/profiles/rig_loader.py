@@ -1172,7 +1172,9 @@ def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
             and key_path[:1] == ("disposition_overrides",)
             and len(key_path) > 1
         )
-        dotted_at_root = current_table == () and key_path[:2] == forbidden_prefix
+        dotted_at_root = current_table == () and (
+            key_path == ("tx_interlock",) or key_path[:2] == forbidden_prefix
+        )
         if dotted_in_table or dotted_at_root:
             raise RigLoadError(
                 f"{filename}: [tx_interlock].disposition_overrides "

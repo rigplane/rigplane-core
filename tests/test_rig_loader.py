@@ -224,6 +224,10 @@ disposition_overrides.power-on = "defer"
             ),
             ('tx_interlock.disposition_overrides."power-on" = "defer"\n', True),
             ('tx_interlock.disposition_overrides.power-on = "defer"\n', True),
+            (
+                'tx_interlock = { disposition_overrides = { "power-on" = "defer" } }\n',
+                True,
+            ),
         ],
     )
     def test_tx_interlock_rejects_non_inline_override_encodings(
