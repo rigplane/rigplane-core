@@ -6,6 +6,7 @@ TDD: these tests were written FIRST, then the implementation.
 from __future__ import annotations
 
 import textwrap
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -681,6 +682,19 @@ restoration = "exact"
     _LARGE_DECIMAL = _LINEAR.replace(
         "display_max = 1.0", "display_max = 1000000000000"
     ).replace("display_step = 0.2", "display_step = 1e-20")
+    _LOOKUP_POINTS = """\
+lookup = [
+  { raw = 0, display = 0.0 },
+  { raw = 2, display = 0.2 },
+  { raw = 4, display = 0.4 },
+  { raw = 6, display = 0.6 },
+  { raw = 8, display = 0.8 },
+  { raw = 10, display = 1.0 },
+]
+"""
+    _LOOKUP = (
+        _LINEAR.replace('mapping = "linear"', 'mapping = "lookup"') + _LOOKUP_POINTS
+    )
 
     def _load(self, tmp_path, declaration: str):
         text = _MINIMAL_TOML + "\n[controls.test_control]\n" + declaration
@@ -770,10 +784,139 @@ restoration = "exact"
         with pytest.raises(RigLoadError, match="display_unit.*non-empty"):
             self._load(tmp_path, declaration)
 
-    def test_lookup_is_explicitly_deferred(self, tmp_path):
+    def test_exact_lookup_is_private_complete_and_non_serialized(self, tmp_path):
+        rig = self._load(tmp_path, 'style = "stepped"\n' + self._LOOKUP)
+
+        assert rig._control_domains["test_control"]["lookup"] == (
+            (0, Decimal("0.0")),
+            (2, Decimal("0.2")),
+            (4, Decimal("0.4")),
+            (6, Decimal("0.6")),
+            (8, Decimal("0.8")),
+            (10, Decimal("1.0")),
+        )
+        public = {"test_control": {"style": "stepped"}}
+        assert rig.controls == public
+        assert rig.to_profile().controls == public
+
+    def test_exact_lookup_requires_every_raw_lattice_point(self, tmp_path):
+        partial = self._LOOKUP.replace("  { raw = 4, display = 0.4 },\n", "")
+        with pytest.raises(RigLoadError, match="exact.*complete raw lattice"):
+            self._load(tmp_path, partial)
+
+    def test_unavailable_lookup_permits_truthful_partial_table(self, tmp_path):
+        partial = self._LOOKUP.replace(
+            'restoration = "exact"', 'restoration = "unavailable"'
+        )
+        partial = partial.replace("  { raw = 4, display = 0.4 },\n", "")
+        assert (
+            len(
+                self._load(tmp_path, partial)._control_domains["test_control"]["lookup"]
+            )
+            == 5
+        )
+
+    def test_lookup_accepts_strictly_decreasing_axes(self, tmp_path):
+        lines = self._LOOKUP_POINTS.splitlines()
+        descending = "\n".join(lines[:1] + list(reversed(lines[1:-1])) + lines[-1:])
         declaration = self._LINEAR.replace('mapping = "linear"', 'mapping = "lookup"')
-        with pytest.raises(RigLoadError, match="lookup.*MOR-1708"):
+        assert (
+            self._load(tmp_path, declaration + descending)._control_domains is not None
+        )
+
+    @pytest.mark.parametrize(
+        ("old", "new", "message"),
+        [
+            ("raw = 4, display = 0.4", "raw = 2, display = 0.4", "raw values.*unique"),
+            (
+                "raw = 4, display = 0.4",
+                "raw = 4, display = 0.2",
+                "display values.*unique",
+            ),
+            (
+                "{ raw = 4, display = 0.4 },\n  { raw = 6, display = 0.6 }",
+                "{ raw = 6, display = 0.4 },\n  { raw = 4, display = 0.6 }",
+                "raw values.*strictly monotonic",
+            ),
+            (
+                "{ raw = 4, display = 0.4 },\n  { raw = 6, display = 0.6 }",
+                "{ raw = 4, display = 0.6 },\n  { raw = 6, display = 0.4 }",
+                "display values.*strictly monotonic",
+            ),
+        ],
+    )
+    def test_lookup_rejects_duplicate_and_non_monotonic_axes(
+        self, tmp_path, old, new, message
+    ):
+        with pytest.raises(RigLoadError, match=message):
+            self._load(tmp_path, self._LOOKUP.replace(old, new))
+
+    @pytest.mark.parametrize(
+        ("old", "new", "message"),
+        [
+            ("raw = 4, display = 0.4", "raw = 3, display = 0.4", "raw.*lattice"),
+            ("raw = 4, display = 0.4", "raw = 12, display = 0.4", "raw.*range"),
+            ("raw = 4, display = 0.4", "raw = 4, display = 0.45", "display.*lattice"),
+            ("raw = 4, display = 0.4", "raw = 4, display = 1.2", "display.*range"),
+        ],
+    )
+    def test_lookup_rejects_out_of_range_and_off_lattice_points(
+        self, tmp_path, old, new, message
+    ):
+        with pytest.raises(RigLoadError, match=message):
+            self._load(tmp_path, self._LOOKUP.replace(old, new))
+
+    def test_lookup_rejects_large_index_tolerance_bypass(self, tmp_path):
+        declaration = self._LOOKUP.replace(
+            "display_max = 1.0", "display_max = 1000000000000.2"
+        )
+        declaration = declaration.replace(
+            "{ raw = 10, display = 1.0 }",
+            "{ raw = 10, display = 1000000000000.05 }",
+        )
+        with pytest.raises(RigLoadError, match="display.*lattice"):
             self._load(tmp_path, declaration)
+
+        declaration = self._LOOKUP.replace("raw_max = 10", "raw_max = 9007199254740992")
+        declaration = declaration.replace(
+            'restoration = "exact"', 'restoration = "unavailable"'
+        )
+        declaration = declaration.replace(
+            "{ raw = 10, display = 1.0 }", "{ raw = 9007199254740991, display = 1.0 }"
+        )
+        with pytest.raises(RigLoadError, match="raw.*lattice"):
+            self._load(tmp_path, declaration)
+
+    def test_unavailable_lookup_still_rejects_ambiguous_display(self, tmp_path):
+        declaration = self._LOOKUP.replace(
+            'restoration = "exact"', 'restoration = "unavailable"'
+        ).replace("raw = 4, display = 0.4", "raw = 4, display = 0.2")
+        with pytest.raises(RigLoadError, match="display values.*unique"):
+            self._load(tmp_path, declaration)
+
+    @pytest.mark.parametrize(
+        "lookup",
+        [
+            "",
+            "lookup = []\n",
+            'lookup = "invalid"\n',
+            "lookup = [0]\n",
+            "lookup = [{ raw = 0 }]\n",
+            "lookup = [{ raw = 0, display = 0.0, extra = 1 }]\n",
+            "lookup = [{ raw = 0.0, display = 0.0 }]\n",
+            "lookup = [{ raw = true, display = 0.0 }]\n",
+            'lookup = [{ raw = 0, display = "zero" }]\n',
+            "lookup = [{ raw = 0, display = nan }]\n",
+        ],
+    )
+    def test_lookup_rejects_empty_and_malformed_tables(self, tmp_path, lookup):
+        declaration = self._LINEAR.replace('mapping = "linear"', 'mapping = "lookup"')
+        with pytest.raises(RigLoadError, match="lookup"):
+            self._load(tmp_path, declaration + lookup)
+
+    def test_lookup_key_requires_lookup_mapping(self, tmp_path):
+        with pytest.raises(RigLoadError, match="lookup.*mapping"):
+            self._load(tmp_path, self._LINEAR + self._LOOKUP_POINTS)
 
     def test_shipped_legacy_profiles_remain_publicly_shape_compatible(self):
         for path in sorted(
