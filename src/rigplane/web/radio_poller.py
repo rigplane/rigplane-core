@@ -2697,13 +2697,6 @@ class RadioPoller:
                 # mypy's type narrowing across branches.
                 target_name = "SUB" if is_sub else "MAIN"
                 if target_name != current:
-                    if (is_sub and self._profile.vfo_sub_code is None) or (
-                        not is_sub and self._profile.vfo_main_code is None
-                    ):
-                        raise CommandError(
-                            f"select_vfo({vfo}) is unsupported by profile "
-                            f"{self._profile.model}: no MAIN/SUB select code"
-                        )
                     # Issue #1189: legacy backends (e.g. SerialMockRadio,
                     # 3rd-party Radio implementers) predate
                     # ``ReceiverBankCapable`` and only expose the legacy
@@ -2716,6 +2709,13 @@ class RadioPoller:
                         await select_receiver(target_name)
                         logger.info("radio-poller: select_receiver=%s", target_name)
                     else:
+                        if (is_sub and self._profile.vfo_sub_code is None) or (
+                            not is_sub and self._profile.vfo_main_code is None
+                        ):
+                            raise CommandError(
+                                f"select_vfo({vfo}) is unsupported by profile "
+                                f"{self._profile.model}: no MAIN/SUB select code"
+                            )
                         legacy_set_vfo = getattr(radio, "set_vfo", None)
                         if legacy_set_vfo is None:
                             logger.warning(
@@ -2730,12 +2730,6 @@ class RadioPoller:
                             "(backend lacks ReceiverBankCapable)",
                             target_name,
                         )
-                    # ``select_receiver`` updates ``_radio_state.active`` on
-                    # the dual-RX runtime; mirror it on radios that don't
-                    # ship that wiring (test mocks, custom backends).
-                    rs = getattr(self._radio, "_radio_state", None)
-                    if rs is not None and hasattr(rs, "active"):
-                        rs.active = target_name
                     # Scope follows the selected receiver: emit 0x27 0x12 so
                     # the spectrum/waterfall flips to the new band.  In
                     # dual-scope mode this still updates the "selected"

@@ -1826,6 +1826,38 @@ async def test_select_vfo_legacy_backend_falls_back_to_set_vfo() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ftx1_main_sub_selection_uses_typed_receiver_path_without_civ_codes() -> (
+    None
+):
+    """FTX-1 reaches its VS receiver path without CI-V VFO profile codes.
+
+    The typed Yaesu backend owns the exact ``VS0;`` / ``VS1;`` writes and the
+    later ``VS;`` observation is the confirmed active-receiver authority.
+    """
+    radio = _make_radio(model="FTX-1", active="MAIN")
+    radio.select_receiver = AsyncMock()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(SelectVfo("SUB"))  # noqa: SLF001
+
+    radio.select_receiver.assert_awaited_once_with("SUB")
+    radio.send_civ.assert_not_awaited()
+    assert radio._radio_state.active == "MAIN"
+
+    radio._radio_state.active = "SUB"
+    radio.select_receiver.reset_mock()
+    await poller._execute(SelectVfo("MAIN"))  # noqa: SLF001
+
+    radio.select_receiver.assert_awaited_once_with("MAIN")
+    radio.send_civ.assert_not_awaited()
+    assert radio._radio_state.active == "SUB"
+
+    radio.select_receiver.reset_mock()
+    await poller._execute(SelectVfo("SUB"))  # noqa: SLF001
+    radio.select_receiver.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_single_receiver_vfo_b_selects_slot_without_sub_receiver() -> None:
     state = RadioState()
     state.active = "MAIN"
