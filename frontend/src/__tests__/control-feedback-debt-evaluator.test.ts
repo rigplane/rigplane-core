@@ -94,6 +94,18 @@ describe('ordered debt evaluator (MOR-1720)', () => {
       .toEqual([]);
   });
 
+  it('retains undefined callable and aggregate values through every reachable consumer', () => {
+    expect(facts('function empty() {} function defaults(value = mutate(props)) {} defaults(empty());'))
+      .toEqual(['escape']);
+    expect(facts('function bare() { return; } bare()?.(mutate(props));')).toEqual([]);
+    expect(facts('const nil = null; (nil?.a).b(mutate(props));')).toEqual([]);
+    expect(facts('function object({ value }) { sink(value); } object(props);')).toEqual(['escape']);
+    expect(facts('function array([value]) { sink(value); } array(props);')).toEqual(['escape']);
+    expect(facts('sink({ ...props });')).toEqual(['escape']);
+    expect(facts('function slots(first, second) { sink(first); sink(second); } slots(...props);'))
+      .toEqual(['escape', 'escape']);
+  });
+
   it('has no facts for unrelated code', () => {
     expect(facts('const add = (a: number, b: number) => a + b; add(1, 2);')).toEqual([]);
   });
