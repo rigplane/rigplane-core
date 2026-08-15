@@ -1,18 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import FilterWidthLifecycleDerivedProbe from './support/FilterWidthLifecycleDerivedProbe.svelte';
+import { currentControlSessionEpoch } from '$lib/runtime/commands/radio-intents';
 
 type Command = {
   id: string; name: string; params: { width: number; receiver: 0 | 1 };
   createdAt: number; originalEpoch: number;
   status: 'pending' | 'acknowledged' | 'confirmed';
 };
-const h = vi.hoisted(() => ({ state: null as Record<string, unknown> | null, commands: [] as Command[] }));
-vi.mock('$lib/runtime/frontend-runtime', () => ({ runtime: { get state() { return h.state; }, get caps() { return null; } } }));
-vi.mock('$lib/stores/commands.svelte', () => ({
-  getCommandLifecycles: () => h.commands,
-  isCommandLifecycleSuperseded: () => false,
+const h = vi.hoisted(() => ({
+  state: null as Record<string, unknown> | null,
+  commands: [] as Command[],
+  epoch: 7,
 }));
+vi.mock('$lib/runtime/frontend-runtime', () => ({ runtime: { get state() { return h.state; }, get caps() { return null; } } }));
+vi.mock('$lib/stores/commands.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/stores/commands.svelte')>();
+  return {
+    ...actual,
+    getCommandLifecycles: () => h.commands,
+    isCommandLifecycleSuperseded: () => false,
+  };
+});
+vi.mock('$lib/runtime/commands/radio-intents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/commands/radio-intents')>();
+  return { ...actual, currentControlSessionEpoch: () => h.epoch };
+});
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: () => null }));
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () => null }));
 
@@ -38,10 +51,15 @@ function render() {
 afterEach(() => {
   mounted.forEach((component) => { void unmount(component); });
   mounted = []; document.body.innerHTML = '';
-  h.state = null; h.commands = []; vi.restoreAllMocks();
+  h.state = null; h.commands = []; h.epoch = 7; vi.restoreAllMocks();
 });
 
 describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
+  it('binds mounted command fixtures to the partial-mocked control-session epoch', () => {
+    expect(currentControlSessionEpoch()).toBe(h.epoch);
+    h.epoch = 8;
+    expect(currentControlSessionEpoch()).toBe(8);
+  });
   it('reads the real accessor through $derived without mutation and shows canonical confirmed truth', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     h.state = observed(2400);
@@ -49,7 +67,7 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
     const refresh = (mounted[0] as { refresh: () => void }).refresh;
     expect(probe.dataset).toMatchObject({ phase: 'idle', confirmed: '2400', target: '' });
 
-    h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, createdAt: 1, originalEpoch: 7, status: 'acknowledged' }];
+    h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
     refresh(); flushSync();
     expect(probe.dataset).toMatchObject({ phase: 'acknowledged', confirmed: '2400', target: '3000' });
 
@@ -65,7 +83,7 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
 
   it('keeps SUB command evidence isolated from MAIN projection', () => {
     h.state = observed(2800, 'MAIN', 2400);
-    h.commands = [{ id: 'sub', name: 'set_filter_width', params: { width: 2800, receiver: 1 }, createdAt: 1, originalEpoch: 7, status: 'acknowledged' }];
+    h.commands = [{ id: 'sub', name: 'set_filter_width', params: { width: 2800, receiver: 1 }, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
     expect(render().dataset).toMatchObject({ phase: 'idle', confirmed: '2800', target: '' });
   });
 });
