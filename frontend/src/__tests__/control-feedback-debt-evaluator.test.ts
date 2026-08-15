@@ -106,6 +106,17 @@ describe('ordered debt evaluator (MOR-1720)', () => {
       .toEqual(['escape', 'escape']);
   });
 
+  it('keeps rest, spread, abrupt member, and throw completion execution-ordered', () => {
+    expect(facts('function array([first, ...rest]) { sink(rest); } array([props, 1]);')).toEqual([]);
+    expect(facts('function object({ first, ...rest }) { sink(rest); } object({ first: props, safe: 1 });')).toEqual([]);
+    expect(facts('const nil = null; (nil?.a)[mutate(props)];')).toEqual(['escape']);
+    expect(facts('function slots(first, second) { sink(first); sink(second); } slots(0, ...props);')).toEqual(['escape']);
+    expect(facts('function direct() { throw mutate(props); mutate(props); } direct();')).toEqual(['escape']);
+    expect(facts('function known() { if (true) throw mutate(props); mutate(props); } known();')).toEqual(['escape']);
+    expect(facts('function both(flag) { if (flag) throw mutate(props); else throw mutate(props); mutate(props); } both(props);'))
+      .toEqual(['escape', 'escape']);
+  });
+
   it('has no facts for unrelated code', () => {
     expect(facts('const add = (a: number, b: number) => a + b; add(1, 2);')).toEqual([]);
   });

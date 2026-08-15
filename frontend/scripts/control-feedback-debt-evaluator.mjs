@@ -38,20 +38,20 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       for (let index = 0; index < pattern.elements.length; index += 1) {
         const part = pattern.elements[index]; if (!part) continue;
         const rest = (value.items || []).slice(index);
-        bind(part, part.type === 'RestElement' ? { items: rest, track: value.track || merge(rest).track } : value.items?.[index] || (value.track ? { track: true } : { missing: true }), env);
+        bind(part, part.type === 'RestElement' ? { items: rest, track: value.items ? merge(rest).track : value.track } : value.items?.[index] || (value.track ? { track: true } : { missing: true }), env);
       }
     }
     if (pattern.type === 'ObjectPattern') { const used = new Set(); for (const part of pattern.properties || []) {
-      if (part.type === 'RestElement') { const fields = Object.fromEntries(Object.entries(value.fields || {}).filter(([key]) => !used.has(key))); bind(part.argument, { fields, track: value.track || merge(Object.values(fields)).track }, env); }
+      if (part.type === 'RestElement') { const fields = Object.fromEntries(Object.entries(value.fields || {}).filter(([key]) => !used.has(key))); bind(part.argument, { fields, track: value.fields ? merge(Object.values(fields)).track : value.track }, env); }
       else { const key = part.key.name || part.key.value; used.add(String(key)); bind(part.value, value.fields?.[key] || (value.track ? { track: true } : { missing: true }), env); }
     }
     }
   };
   const invoke = (fn, args) => {
     if (active.has(fn.node)) { emit('cycle', fn.node, { poison: true }); return { track: true, poison: true }; }
-    active.add(fn.node); const env = scope(fn.env), unknownSpread = args.some((value) => value.spread && !value.items);
+    active.add(fn.node); const env = scope(fn.env), unknownSpread = args.findIndex((value) => value.spread && !value.items);
     if (fn.node.type === 'FunctionExpression' && fn.node.id) env[fn.node.id.name] = { fn, value: { track: false } };
-    for (let index = 0; index < (fn.node.params || []).length; index += 1) { const param = fn.node.params[index]; bind(param, param.type === 'RestElement' ? { items: args.slice(index), track: unknownSpread || merge(args.slice(index)).track } : unknownSpread ? { track: true } : args[index] || { missing: true }, env); }
+    for (let index = 0; index < (fn.node.params || []).length; index += 1) { const param = fn.node.params[index], spreadCovers = unknownSpread >= 0 && index >= unknownSpread; bind(param, param.type === 'RestElement' ? { items: args.slice(index), track: spreadCovers || merge(args.slice(index)).track } : spreadCovers ? { track: true } : args[index] || { missing: true }, env); }
     const result = fn.node.body?.type === 'BlockStatement' ? block(fn.node.body.body, env) : { value: evaluate(fn.node.body, env) };
     active.delete(fn.node); return result.value || { ...known(undefined), undefined: true };
   };
@@ -111,8 +111,9 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       const values = [evaluate(node.object, env, inChain)];
       if (inChain && values[0].chainShortCircuit) return values[0];
       if (node.optional && isKnown(values[0]) && values[0].value == null) return { ...values[0], chainShortCircuit: true };
+      if (node.computed) values.push(evaluate(node.property, env));
       if (isKnown(values[0]) && values[0].value == null) return { ...values[0], abrupt: true };
-      if (node.computed) values.push(evaluate(node.property, env)); return merge(values);
+      return merge(values);
     }
     if (node.type === 'BinaryExpression') {
       const left = evaluate(node.left, env), right = evaluate(node.right, env);
@@ -143,6 +144,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       if (declaration.id.type === 'Identifier') env[declaration.id.name] = { fn, value }; else bind(declaration.id, value, env);
     }
     else if (node.type === 'ReturnStatement') { const value = node.argument ? evaluate(node.argument, env) : { ...known(undefined), undefined: true }; if (value.track) emit('return', node); return { complete: true, value }; }
+    else if (node.type === 'ThrowStatement') return { complete: true, abrupt: true, value: evaluate(node.argument, env) };
     else if (node.type === 'BlockStatement') return block(node.body, scope(env));
     else if (node.type === 'ExpressionStatement') evaluate(node.expression, env);
     else if (node.type === 'IfStatement') {
@@ -152,7 +154,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
         return statement(test.value ? node.consequent : node.alternate, scope(env));
       }
       const yes = statement(node.consequent, scope(env)), no = node.alternate ? statement(node.alternate, scope(env)) : {};
-      if (yes.complete && no.complete) return { complete: true, value: merge([yes.value, no.value]) };
+      if (yes.complete && no.complete) return { complete: true, abrupt: yes.abrupt && no.abrupt, value: merge([yes.value, no.value]) };
     }
     return {};
   };
