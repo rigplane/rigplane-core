@@ -20,7 +20,19 @@ import type { Availability, DspViewModel, RadioViewModel } from '../radio-view-m
 
 /** `1/single` + a fully-observed dsp group (nrActive true, nbActive false —
  *  both toggles exercised at least once by the base fixture). */
-const base = (): RadioViewModel => withDsp(topologyFixtures['1/single']);
+const LEGACY_NR_DOMAIN = { min: 0, max: 15, step: 1, origin: 0 } as const;
+const EXACT_NR_DOMAIN = { min: 0, max: 10, step: 1, origin: 0 } as const;
+
+const base = (): RadioViewModel => {
+  const view = withDsp(topologyFixtures['1/single']);
+  return {
+    ...view,
+    dsp: {
+      ...view.dsp!,
+      nrLevelProjection: { value: 8, domain: LEGACY_NR_DOMAIN, adjustable: true },
+    },
+  };
+};
 
 type AnyField = keyof DspViewModel;
 const NUMERIC_FIELDS: readonly AnyField[] = [
@@ -51,6 +63,21 @@ function withField(
         availability: over.availability ?? current.availability,
       },
     } as DspViewModel,
+  };
+}
+
+function withNrProjection(
+  value: number,
+  projection: DspViewModel['nrLevelProjection'],
+): RadioViewModel {
+  const view = base();
+  return {
+    ...view,
+    dsp: {
+      ...view.dsp!,
+      nrLevel: { ...view.dsp!.nrLevel, reading: { status: 'known', value } },
+      ...(projection === undefined ? {} : { nrLevelProjection: projection }),
+    },
   };
 }
 
@@ -267,6 +294,71 @@ describe('level intents reach the caller with the field and the raw value', () =
       const input = s.input('nrLevel')!;
       expect(input.disabled).toBe(true);
       input.value = '9';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).not.toHaveBeenCalled();
+    }, { onLevelChange });
+  });
+});
+
+describe('exact NR-level projection (MOR-1737)', () => {
+  it.each([0, 1, 4, 10])('renders exact FTX-1 display value %i in its native domain', (value) => {
+    const view = withNrProjection(value, { value, domain: EXACT_NR_DOMAIN, adjustable: true });
+    withSurface(view, (s) => {
+      const input = s.input('nrLevel')!;
+      expect(input.min).toBe('0');
+      expect(input.max).toBe('10');
+      expect(input.step).toBe('1');
+      expect(input.valueAsNumber).toBe(value);
+      expect(s.control('nrLevel')!.textContent).toContain(String(value));
+      expect(input.disabled).toBe(false);
+    });
+  });
+
+  it('emits exact display value 4 without re-projection', () => {
+    const onLevelChange = vi.fn();
+    const view = withNrProjection(4, { value: 4, domain: EXACT_NR_DOMAIN, adjustable: true });
+    withSurface(view, (s) => {
+      const input = s.input('nrLevel')!;
+      input.value = '4';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('nrLevel', 4);
+    }, { onLevelChange });
+  });
+
+  it('uses the projection origin for an unread thumb position', () => {
+    const view = withField(withNrProjection(4, {
+      value: null,
+      domain: { min: 0, max: 10, step: 1, origin: 4 },
+      adjustable: false,
+    }), 'nrLevel', { unknown: true });
+    withSurface(view, (s) => {
+      expect(s.input('nrLevel')!.valueAsNumber).toBe(4);
+      expect(s.input('nrLevel')!.disabled).toBe(true);
+    });
+  });
+
+  it.each([
+    ['malformed projection', withNrProjection(4, {
+      value: 4, domain: { min: 0, max: 10, step: 0, origin: 0 }, adjustable: true,
+    })],
+    ['stale projection', withField(withNrProjection(4, {
+      value: null, domain: EXACT_NR_DOMAIN, adjustable: false,
+    }), 'nrLevel', { availability: { structural: true, operational: false } })],
+    ['unread projection', withField(withNrProjection(4, {
+      value: null, domain: EXACT_NR_DOMAIN, adjustable: false,
+    }), 'nrLevel', { unknown: true })],
+    ['out-of-domain projection', withNrProjection(11, {
+      value: 11, domain: EXACT_NR_DOMAIN, adjustable: true,
+    })],
+    ['absent projection', withDsp(topologyFixtures['1/single'])],
+  ] as const)('fails closed for %s and guards the callback independently of disabled', (_label, view) => {
+    const onLevelChange = vi.fn();
+    withSurface(view, (s) => {
+      const input = s.input('nrLevel')!;
+      expect(input.disabled).toBe(true);
+      input.value = '4';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
       expect(onLevelChange).not.toHaveBeenCalled();
