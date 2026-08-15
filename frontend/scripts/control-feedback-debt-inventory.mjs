@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** AST-backed shrink-only inventory for radio range-control feedback debt (MOR-1713). */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'svelte/compiler';
 
@@ -78,13 +78,25 @@ function programs(ast) {
 /** @param {any} ast */
 function bindingsAndImports(ast) {
   const bindings = new Map();
+  /** @type {Map<string, any[]>} */ const aliases = new Map();
   const valueControls = new Set();
+  /** @param {string} name @param {any} value */
+  const addAlias = (name, value) => aliases.set(name, [...(aliases.get(name) ?? []), value]);
+  /** @param {any} node */
+  const collectAssignments = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier') addAlias(node.left.name, node.right);
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(collectAssignments);
+      else if (value && typeof value === 'object') collectAssignments(value);
+    }
+  };
   for (const program of programs(ast)) {
     for (const statement of program.body) {
       if (statement.type === 'ImportDeclaration') {
         const source = String(statement.source.value);
         const direct = source.endsWith('/ValueControl.svelte') || source === './ValueControl.svelte';
-        const barrel = /(?:^|\/)value-control(?:\/index)?$/.test(source);
+        const barrel = /(?:^|\/)value-control(?:\/index)?$/.test(source.replace(/\.(?:[cm]?[jt]s)$/, ''));
         for (const specifier of statement.specifiers) {
           const imported = specifier.imported?.name ?? specifier.imported?.value;
           if ((direct && specifier.type === 'ImportDefaultSpecifier') || (barrel && imported === 'ValueControl')) {
@@ -92,14 +104,17 @@ function bindingsAndImports(ast) {
           }
         }
       }
-      if (statement.type === 'VariableDeclaration' && statement.kind === 'const') {
+      if (statement.type === 'VariableDeclaration') {
         for (const declaration of statement.declarations) {
-          if (declaration.id.type === 'Identifier' && declaration.init) bindings.set(declaration.id.name, declaration.init);
+          if (declaration.id.type !== 'Identifier' || !declaration.init) continue;
+          addAlias(declaration.id.name, declaration.init);
+          if (statement.kind === 'const') bindings.set(declaration.id.name, declaration.init);
         }
       }
     }
+    collectAssignments(program);
   }
-  return { bindings, valueControls };
+  return { aliases, bindings, valueControls };
 }
 
 /** @param {any} node @param {Map<string, any>} bindings @param {Set<string>} [seen] @returns {any} */
@@ -119,21 +134,21 @@ function staticValue(node, bindings, seen = new Set()) {
   return UNKNOWN;
 }
 
-/** @param {any} node @param {Map<string, any>} bindings @param {Set<string>} seeds @param {Set<string>} [seen] @returns {boolean} */
-function mayBeValueControl(node, bindings, seeds, seen = new Set()) {
+/** @param {any} node @param {Map<string, any[]>} aliases @param {Set<string>} seeds @param {Set<string>} [seen] @returns {boolean} */
+function mayBeValueControl(node, aliases, seeds, seen = new Set()) {
   node = unwrap(node);
   if (!node) return false;
   if (node.type === 'Identifier') {
     if (seeds.has(node.name)) return true;
-    if (seen.has(node.name) || !bindings.has(node.name)) return false;
-    return mayBeValueControl(bindings.get(node.name), bindings, seeds, new Set([...seen, node.name]));
+    if (seen.has(node.name) || !aliases.has(node.name)) return false;
+    return (aliases.get(node.name) ?? []).some((value) => mayBeValueControl(value, aliases, seeds, new Set([...seen, node.name])));
   }
   if (node.type === 'ConditionalExpression') {
-    return mayBeValueControl(node.consequent, bindings, seeds, seen)
-      || mayBeValueControl(node.alternate, bindings, seeds, seen);
+    return mayBeValueControl(node.consequent, aliases, seeds, seen)
+      || mayBeValueControl(node.alternate, aliases, seeds, seen);
   }
   if (node.type === 'LogicalExpression' || node.type === 'SequenceExpression') {
-    return Object.values(node).some((value) => Boolean(value?.type && mayBeValueControl(value, bindings, seeds, seen)));
+    return Object.values(node).some((value) => Boolean(value?.type && mayBeValueControl(value, aliases, seeds, seen)));
   }
   return false;
 }
@@ -171,8 +186,13 @@ function objectEntries(node, bindings, source, seen = new Set()) {
       else for (const [key, value] of nested) result.set(key, value);
       continue;
     }
-    if (property.type !== 'Property' || property.computed) continue;
-    const key = keyOf(property.key.name ?? property.key.value);
+    if (property.type !== 'Property') continue;
+    const rawKey = property.computed ? staticValue(property.key, bindings) : property.key.name ?? property.key.value;
+    if (rawKey === UNKNOWN || typeof rawKey !== 'string') {
+      for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
+      continue;
+    }
+    const key = keyOf(rawKey);
     if (RELEVANT.includes(key)) result.set(key, {
       value: staticValue(property.value, bindings), text: expressionText(property.value, source),
     });
@@ -206,7 +226,8 @@ function sitePolicy(attributes, identity) {
 
 /** @param {string} file @param {string} kind @param {Map<string, Entry>} attributes */
 function isLocalGain(file, kind, attributes) {
-  if (kind !== 'input' || !file.endsWith('src/components-v2/panels/AudioRoutingControl.svelte')) return false;
+  const normalizedFile = posix.normalize(file.replaceAll('\\', '/'));
+  if (kind !== 'input' || normalizedFile !== 'src/components-v2/panels/AudioRoutingControl.svelte') return false;
   const label = attributes.get('aria-label')?.value;
   const value = attributes.get('value')?.text;
   return (label === 'MAIN gain in decibels' && value === 'mainGainDb')
@@ -216,14 +237,14 @@ function isLocalGain(file, kind, attributes) {
 /** @param {string} file @param {string} source @returns {Site[]} */
 export function auditSvelteSource(file, source) {
   const ast = parse(source, { modern: true, filename: file });
-  const { bindings, valueControls } = bindingsAndImports(ast);
+  const { aliases, bindings, valueControls } = bindingsAndImports(ast);
   /** @type {Site[]} */
   const sites = [];
   /** @param {any} node */
   const visit = (node) => {
     if (!node || typeof node !== 'object') return;
     let kind = null;
-    if (node.type === 'Component' && mayBeValueControl({ type: 'Identifier', name: node.name }, bindings, valueControls)) kind = 'ValueControl';
+    if (node.type === 'Component' && mayBeValueControl({ type: 'Identifier', name: node.name }, aliases, valueControls)) kind = 'ValueControl';
     if (node.type === 'RegularElement' && node.name === 'input') kind = 'input';
     if (node.type === 'SvelteElement') {
       const tag = staticValue(node.tag, bindings);

@@ -9,19 +9,22 @@ const debt = (source: string, file = 'src/semantic/Fixture.svelte') =>
 describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
   it('resolves direct, barrel, multi-hop, and conditional ValueControl aliases', () => {
     const source = wrap(
-      '<Direct label="A" value={a}/><Hop label="B" value={b}/><Maybe label="C" value={c}/>',
+      '<Direct label="A" value={a}/><Hop label="B" value={b}/><Maybe label="C" value={c}/><Mutable label="D"/><Assigned label="E"/><Extended label="F"/>',
       `import Direct from '../controls/value-control/ValueControl.svelte';
        import { ValueControl as Barrel } from '../controls/value-control';
+       import { ValueControl as Extended } from '../controls/value-control/index.js';
        const First = Barrel; const Hop = First; const Other = false;
-       const Maybe = Other ? Hop : widget; let a=0,b=0,c=0;`,
+       const Maybe = Other ? Hop : widget; let Mutable = Barrel; let Assigned = widget;
+       Assigned = Other ? widget : Extended; let a=0,b=0,c=0;`,
     );
-    expect(debt(source).map((site: { identity: string }) => site.identity)).toHaveLength(3);
+    expect(debt(source).map((site: { identity: string }) => site.identity)).toHaveLength(6);
   });
 
   it('parses module imports and ignores same-named components without a valid import', () => {
     const valid = `<script context="module">import { ValueControl as VC } from '../controls/value-control';</script><VC label="A" value={a}/>`;
     expect(debt(valid)).toHaveLength(1);
     expect(debt(wrap('<ValueControl label="fake"/>', 'const ValueControl = widget;'))).toEqual([]);
+    expect(debt(wrap('<Wrong label="fake"/>', "import { ValueControl as Wrong } from '../controls/not-value-control/index.js';"))).toEqual([]);
   });
 
   it('conservatively discovers literal, expression, dynamic, and svelte:element ranges', () => {
@@ -49,6 +52,16 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
     expect(debt(source).map((site: { value: string }) => site.value)).toEqual(['b', 'c', 'f']);
   });
 
+  it('handles computed spread keys conservatively in source order', () => {
+    const script = `const typeKey='type', staticType={['type']:'range'}, integrated={[typeKey]:'range',['feedback-policy']:'feedback-integrated'};
+      let dynamicKey='type', unknownComputed={[dynamicKey]:'range'},a=0,b=0,c=0;`;
+    const source = wrap(`<input {...staticType} value={a}/><input {...integrated} value={b}/>
+      <input {...unknownComputed} feedback-policy="radio-backed" value={c}/><input {...unknownComputed} type="button"/>`, script);
+    expect(auditSvelteSource('src/semantic/Fixture.svelte', source).map((site: { value: string }) => site.value)).toEqual(['a', 'b', 'c']);
+    expect(debt(source).map((site: { value: string }) => site.value)).toEqual(['a', 'c']);
+    expect(() => debt(wrap('<input type="range" feedback-policy="radio-backed" {...unknownComputed}/>', script))).toThrow(/static feedback policy/);
+  });
+
   it('rejects unknown or dynamic policies and accepts the closed vocabulary', () => {
     expect(() => debt(wrap('<input type="range" feedback-policy="future"/>'))).toThrow(/unknown feedback policy/);
     expect(() => debt(wrap('<input type="range" feedback-policy={policy}/>', `let policy='radio-backed'`))).toThrow(/static feedback policy/);
@@ -61,6 +74,8 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
       `<input type="range" aria-label="${channel} gain in decibels" value={${value}} feedback-policy="local-resource"/>`;
     const file = 'src/components-v2/panels/AudioRoutingControl.svelte';
     expect(debt(wrap(local('MAIN', 'mainGainDb') + local('SUB', 'subGainDb')), file)).toEqual([]);
+    expect(debt(wrap(local('MAIN', 'mainGainDb')), 'src/components-v2/panels/../panels/AudioRoutingControl.svelte')).toEqual([]);
+    expect(() => debt(wrap(local('MAIN', 'mainGainDb')), `nested/${file}`)).toThrow(/local-resource.*not allowed/);
     expect(debt(wrap(local('MAIN', 'mainGainDb').replace(' feedback-policy="local-resource"', '')), file)).toEqual([]);
     expect(() => debt(wrap(local('MAIN', 'thirdGainDb')), file)).toThrow(/local-resource.*not allowed/);
     const third = wrap(local('MAIN', 'mainGainDb') + local('SUB', 'subGainDb') + '<input type="range" value={monitorGain}/>');
