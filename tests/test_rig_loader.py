@@ -187,41 +187,14 @@ disposition_overrides = {{ "{family}" = "defer" }}
     @pytest.mark.parametrize(
         ("declaration", "at_root"),
         [
+            ('\n[tx_interlock.disposition_overrides]\n"power-on" = "defer"\n', False),
             (
-                """
-[tx_interlock.disposition_overrides]
-"power-on" = "defer"
-""",
+                '\n["tx_interlock"."disposition_overrides"]\n"power-on" = "defer"\n',
                 False,
             ),
-            (
-                """
-["tx_interlock"."disposition_overrides"]
-"power-on" = "defer"
-""",
-                False,
-            ),
-            (
-                """
-[tx_interlock."disposition_overrides"]
-"power-on" = "defer"
-""",
-                False,
-            ),
-            (
-                """
-[tx_interlock]
-disposition_overrides."power-on" = "defer"
-""",
-                False,
-            ),
-            (
-                """
-[tx_interlock]
-disposition_overrides.power-on = "defer"
-""",
-                False,
-            ),
+            ('\n[tx_interlock."disposition_overrides"]\n"power-on" = "defer"\n', False),
+            ('\n[tx_interlock]\ndisposition_overrides."power-on" = "defer"\n', False),
+            ('\n[tx_interlock]\ndisposition_overrides.power-on = "defer"\n', False),
             ('tx_interlock.disposition_overrides."power-on" = "defer"\n', True),
             ('tx_interlock.disposition_overrides.power-on = "defer"\n', True),
         ],
@@ -262,6 +235,33 @@ disposition_overrides.power-on = "defer"
             "# [tx_interlock.disposition_overrides]\n"
             '# tx_interlock.disposition_overrides."power-on" = "defer"\n'
             + _MINIMAL_TOML,
+        )
+
+        assert load_rig(p).tx_interlock_disposition_overrides == {}
+
+    @pytest.mark.parametrize("key", ["tx_interlock", '"tx_interlock"'])
+    def test_tx_interlock_rejects_root_outer_inline_table(self, tmp_path, key):
+        p = _write_toml(
+            tmp_path,
+            f'{key} = {{ disposition_overrides = {{ "power-on" = "defer" }} }}\n'
+            + _MINIMAL_TOML,
+        )
+
+        with pytest.raises(RigLoadError, match="must use inline table syntax"):
+            load_rig(p)
+
+    def test_tx_interlock_shape_guard_tracks_multiline_array_context(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[metadata]
+values = [
+    ["tx_interlock"]
+]
+disposition_overrides.label = "not policy"
+""",
         )
 
         assert load_rig(p).tx_interlock_disposition_overrides == {}

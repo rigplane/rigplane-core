@@ -1144,8 +1144,9 @@ def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
 
     current_table: tuple[str, ...] = ()
     forbidden_prefix = ("tx_interlock", "disposition_overrides")
+    container_depth = 0
     for tokens in _toml_shape_statements(source):
-        if tokens[0][0] == "[" and tokens[-1][0] == "]":
+        if container_depth == 0 and tokens[0][0] == "[" and tokens[-1][0] == "]":
             inner = tokens[1:-1]
             if inner and inner[0][0] == "[" and inner[-1][0] == "]":
                 inner = inner[1:-1]
@@ -1158,26 +1159,33 @@ def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
                 )
             continue
 
-        equals = next(
-            (position for position, token in enumerate(tokens) if token[0] == "="),
-            None,
-        )
-        if equals is None:
-            continue
-        key_path = _toml_key_path(tokens[:equals])
-        if key_path is None:
-            continue
-        dotted_in_table = (
-            current_table == ("tx_interlock",)
-            and key_path[:1] == ("disposition_overrides",)
-            and len(key_path) > 1
-        )
-        dotted_at_root = current_table == () and key_path[:2] == forbidden_prefix
-        if dotted_in_table or dotted_at_root:
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides "
-                "must use inline table syntax"
+        if container_depth == 0:
+            equals = next(
+                (position for position, token in enumerate(tokens) if token[0] == "="),
+                None,
             )
+            key_path = _toml_key_path(tokens[:equals]) if equals is not None else None
+            if key_path is not None:
+                dotted_in_table = (
+                    current_table == ("tx_interlock",)
+                    and key_path[:1] == ("disposition_overrides",)
+                    and len(key_path) > 1
+                )
+                dotted_at_root = (
+                    current_table == () and key_path[:2] == forbidden_prefix
+                )
+                outer_inline = (
+                    current_table == ()
+                    and key_path == ("tx_interlock",)
+                    and any(token[0] == "{" for token in tokens[equals + 1 :])
+                )
+                if dotted_in_table or dotted_at_root or outer_inline:
+                    raise RigLoadError(
+                        f"{filename}: [tx_interlock].disposition_overrides "
+                        "must use inline table syntax"
+                    )
+        container_depth += sum(token[0] in "[{" for token in tokens)
+        container_depth -= sum(token[0] in "]}" for token in tokens)
 
 
 def _parse_tx_interlock_disposition_overrides(
