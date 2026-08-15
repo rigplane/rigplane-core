@@ -73,6 +73,30 @@ function useCaps(value: Capabilities): void {
   vi.mocked(capabilitiesStore.getCapabilities).mockReturnValue(value);
 }
 
+const METADATA_TRAPS: ReadonlyArray<readonly [string, () => Capabilities]> = [
+  ['caps.controls getter', () => {
+    const value = caps();
+    Object.defineProperty(value, 'controls', { get: () => { throw new Error('controls getter'); } });
+    return value;
+  }],
+  ['controls own-property descriptor', () => caps(new Proxy({}, {
+    getOwnPropertyDescriptor: () => { throw new Error('descriptor trap'); },
+  }))],
+  ['controls array', () => caps([] as unknown as Record<string, unknown>)],
+  ['own nr_level getter', () => {
+    const controls: Record<string, unknown> = {};
+    Object.defineProperty(controls, 'nr_level', { get: () => { throw new Error('nr_level getter'); } });
+    return caps(controls);
+  }],
+  ['nr_level candidate has trap', () => caps({ nr_level: new Proxy({}, {
+    has: () => { throw new Error('candidate has trap'); },
+  }) })],
+  ['nr_level candidate property trap', () => caps({ nr_level: new Proxy({}, {
+    has: () => true,
+    get: () => { throw new Error('candidate property trap'); },
+  }) })],
+];
+
 beforeEach(() => {
   vi.mocked(sendCommand).mockClear();
   useCaps(caps());
@@ -124,6 +148,19 @@ describe('exact NR-level contract (MOR-1733)', () => {
     useCaps(caps({ nr: EXACT_NR_DOMAIN }));
     makeDspHandlers().onNrLevelChange(4);
     expect(sendCommand).toHaveBeenCalledWith('set_nr_level', { level: 68, receiver: 0 });
+  });
+
+  it.each(METADATA_TRAPS)('returns an invalid contract for trapped %s metadata', (_name, makeCaps) => {
+    expect(() => resolveNrLevelContract(makeCaps()).displayToRaw(4)).not.toThrow();
+    expect(resolveNrLevelContract(makeCaps()).displayToRaw(4)).toBeNull();
+    expect(() => nrRawToDisplay(4, controlRangeFromCapsOrDefault('nr_level', makeCaps()))).not.toThrow();
+    expect(nrRawToDisplay(4, controlRangeFromCapsOrDefault('nr_level', makeCaps()))).toBeUndefined();
+  });
+
+  it.each(METADATA_TRAPS)('emits nothing when the command seam encounters trapped %s metadata', (_name, makeCaps) => {
+    useCaps(makeCaps());
+    expect(() => makeDspHandlers().onNrLevelChange(4)).not.toThrow();
+    expect(sendCommand).not.toHaveBeenCalled();
   });
 });
 

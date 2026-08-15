@@ -175,7 +175,7 @@ const INVALID_NR_LEVEL_CONTRACT: NrLevelContract = {
 };
 
 function exactNrLevelDomain(control: unknown): ControlDomain | null {
-  if (control === null || typeof control !== 'object') return null;
+  if (control === null || typeof control !== 'object' || Array.isArray(control)) return null;
   const record = control as Record<string, unknown>;
   const exactKeys = [
     'mapping', 'raw_step', 'raw_origin', 'display_step', 'display_origin',
@@ -205,19 +205,27 @@ function legacyNrLevelRange(control: unknown): ControlDisplayRange | null {
 function exactNrLevelContract(domain: ControlDomain): NrLevelContract {
   return {
     rawToDisplay: (raw) => {
-      const exact = decodeControlDomain(domain, raw);
-      if (exact === null) return null;
-      const display = Number(exact);
-      return Number.isSafeInteger(display)
-        && exactDecimalInteger(display) === exact
-        && encodeControlDomain(domain, exact) === raw
-        ? display : null;
+      try {
+        const exact = decodeControlDomain(domain, raw);
+        if (exact === null) return null;
+        const display = Number(exact);
+        return Number.isSafeInteger(display)
+          && exactDecimalInteger(display) === exact
+          && encodeControlDomain(domain, exact) === raw
+          ? display : null;
+      } catch {
+        return null;
+      }
     },
     displayToRaw: (display) => {
-      if (!Number.isSafeInteger(display)) return null;
-      const exact = exactDecimalInteger(display);
-      const raw = encodeControlDomain(domain, exact);
-      return raw !== null && decodeControlDomain(domain, raw) === exact ? raw : null;
+      try {
+        if (!Number.isSafeInteger(display)) return null;
+        const exact = exactDecimalInteger(display);
+        const raw = encodeControlDomain(domain, exact);
+        return raw !== null && decodeControlDomain(domain, raw) === exact ? raw : null;
+      } catch {
+        return null;
+      }
     },
   };
 }
@@ -233,15 +241,27 @@ function legacyNrLevelContract(range: ControlDisplayRange): NrLevelContract {
 export function resolveNrLevelContract(
   caps: Capabilities | null | undefined,
 ): NrLevelContract {
-  const controls = caps?.controls;
-  if (!controls || !Object.prototype.hasOwnProperty.call(controls, 'nr_level')) {
-    return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
+  try {
+    if (caps === null || caps === undefined) {
+      return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
+    }
+    if (typeof caps !== 'object' || Array.isArray(caps)) return INVALID_NR_LEVEL_CONTRACT;
+    const controls = caps.controls;
+    if (controls === undefined) return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
+    if (controls === null || typeof controls !== 'object' || Array.isArray(controls)) {
+      return INVALID_NR_LEVEL_CONTRACT;
+    }
+    if (!Object.prototype.hasOwnProperty.call(controls, 'nr_level')) {
+      return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
+    }
+    const control = controls.nr_level;
+    const exact = exactNrLevelDomain(control);
+    if (exact) return exactNrLevelContract(exact);
+    const legacy = legacyNrLevelRange(control);
+    return legacy ? legacyNrLevelContract(legacy) : INVALID_NR_LEVEL_CONTRACT;
+  } catch {
+    return INVALID_NR_LEVEL_CONTRACT;
   }
-  const control = controls.nr_level;
-  const exact = exactNrLevelDomain(control);
-  if (exact) return exactNrLevelContract(exact);
-  const legacy = legacyNrLevelRange(control);
-  return legacy ? legacyNrLevelContract(legacy) : INVALID_NR_LEVEL_CONTRACT;
 }
 
 /**
@@ -291,8 +311,19 @@ export function controlRangeFromCapsOrDefault(
 ): ControlDisplayRange {
   const fallback = CONTROL_DEFAULTS[key];
   if (!fallback) throw new Error(`controlRangeFromCapsOrDefault: no CONTROL_DEFAULTS entry for '${key}'`);
+  if (key === 'nr_level') {
+    const contract = resolveNrLevelContract(caps);
+    let selected = fallback;
+    try {
+      selected = controlRangeFromCaps(key, caps) ?? fallback;
+    } catch {
+      // The resolver already classified trapped metadata as invalid.
+    }
+    const range = { ...selected };
+    nrLevelContracts.set(range, contract);
+    return range;
+  }
   const range = { ...(controlRangeFromCaps(key, caps) ?? fallback) };
-  if (key === 'nr_level') nrLevelContracts.set(range, resolveNrLevelContract(caps));
   return range;
 }
 
