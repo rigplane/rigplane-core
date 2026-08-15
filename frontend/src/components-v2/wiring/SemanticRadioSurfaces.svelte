@@ -34,6 +34,7 @@
     bindSemanticSurfaceHandlers, getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
   } from '$lib/runtime/adapters/panel-adapters';
+  import { toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
   import {
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
@@ -337,6 +338,10 @@
    */
   const ritXitIntents = semanticHandlers.ritXit;
   const scanIntents = semanticHandlers.scan;
+  /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
+   * keeps legacy servers compatible; `null` is the adapter's fail-closed
+   * result for present-but-unusable metadata. */
+  let ritDomain = $derived(toRitXitProps(runtime.state, runtime.caps).ritDomain);
   /**
    * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
    * `makeCwPanelHandlers` rather than forked. MOR-1606 wires its existing
@@ -1125,7 +1130,7 @@
   {#snippet ritXitScanSurface()}
     {#if view?.ritXit || view?.scan}
       <RitXitScanSurface
-        {view}
+        {view} {ritDomain}
         onRitToggle={ritXitIntents.onRitToggle}
         onXitToggle={ritXitIntents.onXitToggle}
         onRitOffsetChange={ritXitIntents.onRitOffsetChange}

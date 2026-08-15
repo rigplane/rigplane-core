@@ -18,10 +18,9 @@
   `set_rit_frequency` command — proven end to end, not merely asserted, in
   `__tests__/semantic-ritxit-scan-wiring.component.test.ts`.
 
-  O2. The -9999..9999 Hz / 50 Hz-step slider bounds are UI convenience
-  (`RitXitPanel`'s own `ValueControl` bounds), not a radio fact — the X6200
-  no-UI-tables lesson kept them out of the 8A contract, so this surface
-  supplies them itself, unchanged from v2.
+  O2. Legacy servers retain the -9999..9999 Hz / 50 Hz-step slider contract.
+  When exact capability metadata is present, the validated domain supplies
+  the native lattice and exact decode/encode path instead (MOR-1731).
 
   WRONG-VFO GUARD (S3b lesson, MOR-1322 verify report). RIT/XIT offsets
   target whichever receiver the radio currently has ACTIVE, and neither
@@ -61,7 +60,7 @@
   import { pressedOf } from './pressed-of';
 
   export const UNKNOWN_TEXT = '—';
-  /** O2 — v2's own `RitXitPanel` bounds, verbatim. */
+  /** O2 — v2's own legacy `RitXitPanel` bounds, verbatim. */
   export const OFFSET_MIN = -9999;
   export const OFFSET_MAX = 9999;
   export const OFFSET_STEP = 50;
@@ -76,6 +75,9 @@
 </script>
 
 <script lang="ts">
+  import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
+  import { exactDecimalNumber } from '$lib/types/exact-decimal';
+  import type { ControlDomain } from '$lib/types/capabilities';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -88,10 +90,11 @@
     onScanStart?: (type: number) => void;
     onScanStop?: () => void;
     onResumeModeChange?: (mode: number) => void;
+    ritDomain?: ControlDomain | null;
   }
   let {
     view, onRitToggle, onXitToggle, onRitOffsetChange, onXitOffsetChange, onClear,
-    onScanStart, onScanStop, onResumeModeChange,
+    onScanStart, onScanStop, onResumeModeChange, ritDomain,
   }: Props = $props();
 
   let rx = $derived(view.ritXit);
@@ -100,8 +103,23 @@
    *  command fires — never what is displayed, since both facts read the
    *  identical register. */
   let xitLeads = $derived(rx !== undefined && isOn(rx.xitActive) && !isOn(rx.ritActive));
+  let offset = $derived(rx && (xitLeads ? rx.xitOffset : rx.ritOffset));
   /** Wrong-VFO guard (S3b) — see file header. */
   let activeKnown = $derived(view.activeReceiver.status === 'known');
+  let decodedOffset = $derived.by(() => {
+    if (!offset || !usable(offset) || offset.reading.status !== 'known') return null;
+    if (ritDomain === undefined) {
+      return Number.isFinite(offset.reading.value)
+        ? { value: offset.reading.value, text: String(offset.reading.value) } : null;
+    }
+    if (ritDomain === null) return null;
+    const text = decodeControlDomain(ritDomain, offset.reading.value);
+    if (text === null) return null;
+    const value = Number(text);
+    return Number.isFinite(value) ? { value, text } : null;
+  });
+  let canAdjustOffset = $derived(activeKnown && offset !== undefined
+    && usable(offset) && decodedOffset !== null && ritDomain !== null);
   let scanningOn = $derived(sc !== undefined && usable(sc.scanning)
     && sc.scanning.reading.status === 'known' && sc.scanning.reading.value === true);
   /** Local UI selection for the NEXT scan START (MOR-1495 review R2 — see
@@ -116,10 +134,30 @@
   // re-loosening the B-wave criterion forbids.
   function toggleRit(): void { if (rx && activeKnown && usable(rx.ritActive)) onRitToggle?.(); }
   function toggleXit(): void { if (rx && activeKnown && usable(rx.xitActive)) onXitToggle?.(); }
-  function changeOffset(hz: number): void {
-    const offset = rx && (xitLeads ? rx.xitOffset : rx.ritOffset);
-    if (!activeKnown || !offset || !usable(offset)) return;
-    if (xitLeads) onXitOffsetChange?.(hz); else onRitOffsetChange?.(hz);
+  function changeOffset(displayHz: number): void {
+    if (!canAdjustOffset || !Number.isFinite(displayHz)) return;
+    let raw = displayHz;
+    if (ritDomain !== undefined) {
+      if (ritDomain === null) return;
+      raw = encodeControlDomain(ritDomain, exactDecimalNumber(displayHz)) ?? Number.NaN;
+      if (!Number.isSafeInteger(raw)) return;
+    }
+    if (xitLeads) onXitOffsetChange?.(raw); else onRitOffsetChange?.(raw);
+  }
+  function offsetKeydown(event: KeyboardEvent): void {
+    if (!canAdjustOffset || decodedOffset === null) return;
+    const min = ritDomain?.raw_min ?? OFFSET_MIN;
+    const max = ritDomain?.raw_max ?? OFFSET_MAX;
+    let next: number;
+    switch (event.key) {
+      case 'ArrowRight': case 'ArrowUp': next = Math.min(decodedOffset.value + 50, max); break;
+      case 'ArrowLeft': case 'ArrowDown': next = Math.max(decodedOffset.value - 50, min); break;
+      case 'Home': next = min; break;
+      case 'End': next = max; break;
+      default: return;
+    }
+    event.preventDefault();
+    changeOffset(next);
   }
   // CLEAR is correctly LEFT UNGATED on field observation (F2 fix round):
   // `onClear` writes `freq: 0` absolutely, not a read-modify-write of the
@@ -147,7 +185,6 @@
 {#if rx || sc}
   <section class="ritxit-scan-surface" data-testid="ritxit-scan-surface" aria-label="RIT, XIT and scan">
     {#if rx}
-      {@const offset = xitLeads ? rx.xitOffset : rx.ritOffset}
       <div class="row" data-testid="ritxit" data-active-vfo-known={activeKnown}>
         {#if rx.ritActive.availability.structural}
           <button
@@ -161,15 +198,20 @@
             disabled={!activeKnown || !usable(rx.xitActive)} onclick={toggleXit}
           >XIT</button>
         {/if}
-        <label class="offset" data-testid="ritxit-offset" data-observed={usable(offset)}>
+        <label class="offset" data-testid="ritxit-offset"
+          data-observed={offset !== undefined && usable(offset)}>
           <span>Offset</span>
           <input
-            type="range" min={OFFSET_MIN} max={OFFSET_MAX} step={OFFSET_STEP}
-            value={offset.reading.status === 'known' ? offset.reading.value : 0}
-            disabled={!activeKnown || !usable(offset)}
+            type="range"
+            min={ritDomain?.raw_min ?? OFFSET_MIN}
+            max={ritDomain?.raw_max ?? OFFSET_MAX}
+            step={ritDomain?.raw_step ?? OFFSET_STEP}
+            value={decodedOffset?.value ?? ritDomain?.raw_origin ?? 0}
+            disabled={!canAdjustOffset}
+            onkeydown={offsetKeydown}
             oninput={(event) => changeOffset(event.currentTarget.valueAsNumber)}
           />
-          <output data-testid="ritxit-offset-value">{textOf(offset)}</output>
+          <output data-testid="ritxit-offset-value">{decodedOffset?.text ?? UNKNOWN_TEXT}</output>
         </label>
         <button type="button" data-testid="ritxit-clear" disabled={!activeKnown} onclick={clear}>CLEAR</button>
       </div>
