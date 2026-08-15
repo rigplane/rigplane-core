@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import tomllib
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,11 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.tx_interlock_contract import (
+    TX_INTERLOCK_COMMAND_FAMILY_METADATA,
+    TxInterlockCommandFamily,
+    TxInterlockDisposition,
+)
 from rigplane.commands.command_map import CommandMap
 
 __all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
@@ -152,6 +157,9 @@ class RigConfig:
     rx_audio_channel: str = "mix"
     write_only_controls: tuple[str, ...] = ()
     state_acquisition: RadioAcquisitionProfile | None = None
+    tx_interlock_disposition_overrides: dict[
+        TxInterlockCommandFamily, TxInterlockDisposition
+    ] = field(default_factory=dict)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -245,6 +253,7 @@ class RigConfig:
             browser_rx_transcode_to_opus=self.browser_rx_transcode_to_opus,
             write_only_controls=frozenset(self.write_only_controls),
             state_acquisition=self.state_acquisition,
+            tx_interlock_disposition_overrides=self.tx_interlock_disposition_overrides,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -1046,6 +1055,195 @@ def _parse_state_acquisition(
         raise RigLoadError(f"{filename}: [state_acquisition] invalid: {exc}") from exc
 
 
+_TX_INTERLOCK_METADATA_BY_FAMILY = {
+    metadata.family: metadata for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
+}
+
+
+def _toml_shape_statements(source: str) -> list[list[tuple[str, str]]]:
+    """Expose only table/key punctuation while shielding strings and comments."""
+
+    statements: list[list[tuple[str, str]]] = []
+    statement: list[tuple[str, str]] = []
+    punctuation = "[]{}.="
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char == "\n":
+            if statement:
+                statements.append(statement)
+                statement = []
+            index += 1
+            continue
+        if char in " \t\r":
+            index += 1
+            continue
+        if char == "#":
+            newline = source.find("\n", index)
+            index = len(source) if newline < 0 else newline
+            continue
+        if source.startswith(('"""', "'''"), index):
+            delimiter = source[index : index + 3]
+            index += 3
+            while index < len(source) and not source.startswith(delimiter, index):
+                if delimiter == '"""' and source[index] == "\\":
+                    index += 2
+                else:
+                    index += 1
+            index += 3
+            for _ in range(2):
+                if index < len(source) and source[index] == delimiter[0]:
+                    index += 1
+            statement.append(("string", ""))
+            continue
+        if char in "\"'":
+            delimiter = char
+            start = index
+            index += 1
+            while index < len(source) and source[index] != delimiter:
+                if delimiter == '"' and source[index] == "\\":
+                    index += 2
+                else:
+                    index += 1
+            index += 1
+            literal = source[start:index]
+            value = tomllib.loads(f"key = {literal}")["key"]
+            statement.append(("key", value))
+            continue
+        if char in punctuation:
+            statement.append((char, char))
+            index += 1
+            continue
+        start = index
+        while index < len(source) and source[index] not in f" \t\r\n#{punctuation}\"'":
+            index += 1
+        statement.append(("key", source[start:index]))
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _toml_key_path(tokens: list[tuple[str, str]]) -> tuple[str, ...] | None:
+    """Return a dotted key path, or ``None`` for tokens outside that shape."""
+
+    path: list[str] = []
+    expect_key = True
+    for kind, value in tokens:
+        if expect_key and kind == "key":
+            path.append(value)
+            expect_key = False
+        elif not expect_key and kind == ".":
+            expect_key = True
+        else:
+            return None
+    return tuple(path) if path and not expect_key else None
+
+
+def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
+    """Require the documented table plus one non-dotted inline mapping key."""
+
+    current_table: tuple[str, ...] = ()
+    forbidden_prefix = ("tx_interlock", "disposition_overrides")
+    container_depth = 0
+    for tokens in _toml_shape_statements(source):
+        if container_depth == 0 and tokens[0][0] == "[" and tokens[-1][0] == "]":
+            inner = tokens[1:-1]
+            if inner and inner[0][0] == "[" and inner[-1][0] == "]":
+                inner = inner[1:-1]
+            path = _toml_key_path(inner)
+            current_table = path or ()
+            if current_table[:2] == forbidden_prefix:
+                raise RigLoadError(
+                    f"{filename}: [tx_interlock].disposition_overrides "
+                    "must use inline table syntax"
+                )
+            continue
+
+        if container_depth == 0:
+            equals = next(
+                (position for position, token in enumerate(tokens) if token[0] == "="),
+                None,
+            )
+            key_path = _toml_key_path(tokens[:equals]) if equals is not None else None
+            if key_path is not None:
+                assert equals is not None
+                dotted_in_table = (
+                    current_table == ("tx_interlock",)
+                    and key_path[:1] == ("disposition_overrides",)
+                    and len(key_path) > 1
+                )
+                dotted_at_root = (
+                    current_table == () and key_path[:2] == forbidden_prefix
+                )
+                outer_inline = (
+                    current_table == ()
+                    and key_path == ("tx_interlock",)
+                    and tokens[equals + 1][0] == "{"
+                )
+                if dotted_in_table or dotted_at_root or outer_inline:
+                    raise RigLoadError(
+                        f"{filename}: [tx_interlock].disposition_overrides "
+                        "must use inline table syntax"
+                    )
+        container_depth += sum(token[0] in "[{" for token in tokens)
+        container_depth -= sum(token[0] in "]}" for token in tokens)
+
+
+def _parse_tx_interlock_disposition_overrides(
+    filename: str, raw: object
+) -> dict[TxInterlockCommandFamily, TxInterlockDisposition]:
+    """Validate the profile-only, one-way TX interlock tightening mapping."""
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [tx_interlock] must be a table")
+
+    unknown_keys = set(raw) - {"disposition_overrides"}
+    if unknown_keys:
+        raise RigLoadError(
+            f"{filename}: [tx_interlock] unknown key(s): {sorted(unknown_keys)}"
+        )
+
+    overrides_raw = raw.get("disposition_overrides", {})
+    if not isinstance(overrides_raw, dict):
+        raise RigLoadError(
+            f"{filename}: [tx_interlock].disposition_overrides must be an inline table"
+        )
+
+    overrides: dict[TxInterlockCommandFamily, TxInterlockDisposition] = {}
+    for family_value, disposition_value in overrides_raw.items():
+        try:
+            family = TxInterlockCommandFamily(family_value)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides has unknown "
+                f"command family {family_value!r}"
+            ) from exc
+
+        if not isinstance(disposition_value, str):
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides[{family_value!r}] "
+                "must be a string"
+            )
+        if disposition_value != TxInterlockDisposition.DEFER.value:
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides[{family_value!r}] "
+                "must be 'defer'"
+            )
+
+        metadata = _TX_INTERLOCK_METADATA_BY_FAMILY[family]
+        if metadata.base_disposition is not TxInterlockDisposition.TX_SAFE:
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides family "
+                f"{family_value!r} has base disposition "
+                f"{metadata.base_disposition.value!r}, not tx-safe"
+            )
+        overrides[family] = TxInterlockDisposition.DEFER
+
+    return overrides
+
+
 def load_rig(path: Path) -> RigConfig:
     """Load and validate a rig TOML file.
 
@@ -1065,9 +1263,12 @@ def load_rig(path: Path) -> RigConfig:
 
     try:
         raw = path.read_bytes()
-        data = tomllib.loads(raw.decode())
+        source = raw.decode()
+        data = tomllib.loads(source)
     except Exception as exc:
         raise RigLoadError(f"{filename}: failed to parse TOML: {exc}") from exc
+
+    _validate_tx_interlock_override_syntax(filename, source)
 
     # Validate required sections
     for section in _REQUIRED_SECTIONS:
@@ -1520,6 +1721,10 @@ def load_rig(path: Path) -> RigConfig:
         filename,
         data.get("state_acquisition"),
     )
+    tx_interlock_disposition_overrides = _parse_tx_interlock_disposition_overrides(
+        filename,
+        data.get("tx_interlock"),
+    )
 
     return RigConfig(
         id=radio["id"],
@@ -1591,6 +1796,7 @@ def load_rig(path: Path) -> RigConfig:
         rx_audio_channel=rx_audio_channel,
         write_only_controls=write_only_controls,
         state_acquisition=state_acquisition,
+        tx_interlock_disposition_overrides=tx_interlock_disposition_overrides,
     )
 
 
