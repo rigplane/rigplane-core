@@ -663,6 +663,127 @@ mode = 42
         assert rig.keyboard.bindings[0].params == {"mode": 42}
 
 
+class TestControlDomainSchema:
+    _LINEAR = """\
+raw_min = 0
+raw_max = 10
+raw_step = 2
+raw_origin = 0
+display_min = 0.0
+display_max = 1.0
+display_step = 0.2
+display_origin = 0.0
+display_unit = "ratio"
+mapping = "linear"
+quantization = "nearest_ties_up"
+restoration = "exact"
+"""
+    _LARGE_DECIMAL = _LINEAR.replace(
+        "display_max = 1.0", "display_max = 1000000000000"
+    ).replace("display_step = 0.2", "display_step = 1e-20")
+
+    def _load(self, tmp_path, declaration: str):
+        text = _MINIMAL_TOML + "\n[controls.test_control]\n" + declaration
+        return load_rig(_write_toml(tmp_path, text))
+
+    @pytest.mark.parametrize(
+        ("mapping", "declaration"),
+        [
+            (
+                "identity",
+                _LINEAR.replace("display_max = 1.0", "display_max = 10")
+                .replace("display_step = 0.2", "display_step = 2")
+                .replace('display_unit = "ratio"', 'display_unit = "dimensionless"')
+                .replace('mapping = "linear"', 'mapping = "identity"'),
+            ),
+            ("linear", _LINEAR),
+            (
+                "centered",
+                _LINEAR.replace("raw_min = 0", "raw_min = -10")
+                .replace("display_min = 0.0", "display_min = -1.0")
+                .replace('mapping = "linear"', 'mapping = "centered"')
+                + "raw_center = 0\ndisplay_center = 0.0\n",
+            ),
+        ],
+    )
+    def test_scalar_domain_is_private(self, tmp_path, mapping, declaration):
+        rig = self._load(tmp_path, declaration)
+
+        assert rig._control_domains["test_control"]["mapping"] == mapping
+        assert rig.controls is None
+        assert rig.to_profile().controls is None
+
+    @pytest.mark.parametrize(
+        ("old", "new", "message"),
+        [
+            ("raw_min = 0", "raw_min = 1", "raw_min must lie"),
+            ("raw_max = 10", "raw_max = 9", "raw_max must lie"),
+            ("raw_max = 10", "raw_max = 9007199254740991", "raw_max must lie"),
+            ("display_min = 0.0", "display_min = 0.05", "display_min must lie"),
+        ],
+    )
+    def test_rejects_off_lattice_endpoints(self, tmp_path, old, new, message):
+        with pytest.raises(RigLoadError, match=message):
+            self._load(tmp_path, self._LINEAR.replace(old, new))
+
+    def test_accepts_large_exact_decimal_lattice_independent_of_context(self, tmp_path):
+        assert self._load(tmp_path, self._LARGE_DECIMAL)._control_domains is not None
+
+    def test_large_off_lattice_raises_rig_load_error(self, tmp_path):
+        declaration = self._LARGE_DECIMAL.replace(
+            "display_min = 0.0", "display_min = 1e-21"
+        ).replace("display_origin = 0.0", "display_origin = 1e-21")
+        with pytest.raises(RigLoadError, match="display_max must lie"):
+            self._load(tmp_path, declaration)
+
+    @pytest.mark.parametrize(
+        ("centers", "message"),
+        [
+            ("raw_center = 3\ndisplay_center = 0.0\n", "raw_center must lie"),
+            ("raw_center = 0\ndisplay_center = 0.1\n", "display_center must lie"),
+        ],
+    )
+    def test_rejects_off_lattice_centers(self, tmp_path, centers, message):
+        declaration = self._LINEAR.replace('mapping = "linear"', 'mapping = "centered"')
+        with pytest.raises(RigLoadError, match=message):
+            self._load(tmp_path, declaration + centers)
+
+    @pytest.mark.parametrize(
+        ("extra", "accepted"),
+        [
+            ("range_min = 0\nrange_max = 10\n", True),
+            ("range_min = 0\nrange_max = 11\n", False),
+        ],
+    )
+    def test_legacy_range_must_be_formally_equivalent(self, tmp_path, extra, accepted):
+        declaration = self._LINEAR + extra
+        if accepted:
+            assert self._load(tmp_path, declaration)._control_domains is not None
+        else:
+            with pytest.raises(RigLoadError, match="legacy range.*raw bounds"):
+                self._load(tmp_path, declaration)
+
+    @pytest.mark.parametrize("unit", [None, "", "   "])
+    def test_explicit_domain_requires_non_empty_display_unit(self, tmp_path, unit):
+        replacement = "" if unit is None else f'display_unit = "{unit}"\n'
+        declaration = self._LINEAR.replace('display_unit = "ratio"\n', replacement)
+        with pytest.raises(RigLoadError, match="display_unit.*non-empty"):
+            self._load(tmp_path, declaration)
+
+    def test_lookup_is_explicitly_deferred(self, tmp_path):
+        declaration = self._LINEAR.replace('mapping = "linear"', 'mapping = "lookup"')
+        with pytest.raises(RigLoadError, match="lookup.*MOR-1708"):
+            self._load(tmp_path, declaration)
+
+    def test_shipped_legacy_profiles_remain_publicly_shape_compatible(self):
+        for path in sorted(
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
+        ):
+            rig = load_rig(path)
+            assert rig._control_domains is None, path.name
+            assert rig.to_profile().controls == rig.controls, path.name
+
+
 # ── RadioProfile building ───────────────────────────────────────
 
 
