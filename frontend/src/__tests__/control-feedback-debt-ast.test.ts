@@ -30,7 +30,7 @@ describe('control-feedback AST semantics (MOR-1716)', () => {
     expect(shape('const props={}; f({...props}); holder.value=props; f(props); props`tag`; props.items.push(1); function surface(){return props}')).toEqual([[null, true], [null, true], [null, true], [null, true], [null, true]]);
   });
   it('poisons default-parameter escapes but keeps known primitive keys safe', () => {
-    expect(shape('const props={}; function f(value=props){} f(); props[0]="x"; props[key]="y";')).toEqual([[null, true], [null, true]]);
+    expect(shape('const props={}; function f(value=props){sink(value)} f(); props[0]="x"; props[key]="y";')).toEqual([[null, true], [null, true]]);
   });
   it('uses parameter scope order and recursively traverses binding defaults', () => {
     expect(shape('const props={}; function shadow(props, value=props){} shadow(); function escape({x=mutate(props)}){} escape({});')).toEqual([[null, true]]);
@@ -54,7 +54,7 @@ describe('control-feedback AST semantics (MOR-1716)', () => {
     expect(shape('const props={}; function f(value=mutate(props)){} f(1);')).toEqual([]);
     expect(shape('const props={}; function stop(){return;props.type="x"} stop();')).toEqual([]);
     expect(shape('const props={}; const call=function props(){props.type="x"}; call();')).toEqual([]);
-    expect(shape('const props={}; function a(){b()} function b(){props.type="x";a()} a();')).toEqual([[null, true]]);
+    expect(shape('const props={}; function a(){b()} function b(){props.type="x";a()} a();')).toEqual([['type', false], [null, true]]);
   });
   it('preserves exposed-root provenance through evaluator bindings and returns', () => {
     expect(shape('const props={}; function f(x){x.type="x"} f(props);')).toEqual([['type', false]]);
@@ -66,11 +66,11 @@ describe('control-feedback AST semantics (MOR-1716)', () => {
     expect(shape('const props={}; function f(x){x.type="x"} f(props);f(props);')).toEqual([['type', false], ['type', false]]);
   });
   it('keeps recursive provenance conservative without walking callable bodies', () => {
-    expect(shape('const props={}; function f(x){f(x);x.type="x"} f(props);')).toEqual([[null, true], [null, true]]);
-    expect(shape('const props={}; function f({x}){f({x});x.type="x"} f(props);')).toEqual([[null, true], [null, true]]);
-    expect(shape('const props={}; function f([x]){f([x]);x.type="x"} f(props);')).toEqual([[null, true], [null, true]]);
-    expect(shape('const props={}; function f(...xs){f(...xs);xs[0].type="x"} f(props);')).toEqual([[null, true], [null, true]]);
-    expect(shape('const props={}; function f(x=props){f(x);x.type="x"} f();')).toEqual([[null, true], [null, true]]);
+    expect(shape('const props={}; function f(x){f(x);x.type="x"} f(props);')).toEqual([[null, true], ['type', false]]);
+    expect(shape('const props={}; function f({x}){f({x});x.type="x"} f(props);')).toEqual([[null, true], ['type', false]]);
+    expect(shape('const props={}; function f([x]){f([x]);x.type="x"} f(props);')).toEqual([[null, true], ['type', false]]);
+    expect(shape('const props={}; function f(...xs){f(...xs);xs[0].type="x"} f(props);')).toEqual([[null, true], ['type', false]]);
+    expect(shape('const props={}; function f(x=props){f(x);x.type="x"} f();')).toEqual([[null, true], ['type', false]]);
     expect(shape('const props={}; function a(x){b(x)} function b(y){a(y)} a(props);')).toEqual([[null, true]]);
     expect(shape('const props={}; function dead(x){return;x.type="x"} if(false)dead(props);')).toEqual([]);
   });
@@ -85,5 +85,22 @@ describe('control-feedback AST semantics (MOR-1716)', () => {
   it('does not report unrelated objects, cycles, or shadowed roots', () => {
     expect(shape('const props={}; const other={}; other.type="x"; { const props={}; props.type="y" }')).toEqual([]);
     expect(collectObjectFlow(ast('const a=b;const b=a;a.type="x";')).size).toBe(0);
+  });
+  it('keeps related cycle provenance local and unrelated recursion invisible', () => {
+    expect(shape('const props={}; function direct(x){x.type="x";direct(x)} direct(props);')).toEqual([['type', false], [null, true]]);
+    expect(shape('const props={}; function a(x){x.type="x";b(x)} function b(y){a(y)} a(props);')).toEqual([['type', false], [null, true]]);
+    expect(shape('const props={}; props.type="x"; function loop(){loop()} loop(); props.feedbackPolicy="y";')).toEqual([['type', false], ['feedback-policy', false]]);
+  });
+  it('distinguishes parameter targets from mutable-container RHS escapes', () => {
+    expect(shape('const props={}; let holder={}; function f(x){x.type="x";holder.value=x} f(props);')).toEqual([['type', false], [null, true]]);
+    expect(shape('const props={}; let holder={}; function f(x){holder.type=x} f(props);')).toEqual([[null, true]]);
+  });
+  it('maps returned and spread aliases back to the exposed root', () => {
+    expect(shape('const props={}; function get(){return props} get().type="x";')).toEqual([[null, true], ['type', false]]);
+    expect(shape('const props={}; function f(x){x.type="x"} f({...props});f([...props]);')).toEqual([['type', false], ['type', false]]);
+    expect(shape('const props={}; function f({nested:{...rest}}){rest.type="x"} f({nested:{...props}});')).toEqual([['type', false]]);
+  });
+  it('preserves repeated default deletes in exact evaluator order', () => {
+    expect(shape('const props={}; function f(x=props){delete x.type} f();f();delete props.type;delete props.type;')).toEqual([[null, true], [null, true], [null, true], [null, true]]);
   });
 });
