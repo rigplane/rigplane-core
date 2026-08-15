@@ -73,7 +73,8 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     }
     const value = evaluate(node, env); if (unboundUndefined(raw, env)) return { ...known(undefined), undefined: true }; return value;
   };
-  const evaluate = (node, env) => {
+  const evaluate = (node, env, inChain = false) => {
+    if (node?.type === 'ChainExpression') return evaluate(node.expression, env, true);
     node = unwrapExpression(node); if (!node) return { missing: true };
     if (node.type === 'Literal') return known(node.value);
     if (node.type === 'Identifier') return unboundUndefined(node, env) ? { ...known(undefined), undefined: true } : read(node, env);
@@ -92,7 +93,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     }
     if (node.type === 'CallExpression' || node.type === 'NewExpression' || node.type === 'OptionalCallExpression') {
       const callee = evaluate(node.callee, env), fn = callable(node.callee, env), args = [];
-      if (node.optional && isKnown(callee) && callee.value == null) return callee;
+      if ((node.optional && isKnown(callee) && callee.value == null) || inChain && callee.chainShortCircuit) return callee;
       for (const part of node.arguments || []) { const value = argument(part, env); if (value.spread && value.items) args.push(...value.items); else args.push(value); }
       if (fn) return invoke(fn, args);
       const value = merge([callee, ...args]); if (value.track) emit('escape', node); return value;
@@ -107,7 +108,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     }
     if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
       const values = [evaluate(node.object, env)];
-      if (node.optional && isKnown(values[0]) && values[0].value == null) return values[0];
+      if (node.optional && isKnown(values[0]) && values[0].value == null) return { ...values[0], chainShortCircuit: true };
       if (node.computed) values.push(evaluate(node.property, env)); return merge(values);
     }
     if (node.type === 'BinaryExpression') {

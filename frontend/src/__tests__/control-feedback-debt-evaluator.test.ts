@@ -82,6 +82,13 @@ describe('ordered debt evaluator (MOR-1720)', () => {
       .toEqual([]);
   });
 
+  it('keeps optional-member short-circuiting through its chain but not parentheses', () => {
+    expect(facts('const nil = null; nil?.method(mutate(props)); nil?.[mutate(props)](sink(props));'))
+      .toEqual([]);
+    expect(facts('const nil = null; (nil?.method)(mutate(props));'))
+      .toEqual(['escape', 'escape']);
+  });
+
   it('has no facts for unrelated code', () => {
     expect(facts('const add = (a: number, b: number) => a + b; add(1, 2);')).toEqual([]);
   });
