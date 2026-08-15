@@ -244,13 +244,39 @@ class ToggleMockRadio(MockIcomRadio):
     def _dispatch_cmd29(
         self, real_cmd: int, inner: bytes, from_addr: int, receiver: int
     ) -> bytes | None:
-        """Handle Command29-wrapped APF / auto-notch / manual-notch / twin-peak."""
+        """Handle Command29-wrapped operator-toggle commands."""
         to = from_addr
         frm = self._radio_addr
 
         if real_cmd == _CMD_PREAMP and inner:
             sub = inner[0]
             rest = inner[1:]
+
+            if sub == _SUB_AGC:
+                if not rest:
+                    return self._civ_frame(
+                        to,
+                        frm,
+                        _CMD_CMD29,
+                        data=bytes([receiver, _CMD_PREAMP, _SUB_AGC, _bcd(self._agc)]),
+                    )
+                if len(rest) != 1:
+                    return self._civ_nak(to, frm)
+                raw = rest[0]
+                value = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
+                if (
+                    raw >> 4 > 9
+                    or raw & 0x0F > 9
+                    or value
+                    not in (
+                        AgcMode.FAST,
+                        AgcMode.MID,
+                        AgcMode.SLOW,
+                    )
+                ):
+                    return self._civ_nak(to, frm)
+                self._agc = value
+                return self._civ_ack(to, frm)
 
             if sub == _SUB_AUDIO_PEAK_FILTER:
                 if rest:
@@ -408,6 +434,38 @@ class TestAgcToggle:
 
         assert any(name == "agc_changed" for name, _ in events), (
             f"agc_changed not fired; got {[n for n, _ in events]}"
+        )
+
+
+class TestWrappedAgcFixture:
+    """Command29 AGC fixture rejects malformed SET payloads."""
+
+    @pytest.mark.parametrize(
+        "inner",
+        (
+            b"",
+            bytes([_SUB_AGC, _bcd(int(AgcMode.FAST)), 0x00]),
+            bytes([_SUB_AGC, 0x1A]),
+            bytes([_SUB_AGC, _bcd(4)]),
+        ),
+    )
+    def test_agc_rejects_malformed_wrapped_payload(self, inner: bytes) -> None:
+        mock = ToggleMockRadio()
+        expected_agc = int(AgcMode.FAST)
+
+        response = mock._dispatch_cmd29(
+            _CMD_PREAMP, inner, _CONTROLLER_ADDR, RECEIVER_MAIN
+        )
+
+        assert response == mock._civ_nak(_CONTROLLER_ADDR, _RADIO_ADDR)
+        assert mock._agc == expected_agc
+        assert mock._dispatch_cmd29(
+            _CMD_PREAMP, bytes([_SUB_AGC]), _CONTROLLER_ADDR, RECEIVER_MAIN
+        ) == _build_civ(
+            _CONTROLLER_ADDR,
+            _RADIO_ADDR,
+            _CMD_CMD29,
+            data=bytes([RECEIVER_MAIN, _CMD_PREAMP, _SUB_AGC, _bcd(expected_agc)]),
         )
 
 
