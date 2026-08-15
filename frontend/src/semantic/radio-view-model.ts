@@ -16,6 +16,7 @@
  * boolean or a default is the failure mode this contract exists to prevent.
  */
 import type { VfoScheme } from '$lib/types/capabilities';
+import type { NrLevelProjection } from '$lib/radio/filter-controls';
 import type { FrequencyPermit, TxPermit } from '$lib/utils/tx-permit';
 import { invalid, record, exactKeys, str } from './validator-primitives';
 
@@ -398,15 +399,11 @@ export type DspField<T> = TxAuxField<T>;
  * IF-shift, and PBT are family 4 (`filterPassband`, MOR-1284) — this group
  * never duplicates them.
  *
- * `nrLevel`/`nbDepth` are the ONE remaining consumers of `$lib/radio/filter-
- * controls`'s `nrRawToDisplay`/`nbDepthRawToDisplay` — the exact functions
- * `toDspProps` calls — never a re-derived scale (X6200 lesson: control
- * scaling is per-radio-model data, `caps.controls.nr_level`/`.nb_depth`).
- * Like `filterPassband`'s `pbtInner`/`pbtOuter` (MOR-1284 F1), the adapter
- * passes both an explicit `ControlDisplayRange` derived from THIS request's
- * own `caps` argument (`controlRangeFromCaps`) rather than letting them fall
- * back to the capabilities STORE singleton — a fact-layer value must be a
- * pure function of `(state, caps)`, never of module-global state.
+ * `nrLevel` carries the shared `projectNrLevel` result; `nbDepth` uses
+ * `nbDepthRawToDisplay`. Both consume `$lib/radio/filter-controls` rather
+ * than re-deriving a scale (X6200 lesson: scaling is per-radio-model data).
+ * The projection is optional only so semantic payloads and fixtures produced
+ * before MOR-1736 remain valid; the live adapter always emits it.
  *
  * `agcModes` is the capability-derived AGC choice set (`Capabilities.
  * agcModes`, verbatim) — a plain list, not `DspField`-wrapped, for the same
@@ -417,6 +414,8 @@ export type DspField<T> = TxAuxField<T>;
 export interface DspViewModel {
   nrActive: DspField<boolean>;
   nrLevel: DspField<number>;
+  /** Optional only for semantic payloads/fixtures produced before MOR-1736. */
+  nrLevelProjection?: NrLevelProjection;
   nbActive: DspField<boolean>;
   nbLevel: DspField<number>;
   nbDepth: DspField<number>;
@@ -1446,17 +1445,44 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
 
 const NOTCH_MODES = ['off', 'auto', 'manual'] as const;
 
-/** N4 again: exactly the twelve facts the adapter reads, no speculative keys.
+type NrLevelDisplayDomain = NonNullable<NrLevelProjection['domain']>;
+
+function validateNrLevelDisplayDomain(value: unknown, path: string): NrLevelDisplayDomain {
+  const v = record(value, path);
+  exactKeys(v, ['min', 'max', 'step', 'origin'] satisfies readonly (keyof NrLevelDisplayDomain)[], path);
+  return {
+    min: num(v.min, `${path}.min`),
+    max: num(v.max, `${path}.max`),
+    step: num(v.step, `${path}.step`),
+    origin: num(v.origin, `${path}.origin`),
+  };
+}
+
+function validateNrLevelProjection(value: unknown, path: string): NrLevelProjection {
+  const v = record(value, path);
+  exactKeys(v, ['value', 'domain', 'adjustable'] satisfies readonly (keyof NrLevelProjection)[], path);
+  return {
+    value: nullableNumber(v.value, `${path}.value`),
+    domain: v.domain === null ? null : validateNrLevelDisplayDomain(v.domain, `${path}.domain`),
+    adjustable: bool(v.adjustable, `${path}.adjustable`),
+  };
+}
+
+/** N4 again: exactly the adapter's DSP facts, no speculative keys.
  *  See `radio-view-model-adapter.ts::deriveDsp`. */
 function validateDsp(value: unknown, path: string): DspViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'nrActive', 'nrLevel', 'nbActive', 'nbLevel', 'nbDepth', 'nbWidth',
+    'nrActive', 'nrLevel', 'nrLevelProjection', 'nbActive', 'nbLevel', 'nbDepth', 'nbWidth',
     'notchMode', 'notchFreq', 'manualNotchWidth', 'agcMode', 'agcModes', 'agcTimeConstant',
   ], path);
+  const nrLevelProjection = optionalGroup(
+    v.nrLevelProjection, `${path}.nrLevelProjection`, validateNrLevelProjection,
+  );
   return {
     nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),
     nrLevel: validateTxAuxField(v.nrLevel, `${path}.nrLevel`, num),
+    ...(nrLevelProjection !== undefined ? { nrLevelProjection } : {}),
     nbActive: validateTxAuxField(v.nbActive, `${path}.nbActive`, bool),
     nbLevel: validateTxAuxField(v.nbLevel, `${path}.nbLevel`, num),
     nbDepth: validateTxAuxField(v.nbDepth, `${path}.nbDepth`, num),

@@ -75,15 +75,22 @@ function state(
   const main = receiver({ nrLevel: raw });
   if (raw === undefined) delete main.nrLevel;
   return {
+    revision: 1,
+    stateRevision: 1,
+    freshnessRevision: 1,
+    observationSeq: 1,
+    updatedAt: '2026-08-15T00:00:00Z',
     active: 'MAIN',
     split: false,
     dualWatch: false,
     ptt: false,
+    tunerStatus: 0,
     txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14_074_000 },
     main,
     sub: receiver(),
     nbDepth: 4,
     nbWidth: 3,
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
     fieldStatus: {
       active: fresh,
       split: fresh,
@@ -105,7 +112,7 @@ function state(
       'main.agc': fresh,
       'main.agcTimeConstant': fresh,
     },
-  } as ServerState;
+  };
 }
 
 function caps(
