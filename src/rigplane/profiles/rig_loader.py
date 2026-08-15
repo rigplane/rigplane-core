@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 import tomllib
 import warnings
 from dataclasses import dataclass, field
 from decimal import Decimal
+from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any, cast
 
@@ -29,7 +32,13 @@ from rigplane.core.tx_interlock_contract import (
 )
 from rigplane.commands.command_map import CommandMap
 
-__all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
+__all__ = [
+    "RigConfig",
+    "RigLoadError",
+    "load_rig",
+    "discover_rigs",
+    "discover_available_rigs",
+]
 from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
 from rigplane.profiles import (
     BandInfo,
@@ -2309,3 +2318,39 @@ def discover_rigs(directory: Path) -> dict[str, RigConfig]:
         rigs[rig.model] = rig
 
     return rigs
+
+
+def _discover_resource_rigs(directory: Traversable) -> dict[str, RigConfig]:
+    """Load profiles from a package-resource directory.
+
+    Filesystem resources can use the normal loader directly. Non-filesystem
+    resources (for example, a zip import) are materialized together so profile
+    includes such as ``_keyboard-default.toml`` remain available as siblings.
+    """
+    if not directory.is_dir():
+        return {}
+    if isinstance(directory, Path):
+        return discover_rigs(directory)
+
+    with tempfile.TemporaryDirectory(prefix="rigplane-rigs-") as temp_dir:
+        materialized = Path(temp_dir)
+        for resource in directory.iterdir():
+            if resource.is_file() and resource.name.endswith(".toml"):
+                (materialized / resource.name).write_bytes(resource.read_bytes())
+        return discover_rigs(materialized)
+
+
+def discover_available_rigs(
+    fallback_directory: Path | None = None,
+) -> dict[str, RigConfig]:
+    """Discover bundled profiles, with an optional filesystem fallback.
+
+    Package resources are authoritative for installed distributions. The
+    fallback preserves source/editable checkouts whose profiles live at the
+    repository root.
+    """
+    package_rigs = resources.files("rigplane").joinpath("rigs")
+    rigs = _discover_resource_rigs(package_rigs)
+    if rigs or fallback_directory is None:
+        return rigs
+    return discover_rigs(fallback_directory)
