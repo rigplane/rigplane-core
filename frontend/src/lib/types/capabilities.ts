@@ -67,6 +67,8 @@ export interface KeyboardConfig {
 }
 
 export interface ControlRange {
+  range_min?: number;
+  range_max?: number;
   raw_min: number;
   raw_max: number;
   raw_center?: number;
@@ -75,6 +77,59 @@ export interface ControlRange {
   display_unit?: string;
   style?: string;
 }
+
+export type ControlQuantization =
+  | 'nearest_ties_down'
+  | 'nearest_ties_up'
+  | 'floor'
+  | 'ceil'
+  | 'reject';
+export type ControlRestoration = 'exact' | 'unavailable';
+
+export interface ControlLookupPoint {
+  readonly raw: number;
+  readonly display: number;
+}
+
+interface ControlDomainBase {
+  readonly range_min?: number;
+  readonly range_max?: number;
+  readonly raw_min: number;
+  readonly raw_max: number;
+  readonly raw_step: number;
+  readonly raw_origin: number;
+  readonly display_min: number;
+  readonly display_max: number;
+  readonly display_step: number;
+  readonly display_origin: number;
+  readonly display_unit: string;
+  readonly style?: string;
+  readonly quantization: ControlQuantization;
+  readonly restoration: ControlRestoration;
+}
+
+export interface ScalarControlDomain extends ControlDomainBase {
+  readonly mapping: 'identity' | 'linear';
+  readonly raw_center?: never;
+  readonly display_center?: never;
+  readonly lookup?: never;
+}
+
+export interface CenteredControlDomain extends ControlDomainBase {
+  readonly mapping: 'centered';
+  readonly raw_center: number;
+  readonly display_center: number;
+  readonly lookup?: never;
+}
+
+export interface LookupControlDomain extends ControlDomainBase {
+  readonly mapping: 'lookup';
+  readonly raw_center?: never;
+  readonly display_center?: never;
+  readonly lookup: readonly ControlLookupPoint[];
+}
+
+export type ControlDomain = ScalarControlDomain | CenteredControlDomain | LookupControlDomain;
 
 export type VfoScheme = 'single' | 'ab' | 'ab_shared' | 'main_sub';
 export type VfoReadback = 'absolute' | 'selected_unselected' | 'none';
@@ -129,7 +184,7 @@ export interface Capabilities {
   scopeConfig?: ScopeConfig;
   audioConfig: AudioConfig;
   webrtc: WebRtcCapabilities;
-  controls?: Record<string, ControlRange>;
+  controls?: Readonly<Record<string, ControlRange | ControlDomain>>;
   txBands: TxBand[] | null;
   meterCalibrations?: Record<string, MeterCalPoint[]>;
   meterRedlines?: Record<string, number>;
@@ -180,6 +235,181 @@ function requireFiniteNumber(value: unknown, path: string): void {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     invalid(path, 'a finite number');
   }
+}
+
+const DOMAIN_REQUIRED_KEYS = [
+  'raw_min', 'raw_max', 'raw_step', 'raw_origin',
+  'display_min', 'display_max', 'display_step', 'display_origin', 'display_unit',
+  'mapping', 'quantization', 'restoration',
+] as const;
+const DOMAIN_KEYS = new Set([
+  ...DOMAIN_REQUIRED_KEYS, 'style', 'range_min', 'range_max',
+  'raw_center', 'display_center', 'lookup',
+]);
+const EXPLICIT_DOMAIN_KEYS = new Set([
+  'raw_step', 'raw_origin', 'display_step', 'display_origin', 'display_center',
+  'mapping', 'quantization', 'restoration', 'lookup',
+]);
+
+function finiteNumber(value: unknown, path: string): number {
+  requireFiniteNumber(value, path);
+  return value as number;
+}
+
+function safeInteger(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    invalid(path, 'a safe integer');
+  }
+  return value;
+}
+
+function choice<T extends string>(value: unknown, path: string, values: readonly T[]): T {
+  if (typeof value !== 'string' || !values.includes(value as T)) {
+    invalid(path, values.join(' | '));
+  }
+  return value as T;
+}
+
+function decimalParts(value: number): readonly [bigint, number] {
+  const match = String(value).match(/^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i);
+  if (!match) throw new TypeError('finite number has no decimal representation');
+  const fraction = match[3] ?? '';
+  const coefficient = BigInt(`${match[1]}${match[2]}${fraction}`);
+  return [coefficient, Number(match[4] ?? 0) - fraction.length];
+}
+
+function onLattice(value: number, origin: number, step: number): boolean {
+  const values = [decimalParts(value), decimalParts(origin), decimalParts(step)] as const;
+  const exponent = Math.min(...values.map((item) => item[1]));
+  const scaled = values.map(([coefficient, itemExponent]) =>
+    coefficient * (10n ** BigInt(itemExponent - exponent)));
+  return (scaled[0] - scaled[1]) % scaled[2] === 0n;
+}
+
+function validateAxis(
+  low: number,
+  high: number,
+  step: number,
+  origin: number,
+  path: string,
+): void {
+  if (low >= high) invalid(path, 'min < max');
+  if (step <= 0) invalid(`${path}_step`, '> 0');
+  if (origin < low || origin > high) invalid(`${path}_origin`, 'inside its declared range');
+  if (!onLattice(low, origin, step)) invalid(`${path}_min`, 'a value on its declared lattice');
+  if (!onLattice(high, origin, step)) invalid(`${path}_max`, 'a value on its declared lattice');
+}
+
+function validateLookup(
+  value: unknown,
+  path: string,
+  rawAxis: readonly [number, number, number, number],
+  displayAxis: readonly [number, number, number, number],
+  restoration: ControlRestoration,
+): readonly ControlLookupPoint[] {
+  if (!Array.isArray(value) || value.length === 0) invalid(path, 'a non-empty array');
+  const points = value.map((item, index) => {
+    const pointPath = `${path}[${index}]`;
+    const point = requireRecord(item, pointPath);
+    if (Object.keys(point).length !== 2 || !('raw' in point) || !('display' in point)) {
+      invalid(pointPath, 'an object containing exactly raw and display');
+    }
+    const raw = safeInteger(point.raw, `${pointPath}.raw`);
+    const display = finiteNumber(point.display, `${pointPath}.display`);
+    if (raw < rawAxis[0] || raw > rawAxis[1]) invalid(`${pointPath}.raw`, 'inside its declared range');
+    if (!onLattice(raw, rawAxis[3], rawAxis[2])) invalid(`${pointPath}.raw`, 'a value on its declared lattice');
+    if (display < displayAxis[0] || display > displayAxis[1]) {
+      invalid(`${pointPath}.display`, 'inside its declared range');
+    }
+    if (!onLattice(display, displayAxis[3], displayAxis[2])) {
+      invalid(`${pointPath}.display`, 'a value on its declared lattice');
+    }
+    return Object.freeze({ raw, display });
+  });
+  for (const field of ['raw', 'display'] as const) {
+    const values = points.map((point) => point[field]);
+    if (new Set(values).size !== values.length) invalid(path, `unique ${field} values`);
+    const increasing = values.every((item, index) => index === 0 || values[index - 1] < item);
+    const decreasing = values.every((item, index) => index === 0 || values[index - 1] > item);
+    if (values.length > 1 && !increasing && !decreasing) invalid(path, `strictly monotonic ${field} values`);
+  }
+  const expected = (BigInt(rawAxis[1]) - BigInt(rawAxis[0])) / BigInt(rawAxis[2]) + 1n;
+  if (restoration === 'exact' && BigInt(points.length) !== expected) {
+    invalid(path, 'complete raw lattice coverage for exact restoration');
+  }
+  return Object.freeze(points);
+}
+
+function parseControlDomain(raw: Record<string, unknown>, path: string): ControlDomain {
+  const missing = DOMAIN_REQUIRED_KEYS.filter((key) => !(key in raw));
+  if (missing.length) invalid(path, `required fields (${missing.join(', ')})`);
+
+  const mapping = choice(raw.mapping, `${path}.mapping`, ['identity', 'linear', 'centered', 'lookup']);
+  const quantization = choice(raw.quantization, `${path}.quantization`, [
+    'nearest_ties_down', 'nearest_ties_up', 'floor', 'ceil', 'reject',
+  ]);
+  const restoration = choice(raw.restoration, `${path}.restoration`, ['exact', 'unavailable']);
+  const rawAxis = [
+    safeInteger(raw.raw_min, `${path}.raw_min`), safeInteger(raw.raw_max, `${path}.raw_max`),
+    safeInteger(raw.raw_step, `${path}.raw_step`), safeInteger(raw.raw_origin, `${path}.raw_origin`),
+  ] as const;
+  const displayAxis = [
+    finiteNumber(raw.display_min, `${path}.display_min`), finiteNumber(raw.display_max, `${path}.display_max`),
+    finiteNumber(raw.display_step, `${path}.display_step`), finiteNumber(raw.display_origin, `${path}.display_origin`),
+  ] as const;
+  if (typeof raw.display_unit !== 'string' || !raw.display_unit.trim()) {
+    invalid(`${path}.display_unit`, 'a non-empty string');
+  }
+  validateAxis(...rawAxis, `${path}.raw`);
+  validateAxis(...displayAxis, `${path}.display`);
+  if ('range_min' in raw || 'range_max' in raw) {
+    if (!('range_min' in raw) || !('range_max' in raw)
+      || safeInteger(raw.range_min, `${path}.range_min`) !== rawAxis[0]
+      || safeInteger(raw.range_max, `${path}.range_max`) !== rawAxis[1]) {
+      invalid(path, 'legacy range equal to explicit raw bounds');
+    }
+  }
+  if (raw.style !== undefined) {
+    choice(raw.style, `${path}.style`, ['toggle', 'stepped', 'selector', 'toggle_and_level', 'level_is_toggle']);
+  }
+
+  const domain: Record<string, unknown> = { ...raw, mapping, quantization, restoration };
+  if (mapping === 'identity' && rawAxis.some((item, index) => item !== displayAxis[index])) {
+    invalid(path, 'identical raw and display domains for identity mapping');
+  }
+  if (mapping === 'centered') {
+    const rawCenter = safeInteger(raw.raw_center, `${path}.raw_center`);
+    const displayCenter = finiteNumber(raw.display_center, `${path}.display_center`);
+    if (rawCenter < rawAxis[0] || rawCenter > rawAxis[1] || !onLattice(rawCenter, rawAxis[3], rawAxis[2])) {
+      invalid(`${path}.raw_center`, 'a value in range on its declared lattice');
+    }
+    if (displayCenter < displayAxis[0] || displayCenter > displayAxis[1]
+      || !onLattice(displayCenter, displayAxis[3], displayAxis[2])) {
+      invalid(`${path}.display_center`, 'a value in range on its declared lattice');
+    }
+  } else if ('raw_center' in raw || 'display_center' in raw) {
+    invalid(path, 'center fields only for centered mapping');
+  }
+  if (mapping === 'lookup') {
+    domain.lookup = validateLookup(raw.lookup, `${path}.lookup`, rawAxis, displayAxis, restoration);
+  } else if ('lookup' in raw) {
+    invalid(`${path}.lookup`, 'only for lookup mapping');
+  }
+  return Object.freeze(domain) as unknown as ControlDomain;
+}
+
+function normalizeControls(value: unknown): Readonly<Record<string, ControlRange | ControlDomain>> | null {
+  const controls = requireRecord(value, '$.controls');
+  let changed = false;
+  const normalized = Object.fromEntries(Object.entries(controls).map(([name, value]) => {
+    const control = requireRecord(value, `$.controls.${name}`);
+    const unknown = Object.keys(control).filter((key) => !DOMAIN_KEYS.has(key));
+    if (unknown.length) invalid(`$.controls.${name}`, `no unknown keys (${unknown.join(', ')})`);
+    const explicit = Object.keys(control).some((key) => EXPLICIT_DOMAIN_KEYS.has(key));
+    changed ||= explicit;
+    return [name, explicit ? parseControlDomain(control, `$.controls.${name}`) : value];
+  }));
+  return changed ? Object.freeze(normalized) as Readonly<Record<string, ControlRange | ControlDomain>> : null;
 }
 
 export function validateCapabilities(value: unknown): Capabilities {
@@ -305,6 +535,11 @@ export function validateCapabilities(value: unknown): Capabilities {
       requireInteger(band.start, `$.txBands[${index}].start`);
       requireInteger(band.end, `$.txBands[${index}].end`);
     });
+  }
+
+  if ('controls' in raw) {
+    const controls = normalizeControls(raw.controls);
+    if (controls) return { ...raw, controls } as unknown as Capabilities;
   }
 
   return raw as unknown as Capabilities;
