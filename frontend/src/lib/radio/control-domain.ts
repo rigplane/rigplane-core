@@ -4,6 +4,7 @@ import type { ControlDomain, ControlQuantization } from '../types/capabilities';
 type Decimal = readonly [coefficient: bigint, scale: number];
 
 const DECIMAL = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/;
+const QUANTIZATIONS: readonly ControlQuantization[] = ['nearest_ties_down', 'nearest_ties_up', 'floor', 'ceil', 'reject'];
 
 function decimal(value: unknown): Decimal | null {
   if (typeof value !== 'string' || value === '-0' || !DECIMAL.test(value)) return null;
@@ -144,6 +145,8 @@ function centeredAligned(domain: ControlDomain, values: readonly [Decimal, Decim
 }
 
 function validDomain(domain: ControlDomain, values: readonly [Decimal, Decimal, Decimal, Decimal]): boolean {
+  const quantization = (domain as unknown as { quantization?: unknown }).quantization;
+  if (typeof quantization !== 'string' || !QUANTIZATIONS.includes(quantization as ControlQuantization)) return false;
   if (domain.mapping === 'identity') return isIdentity(domain, values);
   if (domain.mapping === 'linear') {
     const indices = scalarIndex(domain);

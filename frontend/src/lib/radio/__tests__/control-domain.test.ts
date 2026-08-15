@@ -27,6 +27,12 @@ describe('control-domain exact math', () => {
   ] as const)('uses %s at negative half-step boundaries', (quantization, input, expected) => {
     expect(quantizeControlDomain({ ...linear, quantization }, input as never)).toBe(expected);
   });
+  it.each(['nearest_ties_down', 'nearest_ties_up', 'floor', 'ceil', 'reject'] as const)('keeps supported quantization %s valid', (quantization) => {
+    const domain = { ...linear, quantization };
+    expect(decodeControlDomain(domain, 0)).toBe('0');
+    expect(quantizeControlDomain(domain, '0' as never)).toBe('0');
+    expect(encodeControlDomain(domain, '0' as never)).toBe(0);
+  });
   it('keeps tiny steps and huge coefficients exact', () => {
     const huge = `1${'0'.repeat(300)}`;
     const domain = { ...linear, raw_min: 0, raw_max: 2, raw_step: 1, raw_origin: 0,
@@ -76,6 +82,12 @@ describe('control-domain exact math', () => {
     const domain = { ...linear, mapping: 'centered' as const, raw_center: 0, display_center: '0.5' as never };
     expect(decodeControlDomain(domain, -4)).toBeNull();
     expect(decodeControlDomain(domain, 4)).toBeNull();
+    expect(quantizeControlDomain(domain, '0' as never)).toBeNull();
+    expect(encodeControlDomain(domain, '0' as never)).toBeNull();
+  });
+  it.each([undefined, null, 0, {}, [], '', 'nearest'])('fails closed for invalid quantization %p', (quantization) => {
+    const domain = { ...linear, quantization } as ControlDomain;
+    expect(decodeControlDomain(domain, 0)).toBeNull();
     expect(quantizeControlDomain(domain, '0' as never)).toBeNull();
     expect(encodeControlDomain(domain, '0' as never)).toBeNull();
   });
