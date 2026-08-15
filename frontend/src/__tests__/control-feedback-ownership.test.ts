@@ -10,6 +10,7 @@ const FILES = [
   'src/semantic/controls/Probe.ts',
 ] as const;
 const FS_RUNTIME = `/@fs/${path.resolve(ROOT, 'src/lib/runtime/frontend-runtime')}`;
+const FS_SINGLE_RUNTIME = FS_RUNTIME.replace('/@fs//', '/@fs/');
 
 async function messages(code: string, filePath: string): Promise<readonly string[]> {
   const [result] = await new ESLint({ cwd: ROOT }).lintText(code, { filePath });
@@ -33,6 +34,11 @@ const FORBIDDEN = [
   [`export * from '${FS_RUNTIME}?worker';`, 'Vite FS export star'],
   [`void import('${FS_RUNTIME.replace('/@fs//', '/@fs///')}?raw#module');`, 'Vite FS dynamic import'],
   [`void import(\`${FS_RUNTIME}?url#module\`);`, 'Vite FS template import'],
+  [`import value from '${FS_SINGLE_RUNTIME}';`, 'single-slash Vite FS import'],
+  [`export { value } from '${FS_SINGLE_RUNTIME.replace('/src/lib/', '/src/lib/./')}#module';`, 'single-slash Vite FS named export'],
+  [`export * from '${FS_SINGLE_RUNTIME.replace('/src/lib/', '/src//lib/')}?worker';`, 'single-slash Vite FS export star'],
+  [`void import('${FS_SINGLE_RUNTIME}?raw#module');`, 'single-slash Vite FS dynamic import'],
+  [`void import(\`${FS_SINGLE_RUNTIME.replace('/src/lib/', '/src/./lib/')}?url#module\`);`, 'single-slash Vite FS template import'],
   [`import value from '${path.resolve(ROOT, 'src/lib/runtime/frontend-runtime')}';`, 'filesystem absolute import'],
   [`import type { ControlFeedback } from '$lib/types/../runtime/adapters/panel-adapters';`, 'type import alias traversal'],
   [`export { runtime } from '$lib/runtime/frontend-runtime';`, 'named export'],
@@ -59,6 +65,7 @@ describe('normalized ControlFeedback ownership boundary (MOR-1712)', () => {
       `import type { ServerState } from '/src/lib/runtime/../types/state';`,
       `import type { ServerState } from '/src//lib/runtime/../types/state';`,
       `import type { ServerState } from '/@fs/${path.resolve(ROOT, 'src/lib/types/state')}?raw#module';`,
+      `import type { ServerState } from '/@fs/${path.resolve(ROOT, 'src/lib/./runtime/../types/state').slice(1)}?raw#module';`,
       `import type { ServerState } from '../../lib/runtime/../types/state';`,
       `import type { Snippet } from 'svelte';`,
       `import type { Presentation } from '../../primitives/control-feedback/control-feedback-presentation';`,
