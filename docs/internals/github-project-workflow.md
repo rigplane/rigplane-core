@@ -4,9 +4,16 @@ robots: noindex, follow
 
 # GitHub Execution Workflow
 
-RigPlane's Linear-authoritative programs use Linear for planning and GitHub for
-bounded implementation evidence. This document defines the GitHub execution
-plane; it does not create a second backlog or roadmap.
+The `RigPlane Core UI Composition Architecture v3` project uses Linear for
+planning and GitHub for bounded implementation evidence. Its live,
+project-specific Linear control-plane contract takes precedence over the legacy
+GitHub-Project planning and control-plane language in `CLAUDE.md`. This document
+defines the GitHub execution plane; it does not create a second backlog or
+roadmap.
+
+That precedence changes only control-plane ownership. All other `CLAUDE.md`
+commands, architecture, testing, hygiene, protected-main, PR, check, exact-head
+`Agent Review Gate`, and guarded merge rules remain binding.
 
 ## Control-plane boundary
 

@@ -46,10 +46,16 @@ validation matrices and decision records stay in Strategy. See
 
 ## Linear planning and GitHub execution
 
-For the Linear-authoritative RigPlane programs, Linear is the authoritative
-control plane. It owns the backlog, scope, parent/child relations,
+For the `RigPlane Core UI Composition Architecture v3` project, the live,
+project-specific Linear control-plane contract takes precedence over the legacy
+GitHub-Project planning and control-plane language in `CLAUDE.md`. Linear is the
+authoritative control plane: it owns the backlog, scope, parent/child relations,
 dependencies, priority, milestones, acceptance criteria, and status. Resolve
 the Linear owner and its acceptance criteria before starting non-trivial work.
+
+This precedence is limited to control-plane ownership. All other `CLAUDE.md`
+commands, architecture, testing, hygiene, protected-main, PR, check, exact-head
+`Agent Review Gate`, and guarded merge rules remain binding.
 
 GitHub is the execution plane: branch, commit, PR, diff, checks, independent
 review, and merge evidence. Do not create a GitHub planning issue before
