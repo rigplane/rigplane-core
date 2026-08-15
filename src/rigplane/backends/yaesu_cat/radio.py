@@ -118,9 +118,19 @@ def _ctcss_index_to_centihz(index: int) -> int:
 
 def _load_config(profile: Any) -> "RigConfig":
     """Load RigConfig from a profile name or return an existing RigConfig."""
-    from ...rig_loader import RigConfig, load_rig
+    from ...rig_loader import RigConfig, discover_available_rigs, load_rig
 
     if isinstance(profile, str):
+        profile_key = profile.casefold().replace("-", "_")
+        for rig in discover_available_rigs(_RIGS_DIR).values():
+            rig_id = rig.id.casefold()
+            aliases = {
+                rig.model.casefold().replace("-", "_"),
+                rig_id,
+                rig_id.removeprefix("yaesu_"),
+            }
+            if profile_key in aliases:
+                return rig
         path = _RIGS_DIR / f"{profile}.toml"
         return load_rig(path)
     if isinstance(profile, RigConfig):
