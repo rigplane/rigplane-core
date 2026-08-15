@@ -46,11 +46,11 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       for (let index = 0; index < pattern.elements.length; index += 1) {
         const part = pattern.elements[index]; if (!part) continue;
         const rest = (value.items || []).slice(index), restValue = merge(rest);
-        const result = bind(part, part.type === 'RestElement' ? { items: rest, roots: frozen([...restValue.roots, ...(value.aggregate ? value.roots : [])]), track: value.aggregate || (value.items ? restValue.track : value.track) } : value.items?.[index] || (value.track ? { track: true, roots: value.roots } : { missing: true }), env); if (result?.abrupt) return result;
+        const result = bind(part, part.type === 'RestElement' ? { items: rest, roots: frozen([...restValue.roots, ...(value.aggregate || !value.items ? value.roots : [])]), track: value.aggregate || (value.items ? restValue.track : value.track) } : value.items?.[index] || (value.track ? { track: true, roots: value.roots } : { missing: true }), env); if (result?.abrupt) return result;
       }
     }
     if (pattern.type === 'ObjectPattern') { const used = new Set(); for (const part of pattern.properties || []) {
-      if (part.type === 'RestElement') { const fields = Object.fromEntries(Object.entries(value.fields || {}).filter(([key]) => !used.has(key))), rest = merge(Object.values(fields)); const result = bind(part.argument, { fields, roots: frozen([...rest.roots, ...(value.aggregate ? value.roots : [])]), track: value.aggregate || (value.fields ? rest.track : value.track) }, env); if (result?.abrupt) return result; }
+      if (part.type === 'RestElement') { const fields = Object.fromEntries(Object.entries(value.fields || {}).filter(([key]) => !used.has(key))), rest = merge(Object.values(fields)); const result = bind(part.argument, { fields, roots: frozen([...rest.roots, ...(value.aggregate || !value.fields ? value.roots : [])]), track: value.aggregate || (value.fields ? rest.track : value.track) }, env); if (result?.abrupt) return result; }
       else { const key = part.key.name || part.key.value; used.add(String(key)); const result = bind(part.value, value.fields?.[key] || (value.track ? { track: true, roots: value.roots } : { missing: true }), env); if (result?.abrupt) return result; }
     }
     }

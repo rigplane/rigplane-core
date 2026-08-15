@@ -206,6 +206,16 @@ describe('ordered debt evaluator (MOR-1720)', () => {
     expect(mixed.map((fact) => [fact.kind, fact.roots.length, Object.isFrozen(fact.roots)])).toEqual([['mutation', 1, true], ['mutation', 1, true], ['mutation', 1, true]]);
   });
 
+  it('retains direct and nested rest roots in execution order', () => {
+    const cases = [
+      effects('function f({ ...rest }) { rest.x = 1; sink(rest); delete rest.x; } f(props);'),
+      effects('function f([ ...rest ]) { rest[0] = 1; sink(rest); delete rest[0]; } f(props);'),
+      effects('function f({ nested: { ...rest } }) { rest.x = 1; sink(rest); delete rest.x; } f({ nested: { ...props } });'),
+    ];
+    for (const result of cases) expect(result.map((fact) => [fact.kind, fact.roots.length, fact.targetRoots?.length ?? 0, fact.escapeRoots?.length ?? 0]))
+      .toEqual([['mutation', 1, 1, 0], ['escape', 1, 0, 1], ['mutation', 1, 1, 0]]);
+  });
+
   it('attaches only active effect roots to zero-argument recursive cycles', () => {
     const direct = effects('function direct() { props.x = 1; direct(); } direct();').filter((fact) => fact.kind === 'cycle')[0];
     const mutual = effects('function a() { b(); } function b() { props.x = 1; a(); } a();').filter((fact) => fact.kind === 'cycle')[0];
