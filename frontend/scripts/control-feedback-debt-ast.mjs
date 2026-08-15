@@ -1,4 +1,5 @@
 // @ts-nocheck -- parser AST nodes are intentionally version-agnostic.
+import { evaluateOrderedEffects } from './control-feedback-debt-evaluator.mjs';
 /** Conservative, parser-only object-flow primitives for debt analysis. */
 const WRAPPERS = new Set(['ParenthesizedExpression', 'TSAsExpression', 'TSSatisfiesExpression', 'TSTypeAssertion', 'TSNonNullExpression', 'ChainExpression', 'TSInstantiationExpression']);
 const SKIP = new Set(['parent', 'metadata', 'typeAnnotation', 'typeParameters', 'returnType', 'loc']);
@@ -21,7 +22,7 @@ export function boundNames(node) {
 
 /** @param {any} program @returns {Map<string, Array<{key:string|null,value:any,poison:boolean,start:number}>>} */
 export function collectObjectFlow(program) {
-  const exposed = new Map(), scope = (parent = null, fn = false) => ({ parent, fn, bindings: new Map() }), rootScope = scope(null, true);
+  const exposed = new Map(), scopes = new WeakMap(), active = new Set(), scope = (parent = null, fn = false) => ({ parent, fn, bindings: new Map() }), rootScope = scope(null, true);
   const get = (s, n) => { for (; s; s = s.parent) if (s.bindings.has(n)) return s.bindings.get(n); return null; };
   const fnScope = (s) => { while (s.parent && !s.fn) s = s.parent; return s; };
   const declare = (s, n, mutable = true) => s.bindings.get(n) ?? (s.bindings.set(n, { root: null, text: null, fn: null, mutable }), s.bindings.get(n));
@@ -59,6 +60,7 @@ export function collectObjectFlow(program) {
   };
   const walk = (n, s) => {
     if (!n || typeof n !== 'object') return;
+    scopes.set(n, s);
     if (n.type === 'Program' || n.type === 'BlockStatement') { const child = n.type === 'Program' ? s : scope(s); predeclare(n.body, child); if (n.type === 'Program') hoistVars(n, child); n.body.forEach((x) => walk(x, child)); return; }
     if (n.type === 'FunctionDeclaration') { declare(s, n.id.name).fn = n; return; }
     if (/FunctionExpression$/.test(n.type) || n.type === 'ArrowFunctionExpression') return;
@@ -69,6 +71,7 @@ export function collectObjectFlow(program) {
       if (b && n.kind === 'const' && d.init?.type === 'ObjectExpression') { b.root = { events: [] }; if (target === rootScope) exposed.set(d.id.name, b.root.events); }
       else if (b && n.kind === 'const' && alias) b.root = alias;
       else poison(roots(d.init, s), d.start);
+      if (b && n.kind === 'const') b.fn = unwrapExpression(d.init).node;
       if (b) b.text = n.kind === 'const' ? text(d.init, s) : null; walk(d.init, s);
     }); return; }
     if (n.type === 'AssignmentExpression') { walk(n.right, s); const m = member(n.left, s); if (m.root) {
@@ -77,10 +80,15 @@ export function collectObjectFlow(program) {
     } else if (n.left?.type === 'Identifier') { const b = get(s, n.left.name); if (b?.root) poison([b.root], n.start); poison(roots(n.right, s), n.start); if (b) b.root = null; }
       else { poison(roots(n.left, s), n.start); poison(roots(n.right, s), n.start); } return; }
     if (n.type === 'UpdateExpression' || n.type === 'UnaryExpression' && n.operator === 'delete') { poison(roots(n.argument, s), n.start); return; }
-    if (['ReturnStatement', 'ThrowStatement', 'YieldExpression'].includes(n.type)) { poison(roots(n.argument, s), n.start); walk(n.argument, s); return; }
-    if (n.type === 'CallExpression' || n.type === 'NewExpression') { poison(roots(n.arguments, s), n.start); const fn = n.callee?.type === 'Identifier' ? get(s, n.callee.name)?.fn : n.callee; if (fn?.type === 'FunctionExpression' || fn?.type === 'ArrowFunctionExpression' || fn?.type === 'FunctionDeclaration') { const child = scope(s, true); if (fn.type === 'FunctionExpression' && fn.id) declare(child, fn.id.name); fn.params?.forEach((p) => { defaults(p, child); names(child, p); }); if (fn.body?.type === 'BlockStatement') { predeclare(fn.body.body, child); hoistVars(fn.body, child); fn.body.body.forEach((x) => walk(x, child)); } else walk(fn.body, child); } else poison(roots(n.callee, s), n.start); n.arguments.forEach((x) => walk(x, s)); return; }
-    if (n.type === 'TaggedTemplateExpression') { poison(roots(n.tag, s), n.start); poison(roots(n.quasi, s), n.start); walk(n.quasi, s); return; }
+    if (['ReturnStatement', 'ThrowStatement', 'YieldExpression'].includes(n.type)) { walk(n.argument, s); poison(roots(n.argument, s), n.start); return; }
+    if (n.type === 'CallExpression' || n.type === 'NewExpression') { const fn = n.callee?.type === 'Identifier' ? get(s, n.callee.name)?.fn : unwrapExpression(n.callee).node; n.arguments.forEach((x) => walk(x, s)); if (fn?.type === 'FunctionExpression' || fn?.type === 'ArrowFunctionExpression' || fn?.type === 'FunctionDeclaration') { if (active.has(fn)) poison(roots(fn, s), n.start); else { active.add(fn); const child = scope(s, true); if (fn.type === 'FunctionExpression' && fn.id) declare(child, fn.id.name); fn.params?.forEach((p) => { defaults(p, child); names(child, p); }); if (fn.body?.type === 'BlockStatement') { predeclare(fn.body.body, child); hoistVars(fn.body, child); fn.body.body.forEach((x) => walk(x, child)); } else walk(fn.body, child); active.delete(fn); } } else { poison(roots(n.callee, s), n.start); poison(roots(n.arguments, s), n.start); } return; }
+    if (n.type === 'TaggedTemplateExpression') { walk(n.quasi, s); poison(roots(n.tag, s), n.start); poison(roots(n.quasi, s), n.start); return; }
     Object.entries(n).forEach(([k, v]) => { if (!SKIP.has(k)) Array.isArray(v) ? v.forEach((x) => walk(x, s)) : walk(v, s); });
   };
-  walk(program, rootScope); return exposed;
+  walk(program, rootScope);
+  for (const fact of evaluateOrderedEffects(program, { isTracked: (node) => roots(node, scopes.get(node) ?? rootScope).size > 0 })) {
+    const rs = roots(fact.node, scopes.get(fact.node) ?? rootScope);
+    if (rs.size && ![...exposed.values()].some((events) => events.some((event) => event.start === fact.node?.start))) poison(rs, fact.node?.start);
+  }
+  return exposed;
 }

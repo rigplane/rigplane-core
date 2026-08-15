@@ -45,6 +45,10 @@ describe('control-feedback AST semantics (MOR-1716)', () => {
   it('only executes invoked function surfaces and template substitutions', () => {
     expect(shape('const props={}; function idle(){return props} (()=>{props.type="x"; return props})() ; tag`${props}`;')).toEqual([['type', false], [null, true], [null, true]]);
   });
+  it('uses the ordered evaluator for wrapped const callables, defaults, and cycles', () => {
+    expect(shape('const props={}; const call=({x=mutate(props)}={})=>{}; (call as unknown)();')).toEqual([[null, true]]);
+    expect(shape('const props={}; function a(){b()} function b(){a()} a();')).toEqual([]);
+  });
   it('keeps all known primitive computed aliases safe', () => {
     expect(shape('const props={}; const n=0, b=true, g=1n, z=null; props[n]="x"; props[b]="x"; props[g]="x"; props[z]="x"; props[unknown]="x";')).toEqual([[null, true]]);
   });
