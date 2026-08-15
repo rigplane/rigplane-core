@@ -8,6 +8,10 @@ const facts = (source: string) => evaluateOrderedEffects(program(source), {
   isTracked: (node: { type?: string; name?: string }) => node?.type === 'Identifier' && node.name === 'props',
 }).map((fact: { kind: string }) => fact.kind);
 
+const effects = (source: string) => evaluateOrderedEffects(program(source), {
+  isTracked: (node: { type?: string; name?: string }) => node?.type === 'Identifier' && node.name === 'props',
+});
+
 describe('ordered debt evaluator (MOR-1720)', () => {
   it('runs hoisted and const callables only when invoked', () => {
     expect(facts('call(); function call() { mutate(props); return props; } const later = () => mutate(props); later(); function idle() { mutate(props); }'))
@@ -152,5 +156,34 @@ describe('ordered debt evaluator (MOR-1720)', () => {
 
   it('has no facts for unrelated code', () => {
     expect(facts('const add = (a: number, b: number) => a + b; add(1, 2);')).toEqual([]);
+  });
+
+  it('retains immutable roots through bound and returned aliases', () => {
+    const result = effects('function f({ x: [first, ...rest] }) { first.type = 1; delete rest[0]; return first; } const alias = f({ x: [props, props] }); sink(alias);');
+    expect(result.filter((fact) => fact.kind === 'mutation').map((fact) => [fact.targetRoots.length, fact.escapeRoots.length, Object.isFrozen(fact.roots)])).toEqual([[1, 0, true], [1, 0, true]]);
+    expect(result.filter((fact) => fact.kind === 'return').every((fact) => fact.roots.length === 1)).toBe(true);
+    expect(result.filter((fact) => fact.kind === 'escape').at(-1).roots.length).toBe(1);
+  });
+
+  it('preserves plain and defaulted bindings independently of supplied nested values', () => {
+    const result = effects('function f(plain, { nested: [item = props] } = {}) { plain.type = 1; item.type = 1; return plain; } sink(f(props, { nested: [props] })); sink(f(props));');
+    expect(result.filter((fact) => fact.kind === 'mutation').map((fact) => fact.targetRoots.length)).toEqual([1, 1, 1, 1]);
+    expect(result.filter((fact) => fact.kind === 'return').map((fact) => fact.roots.length)).toEqual([1, 1]);
+  });
+
+  it('separates receiver provenance from RHS escapes in runtime order', () => {
+    const writes = effects('const holder = {}; holder.value = props; props.value = holder;').filter((fact) => fact.kind === 'mutation');
+    expect(writes.map((fact) => [fact.targetRoots.length, fact.escapeRoots.length, fact.poison])).toEqual([[0, 1, true], [1, 0, false]]);
+  });
+
+  it('associates cycles with the invoking exposed root only', () => {
+    const result = effects('function rooted(x) { rooted(x); } function unrelated() { unrelated(); } rooted(props); props.type = 1; unrelated();');
+    expect(result.filter((fact) => fact.kind === 'cycle').map((fact) => fact.roots.length)).toEqual([1, 0]);
+    expect(result.filter((fact) => fact.kind === 'mutation')[0].poison).toBe(false);
+  });
+
+  it('keeps repeated default deletes ordered without shared side tables', () => {
+    const writes = effects('function f(x = props) { delete x.value; delete x.value; } f(); f();').filter((fact) => fact.kind === 'mutation');
+    expect(writes.map((fact) => [fact.targetRoots.length, fact.poison])).toEqual([[1, true], [1, true], [1, true], [1, true]]);
   });
 });
