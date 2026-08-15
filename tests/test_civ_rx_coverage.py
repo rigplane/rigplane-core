@@ -3036,6 +3036,30 @@ def test_observations_from_frame_normalizes_selected_cmd14_controls(
     assert observation.value == pytest.approx(expected_value)
 
 
+def test_observations_from_frame_marks_only_exact_ptt_readback_as_poll_response(
+    radio: IcomRadio,
+) -> None:
+    """A directed one-byte CI-V PTT readback is radio truth, not a setter ACK.
+
+    The Web TX authority projector may accept ``poll_response`` for PTT, so
+    this deliberately pins the narrow wire shape rather than promoting generic
+    command responses.
+    """
+    readback = _make_frame(cmd=0x1C, sub=0x00, data=b"\x00")
+    assert radio._civ_runtime._observations_from_frame(readback)[0].source.source == (
+        "poll_response"
+    )
+
+    for frame in (
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x00\x01"),
+        _make_frame(cmd=0x1C, sub=0x01, data=b"\x00"),
+        _make_frame(cmd=0x14, sub=0x03, data=_bcd2(45)),
+    ):
+        observations = radio._civ_runtime._observations_from_frame(frame)
+        if observations:
+            assert observations[0].source.source == "command_response"
+
+
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("sub", "value", "field"),
     [

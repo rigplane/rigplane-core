@@ -97,4 +97,15 @@ describe('App TX authority projector', () => {
     expect(project(withPtt(field(12), true), capabilities(), session(2)).ptt)
       .toMatchObject({ value: true, fresh: true, marker: { pttObservationSeq: 4 } });
   });
+  it('accepts a post-baseline PTT poll after reconnect without relaxing any other gate', () => {
+    const project = createAppAuthorityProjector();
+    expect(project(withPtt(field(1, 'poll_response')), capabilities(), session(7)).ptt)
+      .toMatchObject({ value: false, fresh: false, source: 'radio-readback' });
+    expect(project(withPtt(field(2, 'poll_response')), capabilities(), session(7)).ptt)
+      .toMatchObject({ value: false, fresh: true, source: 'radio-readback' });
+    expect(project(withPtt(field(3, 'command_response')), capabilities(), session(7)).ptt)
+      .toMatchObject({ fresh: false, source: 'other' });
+    expect(project(withPtt(field(4, 'poll_response')), capabilities({ tx: false }), session(7)))
+      .toMatchObject({ ptt: { fresh: true }, eligibility: { catPtt: false } });
+  });
 });
