@@ -20,8 +20,14 @@ function resolveModule(specifier, filename, cwd) {
   const clean = specifier.split(/[?#]/, 1)[0];
   const root = frontendRoot(filename, cwd);
   if (clean === '$lib') return path.resolve(root, 'src/lib');
-  if (clean.startsWith('$lib/')) return path.resolve(root, 'src/lib', clean.slice(5));
+  if (clean.startsWith('$lib/')) {
+    const tail = clean.slice(5).replace(/^\/+/, '');
+    return path.resolve(root, 'src/lib', tail);
+  }
   if (clean.startsWith('.')) return path.resolve(path.dirname(filename), clean);
+  if (clean === '/src' || clean.startsWith('/src/')) {
+    return path.resolve(root, clean.replace(/^\/+/, ''));
+  }
   if (path.isAbsolute(clean)) return path.resolve(clean);
   return null;
 }
