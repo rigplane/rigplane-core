@@ -40,5 +40,3 @@ export const CONTROL_FEEDBACK_DEBT_BASELINE = Object.freeze([
   "src/semantic/RxAudioSurface.svelte::input::unlabelled::rx.afLevel.reading.status === 'known' ? rx.afLevel.reading.value : 0",
   'src/semantic/TxAuxSurface.svelte::input::unlabelled::numberOf(txAux[field], min)',
 ]);
-
-export const FROZEN_RADIO_DEBT = new Set(CONTROL_FEEDBACK_DEBT_BASELINE);
