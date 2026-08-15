@@ -448,6 +448,39 @@ fine = false
                 binding.action == "toggle_help" for binding in rig.keyboard.bindings
             )
 
+    def test_default_mode_bindings_follow_loaded_profile_modes(self):
+        no_psk = load_rig(RIGS_DIR / "ic7300.toml")
+        assert no_psk.keyboard is not None
+        no_psk_ids = {binding.id for binding in no_psk.keyboard.bindings}
+        assert {"mode-lsb", "mode-usb"} <= no_psk_ids
+        assert {"mode-psk", "mode-pskr"}.isdisjoint(no_psk_ids)
+
+        psk_capable = load_rig(RIGS_DIR / "ic7610.toml")
+        assert psk_capable.keyboard is not None
+        psk_capable_ids = {binding.id for binding in psk_capable.keyboard.bindings}
+        assert {"mode-psk", "mode-pskr"} <= psk_capable_ids
+
+    def test_mode_select_with_non_string_mode_preserves_parser_behavior(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[ui.keyboard]
+[[ui.keyboard.bindings]]
+id = "non-string-mode"
+key = "F1"
+action = "mode_select"
+[ui.keyboard.bindings.params]
+mode = 42
+""",
+        )
+
+        rig = load_rig(p)
+
+        assert rig.keyboard is not None
+        assert rig.keyboard.bindings[0].params == {"mode": 42}
+
 
 # ── RadioProfile building ───────────────────────────────────────
 

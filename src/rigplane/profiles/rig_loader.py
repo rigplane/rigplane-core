@@ -510,6 +510,35 @@ def _merge_keyboard_config(
     )
 
 
+def _filter_undeclared_mode_bindings(
+    keyboard: KeyboardConfig | None,
+    modes: tuple[str, ...],
+) -> KeyboardConfig | None:
+    """Exclude mode shortcuts that do not target a declared profile mode."""
+    if keyboard is None:
+        return None
+
+    bindings = tuple(
+        binding
+        for binding in keyboard.bindings
+        if not (
+            binding.action == "mode_select"
+            and isinstance(binding.params, dict)
+            and isinstance(binding.params.get("mode"), str)
+            and binding.params["mode"] not in modes
+        )
+    )
+    if len(bindings) == len(keyboard.bindings):
+        return keyboard
+    return KeyboardConfig(
+        leader_key=keyboard.leader_key,
+        leader_timeout_ms=keyboard.leader_timeout_ms,
+        alt_hints=keyboard.alt_hints,
+        help_title=keyboard.help_title,
+        bindings=bindings,
+    )
+
+
 def _valid_audio_codec_names() -> set[str]:
     from rigplane.types import AudioCodec
 
@@ -1369,6 +1398,7 @@ def load_rig(path: Path) -> RigConfig:
         override_section,
         filename=filename,
     )
+    keyboard = _filter_undeclared_mode_bindings(keyboard, modes)
 
     # Parse optional [audio] codec and sample-rate policy (#797, #1470).
     codec_preference: tuple[str, ...] | None = None
