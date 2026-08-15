@@ -124,6 +124,16 @@ describe('ordered debt evaluator (MOR-1720)', () => {
     expect(facts('const nil = null; nil.value; mutate(props);')).toEqual([]);
   });
 
+  it('stops ordered expression children at abrupt completion and tracks updates', () => {
+    expect(facts('function boom() { throw null; } boom() + mutate(props);')).toEqual([]);
+    expect(facts('function boom() { throw null; } boom() ? mutate(props) : sink(props);')).toEqual([]);
+    expect(facts('function boom() { throw null; } boom()[mutate(props)];')).toEqual([]);
+    expect(facts('function boom() { throw null; } tag`${boom()}${mutate(props)}`;')).toEqual([]);
+    expect(facts('function boom() { throw null; } [boom(), mutate(props)];')).toEqual([]);
+    expect(facts('function boom() { throw null; } ({ [boom()]: mutate(props) });')).toEqual([]);
+    expect(facts('props.x++;')).toEqual(['mutation']);
+  });
+
   it('has no facts for unrelated code', () => {
     expect(facts('const add = (a: number, b: number) => a + b; add(1, 2);')).toEqual([]);
   });

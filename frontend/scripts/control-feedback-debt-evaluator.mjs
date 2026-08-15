@@ -59,7 +59,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     const raw = unwrapExpression(node);
     if (raw?.type === 'SpreadElement') return { ...argument(raw.argument, env), spread: true };
     if (raw?.type === 'ArrayExpression') {
-      const items = []; for (const part of raw.elements || []) { const value = part ? argument(part, env) : { missing: true }; if (value.spread && value.items) items.push(...value.items); else items.push(value); }
+      const items = []; for (const part of raw.elements || []) { const value = part ? argument(part, env) : { missing: true }; if (value.abrupt) return value; if (value.spread && value.items) items.push(...value.items); else items.push(value); }
       return { items, track: merge(items).track };
     }
     if (raw?.type === 'ObjectExpression') {
@@ -67,8 +67,8 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       let track = false;
       for (const part of raw.properties || []) {
         if (part.type === 'SpreadElement') { const spread = argument(part.argument, env); Object.assign(fields, spread.fields || {}); track ||= !!spread.track; continue; }
-        if (part.computed) evaluate(part.key, env);
-        fields[part.key.name || part.key.value] = argument(part.value, env);
+        if (part.computed) { const key = evaluate(part.key, env); if (key.abrupt) return key; }
+        const value = argument(part.value, env); if (value.abrupt) return value; fields[part.key.name || part.key.value] = value;
       }
       return { fields, track: track || merge(Object.values(fields)).track };
     }
@@ -100,23 +100,24 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       const value = merge([callee, ...args]); if (value.track) emit('escape', node); return value;
     }
     if (node.type === 'TaggedTemplateExpression') {
-      const values = [evaluate(node.tag, env)]; for (const part of node.quasi.expressions || []) values.push(evaluate(part, env));
+      const values = [evaluate(node.tag, env)]; if (values[0].abrupt) return values[0]; for (const part of node.quasi.expressions || []) { const value = evaluate(part, env); if (value.abrupt) return value; values.push(value); }
       const value = merge(values); if (value.track) emit('escape', node); return value;
     }
     if (node.type === 'AssignmentExpression' || node.type === 'UpdateExpression') {
-      const left = evaluate(node.left, env), right = node.right ? evaluate(node.right, env) : { track: false }, value = merge([left, right]);
+      const left = evaluate(node.type === 'UpdateExpression' ? node.argument : node.left, env); if (left.abrupt) return left; const right = node.right ? evaluate(node.right, env) : { track: false }; if (right.abrupt) return right; const value = merge([left, right]);
       if (value.track) emit('mutation', node); return value;
     }
     if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
       const values = [evaluate(node.object, env, inChain)];
+      if (values[0].abrupt) return values[0];
       if (inChain && values[0].chainShortCircuit) return values[0];
       if (node.optional && isKnown(values[0]) && values[0].value == null) return { ...values[0], chainShortCircuit: true };
-      if (node.computed) values.push(evaluate(node.property, env));
+      if (node.computed) { const property = evaluate(node.property, env); if (property.abrupt) return property; values.push(property); }
       if (isKnown(values[0]) && values[0].value == null) return { ...values[0], abrupt: true };
       return merge(values);
     }
     if (node.type === 'BinaryExpression') {
-      const left = evaluate(node.left, env), right = evaluate(node.right, env);
+      const left = evaluate(node.left, env); if (left.abrupt) return left; const right = evaluate(node.right, env); if (right.abrupt) return right;
       if (!isKnown(left) || !isKnown(right)) return merge([left, right]);
       const operation = {
         '==': () => left.value == right.value, '===': () => left.value === right.value,
@@ -133,8 +134,8 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       return operation ? { ...known(operation()), track: merge([left, right]).track } : merge([left, right]);
     }
     if (node.type === 'LogicalExpression') { const left = evaluate(node.left, env); if (isKnown(left)) { const takeRight = node.operator === '&&' ? !!left.value : node.operator === '||' ? !left.value : left.value == null; return takeRight ? evaluate(node.right, env) : left; } return merge([left, evaluate(node.right, env)]); }
-    if (node.type === 'ConditionalExpression') { const test = evaluate(node.test, env); return isKnown(test) ? evaluate(test.value ? node.consequent : node.alternate, env) : merge([test, evaluate(node.consequent, env), evaluate(node.alternate, env)]); }
-    const values = []; for (const child of expressionChildren(node)) values.push(evaluate(child, env));
+    if (node.type === 'ConditionalExpression') { const test = evaluate(node.test, env); if (test.abrupt) return test; return isKnown(test) ? evaluate(test.value ? node.consequent : node.alternate, env) : merge([test, evaluate(node.consequent, env), evaluate(node.alternate, env)]); }
+    const values = []; for (const child of expressionChildren(node)) { const value = evaluate(child, env); if (value.abrupt) return value; values.push(value); }
     return values.length ? merge(values) : read(node, env);
   };
   const statement = (node, env) => {
