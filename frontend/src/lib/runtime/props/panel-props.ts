@@ -501,14 +501,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function validatedRitDomain(caps: Capabilities | null): ControlDomain | null | undefined {
-  const controls = caps?.controls;
-  if (controls === undefined) return undefined;
-  if (!isRecord(controls)) return null;
-  if (!Object.hasOwn(controls, 'rit')) return undefined;
-  const candidate = controls.rit;
-  if (!isRecord(candidate)) return null;
-
   try {
+    const controls = caps?.controls;
+    if (controls === undefined) return undefined;
+    if (!isRecord(controls)) return null;
+    if (!Object.hasOwn(controls, 'rit')) return undefined;
+    const candidate = controls.rit;
+    if (!isRecord(candidate)) return null;
     const domain = candidate as ControlDomain;
     if (!['identity', 'linear', 'centered', 'lookup'].includes(domain.mapping)
       || !Number.isSafeInteger(domain.raw_origin)) return null;

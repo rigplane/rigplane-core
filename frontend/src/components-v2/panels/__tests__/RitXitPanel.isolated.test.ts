@@ -294,6 +294,20 @@ describe('RIT exact-domain mapper', () => {
     expect(toRitXitProps(null, { controls: {} } as any).ritDomain).toBeUndefined();
     expect(toRitXitProps(null, { controls: { rit: exactRitDomain } } as any).ritDomain).toBe(exactRitDomain);
   });
+
+  it.each([
+    { get controls() { throw new Error('controls getter'); } },
+    { controls: new Proxy({}, { getOwnPropertyDescriptor() { throw new Error('own key trap'); } }) },
+    { controls: Object.defineProperty({}, 'rit', { get() { throw new Error('rit getter'); } }) },
+    (() => {
+      const { proxy, revoke } = Proxy.revocable({}, {});
+      revoke();
+      return { controls: proxy };
+    })(),
+  ])('fails closed without throwing for trapped domain acquisition', (caps) => {
+    expect(() => toRitXitProps(null, caps as any).ritDomain).not.toThrow();
+    expect(toRitXitProps(null, caps as any).ritDomain).toBeNull();
+  });
 });
 
 /**
