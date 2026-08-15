@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ExactDecimal } from '../exact-decimal';
 import type { ControlDomain, LookupControlDomain, ScalarControlDomain } from '../capabilities';
 import { validateCapabilities } from '../capabilities';
+import goldenControls from '../../../../../tests/fixtures/control-domain-controls.json';
 
 function controlDomainTypeContract(linear: ScalarControlDomain, lookup: LookupControlDomain): void {
   // @ts-expect-error normalized bounds are immutable
@@ -64,6 +65,26 @@ function parse(control: Record<string, unknown>): ControlDomain {
   return result.controls?.test as ControlDomain;
 }
 describe('normalized control capability domains', () => {
+  it('consumes the loader-generated golden controls fixture without numeric coercion', () => {
+    const payload = { ...baseCapabilities, controls: goldenControls };
+    const parsed = validateCapabilities(payload);
+    expect(parsed.controls).toEqual(goldenControls);
+    expect(parsed.controls).not.toBe(goldenControls);
+    expect(Object.isFrozen(parsed.controls)).toBe(true);
+    for (const control of Object.values(parsed.controls ?? {})) {
+      expect(Object.isFrozen(control)).toBe(true);
+      expect(typeof (control as ControlDomain).display_min).toBe('string');
+      expect(typeof (control as ControlDomain).display_max).toBe('string');
+      expect(typeof (control as ControlDomain).display_step).toBe('string');
+      expect(typeof (control as ControlDomain).display_origin).toBe('string');
+    }
+    const linear = parsed.controls?.linear as ScalarControlDomain;
+    expect(linear.display_max).toBe(goldenControls.linear.display_max);
+    expect(linear.display_max).toHaveLength(400);
+    const lookup = parsed.controls?.lookup as LookupControlDomain;
+    expect(Object.isFrozen(lookup.lookup)).toBe(true);
+    expect(lookup.lookup.every(Object.isFrozen)).toBe(true);
+  });
   it('leaves legacy capability payloads and legacy controls unchanged', () => {
     expect(validateCapabilities(baseCapabilities)).toBe(baseCapabilities);
     const legacy = { range_min: 0, range_max: 10, style: 'stepped' };
