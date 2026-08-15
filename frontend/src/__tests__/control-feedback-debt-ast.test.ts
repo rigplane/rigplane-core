@@ -65,6 +65,20 @@ describe('control-feedback AST semantics (MOR-1716)', () => {
     expect(shape('const props={}; function f(x){x.feedbackPolicy="y"} props.type=(f(props),"x");')).toEqual([['feedback-policy', false], ['type', false]]);
     expect(shape('const props={}; function f(x){x.type="x"} f(props);f(props);')).toEqual([['type', false], ['type', false]]);
   });
+  it('keeps recursive provenance conservative without walking callable bodies', () => {
+    expect(shape('const props={}; function f(x){f(x);x.type="x"} f(props);')).toEqual([[null, true], [null, true]]);
+    expect(shape('const props={}; function f({x}){f({x});x.type="x"} f(props);')).toEqual([[null, true], [null, true]]);
+    expect(shape('const props={}; function f([x]){f([x]);x.type="x"} f(props);')).toEqual([[null, true], [null, true]]);
+    expect(shape('const props={}; function f(...xs){f(...xs);xs[0].type="x"} f(props);')).toEqual([[null, true], [null, true]]);
+    expect(shape('const props={}; function f(x=props){f(x);x.type="x"} f();')).toEqual([[null, true], [null, true]]);
+    expect(shape('const props={}; function a(x){b(x)} function b(y){a(y)} a(props);')).toEqual([[null, true]]);
+    expect(shape('const props={}; function dead(x){return;x.type="x"} if(false)dead(props);')).toEqual([]);
+  });
+  it('poisons dynamic container RHS escapes for every bound provenance shape', () => {
+    expect(shape('const props={}; let holder={}; function f(x){holder.value=x} f(props);')).toEqual([[null, true]]);
+    expect(shape('const props={}; let holder={}; function f({x}){holder.value=x} function g([x]){holder.value=x} function h(...xs){holder.value=xs[0]} function d(x=props){holder.value=x} f(props);g(props);h(props);d(props);')).toEqual([[null, true], [null, true], [null, true], [null, true]]);
+    expect(shape('const props={}; let holder={}; function returned(){return props} holder.value=returned();')).toEqual([[null, true], [null, true]]);
+  });
   it('keeps all known primitive computed aliases safe', () => {
     expect(shape('const props={}; const n=0, b=true, g=1n, z=null; props[n]="x"; props[b]="x"; props[g]="x"; props[z]="x"; props[unknown]="x";')).toEqual([[null, true]]);
   });
