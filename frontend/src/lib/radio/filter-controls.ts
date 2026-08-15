@@ -8,7 +8,9 @@
 // PBT raw <-> display conversion
 // Reads range from capabilities if available, falls back to IC-7610 defaults
 import { getControlRange } from '$lib/stores/capabilities.svelte';
-import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
+import type {
+  Capabilities, ControlRange as CapabilityControlRange, FilterModeConfig, FilterSegmentConfig,
+} from '$lib/types/capabilities';
 
 export const FILTER_BIPOLAR_MIN = -1200;
 export const FILTER_BIPOLAR_MAX = 1200;
@@ -20,6 +22,11 @@ export const FILTER_WIDTH_STEP = 50;
 const PBT_DEFAULTS = { rawCenter: 128, displayMin: -1200, displayMax: 1200 } as const;
 
 export type PbtRange = { rawCenter: number; displayMin: number; displayMax: number };
+
+/** Legacy numeric consumers must not inspect discriminated exact domains. */
+function isLegacyControlRange(control: unknown): control is CapabilityControlRange {
+  return control !== null && typeof control === 'object' && !('mapping' in control);
+}
 
 function pbtRange(): PbtRange {
   try {
@@ -61,7 +68,7 @@ function pbtRange(): PbtRange {
  */
 export function pbtRangeFromCaps(caps: Capabilities | null | undefined): PbtRange | undefined {
   const ctrl = caps?.controls?.pbt_inner;
-  if (!ctrl) return undefined;
+  if (!isLegacyControlRange(ctrl)) return undefined;
   const { raw_center: rawCenter, display_min: displayMin, display_max: displayMax } = ctrl;
   if (
     typeof rawCenter !== 'number' || !Number.isFinite(rawCenter) || rawCenter === 0
@@ -166,8 +173,8 @@ export function controlRangeFromCaps(
   key: string, caps: Capabilities | null | undefined,
 ): ControlDisplayRange | undefined {
   const ctrl = caps?.controls?.[key];
+  if (!isLegacyControlRange(ctrl)) return undefined;
   if (
-    ctrl &&
     ctrl.display_min !== undefined &&
     ctrl.display_max !== undefined &&
     ctrl.display_max > ctrl.display_min
