@@ -121,6 +121,27 @@ describe('normalized control capability domains', () => {
       display_step: 0.0002,
     })).toThrow(/lattice/);
   });
+  it('normalizes homogeneous legacy display numbers to immutable canonical strings', () => {
+    const parsed = parse({ ...linearDomain, display_min: -0, display_max: 1e-7, display_step: 2e-8, display_origin: -0 });
+    expect(parsed.display_min).toBe('0');
+    expect(parsed.display_step).toBe('0.00000002');
+    expect(Object.isFrozen(parsed)).toBe(true);
+  });
+  it('accepts arbitrary canonical decimal strings without numeric coercion', () => {
+    const huge = `1${'0'.repeat(399)}`;
+    const parsed = parse({
+      ...linearDomain, raw_max: 2, raw_step: 1,
+      display_min: '0', display_max: huge, display_step: `5${'0'.repeat(398)}`, display_origin: '0',
+    });
+    expect(parsed.display_max).toBe(huge);
+  });
+  it.each(['+1', '1e3', ' 1', '01', '1.0', '-0', '1.', ''])('rejects noncanonical string display %s', (display) => {
+    expect(() => parse({ ...linearDomain, display_min: display, display_max: '1', display_step: '0.2', display_origin: '0' })).toThrow(TypeError);
+  });
+  it('rejects mixed number and string display domains, including lookup values', () => {
+    expect(() => parse({ ...linearDomain, display_min: '0' })).toThrow(/homogeneous/);
+    expect(() => parse({ ...linearDomain, mapping: 'lookup', restoration: 'unavailable', lookup: [{ raw: 0, display: '0' }] })).toThrow(/homogeneous/);
+  });
   const lookup = [{ raw: 0, display: 0 }, { raw: 2, display: 0.2 }, { raw: 4, display: 0.4 }];
   it.each([
     ['empty', []],
@@ -149,6 +170,18 @@ describe('normalized control capability domains', () => {
     const parsed = parse({ ...partial, restoration: 'unavailable' });
     expect(parsed.mapping).toBe('lookup');
     if (parsed.mapping === 'lookup') expect(parsed.lookup).toHaveLength(3);
+  });
+  it('normalizes and deeply freezes canonical lookup displays', () => {
+    const parsed = parse({
+      ...linearDomain, mapping: 'lookup', restoration: 'unavailable',
+      display_min: '0', display_max: '1', display_step: '0.2', display_origin: '0',
+      lookup: [{ raw: 0, display: '0' }, { raw: 2, display: '0.2' }],
+    });
+    expect(parsed.mapping).toBe('lookup');
+    if (parsed.mapping === 'lookup') {
+      expect(parsed.lookup[1]!.display).toBe('0.2');
+      expect(Object.isFrozen(parsed.lookup[0])).toBe(true);
+    }
   });
   it('rejects large-index lookup values that are only approximately on lattice', () => {
     expect(() => parse({
