@@ -38,16 +38,17 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
         bind(part, part.type === 'RestElement' ? { items: rest, track: merge(rest).track } : value.items?.[index] || { missing: true }, env);
       }
     }
-    if (pattern.type === 'ObjectPattern') for (const part of pattern.properties || []) {
-      if (part.type === 'RestElement') bind(part.argument, { fields: value.fields || {}, track: merge(Object.values(value.fields || {})).track }, env);
-      else bind(part.value, value.fields?.[part.key.name || part.key.value] || { missing: true }, env);
+    if (pattern.type === 'ObjectPattern') { const used = new Set(); for (const part of pattern.properties || []) {
+      if (part.type === 'RestElement') { const fields = Object.fromEntries(Object.entries(value.fields || {}).filter(([key]) => !used.has(key))); bind(part.argument, { fields, track: merge(Object.values(fields)).track }, env); }
+      else { const key = part.key.name || part.key.value; used.add(String(key)); bind(part.value, value.fields?.[key] || { missing: true }, env); }
+    }
     }
   };
   const invoke = (fn, args) => {
     if (active.has(fn.node)) { emit('cycle', fn.node, { poison: true }); return { track: true, poison: true }; }
     active.add(fn.node); const env = scope(fn.env);
     if (fn.node.type === 'FunctionExpression' && fn.node.id) env[fn.node.id.name] = { fn, value: { track: false } };
-    for (let index = 0; index < (fn.node.params || []).length; index += 1) bind(fn.node.params[index], args[index] || { missing: true }, env);
+    for (let index = 0; index < (fn.node.params || []).length; index += 1) { const param = fn.node.params[index]; bind(param, param.type === 'RestElement' ? { items: args.slice(index), track: merge(args.slice(index)).track } : args[index] || { missing: true }, env); }
     const result = fn.node.body?.type === 'BlockStatement' ? block(fn.node.body.body, env) : { value: evaluate(fn.node.body, env) };
     active.delete(fn.node); return result.value || { track: false };
   };
@@ -71,13 +72,14 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
   };
   const evaluate = (node, env) => {
     node = unwrapExpression(node); if (!node) return { missing: true };
+    if (node.type === 'Literal') return { known: node.value, track: false };
     if (node.type === 'Identifier') return read(node, env);
     if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') return { track: false };
     if (node.type === 'ArrayExpression' || node.type === 'ObjectExpression') return argument(node, env);
     if (node.type === 'UnaryExpression') { const value = evaluate(node.argument, env); return node.operator === 'void' ? { ...value, undefined: true } : value; }
     if (node.type === 'CallExpression' || node.type === 'NewExpression' || node.type === 'OptionalCallExpression') {
       const callee = evaluate(node.callee, env), fn = callable(node.callee, env), args = [];
-      for (const part of node.arguments || []) args.push(argument(part, env));
+      for (const part of node.arguments || []) { const value = argument(part, env); if (value.spread && value.items) args.push(...value.items); else args.push(value); }
       if (fn) return invoke(fn, args);
       const value = merge([callee, ...args]); if (value.track) emit('escape', node); return value;
     }
@@ -92,6 +94,8 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
       const values = [evaluate(node.object, env)]; if (node.computed) values.push(evaluate(node.property, env)); return merge(values);
     }
+    if (node.type === 'LogicalExpression') { const left = evaluate(node.left, env); if (left.known !== undefined) { const takeRight = node.operator === '&&' ? !!left.known : node.operator === '||' ? !left.known : left.known == null; return takeRight ? merge([left, evaluate(node.right, env)]) : left; } return merge([left, evaluate(node.right, env)]); }
+    if (node.type === 'ConditionalExpression') { const test = evaluate(node.test, env); return test.known !== undefined ? evaluate(test.known ? node.consequent : node.alternate, env) : merge([test, evaluate(node.consequent, env), evaluate(node.alternate, env)]); }
     const values = []; for (const child of expressionChildren(node)) values.push(evaluate(child, env));
     return values.length ? merge(values) : read(node, env);
   };
@@ -105,7 +109,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     else if (node.type === 'BlockStatement') return block(node.body, scope(env));
     else if (node.type === 'ExpressionStatement') evaluate(node.expression, env);
     else if (node.type === 'IfStatement') {
-      evaluate(node.test, env); const yes = statement(node.consequent, scope(env)), no = node.alternate ? statement(node.alternate, scope(env)) : {};
+      const test = evaluate(node.test, env); if (test.known !== undefined) return statement(test.known ? node.consequent : node.alternate, scope(env)); const yes = statement(node.consequent, scope(env)), no = node.alternate ? statement(node.alternate, scope(env)) : {};
       if (yes.complete && no.complete) return { complete: true, value: merge([yes.value, no.value]) };
     }
     return {};

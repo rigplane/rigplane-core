@@ -69,7 +69,7 @@ describe('ordered debt evaluator (MOR-1720)', () => {
 
   it('binds a named function-expression self identity and stops after completed branches', () => {
     expect(facts('const direct = function self() { return self(); }; direct(); function done(flag) { if (flag) return props; else return props; mutate(props); } done(true);'))
-      .toEqual(['cycle', 'return', 'return', 'return']);
+      .toEqual(['cycle', 'return', 'return']);
   });
 
   it('has no facts for unrelated code', () => {
