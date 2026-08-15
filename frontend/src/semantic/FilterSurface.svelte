@@ -55,7 +55,87 @@
   never something computed off the pending display.
 -->
 <script module lang="ts">
-  import type { TxAuxField } from './radio-view-model';
+  import type { RadioViewModel, TxAuxField } from './radio-view-model';
+
+  export type PbtField = 'pbtInner' | 'pbtOuter';
+  export type PbtObservationOrder =
+    | Readonly<{ source: 'field'; value: number }>
+    | Readonly<{ source: 'snapshot'; value: number }>;
+  type RetainedPbt = Readonly<{ value: number; order: PbtObservationOrder }>;
+  export interface PbtPresentationState {
+    boundary: string | null;
+    pbtInner: RetainedPbt | null;
+    pbtOuter: RetainedPbt | null;
+  }
+  export interface PbtPresentationEvidence {
+    readonly boundary: string | null;
+    readonly order: Readonly<Record<PbtField, PbtObservationOrder | null>>;
+  }
+  export const EMPTY_PBT_PRESENTATION: Readonly<PbtPresentationState> = Object.freeze({
+    boundary: null, pbtInner: null, pbtOuter: null,
+  });
+
+  const PBT_FIELDS = ['pbtInner', 'pbtOuter'] as const;
+  const isNotOlder = (next: PbtObservationOrder, previous: PbtObservationOrder): boolean => {
+    if (next.source === previous.source) return next.value >= previous.value;
+    // A field-local observation marker is stronger than a snapshot fallback.
+    // Never replace it with an incomparable fallback; a real field marker may
+    // establish a new field-local ordering domain.
+    return next.source === 'field';
+  };
+
+  /**
+   * Pure, presentation-only PBT continuity reducer. Canonical radio truth is
+   * never changed: a retained reading remains operational:false, and the
+   * returned state is owned by one mounted composition instance rather than
+   * by a second radio store, poller, writer, or timer.
+   */
+  export function projectPbtPresentation(
+    previous: Readonly<PbtPresentationState>,
+    canonical: RadioViewModel | null,
+    evidence: PbtPresentationEvidence,
+  ): Readonly<{ state: Readonly<PbtPresentationState>; view: RadioViewModel | null }> {
+    const passband = canonical?.filterPassband;
+    if (!canonical || !passband || evidence.boundary === null) {
+      return Object.freeze({ state: EMPTY_PBT_PRESENTATION, view: canonical });
+    }
+    const sameBoundary = previous.boundary === evidence.boundary;
+    const nextState: PbtPresentationState = {
+      boundary: evidence.boundary, pbtInner: null, pbtOuter: null,
+    };
+    const projected = { ...passband };
+    for (const field of PBT_FIELDS) {
+      const current = passband[field];
+      const retained = sameBoundary ? previous[field] : null;
+      const order = evidence.order[field];
+      if (!current.availability.structural) continue;
+      if (
+        current.availability.operational
+        && current.reading.status === 'known'
+        && Number.isFinite(current.reading.value)
+        && order !== null
+      ) {
+        if (retained && !isNotOlder(order, retained.order)) {
+          nextState[field] = retained;
+          projected[field] = {
+            reading: { status: 'known', value: retained.value },
+            availability: { structural: true, operational: false },
+          };
+        } else {
+          nextState[field] = Object.freeze({ value: current.reading.value, order });
+        }
+      } else if (retained) {
+        nextState[field] = retained;
+        projected[field] = {
+          reading: { status: 'known', value: retained.value },
+          availability: { structural: true, operational: false },
+        };
+      }
+    }
+    const state = Object.freeze(nextState);
+    const view = Object.freeze({ ...canonical, filterPassband: Object.freeze(projected) });
+    return Object.freeze({ state, view });
+  }
 
   /** Fixed filter-shape choice set (SHARP/SOFT) — same two options
    *  `FilterPanel`'s shape buttons offer, `[value, label]`. */
@@ -79,6 +159,8 @@
     usable(f) ? undefined : 'field-not-observed';
   const textOf = (f: TxAuxField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : '?';
+  const presentationOf = (f: TxAuxField<unknown>): 'confirmed' | 'retained' | 'unknown' =>
+    usable(f) ? 'confirmed' : f.reading.status === 'known' ? 'retained' : 'unknown';
   const numberOf = (f: TxAuxField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
   /** Never fabricates a selection: `usable` alone cannot narrow `reading` for
@@ -89,7 +171,6 @@
 
 <script lang="ts">
   import { t } from '$lib/i18n';
-  import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
     view: RadioViewModel;
@@ -213,11 +294,13 @@
           <label
             class="filter-level" data-testid={`filter-${field}`}
             data-disabled-reason={reasonOf(filterPassband[field])}
+            data-presentation={presentationOf(filterPassband[field])}
           >
             <span class="filter-level-name">{label}</span>
             <input
               type="range" {min} {max} {step}
               value={numberOf(filterPassband[field], min)}
+              data-thumb={filterPassband[field].reading.status === 'known' ? 'visible' : 'hidden'}
               disabled={!usable(filterPassband[field])}
               oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
             />
@@ -245,6 +328,12 @@
   .filter-level-name { min-width: 8ch; }
   .filter-choice[aria-pressed='true'] { font-weight: 700; }
   .filter-choice:disabled { cursor: not-allowed; }
+  /* A range has no native indeterminate state. When no confirmed value has
+     ever existed, hide its thumb instead of rendering the browser's numeric
+     fallback as a plausible zero/endpoint position. The track and '?' remain
+     visible, so structural support and temporary unavailability stay clear. */
+  input[type='range'][data-thumb='hidden']::-webkit-slider-thumb { opacity: 0; }
+  input[type='range'][data-thumb='hidden']::-moz-range-thumb { opacity: 0; }
   /* MOR-1441 leg 2 — a pending (unconfirmed) target never renders identically
      to confirmed truth. Structural (italic + reduced opacity), never a
      color-only tell — same doctrine `.freq[data-freq-status='pending']`

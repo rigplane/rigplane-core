@@ -40,7 +40,10 @@
   import DspSurface, {
     type DspLevelField, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
-  import FilterSurface from '../../semantic/FilterSurface.svelte';
+  import FilterSurface, {
+    EMPTY_PBT_PRESENTATION, projectPbtPresentation,
+    type PbtObservationOrder, type PbtPresentationEvidence,
+  } from '../../semantic/FilterSurface.svelte';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import RfFrontEndSurface, {
@@ -445,9 +448,49 @@
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
   // MOR-1312 slice 12B: the scope-display snapshot is the FIFTH.
-  let view: RadioViewModel | null = $derived(
-    toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
-  );
+  let pbtPresentationState = EMPTY_PBT_PRESENTATION;
+  function pbtEvidence(canonical: RadioViewModel | null): PbtPresentationEvidence {
+    const state = runtime.state;
+    const caps = runtime.caps;
+    const generation = state?.providerGeneration;
+    if (
+      !state || !caps || !Number.isSafeInteger(generation) || generation !== caps.providerGeneration
+      || canonical?.activeReceiver.status !== 'known'
+    ) {
+      return { boundary: null, order: { pbtInner: null, pbtOuter: null } };
+    }
+    const receiver = canonical.activeReceiver.receiver;
+    const base = receiver === 'MAIN' ? 'main.' : 'sub.';
+    const snapshotOrder = (): PbtObservationOrder | null => Number.isSafeInteger(state.observationSeq)
+      ? { source: 'snapshot', value: state.observationSeq }
+      : null;
+    const orderFor = (field: 'pbtInner' | 'pbtOuter'): PbtObservationOrder | null => {
+      const status = state.fieldStatus?.[`${base}${field}`];
+      if (!status) return snapshotOrder();
+      if (
+        status.observed !== true || status.freshness !== 'fresh'
+        || status.availability !== 'available'
+      ) return null;
+      return typeof status.lastObservedMonotonic === 'number'
+        && Number.isFinite(status.lastObservedMonotonic)
+        ? { source: 'field', value: status.lastObservedMonotonic }
+        : snapshotOrder();
+    };
+    return {
+      boundary: `${generation}:${receiver}`,
+      order: { pbtInner: orderFor('pbtInner'), pbtOuter: orderFor('pbtOuter') },
+    };
+  }
+  let view: RadioViewModel | null = $derived.by(() => {
+    const canonical = toRadioViewModel(
+      runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot,
+    );
+    const projection = projectPbtPresentation(
+      pbtPresentationState, canonical, pbtEvidence(canonical),
+    );
+    pbtPresentationState = projection.state;
+    return projection.view;
+  });
 
   /**
    * MOR-1441 leg 2 — active receiver's wire index (0=MAIN, 1=SUB) for the
