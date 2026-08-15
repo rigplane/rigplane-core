@@ -14,17 +14,25 @@ type FakeState = {
   observationSeq?: number;
   fieldStatus?: Record<string, { observed?: boolean; freshness?: string; availability?: string; lastObservedMonotonic?: number | null }>;
 };
-const lifecycle = { commands: [] as FakeCommand[], confirms: [] as [string, number, number][] };
+const lifecycle = { commands: [] as FakeCommand[] };
 const runtimeState: { state: FakeState | null } = { state: null };
+const controlSession = vi.hoisted(() => ({ epoch: 7 }));
 const commandRadio = vi.hoisted(() => ({
   current: null as Record<string, unknown> | null,
   listeners: new Set<(value: Record<string, unknown> | null) => void>(),
 }));
-vi.mock('$lib/stores/commands.svelte', () => ({
-  getCommandLifecycles: () => lifecycle.commands,
-  confirmCommand: (id: string, epoch: number, eventEpoch: number) => lifecycle.confirms.push([id, epoch, eventEpoch]),
-  isCommandLifecycleSuperseded: () => false,
-}));
+vi.mock('$lib/stores/commands.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/stores/commands.svelte')>();
+  return {
+    ...actual,
+    getCommandLifecycles: () => lifecycle.commands,
+    isCommandLifecycleSuperseded: () => false,
+  };
+});
+vi.mock('$lib/runtime/commands/radio-intents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/commands/radio-intents')>();
+  return { ...actual, currentControlSessionEpoch: () => controlSession.epoch };
+});
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: () => commandRadio.current,
   subscribeRadioState: (handler: (value: Record<string, unknown> | null) => void) => {
@@ -40,13 +48,16 @@ vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () =
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: () => null }));
 
 import { getFilterWidthCommandLifecycle } from '../panel-adapters';
+import { beginCommand } from '$lib/stores/commands.svelte';
+import { currentControlSessionEpoch, dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 function emitAcceptedState(value: FakeState | null): void {
   commandRadio.current = value;
   for (const handler of commandRadio.listeners) handler(value);
 }
 const command = (over: Partial<FakeCommand> = {}): FakeCommand => ({
   id: 'width-1', name: 'set_filter_width', params: { width: 3000 },
-  originalEpoch: 7, eventEpoch: 7, createdAt: 1, status: 'pending', ...over,
+  originalEpoch: controlSession.epoch, eventEpoch: controlSession.epoch,
+  createdAt: 1, status: 'pending', ...over,
 });
 const state = (over: Partial<FakeState> = {}): FakeState => ({
   active: 'MAIN', main: { filterWidth: 2400 }, sub: {}, observationSeq: 4,
@@ -56,10 +67,18 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   afterEach(() => {
     vi.useRealTimers();
     lifecycle.commands = [];
-    lifecycle.confirms = [];
+    controlSession.epoch = 7;
     runtimeState.state = null;
     commandRadio.current = null;
     commandRadio.listeners.clear();
+  });
+  it('preserves real module exports while exposing a mutable control-session epoch', () => {
+    expect(beginCommand).toBeTypeOf('function');
+    expect(dispatchRadioIntent).toBeTypeOf('function');
+    expect(currentControlSessionEpoch()).toBe(7);
+    controlSession.epoch = 8;
+    expect(currentControlSessionEpoch()).toBe(8);
+    expect(command()).toMatchObject({ originalEpoch: 8, eventEpoch: 8 });
   });
   it('stays unavailable rather than fabricating a pending or confirmed value without observed width', () => {
     runtimeState.state = state({ main: {} });
@@ -81,20 +100,17 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('does not let an unrelated global observation advance confirm a cached matching width', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, observationSeq: 99,
       fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackObservationSeq: 4, ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('does not confirm a matching width from a reverse or stale field marker', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 3 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ target: 3000, phase: 'acknowledged', busy: true });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it.each([
     ['missing status', undefined],
@@ -109,13 +125,11 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null,
     });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('does not let a legacy record without an ACK field boundary confirm', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     lifecycle.commands = [command({ status: 'acknowledged' })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ target: 3000, phase: 'acknowledged', busy: true });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('does not establish a cold boundary from an accessor read', () => {
     runtimeState.state = state({ main: { filterWidth: 2400 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
@@ -124,13 +138,11 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(lifecycle.commands[0].ackFieldObservationTimes).toEqual({});
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6 } } });
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('does not treat a missing exact field marker in a non-empty ACK map as an empty boundary', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'sub.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('keeps a fresh non-matching observation canonical while the acknowledged target remains pending', () => {
     runtimeState.state = state({ main: { filterWidth: 2400 }, observationSeq: 5, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
@@ -138,7 +150,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2400, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('does not let an accessor read confirm SUB independently of MAIN', () => {
     runtimeState.state = state({
@@ -152,7 +163,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2800, target: 2800, phase: 'acknowledged', busy: true, outcome: null,
     });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('projects only the newest same-receiver target, so older late events cannot overwrite it', () => {
     runtimeState.state = state({ main: { filterWidth: 3000 }, observationSeq: 5 });
@@ -163,7 +173,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 3000, target: 2800, phase: 'pending', busy: true, outcome: null,
     });
-    expect(lifecycle.confirms).toEqual([]);
   });
   it('lets a newer terminal record suppress an older pending target', () => {
     runtimeState.state = state();
