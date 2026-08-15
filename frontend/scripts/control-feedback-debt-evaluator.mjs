@@ -92,7 +92,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       return value;
     }
     if (node.type === 'CallExpression' || node.type === 'NewExpression' || node.type === 'OptionalCallExpression') {
-      const callee = evaluate(node.callee, env), fn = callable(node.callee, env), args = [];
+      const callee = evaluate(node.callee, env, inChain), fn = callable(node.callee, env), args = [];
       if ((node.optional && isKnown(callee) && callee.value == null) || inChain && callee.chainShortCircuit) return callee;
       for (const part of node.arguments || []) { const value = argument(part, env); if (value.spread && value.items) args.push(...value.items); else args.push(value); }
       if (fn) return invoke(fn, args);
@@ -107,7 +107,8 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       if (value.track) emit('mutation', node); return value;
     }
     if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
-      const values = [evaluate(node.object, env)];
+      const values = [evaluate(node.object, env, inChain)];
+      if (inChain && values[0].chainShortCircuit) return values[0];
       if (node.optional && isKnown(values[0]) && values[0].value == null) return { ...values[0], chainShortCircuit: true };
       if (node.computed) values.push(evaluate(node.property, env)); return merge(values);
     }
