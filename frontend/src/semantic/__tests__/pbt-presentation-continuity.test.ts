@@ -55,6 +55,25 @@ describe('PBT presentation continuity', () => {
     expect(fields.pbtOuter).toMatchObject({ reading: { value: 200 }, availability: { operational: false } });
   });
 
+  it('snapshots the accepted boundary against caller mutation', () => {
+    const boundary = { providerGeneration: 1, receiver: 'MAIN', controlSession: 'a', epoch: 1 };
+    const first = reduce(EMPTY_PBT_PRESENTATION, view(100), evidence(fresh('field', 10), fresh('field', 10), boundary));
+    boundary.controlSession = 'b';
+    const result = reduce(first.state, view(999), evidence(unavailable, unavailable, boundary));
+    expect(result.state.pbtInner).toBeNull();
+    expect(result.view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: 999 });
+  });
+
+  it('snapshots accepted marker and value objects against caller mutation', () => {
+    const marker = { source: 'field' as const, value: 10 };
+    const first = reduce(EMPTY_PBT_PRESENTATION, view(100), evidence({ status: 'fresh', marker }));
+    marker.value = 0;
+    const result = reduce(first.state, view(999), evidence(fresh('snapshot', 5)));
+    expect(result.view.filterPassband!.pbtInner).toMatchObject({
+      reading: { value: 100 }, availability: { operational: false },
+    });
+  });
+
   it('does not retain unsupported fields', () => {
     const first = reduce();
     const unsupported = view();

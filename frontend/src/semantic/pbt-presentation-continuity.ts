@@ -44,6 +44,13 @@ const boundaryEquals = (
   && left.controlSession === right.controlSession
   && left.epoch === right.epoch;
 const validMarker = (marker: PbtObservationMarker): boolean => Number.isSafeInteger(marker.value);
+const snapshotBoundary = (
+  boundary: NonNullable<PbtPresentationEvidence['boundary']>,
+): NonNullable<PbtPresentationEvidence['boundary']> => Object.freeze({ ...boundary });
+const snapshotMarker = (marker: PbtObservationMarker): PbtObservationMarker =>
+  Object.freeze({ source: marker.source, value: marker.value });
+const snapshotRetained = (value: number, marker: PbtObservationMarker): RetainedPbt =>
+  Object.freeze({ value, marker: snapshotMarker(marker) });
 const retainedField = (field: RetainedPbt): FilterPassbandViewModel[PbtField] => ({
   reading: { status: 'known', value: field.value },
   availability: { structural: true, operational: false },
@@ -64,7 +71,9 @@ export function projectPbtPresentation(
     return Object.freeze({ state: EMPTY_PBT_PRESENTATION, view: canonical });
   }
   const sameBoundary = boundaryEquals(previous.boundary, evidence.boundary);
-  const state: NextPbtPresentationState = { boundary: evidence.boundary, pbtInner: null, pbtOuter: null };
+  const state: NextPbtPresentationState = {
+    boundary: snapshotBoundary(evidence.boundary), pbtInner: null, pbtOuter: null,
+  };
   let projected: FilterPassbandViewModel | null = null;
   for (const field of FIELDS) {
     const current = passband[field];
@@ -79,7 +88,7 @@ export function projectPbtPresentation(
       && currentValue !== null
       && (!retained || incoming.marker.value > retained.marker.value);
     if (accepted) {
-      state[field] = Object.freeze({ value: currentValue, marker: incoming.marker });
+      state[field] = snapshotRetained(currentValue, incoming.marker);
     } else if (retained) {
       state[field] = retained;
       projected ??= { ...passband };
