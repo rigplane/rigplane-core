@@ -364,6 +364,35 @@ describe('exact NR-level projection (MOR-1737)', () => {
       expect(onLevelChange).not.toHaveBeenCalled();
     }, { onLevelChange });
   });
+
+  it.each([
+    ['endpoints off the origin lattice', {
+      value: 5,
+      domain: { min: 0, max: 10, step: 2, origin: 1 },
+      adjustable: true,
+    }],
+    ['overflow-sensitive endpoint delta', {
+      value: Number.MIN_SAFE_INTEGER,
+      domain: {
+        min: Number.MIN_SAFE_INTEGER,
+        max: Number.MAX_SAFE_INTEGER - 1,
+        step: 5,
+        origin: Number.MIN_SAFE_INTEGER,
+      },
+      adjustable: true,
+    }],
+  ] as const)('rejects a projection with %s', (_label, projection) => {
+    const onLevelChange = vi.fn();
+    const view = withNrProjection(projection.value, projection);
+    withSurface(view, (s) => {
+      const input = s.input('nrLevel')!;
+      expect(input.disabled).toBe(true);
+      input.value = String(projection.value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).not.toHaveBeenCalled();
+    }, { onLevelChange });
+  });
 });
 
 // ── 4b. Manual-notch position is the CI-V raw 0..255 domain ───────────────

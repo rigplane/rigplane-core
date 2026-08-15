@@ -88,10 +88,15 @@
     value: number; text: string; usable: boolean;
   }>;
 
+  const safeNrInteger = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value);
+  const onNrLattice = (value: number, origin: number, step: number): boolean =>
+    (BigInt(value) - BigInt(origin)) % BigInt(step) === 0n;
   const acceptsNrValue = (value: unknown, domain: NonNullable<NrDomain>): value is number =>
-    typeof value === 'number' && Number.isSafeInteger(value)
+    safeNrInteger(value) && safeNrInteger(domain.origin)
+    && safeNrInteger(domain.step) && domain.step > 0
     && value >= domain.min && value <= domain.max
-    && (value - domain.origin) % domain.step === 0;
+    && onNrLattice(value, domain.origin, domain.step);
 
   function nrPresentation(dsp: DspViewModel): NrPresentation {
     const unavailable = {
@@ -102,10 +107,12 @@
       const projection = dsp.nrLevelProjection;
       const domain = projection?.domain;
       if (!projection || !domain
-        || !Number.isSafeInteger(domain.min) || !Number.isSafeInteger(domain.max)
-        || !Number.isSafeInteger(domain.step) || domain.step <= 0
-        || !Number.isSafeInteger(domain.origin)
-        || domain.min >= domain.max || domain.origin < domain.min || domain.origin > domain.max) {
+        || !safeNrInteger(domain.min) || !safeNrInteger(domain.max)
+        || !safeNrInteger(domain.step) || domain.step <= 0
+        || !safeNrInteger(domain.origin)
+        || domain.min >= domain.max || domain.origin < domain.min || domain.origin > domain.max
+        || !onNrLattice(domain.min, domain.origin, domain.step)
+        || !onNrLattice(domain.max, domain.origin, domain.step)) {
         return unavailable;
       }
       const projectionUsable = projection.adjustable === true
