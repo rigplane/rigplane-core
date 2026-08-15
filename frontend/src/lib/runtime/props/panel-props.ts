@@ -34,7 +34,11 @@ function activeReceiverKey(state: ServerState): 'main' | 'sub' {
 }
 
 function hasCap(caps: Capabilities | null, name: string): boolean {
-  return caps?.capabilities?.includes(name) ?? false;
+  try {
+    return caps?.capabilities?.includes(name) ?? false;
+  } catch {
+    return false;
+  }
 }
 
 function topFieldAvailable(state: ServerState | null, field: string): boolean {

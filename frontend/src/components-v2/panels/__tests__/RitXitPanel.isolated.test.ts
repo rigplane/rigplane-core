@@ -308,6 +308,17 @@ describe('RIT exact-domain mapper', () => {
     expect(() => toRitXitProps(null, caps as any).ritDomain).not.toThrow();
     expect(toRitXitProps(null, caps as any).ritDomain).toBeNull();
   });
+
+  it('fails closed for revoked capabilities before capability-tag lookup', () => {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+
+    expect(() => toRitXitProps(null, proxy as any)).not.toThrow();
+    const props = toRitXitProps(null, proxy as any);
+    expect(props.hasRit).toBe(false);
+    expect(props.hasXit).toBe(false);
+    expect(props.ritDomain).toBeNull();
+  });
 });
 
 /**
