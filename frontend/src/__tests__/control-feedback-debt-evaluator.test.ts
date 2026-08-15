@@ -19,6 +19,16 @@ describe('ordered debt evaluator (MOR-1720)', () => {
       .toEqual(['escape']);
   });
 
+  it('keeps satisfies, chain, optional, assertion and instantiation wrappers executable', () => {
+    expect(facts('const once = ((() => mutate(props)) satisfies unknown)!; (once as unknown)(); ((() => mutate(props)) as unknown)?.(); sink<string>(props);'))
+      .toEqual(['escape', 'escape', 'escape']);
+  });
+
+  it('eagerly visits every child after a tracked child', () => {
+    expect(facts('first(props) + second(props); [first(props), second(props)]; ({ a: first(props), b: second(props) });'))
+      .toEqual(['escape', 'escape', 'escape', 'escape', 'escape', 'escape']);
+  });
+
   it('uses defaults only for missing or undefined arguments, in parameter order', () => {
     expect(facts('function f(a, b = mutate(props), { x = mutate(props) } = {}) { return a; } f(1, 2, { x: 3 }); f(1, undefined, {});'))
       .toEqual(['escape', 'escape']);
@@ -29,6 +39,24 @@ describe('ordered debt evaluator (MOR-1720)', () => {
       .toEqual(['escape']);
   });
 
+  it('preserves supplied array, object and rest values without running their defaults', () => {
+    expect(facts('function f([x = mutate(props), ...rest], { y = mutate(props), ...more }) { use(rest); use(more); } f([1, props], { y: 1, z: props });'))
+      .toEqual(['escape', 'escape']);
+  });
+
+  it('recursively binds nested destructuring defaults', () => {
+    expect(facts('function f({ nested: [value = mutate(props)] = [] }) {} f({ nested: [1] }); f({});')).toEqual(['escape']);
+  });
+
+  it('retains a spread array value for a rest binding', () => {
+    expect(facts('function f([head, ...rest]) { use(rest); } f([1, ...[props]]);')).toEqual(['escape']);
+  });
+
+  it('uses void zero and global undefined, but never a shadowed undefined, for defaults', () => {
+    expect(facts('function f(value = mutate(props)) {} f(void 0); f(undefined); const undefined = props; f(undefined);'))
+      .toEqual(['escape', 'escape']);
+  });
+
   it('orders nested calls, writes, member receivers, and tag substitutions', () => {
     expect(facts('outer(mutate(props), props.value = mutate(props)); props.method(mutate(props)); tag`${mutate(props)}`;'))
       .toEqual(['escape', 'escape', 'mutation', 'escape', 'escape', 'escape', 'escape', 'escape']);
@@ -37,6 +65,11 @@ describe('ordered debt evaluator (MOR-1720)', () => {
   it('reports recursive and mutual callable cycles without executing unrelated closures', () => {
     expect(facts('function a() { b(); } function b() { a(); } a(); const idle = () => mutate(props);'))
       .toEqual(['cycle']);
+  });
+
+  it('binds a named function-expression self identity and stops after completed branches', () => {
+    expect(facts('const direct = function self() { return self(); }; direct(); function done(flag) { if (flag) return props; else return props; mutate(props); } done(true);'))
+      .toEqual(['cycle', 'return', 'return', 'return']);
   });
 
   it('has no facts for unrelated code', () => {

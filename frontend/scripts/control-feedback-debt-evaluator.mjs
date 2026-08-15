@@ -1,110 +1,115 @@
 // @ts-nocheck -- parser AST nodes intentionally remain version-neutral plain objects.
+import { expressionChildren, isGenuineUndefined, unwrapExpression } from './control-feedback-debt-expression.mjs';
+
 /**
- * Pure, parser-node ordered-effect evaluator. Identity ownership remains with its caller.
+ * Evaluate parser expressions in execution order; callers retain canonical identity ownership.
  * @param {object} program
  * @param {{ isTracked?: (node: any, scope: any) => boolean }} options
  */
 export function evaluateOrderedEffects(program, { isTracked = () => false } = {}) {
-  const facts = [], active = new Set();
-  const scope = (parent = null) => Object.create(parent);
+  const facts = [], active = new Set(), scope = (parent = null) => Object.create(parent);
   const emit = (kind, node, extra = {}) => facts.push({ kind, node, ...extra });
-  const unwrap = (node) => {
-    while (node && ['ParenthesizedExpression', 'TSAsExpression', 'TSTypeAssertion', 'TSNonNullExpression', 'TypeCastExpression'].includes(node.type)) node = node.expression;
-    return node;
-  };
-  const lookup = (env, name) => env && (name in env) ? env[name] : undefined;
-  const value = (node, env) => {
-    node = unwrap(node);
-    if (!node) return false;
-    if (node.type === 'Identifier') return lookup(env, node.name)?.track ?? isTracked(node, env);
-    if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') return value(node.object, env) || (node.computed && value(node.property, env));
-    if (node.type === 'AssignmentExpression') return value(node.left, env) || value(node.right, env);
-    return isTracked(node, env);
+  const merge = (values) => { let track = false; for (const value of values) { if (value?.track) track = true; } return { track }; };
+  const binding = (env, name) => env && (name in env) ? env[name] : undefined;
+  const unboundUndefined = (node, env) => isGenuineUndefined(node, (name) => binding(env, name) !== undefined);
+  const read = (node, env) => {
+    node = unwrapExpression(node);
+    if (!node) return { missing: true };
+    if (node.type === 'Identifier') return binding(env, node.name)?.value || { track: isTracked(node, env) };
+    if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') return merge([read(node.object, env), node.computed ? read(node.property, env) : null]);
+    return { track: isTracked(node, env) };
   };
   const callable = (node, env) => {
-    node = unwrap(node);
-    if (node?.type === 'Identifier') return lookup(env, node.name)?.fn;
+    node = unwrapExpression(node);
+    if (node?.type === 'Identifier') return binding(env, node.name)?.fn;
     return node && ['FunctionExpression', 'ArrowFunctionExpression'].includes(node.type) ? { node, env } : undefined;
   };
-  const hoist = (body, env) => body.forEach((node) => {
-    if (node.type === 'FunctionDeclaration' && node.id) env[node.id.name] = { fn: { node, env }, track: false };
-  });
-  const bind = (pattern, argument, env) => {
-    pattern = unwrap(pattern);
+  const hoist = (body, env) => { for (const node of body) if (node.type === 'FunctionDeclaration' && node.id) env[node.id.name] = { fn: { node, env }, value: { track: false } }; };
+  const bind = (pattern, value, env) => {
+    pattern = unwrapExpression(pattern); value ||= { missing: true };
     if (!pattern) return;
-    if (pattern.type === 'AssignmentPattern') {
-      const missing = !argument || argument.missing || argument.undefined;
-      const next = missing ? { track: evaluate(pattern.right, env) } : argument;
-      bind(pattern.left, next, env); return;
+    if (pattern.type === 'AssignmentPattern') return bind(pattern.left, value.missing || value.undefined ? evaluate(pattern.right, env) : value, env);
+    if (pattern.type === 'Identifier') { env[pattern.name] = { value }; return; }
+    if (pattern.type === 'RestElement') return bind(pattern.argument, value.rest || value, env);
+    if (pattern.type === 'ArrayPattern') {
+      for (let index = 0; index < pattern.elements.length; index += 1) {
+        const part = pattern.elements[index]; if (!part) continue;
+        const rest = (value.items || []).slice(index);
+        bind(part, part.type === 'RestElement' ? { items: rest, track: merge(rest).track } : value.items?.[index] || { missing: true }, env);
+      }
     }
-    if (pattern.type === 'Identifier') { env[pattern.name] = { track: !!argument?.track }; return; }
-    if (pattern.type === 'RestElement') { bind(pattern.argument, { track: false }, env); return; }
-    if (pattern.type === 'ObjectPattern') for (const property of pattern.properties || []) {
-      if (property.type === 'RestElement') bind(property.argument, { track: false }, env);
-      else bind(property.value, argument?.fields?.[property.key.name || property.key.value] || { missing: true }, env);
+    if (pattern.type === 'ObjectPattern') for (const part of pattern.properties || []) {
+      if (part.type === 'RestElement') bind(part.argument, { fields: value.fields || {}, track: merge(Object.values(value.fields || {})).track }, env);
+      else bind(part.value, value.fields?.[part.key.name || part.key.value] || { missing: true }, env);
     }
-    if (pattern.type === 'ArrayPattern') for (const element of pattern.elements || []) bind(element, { missing: true }, env);
   };
   const invoke = (fn, args) => {
-    if (active.has(fn.node)) { emit('cycle', fn.node, { poison: true }); return false; }
-    active.add(fn.node);
-    const env = scope(fn.env);
-    (fn.node.params || []).forEach((param, index) => bind(param, args[index] || { missing: true }, env));
-    const result = fn.node.body?.type === 'BlockStatement' ? block(fn.node.body.body, env) : { track: evaluate(fn.node.body, env) };
-    active.delete(fn.node); return !!result.track;
-  };
-  const evaluate = (node, env) => {
-    node = unwrap(node);
-    if (!node) return false;
-    if (node.type === 'SequenceExpression') return node.expressions.reduce((tracked, part) => evaluate(part, env) || tracked, false);
-    if (node.type === 'CallExpression' || node.type === 'NewExpression' || node.type === 'OptionalCallExpression') {
-      const calleeTracked = evaluate(node.callee, env), fn = callable(node.callee, env);
-      const args = (node.arguments || []).map((arg) => argument(arg, env));
-      if (fn) return invoke(fn, args);
-      const tracked = calleeTracked || args.some((arg) => arg.track);
-      if (tracked) emit('escape', node); return tracked;
-    }
-    if (node.type === 'TaggedTemplateExpression') {
-      const tag = evaluate(node.tag, env), substitutions = (node.quasi.expressions || []).map((part) => evaluate(part, env));
-      const tracked = tag || substitutions.some(Boolean); if (tracked) emit('escape', node); return tracked;
-    }
-    if (node.type === 'AssignmentExpression' || node.type === 'UpdateExpression') {
-      const left = evaluate(node.left, env), right = node.right ? evaluate(node.right, env) : false;
-      const tracked = left || right; if (tracked) emit('mutation', node); return tracked;
-    }
-    if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
-      const object = evaluate(node.object, env), property = node.computed ? evaluate(node.property, env) : false; return object || property || value(node, env);
-    }
-    if (node.type === 'Identifier') return value(node, env);
-    if (node.type === 'BinaryExpression' || node.type === 'LogicalExpression' || node.type === 'ConditionalExpression' || node.type === 'UnaryExpression' || node.type === 'AwaitExpression' || node.type === 'SpreadElement') {
-      return ['left', 'right', 'test', 'consequent', 'alternate', 'argument'].some((key) => evaluate(node[key], env));
-    }
-    if (node.type === 'ArrayExpression') return (node.elements || []).some((part) => evaluate(part, env));
-    if (node.type === 'ObjectExpression') return (node.properties || []).some((part) => evaluate(part.value || part.argument, env));
-    return value(node, env);
+    if (active.has(fn.node)) { emit('cycle', fn.node, { poison: true }); return { track: true, poison: true }; }
+    active.add(fn.node); const env = scope(fn.env);
+    if (fn.node.type === 'FunctionExpression' && fn.node.id) env[fn.node.id.name] = { fn, value: { track: false } };
+    for (let index = 0; index < (fn.node.params || []).length; index += 1) bind(fn.node.params[index], args[index] || { missing: true }, env);
+    const result = fn.node.body?.type === 'BlockStatement' ? block(fn.node.body.body, env) : { value: evaluate(fn.node.body, env) };
+    active.delete(fn.node); return result.value || { track: false };
   };
   const argument = (node, env) => {
-    const raw = unwrap(node), result = { undefined: raw?.type === 'Identifier' && raw.name === 'undefined' };
+    const raw = unwrapExpression(node);
+    if (raw?.type === 'SpreadElement') return { ...argument(raw.argument, env), spread: true };
+    if (raw?.type === 'ArrayExpression') {
+      const items = []; for (const part of raw.elements || []) { const value = part ? argument(part, env) : { missing: true }; if (value.spread && value.items) items.push(...value.items); else items.push(value); }
+      return { items, track: merge(items).track };
+    }
     if (raw?.type === 'ObjectExpression') {
-      result.fields = Object.fromEntries(raw.properties.filter((part) => part.type === 'Property').map((part) => [part.key.name || part.key.value, argument(part.value, env)]));
-      result.track = Object.values(result.fields).some((part) => part.track);
-    } else result.track = evaluate(node, env);
-    return result;
+      const fields = {};
+      for (const part of raw.properties || []) {
+        if (part.type === 'SpreadElement') { const spread = argument(part.argument, env); Object.assign(fields, spread.fields || {}); continue; }
+        if (part.computed) evaluate(part.key, env);
+        fields[part.key.name || part.key.value] = argument(part.value, env);
+      }
+      return { fields, track: merge(Object.values(fields)).track };
+    }
+    const value = evaluate(node, env); if (unboundUndefined(raw, env)) value.undefined = true; return value;
+  };
+  const evaluate = (node, env) => {
+    node = unwrapExpression(node); if (!node) return { missing: true };
+    if (node.type === 'Identifier') return read(node, env);
+    if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') return { track: false };
+    if (node.type === 'ArrayExpression' || node.type === 'ObjectExpression') return argument(node, env);
+    if (node.type === 'UnaryExpression') { const value = evaluate(node.argument, env); return node.operator === 'void' ? { ...value, undefined: true } : value; }
+    if (node.type === 'CallExpression' || node.type === 'NewExpression' || node.type === 'OptionalCallExpression') {
+      const callee = evaluate(node.callee, env), fn = callable(node.callee, env), args = [];
+      for (const part of node.arguments || []) args.push(argument(part, env));
+      if (fn) return invoke(fn, args);
+      const value = merge([callee, ...args]); if (value.track) emit('escape', node); return value;
+    }
+    if (node.type === 'TaggedTemplateExpression') {
+      const values = [evaluate(node.tag, env)]; for (const part of node.quasi.expressions || []) values.push(evaluate(part, env));
+      const value = merge(values); if (value.track) emit('escape', node); return value;
+    }
+    if (node.type === 'AssignmentExpression' || node.type === 'UpdateExpression') {
+      const left = evaluate(node.left, env), right = node.right ? evaluate(node.right, env) : { track: false }, value = merge([left, right]);
+      if (value.track) emit('mutation', node); return value;
+    }
+    if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
+      const values = [evaluate(node.object, env)]; if (node.computed) values.push(evaluate(node.property, env)); return merge(values);
+    }
+    const values = []; for (const child of expressionChildren(node)) values.push(evaluate(child, env));
+    return values.length ? merge(values) : read(node, env);
   };
   const statement = (node, env) => {
     if (node.type === 'FunctionDeclaration') return {};
     if (node.type === 'VariableDeclaration') for (const declaration of node.declarations) {
-      const init = declaration.init, fn = callable(init, env), track = init ? evaluate(init, env) : false;
-      if (declaration.id.type === 'Identifier') env[declaration.id.name] = { fn, track };
-      else bind(declaration.id, { track }, env);
+      const fn = callable(declaration.init, env), value = declaration.init ? evaluate(declaration.init, env) : { missing: true };
+      if (declaration.id.type === 'Identifier') env[declaration.id.name] = { fn, value }; else bind(declaration.id, value, env);
     }
-    else if (node.type === 'ReturnStatement') { const track = evaluate(node.argument, env); if (track) emit('return', node); return { returned: true, track }; }
+    else if (node.type === 'ReturnStatement') { const value = evaluate(node.argument, env); if (value.track) emit('return', node); return { complete: true, value }; }
     else if (node.type === 'BlockStatement') return block(node.body, scope(env));
     else if (node.type === 'ExpressionStatement') evaluate(node.expression, env);
-    else if (node.type === 'IfStatement') { evaluate(node.test, env); statement(node.consequent, env); if (node.alternate) statement(node.alternate, env); }
+    else if (node.type === 'IfStatement') {
+      evaluate(node.test, env); const yes = statement(node.consequent, scope(env)), no = node.alternate ? statement(node.alternate, scope(env)) : {};
+      if (yes.complete && no.complete) return { complete: true, value: merge([yes.value, no.value]) };
+    }
     return {};
   };
-  const block = (body, env) => { hoist(body, env); for (const node of body) { const result = statement(node, env); if (result.returned) return result; } return {}; };
-  block(program.body || program, scope());
-  return facts;
+  const block = (body, env) => { hoist(body, env); for (const node of body) { const result = statement(node, env); if (result.complete) return result; } return {}; };
+  block(program.body || program, scope()); return facts;
 }
