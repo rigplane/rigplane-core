@@ -43,6 +43,10 @@ const newer = (barrier: PttMarker, observation: PttObservation) => {
   if (barrier.pttObservationSeq !== null || seq !== null) return barrier.pttObservationSeq !== null && seq !== null && seq > barrier.pttObservationSeq;
   return barrier.pttLastObservedMonotonic !== null && at !== null && at > barrier.pttLastObservedMonotonic;
 };
+const sameMarker = (marker: PttMarker, observation: PttObservation) =>
+  marker.authorityEpoch === observation.marker.authorityEpoch
+  && marker.pttObservationSeq === observation.marker.pttObservationSeq
+  && marker.pttLastObservedMonotonic === observation.marker.pttLastObservedMonotonic;
 const authoritative = (observation: PttObservation) => observation.observed && observation.fresh && (observation.source === 'radio-readback' || observation.source === 'backend-observation');
 const ready = (eligibility: Eligibility) => eligibility.catPtt && eligibility.browserTxAudio && eligibility.controlLive && eligibility.permit === 'allowed' && eligibility.target !== null;
 const effect = (type: TxEffectType, state: TxState, commandId?: string, barrier?: PttMarker, guard: TxGuard | null = state.guard): TxEffect => ({ type, ...(guard ? { guard } : {}), ...(commandId !== undefined ? { commandId } : {}), ...(barrier ? { barrier } : {}) });
@@ -90,7 +94,8 @@ export function transition(state: TxState, event: TxEvent): TxTransition {
   if (('offCommandId' in event && typeof event.offCommandId !== 'string') || ((event.type === 'audio-ready' || event.type === 'release' || event.type === 'on-sent') && typeof event.commandId !== 'string')) return { state, effects: [] };
   if (event.type === 'start') {
     if (state.phase !== 'idle') return { state, effects: [] };
-    const ok = ready(event.eligibility) && event.ptt.value === false && authoritative(event.ptt) && newer(state.pttMarker, event.ptt) && event.ptt.marker.authorityEpoch === state.authorityEpoch;
+    const currentConfirmedOff = state.radioTx === 'off' && sameMarker(state.pttMarker, event.ptt);
+    const ok = ready(event.eligibility) && event.ptt.value === false && authoritative(event.ptt) && (newer(state.pttMarker, event.ptt) || currentConfirmedOff) && event.ptt.marker.authorityEpoch === state.authorityEpoch;
     if (!ok) return { state: { ...state, phase: 'failed', fault: 'not-eligible', txRisk: 'none', sourceId: null, leaseId: null, guard: null }, effects: [] };
     const generation = state.generation + 1;
     const guard = { leaseId: event.leaseId, generation, authorityEpoch: state.authorityEpoch };
