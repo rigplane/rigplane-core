@@ -21,10 +21,14 @@
 </script>
 
 <script lang="ts">
-  import { onDestroy, type Snippet } from 'svelte';
+  import { onDestroy, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+  import {
+    EMPTY_PBT_PRESENTATION, projectPbtPresentation, type PbtField,
+    type PbtPresentationEvidence, type PbtPresentationState,
+  } from '../../semantic/pbt-presentation-continuity';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
   import {
     bindSemanticSurfaceHandlers, getPendingFrequencyHz,
@@ -445,9 +449,43 @@
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
   // MOR-1312 slice 12B: the scope-display snapshot is the FIFTH.
-  let view: RadioViewModel | null = $derived(
+  let canonicalView: RadioViewModel | null = $derived(
     toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
   );
+  let pbtPresentation: PbtPresentationState = $state(EMPTY_PBT_PRESENTATION);
+  let view = $state<RadioViewModel | null>(null);
+  const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
+  const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
+  let controlSession = $state(readControlSession?.() ?? { state: 'disconnected', epoch: -1 });
+  const unsubscribePbtSession = subscribeControlSession?.((next) => { controlSession = next; });
+  onDestroy(() => unsubscribePbtSession?.());
+  const pbtEvidence = (): PbtPresentationEvidence => {
+    const state = runtime.state, session = controlSession, generation = state?.providerGeneration;
+    const receiver = canonicalView?.activeReceiver;
+    const boundary = session.state === 'connected'
+      && receiver?.status === 'known'
+      && Number.isSafeInteger(generation)
+      && generation === runtime.caps?.providerGeneration
+      ? { providerGeneration: generation as number, receiver: receiver.receiver,
+        controlSession: session.state, epoch: session.epoch } : null;
+    const field = (name: PbtField) => {
+      const path = `${receiver?.status === 'known' && receiver.receiver === 'SUB' ? 'sub' : 'main'}.${name}`;
+      const status = state?.fieldStatus?.[path];
+      const observedAt = status?.lastObservedMonotonic;
+      return status?.observed && status.freshness === 'fresh' && status.availability === 'available'
+        && Number.isSafeInteger(observedAt)
+        ? { status: 'fresh' as const, marker: { source: 'field' as const, value: observedAt as number } }
+        : { status: status?.freshness === 'stale' ? 'stale' as const : 'unavailable' as const };
+    };
+    return { boundary, fields: { pbtInner: field('pbtInner'), pbtOuter: field('pbtOuter') } };
+  };
+  $effect(() => {
+    const projected = canonicalView === null
+      ? { state: EMPTY_PBT_PRESENTATION, view: null }
+      : projectPbtPresentation(untrack(() => pbtPresentation), canonicalView, pbtEvidence());
+    pbtPresentation = projected.state;
+    view = projected.view;
+  });
 
   /**
    * MOR-1441 leg 2 — active receiver's wire index (0=MAIN, 1=SUB) for the
