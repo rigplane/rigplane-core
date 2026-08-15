@@ -1166,6 +1166,7 @@ def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
             )
             key_path = _toml_key_path(tokens[:equals]) if equals is not None else None
             if key_path is not None:
+                assert equals is not None
                 dotted_in_table = (
                     current_table == ("tx_interlock",)
                     and key_path[:1] == ("disposition_overrides",)
