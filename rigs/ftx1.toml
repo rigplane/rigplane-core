@@ -462,6 +462,76 @@ style = "level_is_toggle"
 range_min = 0
 range_max = 10
 
+[controls.rit]
+mapping = "identity"
+raw_min = -9999
+raw_max = 9999
+raw_step = 1
+raw_origin = 0
+display_min = -9999
+display_max = 9999
+display_step = 1
+display_origin = 0
+display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
+
+[controls.nr_level]
+mapping = "identity"
+raw_min = 0
+raw_max = 10
+raw_step = 1
+raw_origin = 0
+display_min = 0
+display_max = 10
+display_step = 1
+display_origin = 0
+display_unit = "level"
+quantization = "reject"
+restoration = "exact"
+
+[controls.manual_notch_freq]
+mapping = "linear"
+raw_min = 1
+raw_max = 320
+raw_step = 1
+raw_origin = 1
+display_min = 10
+display_max = 3200
+display_step = 10
+display_origin = 10
+display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
+
+[controls.if_shift]
+mapping = "identity"
+raw_min = -1200
+raw_max = 1200
+raw_step = 20
+raw_origin = 0
+display_min = -1200
+display_max = 1200
+display_step = 20
+display_origin = 0
+display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
+
+[controls.cw_pitch]
+mapping = "identity"
+raw_min = 300
+raw_max = 1050
+raw_step = 10
+raw_origin = 300
+display_min = 300
+display_max = 1050
+display_step = 10
+display_origin = 300
+display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
+
 # Speech processor (PL) level is 0-100 on the FTX-1 (CAT OM). Declared so the
 # range-aware level RMVR nudges inside the band instead of the 0-255 default
 # (MOR-695). Key matches the IC-7610 ``compressor_level`` candidate.

@@ -1068,6 +1068,17 @@ choices = [
             path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
         ):
             rig = load_rig(path)
+            if path.name == "ftx1.toml":
+                assert rig._control_domains is not None
+                assert set(rig._control_domains) == {
+                    "rit",
+                    "nr_level",
+                    "manual_notch_freq",
+                    "if_shift",
+                    "cw_pitch",
+                }
+                assert rig.to_profile().controls is not rig.controls
+                continue
             assert rig._control_domains is None, path.name
             assert rig.to_profile().controls == rig.controls, path.name
 
