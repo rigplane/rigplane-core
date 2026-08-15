@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, MagicMock, call
+from zipfile import Path as ZipPath
+from zipfile import ZipFile
 
 import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.backends.yaesu_cat import radio as yaesu_radio
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
 from rigplane.exceptions import CommandError
@@ -51,6 +55,25 @@ def test_instantiation_with_string_profile():
     r = YaesuCatRadio("/dev/null", profile="ftx1")
     assert r.model == "FTX-1"
     assert not r.connected
+
+
+def test_string_profile_loads_from_non_filesystem_package_resources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Yaesu consumer resolves bundled profiles without a source tree."""
+    archive_path = tmp_path / "rigplane.zip"
+    with ZipFile(archive_path, "w") as archive:
+        for name in ("ftx1.toml", "_keyboard-default.toml"):
+            archive.writestr(f"rigplane/rigs/{name}", (_RIGS_DIR / name).read_bytes())
+
+    with ZipFile(archive_path) as archive:
+        package_root = ZipPath(archive, "rigplane/")
+        monkeypatch.setattr(resources, "files", lambda package: package_root)
+        monkeypatch.setattr(yaesu_radio, "_RIGS_DIR", tmp_path / "missing-rigs")
+        radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+
+    assert radio.model == "FTX-1"
+    assert radio._config.keyboard is not None
 
 
 def test_instantiation_with_rig_config(config):
