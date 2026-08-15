@@ -24,7 +24,7 @@ import {
   getRadioPowerOn,
 } from '$lib/stores/connection.svelte';
 import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
-import { connect, onMessage, sendRaw } from '$lib/transport/ws-client';
+import * as transport from '$lib/transport/ws-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
 import { derivePresentationCapabilities } from './adapters/presentation-capabilities';
@@ -38,6 +38,7 @@ import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { WsIncoming } from '$lib/types/protocol';
 import type { ConnectionState } from '$lib/transport/ws-client';
+import type { ControlSessionTransition } from '$lib/transport/ws-client';
 export const presentationResources = new PresentationResourceHost<unknown>('app');
 // ── Types ──
 
@@ -62,6 +63,9 @@ export interface DefaultScopeStatus {
   transport: ConnectionState;
   frameSeen: boolean;
 }
+export type ControlSessionSnapshot = Readonly<ControlSessionTransition>;
+export type ControlSessionSubscriber = (next: ControlSessionSnapshot) => void;
+const CLOSED_CONTROL_SESSION: ControlSessionSnapshot = Object.freeze({ state: 'disconnected', epoch: -1 });
 
 // ── Runtime class ──
 
@@ -130,6 +134,12 @@ class FrontendRuntime {
   /** Current radio state (frequency, mode, meters, etc.) */
   get state(): ServerState | null {
     return radio.current;
+  }
+  get controlSession(): ControlSessionSnapshot {
+    return 'getControlSession' in transport ? transport.getControlSession() : CLOSED_CONTROL_SESSION;
+  }
+  subscribeControlSession(handler: ControlSessionSubscriber): () => void {
+    return 'onControlSessionTransition' in transport ? transport.onControlSessionTransition(handler) : () => undefined;
   }
 
   /** Radio capabilities (modes, filters, features, etc.) */
@@ -299,10 +309,10 @@ class FrontendRuntime {
     });
 
     // 2. Open the control WebSocket channel — the sole state writer.
-    connect('/api/v1/ws');
+    transport.connect('/api/v1/ws');
 
     // 3. Subscribe to the events stream (re-sent automatically on reconnect by WsChannel).
-    sendRaw({ type: 'subscribe', streams: ['events'] });
+    transport.sendRaw({ type: 'subscribe', streams: ['events'] });
 
     // Only latch as started after the entire chain succeeds.
     let cleanupInFlight: Promise<void> | undefined;
@@ -351,7 +361,7 @@ class FrontendRuntime {
     this._dxSubscribers.set(id, handler);
     if (this._dxControlUnsubscribe === null) {
       try {
-        this._dxControlUnsubscribe = onMessage((message) => {
+        this._dxControlUnsubscribe = transport.onMessage((message) => {
           if (message.type !== 'dx_spot' && message.type !== 'dx_spots') return;
           for (const subscriber of [...this._dxSubscribers.values()]) subscriber(message);
         });
