@@ -1,64 +1,80 @@
 # FTX-1 (Yaesu) — CAT manual vs implementation
 
-**Manual:** Yaesu FTX-1 CAT Operation Reference Manual **v2507-B** (67-command index + detail).
-**Driver:** `src/rigplane/backends/yaesu_cat/radio.py` (146 `async def`).
-**Profile:** `rigs/ftx1.toml`. **Validation:** `src/rigplane/validation/registry/*`.
-**Live run:** `/tmp/ftx1.live.json` — 58 checks: 30 pass · 1 **fail** (`vfo_slot.set`) · 21 unsupported · 6 manual_required. (core 2.9.0, mode=hardware, tx_allowed, USB + antenna.)
+## Authority and scope
 
-Protocol: Yaesu ASCII CAT, `;`-terminated (NOT CI-V). CP2105 dual-UART.
+- **Manual:** Yaesu FTX-1 Series CAT Operation Reference Manual **2508-C**.
+- **Official source:** <https://www.yaesu.com/Files/4CB893D7-1018-01AF-FA97E9E9AD48B50C/FTX-1_CAT_OM_ENG_2508-C.pdf>
+- **Retrieved:** 2026-08-14.
+- **Pinned SHA-256:** `fbbd8eb6b12d1fec9474f3771f4b872ba4fd195dbe4b080cc2a1aae2b4ebc56c`.
+- **Implementation surfaces:** `src/rigplane/backends/yaesu_cat/`, `rigs/ftx1.toml`, and the validation registry.
 
----
+The vendor PDF is copyrighted and is not committed. This is a source-to-code audit,
+not a hardware-validation record: historical FTX-1 observations are not evidence for
+the current release candidate, and this document makes no live, RX, TX, or safety
+claim.
 
-## Gap lists (priority-ordered)
+### Revision-consistency witness
 
-### A. UNDER-DECLARED — backend implements, profile/registry can't see it
+The audit index records the same manual revision and links to this file, which is the
+single repository location for the source URL, retrieval date, and pinned digest.
+Review both entries together whenever the manual changes.
 
-| CAT | rigplane symbol | Fix | Ticket |
+## Receiver, VFO, and function semantics
+
+The FTX-1 is a two-receiver (MAIN/SUB) radio. Its CAT words must not be projected as
+a generic per-receiver VFO A/B model.
+
+| CAT | Official 2508-C meaning | RigPlane reading | Status / owner |
 |---|---|---|---|
-| **CN** CTCSS tone freq (+ **CT** type) | backend `get_sql_type`/`set_sql_type`, `get_ctcss_tone` (read-only) exist; registry tone round-trips resolve to `get_/set_repeater_tone`, `_tsql`, `_tone_freq`, `_tsql_freq` — **none exist on the backend** → 4 tone checks `unsupported` | Repoint registry tone checks at `get_sql_type`/`set_sql_type`+`get_ctcss_tone`, mark tone-freq read-only | **MOR-672** |
-| **DT** Date & Time | `get/set_system_date`/`time` exist; **no `DT` command string** in `ftx1.toml` → `system_date/time.read` unsupported | Add `DT0;`/`DT1;` strings to `[commands]` | **MOR-672** |
-| **VG** VOX Gain | `get/set_vox_gain` **raise NotImplementedError**, no `VG` string | Implement + add strings | **MOR-674** |
-| **NA** Narrow | `get/set_narrow` work, folded into `filter_width` | Low — optional `narrow.set` | — |
+| `VS` | Selects the operating receiver: `0` = MAIN TX/RX + SUB RX; `1` = MAIN RX + SUB TX/RX. | `select_receiver()` / `get_active_receiver()` use `VS`; this is receiver selection, not VFO-slot selection. | Existing command mapping; MAIN/SUB dispatch and UI acceptance: MOR-1671. |
+| `SV` | Swaps MAIN-side and SUB-side. | A MAIN/SUB exchange, not a VFO-A/VFO-B swap. | No generic A/B swap is exposed; retain this distinction. |
+| `AB` / `BA` | Copy MAIN to SUB / SUB to MAIN. | One-way receiver-side copies, not A-to-B or B-to-A VFO copies. | Generic A/B copy/exchange remains unsupported for this topology. |
+| `FA` / `FB` | Read/write MAIN-side / SUB-side frequency. | `freq` / `freq_sub` map directly. | Existing mapping; receiver-specific restoration work is MOR-1676. |
+| `IF` / `OI` | Read-only information for MAIN-side / opposite-band SUB-side, including frequency, clarifier, mode, memory state, squelch type, and shift. | `IF` is a MAIN composite status read; `OI` is not represented as a generic VFO-A/B status. | Do not infer cross-receiver symmetry from `IF`; profile-domain work is MOR-1670 and its children. |
+| `FR` | RX function: `00` dual receive, `01` single receive. | A receive-mode setting, not VFO selection. | Existing command mapping; no per-control VFO abstraction may substitute for it. |
+| `FT` | Selects transmitter: `0` MAIN, `1` SUB. | Transmitter-source routing, separate from `VS` and `FR`. | Existing command mapping; TX authority and interlock work remains separately gated. |
 
-### B. VALIDATION GAPS — implemented + declared, but no round-trip (presence-only)
+In particular, `VS`, `FR`, and `FT` answer three different questions: which receiver
+is selected for the TX/RX pairing, whether both receivers are receiving, and which
+side is the transmitter. `FA`/`FB` address MAIN/SUB frequency, while `AB`/`BA`/`SV`
+operate between those sides. None of those commands establishes a per-receiver VFO
+A/B selection, copy, or exchange.
 
-| CAT | rigplane symbol | Live | Ticket |
-|---|---|---|---|
-| **IS** IF Shift | `get/set_if_shift` — only `if_shift.presence` | pass | **MOR-671** |
-| **CO** Contour | `get/set_contour` (+apf) — only `contour.presence` | pass | **MOR-671** |
-| **BI** Break-in | `get/set_break_in` — only `break_in.presence` | pass | **MOR-673** |
-| **PR/PL** Compressor | `get/set_processor`(+level) — only `compressor.presence` | pass | **MOR-673** |
-| **CT** SQL type | `get/set_sql_type` — only `sql_type.presence` | pass | **MOR-673** |
-| **FR** Dual RX | `get/set_rx_func` — only `dual_rx.presence` | pass | — (low) |
+## Material reconciliation from 2507-B
 
-### C. MISSING BACKEND — documented operator command, no backend method
+The prior committed audit named 2507-B, reduced the manual to an old command-count
+summary, and treated `VS` through the failed generic `vfo_slot` harness path. Revision
+2508-C's command list and detailed pages make the following audit corrections
+material:
 
-| CAT | Function | Value | Ticket |
-|---|---|---|---|
-| **MX** | MOX SET (manual TX-on) | Med — alt TX trigger | **MOR-675** |
-| **OS** | Repeater Offset/Shift | Med — FM repeater | **MOR-675** |
-| **TS** | TXW (TX watch, split) | Med — operating | **MOR-675** |
-| **VD** | VOX delay (methods exist, no `VD` string) | Med | **MOR-674** |
-| MD/MC/MA/MB/MW/MR/MT/MS memory family | memory ops | Feature | **MOR-676** |
-| KM / PB / LM | CW + voice message keyer | Feature | **MOR-676** |
+- `VS` is explicitly MAIN/SUB TX/RX selection; it is not the `ab_shared` VFO-slot
+  operation. The production/UI follow-up is MOR-1671.
+- `AB`, `BA`, and `SV` are respectively MAIN-to-SUB copy, SUB-to-MAIN copy, and
+  MAIN/SUB exchange; they are not A/B copy or swap commands. This stays an honesty
+  boundary, not a request to emulate missing VFO-A/B behavior.
+- `FR` (dual/single receive), `FT` (MAIN/SUB transmitter), `FA`/`FB` (side-specific
+  frequency), and the asymmetric `IF`/`OI` status records are separate command
+  domains. Profile quantization/restoration defects belong to MOR-1670 and its
+  children MOR-1676 through MOR-1682, rather than to a model-name frontend branch.
+- The old audit's current-looking live-run summary, including a TX-enabled claim, is
+  historical and removed. Hardware acceptance remains outside this documentation PR.
 
-### D. MISMATCH / WRONG — declared/checked but behaves differently
+## Gap register
 
-| CAT | rigplane symbol | Issue | Ticket |
-|---|---|---|---|
-| **VS** | `vfo_slot.set` (**FAIL**) | `set_vfo_slot` raises NotImplementedError on `vfo.scheme="ab_shared"`; backend DOES implement `VS` via `set_vfo_select` (MAIN/SUB) — harness calls wrong abstraction. The one red FAIL. | **MOR-670** (NotImplementedError→unsupported) |
-| **ML** | `get/set_monitor` raise NIE | Correctly NOT declared (real radio returns `?;` — manual column optimistic vs hardware). No gap. | (note) |
-| **CT** | `set_sql_type` writes `CT0{type:02d}`, live answers `CT0;` single-digit | Asymmetric width; flagged in-profile as "unconfirmed residual" | MOR-473 (open) |
+| Category | Reconciled finding | Existing Linear owner |
+|---|---|---|
+| Receiver selection | MAIN/SUB UI dispatch must use documented `VS` semantics, not an A/B control. | MOR-1671 |
+| Profile-domain restoration | The manual's native discrete domains need profile-derived lattices, not generic continuous assumptions. | MOR-1670; MOR-1676..MOR-1682 |
+| Unsupported power representation | CAT power control must not imply a uniformly supported browser power control. | MOR-1673 |
+| Capability-derived bands | Exposed bands must follow actual profile capability rather than a static front-end list. | MOR-1674 |
+| AF presentation | CAT AF-scale values require the agreed percent formatting. | MOR-1675 |
+| TX behavior | `FT` routing is not authorization to key or test TX; interlock and RF-authority tickets own that safety work. | MOR-1500; MOR-1625..MOR-1630; MOR-1694 |
 
-### Intentionally OUT OF SCOPE (device front panel — nothing to mirror into browser UI)
-- **DA** TFT contrast/brightness/LED · **SF** FUNC knob assignment · **EX** settings menu (Table 3, hundreds of params) · **MS** Meter SW (UI reads meters directly).
+This audit deliberately does not create a second backlog, change a profile, or claim
+that any listed command has completed hardware validation.
 
----
+## Out of scope
 
-## Ticket coverage summary
-
-- 1 red FAIL (`vfo_slot.set`) → **MOR-670**.
-- presence-only IS/CO → **MOR-671**; BI/PR/CT → **MOR-673**.
-- tone (CN/CT) + clock (DT) under-declaration → **MOR-672**.
-- VG impl + VD wiring → **MOR-674**; MX/OS/TS missing backend → **MOR-675**.
-- memory + keyer UI feature → **MOR-676**.
+Front-panel and menu-domain controls (including display, FUNC-knob assignment, and
+the broad `EX` menu) are not automatically browser controls. A documented command is
+not, by itself, a product-support or hardware-acceptance claim.
