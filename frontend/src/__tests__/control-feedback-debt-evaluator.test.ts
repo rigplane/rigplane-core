@@ -134,6 +134,18 @@ describe('ordered debt evaluator (MOR-1720)', () => {
     expect(facts('props.x++;')).toEqual(['mutation']);
   });
 
+  it('preserves abrupt and unknown aggregate spread through supported control flow', () => {
+    expect(facts('function boom() { throw null; } boom() && mutate(props);')).toEqual([]);
+    expect(facts('function boom() { throw null; } !boom(); mutate(props);')).toEqual([]);
+    expect(facts('function boom() { throw null; } if (boom()) mutate(props); sink(props);')).toEqual([]);
+    expect(facts('function boom() { throw null; } const value = boom(), later = mutate(props);')).toEqual([]);
+    expect(facts('function boom() { throw null; } function f(a = boom(), b = mutate(props)) {} f();')).toEqual([]);
+    expect(facts('function boom() { throw null; } function f({ a = boom(), b = mutate(props) } = {}) {} f({});')).toEqual([]);
+    expect(facts('function boom() { throw null; } ({ ...boom(), later: mutate(props) });')).toEqual([]);
+    expect(facts('function object({ x, ...rest }) { sink(rest); } object({ ...props });')).toEqual(['escape']);
+    expect(facts('function array([x, y, ...rest]) { sink(rest); } array([ ...props ]);')).toEqual(['escape']);
+  });
+
   it('has no facts for unrelated code', () => {
     expect(facts('const add = (a: number, b: number) => a + b; add(1, 2);')).toEqual([]);
   });
