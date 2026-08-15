@@ -2636,7 +2636,9 @@ class CivRuntime:
         if frame.to_addr == 0x00 or frame.command in (0x00, 0x01):
             source = "civ_unsolicited"
         elif (
-            frame.command == 0x1C
+            frame.to_addr == CONTROLLER_ADDR
+            and frame.from_addr == self._host._radio_addr
+            and frame.command == 0x1C
             and frame.sub == 0x00
             and len(frame.data) == 1
             and frame.data[0] in (0x00, 0x01)

@@ -1535,7 +1535,7 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
             "global.tx_state.ptt",
             True,
-            "command_response",
+            "poll_response",
         ),
         (
             _make_frame(cmd=0x07, data=bytes([0xD2, 0x01])),
@@ -3052,12 +3052,22 @@ def test_observations_from_frame_marks_only_exact_ptt_readback_as_poll_response(
 
     for frame in (
         _make_frame(cmd=0x1C, sub=0x00, data=b"\x00\x01"),
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x02"),
         _make_frame(cmd=0x1C, sub=0x01, data=b"\x00"),
         _make_frame(cmd=0x14, sub=0x03, data=_bcd2(45)),
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x00", to_addr=0x99),
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x00", from_addr=0x99),
     ):
         observations = radio._civ_runtime._observations_from_frame(frame)
         if observations:
             assert observations[0].source.source == "command_response"
+
+    unsolicited = _make_frame(
+        cmd=0x1C, sub=0x00, data=b"\x01", to_addr=0x00
+    )
+    assert radio._civ_runtime._observations_from_frame(unsolicited)[
+        0
+    ].source.source == "civ_unsolicited"
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
