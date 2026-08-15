@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import tomllib
 import warnings
 from dataclasses import dataclass, field
@@ -1059,28 +1058,122 @@ def _parse_state_acquisition(
 _TX_INTERLOCK_METADATA_BY_FAMILY = {
     metadata.family: metadata for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
 }
-_TX_INTERLOCK_TABLE_HEADER = re.compile(r"^\[\s*tx_interlock\s*\]\s*(?:#.*)?$")
-_TX_INTERLOCK_NESTED_OVERRIDES_HEADER = re.compile(
-    r"^\[\s*tx_interlock\s*\.\s*disposition_overrides\s*\]\s*(?:#.*)?$"
-)
-_TX_INTERLOCK_DOTTED_OVERRIDES_KEY = re.compile(r"^disposition_overrides\s*\.")
+
+
+def _toml_shape_statements(source: str) -> list[list[tuple[str, str]]]:
+    """Expose only table/key punctuation while shielding strings and comments."""
+
+    statements: list[list[tuple[str, str]]] = []
+    statement: list[tuple[str, str]] = []
+    punctuation = "[]{}.="
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char == "\n":
+            if statement:
+                statements.append(statement)
+                statement = []
+            index += 1
+            continue
+        if char in " \t\r":
+            index += 1
+            continue
+        if char == "#":
+            newline = source.find("\n", index)
+            index = len(source) if newline < 0 else newline
+            continue
+        if source.startswith(('"""', "'''"), index):
+            delimiter = source[index : index + 3]
+            index += 3
+            while index < len(source) and not source.startswith(delimiter, index):
+                if delimiter == '"""' and source[index] == "\\":
+                    index += 2
+                else:
+                    index += 1
+            index += 3
+            for _ in range(2):
+                if index < len(source) and source[index] == delimiter[0]:
+                    index += 1
+            statement.append(("string", ""))
+            continue
+        if char in "\"'":
+            delimiter = char
+            start = index
+            index += 1
+            while index < len(source) and source[index] != delimiter:
+                if delimiter == '"' and source[index] == "\\":
+                    index += 2
+                else:
+                    index += 1
+            index += 1
+            literal = source[start:index]
+            value = tomllib.loads(f"key = {literal}")["key"]
+            statement.append(("key", value))
+            continue
+        if char in punctuation:
+            statement.append((char, char))
+            index += 1
+            continue
+        start = index
+        while index < len(source) and source[index] not in f" \t\r\n#{punctuation}\"'":
+            index += 1
+        statement.append(("key", source[start:index]))
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _toml_key_path(tokens: list[tuple[str, str]]) -> tuple[str, ...] | None:
+    """Return a dotted key path, or ``None`` for tokens outside that shape."""
+
+    path: list[str] = []
+    expect_key = True
+    for kind, value in tokens:
+        if expect_key and kind == "key":
+            path.append(value)
+            expect_key = False
+        elif not expect_key and kind == ".":
+            expect_key = True
+        else:
+            return None
+    return tuple(path) if path and not expect_key else None
 
 
 def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
-    """Reject TOML encodings that erase the documented inline-table boundary."""
+    """Require the documented table plus one non-dotted inline mapping key."""
 
-    in_tx_interlock = False
-    for raw_line in source.splitlines():
-        line = raw_line.lstrip()
-        if _TX_INTERLOCK_NESTED_OVERRIDES_HEADER.fullmatch(line):
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides "
-                "must use inline table syntax"
-            )
-        if line.startswith("["):
-            in_tx_interlock = bool(_TX_INTERLOCK_TABLE_HEADER.fullmatch(line))
+    current_table: tuple[str, ...] = ()
+    forbidden_prefix = ("tx_interlock", "disposition_overrides")
+    for tokens in _toml_shape_statements(source):
+        if tokens[0][0] == "[" and tokens[-1][0] == "]":
+            inner = tokens[1:-1]
+            if inner and inner[0][0] == "[" and inner[-1][0] == "]":
+                inner = inner[1:-1]
+            path = _toml_key_path(inner)
+            current_table = path or ()
+            if current_table[:2] == forbidden_prefix:
+                raise RigLoadError(
+                    f"{filename}: [tx_interlock].disposition_overrides "
+                    "must use inline table syntax"
+                )
             continue
-        if in_tx_interlock and _TX_INTERLOCK_DOTTED_OVERRIDES_KEY.match(line):
+
+        equals = next(
+            (position for position, token in enumerate(tokens) if token[0] == "="),
+            None,
+        )
+        if equals is None:
+            continue
+        key_path = _toml_key_path(tokens[:equals])
+        if key_path is None:
+            continue
+        dotted_in_table = (
+            current_table == ("tx_interlock",)
+            and key_path[:1] == ("disposition_overrides",)
+            and len(key_path) > 1
+        )
+        dotted_at_root = current_table == () and key_path[:2] == forbidden_prefix
+        if dotted_in_table or dotted_at_root:
             raise RigLoadError(
                 f"{filename}: [tx_interlock].disposition_overrides "
                 "must use inline table syntax"

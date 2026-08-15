@@ -98,14 +98,23 @@ class TestLoadRig:
         assert rig.tx_interlock_disposition_overrides == {}
         assert rig.to_profile().tx_interlock_disposition_overrides == {}
 
-    def test_tx_interlock_parses_tx_safe_to_defer_tightening(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("header", "family_key"),
+        [
+            ("[tx_interlock]", '"power-on"'),
+            ('["tx_interlock"] # quoted top-level key', "'power-on'"),
+        ],
+    )
+    def test_tx_interlock_parses_tx_safe_to_defer_tightening(
+        self, tmp_path, header, family_key
+    ):
         p = _write_toml(
             tmp_path,
             _MINIMAL_TOML
-            + """
+            + f"""
 
-[tx_interlock]
-disposition_overrides = { "power-on" = "defer" }
+{header}
+disposition_overrides = {{ {family_key} = "defer" }} # canonical inline mapping
 """,
         )
 
@@ -176,28 +185,86 @@ disposition_overrides = {{ "{family}" = "defer" }}
             load_rig(p)
 
     @pytest.mark.parametrize(
-        "declaration",
+        ("declaration", "at_root"),
         [
-            """
+            (
+                """
 [tx_interlock.disposition_overrides]
 "power-on" = "defer"
 """,
-            """
+                False,
+            ),
+            (
+                """
+["tx_interlock"."disposition_overrides"]
+"power-on" = "defer"
+""",
+                False,
+            ),
+            (
+                """
+[tx_interlock."disposition_overrides"]
+"power-on" = "defer"
+""",
+                False,
+            ),
+            (
+                """
 [tx_interlock]
 disposition_overrides."power-on" = "defer"
 """,
+                False,
+            ),
+            (
+                """
+[tx_interlock]
+disposition_overrides.power-on = "defer"
+""",
+                False,
+            ),
+            ('tx_interlock.disposition_overrides."power-on" = "defer"\n', True),
+            ('tx_interlock.disposition_overrides.power-on = "defer"\n', True),
         ],
     )
     def test_tx_interlock_rejects_non_inline_override_encodings(
-        self, tmp_path, declaration
+        self, tmp_path, declaration, at_root
     ):
-        p = _write_toml(tmp_path, _MINIMAL_TOML + declaration)
+        content = (
+            declaration + _MINIMAL_TOML if at_root else _MINIMAL_TOML + declaration
+        )
+        p = _write_toml(tmp_path, content)
 
         with pytest.raises(
             RigLoadError,
             match=r"\[tx_interlock\]\.disposition_overrides must use inline table syntax",
         ):
             load_rig(p)
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            '"[tx_interlock.disposition_overrides]"',
+            '\'disposition_overrides."power-on" = "defer"\'',
+            '"""multiline\n[tx_interlock.disposition_overrides]\n"""',
+            "'''multiline\ntx_interlock.disposition_overrides.power-on = 'defer'\n'''",
+        ],
+    )
+    def test_tx_interlock_shape_guard_ignores_string_content(self, tmp_path, label):
+        toml = _MINIMAL_TOML.replace('label = "HF"', f"label = {label}")
+
+        rig = load_rig(_write_toml(tmp_path, toml))
+
+        assert rig.tx_interlock_disposition_overrides == {}
+
+    def test_tx_interlock_shape_guard_ignores_comments(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            "# [tx_interlock.disposition_overrides]\n"
+            '# tx_interlock.disposition_overrides."power-on" = "defer"\n'
+            + _MINIMAL_TOML,
+        )
+
+        assert load_rig(p).tx_interlock_disposition_overrides == {}
 
     def test_load_minimal_power_max_watts(self, tmp_path):
         p = _write_toml(
