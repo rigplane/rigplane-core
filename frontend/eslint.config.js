@@ -23,6 +23,7 @@ import tsPlugin from '@typescript-eslint/eslint-plugin';
 import sveltePlugin from 'eslint-plugin-svelte';
 import svelteParser from 'svelte-eslint-parser';
 import radioAuthorityPlugin from './scripts/radio-authority-eslint-plugin.mjs';
+import controlFeedbackOwnershipPlugin from './scripts/control-feedback-ownership-eslint-plugin.mjs';
 
 /** Modules that only the runtime/wiring layer may import. */
 const FORBIDDEN_RUNTIME_IMPORTS = {
@@ -335,6 +336,16 @@ export default [
     rules: {
       'no-restricted-imports': ['error', FORBIDDEN_PRIMITIVES_IMPORTS],
     },
+  },
+
+  // ── Normalized ownership boundary: pure control-feedback consumers (MOR-1712) ──
+  {
+    files: [
+      'src/primitives/control-feedback/**/*.ts', 'src/primitives/control-feedback/**/*.svelte',
+      'src/semantic/controls/**/*.ts', 'src/semantic/controls/**/*.svelte',
+    ],
+    plugins: { 'control-feedback-ownership': controlFeedbackOwnershipPlugin },
+    rules: { 'control-feedback-ownership/normalized-import-boundary': 'error' },
   },
 
   // ── Import boundary: presentation — layouts, design languages (MOR-1061) ──
