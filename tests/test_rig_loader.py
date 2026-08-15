@@ -664,139 +664,134 @@ mode = 42
 
 
 class TestControlDomainSchema:
-    def _load_control(self, tmp_path, declaration: str):
-        path = _write_toml(
-            tmp_path,
-            _MINIMAL_TOML + "\n[controls.test_control]\n" + declaration,
-        )
-        return load_rig(path).controls["test_control"]
-
-    @pytest.mark.parametrize(
-        ("mapping", "extra"),
-        [
-            ("linear", ""),
-            ("centered", "raw_center = 0\ndisplay_center = 0.0\n"),
-            (
-                "lookup",
-                "lookup = [{ raw = -10, display = -1.0 }, "
-                "{ raw = 0, display = 0.0 }, { raw = 10, display = 1.0 }]\n",
-            ),
-        ],
-    )
-    def test_explicit_domain_mappings_load(self, tmp_path, mapping, extra):
-        control = self._load_control(
-            tmp_path,
-            f"""\
-raw_min = -10
+    _LINEAR = """\
+raw_min = 0
 raw_max = 10
-raw_step = 5
+raw_step = 2
 raw_origin = 0
-display_min = -1.0
+display_min = 0.0
 display_max = 1.0
-display_step = 0.5
+display_step = 0.2
 display_origin = 0.0
 display_unit = "ratio"
-mapping = "{mapping}"
+mapping = "linear"
 quantization = "nearest_ties_up"
 restoration = "exact"
-{extra}""",
+"""
+
+    def _load(self, tmp_path, declaration: str):
+        return load_rig(
+            _write_toml(
+                tmp_path,
+                _MINIMAL_TOML + "\n[controls.test_control]\n" + declaration,
+            )
         )
-
-        assert control["mapping"] == mapping
-        assert control["raw_origin"] == 0
-
-    def test_range_bounds_need_not_be_lattice_points_when_origin_is_explicit(
-        self, tmp_path
-    ):
-        control = self._load_control(
-            tmp_path,
-            """\
-raw_min = -9999
-raw_max = 9999
-raw_step = 50
-raw_origin = 0
-display_min = -9999
-display_max = 9999
-display_step = 50
-display_origin = 0
-mapping = "identity"
-quantization = "reject"
-restoration = "exact"
-""",
-        )
-
-        assert control["raw_origin"] == 0
 
     @pytest.mark.parametrize(
-        ("declaration", "message"),
+        ("mapping", "declaration"),
         [
-            ("raw_min = 0\nraw_max = 10\nraw_step = 1\n", "mapping is required"),
             (
-                "raw_min = 0\nraw_max = 10\nraw_step = 0\nraw_origin = 0\n"
-                "display_min = 0\ndisplay_max = 10\ndisplay_step = 1\n"
-                'display_origin = 0\nmapping = "identity"\n'
-                'quantization = "reject"\nrestoration = "exact"\n',
-                "raw_step must be > 0",
+                "identity",
+                _LINEAR.replace("display_max = 1.0", "display_max = 10")
+                .replace("display_step = 0.2", "display_step = 2")
+                .replace('display_unit = "ratio"', 'display_unit = "dimensionless"')
+                .replace('mapping = "linear"', 'mapping = "identity"'),
             ),
+            ("linear", _LINEAR),
             (
-                "raw_min = 0\nraw_max = 10\nraw_step = 2\nraw_origin = 0\nraw_center = 3\n"
-                "display_min = 0\ndisplay_max = 10\ndisplay_step = 1\n"
-                'display_origin = 0\nmapping = "centered"\ndisplay_center = 5\n'
-                'quantization = "reject"\nrestoration = "exact"\n',
-                "raw_center must lie on its declared lattice",
+                "centered",
+                _LINEAR.replace("raw_min = 0", "raw_min = -10")
+                .replace("display_min = 0.0", "display_min = -1.0")
+                .replace('mapping = "linear"', 'mapping = "centered"')
+                + "raw_center = 0\ndisplay_center = 0.0\n",
             ),
-            (
-                "raw_min = 0\nraw_max = 10\nraw_step = 1\nraw_origin = 0\n"
-                "display_min = 0\ndisplay_max = 10\ndisplay_step = 1\n"
-                'display_origin = 0\nmapping = "lookup"\n'
-                'quantization = "reject"\nrestoration = "exact"\n'
-                "lookup = [{raw = 0, display = 0}, {raw = 5, display = 6}, "
-                "{raw = 10, display = 4}]\n",
-                "lookup display values must be strictly monotonic",
-            ),
-            (
-                "raw_min = 0\nraw_max = 10\nraw_step = 2\nraw_origin = 0\n"
-                "display_min = 0\ndisplay_max = 10\ndisplay_step = 1\n"
-                'display_origin = 0\nmapping = "lookup"\n'
-                'quantization = "reject"\nrestoration = "exact"\n'
-                "lookup = [{raw = 0, display = 0}, {raw = 3, display = 3}]\n",
-                "lookup raw value 3 must lie on its declared lattice",
-            ),
-            (
-                "raw_min = 0\nraw_max = 10\nraw_step = 1\nraw_origin = 0\n"
-                "display_min = 0\ndisplay_max = 10\ndisplay_step = 1\n"
-                'display_origin = 0\nmapping = "linear"\n'
-                'quantization = "nearest"\nrestoration = "exact"\n',
-                "quantization must be one of",
-            ),
-            (
-                "raw_min = 0\nraw_max = 10\nraw_step = 1\nraw_origin = 0\n"
-                "display_min = 0\ndisplay_max = 10\ndisplay_step = 1\n"
-                'display_origin = 0\nmapping = "linear"\n'
-                'quantization = "reject"\nrestoration = "best_effort"\n',
-                "restoration must be one of",
-            ),
-            ("unknown_domain_key = 1\n", "unknown key"),
         ],
     )
-    def test_rejects_malformed_or_ambiguous_domains(
-        self, tmp_path, declaration, message
+    def test_scalar_domain_is_private_and_not_serialized(
+        self, tmp_path, mapping, declaration
+    ):
+        rig = self._load(tmp_path, declaration)
+
+        assert rig._control_domains["test_control"]["mapping"] == mapping
+        assert rig.controls is None
+        assert rig.to_profile().controls is None
+
+    @pytest.mark.parametrize(
+        ("old", "new", "message"),
+        [
+            ("raw_min = 0", "raw_min = 1", "raw_min must lie"),
+            ("raw_max = 10", "raw_max = 9", "raw_max must lie"),
+            (
+                "raw_max = 10",
+                "raw_max = 9007199254740991",
+                "raw_max must lie",
+            ),
+            ("display_min = 0.0", "display_min = 0.05", "display_min must lie"),
+            (
+                "display_max = 1.0",
+                "display_max = 1000000000000.05",
+                "display_max must lie",
+            ),
+        ],
+    )
+    def test_rejects_off_lattice_endpoints_at_small_and_large_indices(
+        self, tmp_path, old, new, message
     ):
         with pytest.raises(RigLoadError, match=message):
-            self._load_control(tmp_path, declaration)
+            self._load(tmp_path, self._LINEAR.replace(old, new))
 
-    def test_legacy_partial_ranges_remain_backward_compatible(self, tmp_path):
-        control = self._load_control(
-            tmp_path,
-            "raw_min = 0\nraw_max = 255\ndisplay_min = 0\ndisplay_max = 15\n",
+    @pytest.mark.parametrize(
+        ("centers", "message"),
+        [
+            ("raw_center = 3\ndisplay_center = 0.0\n", "raw_center must lie"),
+            ("raw_center = 0\ndisplay_center = 0.1\n", "display_center must lie"),
+        ],
+    )
+    def test_rejects_off_lattice_centers(self, tmp_path, centers, message):
+        declaration = self._LINEAR.replace('mapping = "linear"', 'mapping = "centered"')
+        with pytest.raises(RigLoadError, match=message):
+            self._load(tmp_path, declaration + centers)
+
+    @pytest.mark.parametrize(
+        ("extra", "accepted"),
+        [
+            ("range_min = 0\nrange_max = 10\n", True),
+            ("range_min = 0\nrange_max = 11\n", False),
+        ],
+    )
+    def test_legacy_range_must_be_formally_equivalent(self, tmp_path, extra, accepted):
+        declaration = self._LINEAR + extra
+        if accepted:
+            assert self._load(tmp_path, declaration)._control_domains is not None
+        else:
+            with pytest.raises(RigLoadError, match="legacy range.*raw bounds"):
+                self._load(tmp_path, declaration)
+
+    @pytest.mark.parametrize("unit", [None, "", "   "])
+    def test_explicit_domain_requires_non_empty_display_unit(self, tmp_path, unit):
+        declaration = self._LINEAR
+        if unit is None:
+            declaration = declaration.replace('display_unit = "ratio"\n', "")
+        else:
+            declaration = declaration.replace(
+                'display_unit = "ratio"', f'display_unit = "{unit}"'
+            )
+        with pytest.raises(RigLoadError, match="display_unit.*non-empty"):
+            self._load(tmp_path, declaration)
+
+    def test_lookup_is_explicitly_deferred(self, tmp_path):
+        declaration = self._LINEAR.replace('mapping = "linear"', 'mapping = "lookup"')
+        with pytest.raises(RigLoadError, match="lookup.*MOR-1708"):
+            self._load(tmp_path, declaration)
+
+    def test_shipped_legacy_profiles_remain_publicly_shape_compatible(self):
+        paths = (
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
         )
-
-        assert control == {
-            "raw_min": 0,
-            "raw_max": 255,
-            "display_min": 0,
-            "display_max": 15,
-        }
+        for path in sorted(paths):
+            rig = load_rig(path)
+            assert rig._control_domains is None, path.name
+            assert rig.to_profile().controls == rig.controls, path.name
 
 
 # ── RadioProfile building ───────────────────────────────────────
