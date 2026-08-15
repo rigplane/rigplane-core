@@ -907,6 +907,21 @@ choices = [
             ),
             ('[{ raw = 0, label = "" }]', "label.*non-empty"),
             ('[{ raw = true, label = "Default" }]', "raw.*integer"),
+            ("[{ raw = 0, display = 250 }]", "exactly one.*default"),
+            (
+                "[{ raw = 0, display = 250 }, { raw = 1, display = 500 }]",
+                "exactly one.*default",
+            ),
+            (
+                '[{ raw = 0, display = 250 }, { raw = 1, label = "Default" }]',
+                "default.*raw code 0",
+            ),
+            (
+                '[{ raw = 0, label = "Default" }, { raw = 1, label = "Default" }]',
+                "exactly one.*default",
+            ),
+            ('[{ raw = 0, label = "default" }]', 'label must be exactly "Default"'),
+            ('[{ raw = 0, label = "Default " }]', 'label must be exactly "Default"'),
             (
                 '[{ raw = 0, label = "Default", display = 250 }]',
                 "exactly raw and one of label or display",

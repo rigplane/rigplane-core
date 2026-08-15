@@ -232,6 +232,7 @@ def _parse_encoded_control_choices(
 
     choices: list[_EncodedChoice] = []
     numeric_values: list[Decimal] = []
+    labeled_choices: list[tuple[int, str, str]] = []
     for index, choice in enumerate(raw_choices):
         choice_prefix = f"{prefix}.choices[{index}]"
         if not isinstance(choice, dict) or set(choice) not in (
@@ -249,6 +250,7 @@ def _parse_encoded_control_choices(
             if not isinstance(label, str) or not label.strip():
                 raise RigLoadError(f"{choice_prefix}.label must be a non-empty string")
             choices.append((raw_value, label))
+            labeled_choices.append((raw_value, label, choice_prefix))
         else:
             display = _control_decimal(choice["display"], f"{choice_prefix}.display")
             choices.append((raw_value, display))
@@ -259,6 +261,15 @@ def _parse_encoded_control_choices(
         raise RigLoadError(f"{prefix}.choices raw values must be unique")
     if len(set(numeric_values)) != len(numeric_values):
         raise RigLoadError(f"{prefix}.choices display values must be unique")
+    if len(labeled_choices) != 1:
+        raise RigLoadError(
+            f"{prefix}.choices must contain exactly one default label choice"
+        )
+    default_raw, default_label, default_prefix = labeled_choices[0]
+    if default_raw != 0:
+        raise RigLoadError(f"{default_prefix}.label default must use raw code 0")
+    if default_label != "Default":
+        raise RigLoadError(f'{default_prefix}.label must be exactly "Default"')
     return tuple(choices)
 
 
