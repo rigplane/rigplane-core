@@ -323,6 +323,8 @@ def _parse_control_spec(
         raise RigLoadError(
             f"{prefix}.mapping must be one of {sorted(VALID_CONTROL_MAPPINGS)!r}"
         )
+    if mapping != "encoded" and "choices" in raw:
+        raise RigLoadError(f"{prefix}.choices requires encoded mapping")
     if mapping == "encoded":
         if "choices" not in raw:
             raise RigLoadError(f"{prefix}.choices is required for encoded mapping")
