@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call as mock_call, patch
 
 import pytest
 
@@ -21,9 +22,11 @@ from rigplane.core.state_store import StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import (
     CommandQueue,
     SetFreq,
@@ -147,6 +150,51 @@ def make_radio(
     radio.get_rx_func = AsyncMock(return_value=0)
     radio.get_tx_func = AsyncMock(return_value=0)
     return radio
+
+
+def _real_ftx1_control_path(
+    *, receiver_count: int = 2
+) -> tuple[
+    YaesuCatRadio,
+    ControlHandler,
+    YaesuCatPoller,
+    StateStore,
+    Callable[[Sequence[Observation]], None],
+]:
+    """Build the production Web queue and observation-poller route."""
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    if receiver_count != radio.receiver_count:
+        radio._config = replace(  # noqa: SLF001
+            radio._config,  # noqa: SLF001
+            receiver_count=receiver_count,
+            vfo_scheme="ab" if receiver_count == 1 else radio._config.vfo_scheme,  # noqa: SLF001
+        )
+        radio._profile_cache = None  # noqa: SLF001
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.write = AsyncMock()  # noqa: SLF001
+    store = StateStore()
+    queue = CommandQueue()
+    server = SimpleNamespace(command_queue=queue, command_state_store=store)
+    handler = ControlHandler(
+        None,  # type: ignore[arg-type]
+        radio,
+        "test",
+        radio.model,
+        server=server,
+        session_id="ws-ftx1",
+    )
+    server.command_service = handler._command_service  # noqa: SLF001
+
+    def accept(observations: Sequence[Observation]) -> None:
+        for observation in observations:
+            server.command_service.apply_observation(observation)
+
+    poller = radio.create_observation_poller(
+        callback=accept,
+        command_queue=queue,
+    )
+    poller.bind_provider_generation(capture=lambda: store.provider_generation)
+    return radio, handler, poller, store, accept
 
 
 def _normalized_255(raw: int) -> float:
@@ -1376,6 +1424,155 @@ async def test_fast_poll_reads_tx_meters_when_ptt_active() -> None:
 # ---------------------------------------------------------------------------
 # Command queue: future exception propagation
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback() -> (
+    None
+):
+    """Web MAIN/SUB uses the real Yaesu queue and confirmed VS observation path."""
+    radio, handler, poller, store, accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    active_path = FieldPath.global_("slow_state", "active")
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "select_vfo",
+        {"vfo": "SUB"},
+        command_id="select-sub",
+    )
+    assert (
+        service.pending_overlays(source="websocket", session_id="ws-ftx1")[0].value
+        == "SUB"
+    )
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    radio._transport.write.assert_awaited_once_with("VS1;")  # noqa: SLF001
+    assert radio.radio_state.active == "MAIN"
+    with pytest.raises(KeyError):
+        store.snapshot().field(active_path)
+    assert service.pending_overlays(source="websocket", session_id="ws-ftx1")
+
+    radio._transport.query = AsyncMock(side_effect=("VS0", "VS1"))  # noqa: SLF001
+    profile = radio.profile.state_acquisition
+    assert profile is not None
+
+    def observe_active(value: str) -> None:
+        accept(
+            poller._annotate_receiver_select_readback(  # noqa: SLF001
+                (
+                    replace(
+                        ProviderObservationAdapter(
+                            profile,
+                            source="yaesu_poll_response",
+                            transport="serial",
+                        ).observation(
+                            active_path,
+                            value,
+                            native_id="read_vfo_select",
+                        ),
+                        provider_generation=store.provider_generation,
+                    ),
+                )
+            )
+        )
+
+    assert await radio.read_vfo_select() == 0
+    observe_active("MAIN")
+    assert store.snapshot().field(active_path).value == "MAIN"
+    assert service.pending_overlays(source="websocket", session_id="ws-ftx1")
+    assert radio.radio_state.active == "MAIN"
+
+    assert await radio.read_vfo_select() == 1
+    observe_active("SUB")
+    assert radio._transport.query.await_args_list == [  # noqa: SLF001
+        mock_call("VS;"),
+        mock_call("VS;"),
+    ]
+    assert radio.radio_state.active == "MAIN"
+    assert store.snapshot().field(active_path).value == "SUB"
+    assert service.pending_overlays(source="websocket", session_id="ws-ftx1") == ()
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "select_vfo",
+        {"vfo": "MAIN"},
+        command_id="select-main",
+    )
+    await poller._drain_commands()  # noqa: SLF001
+    await poller._drain_commands()  # a second drain must not duplicate the write
+
+    assert radio._transport.write.await_args_list == [  # noqa: SLF001
+        mock_call("VS1;"),
+        mock_call("VS0;"),
+    ]
+    assert store.snapshot().field(active_path).value == "SUB"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_state"),
+    [
+        (CatTimeoutError("receiver dispatch timed out"), "timed_out"),
+        (RuntimeError("receiver dispatch failed"), "failed"),
+    ],
+)
+async def test_ftx1_receiver_dispatch_failure_is_terminal(
+    failure: Exception,
+    expected_state: str,
+) -> None:
+    """Post-ack Yaesu dispatch failures clear pending and report terminal truth."""
+    radio, handler, poller, _store, _accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    radio._transport.write = AsyncMock(side_effect=failure)  # noqa: SLF001
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "select_vfo",
+        {"vfo": "SUB"},
+        command_id="failed-select",
+    )
+    assert service.pending_overlays(source="websocket", session_id="ws-ftx1")
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert service.pending_overlays(source="websocket", session_id="ws-ftx1") == ()
+    terminal = [
+        event
+        for event in service.lifecycle_events()
+        if event.command_id == "failed-select"
+        and event.state in {"failed", "timed_out"}
+    ]
+    assert [event.state for event in terminal] == [expected_state]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("receiver_count", "vfo"),
+    [(2, "SIDE"), (1, "SUB")],
+)
+async def test_yaesu_receiver_selection_rejects_unsupported_target_or_topology(
+    receiver_count: int,
+    vfo: str,
+) -> None:
+    """Invalid names and SUB on single-RX profiles fail without CAT writes."""
+    radio, handler, poller, _store, _accept = _real_ftx1_control_path(
+        receiver_count=receiver_count
+    )
+    service = handler._command_service  # noqa: SLF001
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "select_vfo",
+        {"vfo": vfo},
+        command_id="unsupported-select",
+    )
+    await poller._drain_commands()  # noqa: SLF001
+
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+    terminal = [
+        event
+        for event in service.lifecycle_events()
+        if event.command_id == "unsupported-select" and event.state == "failed"
+    ]
+    assert len(terminal) == 1
 
 
 @pytest.mark.asyncio

@@ -32,12 +32,14 @@ from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 
+from ...core.exceptions import TimeoutError as RigplaneTimeoutError
+from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import YaesuStateExtension
-from .transport import CatTransportError
+from .transport import CatTimeoutError, CatTransportError
 
 if TYPE_CHECKING:
-    from ..._poller_types import CommandQueue
+    from ..._poller_types import CommandQueue, CommandQueueEntry
     from ...radio_state import RadioState
     from ...core.state_pipeline_contracts import Observation
     from .radio import YaesuCatRadio
@@ -51,6 +53,7 @@ _MEDIUM_INTERVAL: float = 0.200  # 5 Hz
 _SLOW_INTERVAL: float = 1.000  # 1 Hz
 _EMA_ALPHA: float = 0.3
 _TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
+_ACTIVE_RECEIVER_PATH = FieldPath.global_("slow_state", "active")
 
 
 class YaesuCatPoller:
@@ -109,6 +112,7 @@ class YaesuCatPoller:
         self._tx_target_known_generation: tuple[str | None, int] | None = None
         self._capture_provider_generation: Callable[[], int] | None = None
         self._advance_provider_generation: Callable[[], int] | None = None
+        self._pending_receiver_select: CommandQueueEntry | None = None
 
     def bind_provider_generation(
         self,
@@ -331,9 +335,68 @@ class YaesuCatPoller:
         if not self._provider_generation_is_current(provider_generation):
             return True
         self._observation_callback(
-            self._stamp_provider_generation(observations, provider_generation)
+            self._annotate_receiver_select_readback(
+                self._stamp_provider_generation(observations, provider_generation)
+            )
         )
         return True
+
+    def _track_receiver_select_readback(self, entry: CommandQueueEntry) -> None:
+        if (
+            entry.command_service is None
+            or entry.command_id is None
+            or entry.source is None
+        ):
+            return
+        expectations = entry.command_service.readback_expectations(
+            source=entry.source,
+            session_id=entry.session_id,
+            command_id=entry.command_id,
+        )
+        if any(item.path == _ACTIVE_RECEIVER_PATH for item in expectations):
+            self._pending_receiver_select = entry
+
+    def _annotate_receiver_select_readback(
+        self, observations: Sequence[Observation]
+    ) -> tuple[Observation, ...]:
+        entry = self._pending_receiver_select
+        if (
+            entry is None
+            or entry.command_service is None
+            or entry.command_id is None
+            or entry.source is None
+        ):
+            return tuple(observations)
+        expectations = entry.command_service.readback_expectations(
+            source=entry.source,
+            session_id=entry.session_id,
+            command_id=entry.command_id,
+        )
+        expectation = next(
+            (item for item in expectations if item.path == _ACTIVE_RECEIVER_PATH),
+            None,
+        )
+        if expectation is None:
+            self._pending_receiver_select = None
+            return tuple(observations)
+        result: list[Observation] = []
+        for observation in observations:
+            if (
+                observation.path == expectation.path
+                and observation.value == expectation.value
+            ):
+                observation = replace(
+                    observation,
+                    source=replace(
+                        observation.source,
+                        command_source=entry.source,
+                        session_id=entry.session_id,
+                    ),
+                    correlation_id=entry.command_id,
+                )
+                self._pending_receiver_select = None
+            result.append(observation)
+        return tuple(result)
 
     # ------------------------------------------------------------------
     # Polling loops
@@ -442,9 +505,11 @@ class YaesuCatPoller:
                 continue
             try:
                 await self._execute_command(cmd)
+                self._track_receiver_select_readback(entry)
                 if entry.future is not None and not entry.future.done():
                     entry.future.set_result(None)
             except Exception as exc:
+                self._mark_queued_command_failed(entry, exc)
                 if entry.future is not None and not entry.future.done():
                     entry.future.set_exception(exc)
                 logger.warning(
@@ -452,6 +517,21 @@ class YaesuCatPoller:
                     type(cmd).__name__,
                     exc_info=True,
                 )
+
+    @staticmethod
+    def _mark_queued_command_failed(entry: Any, exc: BaseException) -> None:
+        if entry.command_service is None or entry.command_id is None:
+            return
+        params: dict[str, Any] = {
+            "message": str(exc) or None,
+            "timed_out": isinstance(
+                exc, (TimeoutError, RigplaneTimeoutError, CatTimeoutError)
+            ),
+            "session_id": entry.session_id,
+        }
+        if entry.source is not None:
+            params["source"] = entry.source
+        entry.command_service.fail_command(entry.command_id, **params)
 
     # CI-V band codes → Yaesu BS band codes
     _CIV_TO_YAESU_BAND: dict[int, int] = {
@@ -541,7 +621,21 @@ class YaesuCatPoller:
                 yaesu_band = self._CIV_TO_YAESU_BAND.get(band, band)
                 await radio.set_band(yaesu_band)
             case SelectVfo(vfo=vfo):
-                code = 0 if vfo.upper() in ("A", "MAIN") else 1
+                normalized = vfo.strip().upper()
+                receiver_count = radio.receiver_count
+                if receiver_count == 1 and normalized in ("A", "VFOA", "MAIN", "0"):
+                    code = 0
+                elif receiver_count == 1 and normalized in ("B", "VFOB"):
+                    code = 1
+                elif receiver_count > 1 and normalized in ("A", "VFOA", "MAIN", "0"):
+                    code = 0
+                elif receiver_count > 1 and normalized in ("B", "VFOB", "SUB", "1"):
+                    code = 1
+                else:
+                    raise CommandError(
+                        f"select_vfo({vfo!r}) is unsupported for "
+                        f"receiver_count={receiver_count}"
+                    )
                 await radio.set_vfo_select(code)
             case VfoSwap():
                 profile = getattr(radio, "profile", None)

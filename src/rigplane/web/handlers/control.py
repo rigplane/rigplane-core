@@ -1402,6 +1402,12 @@ class ControlHandler:
         intent_params = dict(params)
         if self._server is not None:
             intent_params["_control_server"] = self._server
+        if name in ("set_vfo", "select_vfo") and "receiver_count" not in intent_params:
+            receiver_count = getattr(
+                getattr(self._radio, "profile", None), "receiver_count", None
+            )
+            if isinstance(receiver_count, int) and not isinstance(receiver_count, bool):
+                intent_params["receiver_count"] = receiver_count
         power_max_watts = None
         if getattr(self._radio, "native_power_unit", "raw_255") == "watts":
             power_max_watts = getattr(
