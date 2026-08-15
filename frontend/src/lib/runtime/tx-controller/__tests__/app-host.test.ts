@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TxControllerDependencies } from '../controller';
-import type { PttMarker, TxEvent, TxState } from '../model';
+import { initialTxState, transition, type Eligibility, type PttMarker, type PttObservation, type TxEvent, type TxState } from '../model';
 import type { ControlSessionTransition } from '$lib/transport/ws-client'; type SessionHandler = (projection: any, session: ControlSessionTransition) => void;
 const h = vi.hoisted(() => ({
   contexts: new Map<unknown, unknown>(), factory: vi.fn(), controllers: 0,
@@ -77,6 +77,49 @@ describe('App TxController host', () => {
     h.session!(projection({ state: 'connected', epoch: 5 }, 2), { state: 'connected', epoch: 5 });
     h.lifecycle!(); host.refreshAuthority(); getAppTxController().start('stale', 'lease', 'momentary');
     expect(h.events).toHaveLength(count);
+  });
+  it('applies idle authoritative OFF and reuses that exact marker for an eligible Key start', async () => {
+    const host = provideAppTxControllerHost(bindings()); const facade = getAppTxController();
+    h.session!(projection({ state: 'connected', epoch: 1 }, 1), { state: 'connected', epoch: 1 });
+    expect(facade.snapshot()).toMatchObject({ guard: null, radioTx: 'unknown' });
+    expect(h.effects).toEqual([]);
+
+    host.refreshAuthority();
+    expect(facade.snapshot()).toMatchObject({ guard: null, radioTx: 'off',
+      pttMarker: { authorityEpoch: 1, pttObservationSeq: 2 } });
+    expect(h.effects).toEqual([]);
+
+    facade.start('desktop', 'lease', 'momentary');
+    await Promise.resolve(); await Promise.resolve();
+    expect(facade.snapshot()).toMatchObject({ guard: { authorityEpoch: 1 }, radioTx: 'off' });
+    expect(h.effects).toEqual(['audio', 'on']);
+  });
+  it('rejects equal-marker reuse unless OFF truth and every existing gate still qualify', () => {
+    const marker = { authorityEpoch: 1, pttObservationSeq: 2, pttLastObservedMonotonic: 2 };
+    const ptt: PttObservation = { value: false, observed: true, fresh: true,
+      source: 'radio-readback', marker };
+    const eligibility: Eligibility = { catPtt: true, browserTxAudio: true, controlLive: true,
+      permit: 'allowed', target: { receiver: 'MAIN', slot: 'A', frequencyHz: 100 } };
+    const confirmed = transition(initialTxState(1, { ...marker, pttObservationSeq: 1 }),
+      { type: 'authority', epoch: 1, ptt, eligibility, offCommandId: 'off' }).state;
+    const start = (state: TxState, evidence: PttObservation = ptt, gates: Eligibility = eligibility) =>
+      transition(state, { type: 'start', sourceId: 'desktop', leaseId: 'lease',
+        intent: 'momentary', eligibility: gates, ptt: evidence });
+
+    expect(start(confirmed).effects.map((effect) => effect.type)).toContain('start-audio');
+    const rejected = [
+      start({ ...confirmed, radioTx: 'unknown' }), start({ ...confirmed, radioTx: 'on' }),
+      start(confirmed, { ...ptt, marker: { ...marker, pttObservationSeq: 1 } }),
+      start(confirmed, { ...ptt, marker: { ...marker, authorityEpoch: 0 } }),
+      start(confirmed, { ...ptt, fresh: false }), start(confirmed, { ...ptt, source: 'other' }),
+      start(confirmed, ptt, { ...eligibility, catPtt: false }),
+      start(confirmed, ptt, { ...eligibility, browserTxAudio: false }),
+      start(confirmed, ptt, { ...eligibility, controlLive: false }),
+      start(confirmed, ptt, { ...eligibility, permit: 'denied' }),
+      start(confirmed, ptt, { ...eligibility, target: null }),
+      start({ ...confirmed, phase: 'failed', fault: 'audio-failed' }),
+    ];
+    for (const result of rejected) expect(result.effects).toEqual([]);
   });
   it('dispatches release synchronously, shares its bounded promise, and retains uncertain OFF state', async () => {
     const host = provideAppTxControllerHost(bindings()); const facade = getAppTxController();
