@@ -1,5 +1,17 @@
 """Focused contract tests for the shared TX interlock policy."""
 
+from rigplane.core.tx_interlock_contract import (
+    TX_INTERLOCK_COMMAND_FAMILY_METADATA as CORE_TX_INTERLOCK_METADATA,
+)
+from rigplane.core.tx_interlock_contract import (
+    TxInterlockCommandFamily as CoreTxInterlockCommandFamily,
+)
+from rigplane.core.tx_interlock_contract import (
+    TxInterlockCommandFamilyMetadata as CoreTxInterlockCommandFamilyMetadata,
+)
+from rigplane.core.tx_interlock_contract import (
+    TxInterlockDisposition as CoreTxInterlockDisposition,
+)
 from rigplane.runtime._poller_types import (
     MemoryToVfo,
     PttOff,
@@ -25,15 +37,24 @@ from rigplane.runtime._poller_types import (
     VfoSwap,
 )
 from rigplane.runtime.tx_interlock import (
+    TX_INTERLOCK_COMMAND_FAMILY_METADATA,
     DeferredTxCommandLane,
     RfState,
     TxInterlockCommandFamily,
+    TxInterlockCommandFamilyMetadata,
     TxInterlockDeferredOutcome,
     TxInterlockDisposition,
     classify_tx_interlock,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
 )
+
+
+def test_runtime_reexports_the_canonical_core_contract_by_identity() -> None:
+    assert TxInterlockDisposition is CoreTxInterlockDisposition
+    assert TxInterlockCommandFamily is CoreTxInterlockCommandFamily
+    assert TxInterlockCommandFamilyMetadata is CoreTxInterlockCommandFamilyMetadata
+    assert TX_INTERLOCK_COMMAND_FAMILY_METADATA is CORE_TX_INTERLOCK_METADATA
 
 
 def test_emergency_stop_commands_take_structural_precedence() -> None:
@@ -57,6 +78,23 @@ def test_rf_start_and_disruptive_commands_are_hard_block() -> None:
     assert (
         classify_tx_interlock(SetPowerstat(on=True)) is TxInterlockDisposition.TX_SAFE
     )
+
+
+def test_tuner_values_keep_mixed_structural_and_default_semantics() -> None:
+    assert (
+        classify_tx_interlock(SetTunerStatus(0)) is TxInterlockDisposition.ALWAYS_PASS
+    )
+    assert classify_tx_interlock(SetTunerStatus(1)) is TxInterlockDisposition.BLOCK
+    assert classify_tx_interlock(SetTunerStatus(2)) is TxInterlockDisposition.BLOCK
+    assert classify_tx_interlock(SetTunerStatus(3)) is TxInterlockDisposition.TX_SAFE
+
+
+def test_unknown_commands_remain_tx_safe_without_family_metadata() -> None:
+    command = object()
+
+    assert classify_tx_interlock(command) is TxInterlockDisposition.TX_SAFE
+    assert evaluate_tx_interlock(command, rf_state=RfState.UNKNOWN).allowed is True
+    assert get_tx_interlock_command_family_metadata(command) is None
 
 
 def test_hard_block_fails_closed_for_unknown_rf_state_without_claiming_tx() -> None:

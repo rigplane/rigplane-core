@@ -40,7 +40,7 @@ export function provideAppTxControllerHost(bindings: AppTxControllerHostBindings
   const refreshAuthority = () => {
     if (disposed) return;
     authority = browser.projectAuthority(session);
-    if (controller.snapshot().guard) applyAuthority(authority);
+    applyAuthority(authority);
   };
   const release = (): Promise<void> => {
     if (inFlight) return inFlight;
