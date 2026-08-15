@@ -1350,8 +1350,8 @@ test('FTX-1 exact RIT lattice in Chromium', async ({ page }) => {
   await expect(slider).toHaveAttribute('max', '9999');
   await expect(slider).toHaveAttribute('step', '1');
   await expect(slider).toHaveValue('0');
-  await clearCommands(page);
-  expect((await drainCommands(page)).filter((command) => command.name === 'set_rit_frequency'))
+  const startupCommands = await drainCommands(page);
+  expect(startupCommands.filter((command) => command.name === 'set_rit_frequency'))
     .toHaveLength(0);
 
   const sequence = [50, 0, -50, 0, -9999, 9999];
