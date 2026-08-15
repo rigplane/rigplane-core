@@ -22,7 +22,7 @@ Each gap row cross-references an existing or NEW Linear ticket (team RigPlane, k
 
 | Radio | Driver | Manual | Status |
 |---|---|---|---|
-| FTX-1 (Yaesu) | `yaesu_cat` | CAT Operation Reference Manual 2508-C | 📋 [ftx1.md](ftx1.md) — static audit; source/digest/retrieval witness |
+| FTX-1 (Yaesu) | `yaesu_cat` | CAT Operation Reference Manual 2508-C | 📋 [ftx1.md](ftx1.md) — static audit; source/digest/retrieval and open-gap witness |
 | IC-7610 (Icom) | `icom_civ` | CI-V Reference Guide rev 1a | ✅ [ic7610.md](ic7610.md) — done, live-validated (3 scope FAILs → MOR-664) |
 | IC-7300 (Icom) | `icom_civ` (shared) | Full Manual v6 §19 | ✅ [ic7300.md](ic7300.md) — done, static/template (no live run) |
 | Xiegu X6200 | `ic705` serial (CI-V-like) | Radioddity CI-V V1.0.6 | ✅ [x6200.md](x6200.md) — done, doc-vs-code (live not run) |

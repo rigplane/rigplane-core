@@ -56,19 +56,29 @@ material:
   frequency), and the asymmetric `IF`/`OI` status records are separate command
   domains. Profile quantization/restoration defects belong to MOR-1670 and its
   children MOR-1676 through MOR-1682, rather than to a model-name frontend branch.
+- The `MC` read form materially changed. Revision 2507-B documented the
+  receiver-ambiguous `MC;`; revision 2508-C requires the receiver-qualified
+  `MCP1;` in the manual's parameter notation (`MC0;` for MAIN or `MC1;` for
+  SUB). The future memory API and parser must preserve that receiver identity;
+  MOR-676 owns the feature.
 - The old audit's current-looking live-run summary, including a TX-enabled claim, is
   historical and removed. Hardware acceptance remains outside this documentation PR.
 
 ## Gap register
 
-| Category | Reconciled finding | Existing Linear owner |
+| Gap class | Reconciled finding | Live Linear owner / state |
 |---|---|---|
-| Receiver selection | MAIN/SUB UI dispatch must use documented `VS` semantics, not an A/B control. | MOR-1671 |
-| Profile-domain restoration | The manual's native discrete domains need profile-derived lattices, not generic continuous assumptions. | MOR-1670; MOR-1676..MOR-1682 |
-| Unsupported power representation | CAT power control must not imply a uniformly supported browser power control. | MOR-1673 |
-| Capability-derived bands | Exposed bands must follow actual profile capability rather than a static front-end list. | MOR-1674 |
-| AF presentation | CAT AF-scale values require the agreed percent formatting. | MOR-1675 |
-| TX behavior | `FT` routing is not authorization to key or test TX; interlock and RF-authority tickets own that safety work. | MOR-1500; MOR-1625..MOR-1630; MOR-1694 |
+| D — receiver mismatch | MAIN/SUB UI dispatch must use documented `VS` semantics, not an A/B control. | MOR-1671 |
+| A — profile domains | Native discrete domains need profile-derived lattices, not generic continuous assumptions. | MOR-1670; MOR-1676..MOR-1682 |
+| A/C — VOX wiring | `VG` gain and `VD` delay remain unwired in the FTX-1 profile; the backend methods raise `NotImplementedError`. Acceptance requires real command wiring and verified payload widths. | MOR-674 — Backlog |
+| B — validation coverage | BI break-in and PR/PL compressor on/off still lack the requested RMVR rows. The `sql_type.set` RMVR now exists, so its remaining failure is routed separately rather than counted as a missing row. | MOR-673 — Backlog; MOR-696 — Backlog |
+| C — operator commands | `MX` MOX, `OS` repeater shift, and `TS` TX watch remain absent from the backend/profile surface. Documentation of `MX` or `TS` is not TX-test authorization. | MOR-675 — Backlog |
+| C — memory/keyer feature | The memory bank plus CW/voice message-keyer surface remains unimplemented. For `MC`, implementation must use the 2508-C receiver-qualified read `MCP1;` (`MC0;`/`MC1;`), not the 2507-B `MC;`. | MOR-676 — Backlog epic; decompose before implementation |
+| D — CAT mismatch | `sql_type.set` exists, but the profile retains an unconfirmed two-digit CT write while 2508-C documents one receiver digit plus one SQL-type digit. The recorded non-round-trip evidence is historical; current hardware acceptance is still required. | MOR-696 — Backlog |
+| A — unsupported power | CAT power control must not imply a uniformly supported browser power control. | MOR-1673 |
+| A — capability-derived bands | Exposed bands must follow actual profile capability rather than a static front-end list. | MOR-1674 |
+| A — AF presentation | CAT AF-scale values require the agreed percent formatting. | MOR-1675 |
+| D — TX behavior | `FT` routing is not authorization to key or test TX; interlock and RF-authority tickets own that safety work. | MOR-1500; MOR-1625..MOR-1630; MOR-1694 |
 
 This audit deliberately does not create a second backlog, change a profile, or claim
 that any listed command has completed hardware validation.
