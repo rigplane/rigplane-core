@@ -678,14 +678,13 @@ mapping = "linear"
 quantization = "nearest_ties_up"
 restoration = "exact"
 """
+    _LARGE_DECIMAL = _LINEAR.replace(
+        "display_max = 1.0", "display_max = 1000000000000"
+    ).replace("display_step = 0.2", "display_step = 1e-20")
 
     def _load(self, tmp_path, declaration: str):
-        return load_rig(
-            _write_toml(
-                tmp_path,
-                _MINIMAL_TOML + "\n[controls.test_control]\n" + declaration,
-            )
-        )
+        text = _MINIMAL_TOML + "\n[controls.test_control]\n" + declaration
+        return load_rig(_write_toml(tmp_path, text))
 
     @pytest.mark.parametrize(
         ("mapping", "declaration"),
@@ -707,9 +706,7 @@ restoration = "exact"
             ),
         ],
     )
-    def test_scalar_domain_is_private_and_not_serialized(
-        self, tmp_path, mapping, declaration
-    ):
+    def test_scalar_domain_is_private(self, tmp_path, mapping, declaration):
         rig = self._load(tmp_path, declaration)
 
         assert rig._control_domains["test_control"]["mapping"] == mapping
@@ -721,24 +718,23 @@ restoration = "exact"
         [
             ("raw_min = 0", "raw_min = 1", "raw_min must lie"),
             ("raw_max = 10", "raw_max = 9", "raw_max must lie"),
-            (
-                "raw_max = 10",
-                "raw_max = 9007199254740991",
-                "raw_max must lie",
-            ),
+            ("raw_max = 10", "raw_max = 9007199254740991", "raw_max must lie"),
             ("display_min = 0.0", "display_min = 0.05", "display_min must lie"),
-            (
-                "display_max = 1.0",
-                "display_max = 1000000000000.05",
-                "display_max must lie",
-            ),
         ],
     )
-    def test_rejects_off_lattice_endpoints_at_small_and_large_indices(
-        self, tmp_path, old, new, message
-    ):
+    def test_rejects_off_lattice_endpoints(self, tmp_path, old, new, message):
         with pytest.raises(RigLoadError, match=message):
             self._load(tmp_path, self._LINEAR.replace(old, new))
+
+    def test_accepts_large_exact_decimal_lattice_independent_of_context(self, tmp_path):
+        assert self._load(tmp_path, self._LARGE_DECIMAL)._control_domains is not None
+
+    def test_large_off_lattice_raises_rig_load_error(self, tmp_path):
+        declaration = self._LARGE_DECIMAL.replace(
+            "display_min = 0.0", "display_min = 1e-21"
+        ).replace("display_origin = 0.0", "display_origin = 1e-21")
+        with pytest.raises(RigLoadError, match="display_max must lie"):
+            self._load(tmp_path, declaration)
 
     @pytest.mark.parametrize(
         ("centers", "message"),
@@ -769,13 +765,8 @@ restoration = "exact"
 
     @pytest.mark.parametrize("unit", [None, "", "   "])
     def test_explicit_domain_requires_non_empty_display_unit(self, tmp_path, unit):
-        declaration = self._LINEAR
-        if unit is None:
-            declaration = declaration.replace('display_unit = "ratio"\n', "")
-        else:
-            declaration = declaration.replace(
-                'display_unit = "ratio"', f'display_unit = "{unit}"'
-            )
+        replacement = "" if unit is None else f'display_unit = "{unit}"\n'
+        declaration = self._LINEAR.replace('display_unit = "ratio"\n', replacement)
         with pytest.raises(RigLoadError, match="display_unit.*non-empty"):
             self._load(tmp_path, declaration)
 
@@ -785,10 +776,9 @@ restoration = "exact"
             self._load(tmp_path, declaration)
 
     def test_shipped_legacy_profiles_remain_publicly_shape_compatible(self):
-        paths = (
+        for path in sorted(
             path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
-        )
-        for path in sorted(paths):
+        ):
             rig = load_rig(path)
             assert rig._control_domains is None, path.name
             assert rig.to_profile().controls == rig.controls, path.name

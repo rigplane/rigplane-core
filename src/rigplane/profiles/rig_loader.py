@@ -139,6 +139,16 @@ def _control_decimal(value: object, path: str) -> Decimal:
     return decimal
 
 
+def _on_control_lattice(
+    value: int | Decimal, origin: int | Decimal, step: int | Decimal
+) -> bool:
+    (value_num, value_den), (origin_num, origin_den), (step_num, step_den) = (
+        Decimal(item).as_integer_ratio() for item in (value, origin, step)
+    )
+    numerator = (value_num * origin_den - origin_num * value_den) * step_den
+    return numerator % (value_den * origin_den * step_num) == 0
+
+
 def _parse_control_spec(
     filename: str, control_name: str, raw: object
 ) -> tuple[ControlSpec | None, _ScalarControlDomain | None]:
@@ -234,7 +244,7 @@ def _parse_control_spec(
         ("display_min", display_min, display_origin, display_step),
         ("display_max", display_max, display_origin, display_step),
     ):
-        if (value - origin) % step != 0:
+        if not _on_control_lattice(value, origin, step):
             raise RigLoadError(f"{prefix}.{name} must lie on its declared lattice")
     if not raw_min <= raw_origin <= raw_max:
         raise RigLoadError(f"{prefix}.raw_origin must be inside its declared range")
@@ -279,13 +289,13 @@ def _parse_control_spec(
         )
         if not raw_min <= raw_center <= raw_max:
             raise RigLoadError(f"{prefix}.raw_center must be inside its declared range")
-        if (raw_center - raw_origin) % raw_step != 0:
+        if not _on_control_lattice(raw_center, raw_origin, raw_step):
             raise RigLoadError(f"{prefix}.raw_center must lie on its declared lattice")
         if not display_min <= display_center <= display_max:
             raise RigLoadError(
                 f"{prefix}.display_center must be inside its declared range"
             )
-        if (display_center - display_origin) % display_step != 0:
+        if not _on_control_lattice(display_center, display_origin, display_step):
             raise RigLoadError(
                 f"{prefix}.display_center must lie on its declared lattice"
             )
