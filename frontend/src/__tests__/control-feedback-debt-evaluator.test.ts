@@ -12,6 +12,10 @@ const effects = (source: string) => evaluateOrderedEffects(program(source), {
   isTracked: (node: { type?: string; name?: string }) => node?.type === 'Identifier' && node.name === 'props',
 });
 
+const multiRootEffects = (source: string) => evaluateOrderedEffects(program(source), {
+  isTracked: (node: { type?: string; name?: string }) => node?.type === 'Identifier' && ['props', 'other'].includes(node.name || ''),
+});
+
 describe('ordered debt evaluator (MOR-1720)', () => {
   it('runs hoisted and const callables only when invoked', () => {
     expect(facts('call(); function call() { mutate(props); return props; } const later = () => mutate(props); later(); function idle() { mutate(props); }'))
@@ -185,5 +189,26 @@ describe('ordered debt evaluator (MOR-1720)', () => {
   it('keeps repeated default deletes ordered without shared side tables', () => {
     const writes = effects('function f(x = props) { delete x.value; delete x.value; } f(); f();').filter((fact) => fact.kind === 'mutation');
     expect(writes.map((fact) => [fact.targetRoots.length, fact.poison])).toEqual([[1, true], [1, true], [1, true], [1, true]]);
+  });
+
+  it('preserves anonymous spread roots through nested and rest bindings', () => {
+    const object = effects('function f({ ...rest }) { rest.value = 1; sink(rest); delete rest.value; } f({ ...props });');
+    expect(object.map((fact) => [fact.kind, fact.roots.length])).toEqual([['mutation', 1], ['escape', 1], ['mutation', 1]]);
+    const array = effects('function f([value, ...rest]) { value.x = 1; sink(rest); delete value.x; } f([...props]);');
+    expect(array.map((fact) => [fact.kind, fact.roots.length])).toEqual([['mutation', 1], ['escape', 1], ['mutation', 1]]);
+    const nested = effects('function f({ item: { ...rest } }) { delete rest.x; } f({ item: { ...props } });');
+    expect(nested.map((fact) => fact.roots.length)).toEqual([1]);
+  });
+
+  it('attaches only active effect roots to zero-argument recursive cycles', () => {
+    const direct = effects('function direct() { props.x = 1; direct(); } direct();').filter((fact) => fact.kind === 'cycle')[0];
+    const mutual = effects('function a() { b(); } function b() { props.x = 1; a(); } a();').filter((fact) => fact.kind === 'cycle')[0];
+    const unrelated = effects('props.x = 1; function idle() { idle(); } idle(); props.x = 1;').filter((fact) => fact.kind === 'cycle')[0];
+    expect([direct, mutual, unrelated].map((fact) => [fact.roots.length, Object.isFrozen(fact.roots)])).toEqual([[1, true], [1, true], [0, true]]);
+  });
+
+  it('keeps cycle roots invocation-specific, ordered, and non-global', () => {
+    const cycles = multiRootEffects('function f(value) { value.x = 1; f(value); } f(props); f(other);').filter((fact) => fact.kind === 'cycle');
+    expect(cycles.map((fact) => [fact.roots.map((root: { name?: string }) => root.name), Object.isFrozen(fact.roots)])).toEqual([[['props'], true], [['other'], true]]);
   });
 });

@@ -10,7 +10,8 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
   const facts = [], active = new Map(), scope = (parent = null) => Object.create(parent);
   const frozen = (values = []) => Object.freeze([...new Set(values)]);
   const roots = (values) => frozen(values.flatMap((value) => value?.roots || []));
-  const emit = (kind, node, extra = {}) => facts.push(Object.freeze({ kind, node, ...extra }));
+  const noteActive = (provenance) => { if (provenance?.length) for (const state of active.values()) state.roots = frozen([...state.roots, ...provenance]); };
+  const emit = (kind, node, extra = {}) => { facts.push(Object.freeze({ kind, node, ...extra })); noteActive(extra.roots || extra.targetRoots || extra.escapeRoots); };
   const merge = (values) => { const provenance = roots(values); return { track: provenance.length > 0 || values.some((value) => value?.track), roots: provenance }; };
   const hasBinding = (env, name) => !!env && name in env;
   const binding = (env, name) => hasBinding(env, name) ? env[name] : undefined;
@@ -44,12 +45,12 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     if (pattern.type === 'ArrayPattern') {
       for (let index = 0; index < pattern.elements.length; index += 1) {
         const part = pattern.elements[index]; if (!part) continue;
-        const rest = (value.items || []).slice(index);
-        const result = bind(part, part.type === 'RestElement' ? { items: rest, roots: value.items ? merge(rest).roots : value.roots, track: value.aggregate || (value.items ? merge(rest).track : value.track) } : value.items?.[index] || (value.track ? { track: true, roots: value.roots } : { missing: true }), env); if (result?.abrupt) return result;
+        const rest = (value.items || []).slice(index), restValue = merge(rest);
+        const result = bind(part, part.type === 'RestElement' ? { items: rest, roots: frozen([...restValue.roots, ...(value.aggregate ? value.roots : [])]), track: value.aggregate || (value.items ? restValue.track : value.track) } : value.items?.[index] || (value.track ? { track: true, roots: value.roots } : { missing: true }), env); if (result?.abrupt) return result;
       }
     }
     if (pattern.type === 'ObjectPattern') { const used = new Set(); for (const part of pattern.properties || []) {
-      if (part.type === 'RestElement') { const fields = Object.fromEntries(Object.entries(value.fields || {}).filter(([key]) => !used.has(key))); const result = bind(part.argument, { fields, roots: value.fields ? merge(Object.values(fields)).roots : value.roots, track: value.aggregate || (value.fields ? merge(Object.values(fields)).track : value.track) }, env); if (result?.abrupt) return result; }
+      if (part.type === 'RestElement') { const fields = Object.fromEntries(Object.entries(value.fields || {}).filter(([key]) => !used.has(key))), rest = merge(Object.values(fields)); const result = bind(part.argument, { fields, roots: frozen([...rest.roots, ...(value.aggregate ? value.roots : [])]), track: value.aggregate || (value.fields ? rest.track : value.track) }, env); if (result?.abrupt) return result; }
       else { const key = part.key.name || part.key.value; used.add(String(key)); const result = bind(part.value, value.fields?.[key] || (value.track ? { track: true, roots: value.roots } : { missing: true }), env); if (result?.abrupt) return result; }
     }
     }
@@ -57,7 +58,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
   const invoke = (fn, args) => {
     const invocation = merge(args), previous = active.get(fn.node);
     if (previous) { const provenance = roots([invocation, previous]); emit('cycle', fn.node, { poison: true, roots: provenance, escapeRoots: provenance }); return { track: true, roots: provenance, poison: true }; }
-    active.set(fn.node, invocation); const env = scope(fn.env), unknownSpread = args.findIndex((value) => value.spread && !value.items);
+    active.set(fn.node, { roots: invocation.roots }); const env = scope(fn.env), unknownSpread = args.findIndex((value) => value.spread && !value.items);
     if (fn.node.type === 'FunctionExpression' && fn.node.id) env[fn.node.id.name] = { fn, value: { track: false } };
     for (let index = 0; index < (fn.node.params || []).length; index += 1) { const param = fn.node.params[index], spreadCovers = unknownSpread >= 0 && index >= unknownSpread, result = bind(param, param.type === 'RestElement' ? { items: args.slice(index), ...merge(args.slice(index)), track: spreadCovers || merge(args.slice(index)).track } : spreadCovers ? { track: true, roots: invocation.roots } : args[index] || { missing: true }, env); if (result?.abrupt) { active.delete(fn.node); return result; } }
     const result = fn.node.body?.type === 'BlockStatement' ? block(fn.node.body.body, env) : { value: evaluate(fn.node.body, env) };
@@ -72,13 +73,13 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
     }
     if (raw?.type === 'ObjectExpression') {
       const fields = {};
-      let track = false, aggregate = false;
+      let track = false, aggregate = false, spreadRoots = frozen();
       for (const part of raw.properties || []) {
-        if (part.type === 'SpreadElement') { const spread = argument(part.argument, env); if (spread.abrupt) return spread; Object.assign(fields, spread.fields || {}); track ||= !!spread.track; aggregate ||= !spread.fields && !!spread.track; continue; }
+        if (part.type === 'SpreadElement') { const spread = argument(part.argument, env); if (spread.abrupt) return spread; Object.assign(fields, spread.fields || {}); spreadRoots = frozen([...spreadRoots, ...spread.roots]); track ||= !!spread.track; aggregate ||= !spread.fields && !!spread.track; continue; }
         if (part.computed) { const key = evaluate(part.key, env); if (key.abrupt) return key; }
         const value = argument(part.value, env); if (value.abrupt) return value; fields[part.key.name || part.key.value] = value;
       }
-      return { fields, ...merge(Object.values(fields)), track: track || merge(Object.values(fields)).track, aggregate };
+      const value = merge(Object.values(fields)); return { fields, roots: frozen([...value.roots, ...spreadRoots]), track: track || value.track, aggregate };
     }
     const value = evaluate(node, env); if (unboundUndefined(raw, env)) return { ...known(undefined), undefined: true }; return value;
   };
