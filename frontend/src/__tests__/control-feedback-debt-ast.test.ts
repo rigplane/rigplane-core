@@ -1,0 +1,33 @@
+import { describe, expect, it } from 'vitest';
+import { parse } from 'svelte/compiler';
+// @ts-ignore Node ESM utility consumed later by the inventory flow.
+import { boundNames, collectObjectFlow, unwrapExpression } from '../../scripts/control-feedback-debt-ast.mjs';
+
+const ast = (s: string): any => parse(`<script lang="ts">${s}</script>`, { modern: true }).instance!.content;
+const events = (s: string) => collectObjectFlow(ast(s)).get('props') ?? [];
+const shape = (s: string) => events(s).map(({ key, poison }: any) => [key, poison]);
+
+describe('control-feedback AST semantics (MOR-1716)', () => {
+  it('normalizes emitted wrappers and poisons unsupported tracked wrappers', () => {
+    const n: any = ast('const props = {}; (props as object).type = "x";').body[1].expression.left.object;
+    expect(unwrapExpression(n).node.name).toBe('props');
+    expect(shape('const props={}; (props<string>).type="x";')).toEqual([['type', false]]);
+  });
+  it('finds every nested binding-pattern identifier', () => {
+    expect(boundNames({ type: 'ObjectPattern', properties: [{ value: { type: 'ArrayPattern', elements: [{ type: 'Identifier', name: 'a' }, { type: 'RestElement', argument: { type: 'AssignmentPattern', left: { type: 'Identifier', name: 'b' } } }] } }] })).toEqual(['a', 'b']);
+  });
+  it('keeps safe writes ordered but fails closed for aliases and mutations', () => {
+    expect(shape('const props={}; props.type="x"; props["feedback-policy"]="y"; let a; a=props; a.type="z";')).toEqual([['type', false], ['feedback-policy', false], [null, true]]);
+    expect(shape('const props={}; props.type++; delete props.type; props[key]="x";')).toEqual([[null, true], [null, true], [null, true]]);
+  });
+  it('poisons nested argument containers and root method receivers', () => {
+    expect(shape('const props={}; f({x:props}); f([props]); props.items.push(1);')).toEqual([[null, true], [null, true], [null, true]]);
+  });
+  it('declares function, catch, block and loop bindings lexically', () => {
+    expect(shape('const props={}; (function props(){ props.type="x"; })(); try{}catch({props}){props.type="x"} {let props={};props.type="x"} for(const {props} of [])props.type="x";')).toEqual([]);
+  });
+  it('does not report unrelated objects, cycles, or shadowed roots', () => {
+    expect(shape('const props={}; const other={}; other.type="x"; { const props={}; props.type="y" }')).toEqual([]);
+    expect(collectObjectFlow(ast('const a=b;const b=a;a.type="x";')).size).toBe(0);
+  });
+});
