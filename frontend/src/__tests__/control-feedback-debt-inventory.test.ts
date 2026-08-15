@@ -9,22 +9,25 @@ const debt = (source: string, file = 'src/semantic/Fixture.svelte') =>
 describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
   it('resolves direct, barrel, multi-hop, and conditional ValueControl aliases', () => {
     const source = wrap(
-      '<Direct label="A" value={a}/><Hop label="B" value={b}/><Maybe label="C" value={c}/><Mutable label="D"/><Assigned label="E"/><Extended label="F"/>',
-      `import Direct from '../controls/value-control/ValueControl.svelte';
-       import { ValueControl as Barrel } from '../controls/value-control';
-       import { ValueControl as Extended } from '../controls/value-control/index.js';
+      '<Direct label="A" value={a}/><Hop label="B" value={b}/><Maybe label="C" value={c}/><Mutable label="D"/><Assigned label="E"/><Extended label="F"/><Typed label="G"/>',
+      `import Direct from '../components-v2/controls/value-control/ValueControl.svelte';
+       import { ValueControl as Barrel } from '../components-v2/controls/value-control';
+       import { ValueControl as Extended } from '../components-v2/controls/value-control/index.js';
+       import { ValueControl as Typed } from '../components-v2/controls/value-control/index.ts';
        const First = Barrel; const Hop = First; const Other = false;
        const Maybe = Other ? Hop : widget; let Mutable = Barrel; let Assigned = widget;
        Assigned = Other ? widget : Extended; let a=0,b=0,c=0;`,
     );
-    expect(debt(source).map((site: { identity: string }) => site.identity)).toHaveLength(6);
+    expect(debt(source).map((site: { identity: string }) => site.identity)).toHaveLength(7);
   });
 
   it('parses module imports and ignores same-named components without a valid import', () => {
-    const valid = `<script context="module">import { ValueControl as VC } from '../controls/value-control';</script><VC label="A" value={a}/>`;
+    const valid = `<script context="module">import { ValueControl as VC } from '../components-v2/controls/value-control';</script><VC label="A" value={a}/>`;
     expect(debt(valid)).toHaveLength(1);
     expect(debt(wrap('<ValueControl label="fake"/>', 'const ValueControl = widget;'))).toEqual([]);
     expect(debt(wrap('<Wrong label="fake"/>', "import { ValueControl as Wrong } from '../controls/not-value-control/index.js';"))).toEqual([]);
+    expect(debt(wrap('<Wrong label="fake"/>', "import Wrong from '../other/ValueControl.svelte';"))).toEqual([]);
+    expect(debt(wrap('<Wrong label="fake"/>', "import { ValueControl as Wrong } from '../other/value-control/index.js';"))).toEqual([]);
   });
 
   it('conservatively discovers literal, expression, dynamic, and svelte:element ranges', () => {
@@ -60,6 +63,18 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
     expect(auditSvelteSource('src/semantic/Fixture.svelte', source).map((site: { value: string }) => site.value)).toEqual(['a', 'b', 'c']);
     expect(debt(source).map((site: { value: string }) => site.value)).toEqual(['a', 'c']);
     expect(() => debt(wrap('<input type="range" feedback-policy="radio-backed" {...unknownComputed}/>', script))).toThrow(/static feedback policy/);
+  });
+
+  it('applies spread-object mutations and poisons unknown writes or escapes', () => {
+    const script = `const aProps={type:'button'}, bProps={type:'button'}, pProps={type:'range','feedback-policy':'radio-backed'}, key='type';
+      aProps.type='range'; bProps[key]='range'; pProps['feedback-policy']='feedback-integrated'; let a=0,b=0,c=0;`;
+    const source = wrap('<input {...aProps} value={a}/><input {...bProps} value={b}/><input {...pProps} value={c}/>', script);
+    expect(auditSvelteSource('src/semantic/Fixture.svelte', source).map((site: { value: string }) => site.value)).toEqual(['a', 'b', 'c']);
+    expect(debt(source).map((site: { value: string }) => site.value)).toEqual(['a', 'b']);
+    const unknown = `const props={type:'button'}; let key='type'; props[key]='range';`;
+    expect(() => debt(wrap('<input {...props}/>', unknown))).toThrow(/static feedback policy/);
+    expect(debt(wrap('<input {...props} type="button" feedback-policy="radio-backed"/>', unknown))).toEqual([]);
+    expect(() => debt(wrap('<input {...props}/>', `const props={type:'button'}; mutate(props);`))).toThrow(/static feedback policy/);
   });
 
   it('rejects unknown or dynamic policies and accepts the closed vocabulary', () => {

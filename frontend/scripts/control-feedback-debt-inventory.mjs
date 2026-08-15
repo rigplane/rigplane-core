@@ -14,6 +14,7 @@ const EXACT_DEMO_FILES = new Set([
   'src/components-v2/meters/SMeterDemo.svelte',
 ]);
 const RELEVANT = ['type', 'feedback-policy', 'aria-label', 'label', 'value'];
+const VALUE_CONTROL_DIR = 'src/components-v2/controls/value-control';
 /** @typedef {{value: any, text: string}} Entry */
 /** @typedef {{identity: string, file: string, kind: string, label: string, value: string, policy: string}} Site */
 /** @param {string} key */
@@ -75,17 +76,39 @@ function programs(ast) {
   return [ast.instance?.content, ast.module?.content].filter(Boolean);
 }
 
-/** @param {any} ast */
-function bindingsAndImports(ast) {
+/** @param {string} source @param {string} file */
+function valueControlImport(source, file) {
+  const clean = source.split(/[?#]/, 1)[0];
+  const importer = posix.dirname(posix.normalize(file.replaceAll('\\', '/')));
+  const target = clean.startsWith('.') ? posix.normalize(posix.join(importer, clean))
+    : clean.startsWith('/src/') ? posix.normalize(clean).slice(1) : '';
+  if (target === `${VALUE_CONTROL_DIR}/ValueControl.svelte`) return 'direct';
+  const stem = target.replace(/\.(?:[cm]?[jt]s)$/, '');
+  return stem === VALUE_CONTROL_DIR || stem === `${VALUE_CONTROL_DIR}/index` ? 'barrel' : null;
+}
+
+/** @param {any} ast @param {string} file */
+function bindingsAndImports(ast, file) {
   const bindings = new Map();
   /** @type {Map<string, any[]>} */ const aliases = new Map();
+  /** @type {Map<string, any[]>} */ const mutations = new Map();
   const valueControls = new Set();
   /** @param {string} name @param {any} value */
   const addAlias = (name, value) => aliases.set(name, [...(aliases.get(name) ?? []), value]);
+  /** @param {string} name @param {any} key @param {any} value */
+  const addMutation = (name, key, value) => mutations.set(name, [...(mutations.get(name) ?? []), { key, value }]);
   /** @param {any} node */
   const collectAssignments = (node) => {
     if (!node || typeof node !== 'object') return;
     if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier') addAlias(node.left.name, node.right);
+    const member = node.type === 'AssignmentExpression' && node.left.type === 'MemberExpression' ? node.left : null;
+    if (member?.object.type === 'Identifier' && bindings.has(member.object.name)) {
+      const key = member.computed ? staticValue(member.property, bindings) : member.property.name;
+      addMutation(member.object.name, key, node.operator === '=' ? node.right : null);
+    }
+    if (node.type === 'CallExpression' || node.type === 'NewExpression') {
+      for (const argument of node.arguments) if (argument.type === 'Identifier' && bindings.has(argument.name)) addMutation(argument.name, UNKNOWN, null);
+    }
     for (const value of Object.values(node)) {
       if (Array.isArray(value)) value.forEach(collectAssignments);
       else if (value && typeof value === 'object') collectAssignments(value);
@@ -95,11 +118,10 @@ function bindingsAndImports(ast) {
     for (const statement of program.body) {
       if (statement.type === 'ImportDeclaration') {
         const source = String(statement.source.value);
-        const direct = source.endsWith('/ValueControl.svelte') || source === './ValueControl.svelte';
-        const barrel = /(?:^|\/)value-control(?:\/index)?$/.test(source.replace(/\.(?:[cm]?[jt]s)$/, ''));
+        const target = valueControlImport(source, file);
         for (const specifier of statement.specifiers) {
           const imported = specifier.imported?.name ?? specifier.imported?.value;
-          if ((direct && specifier.type === 'ImportDefaultSpecifier') || (barrel && imported === 'ValueControl')) {
+          if ((target === 'direct' && specifier.type === 'ImportDefaultSpecifier') || (target === 'barrel' && imported === 'ValueControl')) {
             valueControls.add(specifier.local.name);
           }
         }
@@ -114,7 +136,7 @@ function bindingsAndImports(ast) {
     }
     collectAssignments(program);
   }
-  return { aliases, bindings, valueControls };
+  return { aliases, bindings, mutations, valueControls };
 }
 
 /** @param {any} node @param {Map<string, any>} bindings @param {Set<string>} [seen] @returns {any} */
@@ -171,41 +193,47 @@ function attributeEntry(attribute, bindings, source) {
   return { value: staticValue(expression, bindings), text: expressionText(expression, source) };
 }
 
-/** @param {any} node @param {Map<string, any>} bindings @param {string} source @param {Set<string>} [seen] @returns {Map<string, Entry>|null} */
-function objectEntries(node, bindings, source, seen = new Set()) {
+/** @param {Map<string, Entry>} result @param {any} rawKey @param {any} value @param {Map<string, any>} bindings @param {string} source */
+function setEntry(result, rawKey, value, bindings, source) {
+  if (rawKey === UNKNOWN || typeof rawKey !== 'string') {
+    for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
+    return;
+  }
+  const key = keyOf(rawKey);
+  if (RELEVANT.includes(key)) result.set(key, value ? {
+    value: staticValue(value, bindings), text: expressionText(value, source),
+  } : { value: UNKNOWN, text: 'dynamic' });
+}
+
+/** @param {any} node @param {Map<string, any>} bindings @param {Map<string, any[]>} mutations @param {string} source @param {Set<string>} [seen] @returns {Map<string, Entry>|null} */
+function objectEntries(node, bindings, mutations, source, seen = new Set()) {
   node = unwrap(node);
   if (node?.type === 'Identifier' && bindings.has(node.name) && !seen.has(node.name)) {
-    return objectEntries(bindings.get(node.name), bindings, source, new Set([...seen, node.name]));
+    const result = objectEntries(bindings.get(node.name), bindings, mutations, source, new Set([...seen, node.name]));
+    if (result) for (const mutation of mutations.get(node.name) ?? []) setEntry(result, mutation.key, mutation.value, bindings, source);
+    return result;
   }
   if (node?.type !== 'ObjectExpression') return null;
   const result = new Map();
   for (const property of node.properties) {
     if (property.type === 'SpreadElement') {
-      const nested = objectEntries(property.argument, bindings, source, seen);
+      const nested = objectEntries(property.argument, bindings, mutations, source, seen);
       if (!nested) for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
       else for (const [key, value] of nested) result.set(key, value);
       continue;
     }
     if (property.type !== 'Property') continue;
-    const rawKey = property.computed ? staticValue(property.key, bindings) : property.key.name ?? property.key.value;
-    if (rawKey === UNKNOWN || typeof rawKey !== 'string') {
-      for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
-      continue;
-    }
-    const key = keyOf(rawKey);
-    if (RELEVANT.includes(key)) result.set(key, {
-      value: staticValue(property.value, bindings), text: expressionText(property.value, source),
-    });
+    setEntry(result, property.computed ? staticValue(property.key, bindings) : property.key.name ?? property.key.value, property.value, bindings, source);
   }
   return result;
 }
 
-/** @param {any} node @param {Map<string, any>} bindings @param {string} source @returns {Map<string, Entry>} */
-function effectiveAttributes(node, bindings, source) {
+/** @param {any} node @param {Map<string, any>} bindings @param {Map<string, any[]>} mutations @param {string} source @returns {Map<string, Entry>} */
+function effectiveAttributes(node, bindings, mutations, source) {
   const result = new Map();
   for (const attribute of node.attributes ?? []) {
     if (attribute.type === 'SpreadAttribute') {
-      const entries = objectEntries(attribute.expression, bindings, source);
+      const entries = objectEntries(attribute.expression, bindings, mutations, source);
       if (!entries) for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
       else for (const [key, value] of entries) result.set(key, value);
     } else if (attribute.type === 'Attribute' && RELEVANT.includes(keyOf(attribute.name))) {
@@ -237,7 +265,7 @@ function isLocalGain(file, kind, attributes) {
 /** @param {string} file @param {string} source @returns {Site[]} */
 export function auditSvelteSource(file, source) {
   const ast = parse(source, { modern: true, filename: file });
-  const { aliases, bindings, valueControls } = bindingsAndImports(ast);
+  const { aliases, bindings, mutations, valueControls } = bindingsAndImports(ast, file);
   /** @type {Site[]} */
   const sites = [];
   /** @param {any} node */
@@ -251,7 +279,7 @@ export function auditSvelteSource(file, source) {
       if (tag === 'input' || tag === UNKNOWN) kind = 'input';
     }
     if (kind) {
-      const attributes = effectiveAttributes(node, bindings, source);
+      const attributes = effectiveAttributes(node, bindings, mutations, source);
       const type = attributes.get('type')?.value;
       if (kind === 'ValueControl' || type === 'range' || type === UNKNOWN) {
         const label = attributes.get(kind === 'input' ? 'aria-label' : 'label');
