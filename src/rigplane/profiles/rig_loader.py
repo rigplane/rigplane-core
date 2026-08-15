@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import tomllib
 import warnings
 from dataclasses import dataclass, field
@@ -54,6 +55,46 @@ VALID_CONTROL_STYLES = {
     "toggle_and_level",
     "level_is_toggle",
 }
+VALID_CONTROL_MAPPINGS = {"identity", "linear", "centered", "lookup"}
+VALID_CONTROL_QUANTIZATION = {
+    "nearest_ties_down",
+    "nearest_ties_up",
+    "floor",
+    "ceil",
+    "reject",
+}
+VALID_CONTROL_RESTORATION = {"exact", "unavailable"}
+_CONTROL_KEYS = {
+    "style",
+    "range_min",
+    "range_max",
+    "raw_min",
+    "raw_max",
+    "raw_step",
+    "raw_origin",
+    "raw_center",
+    "display_min",
+    "display_max",
+    "display_step",
+    "display_origin",
+    "display_center",
+    "display_unit",
+    "mapping",
+    "quantization",
+    "restoration",
+    "lookup",
+}
+_EXPLICIT_CONTROL_DOMAIN_KEYS = {
+    "raw_step",
+    "raw_origin",
+    "display_step",
+    "display_origin",
+    "display_center",
+    "mapping",
+    "quantization",
+    "restoration",
+    "lookup",
+}
 VALID_RULE_KINDS = {"mutex", "disables", "requires", "value_limit"}
 VALID_KEYBOARD_MODIFIERS = {"SHIFT", "CTRL", "ALT", "META"}
 VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
@@ -73,6 +114,195 @@ _REQUIRED_RADIO_FIELDS = ("id", "model", "receiver_count", "has_lan", "has_wifi"
 
 class RigLoadError(Exception):
     """Raised when a rig TOML file is invalid or malformed."""
+
+
+def _control_number(value: object, path: str, *, integer: bool = False) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        expected = "an integer" if integer else "a finite number"
+        raise RigLoadError(f"{path} must be {expected}")
+    if integer and not isinstance(value, int):
+        raise RigLoadError(f"{path} must be an integer")
+    if not math.isfinite(value):
+        raise RigLoadError(f"{path} must be a finite number")
+    return value
+
+
+def _on_lattice(value: int | float, origin: int | float, step: int | float) -> bool:
+    offset = (value - origin) / step
+    return math.isclose(offset, round(offset), rel_tol=1e-9, abs_tol=1e-9)
+
+
+def _parse_control_spec(filename: str, control_name: str, raw: object) -> ControlSpec:
+    prefix = f"{filename}: [controls.{control_name}]"
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{prefix} must be a table")
+
+    unknown = sorted(set(raw) - _CONTROL_KEYS)
+    if unknown:
+        raise RigLoadError(f"{prefix} unknown key(s): {unknown!r}")
+
+    style = raw.get("style")
+    if style is not None and (
+        not isinstance(style, str) or style not in VALID_CONTROL_STYLES
+    ):
+        raise RigLoadError(
+            f"{prefix}.style must be one of {VALID_CONTROL_STYLES}, got {style!r}"
+        )
+
+    for first, last, integer in (
+        ("range_min", "range_max", True),
+        ("raw_min", "raw_max", True),
+        ("display_min", "display_max", False),
+    ):
+        present = [key in raw for key in (first, last)]
+        if any(present) and not all(present):
+            raise RigLoadError(f"{prefix}.{first} and {last} must be declared together")
+        if all(present):
+            low = _control_number(raw[first], f"{prefix}.{first}", integer=integer)
+            high = _control_number(raw[last], f"{prefix}.{last}", integer=integer)
+            if low >= high:
+                raise RigLoadError(f"{prefix}.{first} must be less than {last}")
+    if "raw_center" in raw:
+        _control_number(raw["raw_center"], f"{prefix}.raw_center", integer=True)
+    if "display_center" in raw:
+        _control_number(raw["display_center"], f"{prefix}.display_center")
+    if "display_unit" in raw and not isinstance(raw["display_unit"], str):
+        raise RigLoadError(f"{prefix}.display_unit must be a string")
+
+    explicit = bool(set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS)
+    if not explicit:
+        return dict(raw)  # type: ignore[return-value]
+    if "mapping" not in raw:
+        raise RigLoadError(f"{prefix}.mapping is required for an explicit domain")
+
+    mapping = raw["mapping"]
+    if not isinstance(mapping, str) or mapping not in VALID_CONTROL_MAPPINGS:
+        raise RigLoadError(
+            f"{prefix}.mapping must be one of {sorted(VALID_CONTROL_MAPPINGS)!r}"
+        )
+    required = {
+        "raw_min",
+        "raw_max",
+        "raw_step",
+        "raw_origin",
+        "display_min",
+        "display_max",
+        "display_step",
+        "display_origin",
+        "quantization",
+        "restoration",
+    }
+    missing = sorted(required - set(raw))
+    if missing:
+        if "display_min" in missing and "display_max" in missing:
+            raise RigLoadError(f"{prefix}.display_min and display_max are required")
+        raise RigLoadError(f"{prefix} missing required key(s): {missing!r}")
+
+    raw_min = _control_number(raw["raw_min"], f"{prefix}.raw_min", integer=True)
+    raw_max = _control_number(raw["raw_max"], f"{prefix}.raw_max", integer=True)
+    raw_step = _control_number(raw["raw_step"], f"{prefix}.raw_step", integer=True)
+    raw_origin = _control_number(
+        raw["raw_origin"], f"{prefix}.raw_origin", integer=True
+    )
+    display_min = _control_number(raw["display_min"], f"{prefix}.display_min")
+    display_max = _control_number(raw["display_max"], f"{prefix}.display_max")
+    display_step = _control_number(raw["display_step"], f"{prefix}.display_step")
+    display_origin = _control_number(raw["display_origin"], f"{prefix}.display_origin")
+    for name, step in (("raw_step", raw_step), ("display_step", display_step)):
+        if step <= 0:
+            raise RigLoadError(f"{prefix}.{name} must be > 0")
+    for name, origin, low, high in (
+        ("raw_origin", raw_origin, raw_min, raw_max),
+        ("display_origin", display_origin, display_min, display_max),
+    ):
+        if not low <= origin <= high:
+            raise RigLoadError(f"{prefix}.{name} must be inside its declared range")
+
+    quantization = raw["quantization"]
+    if (
+        not isinstance(quantization, str)
+        or quantization not in VALID_CONTROL_QUANTIZATION
+    ):
+        raise RigLoadError(
+            f"{prefix}.quantization must be one of "
+            f"{sorted(VALID_CONTROL_QUANTIZATION)!r}"
+        )
+    restoration = raw["restoration"]
+    if not isinstance(restoration, str) or restoration not in VALID_CONTROL_RESTORATION:
+        raise RigLoadError(
+            f"{prefix}.restoration must be one of {sorted(VALID_CONTROL_RESTORATION)!r}"
+        )
+
+    if mapping == "identity":
+        raw_domain = (raw_min, raw_max, raw_step, raw_origin)
+        display_domain = (display_min, display_max, display_step, display_origin)
+        if raw_domain != display_domain:
+            raise RigLoadError(f"{prefix} identity mapping requires identical domains")
+    if mapping == "centered":
+        for name, low, high, origin, step in (
+            ("raw_center", raw_min, raw_max, raw_origin, raw_step),
+            (
+                "display_center",
+                display_min,
+                display_max,
+                display_origin,
+                display_step,
+            ),
+        ):
+            if name not in raw:
+                raise RigLoadError(f"{prefix}.{name} is required for centered mapping")
+            center = _control_number(
+                raw[name], f"{prefix}.{name}", integer=name == "raw_center"
+            )
+            if not low <= center <= high:
+                raise RigLoadError(f"{prefix}.{name} must be inside its declared range")
+            if not _on_lattice(center, origin, step):
+                raise RigLoadError(f"{prefix}.{name} must lie on its declared lattice")
+    elif "raw_center" in raw or "display_center" in raw:
+        raise RigLoadError(f"{prefix} center fields require centered mapping")
+
+    lookup = raw.get("lookup")
+    if mapping == "lookup":
+        if not isinstance(lookup, list) or len(lookup) < 2:
+            raise RigLoadError(f"{prefix}.lookup must contain at least two points")
+        points: list[tuple[int, int | float]] = []
+        for index, point in enumerate(lookup):
+            point_path = f"{prefix}.lookup[{index}]"
+            if not isinstance(point, dict) or set(point) != {"raw", "display"}:
+                raise RigLoadError(f"{point_path} must contain only raw and display")
+            point_raw = _control_number(point["raw"], f"{point_path}.raw", integer=True)
+            point_display = _control_number(point["display"], f"{point_path}.display")
+            if not raw_min <= point_raw <= raw_max:
+                raise RigLoadError(f"{point_path}.raw must be inside the raw range")
+            if not display_min <= point_display <= display_max:
+                raise RigLoadError(
+                    f"{point_path}.display must be inside the display range"
+                )
+            if not _on_lattice(point_raw, raw_origin, raw_step):
+                raise RigLoadError(
+                    f"{prefix}.lookup raw value {point_raw} must lie on its declared lattice"
+                )
+            if not _on_lattice(point_display, display_origin, display_step):
+                raise RigLoadError(
+                    f"{prefix}.lookup display value {point_display} must lie on its declared lattice"
+                )
+            points.append((point_raw, point_display))  # type: ignore[arg-type]
+        if any(a[0] >= b[0] for a, b in zip(points, points[1:])):
+            raise RigLoadError(
+                f"{prefix}.lookup raw values must be strictly increasing"
+            )
+        display_deltas = [b[1] - a[1] for a, b in zip(points, points[1:])]
+        if not (
+            all(delta > 0 for delta in display_deltas)
+            or all(delta < 0 for delta in display_deltas)
+        ):
+            raise RigLoadError(
+                f"{prefix}.lookup display values must be strictly monotonic"
+            )
+    elif lookup is not None:
+        raise RigLoadError(f"{prefix}.lookup is only valid for lookup mapping")
+
+    return dict(raw)  # type: ignore[return-value]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1542,16 +1772,11 @@ def load_rig(path: Path) -> RigConfig:
     controls_raw = data.get("controls")
     controls: dict[str, ControlSpec] | None = None
     if controls_raw is not None:
+        if not isinstance(controls_raw, dict):
+            raise RigLoadError(f"{filename}: [controls] must be a table")
         controls = {}
         for ctrl_name, ctrl_data in controls_raw.items():
-            if isinstance(ctrl_data, dict):
-                style = ctrl_data.get("style")
-                if style is not None and style not in VALID_CONTROL_STYLES:
-                    raise RigLoadError(
-                        f"{filename}: [controls.{ctrl_name}].style must be one of "
-                        f"{VALID_CONTROL_STYLES}, got {style!r}"
-                    )
-                controls[ctrl_name] = dict(ctrl_data)  # type: ignore[assignment]
+            controls[ctrl_name] = _parse_control_spec(filename, ctrl_name, ctrl_data)
 
     # Parse [meters] (optional)
     meters_raw = data.get("meters")
