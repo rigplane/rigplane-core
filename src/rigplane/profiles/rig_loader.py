@@ -33,6 +33,7 @@ __all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
 from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
 from rigplane.profiles import (
     BandInfo,
+    ControlLookupPoint,
     ControlSpec,
     FilterWidthRule,
     FilterWidthSegment,
@@ -512,6 +513,40 @@ class RigConfig:
             )
             for r in self.freq_ranges
         )
+        controls = self.controls
+        if self._control_domains:
+            published_controls: dict[str, ControlSpec] = {
+                name: spec.copy() for name, spec in (self.controls or {}).items()
+            }
+            for name, domain in self._control_domains.items():
+                published_domain: ControlSpec = {
+                    "mapping": cast(str, domain["mapping"]),
+                    "raw_min": cast(int, domain["raw_min"]),
+                    "raw_max": cast(int, domain["raw_max"]),
+                    "raw_step": cast(int, domain["raw_step"]),
+                    "raw_origin": cast(int, domain["raw_origin"]),
+                    "display_min": float(cast(Decimal, domain["display_min"])),
+                    "display_max": float(cast(Decimal, domain["display_max"])),
+                    "display_step": float(cast(Decimal, domain["display_step"])),
+                    "display_origin": float(cast(Decimal, domain["display_origin"])),
+                    "display_unit": cast(str, domain["display_unit"]),
+                    "quantization": cast(str, domain["quantization"]),
+                    "restoration": cast(str, domain["restoration"]),
+                }
+                if published_domain["mapping"] == "centered":
+                    published_domain["raw_center"] = cast(int, domain["raw_center"])
+                    published_domain["display_center"] = float(
+                        cast(Decimal, domain["display_center"])
+                    )
+                if published_domain["mapping"] == "lookup":
+                    published_domain["lookup"] = [
+                        ControlLookupPoint(raw=raw, display=float(display))
+                        for raw, display in cast(
+                            tuple[_LookupPoint, ...], domain["lookup"]
+                        )
+                    ]
+                published_controls.setdefault(name, {}).update(published_domain)
+            controls = published_controls
 
         return RadioProfile(
             id=self.id,
@@ -558,7 +593,7 @@ class RigConfig:
             set_mode_via_selected="set_selected_mode" in self.commands,
             protocol_type=self.protocol_type,
             hamlib_model_id=self.hamlib_model_id,
-            controls=self.controls,
+            controls=controls,
             meter_calibrations=self.meter_calibrations,
             meter_redlines=self.meter_redlines,
             rules=self.rules,

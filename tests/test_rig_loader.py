@@ -5,6 +5,7 @@ TDD: these tests were written FIRST, then the implementation.
 
 from __future__ import annotations
 
+import json
 import textwrap
 from decimal import Decimal
 from pathlib import Path
@@ -720,12 +721,39 @@ lookup = [
             ),
         ],
     )
-    def test_scalar_domain_is_private(self, tmp_path, mapping, declaration):
+    def test_scalar_domain_is_published_with_exact_normalized_shape(
+        self, tmp_path, mapping, declaration
+    ):
         rig = self._load(tmp_path, declaration)
 
         assert rig._control_domains["test_control"]["mapping"] == mapping
         assert rig.controls is None
-        assert rig.to_profile().controls is None
+        public = rig.to_profile().controls
+        assert public == {
+            "test_control": {
+                "mapping": mapping,
+                "raw_min": -10 if mapping == "centered" else 0,
+                "raw_max": 10,
+                "raw_step": 2,
+                "raw_origin": 0,
+                "display_min": -1.0 if mapping == "centered" else 0.0,
+                "display_max": 10.0 if mapping == "identity" else 1.0,
+                "display_step": 2.0 if mapping == "identity" else 0.2,
+                "display_origin": 0.0,
+                "display_unit": "dimensionless" if mapping == "identity" else "ratio",
+                "quantization": "nearest_ties_up",
+                "restoration": "exact",
+                **(
+                    {"raw_center": 0, "display_center": 0.0}
+                    if mapping == "centered"
+                    else {}
+                ),
+            }
+        }
+        assert "lookup" not in public["test_control"]
+        assert ("raw_center" in public["test_control"]) is (mapping == "centered")
+        assert ("display_center" in public["test_control"]) is (mapping == "centered")
+        assert json.loads(json.dumps(public)) == public
 
     @pytest.mark.parametrize(
         ("old", "new", "message"),
@@ -784,7 +812,7 @@ lookup = [
         with pytest.raises(RigLoadError, match="display_unit.*non-empty"):
             self._load(tmp_path, declaration)
 
-    def test_exact_lookup_is_private_complete_and_non_serialized(self, tmp_path):
+    def test_exact_lookup_is_published_as_json_safe_objects(self, tmp_path):
         rig = self._load(tmp_path, 'style = "stepped"\n' + self._LOOKUP)
 
         assert rig._control_domains["test_control"]["lookup"] == (
@@ -795,9 +823,36 @@ lookup = [
             (8, Decimal("0.8")),
             (10, Decimal("1.0")),
         )
-        public = {"test_control": {"style": "stepped"}}
-        assert rig.controls == public
+        public = {
+            "test_control": {
+                "style": "stepped",
+                "mapping": "lookup",
+                "raw_min": 0,
+                "raw_max": 10,
+                "raw_step": 2,
+                "raw_origin": 0,
+                "display_min": 0.0,
+                "display_max": 1.0,
+                "display_step": 0.2,
+                "display_origin": 0.0,
+                "display_unit": "ratio",
+                "quantization": "nearest_ties_up",
+                "restoration": "exact",
+                "lookup": [
+                    {"raw": 0, "display": 0.0},
+                    {"raw": 2, "display": 0.2},
+                    {"raw": 4, "display": 0.4},
+                    {"raw": 6, "display": 0.6},
+                    {"raw": 8, "display": 0.8},
+                    {"raw": 10, "display": 1.0},
+                ],
+            }
+        }
+        assert rig.controls == {"test_control": {"style": "stepped"}}
         assert rig.to_profile().controls == public
+        assert json.loads(json.dumps(public)) == public
+        assert "raw_center" not in public["test_control"]
+        assert "display_center" not in public["test_control"]
 
     def test_exact_lookup_requires_every_raw_lattice_point(self, tmp_path):
         partial = self._LOOKUP.replace("  { raw = 4, display = 0.4 },\n", "")
@@ -925,6 +980,12 @@ lookup = [
             rig = load_rig(path)
             assert rig._control_domains is None, path.name
             assert rig.to_profile().controls == rig.controls, path.name
+
+    def test_malformed_domain_rejects_before_profile_production(self, tmp_path):
+        malformed = self._LINEAR.replace("raw_step = 2", "raw_step = 0")
+
+        with pytest.raises(RigLoadError, match="raw_step"):
+            self._load(tmp_path, malformed)
 
 
 # ── RadioProfile building ───────────────────────────────────────

@@ -19,6 +19,7 @@ from rigplane.core.tx_interlock_contract import (
 )
 
 __all__ = [
+    "ControlLookupPoint",
     "ControlSpec",
     "FilterWidthSegment",
     "FilterWidthRule",
@@ -34,16 +35,32 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+class ControlLookupPoint(TypedDict):
+    """One normalized lookup point for a profile control domain."""
+
+    raw: int
+    display: float
+
+
 class ControlSpec(TypedDict, total=False):
     """Specification for a single radio control (from TOML ``[controls.*]``)."""
 
     style: str
+    mapping: str
     raw_min: int
     raw_max: int
+    raw_step: int
+    raw_origin: int
     raw_center: int
-    display_min: int
-    display_max: int
+    display_min: float
+    display_max: float
+    display_step: float
+    display_origin: float
+    display_center: float
     display_unit: str
+    quantization: str
+    restoration: str
+    lookup: list[ControlLookupPoint]
 
 
 class MeterCalibrationPoint(TypedDict):
