@@ -49,6 +49,13 @@ describe('control-feedback AST semantics (MOR-1716)', () => {
     expect(shape('const props={}; const call=({x=mutate(props)}={})=>{}; (call as unknown)();')).toEqual([[null, true]]);
     expect(shape('const props={}; function a(){b()} function b(){a()} a();')).toEqual([]);
   });
+  it('lets the ordered evaluator own callable, default, completion, self, and cycle semantics', () => {
+    expect(shape('const props={}; const idle=()=>mutate(props);')).toEqual([]);
+    expect(shape('const props={}; function f(value=mutate(props)){} f(1);')).toEqual([]);
+    expect(shape('const props={}; function stop(){return;props.type="x"} stop();')).toEqual([]);
+    expect(shape('const props={}; const call=function props(){props.type="x"}; call();')).toEqual([]);
+    expect(shape('const props={}; function a(){b()} function b(){props.type="x";a()} a();')).toEqual([[null, true]]);
+  });
   it('keeps all known primitive computed aliases safe', () => {
     expect(shape('const props={}; const n=0, b=true, g=1n, z=null; props[n]="x"; props[b]="x"; props[g]="x"; props[z]="x"; props[unknown]="x";')).toEqual([[null, true]]);
   });
