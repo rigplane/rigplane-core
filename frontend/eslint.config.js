@@ -213,6 +213,10 @@ const FORBIDDEN_PRIMITIVES_IMPORTS = {
 
 const CONTROL_FEEDBACK_OWNERSHIP_PATTERNS = [
   {
+    regex: '(^\\$lib/runtime(?:/|$)|(^|/)lib/runtime(?:/|$))',
+    message: 'Control presentation must not import any runtime owner, alias or relative.',
+  },
+  {
     group: ['$lib/types/protocol', '**/lib/types/protocol'],
     message: 'Control presentation must consume structural input, never wire protocol ownership.',
   },
