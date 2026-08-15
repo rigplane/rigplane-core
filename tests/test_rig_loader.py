@@ -12,6 +12,11 @@ import pytest
 
 from rigplane.command_map import CommandMap
 from rigplane.core.capabilities import CAP_SPEECH, KNOWN_CAPABILITIES
+from rigplane.core.tx_interlock_contract import (
+    TX_INTERLOCK_COMMAND_FAMILY_METADATA,
+    TxInterlockCommandFamily,
+    TxInterlockDisposition,
+)
 from rigplane.profiles import BandInfo, FreqRangeInfo, RadioProfile, get_radio_profile
 from rigplane.rig_loader import RigConfig, RigLoadError, discover_rigs, load_rig
 
@@ -86,6 +91,89 @@ class TestLoadRig:
         p = _write_toml(tmp_path, _MINIMAL_TOML)
         rig = load_rig(p)
         assert rig.model == "IC-7300"
+
+    def test_tx_interlock_tightening_defaults_empty(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
+
+        assert rig.tx_interlock_disposition_overrides == {}
+        assert rig.to_profile().tx_interlock_disposition_overrides == {}
+
+    def test_tx_interlock_parses_tx_safe_to_defer_tightening(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[tx_interlock]
+disposition_overrides = { "power-on" = "defer" }
+""",
+        )
+
+        rig = load_rig(p)
+        expected = {
+            TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER,
+        }
+
+        assert rig.tx_interlock_disposition_overrides == expected
+        assert rig.to_profile().tx_interlock_disposition_overrides == expected
+
+    @pytest.mark.parametrize(
+        "family",
+        [
+            metadata.family.value
+            for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
+            if metadata.base_disposition is not TxInterlockDisposition.TX_SAFE
+        ],
+    )
+    def test_tx_interlock_rejects_ineligible_base_family(self, tmp_path, family):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + f"""
+
+[tx_interlock]
+disposition_overrides = {{ "{family}" = "defer" }}
+""",
+        )
+
+        with pytest.raises(
+            RigLoadError,
+            match=rf"\[tx_interlock\]\.disposition_overrides.*{family}.*not tx-safe",
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("declaration", "message"),
+        [
+            (
+                'disposition_overrides = { "unknown-family" = "defer" }',
+                "unknown-family",
+            ),
+            ('disposition_overrides = { "power-on" = "block" }', "must be 'defer'"),
+            ('disposition_overrides = { "power-on" = true }', "must be a string"),
+            ('disposition_overrides = ["power-on"]', "must be an inline table"),
+            ("unexpected = true", "unknown key"),
+        ],
+    )
+    def test_tx_interlock_rejects_invalid_schema(self, tmp_path, declaration, message):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + f"""
+
+[tx_interlock]
+{declaration}
+""",
+        )
+
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(p)
+
+    def test_tx_interlock_section_must_be_table(self, tmp_path):
+        p = _write_toml(tmp_path, 'tx_interlock = "invalid"\n' + _MINIMAL_TOML)
+
+        with pytest.raises(RigLoadError, match=r"\[tx_interlock\] must be a table"):
+            load_rig(p)
 
     def test_load_minimal_power_max_watts(self, tmp_path):
         p = _write_toml(

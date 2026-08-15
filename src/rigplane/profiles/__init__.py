@@ -8,11 +8,15 @@ TOML file with zero Python changes.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Required, TypedDict
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.tx_interlock_contract import (
+    TxInterlockCommandFamily,
+    TxInterlockDisposition,
+)
 
 __all__ = [
     "ControlSpec",
@@ -234,6 +238,9 @@ class RadioProfile:
     # data only; future schedulers/adapters consume it instead of Web or
     # rigctld delivery code branching on radio model.
     state_acquisition: RadioAcquisitionProfile | None = None
+    tx_interlock_disposition_overrides: dict[
+        TxInterlockCommandFamily, TxInterlockDisposition
+    ] = field(default_factory=dict)
 
     @property
     def vfo_swap_code(self) -> int | None:

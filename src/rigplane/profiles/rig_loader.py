@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import tomllib
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,11 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.tx_interlock_contract import (
+    TX_INTERLOCK_COMMAND_FAMILY_METADATA,
+    TxInterlockCommandFamily,
+    TxInterlockDisposition,
+)
 from rigplane.commands.command_map import CommandMap
 
 __all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
@@ -152,6 +157,9 @@ class RigConfig:
     rx_audio_channel: str = "mix"
     write_only_controls: tuple[str, ...] = ()
     state_acquisition: RadioAcquisitionProfile | None = None
+    tx_interlock_disposition_overrides: dict[
+        TxInterlockCommandFamily, TxInterlockDisposition
+    ] = field(default_factory=dict)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -245,6 +253,7 @@ class RigConfig:
             browser_rx_transcode_to_opus=self.browser_rx_transcode_to_opus,
             write_only_controls=frozenset(self.write_only_controls),
             state_acquisition=self.state_acquisition,
+            tx_interlock_disposition_overrides=self.tx_interlock_disposition_overrides,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -1046,6 +1055,66 @@ def _parse_state_acquisition(
         raise RigLoadError(f"{filename}: [state_acquisition] invalid: {exc}") from exc
 
 
+_TX_INTERLOCK_METADATA_BY_FAMILY = {
+    metadata.family: metadata for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
+}
+
+
+def _parse_tx_interlock_disposition_overrides(
+    filename: str, raw: object
+) -> dict[TxInterlockCommandFamily, TxInterlockDisposition]:
+    """Validate the profile-only, one-way TX interlock tightening mapping."""
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [tx_interlock] must be a table")
+
+    unknown_keys = set(raw) - {"disposition_overrides"}
+    if unknown_keys:
+        raise RigLoadError(
+            f"{filename}: [tx_interlock] unknown key(s): {sorted(unknown_keys)}"
+        )
+
+    overrides_raw = raw.get("disposition_overrides", {})
+    if not isinstance(overrides_raw, dict):
+        raise RigLoadError(
+            f"{filename}: [tx_interlock].disposition_overrides must be an inline table"
+        )
+
+    overrides: dict[TxInterlockCommandFamily, TxInterlockDisposition] = {}
+    for family_value, disposition_value in overrides_raw.items():
+        try:
+            family = TxInterlockCommandFamily(family_value)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides has unknown "
+                f"command family {family_value!r}"
+            ) from exc
+
+        if not isinstance(disposition_value, str):
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides[{family_value!r}] "
+                "must be a string"
+            )
+        if disposition_value != TxInterlockDisposition.DEFER.value:
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides[{family_value!r}] "
+                "must be 'defer'"
+            )
+
+        metadata = _TX_INTERLOCK_METADATA_BY_FAMILY[family]
+        if metadata.base_disposition is not TxInterlockDisposition.TX_SAFE:
+            raise RigLoadError(
+                f"{filename}: [tx_interlock].disposition_overrides family "
+                f"{family_value!r} has base disposition "
+                f"{metadata.base_disposition.value!r}, not tx-safe"
+            )
+        overrides[family] = TxInterlockDisposition.DEFER
+
+    return overrides
+
+
 def load_rig(path: Path) -> RigConfig:
     """Load and validate a rig TOML file.
 
@@ -1520,6 +1589,10 @@ def load_rig(path: Path) -> RigConfig:
         filename,
         data.get("state_acquisition"),
     )
+    tx_interlock_disposition_overrides = _parse_tx_interlock_disposition_overrides(
+        filename,
+        data.get("tx_interlock"),
+    )
 
     return RigConfig(
         id=radio["id"],
@@ -1591,6 +1664,7 @@ def load_rig(path: Path) -> RigConfig:
         rx_audio_channel=rx_audio_channel,
         write_only_controls=write_only_controls,
         state_acquisition=state_acquisition,
+        tx_interlock_disposition_overrides=tx_interlock_disposition_overrides,
     )
 
 
