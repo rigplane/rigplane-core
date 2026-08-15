@@ -3,6 +3,7 @@
   import { HardwareButton, HardwarePlainButton } from '../../lib/Button';
   import { formatOffsetKHz, shouldShowPanel } from './rit-utils';
   import { getShortcutHint } from '../layout/shortcut-hints';
+  import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 
   import { deriveRitXitProps, getRitXitHandlers } from '$lib/runtime/adapters/panel-adapters';
 
@@ -15,6 +16,7 @@
   let xitOffset = $derived(p.xitOffset);
   let hasRit = $derived(p.hasRit);
   let hasXit = $derived(p.hasXit);
+  let ritDomain = $derived(p.ritDomain);
   const onRitToggle = handlers.onRitToggle;
   const onXitToggle = handlers.onXitToggle;
   const onRitOffsetChange = handlers.onRitOffsetChange;
@@ -23,6 +25,8 @@
 
   let visible = $derived(shouldShowPanel(hasRit, hasXit));
   let offsetValue = $derived(xitActive && !ritActive ? xitOffset : ritOffset);
+  let exactOffset = $derived(ritDomain ? decodeControlDomain(ritDomain, offsetValue) : null);
+  let canAdjustOffset = $derived(ritDomain ? exactOffset !== null : Number.isFinite(offsetValue));
   const ritShortcut = getShortcutHint('toggle_rit');
   const xitShortcut = getShortcutHint('toggle_xit');
   const clearShortcut = getShortcutHint('clear_rit_xit');
@@ -40,6 +44,12 @@
   }
 
   function handleOffsetChange(value: number) {
+    if (ritDomain) {
+      const display = decodeControlDomain(ritDomain, value);
+      const encoded = display === null ? null : encodeControlDomain(ritDomain, display);
+      if (encoded === null) return;
+      value = encoded;
+    }
     if (xitActive && !ritActive) {
       onXitOffsetChange(value);
       return;
@@ -62,19 +72,23 @@
           <span class="offset" class:active={xitActive}>{formatOffsetDisplay(xitOffset)}</span>
         </div>
       {/if}
-      <ValueControl
-        label="Offset"
-        value={offsetValue}
-        min={-9999}
-        max={9999}
-        step={50}
-        unit="kHz"
-        displayFn={formatOffsetDisplay}
-        renderer="bipolar"
-        accentColor="var(--v2-accent-cyan)"
-        onChange={handleOffsetChange}
-      variant="hardware-illuminated"
-      />
+      {#if canAdjustOffset}
+        <ValueControl
+          label="Offset"
+          value={offsetValue}
+          min={ritDomain?.raw_min ?? -9999}
+          max={ritDomain?.raw_max ?? 9999}
+          step={ritDomain?.raw_step ?? 50}
+          defaultValue={ritDomain?.raw_origin ?? 0}
+          keyboardStep={ritDomain ? 50 : undefined}
+          unit="kHz"
+          displayFn={formatOffsetDisplay}
+          renderer="bipolar"
+          accentColor="var(--v2-accent-cyan)"
+          onChange={handleOffsetChange}
+          variant="hardware-illuminated"
+        />
+      {/if}
       <div class="clear-row">
         <!-- action-button: momentary command, no sustained state -->
         <HardwarePlainButton onclick={onClear} title={clearShortcut} shortcutHint={clearShortcut}>CLEAR</HardwarePlainButton>

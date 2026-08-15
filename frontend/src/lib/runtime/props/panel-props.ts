@@ -12,7 +12,7 @@
  */
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
-import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
+import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
   deriveIfShift,
   nbDepthRawToDisplay,
@@ -491,6 +491,8 @@ export interface RitXitProps {
   xitOffset: number;
   hasRit: boolean;
   hasXit: boolean;
+  /** Exact RIT control contract, when supplied by a normalized capability payload. */
+  ritDomain?: ControlDomain;
 }
 
 export function toRitXitProps(
@@ -500,6 +502,7 @@ export function toRitXitProps(
   const ritOnAvailable = topFieldAvailable(state, 'ritOn');
   const ritFreqAvailable = topFieldAvailable(state, 'ritFreq');
   const ritTxAvailable = topFieldAvailable(state, 'ritTx');
+  const ritControl = caps?.controls?.rit;
   return {
     ritActive: state?.ritOn ?? false,
     ritOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
@@ -507,6 +510,7 @@ export function toRitXitProps(
     xitOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
     hasRit: hasCap(caps, 'rit') && ritOnAvailable,
     hasXit: hasCap(caps, 'xit') && ritTxAvailable,
+    ritDomain: ritControl && 'mapping' in ritControl ? ritControl : undefined,
   };
 }
 

@@ -74,7 +74,17 @@ interface FreqRange {
 }
 
 interface Capabilities {
+  controls?: Record<string, unknown>;
   freqRanges?: FreqRange[];
+}
+
+interface ExactRitDomain {
+  raw_min: number;
+  raw_max: number;
+  raw_step: number;
+  raw_origin: number;
+  mapping: string;
+  restoration: string;
 }
 
 interface WsCommandRecord {
@@ -655,8 +665,20 @@ function bandCode(capabilities: Capabilities, bandName: string): number | undefi
   return undefined;
 }
 
+function exactRitDomain(capabilities: Capabilities): ExactRitDomain | null {
+  const candidate = capabilities.controls?.rit;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+  const domain = candidate as Partial<ExactRitDomain>;
+  return domain.restoration === 'exact'
+    && typeof domain.mapping === 'string'
+    && [domain.raw_min, domain.raw_max, domain.raw_step, domain.raw_origin].every(Number.isSafeInteger)
+    ? domain as ExactRitDomain
+    : null;
+}
+
 async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]> {
   const expected20mCode = bandCode(capabilities, '20m');
+  const ritDomain = exactRitDomain(capabilities);
   return [
     {
       panel: 'RF FRONT END',
@@ -846,20 +868,44 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     {
       panel: 'RIT / XIT',
       control: 'Offset',
-      action: 'nudge +1 step',
-      expected: 'set_rit_frequency { freq: <number> }',
+      action: ritDomain ? 'exact 50 Hz keyboard lattice' : 'nudge +1 step',
+      expected: ritDomain ? 'set_rit_frequency { freq: 50, 0, -50, -9999, 9999 }' : 'set_rit_frequency { freq: <number> }',
       locate: (page) => page.getByRole('slider', { name: 'Offset', exact: true }),
       onMissing: async () => ({
         status: 'FAIL',
         actual: 'control missing from DOM',
         details: 'RIT / XIT panel did not render the shared Offset slider.',
       }),
+      prepare: ritDomain ? async (ctx) => {
+        await sendWsCommand(ctx.page, 'set_rit_frequency', { freq: 0 });
+        await waitForState(ctx.request, (state) => state.ritFreq === 0);
+      } : undefined,
       act: async (_page, locator) => {
         await locator.focus();
         await locator.press('ArrowRight');
+        if (ritDomain) {
+          await locator.press('ArrowLeft');
+          await locator.press('ArrowLeft');
+          await locator.press('ArrowRight');
+          await locator.press('ArrowUp');
+          await locator.press('ArrowDown');
+          await locator.press('Home');
+          await locator.press('End');
+        }
       },
-      verify: (_ctx, commands) =>
-        (() => {
+      verify: (_ctx, commands) => {
+        if (ritDomain) {
+          const frequencies = commands
+            .filter((command) => command.name === 'set_rit_frequency')
+            .map((command) => command.params.freq);
+          const expected = [50, 0, -50, 0, 50, 0, -9999, 9999];
+          return frequencies.every(Number.isSafeInteger)
+            && frequencies.every((frequency) => frequency! >= ritDomain.raw_min && frequency! <= ritDomain.raw_max)
+            && JSON.stringify(frequencies) === JSON.stringify(expected)
+            ? { status: 'PASS' as const, actual: formatCommandList(commands) }
+            : { status: 'FAIL' as const, actual: formatCommandList(commands), details: `Expected exact RIT lattice ${expected.join(', ')}` };
+        }
+        return (() => {
           const match = commands.find(
             (command) => command.name === 'set_rit_frequency' && typeof command.params.freq === 'number',
           );
@@ -873,7 +919,8 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
             status: 'FAIL' as const,
             actual: formatCommandList(commands),
           };
-        })(),
+        })();
+      },
       cleanup: async (ctx) => {
         await sendRestoreCommands(ctx.page, ctx.request, [
           { name: 'set_rit_frequency', params: { freq: ctx.originalState.ritFreq } },
