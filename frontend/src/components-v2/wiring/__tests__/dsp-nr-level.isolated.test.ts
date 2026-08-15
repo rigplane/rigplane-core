@@ -74,6 +74,11 @@ function useCaps(value: Capabilities): void {
 }
 
 const METADATA_TRAPS: ReadonlyArray<readonly [string, () => Capabilities]> = [
+  ['revoked caps proxy', () => {
+    const { proxy, revoke } = Proxy.revocable(caps(), {});
+    revoke();
+    return proxy;
+  }],
   ['caps.controls getter', () => {
     const value = caps();
     Object.defineProperty(value, 'controls', { get: () => { throw new Error('controls getter'); } });
@@ -81,6 +86,9 @@ const METADATA_TRAPS: ReadonlyArray<readonly [string, () => Capabilities]> = [
   }],
   ['controls own-property descriptor', () => caps(new Proxy({}, {
     getOwnPropertyDescriptor: () => { throw new Error('descriptor trap'); },
+  }))],
+  ['controls ownKeys', () => caps(new Proxy({}, {
+    ownKeys: () => { throw new Error('ownKeys trap'); },
   }))],
   ['controls array', () => caps([] as unknown as Record<string, unknown>)],
   ['own nr_level getter', () => {
@@ -94,6 +102,9 @@ const METADATA_TRAPS: ReadonlyArray<readonly [string, () => Capabilities]> = [
   ['nr_level candidate property trap', () => caps({ nr_level: new Proxy({}, {
     has: () => true,
     get: () => { throw new Error('candidate property trap'); },
+  }) })],
+  ['exact-looking candidate descriptor', () => caps({ nr_level: new Proxy(EXACT_NR_DOMAIN, {
+    getOwnPropertyDescriptor: () => { throw new Error('candidate descriptor trap'); },
   }) })],
 ];
 

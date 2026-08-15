@@ -568,10 +568,18 @@ export function makeDspHandlers() {
       dispatchRadioIntent({ name: 'set_nr', params: { on: mode > 0, receiver } });
     },
     onNrLevelChange: (level: number) => {
-      const receiver = knownReceiverField('nrLevel');
-      if (!hasCapability('nr') || receiver === null || !Number.isFinite(level)) return;
-      const raw = resolveNrLevelContract(getCapabilities()).displayToRaw(level);
-      if (raw === null) return;
+      let receiver: Receiver;
+      let raw: number;
+      try {
+        const resolvedReceiver = knownReceiverField('nrLevel');
+        if (!hasCapability('nr') || resolvedReceiver === null || !Number.isFinite(level)) return;
+        const resolvedRaw = resolveNrLevelContract(getCapabilities()).displayToRaw(level);
+        if (resolvedRaw === null) return;
+        receiver = resolvedReceiver;
+        raw = resolvedRaw;
+      } catch {
+        return;
+      }
       dispatchRadioIntent({ name: 'set_nr_level', params: { level: raw, receiver } });
     },
     onNbToggle: (on: boolean) => {

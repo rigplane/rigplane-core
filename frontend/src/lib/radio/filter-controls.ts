@@ -173,15 +173,39 @@ const INVALID_NR_LEVEL_CONTRACT: NrLevelContract = {
   rawToDisplay: () => null,
   displayToRaw: () => null,
 };
+const EXACT_NR_LEVEL_KEYS = [
+  'mapping', 'raw_step', 'raw_origin', 'display_step', 'display_origin',
+  'quantization', 'restoration', 'display_center', 'lookup',
+] as const;
+const NR_LEVEL_METADATA_KEYS = [
+  'raw_min', 'raw_max', 'raw_center', 'display_min', 'display_max',
+  'display_unit', 'style', ...EXACT_NR_LEVEL_KEYS,
+] as const;
 
-function exactNrLevelDomain(control: unknown): ControlDomain | null {
-  if (control === null || typeof control !== 'object' || Array.isArray(control)) return null;
-  const record = control as Record<string, unknown>;
-  const exactKeys = [
-    'mapping', 'raw_step', 'raw_origin', 'display_step', 'display_origin',
-    'quantization', 'restoration', 'display_center', 'lookup',
-  ];
-  return exactKeys.some((key) => key in record) ? control as ControlDomain : null;
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function snapshotNrLevelControl(control: unknown): Record<string, unknown> | null {
+  if (!isPlainRecord(control)) return null;
+  const ownKeys = Reflect.ownKeys(control);
+  const ownsMapping = ownKeys.includes('mapping');
+  if (Reflect.has(control, 'mapping') !== ownsMapping) return null;
+  const snapshot: Record<string, unknown> = {};
+  for (const key of NR_LEVEL_METADATA_KEYS) {
+    if (!ownKeys.includes(key)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(control, key);
+    if (!descriptor || !('value' in descriptor)) return null;
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
+function exactNrLevelDomain(control: Record<string, unknown>): ControlDomain | null {
+  return EXACT_NR_LEVEL_KEYS.some((key) => Object.hasOwn(control, key))
+    ? control as unknown as ControlDomain : null;
 }
 
 function legacyNrLevelRange(control: unknown): ControlDisplayRange | null {
@@ -245,16 +269,21 @@ export function resolveNrLevelContract(
     if (caps === null || caps === undefined) {
       return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
     }
-    if (typeof caps !== 'object' || Array.isArray(caps)) return INVALID_NR_LEVEL_CONTRACT;
+    if (!isPlainRecord(caps)) return INVALID_NR_LEVEL_CONTRACT;
     const controls = caps.controls;
     if (controls === undefined) return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
-    if (controls === null || typeof controls !== 'object' || Array.isArray(controls)) {
-      return INVALID_NR_LEVEL_CONTRACT;
-    }
-    if (!Object.prototype.hasOwnProperty.call(controls, 'nr_level')) {
+    if (!isPlainRecord(controls)) return INVALID_NR_LEVEL_CONTRACT;
+    const ownKeys = Reflect.ownKeys(controls);
+    const ownsNrLevel = ownKeys.includes('nr_level');
+    if (Reflect.has(controls, 'nr_level') !== ownsNrLevel) return INVALID_NR_LEVEL_CONTRACT;
+    const descriptor = Object.getOwnPropertyDescriptor(controls, 'nr_level');
+    if (!ownsNrLevel) {
+      if (descriptor !== undefined) return INVALID_NR_LEVEL_CONTRACT;
       return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
     }
-    const control = controls.nr_level;
+    if (!descriptor || !('value' in descriptor)) return INVALID_NR_LEVEL_CONTRACT;
+    const control = snapshotNrLevelControl(descriptor.value);
+    if (!control) return INVALID_NR_LEVEL_CONTRACT;
     const exact = exactNrLevelDomain(control);
     if (exact) return exactNrLevelContract(exact);
     const legacy = legacyNrLevelRange(control);
