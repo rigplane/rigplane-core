@@ -1,4 +1,8 @@
 // Capabilities — mirrors backend /api/v1/capabilities schema
+import {
+  compareExactDecimals, exactDecimalInteger, exactDecimalNumber, exactDecimalOnLattice,
+  exactDecimalString, type ExactDecimal,
+} from './exact-decimal';
 
 export interface Band {
   name: string;
@@ -88,7 +92,7 @@ export type ControlRestoration = 'exact' | 'unavailable';
 
 export interface ControlLookupPoint {
   readonly raw: number;
-  readonly display: number;
+  readonly display: ExactDecimal;
 }
 
 interface ControlDomainBase {
@@ -98,10 +102,10 @@ interface ControlDomainBase {
   readonly raw_max: number;
   readonly raw_step: number;
   readonly raw_origin: number;
-  readonly display_min: number;
-  readonly display_max: number;
-  readonly display_step: number;
-  readonly display_origin: number;
+  readonly display_min: ExactDecimal;
+  readonly display_max: ExactDecimal;
+  readonly display_step: ExactDecimal;
+  readonly display_origin: ExactDecimal;
   readonly display_unit: string;
   readonly style?: string;
   readonly quantization: ControlQuantization;
@@ -118,7 +122,7 @@ export interface ScalarControlDomain extends ControlDomainBase {
 export interface CenteredControlDomain extends ControlDomainBase {
   readonly mapping: 'centered';
   readonly raw_center: number;
-  readonly display_center: number;
+  readonly display_center: ExactDecimal;
   readonly lookup?: never;
 }
 
@@ -270,23 +274,7 @@ function choice<T extends string>(value: unknown, path: string, values: readonly
   return value as T;
 }
 
-function decimalParts(value: number): readonly [bigint, number] {
-  const match = String(value).match(/^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i);
-  if (!match) throw new TypeError('finite number has no decimal representation');
-  const fraction = match[3] ?? '';
-  const coefficient = BigInt(`${match[1]}${match[2]}${fraction}`);
-  return [coefficient, Number(match[4] ?? 0) - fraction.length];
-}
-
-function onLattice(value: number, origin: number, step: number): boolean {
-  const values = [decimalParts(value), decimalParts(origin), decimalParts(step)] as const;
-  const exponent = Math.min(...values.map((item) => item[1]));
-  const scaled = values.map(([coefficient, itemExponent]) =>
-    coefficient * (10n ** BigInt(itemExponent - exponent)));
-  return (scaled[0] - scaled[1]) % scaled[2] === 0n;
-}
-
-function validateAxis(
+function validateRawAxis(
   low: number,
   high: number,
   step: number,
@@ -296,16 +284,27 @@ function validateAxis(
   if (low >= high) invalid(path, 'min < max');
   if (step <= 0) invalid(`${path}_step`, '> 0');
   if (origin < low || origin > high) invalid(`${path}_origin`, 'inside its declared range');
-  if (!onLattice(low, origin, step)) invalid(`${path}_min`, 'a value on its declared lattice');
-  if (!onLattice(high, origin, step)) invalid(`${path}_max`, 'a value on its declared lattice');
+  if (!exactDecimalOnLattice(exactDecimalInteger(low), exactDecimalInteger(origin), exactDecimalInteger(step))) invalid(`${path}_min`, 'a value on its declared lattice');
+  if (!exactDecimalOnLattice(exactDecimalInteger(high), exactDecimalInteger(origin), exactDecimalInteger(step))) invalid(`${path}_max`, 'a value on its declared lattice');
+}
+
+function validateDisplayAxis(
+  low: ExactDecimal, high: ExactDecimal, step: ExactDecimal, origin: ExactDecimal, path: string,
+): void {
+  if (compareExactDecimals(low, high) >= 0) invalid(path, 'min < max');
+  if (compareExactDecimals(step, exactDecimalInteger(0)) <= 0) invalid(`${path}_step`, '> 0');
+  if (compareExactDecimals(origin, low) < 0 || compareExactDecimals(origin, high) > 0) invalid(`${path}_origin`, 'inside its declared range');
+  if (!exactDecimalOnLattice(low, origin, step)) invalid(`${path}_min`, 'a value on its declared lattice');
+  if (!exactDecimalOnLattice(high, origin, step)) invalid(`${path}_max`, 'a value on its declared lattice');
 }
 
 function validateLookup(
   value: unknown,
   path: string,
   rawAxis: readonly [number, number, number, number],
-  displayAxis: readonly [number, number, number, number],
+  displayAxis: readonly [ExactDecimal, ExactDecimal, ExactDecimal, ExactDecimal],
   restoration: ControlRestoration,
+  kind: DisplayKind,
 ): readonly ControlLookupPoint[] {
   if (!Array.isArray(value) || value.length === 0) invalid(path, 'a non-empty array');
   const points = value.map((item, index) => {
@@ -315,22 +314,24 @@ function validateLookup(
       invalid(pointPath, 'an object containing exactly raw and display');
     }
     const raw = safeInteger(point.raw, `${pointPath}.raw`);
-    const display = finiteNumber(point.display, `${pointPath}.display`);
+    const display = readDisplay(point.display, `${pointPath}.display`, kind);
     if (raw < rawAxis[0] || raw > rawAxis[1]) invalid(`${pointPath}.raw`, 'inside its declared range');
-    if (!onLattice(raw, rawAxis[3], rawAxis[2])) invalid(`${pointPath}.raw`, 'a value on its declared lattice');
-    if (display < displayAxis[0] || display > displayAxis[1]) {
+    if (!exactDecimalOnLattice(exactDecimalInteger(raw), exactDecimalInteger(rawAxis[3]), exactDecimalInteger(rawAxis[2]))) invalid(`${pointPath}.raw`, 'a value on its declared lattice');
+    if (compareExactDecimals(display, displayAxis[0]) < 0 || compareExactDecimals(display, displayAxis[1]) > 0) {
       invalid(`${pointPath}.display`, 'inside its declared range');
     }
-    if (!onLattice(display, displayAxis[3], displayAxis[2])) {
+    if (!exactDecimalOnLattice(display, displayAxis[3], displayAxis[2])) {
       invalid(`${pointPath}.display`, 'a value on its declared lattice');
     }
     return Object.freeze({ raw, display });
   });
   for (const field of ['raw', 'display'] as const) {
     const values = points.map((point) => point[field]);
-    if (new Set(values).size !== values.length) invalid(path, `unique ${field} values`);
-    const increasing = values.every((item, index) => index === 0 || values[index - 1] < item);
-    const decreasing = values.every((item, index) => index === 0 || values[index - 1] > item);
+    const order = (left: number | ExactDecimal, right: number | ExactDecimal) => field === 'raw'
+      ? left as number - (right as number) : compareExactDecimals(left as ExactDecimal, right as ExactDecimal);
+    if (values.some((item, index) => index > 0 && order(values[index - 1]!, item) === 0)) invalid(path, `unique ${field} values`);
+    const increasing = values.every((item, index) => index === 0 || order(values[index - 1]!, item) < 0);
+    const decreasing = values.every((item, index) => index === 0 || order(values[index - 1]!, item) > 0);
     if (values.length > 1 && !increasing && !decreasing) invalid(path, `strictly monotonic ${field} values`);
   }
   const expected = (BigInt(rawAxis[1]) - BigInt(rawAxis[0])) / BigInt(rawAxis[2]) + 1n;
@@ -338,6 +339,29 @@ function validateLookup(
     invalid(path, 'complete raw lattice coverage for exact restoration');
   }
   return Object.freeze(points);
+}
+
+type DisplayKind = 'number' | 'string';
+
+function readDisplay(value: unknown, path: string, kind: DisplayKind): ExactDecimal {
+  if (kind === 'number') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) invalid(path, 'a finite number');
+    return exactDecimalNumber(value);
+  }
+  const decimal = exactDecimalString(value);
+  if (!decimal) invalid(path, 'a canonical fixed-point decimal string');
+  return decimal;
+}
+
+function displayKind(raw: Record<string, unknown>, mapping: string, path: string): DisplayKind {
+  const values: unknown[] = [raw.display_min, raw.display_max, raw.display_step, raw.display_origin];
+  if (mapping === 'centered') values.push(raw.display_center);
+  if (mapping === 'lookup' && Array.isArray(raw.lookup)) {
+    raw.lookup.forEach((point) => { if (point && typeof point === 'object' && !Array.isArray(point)) values.push((point as Record<string, unknown>).display); });
+  }
+  const kinds = new Set(values.map((value) => typeof value));
+  if (kinds.size !== 1 || (!kinds.has('number') && !kinds.has('string'))) invalid(path, 'a homogeneous all-number or all-canonical-string display domain');
+  return kinds.has('number') ? 'number' : 'string';
 }
 
 function parseControlDomain(raw: Record<string, unknown>, path: string): ControlDomain {
@@ -349,19 +373,20 @@ function parseControlDomain(raw: Record<string, unknown>, path: string): Control
     'nearest_ties_down', 'nearest_ties_up', 'floor', 'ceil', 'reject',
   ]);
   const restoration = choice(raw.restoration, `${path}.restoration`, ['exact', 'unavailable']);
+  const displays = displayKind(raw, mapping, path);
   const rawAxis = [
     safeInteger(raw.raw_min, `${path}.raw_min`), safeInteger(raw.raw_max, `${path}.raw_max`),
     safeInteger(raw.raw_step, `${path}.raw_step`), safeInteger(raw.raw_origin, `${path}.raw_origin`),
   ] as const;
   const displayAxis = [
-    finiteNumber(raw.display_min, `${path}.display_min`), finiteNumber(raw.display_max, `${path}.display_max`),
-    finiteNumber(raw.display_step, `${path}.display_step`), finiteNumber(raw.display_origin, `${path}.display_origin`),
+    readDisplay(raw.display_min, `${path}.display_min`, displays), readDisplay(raw.display_max, `${path}.display_max`, displays),
+    readDisplay(raw.display_step, `${path}.display_step`, displays), readDisplay(raw.display_origin, `${path}.display_origin`, displays),
   ] as const;
   if (typeof raw.display_unit !== 'string' || !raw.display_unit.trim()) {
     invalid(`${path}.display_unit`, 'a non-empty string');
   }
-  validateAxis(...rawAxis, `${path}.raw`);
-  validateAxis(...displayAxis, `${path}.display`);
+  validateRawAxis(...rawAxis, `${path}.raw`);
+  validateDisplayAxis(...displayAxis, `${path}.display`);
   if ('range_min' in raw || 'range_max' in raw) {
     if (!('range_min' in raw) || !('range_max' in raw)
       || safeInteger(raw.range_min, `${path}.range_min`) !== rawAxis[0]
@@ -373,25 +398,26 @@ function parseControlDomain(raw: Record<string, unknown>, path: string): Control
     choice(raw.style, `${path}.style`, ['toggle', 'stepped', 'selector', 'toggle_and_level', 'level_is_toggle']);
   }
 
-  const domain: Record<string, unknown> = { ...raw, mapping, quantization, restoration };
-  if (mapping === 'identity' && rawAxis.some((item, index) => item !== displayAxis[index])) {
+  const domain: Record<string, unknown> = { ...raw, ...Object.fromEntries(['min', 'max', 'step', 'origin'].map((field, index) => [`display_${field}`, displayAxis[index]!])), mapping, quantization, restoration };
+  if (mapping === 'identity' && rawAxis.some((item, index) => compareExactDecimals(exactDecimalInteger(item), displayAxis[index]!) !== 0)) {
     invalid(path, 'identical raw and display domains for identity mapping');
   }
   if (mapping === 'centered') {
     const rawCenter = safeInteger(raw.raw_center, `${path}.raw_center`);
-    const displayCenter = finiteNumber(raw.display_center, `${path}.display_center`);
-    if (rawCenter < rawAxis[0] || rawCenter > rawAxis[1] || !onLattice(rawCenter, rawAxis[3], rawAxis[2])) {
+    const displayCenter = readDisplay(raw.display_center, `${path}.display_center`, displays);
+    domain.display_center = displayCenter;
+    if (rawCenter < rawAxis[0] || rawCenter > rawAxis[1] || !exactDecimalOnLattice(exactDecimalInteger(rawCenter), exactDecimalInteger(rawAxis[3]), exactDecimalInteger(rawAxis[2]))) {
       invalid(`${path}.raw_center`, 'a value in range on its declared lattice');
     }
-    if (displayCenter < displayAxis[0] || displayCenter > displayAxis[1]
-      || !onLattice(displayCenter, displayAxis[3], displayAxis[2])) {
+    if (compareExactDecimals(displayCenter, displayAxis[0]) < 0 || compareExactDecimals(displayCenter, displayAxis[1]) > 0
+      || !exactDecimalOnLattice(displayCenter, displayAxis[3], displayAxis[2])) {
       invalid(`${path}.display_center`, 'a value in range on its declared lattice');
     }
   } else if ('raw_center' in raw || 'display_center' in raw) {
     invalid(path, 'center fields only for centered mapping');
   }
   if (mapping === 'lookup') {
-    domain.lookup = validateLookup(raw.lookup, `${path}.lookup`, rawAxis, displayAxis, restoration);
+    domain.lookup = validateLookup(raw.lookup, `${path}.lookup`, rawAxis, displayAxis, restoration, displays);
   } else if ('lookup' in raw) {
     invalid(`${path}.lookup`, 'only for lookup mapping');
   }
