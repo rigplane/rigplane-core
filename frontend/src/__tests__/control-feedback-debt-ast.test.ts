@@ -56,6 +56,15 @@ describe('control-feedback AST semantics (MOR-1716)', () => {
     expect(shape('const props={}; const call=function props(){props.type="x"}; call();')).toEqual([]);
     expect(shape('const props={}; function a(){b()} function b(){props.type="x";a()} a();')).toEqual([[null, true]]);
   });
+  it('preserves exposed-root provenance through evaluator bindings and returns', () => {
+    expect(shape('const props={}; function f(x){x.type="x"} f(props);')).toEqual([['type', false]]);
+    expect(shape('const props={}; function f(x){mutate(x)} f(props);')).toEqual([[null, true]]);
+    expect(shape('const props={}; function object({x}){x.type="x"} function array([x]){x.type="x"} function rest(...xs){xs[0].type="x"} object(props);array(props);rest(props);')).toEqual([['type', false], ['type', false], ['type', false]]);
+    expect(shape('const props={}; function supplied(x=props){x.type="x"} supplied(props);')).toEqual([['type', false]]);
+    expect(shape('const props={}; function returned(){return props} const x=returned();x.type="x";')).toEqual([[null, true], ['type', false]]);
+    expect(shape('const props={}; function f(x){x.feedbackPolicy="y"} props.type=(f(props),"x");')).toEqual([['feedback-policy', false], ['type', false]]);
+    expect(shape('const props={}; function f(x){x.type="x"} f(props);f(props);')).toEqual([['type', false], ['type', false]]);
+  });
   it('keeps all known primitive computed aliases safe', () => {
     expect(shape('const props={}; const n=0, b=true, g=1n, z=null; props[n]="x"; props[b]="x"; props[g]="x"; props[z]="x"; props[unknown]="x";')).toEqual([[null, true]]);
   });

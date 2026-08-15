@@ -41,17 +41,18 @@ export function collectObjectFlow(program) {
   const evaluated = { ...program, body: (program.body ?? []).flatMap((n) => n.type !== 'VariableDeclaration' ? [n] : (() => { const declarations = n.declarations.filter((d) => !rootDecls.has(d)); return declarations.length ? [{ ...n, declarations }] : []; })()) };
   const emit = (root, key, value, poison, node, order) => { const events = root.events; if (!events.some((e) => e.key === key && e.poison === poison && e.order === order)) events.push({ key, value, poison, start: node?.start ?? -1, order }); };
   const poison = (rs, node, order) => rs.forEach((r) => emit(r, null, null, true, node, order));
-  const reads = [];
-  const facts = evaluateOrderedEffects(evaluated, { isTracked: (node) => { if (defaults.has(node) || deletes.has(node)) reads.push(node); return !!direct(node, scopes.get(node) ?? rootScope); } });
-  const records = facts.map((fact) => ({ fact }));
-  reads.filter((node) => !facts.some((fact) => fact.node?.start <= node.start && fact.node?.end >= node.end)).forEach((node) => records.splice(Math.max(0, records.findIndex(({ fact }) => fact.node?.start > node.start)), 0, { node }));
-  records.forEach(({ fact, node }, order) => {
-    if (!fact) return poison(roots(node, scopes.get(node) ?? rootScope), node, order);
-    const s = scopes.get(fact.node) ?? rootScope, rs = fact.kind === 'cycle' ? cycleRoots(fact.node) : roots(fact.node, s);
-    if (fact.kind === 'cycle') for (const root of rs) root.events.splice(0, root.events.length, ...root.events.filter((event) => event.poison));
-    if (fact.kind === 'mutation' && fact.node?.type === 'AssignmentExpression') { const m = member(fact.node.left, s), key = m.key === 'feedbackPolicy' ? 'feedback-policy' : m.key; if (m.root) { poison([...roots(fact.node.right, s)].filter((r) => r !== m.root), fact.node, order); if (!m.safe || key === null || fact.node.operator !== '=') poison([m.root], fact.node, order); else if (key === 'type' || key === 'feedback-policy') emit(m.root, key, fact.node.right, false, fact.node, order); } else poison(rs, fact.node, order); }
-    else poison(rs, fact.node, order);
-  });
+  for (const root of new Set([...exposed.keys()].map((name) => get(rootScope, name).root))) {
+    const reads = [], facts = evaluateOrderedEffects(evaluated, { isTracked: (node) => { const hit = direct(node, scopes.get(node) ?? rootScope) === root; if (hit && (defaults.has(node) || deletes.has(node))) reads.push(node); return hit; } });
+    const records = facts.map((fact) => ({ fact }));
+    reads.filter((node) => !facts.some((fact) => fact.node?.start <= node.start && fact.node?.end >= node.end)).forEach((node) => { const at = records.findIndex(({ fact }) => fact.node?.start > node.start); records.splice(at < 0 ? records.length : at, 0, { node }); });
+    records.forEach(({ fact, node }, order) => {
+      if (!fact) return poison([root], node, order);
+      const s = scopes.get(fact.node) ?? rootScope, rs = fact.kind === 'cycle' ? cycleRoots(fact.node) : new Set([root]);
+      if (fact.kind === 'cycle') for (const hit of rs) hit.events.splice(0, hit.events.length, ...hit.events.filter((event) => event.poison));
+      if (fact.kind === 'mutation' && fact.node?.type === 'AssignmentExpression') { const m = member(fact.node.left, s), key = m.key === 'feedbackPolicy' ? 'feedback-policy' : m.key, rhs = roots(fact.node.right, s); if (m.root === root || !m.root && !rhs.has(root)) { if (key === null || fact.node.operator !== '=') poison([root], fact.node, order); else if (key === 'type' || key === 'feedback-policy') emit(root, key, fact.node.right, false, fact.node, order); } else poison(rs, fact.node, order); }
+      else poison(rs, fact.node, order);
+    });
+  }
   for (const events of exposed.values()) events.sort((a, b) => a.order - b.order).forEach((e) => delete e.order);
   return exposed;
 }
