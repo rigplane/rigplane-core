@@ -58,6 +58,96 @@ const baseProps = {
 };
 
 describe('ValueControl controlled HBar rendering', () => {
+  it('keeps feedback presentation inert by default on the actual slider', () => {
+    const { target } = mountReactive({ ...baseProps, onChange: vi.fn() });
+    const control = slider(target);
+
+    expect(control.hasAttribute('data-command-phase')).toBe(false);
+    expect(control.hasAttribute('aria-busy')).toBe(false);
+    expect(control.hasAttribute('aria-describedby')).toBe(false);
+    expect(target.querySelector('[data-control-feedback-status]')).toBeNull();
+  });
+
+  it.each([
+    {
+      label: 'Filter Width',
+      description: 'Target 2400 Hz; last confirmed 2300 Hz',
+      status: 'Awaiting confirmation: 2400 Hz',
+    },
+    {
+      label: 'Notch Position',
+      description: 'Цель 160; последнее подтверждённое 128',
+      status: 'Ожидание подтверждения: 160',
+    },
+  ])('projects caller-authored feedback onto the $label HBar without changing truth', ({
+    label, description, status,
+  }) => {
+    const onChange = vi.fn();
+    const { target } = mountReactive({
+      ...baseProps,
+      label,
+      optimistic: false,
+      onChange,
+      feedbackPhase: 'awaiting-confirmation',
+      feedbackBusy: true,
+      feedbackDescription: description,
+      feedbackStatus: status,
+    });
+    const control = slider(target);
+    const descriptionId = control.getAttribute('aria-describedby');
+
+    expect(control.getAttribute('data-command-phase')).toBe('awaiting-confirmation');
+    expect(control.getAttribute('aria-busy')).toBe('true');
+    expect(descriptionId).toBeTruthy();
+    expect(target.querySelector(`#${descriptionId}`)?.textContent).toBe(description);
+    const live = target.querySelector('[data-control-feedback-status]');
+    expect(live?.getAttribute('role')).toBe('status');
+    expect(live?.getAttribute('aria-live')).toBe('polite');
+    expect(live?.getAttribute('aria-atomic')).toBe('true');
+    expect(live?.textContent).toBe(status);
+    expect(visibleValue(target)).toContain('20');
+    expect(fill(target)).toContain('--vc-fill-percent: 20%');
+    expect(control.getAttribute('aria-valuenow')).toBe('20');
+
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    flushSync();
+    expect(onChange).toHaveBeenNthCalledWith(1, 30);
+    expect(onChange).toHaveBeenNthCalledWith(2, 30);
+    expect(control.getAttribute('aria-valuenow')).toBe('20');
+    expect(fill(target)).toContain('--vc-fill-percent: 20%');
+  });
+
+  it.each(['confirmed', 'failed', 'timed-out', 'cancelled', 'superseded'])(
+    'clears busy for terminal phase %s without changing canonical truth', (phase) => {
+      const { state, target } = mountReactive({
+        ...baseProps,
+        optimistic: false,
+        onChange: vi.fn(),
+        feedbackPhase: 'awaiting-confirmation',
+        feedbackBusy: true,
+        feedbackDescription: 'Target 30; last confirmed 20',
+        feedbackStatus: 'Awaiting confirmation: 30',
+      });
+
+      state.feedbackPhase = phase;
+      state.feedbackBusy = false;
+      state.feedbackDescription = null;
+      state.feedbackStatus = `Terminal: ${phase}`;
+      flushSync();
+
+      const control = slider(target);
+      expect(control.getAttribute('data-command-phase')).toBe(phase);
+      expect(control.getAttribute('aria-busy')).toBe('false');
+      expect(control.hasAttribute('aria-describedby')).toBe(false);
+      expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+        .toBe(`Terminal: ${phase}`);
+      expect(control.getAttribute('aria-valuenow')).toBe('20');
+      expect(visibleValue(target)).toContain('20');
+      expect(fill(target)).toContain('--vc-fill-percent: 20%');
+    },
+  );
+
   it('emits a controlled pointer target while display, fill, and ARIA remain canonical', () => {
     const onChange = vi.fn();
     const { target } = mountReactive({ ...baseProps, optimistic: false, onChange });
