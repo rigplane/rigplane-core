@@ -134,7 +134,7 @@ export function evaluateOrderedEffects(program, { isTracked = () => false } = {}
       return operation ? { ...known(operation()), track: merge([left, right]).track } : merge([left, right]);
     }
     if (node.type === 'LogicalExpression') { const left = evaluate(node.left, env); if (left.abrupt) return left; if (isKnown(left)) { const takeRight = node.operator === '&&' ? !!left.value : node.operator === '||' ? !left.value : left.value == null; return takeRight ? evaluate(node.right, env) : left; } return merge([left, evaluate(node.right, env)]); }
-    if (node.type === 'ConditionalExpression') { const test = evaluate(node.test, env); if (test.abrupt) return test; return isKnown(test) ? evaluate(test.value ? node.consequent : node.alternate, env) : merge([test, evaluate(node.consequent, env), evaluate(node.alternate, env)]); }
+    if (node.type === 'ConditionalExpression') { const test = evaluate(node.test, env); if (test.abrupt) return test; if (isKnown(test)) return evaluate(test.value ? node.consequent : node.alternate, env); const yes = evaluate(node.consequent, env), no = evaluate(node.alternate, env); return yes.abrupt && no.abrupt ? { ...merge([yes, no]), abrupt: true } : merge([test, yes, no]); }
     const values = []; for (const child of expressionChildren(node)) { const value = evaluate(child, env); if (value.abrupt) return value; values.push(value); }
     return values.length ? merge(values) : read(node, env);
   };

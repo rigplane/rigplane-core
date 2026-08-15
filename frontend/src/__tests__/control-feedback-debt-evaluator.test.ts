@@ -146,6 +146,10 @@ describe('ordered debt evaluator (MOR-1720)', () => {
     expect(facts('function array([x, y, ...rest]) { sink(rest); } array([ ...props ]);')).toEqual(['escape']);
   });
 
+  it('completes abruptly when every unknown conditional branch throws', () => {
+    expect(facts('function boom() { throw null; } (props ? boom() : boom()); mutate(props);')).toEqual([]);
+  });
+
   it('has no facts for unrelated code', () => {
     expect(facts('const add = (a: number, b: number) => a + b; add(1, 2);')).toEqual([]);
   });
