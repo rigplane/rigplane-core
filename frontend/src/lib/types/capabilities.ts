@@ -78,7 +78,6 @@ export interface ControlRange {
   style?: string;
 }
 
-export type ControlMapping = 'identity' | 'linear' | 'centered' | 'lookup';
 export type ControlQuantization =
   | 'nearest_ties_down'
   | 'nearest_ties_up'
@@ -92,7 +91,11 @@ export interface ControlLookupPoint {
   readonly display: number;
 }
 
-interface ControlDomainBase extends ControlRange {
+interface ControlDomainBase {
+  readonly range_min?: number;
+  readonly range_max?: number;
+  readonly raw_min: number;
+  readonly raw_max: number;
   readonly raw_step: number;
   readonly raw_origin: number;
   readonly display_min: number;
@@ -100,23 +103,29 @@ interface ControlDomainBase extends ControlRange {
   readonly display_step: number;
   readonly display_origin: number;
   readonly display_unit: string;
-  readonly mapping: ControlMapping;
+  readonly style?: string;
   readonly quantization: ControlQuantization;
   readonly restoration: ControlRestoration;
 }
 
 export interface ScalarControlDomain extends ControlDomainBase {
   readonly mapping: 'identity' | 'linear';
+  readonly raw_center?: never;
+  readonly display_center?: never;
+  readonly lookup?: never;
 }
 
 export interface CenteredControlDomain extends ControlDomainBase {
   readonly mapping: 'centered';
   readonly raw_center: number;
   readonly display_center: number;
+  readonly lookup?: never;
 }
 
 export interface LookupControlDomain extends ControlDomainBase {
   readonly mapping: 'lookup';
+  readonly raw_center?: never;
+  readonly display_center?: never;
   readonly lookup: readonly ControlLookupPoint[];
 }
 
@@ -175,7 +184,7 @@ export interface Capabilities {
   scopeConfig?: ScopeConfig;
   audioConfig: AudioConfig;
   webrtc: WebRtcCapabilities;
-  controls?: Record<string, ControlRange | ControlDomain>;
+  controls?: Readonly<Record<string, ControlRange | ControlDomain>>;
   txBands: TxBand[] | null;
   meterCalibrations?: Record<string, MeterCalPoint[]>;
   meterRedlines?: Record<string, number>;
@@ -400,9 +409,7 @@ function normalizeControls(value: unknown): Readonly<Record<string, ControlRange
     changed ||= explicit;
     return [name, explicit ? parseControlDomain(control, `$.controls.${name}`) : value];
   }));
-  return changed
-    ? Object.freeze(normalized) as Readonly<Record<string, ControlRange | ControlDomain>>
-    : null;
+  return changed ? Object.freeze(normalized) as Readonly<Record<string, ControlRange | ControlDomain>> : null;
 }
 
 export function validateCapabilities(value: unknown): Capabilities {

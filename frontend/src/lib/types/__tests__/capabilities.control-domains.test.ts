@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import type { ControlDomain } from '../capabilities';
+import type { ControlDomain, LookupControlDomain, ScalarControlDomain } from '../capabilities';
 import { validateCapabilities } from '../capabilities';
+
+function controlDomainTypeContract(linear: ScalarControlDomain, lookup: LookupControlDomain): void {
+  // @ts-expect-error normalized bounds are immutable
+  linear.raw_min = 1;
+  // @ts-expect-error normalized bounds are immutable
+  linear.display_max = 1;
+  // @ts-expect-error scalar domains cannot carry center fields
+  void ({ ...linear, raw_center: 0 } satisfies ControlDomain);
+  // @ts-expect-error lookup domains cannot carry center fields
+  void ({ ...lookup, raw_center: 0 } satisfies ControlDomain);
+  // @ts-expect-error lookup arrays are immutable
+  lookup.lookup.push({ raw: 1, display: 1 });
+  // @ts-expect-error lookup entries are immutable
+  lookup.lookup[0]!.display = 1;
+}
+void controlDomainTypeContract;
 const baseCapabilities = {
   model: 'Test Radio',
   scope: false,
@@ -43,36 +59,16 @@ describe('normalized control capability domains', () => {
     expect(validateCapabilities(payload)).toBe(payload);
     expect(() => parse({ raw_min: 0, raw_max: 1, surprise: true })).toThrow(/unknown/);
   });
-
   it.each([
-    ['identity', {
-      ...linearDomain,
-      mapping: 'identity',
-      display_max: 10,
-      display_step: 2,
-    }],
+    ['identity', { ...linearDomain, mapping: 'identity', display_max: 10, display_step: 2 }],
     ['linear', linearDomain],
     ['centered', {
-      ...linearDomain,
-      raw_min: -10,
-      raw_origin: -10,
-      display_min: -1,
-      display_origin: -1,
-      mapping: 'centered',
-      raw_center: 0,
-      display_center: 0,
+      ...linearDomain, raw_min: -10, raw_origin: -10, display_min: -1, display_origin: -1,
+      mapping: 'centered', raw_center: 0, display_center: 0,
     }],
     ['lookup', {
-      ...linearDomain,
-      mapping: 'lookup',
-      lookup: [
-        { raw: 0, display: 0 },
-        { raw: 2, display: 0.2 },
-        { raw: 4, display: 0.4 },
-        { raw: 6, display: 0.6 },
-        { raw: 8, display: 0.8 },
-        { raw: 10, display: 1 },
-      ],
+      ...linearDomain, mapping: 'lookup',
+      lookup: Array.from({ length: 6 }, (_, index) => ({ raw: index * 2, display: index / 5 })),
     }],
   ])('accepts and freezes a valid %s domain without mutating its input', (_name, control) => {
     const before = structuredClone(control);
@@ -85,7 +81,6 @@ describe('normalized control capability domains', () => {
       expect(parsed.lookup.every(Object.isFrozen)).toBe(true);
     }
   });
-
   it.each([
     ['missing field', { ...linearDomain, raw_step: undefined }],
     ['empty unit', { ...linearDomain, display_unit: '  ' }],
