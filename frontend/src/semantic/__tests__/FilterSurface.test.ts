@@ -525,6 +525,53 @@ describe('level fields emit the raw value, unrescaled', () => {
   });
 });
 
+// ── 5b. Unknown PBT is indeterminate, never an endpoint-shaped range ───────
+
+describe('unknown PBT has no fabricated numeric semantics (MOR-1705)', () => {
+  const PBT_FIELDS = [
+    ['pbtInner', 'PBT inner', 'onPbtInnerChange'],
+    ['pbtOuter', 'PBT outer', 'onPbtOuterChange'],
+  ] as const;
+
+  it.each(PBT_FIELDS)('renders unknown %s as an accessible indeterminate status with no command target', (field, label, handler) => {
+    const spy = vi.fn();
+    const view = withPassbandField(base(), field, { unknown: true });
+    withSurface(view, (s) => {
+      const group = s.group(`filter-${field}`)!;
+      expect(group.getAttribute('role')).toBe('status');
+      expect(group.getAttribute('aria-label')).toBe(`${label}: unavailable; value not observed`);
+      expect(group.textContent).toContain('Unavailable — value not observed');
+      expect(group.querySelector('input')).toBeNull();
+      expect(group.querySelector('[aria-valuenow]')).toBeNull();
+      expect(s.input(`filter-${field}`)).toBeNull();
+      expect(spy).not.toHaveBeenCalled();
+    }, { [handler]: spy });
+  });
+
+  it.each(PBT_FIELDS)('renders known and retained %s as ranges with their own availability', (field, _label, handler) => {
+    const onChange = vi.fn();
+    withSurface(base(), (s) => {
+      const input = s.input(`filter-${field}`)!;
+      expect(input.disabled).toBe(false);
+      expect(s.group(`filter-${field}`)!.dataset.presentation).toBe('confirmed');
+      input.value = '100';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onChange).toHaveBeenCalledExactlyOnceWith(100);
+    }, { [handler]: onChange });
+    const retained = withPassbandField(base(), field, {
+      availability: { structural: true, operational: false },
+    });
+    withSurface(retained, (s) => {
+      const input = s.input(`filter-${field}`)!;
+      expect(input.disabled).toBe(true);
+      expect(s.group(`filter-${field}`)!.dataset.disabledReason).toBe('field-not-observed');
+      expect(s.group(`filter-${field}`)!.dataset.presentation).toBe('retained');
+      expect(s.output(`filter-${field}`)!.textContent).not.toBe('?');
+    });
+  });
+});
+
 // ── 6. filterWidth bounds read their OWN field, independently (F2-style) ────
 
 describe('filterWidth and its bounds carry independent availability', () => {
