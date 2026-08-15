@@ -20,6 +20,7 @@ from rigplane.core.tx_interlock_contract import (
 
 __all__ = [
     "ControlLookupPoint",
+    "EncodedControlChoice",
     "ControlDomainSpec",
     "ControlSpec",
     "FilterWidthSegment",
@@ -41,6 +42,23 @@ class ControlLookupPoint(TypedDict):
 
     raw: int
     display: str
+
+
+class EncodedControlLabelChoice(TypedDict):
+    """One encoded choice represented by a truthful non-numeric label."""
+
+    raw: int
+    label: str
+
+
+class EncodedControlNumericChoice(TypedDict):
+    """One encoded choice represented by an exact numeric display value."""
+
+    raw: int
+    display: str
+
+
+EncodedControlChoice = EncodedControlLabelChoice | EncodedControlNumericChoice
 
 
 class ControlSpec(TypedDict, total=False):
@@ -104,11 +122,20 @@ class LookupControlDomainSpec(_ControlDomainBase):
     display_center: NotRequired[Never]
 
 
+class EncodedControlDomainSpec(TypedDict):
+    """Discrete raw codes whose choices may be labeled or numeric."""
+
+    mapping: Required[Literal["encoded"]]
+    choices: list[EncodedControlChoice]
+    style: NotRequired[str]
+
+
 ControlDomainSpec = (
     IdentityControlDomainSpec
     | LinearControlDomainSpec
     | CenteredControlDomainSpec
     | LookupControlDomainSpec
+    | EncodedControlDomainSpec
 )
 
 

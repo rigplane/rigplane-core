@@ -864,6 +864,71 @@ lookup = [
         assert "raw_center" not in public["test_control"]
         assert "display_center" not in public["test_control"]
 
+    def test_encoded_domain_publishes_default_and_exact_numeric_choices(self, tmp_path):
+        declaration = """\
+mapping = "encoded"
+choices = [
+  { raw = 0, label = "Default" },
+  { raw = 1, display = 250 },
+  { raw = 4, display = 1250.5 },
+]
+"""
+
+        rig = self._load(tmp_path, declaration)
+
+        assert rig._control_domains["test_control"]["choices"] == (
+            (0, "Default"),
+            (1, Decimal("250")),
+            (4, Decimal("1250.5")),
+        )
+        public = rig.to_profile().controls
+        assert public == {
+            "test_control": {
+                "mapping": "encoded",
+                "choices": [
+                    {"raw": 0, "label": "Default"},
+                    {"raw": 1, "display": "250"},
+                    {"raw": 4, "display": "1250.5"},
+                ],
+            }
+        }
+        assert json.loads(json.dumps(public, allow_nan=False)) == public
+
+    @pytest.mark.parametrize(
+        ("choices", "message"),
+        [
+            (
+                '[{ raw = 0, label = "Default" }, { raw = 0, display = 250 }]',
+                "raw values.*unique",
+            ),
+            (
+                '[{ raw = 0, label = "Default" }, { raw = 1, display = 250 }, { raw = 2, display = 250 }]',
+                "display values.*unique",
+            ),
+            ('[{ raw = 0, label = "" }]', "label.*non-empty"),
+            ('[{ raw = true, label = "Default" }]', "raw.*integer"),
+            (
+                '[{ raw = 0, label = "Default", display = 250 }]',
+                "exactly raw and one of label or display",
+            ),
+            (
+                '[{ raw = 0, label = "Default", extra = 1 }]',
+                "exactly raw and one of label or display",
+            ),
+            (
+                '[{ raw = 0, label = "Default" }, { raw = 1, display = nan }]',
+                "display.*finite",
+            ),
+        ],
+    )
+    def test_encoded_domain_rejects_ambiguous_or_malformed_choices(
+        self, tmp_path, choices, message
+    ):
+        declaration = 'mapping = "encoded"\nchoices = ' + choices + "\n"
+
+        with pytest.raises(RigLoadError, match=message):
+            self._load(tmp_path, declaration)
+
     def test_exact_lookup_requires_every_raw_lattice_point(self, tmp_path):
         partial = self._LOOKUP.replace("  { raw = 4, display = 0.4 },\n", "")
         with pytest.raises(RigLoadError, match="exact.*complete raw lattice"):
