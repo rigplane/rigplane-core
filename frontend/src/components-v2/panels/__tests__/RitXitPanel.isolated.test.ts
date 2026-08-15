@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { formatOffset, formatOffsetKHz, shouldShowPanel } from '../rit-utils';
+import type { ControlDomain } from '$lib/types/capabilities';
+import { toRitXitProps } from '$lib/runtime/props/panel-props';
+
+const exactRitDomain: ControlDomain = {
+  mapping: 'identity', raw_min: -9999, raw_max: 9999, raw_step: 1, raw_origin: 0,
+  display_min: '-9999' as never, display_max: '9999' as never,
+  display_step: '1' as never, display_origin: '0' as never,
+  display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+};
 
 const mockProps = {
   ritActive: false,
@@ -9,6 +18,7 @@ const mockProps = {
   xitOffset: 0,
   hasRit: true,
   hasXit: true,
+  ritDomain: undefined as ControlDomain | null | undefined,
 };
 
 const mockHandlers = {
@@ -43,6 +53,7 @@ beforeEach(() => {
   Object.assign(mockProps, {
     ritActive: false, ritOffset: 0, xitActive: false, xitOffset: 0,
     hasRit: true, hasXit: true,
+    ritDomain: undefined,
   });
   mockHandlers.onRitToggle = vi.fn();
   mockHandlers.onXitToggle = vi.fn();
@@ -233,6 +244,55 @@ describe('RitXitPanel component', () => {
     vi.advanceTimersByTime(60);
 
     expect(mockHandlers.onXitOffsetChange).toHaveBeenCalled();
+  });
+
+  it('keeps the legacy control only when the RIT domain is absent', () => {
+    const target = mountPanel({ ritDomain: undefined });
+    expect(target.querySelector('[role="slider"]')?.getAttribute('aria-valuemin')).toBe('-9999');
+  });
+
+  it('fails closed when an advertised RIT domain is invalid', () => {
+    const target = mountPanel({ ritDomain: null });
+    expect(target.querySelector('[role="slider"]')).toBeNull();
+    expect(mockHandlers.onRitOffsetChange).not.toHaveBeenCalled();
+  });
+
+  it('uses the exact RIT lattice without emitting on initial zero', () => {
+    const target = mountPanel({ ritDomain: exactRitDomain, ritOffset: 0 });
+    const slider = target.querySelector<HTMLElement>('[role="slider"]')!;
+    expect(slider.getAttribute('aria-valuemin')).toBe('-9999');
+    expect(slider.getAttribute('aria-valuemax')).toBe('9999');
+    expect(mockHandlers.onRitOffsetChange).not.toHaveBeenCalled();
+
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    expect(mockHandlers.onRitOffsetChange.mock.calls).toEqual([[50], [0]]);
+  });
+
+  it('fails closed for an exact domain with an invalid current value or unavailable encoding', () => {
+    expect(mountPanel({ ritDomain: exactRitDomain, ritOffset: 10000 }).querySelector('[role="slider"]')).toBeNull();
+    expect(mountPanel({ ritDomain: { ...exactRitDomain, restoration: 'unavailable' }, ritOffset: 0 }).querySelector('[role="slider"]')).toBeNull();
+  });
+
+  it('keeps the XIT-leading intent route while encoding the exact RIT domain', () => {
+    const target = mountPanel({ ritDomain: exactRitDomain, ritActive: false, xitActive: true, xitOffset: 0 });
+    target.querySelector<HTMLElement>('[role="slider"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    expect(mockHandlers.onXitOffsetChange).toHaveBeenCalledWith(50);
+  });
+});
+
+describe('RIT exact-domain mapper', () => {
+  it.each([null, 1, [], {}, { mapping: 'future' }, { mapping: 'identity', raw_origin: 0 }])('rejects advertised malformed domain %p', (rit) => {
+    expect(toRitXitProps(null, { controls: { rit } } as any).ritDomain).toBeNull();
+  });
+
+  it('distinguishes an absent domain from a validated exact domain', () => {
+    expect(toRitXitProps(null, null).ritDomain).toBeUndefined();
+    expect(toRitXitProps(null, { controls: {} } as any).ritDomain).toBeUndefined();
+    expect(toRitXitProps(null, { controls: { rit: exactRitDomain } } as any).ritDomain).toBe(exactRitDomain);
   });
 });
 

@@ -19,6 +19,7 @@ import {
   nrRawToDisplay,
   pbtRawToHz,
 } from '$lib/radio/filter-controls';
+import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
@@ -492,7 +493,30 @@ export interface RitXitProps {
   hasRit: boolean;
   hasXit: boolean;
   /** Exact RIT control contract, when supplied by a normalized capability payload. */
-  ritDomain?: ControlDomain;
+  ritDomain: ControlDomain | null | undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validatedRitDomain(caps: Capabilities | null): ControlDomain | null | undefined {
+  const controls = caps?.controls;
+  if (controls === undefined) return undefined;
+  if (!isRecord(controls)) return null;
+  if (!Object.hasOwn(controls, 'rit')) return undefined;
+  const candidate = controls.rit;
+  if (!isRecord(candidate)) return null;
+
+  try {
+    const domain = candidate as ControlDomain;
+    if (!['identity', 'linear', 'centered', 'lookup'].includes(domain.mapping)
+      || !Number.isSafeInteger(domain.raw_origin)) return null;
+    const display = decodeControlDomain(domain, domain.raw_origin);
+    return display !== null && encodeControlDomain(domain, display) === domain.raw_origin ? domain : null;
+  } catch {
+    return null;
+  }
 }
 
 export function toRitXitProps(
@@ -502,16 +526,19 @@ export function toRitXitProps(
   const ritOnAvailable = topFieldAvailable(state, 'ritOn');
   const ritFreqAvailable = topFieldAvailable(state, 'ritFreq');
   const ritTxAvailable = topFieldAvailable(state, 'ritTx');
-  const ritControl = caps?.controls?.rit;
-  return {
+  const props = {
     ritActive: state?.ritOn ?? false,
     ritOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
     xitActive: state?.ritTx ?? false,
     xitOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
     hasRit: hasCap(caps, 'rit') && ritOnAvailable,
     hasXit: hasCap(caps, 'xit') && ritTxAvailable,
-    ritDomain: ritControl && 'mapping' in ritControl ? ritControl : undefined,
   };
+  Object.defineProperty(props, 'ritDomain', {
+    value: validatedRitDomain(caps),
+    enumerable: false,
+  });
+  return props as RitXitProps;
 }
 
 /* ── Mode Panel ──────────────────────────────────────────────── */

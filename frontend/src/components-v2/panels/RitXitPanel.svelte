@@ -4,6 +4,7 @@
   import { formatOffsetKHz, shouldShowPanel } from './rit-utils';
   import { getShortcutHint } from '../layout/shortcut-hints';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
+  import type { ControlDomain } from '$lib/types/capabilities';
 
   import { deriveRitXitProps, getRitXitHandlers } from '$lib/runtime/adapters/panel-adapters';
 
@@ -25,8 +26,9 @@
 
   let visible = $derived(shouldShowPanel(hasRit, hasXit));
   let offsetValue = $derived(xitActive && !ritActive ? xitOffset : ritOffset);
-  let exactOffset = $derived(ritDomain ? decodeControlDomain(ritDomain, offsetValue) : null);
-  let canAdjustOffset = $derived(ritDomain ? exactOffset !== null : Number.isFinite(offsetValue));
+  let canAdjustOffset = $derived(ritDomain === undefined
+    ? Number.isFinite(offsetValue)
+    : ritDomain !== null && canonicalRaw(ritDomain, offsetValue) !== null);
   const ritShortcut = getShortcutHint('toggle_rit');
   const xitShortcut = getShortcutHint('toggle_xit');
   const clearShortcut = getShortcutHint('clear_rit_xit');
@@ -44,9 +46,9 @@
   }
 
   function handleOffsetChange(value: number) {
-    if (ritDomain) {
-      const display = decodeControlDomain(ritDomain, value);
-      const encoded = display === null ? null : encodeControlDomain(ritDomain, display);
+    if (ritDomain !== undefined) {
+      if (ritDomain === null) return;
+      const encoded = canonicalRaw(ritDomain, value);
       if (encoded === null) return;
       value = encoded;
     }
@@ -55,6 +57,16 @@
       return;
     }
     onRitOffsetChange(value);
+  }
+
+  function canonicalRaw(domain: ControlDomain, value: number): number | null {
+    try {
+      const display = decodeControlDomain(domain, value);
+      const encoded = display === null ? null : encodeControlDomain(domain, display);
+      return encoded !== null && Number.isSafeInteger(encoded) ? encoded : null;
+    } catch {
+      return null;
+    }
   }
 </script>
 
@@ -80,7 +92,7 @@
           max={ritDomain?.raw_max ?? 9999}
           step={ritDomain?.raw_step ?? 50}
           defaultValue={ritDomain?.raw_origin ?? 0}
-          keyboardStep={ritDomain ? 50 : undefined}
+          keyboardStep={ritDomain === undefined ? undefined : 50}
           unit="kHz"
           displayFn={formatOffsetDisplay}
           renderer="bipolar"
