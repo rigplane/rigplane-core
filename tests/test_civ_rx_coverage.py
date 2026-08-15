@@ -3062,12 +3062,11 @@ def test_observations_from_frame_marks_only_exact_ptt_readback_as_poll_response(
         if observations:
             assert observations[0].source.source == "command_response"
 
-    unsolicited = _make_frame(
-        cmd=0x1C, sub=0x00, data=b"\x01", to_addr=0x00
+    unsolicited = _make_frame(cmd=0x1C, sub=0x00, data=b"\x01", to_addr=0x00)
+    assert (
+        radio._civ_runtime._observations_from_frame(unsolicited)[0].source.source
+        == "civ_unsolicited"
     )
-    assert radio._civ_runtime._observations_from_frame(unsolicited)[
-        0
-    ].source.source == "civ_unsolicited"
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
