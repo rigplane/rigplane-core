@@ -29,6 +29,49 @@ export interface BeginCommandInput {
   originalEpoch: number; timeoutMs?: number;
 }
 
+export interface ControlFeedbackScope {
+  readonly control: string;
+  readonly receiver: 0 | 1;
+  readonly slot?: string;
+}
+export type StateBackedRepeatPolicy = 'latest-target-wins';
+export interface StateBackedCommandDescriptor<T> {
+  readonly intentName: string;
+  readonly repeatPolicy: StateBackedRepeatPolicy;
+  scope(command: Pick<CommandLifecycle, 'params'>): ControlFeedbackScope | null;
+  fieldPath(scope: ControlFeedbackScope): string;
+  target(command: Pick<CommandLifecycle, 'params'>): T | null;
+  confirmed(state: ServerState, scope: ControlFeedbackScope): T | null;
+  matches(confirmed: T, target: T): boolean;
+}
+
+const finiteNumber = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/** First state-backed descriptor; later controls compose with this contract. */
+export const FILTER_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_filter_width',
+  repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => Object.freeze({
+    control: 'filter-width',
+    receiver: command.params.receiver === 1 ? 1 : 0,
+  }),
+  fieldPath: (scope: ControlFeedbackScope) => scope.receiver === 1 ? 'sub.filterWidth' : 'main.filterWidth',
+  target: (command: Pick<CommandLifecycle, 'params'>) => finiteNumber(command.params.width),
+  confirmed: (state: ServerState, scope: ControlFeedbackScope) => finiteNumber(
+    (scope.receiver === 1 ? state.sub : state.main)?.filterWidth,
+  ),
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
+const stateBackedDescriptors = new Map<string, StateBackedCommandDescriptor<unknown>>([
+  [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
+]);
+
+export const getStateBackedCommandDescriptor = (
+  intentName: string,
+): StateBackedCommandDescriptor<unknown> | undefined => stateBackedDescriptors.get(intentName);
+
 const DEFAULT_TIMEOUT_MS = 5_000;
 /**
  * Terminal outcomes remain available for a five-second bounded presentation
@@ -37,15 +80,22 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  */
 const OUTCOME_RETENTION_MS = 5_000;
 const MAX_RETAINED_COMMANDS = 100;
-const ACK_CORRELATION_PATHS = ['main.filterWidth', 'sub.filterWidth'] as const;
 let commands = $state<CommandLifecycle[]>([]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const supersededRecordKeys = new Set<string>();
-let filterWidthReconciliationStarted = false;
+let stateBackedReconciliationStarted = false;
 const key = (id: string, epoch: number): string => `${epoch}:${id}`;
 
 const receiverScope = (command: Pick<CommandLifecycle, 'params'>): 0 | 1 =>
   command.params.receiver === 1 ? 1 : 0;
+
+const commandScopeKey = (command: Pick<CommandLifecycle, 'name' | 'params'>): string => {
+  const descriptor = getStateBackedCommandDescriptor(command.name);
+  const scope = descriptor?.scope(command);
+  return scope === null || scope === undefined
+    ? JSON.stringify(['legacy-receiver', receiverScope(command)])
+    : JSON.stringify([scope.control, scope.receiver, scope.slot ?? null]);
+};
 
 export const isCommandLifecycleSuperseded = (command: CommandLifecycle): boolean => supersededRecordKeys.has(key(command.id, command.originalEpoch));
 
@@ -101,34 +151,37 @@ function transition(
   if (status === 'acknowledged') {
     const radio = getRadioState(); command.ackObservationSeq = radio?.observationSeq;
     const observations: Record<string, number> = {};
-    for (const path of ACK_CORRELATION_PATHS) {
+    const descriptor = getStateBackedCommandDescriptor(command.name);
+    const scope = descriptor?.scope(command);
+    const path = scope === null || scope === undefined ? null : descriptor?.fieldPath(scope);
+    if (path !== null && path !== undefined) {
       const field = radio?.fieldStatus?.[path];
       const marker = field?.lastObservedMonotonic;
       if (typeof marker === 'number' && Number.isFinite(marker)) observations[path] = marker;
     }
     command.ackFieldObservationTimes = observations;
     startLiveDeadline(command);
-    if (command.name === 'set_filter_width') startFilterWidthReconciliation();
+    if (descriptor !== undefined) startStateBackedReconciliation();
   } else {
     retainTerminalOutcome(command);
   }
 }
 
-/** Accepted state, not a presentation read, reconciles Filter Width. */
-function reconcileFilterWidthCommands(state: ServerState | null): void {
+/** Accepted StateStore observations, never presentation reads, reconcile commands. */
+function reconcileStateBackedCommands(state: ServerState | null): void {
   if (!state) return;
   for (const command of commands) {
-    if (command.name !== 'set_filter_width' || command.status !== 'acknowledged' || isCommandLifecycleSuperseded(command)) continue;
-
-    const receiver = receiverScope(command);
-    const path = receiver === 1 ? 'sub.filterWidth' : 'main.filterWidth';
+    if (command.status !== 'acknowledged' || isCommandLifecycleSuperseded(command)) continue;
+    const descriptor = getStateBackedCommandDescriptor(command.name);
+    const scope = descriptor?.scope(command);
+    const target = descriptor?.target(command);
+    if (descriptor === undefined || scope === null || scope === undefined || target === null || target === undefined) continue;
+    const path = descriptor.fieldPath(scope);
     const field = state.fieldStatus?.[path];
     const marker = field?.lastObservedMonotonic;
-    const width = (receiver === 1 ? state.sub : state.main)?.filterWidth;
-    const target = command.params.width;
+    const confirmed = descriptor.confirmed(state, scope);
     if (field?.observed !== true || field.freshness !== 'fresh' || field.availability !== 'available' || typeof marker !== 'number' || !Number.isFinite(marker)
-      || typeof width !== 'number' || !Number.isFinite(width)
-      || typeof target !== 'number' || !Number.isFinite(target)) continue;
+      || confirmed === null) continue;
 
     const boundaries = command.ackFieldObservationTimes;
     if (boundaries === undefined) continue;
@@ -137,14 +190,16 @@ function reconcileFilterWidthCommands(state: ServerState | null): void {
       command.ackFieldObservationTimes = { ...boundaries, [path]: marker };
       continue;
     }
-    if (marker > boundary && width === target) transition(command.id, command.originalEpoch, 'confirmed', command.eventEpoch ?? command.originalEpoch);
+    if (marker > boundary && descriptor.matches(confirmed, target)) {
+      transition(command.id, command.originalEpoch, 'confirmed', command.eventEpoch ?? command.originalEpoch);
+    }
   }
 }
 
-function startFilterWidthReconciliation(): void {
-  if (filterWidthReconciliationStarted) return;
-  filterWidthReconciliationStarted = true;
-  subscribeRadioState(reconcileFilterWidthCommands);
+function startStateBackedReconciliation(): void {
+  if (stateBackedReconciliationStarted) return;
+  stateBackedReconciliationStarted = true;
+  subscribeRadioState(reconcileStateBackedCommands);
 }
 
 export function beginCommand(input: BeginCommandInput): CommandLifecycle {
@@ -153,8 +208,8 @@ export function beginCommand(input: BeginCommandInput): CommandLifecycle {
   const now = Date.now();
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const command: CommandLifecycle = { ...input, timeoutMs, createdAt: now, updatedAt: now, status: 'pending' };
-  const scope = receiverScope(command);
-  for (const existing of commands) if (existing.name === command.name && receiverScope(existing) === scope) {
+  for (const existing of commands) if (existing.name === command.name
+    && commandScopeKey(existing) === commandScopeKey(command)) {
     supersededRecordKeys.add(key(existing.id, existing.originalEpoch));
   }
   commands.push(command);

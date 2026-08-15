@@ -31,7 +31,14 @@ import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
-import { getCommandLifecycles, isCommandLifecycleSuperseded } from '$lib/stores/commands.svelte';
+import {
+  getCommandLifecycles,
+  isCommandLifecycleSuperseded,
+  type CommandLifecycle,
+  type ControlFeedbackScope,
+  type StateBackedCommandDescriptor,
+  type StateBackedRepeatPolicy,
+} from '$lib/stores/commands.svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 
@@ -262,68 +269,140 @@ export interface FilterWidthCommandLifecycleView {
   presentation: Readonly<FilterWidthLifecyclePresentation> | null;
 }
 
-function activeFilterWidthReceiver(): { receiver: 0 | 1; width: number; fieldPath: string; fieldStatus: NonNullable<ServerState['fieldStatus']>[string] | undefined } | null {
-  const state = runtime.state;
-  if (!state) return null;
-  const receiver: 0 | 1 = state.active === 'SUB' ? 1 : 0;
-  const width = (receiver === 0 ? state.main : state.sub)?.filterWidth;
-  if (typeof width !== 'number' || !Number.isFinite(width)) return null;
-  const fieldPath = receiver === 0 ? 'main.filterWidth' : 'sub.filterWidth';
-  const fieldStatus = state.fieldStatus?.[fieldPath];
-  if (fieldStatus?.observed !== true || fieldStatus.freshness !== 'fresh' || fieldStatus.availability !== 'available'
-    || typeof fieldStatus.lastObservedMonotonic !== 'number'
-    || !Number.isFinite(fieldStatus.lastObservedMonotonic)) return null;
-  return { receiver, width, fieldPath, fieldStatus };
+export type ControlFeedbackPhase = 'unavailable' | 'idle' | 'submitted' | 'queued' | 'dispatched'
+  | 'awaiting-confirmation' | 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
+export type ControlFeedbackOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
+export interface ControlFeedback<T> {
+  readonly confirmed: T | null;
+  /** Present only while the target is explicitly unconfirmed. */
+  readonly target: T | null;
+  /** Retained for transition-deduplicated terminal presentation. */
+  readonly requestedTarget: T | null;
+  readonly phase: ControlFeedbackPhase;
+  readonly busy: boolean;
+  readonly availability: 'available' | 'unavailable';
+  readonly outcome: Readonly<{ phase: ControlFeedbackOutcome; error?: string }> | null;
+  readonly lifecycleId: string | null;
+  readonly transitionId: string | null;
+  readonly sessionEpoch: number | null;
+  readonly scope: Readonly<ControlFeedbackScope>;
+  readonly repeatPolicy: StateBackedRepeatPolicy;
 }
 
-function latestFilterWidthLifecycle(receiver: 0 | 1) {
-  let latest: ReturnType<typeof getCommandLifecycles>[number] | null = null;
-  for (const command of getCommandLifecycles()) {
-  if (command.name !== 'set_filter_width' || (command.params.receiver === 1 ? 1 : 0) !== receiver
-      || typeof command.params.width !== 'number' || !Number.isFinite(command.params.width)
-      || isCommandLifecycleSuperseded(command)) continue;
-    if (!latest || command.createdAt >= latest.createdAt) latest = command;
+/** Pure Filter Width projection descriptor; it owns no lifecycle or radio state. */
+export const FILTER_WIDTH_FEEDBACK_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_filter_width', repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => Object.freeze({
+    control: 'filter-width', receiver: command.params.receiver === 1 ? 1 : 0,
+  }),
+  fieldPath: (scope: ControlFeedbackScope) => scope.receiver === 1 ? 'sub.filterWidth' : 'main.filterWidth',
+  target: (command: Pick<CommandLifecycle, 'params'>) => {
+    const width = command.params.width;
+    return typeof width === 'number' && Number.isFinite(width) ? width : null;
+  },
+  confirmed: (state: ServerState, scope: ControlFeedbackScope) => {
+    const width = (scope.receiver === 1 ? state.sub : state.main)?.filterWidth;
+    return typeof width === 'number' && Number.isFinite(width) ? width : null;
+  },
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
+const sameFeedbackScope = (left: ControlFeedbackScope | null, right: ControlFeedbackScope): boolean =>
+  left !== null && left.control === right.control && left.receiver === right.receiver
+    && (left.slot ?? null) === (right.slot ?? null);
+
+/** Pure typed projection: lifecycle and canonical StateStore inputs only. */
+export function projectControlFeedback<T>(
+  descriptor: StateBackedCommandDescriptor<T>,
+  state: ServerState | null,
+  commands: readonly CommandLifecycle[],
+  scope: ControlFeedbackScope,
+): Readonly<ControlFeedback<T>> {
+  const unavailable = (): Readonly<ControlFeedback<T>> => Object.freeze({
+    confirmed: null, target: null, requestedTarget: null, phase: 'unavailable', busy: false,
+    availability: 'unavailable', outcome: null, lifecycleId: null, transitionId: null,
+    sessionEpoch: null, scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
+  });
+  if (state === null) return unavailable();
+  const path = descriptor.fieldPath(scope);
+  const field = state.fieldStatus?.[path];
+  const confirmed = descriptor.confirmed(state, scope);
+  if (confirmed === null || field?.observed !== true || field.freshness !== 'fresh'
+    || field.availability !== 'available' || typeof field.lastObservedMonotonic !== 'number'
+    || !Number.isFinite(field.lastObservedMonotonic)) return unavailable();
+
+  let latest: CommandLifecycle | null = null;
+  for (const command of commands) {
+    if (command.name !== descriptor.intentName || !sameFeedbackScope(descriptor.scope(command), scope)
+      || descriptor.target(command) === null || isCommandLifecycleSuperseded(command)) continue;
+    if (latest === null || command.createdAt >= latest.createdAt) latest = command;
   }
-  return latest;
+  if (latest === null) return Object.freeze({
+    confirmed, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+    sessionEpoch: null, scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
+  });
+
+  const requestedTarget = descriptor.target(latest)!;
+  const lifecycleId = JSON.stringify([latest.originalEpoch, latest.id]);
+  const transitionId = JSON.stringify([latest.originalEpoch, latest.id, latest.status]);
+  const terminal = latest.status === 'confirmed' || latest.status === 'failed'
+    || latest.status === 'timed-out' || latest.status === 'cancelled';
+  const phase: ControlFeedbackPhase = latest.status === 'pending' ? 'submitted'
+    : latest.status === 'acknowledged' ? 'awaiting-confirmation' : latest.status;
+  const error = terminal && typeof latest.error === 'string' && latest.error.length > 0
+    ? latest.error.slice(0, 256) : undefined;
+  const outcome = terminal ? Object.freeze({ phase: latest.status as ControlFeedbackOutcome,
+    ...(error === undefined ? {} : { error }) }) : null;
+  return Object.freeze({
+    confirmed, target: terminal ? null : requestedTarget, requestedTarget, phase,
+    busy: !terminal, availability: 'available', outcome, lifecycleId, transitionId,
+    sessionEpoch: latest.originalEpoch, scope: Object.freeze({ ...scope }),
+    repeatPolicy: descriptor.repeatPolicy,
+  });
 }
 
 function filterWidthPresentation(
-  command: NonNullable<ReturnType<typeof latestFilterWidthLifecycle>>, receiver: 0 | 1,
+  feedback: Readonly<ControlFeedback<number>>,
 ): Readonly<FilterWidthLifecyclePresentation> {
-  const target = command.params.width as number;
-  const lifecycleId = JSON.stringify([command.originalEpoch, command.id]);
-  const terminal = command.status === 'confirmed' || command.status === 'failed'
-    || command.status === 'timed-out' || command.status === 'cancelled';
-  const error = terminal && typeof command.error === 'string' && command.error.length > 0
-    ? command.error.slice(0, 256) : undefined;
+  const status = feedback.phase === 'submitted' ? 'pending'
+    : feedback.phase === 'awaiting-confirmation' ? 'acknowledged' : feedback.phase;
+  const error = feedback.outcome?.error;
   return Object.freeze({
-    lifecycleId,
-    transitionId: JSON.stringify([command.originalEpoch, command.id, command.status]),
-    receiver,
-    sessionEpoch: command.originalEpoch,
-    target,
-    status: command.status,
+    lifecycleId: feedback.lifecycleId!,
+    transitionId: feedback.transitionId!,
+    receiver: feedback.scope.receiver,
+    sessionEpoch: feedback.sessionEpoch!,
+    target: feedback.requestedTarget!,
+    status: status as FilterWidthLifecyclePresentation['status'],
     ...(error === undefined ? {} : { error }),
   });
 }
 
 export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleView {
-  const observed = activeFilterWidthReceiver();
-  if (!observed) return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null, presentation: null };
-
-  const command = latestFilterWidthLifecycle(observed.receiver);
-  if (!command) return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: null, presentation: null };
-  const presentation = filterWidthPresentation(command, observed.receiver);
-  if (command.status === 'confirmed') {
-    return { confirmed: observed.width, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' }, presentation };
+  const receiver: 0 | 1 = runtime.state?.active === 'SUB' ? 1 : 0;
+  const feedback = projectControlFeedback(
+    FILTER_WIDTH_FEEDBACK_DESCRIPTOR,
+    runtime.state,
+    getCommandLifecycles(),
+    { control: 'filter-width', receiver },
+  );
+  if (feedback.availability === 'unavailable') {
+    return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null, presentation: null };
   }
-  if (command.status === 'failed' || command.status === 'timed-out' || command.status === 'cancelled') {
-    return { confirmed: observed.width, target: null, phase: 'idle', busy: false, outcome: { phase: command.status, error: command.error }, presentation };
+  if (feedback.phase === 'idle') {
+    return { confirmed: feedback.confirmed, target: null, phase: 'idle', busy: false, outcome: null, presentation: null };
   }
-
-  const target = command.params.width as number;
-  if (command.status === 'acknowledged') return { confirmed: observed.width, target, phase: 'acknowledged', busy: true, outcome: null, presentation };
-  return { confirmed: observed.width, target, phase: 'pending', busy: true, outcome: null, presentation };
+  const presentation = filterWidthPresentation(feedback);
+  if (feedback.phase === 'confirmed') return { confirmed: feedback.confirmed, target: null,
+    phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' }, presentation };
+  if (feedback.phase === 'failed' || feedback.phase === 'timed-out' || feedback.phase === 'cancelled') {
+    return { confirmed: feedback.confirmed, target: null, phase: 'idle', busy: false,
+      outcome: { phase: feedback.phase, error: feedback.outcome?.error }, presentation };
+  }
+  return { confirmed: feedback.confirmed, target: feedback.target,
+    phase: feedback.phase === 'awaiting-confirmation' ? 'acknowledged' : 'pending',
+    busy: true, outcome: null, presentation };
 }
 
 // ── Pending discrete-control targets (MOR-1441 leg 2) ──

@@ -39,7 +39,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () => null }));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: () => null }));
 
-import { getFilterWidthCommandLifecycle } from '../panel-adapters';
+import {
+  FILTER_WIDTH_FEEDBACK_DESCRIPTOR,
+  getFilterWidthCommandLifecycle,
+  projectControlFeedback,
+} from '../panel-adapters';
 function emitAcceptedState(value: FakeState | null): void {
   commandRadio.current = value;
   for (const handler of commandRadio.listeners) handler(value);
@@ -73,6 +77,35 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     lifecycle.commands = [command()];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2400, target: 3000, phase: 'pending', busy: true, outcome: null,
+    });
+  });
+  it('projects a frozen generic feedback contract with explicit repeat and scope policy', () => {
+    const current = state();
+    const feedback = projectControlFeedback(
+      FILTER_WIDTH_FEEDBACK_DESCRIPTOR,
+      current as never,
+      [command()] as never,
+      { control: 'filter-width', receiver: 0 },
+    );
+    expect(feedback).toEqual(expect.objectContaining({
+      confirmed: 2400, target: 3000, requestedTarget: 3000,
+      phase: 'submitted', busy: true, availability: 'available',
+      scope: { control: 'filter-width', receiver: 0 },
+      repeatPolicy: 'latest-target-wins', sessionEpoch: 7,
+      lifecycleId: '[7,"width-1"]', transitionId: '[7,"width-1","pending"]',
+    }));
+    expect(Object.isFrozen(feedback)).toBe(true);
+    expect(Object.isFrozen(feedback.scope)).toBe(true);
+  });
+  it('keeps an out-of-band canonical observation visible while awaiting the requested target', () => {
+    const feedback = projectControlFeedback(
+      FILTER_WIDTH_FEEDBACK_DESCRIPTOR,
+      state({ main: { filterWidth: 2600 } }) as never,
+      [command({ status: 'acknowledged' })] as never,
+      { control: 'filter-width', receiver: 0 },
+    );
+    expect(feedback).toMatchObject({
+      confirmed: 2600, target: 3000, phase: 'awaiting-confirmation', busy: true,
     });
   });
   it('keeps a fresh matching observation acknowledged when a caller only reads the pure accessor', () => {
@@ -291,6 +324,28 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     runtimeState.state = state({ main: { filterWidth: 2400 }, sub: { filterWidth: 1800 } });
     expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2600, phase: 'pending', busy: true });
     expect(getLiveView().presentation?.lifecycleId).not.toBe(subPresentation?.lifecycleId);
+    store.resetCommandLifecycle();
+  });
+  it('applies latest-target-wins to repeated identical and changed targets in one scope', async () => {
+    vi.useFakeTimers(); vi.doUnmock('$lib/stores/commands.svelte'); vi.resetModules();
+    runtimeState.state = state();
+    const store = await import('$lib/stores/commands.svelte');
+    const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
+    const first = store.beginCommand({
+      id: 'first', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, originalEpoch: 7,
+    });
+    const repeated = store.beginCommand({
+      id: 'repeated', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, originalEpoch: 7,
+    });
+    expect(store.isCommandLifecycleSuperseded(first)).toBe(true);
+    expect(store.isCommandLifecycleSuperseded(repeated)).toBe(false);
+    expect(getLiveView()).toMatchObject({ target: 3000, phase: 'pending', busy: true });
+    const changed = store.beginCommand({
+      id: 'changed', name: 'set_filter_width', params: { width: 2800, receiver: 0 }, originalEpoch: 7,
+    });
+    expect(store.isCommandLifecycleSuperseded(repeated)).toBe(true);
+    expect(store.isCommandLifecycleSuperseded(changed)).toBe(false);
+    expect(getLiveView()).toMatchObject({ target: 2800, phase: 'pending', busy: true });
     store.resetCommandLifecycle();
   });
   it('projects a fresh frozen presentation DTO with stable lifecycle and transition identities', () => {
