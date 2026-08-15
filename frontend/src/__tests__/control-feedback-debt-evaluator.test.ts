@@ -72,6 +72,16 @@ describe('ordered debt evaluator (MOR-1720)', () => {
       .toEqual(['cycle', 'return', 'return']);
   });
 
+  it('preserves known undefined and primitive reachability without evaluating dead effects', () => {
+    expect(facts('if (false) mutate(props); !true && mutate(props); ~0 && mutate(props); 1 === 2 && mutate(props); void 0 ?? mutate(props); undefined && mutate(props); false || mutate(props);'))
+      .toEqual(['escape', 'escape', 'escape']);
+  });
+
+  it('short-circuits known-null optional operations before arguments or computed keys', () => {
+    expect(facts('const nil = null; nil?.(mutate(props)); nil?.[mutate(props)]; nil?.field;'))
+      .toEqual([]);
+  });
+
   it('has no facts for unrelated code', () => {
     expect(facts('const add = (a: number, b: number) => a + b; add(1, 2);')).toEqual([]);
   });
