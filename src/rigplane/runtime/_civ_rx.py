@@ -2632,11 +2632,22 @@ class CivRuntime:
         frame: CivFrame,
         quality: tuple[str, ...] = ("confirmed",),
     ) -> Observation:
-        source: ObservationSource = (
-            "civ_unsolicited"
-            if frame.to_addr == 0x00 or frame.command in (0x00, 0x01)
-            else "command_response"
-        )
+        source: ObservationSource = "command_response"
+        if frame.to_addr == 0x00 or frame.command in (0x00, 0x01):
+            source = "civ_unsolicited"
+        elif (
+            frame.to_addr == CONTROLLER_ADDR
+            and frame.from_addr == self._host._radio_addr
+            and frame.command == 0x1C
+            and frame.sub == 0x00
+            and len(frame.data) == 1
+            and frame.data[0] in (0x00, 0x01)
+        ):
+            # A directed, exact one-byte PTT reply can only be CI-V's 0x1C/0x00
+            # field readback.  It is intentionally narrower than generic command
+            # responses so the Web TX authority gate cannot treat an ACK, setter
+            # success, or unrelated response as radio truth.
+            source = "poll_response"
         return Observation(
             path=path,
             value=value,
