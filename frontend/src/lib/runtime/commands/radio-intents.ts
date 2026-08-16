@@ -1,5 +1,6 @@
-import { acknowledgeCommand, beginCommand, cancelPendingCommands, failCommand, type CommandLifecycle } from '$lib/stores/commands.svelte';
+import { acknowledgeCommand, applyCommandLifecycleProjection, beginCommand, cancelPendingCommands, failCommand, type CommandLifecycle } from '$lib/stores/commands.svelte';
 import { makeCommandId } from '$lib/types/protocol';
+import * as controlTransport from '$lib/transport/ws-client';
 import { getControlSession, onCommandDelivery, onControlSessionTransition, sendCommand } from '$lib/transport/ws-client';
 
 type FieldKind = 'boolean' | 'integer' | 'normalized' | 'number' | 'receiver' | 'string' | 'vfo';
@@ -99,6 +100,9 @@ onCommandDelivery((event) => {
   else if (event.kind === 'ack' || event.kind === 'response-ok') acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch);
   else failCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.error);
 });
+if (Object.prototype.hasOwnProperty.call(controlTransport, 'onCommandLifecycleDelivery')) {
+  controlTransport.onCommandLifecycleDelivery((event) => applyCommandLifecycleProjection(event, getControlSession().epoch));
+}
 onControlSessionTransition((transition) => {
   if (transition.state === 'disconnected') cancelPendingCommands(transition.epoch);
 });

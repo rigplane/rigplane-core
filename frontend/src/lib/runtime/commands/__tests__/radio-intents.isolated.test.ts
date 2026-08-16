@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
+import type { CommandDeliveryEvent, CommandLifecycleDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
 import type { RadioIntent } from '../radio-intents';
 
 const harness = vi.hoisted(() => ({
   delivery: undefined as ((event: CommandDeliveryEvent) => void) | undefined,
+  lifecycle: undefined as ((event: CommandLifecycleDeliveryEvent) => void) | undefined,
   transition: undefined as ((event: ControlSessionTransition) => void) | undefined,
   session: { state: 'connected' as const, epoch: 7 },
   sendCommand: vi.fn((..._args: unknown[]) => true),
@@ -18,6 +19,10 @@ vi.mock('$lib/transport/ws-client', () => ({
     return () => {
       if (harness.delivery === handler) harness.delivery = undefined;
     };
+  }),
+  onCommandLifecycleDelivery: vi.fn((handler: (event: CommandLifecycleDeliveryEvent) => void) => {
+    harness.lifecycle = handler;
+    return () => { if (harness.lifecycle === handler) harness.lifecycle = undefined; };
   }),
   onControlSessionTransition: vi.fn((handler: (event: ControlSessionTransition) => void) => {
     harness.transition = handler;
@@ -36,6 +41,7 @@ describe('typed non-PTT radio intents', () => {
     vi.useFakeTimers();
     vi.resetModules();
     harness.delivery = undefined;
+    harness.lifecycle = undefined;
     harness.transition = undefined;
     harness.session = { state: 'connected', epoch: 7 };
     harness.sendCommand.mockReset().mockReturnValue(true);
@@ -81,6 +87,89 @@ describe('typed non-PTT radio intents', () => {
       eventEpoch: 7,
     });
     expect(lifecycle.getCommandLifecycle('mode-1', 7)).not.toHaveProperty('confirmedValue');
+  });
+
+  it('projects held truth without changing pending or acknowledged authority', () => {
+    const beforeAck = intents.dispatchRadioIntent({ id: 'held-first', name: 'set_freq', params: { freq: 1 } });
+    const held = { commandId: 'held-first', kind: 'held', originalEpoch: 7, eventEpoch: 7,
+      reason: 'tx_active', expiresAt: 12.5 } as const;
+    harness.lifecycle?.(held);
+    const annotation = lifecycle.getCommandLifecycleHold(beforeAck);
+    expect(annotation).toEqual({ ...held });
+    expect(Object.isFrozen(annotation)).toBe(true);
+    expect(lifecycle.getCommandLifecycle(beforeAck.id, 7)?.status).toBe('pending');
+    harness.lifecycle?.(held);
+    expect(lifecycle.getCommandLifecycleHold(beforeAck)).toBe(annotation);
+    harness.delivery?.({ commandId: beforeAck.id, kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
+    expect(lifecycle.getCommandLifecycle(beforeAck.id, 7)?.status).toBe('acknowledged');
+    expect(lifecycle.getCommandLifecycleHold(beforeAck)).toBe(annotation);
+
+    const afterAck = intents.dispatchRadioIntent({ id: 'ack-first', name: 'set_mode', params: { mode: 'CW' } });
+    harness.delivery?.({ commandId: afterAck.id, kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
+    harness.lifecycle?.({ ...held, commandId: afterAck.id });
+    expect(lifecycle.getCommandLifecycle(afterAck.id, 7)?.status).toBe('acknowledged');
+    expect(lifecycle.getCommandLifecycleHold(afterAck)?.commandId).toBe(afterAck.id);
+
+    const ignored = intents.dispatchRadioIntent({ id: 'ignored', name: 'set_freq', params: { freq: 2 } });
+    for (const event of [
+      { ...held, commandId: 'missing' }, { ...held, commandId: ignored.id, originalEpoch: 6 },
+      { ...held, commandId: ignored.id, eventEpoch: 8 },
+    ]) harness.lifecycle?.(event);
+    expect(lifecycle.getCommandLifecycleHold(ignored)).toBeUndefined();
+  });
+
+  it('makes lifecycle terminals authoritative for one resettable five-second window', () => {
+    const record = intents.dispatchRadioIntent({ id: 'terminal', name: 'set_freq', params: { freq: 3 } });
+    harness.lifecycle?.({ commandId: record.id, kind: 'held', originalEpoch: 7, eventEpoch: 7,
+      reason: 'tx_active', expiresAt: 12.5 });
+    harness.delivery?.({ commandId: record.id, kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
+    harness.lifecycle?.({ commandId: record.id, kind: 'failed', originalEpoch: 7, eventEpoch: 7, error: 'blocked' });
+    expect(lifecycle.getCommandLifecycle(record.id, 7)).toMatchObject({ status: 'failed', error: 'blocked' });
+    expect(lifecycle.getCommandLifecycleHold(record)).toBeUndefined();
+    vi.advanceTimersByTime(4_999);
+    expect(lifecycle.getCommandLifecycle(record.id, 7)).toBeDefined();
+    harness.lifecycle?.({ commandId: record.id, kind: 'timed-out', originalEpoch: 7, eventEpoch: 7, error: 'expired' });
+    vi.advanceTimersByTime(1);
+    expect(lifecycle.getCommandLifecycle(record.id, 7)?.status).toBe('timed-out');
+    harness.delivery?.({ commandId: record.id, kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
+    lifecycle.cancelPendingCommands(7); lifecycle.confirmCommand(record.id, 7, 7);
+    expect(lifecycle.getCommandLifecycle(record.id, 7)?.status).toBe('timed-out');
+    vi.advanceTimersByTime(4_998);
+    expect(lifecycle.getCommandLifecycle(record.id, 7)).toBeDefined();
+    vi.advanceTimersByTime(1);
+    expect(lifecycle.getCommandLifecycle(record.id, 7)).toBeUndefined();
+
+    const superseded = intents.dispatchRadioIntent({ id: 'server-superseded', name: 'set_filter', params: { filter: 2 } });
+    harness.lifecycle?.({ commandId: superseded.id, kind: 'superseded', originalEpoch: 7, eventEpoch: 7 });
+    expect(lifecycle.getCommandLifecycle(superseded.id, 7)?.status).toBe('cancelled');
+    expect(lifecycle.isCommandLifecycleSuperseded(superseded)).toBe(true);
+    vi.advanceTimersByTime(5_000);
+    expect(lifecycle.getCommandLifecycle(superseded.id, 7)).toBeUndefined();
+  });
+
+  it('clears held annotations on cancellation, confirmation, timeout, retirement, and reset', () => {
+    const cancel = intents.dispatchRadioIntent({ id: 'held-cancel', name: 'set_filter', params: { filter: 1 } });
+    const emitHeld = (commandId: string) => harness.lifecycle?.({ commandId, kind: 'held',
+      originalEpoch: 7, eventEpoch: 7, reason: 'tx_active', expiresAt: 12.5 });
+    emitHeld(cancel.id); harness.transition?.({ state: 'disconnected', epoch: 7 });
+    expect(lifecycle.getCommandLifecycleHold(cancel)).toBeUndefined();
+
+    const confirmed = intents.dispatchRadioIntent({ id: 'held-confirm', name: 'set_filter', params: { filter: 2 } });
+    harness.delivery?.({ commandId: confirmed.id, kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
+    emitHeld(confirmed.id); lifecycle.confirmCommand(confirmed.id, 7, 7);
+    expect(lifecycle.getCommandLifecycle(confirmed.id, 7)?.status).toBe('confirmed');
+    expect(lifecycle.getCommandLifecycleHold(confirmed)).toBeUndefined();
+
+    const retired = intents.dispatchRadioIntent({ id: 'held-retire', name: 'set_freq', params: { freq: 4 } });
+    emitHeld(retired.id); vi.advanceTimersByTime(5_000);
+    expect(lifecycle.getCommandLifecycle(retired.id, 7)?.status).toBe('timed-out');
+    expect(lifecycle.getCommandLifecycleHold(retired)).toBeUndefined();
+    vi.advanceTimersByTime(5_000);
+    expect(lifecycle.getCommandLifecycle(retired.id, 7)).toBeUndefined();
+    expect(lifecycle.getCommandLifecycleHold(intents.dispatchRadioIntent({ id: retired.id,
+      name: 'set_freq', params: { freq: 5 } }))).toBeUndefined();
+    emitHeld(retired.id); lifecycle.resetCommandLifecycle();
+    expect(lifecycle.getCommandLifecycleHold(retired)).toBeUndefined();
   });
 
   it('isolates error, timeout, cancellation, and stale-session results', () => {
@@ -146,6 +235,7 @@ describe('typed non-PTT radio intents', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/radio-intents.ts'), 'utf8');
     expect(source).not.toMatch(/from ['"]\$lib\/stores\/radio/);
     expect(source).not.toMatch(/\b(?:patchActiveReceiver|patchRadioState|patchReceiver)\s*\(/);
+    expect(source).not.toMatch(/\bconfirmCommand\s*\(/);
     expect(source).not.toContain('set_keyer_type');
     expect(source).not.toMatch(/['"]ptt(?:_on|_off)?['"]/);
   });

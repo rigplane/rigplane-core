@@ -29,6 +29,15 @@ export interface BeginCommandInput {
   id: string; name: string; params: Readonly<Record<string, unknown>>;
   originalEpoch: number; timeoutMs?: number;
 }
+export interface CommandLifecycleHold {
+  readonly commandId: string; readonly originalEpoch: number; readonly eventEpoch: number;
+  readonly kind: 'held'; readonly reason: 'tx_active'; readonly expiresAt: number;
+}
+export interface CommandLifecycleProjection {
+  readonly commandId: string; readonly originalEpoch: number; readonly eventEpoch: number;
+  readonly kind: 'held' | 'superseded' | 'timed-out' | 'failed';
+  readonly reason?: string; readonly expiresAt?: number; readonly error?: string;
+}
 
 export interface ControlFeedbackScope {
   readonly control: string;
@@ -102,6 +111,7 @@ const MAX_RETAINED_COMMANDS = 100;
 let commands = $state<CommandLifecycle[]>([]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const supersededRecordKeys = new Set<string>();
+const heldAnnotations = new Map<string, Readonly<CommandLifecycleHold>>();
 let stateBackedReconciliationStarted = false;
 const key = (id: string, epoch: number): string => `${epoch}:${id}`;
 
@@ -116,6 +126,11 @@ const commandScopeKey = (command: Pick<CommandLifecycle, 'name' | 'params'>): st
 };
 
 export const isCommandLifecycleSuperseded = (command: CommandLifecycle): boolean => supersededRecordKeys.has(key(command.id, command.originalEpoch));
+export const getCommandLifecycleHold = (command: Pick<CommandLifecycle, 'id' | 'originalEpoch'>): Readonly<CommandLifecycleHold> | undefined =>
+  heldAnnotations.get(key(command.id, command.originalEpoch));
+const clearCommandHold = (command: Pick<CommandLifecycle, 'id' | 'originalEpoch'>): void => {
+  heldAnnotations.delete(key(command.id, command.originalEpoch));
+};
 
 function clearRecordTimer(command: CommandLifecycle): void {
   const recordKey = key(command.id, command.originalEpoch);
@@ -127,6 +142,7 @@ function retireRecord(command: CommandLifecycle): void {
   const index = commands.indexOf(command);
   if (index >= 0) commands.splice(index, 1);
   supersededRecordKeys.delete(key(command.id, command.originalEpoch));
+  clearCommandHold(command);
 }
 function retainTerminalOutcome(command: CommandLifecycle): void {
   clearRecordTimer(command);
@@ -146,6 +162,7 @@ function startLiveDeadline(command: CommandLifecycle): void {
   timers.set(key(command.id, command.originalEpoch), setTimeout(() => {
     const current = getCommandLifecycle(command.id, command.originalEpoch);
     if (!current || (current.status !== 'pending' && current.status !== 'acknowledged')) return;
+    clearCommandHold(current);
     current.status = 'timed-out'; current.updatedAt = Date.now();
     retainTerminalOutcome(current);
   }, command.timeoutMs));
@@ -181,6 +198,7 @@ function transition(
     startLiveDeadline(command);
     if (descriptor !== undefined) startStateBackedReconciliation();
   } else {
+    clearCommandHold(command);
     retainTerminalOutcome(command);
   }
 }
@@ -245,14 +263,40 @@ export const failCommand = (id: string, epoch: number, eventEpoch: number, error
 /** Downstream observation adapters may call this only after qualifying radio truth. */
 export const confirmCommand = (id: string, epoch: number, eventEpoch: number): void =>
   transition(id, epoch, 'confirmed', eventEpoch);
+export function applyCommandLifecycleProjection(event: CommandLifecycleProjection, currentEpoch: number): void {
+  if (event.eventEpoch !== currentEpoch) return;
+  const command = getCommandLifecycle(event.commandId, event.originalEpoch);
+  if (!command || command.status === 'confirmed'
+    || (command.eventEpoch !== undefined && command.eventEpoch !== event.eventEpoch)) return;
+  const recordKey = key(command.id, command.originalEpoch);
+  if (event.kind === 'held') {
+    if ((command.status !== 'pending' && command.status !== 'acknowledged')
+      || event.reason !== 'tx_active' || typeof event.expiresAt !== 'number') return;
+    const held = Object.freeze({ commandId: event.commandId, kind: 'held' as const,
+      originalEpoch: event.originalEpoch, eventEpoch: event.eventEpoch,
+      reason: 'tx_active' as const, expiresAt: event.expiresAt });
+    const existing = heldAnnotations.get(recordKey);
+    if (existing && existing.expiresAt === held.expiresAt && existing.eventEpoch === held.eventEpoch) return;
+    heldAnnotations.set(recordKey, held);
+    return;
+  }
+  clearCommandHold(command); clearRecordTimer(command);
+  command.eventEpoch = event.eventEpoch; command.updatedAt = Date.now();
+  if (event.error === undefined) delete command.error; else command.error = event.error;
+  if (event.kind === 'superseded') {
+    supersededRecordKeys.add(recordKey); command.status = 'cancelled';
+  } else command.status = event.kind;
+  retainTerminalOutcome(command);
+}
 export function cancelPendingCommands(epoch: number, error = 'session-disconnected'): void {
   for (const command of commands) {
     if (command.originalEpoch !== epoch || (command.status !== 'pending' && command.status !== 'acknowledged')) continue;
     command.status = 'cancelled'; command.updatedAt = Date.now(); command.error = error;
+    clearCommandHold(command);
     retainTerminalOutcome(command);
   }
 }
 export function resetCommandLifecycle(): void {
   for (const timer of timers.values()) clearTimeout(timer);
-  timers.clear(); commands = []; supersededRecordKeys.clear();
+  timers.clear(); commands = []; supersededRecordKeys.clear(); heldAnnotations.clear();
 }
