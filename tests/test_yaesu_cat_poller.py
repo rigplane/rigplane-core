@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call as mock_call, patch
 
 import pytest
 
+from rigplane.core.command_service import CommandService
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
     FieldCapability,
@@ -660,6 +661,90 @@ async def test_yaesu_deferred_command_supersedes_without_extending_expiry(
     await _drain_with_ptt(poller, clock, 13.0, False)
     assert isinstance(second.exception(), TimeoutError)
     radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_deferred_command_emits_held_lifecycle_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [10.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    service = CommandService(
+        executor=MagicMock(), state_store=StateStore(), clock=lambda: clock[0]
+    )
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    queue.put_ordered(
+        SetFreq(7_100_000), command_id="held", command_service=service
+    )
+
+    await _drain_with_ptt(poller, clock, 10.0, True)
+    event = service.lifecycle_events()[0]
+    assert (event.command_id, event.state, event.timestamp_monotonic) == (
+        "held",
+        "queued",
+        10.0,
+    )
+    assert event.details == {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": 13.0,
+    }
+
+    await _drain_with_ptt(poller, clock, 10.5, True)
+    await _drain_with_ptt(poller, clock, 10.75, False)
+    await _drain_with_ptt(poller, clock, 11.0, None)
+    assert service.lifecycle_events() == (event,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replacement_at", "terminal_state", "replacement_expiry"),
+    ((22.5, "superseded", 23.0), (23.0, "timed_out", 26.0)),
+)
+async def test_yaesu_deferred_replacement_lifecycle_preserves_deadline_truth(
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_at: float,
+    terminal_state: str,
+    replacement_expiry: float,
+) -> None:
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    service = CommandService(
+        executor=MagicMock(), state_store=StateStore(), clock=lambda: clock[0]
+    )
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    first = asyncio.get_running_loop().create_future()
+    queue.put_ordered(
+        SetFreq(7_100_000),
+        future=first,
+        command_id="first",
+        command_service=service,
+    )
+    await _drain_with_ptt(poller, clock, 20.0, True)
+    queue.put_ordered(
+        SetFreq(7_200_000), command_id="replacement", command_service=service
+    )
+    await _drain_with_ptt(poller, clock, replacement_at, True)
+
+    events = service.lifecycle_events()
+    assert [(event.command_id, event.state) for event in events] == [
+        ("first", "queued"),
+        ("first", terminal_state),
+        ("replacement", "queued"),
+    ]
+    assert events[-1].timestamp_monotonic == replacement_at
+    assert events[-1].details == {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": replacement_expiry,
+    }
+    assert first.exception() is not None
 
 
 @pytest.mark.asyncio
