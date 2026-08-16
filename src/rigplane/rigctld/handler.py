@@ -37,10 +37,16 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import FreshnessState, StateStore, StateSnapshot
+from ..core.tx_interlock_contract import (
+    TxInterlockCommandFamily,
+    TxInterlockDisposition,
+)
 from ..core.tx_safety import TxOutcome, TxReleaseReason
 from ..exceptions import ConnectionError, TimeoutError as RigplaneTimeoutError
 from ..radio_protocol import StateModelCapable, StateModelService, StateStoreCapable
 from ..radio_state import RadioState, ReceiverState
+from ..runtime import _poller_types as tx_commands  # noqa: TID251
+from ..runtime import tx_interlock
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..types import Mode
 from .contract import (  # noqa: TID251
@@ -230,6 +236,80 @@ def _passband_to_filter(passband_hz: int) -> int | None:
 _TX_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})
 
 
+@dataclass(frozen=True, slots=True)
+class _RigctldTxPolicyClassification:
+    command: object
+    disposition: TxInterlockDisposition
+    family: TxInterlockCommandFamily | None
+
+
+_LEVEL_POLICY_COMMANDS: dict[str, str] = dict(
+    zip(
+        "RFPOWER AF RF SQL NR NB COMP MICGAIN MONITOR_GAIN KEYSPD CWPITCH PREAMP ATT NOTCHF IFSHIFT".split(),
+        "SetPower SetAfLevel SetRfGain SetSquelch SetNRLevel SetNBLevel SetCompressorLevel SetMicGain SetMonitorGain SetKeySpeed SetCwPitch SetPreamp SetAttenuator SetNotchFilter SetIfShift".split(),
+        strict=True,
+    )
+)
+_FUNC_POLICY_COMMANDS: dict[str, str] = dict(
+    zip(
+        "NB NR COMP VOX TONE TSQL ANF LOCK MON APF AGC".split(),
+        "SetNB SetNR SetCompressor SetVox SetRepeaterTone SetRepeaterTsql SetAutoNotch SetDialLock SetMonitor SetAudioPeakFilter SetAgc".split(),
+        strict=True,
+    )
+)
+
+
+def _classify_rigctld_tx_intent(
+    intent: CommandIntent,
+) -> _RigctldTxPolicyClassification:
+    """Map one material rigctld intent into the canonical typed TX policy."""
+    params = intent.params
+    command: tx_commands.Command
+    if intent.name == "set_freq":
+        command = tx_commands.SetFreq(int(params["freq_hz"]))
+    elif intent.name == "set_mode":
+        command = tx_commands.SetMode(str(params["mode"]))
+    elif intent.name == "set_ptt":
+        command = tx_commands.PttOn() if bool(params["ptt"]) else tx_commands.PttOff()
+    elif intent.name in ("set_rit", "set_xit"):
+        command = tx_commands.SetRitFrequency(int(params["hz"]))
+    elif intent.name == "set_vfo":
+        command = tx_commands.SelectVfo(str(params["vfo"]))
+    elif intent.name == "set_split_vfo":
+        command = tx_commands.SetSplit(bool(params["on"]))
+    elif intent.name == "send_raw":
+        command = tx_commands.SendCiv(command=0)
+    elif intent.name == "set_level":
+        level = str(params["level"]).upper()
+        command_type = _LEVEL_POLICY_COMMANDS.get(level)
+        if command_type is None:
+            raise ValueError(f"unmapped rigctld TX policy intent: set_level {level!r}")
+        command = getattr(tx_commands, command_type)(params["value"])
+    elif intent.name == "set_func":
+        func = str(params["func"]).upper()
+        on = bool(params["on"])
+        if func == "TUNER":
+            command = tx_commands.SetTunerStatus(1 if on else 0)
+        elif func == "SPLIT":
+            command = tx_commands.SetSplit(on)
+        else:
+            command_type = _FUNC_POLICY_COMMANDS.get(func)
+            if command_type is None:
+                raise ValueError(
+                    f"unmapped rigctld TX policy intent: set_func {func!r}"
+                )
+            command = getattr(tx_commands, command_type)(on)
+    else:
+        raise ValueError(f"unmapped rigctld TX policy intent: {intent.name!r}")
+
+    metadata = tx_interlock.get_tx_interlock_command_family_metadata(command)
+    return _RigctldTxPolicyClassification(
+        command=command,
+        disposition=tx_interlock.classify_tx_interlock(command),
+        family=None if metadata is None else metadata.family,
+    )
+
+
 def _ok() -> RigctldResponse:
     return RigctldResponse(error=HamlibError.OK)
 
@@ -335,6 +415,9 @@ class _RigctldCommandExecutor:
     handler: "RigctldHandler"
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        # B4-a establishes the exhaustive policy seam only. B4-b consumes this
+        # result to enforce BLOCK/DEFER; wire behavior remains unchanged here.
+        _classify_rigctld_tx_intent(intent)
         params = intent.params
         if intent.name == "set_freq":
             await self.handler._radio.set_freq(
