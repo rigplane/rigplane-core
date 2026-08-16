@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+// @ts-nocheck -- parser AST nodes and lexical scope records are intentionally version-agnostic.
 /** AST-backed shrink-only inventory for radio range-control feedback debt (MOR-1713). */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'svelte/compiler';
-import { collectObjectFlow, unwrapExpression } from './control-feedback-debt-ast.mjs';
+import { boundNames, collectObjectFlow, unwrapExpression } from './control-feedback-debt-ast.mjs';
 import { CONTROL_FEEDBACK_DEBT_BASELINE } from './control-feedback-debt-baseline.mjs';
 
 const UNKNOWN = Symbol('dynamic');
@@ -23,14 +24,6 @@ const FROZEN_RADIO_DEBT = new Set(CONTROL_FEEDBACK_DEBT_BASELINE);
 /** @param {string} key */
 const keyOf = (key) => key === 'feedbackPolicy' ? 'feedback-policy' : key;
 
-/** @param {any} node @returns {any} */
-const unwrap = (node) => unwrapExpression(node).node;
-
-/** @param {any} ast @returns {any[]} */
-function programs(ast) {
-  return [ast.instance?.content, ast.module?.content].filter(Boolean);
-}
-
 /** @param {string} source @param {string} file */
 function valueControlImport(source, file) {
   const clean = source.split(/[?#]/, 1)[0];
@@ -42,15 +35,14 @@ function valueControlImport(source, file) {
   return stem === VALUE_CONTROL_DIR || stem === `${VALUE_CONTROL_DIR}/index` ? 'barrel' : null;
 }
 
-/** @param {any} ast @param {string} file */
 function bindingsAndImports(ast, file) {
-  const bindings = new Map();
-  /** @type {Map<string, any[]>} */ const aliases = new Map();
-  /** @type {Map<string, any[]>} */ const objectFlows = new Map();
-  const valueControls = new Set();
-  /** @param {string} name @param {any} value */
-  const addAlias = (name, value) => aliases.set(name, [...(aliases.get(name) ?? []), value]);
-  /** @param {any} node */
+  const makeScope = (outer) => ({
+    bindings: new Map(outer?.bindings), aliases: new Map(outer?.aliases),
+    objectFlows: new Map(outer?.objectFlows), valueControls: new Set(outer?.valueControls),
+  });
+  let scope = makeScope();
+  const addAlias = (name, value) => scope.aliases.set(name, [...(scope.aliases.get(name) ?? []), { node: value, scope }]);
+  const shadow = (name) => { scope.aliases.delete(name); scope.bindings.delete(name); scope.objectFlows.delete(name); scope.valueControls.delete(name); };
   const collectAssignments = (node) => {
     if (!node || typeof node !== 'object') return;
     if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier') addAlias(node.left.name, node.right);
@@ -59,76 +51,79 @@ function bindingsAndImports(ast, file) {
       else if (value && typeof value === 'object') collectAssignments(value);
     }
   };
-  for (const program of programs(ast)) {
-    for (const [name, events] of collectObjectFlow(program)) objectFlows.set(name, [...(objectFlows.get(name) ?? []), ...events]);
+  for (const program of [ast.module?.content, ast.instance?.content].filter(Boolean)) {
+    if (program === ast.instance?.content && ast.module?.content) scope = makeScope(scope);
     for (const statement of program.body) {
+      if (statement.id?.type === 'Identifier') shadow(statement.id.name);
       if (statement.type === 'ImportDeclaration') {
         const source = String(statement.source.value);
         const target = valueControlImport(source, file);
         for (const specifier of statement.specifiers) {
+          shadow(specifier.local.name);
           const imported = specifier.imported?.name ?? specifier.imported?.value;
           if ((target === 'direct' && specifier.type === 'ImportDefaultSpecifier') || (target === 'barrel' && imported === 'ValueControl')) {
-            valueControls.add(specifier.local.name);
+            scope.valueControls.add(specifier.local.name);
           }
         }
       }
       if (statement.type === 'VariableDeclaration') {
         for (const declaration of statement.declarations) {
+          for (const name of boundNames(declaration.id)) shadow(name);
           if (declaration.id.type !== 'Identifier' || !declaration.init) continue;
           addAlias(declaration.id.name, declaration.init);
-          if (statement.kind === 'const') bindings.set(declaration.id.name, declaration.init);
+          if (statement.kind === 'const') scope.bindings.set(declaration.id.name, { node: declaration.init, scope });
         }
       }
     }
+    for (const [name, events] of collectObjectFlow(program)) scope.objectFlows.set(name, events);
     collectAssignments(program);
   }
-  return { aliases, bindings, objectFlows, valueControls };
+  return scope;
 }
 
-/** @param {any} node @param {Map<string, any>} bindings @param {Set<string>} [seen] @returns {any} */
-function staticValue(node, bindings, seen = new Set()) {
-  node = unwrap(node);
+/** @param {any} node @param {any} scope @param {Set<any>} [seen] @returns {any} */
+function staticValue(node, scope, seen = new Set()) {
+  node = unwrapExpression(node).node;
   if (!node) return UNKNOWN;
   if (node.type === 'Literal') return node.value;
   if (node.type === 'TemplateLiteral' && node.expressions.length === 0) return node.quasis[0].value.cooked;
-  if (node.type === 'Identifier' && bindings.has(node.name) && !seen.has(node.name)) {
-    return staticValue(bindings.get(node.name), bindings, new Set([...seen, node.name]));
+  const binding = node.type === 'Identifier' ? scope.bindings.get(node.name) : null;
+  if (binding && !seen.has(binding)) {
+    return staticValue(binding.node, binding.scope, new Set([...seen, binding]));
   }
   if (node.type === 'ConditionalExpression') {
-    const yes = staticValue(node.consequent, bindings, seen);
-    const no = staticValue(node.alternate, bindings, seen);
+    const yes = staticValue(node.consequent, scope, seen);
+    const no = staticValue(node.alternate, scope, seen);
     return yes !== UNKNOWN && Object.is(yes, no) ? yes : UNKNOWN;
   }
   return UNKNOWN;
 }
 
-/** @param {any} node @param {Map<string, any[]>} aliases @param {Set<string>} seeds @param {Set<string>} [seen] @returns {boolean} */
-function mayBeValueControl(node, aliases, seeds, seen = new Set()) {
-  node = unwrap(node);
+/** @param {any} node @param {any} scope @param {Set<any>} [seen] @returns {boolean} */
+function mayBeValueControl(node, scope, seen = new Set()) {
+  node = unwrapExpression(node).node;
   if (!node) return false;
   if (node.type === 'Identifier') {
-    if (seeds.has(node.name)) return true;
-    if (seen.has(node.name) || !aliases.has(node.name)) return false;
-    return (aliases.get(node.name) ?? []).some((value) => mayBeValueControl(value, aliases, seeds, new Set([...seen, node.name])));
+    if (scope.valueControls.has(node.name)) return true;
+    return (scope.aliases.get(node.name) ?? []).some((binding) => !seen.has(binding)
+      && mayBeValueControl(binding.node, binding.scope, new Set([...seen, binding])));
   }
   if (node.type === 'ConditionalExpression') {
-    return mayBeValueControl(node.consequent, aliases, seeds, seen)
-      || mayBeValueControl(node.alternate, aliases, seeds, seen);
+    return mayBeValueControl(node.consequent, scope, seen)
+      || mayBeValueControl(node.alternate, scope, seen);
   }
   if (node.type === 'LogicalExpression' || node.type === 'SequenceExpression') {
-    return Object.values(node).some((value) => Boolean(value?.type && mayBeValueControl(value, aliases, seeds, seen)));
+    return Object.values(node).some((value) => Boolean(value?.type && mayBeValueControl(value, scope, seen)));
   }
   return false;
 }
 
-/** @param {any} node @param {string} source */
 function expressionText(node, source) {
-  node = unwrap(node);
+  node = unwrapExpression(node).node;
   return node?.start === undefined ? 'dynamic' : source.slice(node.start, node.end).replace(/\s+/g, ' ').trim();
 }
 
-/** @param {any} attribute @param {Map<string, any>} bindings @param {string} source @returns {Entry} */
-function attributeEntry(attribute, bindings, source) {
+function attributeEntry(attribute, scope, source) {
   if (attribute.value === true) return { value: true, text: 'true' };
   const value = attribute.value;
   if (Array.isArray(value)) {
@@ -136,54 +131,53 @@ function attributeEntry(attribute, bindings, source) {
     return { value: UNKNOWN, text: source.slice(attribute.start, attribute.end) };
   }
   const expression = value?.type === 'ExpressionTag' ? value.expression : value;
-  return { value: staticValue(expression, bindings), text: expressionText(expression, source) };
+  return { value: staticValue(expression, scope), text: expressionText(expression, source) };
 }
 
-/** @param {Map<string, Entry>} result @param {any} rawKey @param {any} value @param {Map<string, any>} bindings @param {string} source */
-function setEntry(result, rawKey, value, bindings, source) {
+function setEntry(result, rawKey, value, scope, source) {
   if (rawKey === UNKNOWN || typeof rawKey !== 'string') {
     for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
     return;
   }
   const key = keyOf(rawKey);
   if (RELEVANT.includes(key)) result.set(key, value ? {
-    value: staticValue(value, bindings), text: expressionText(value, source),
+    value: staticValue(value, scope), text: expressionText(value, source),
   } : { value: UNKNOWN, text: 'dynamic' });
 }
 
-/** @param {any} node @param {Map<string, any>} bindings @param {Map<string, any[]>} objectFlows @param {string} source @param {Set<string>} [seen] @returns {Map<string, Entry>|null} */
-function objectEntries(node, bindings, objectFlows, source, seen = new Set()) {
-  node = unwrap(node);
-  if (node?.type === 'Identifier' && bindings.has(node.name) && !seen.has(node.name)) {
-    const result = objectEntries(bindings.get(node.name), bindings, objectFlows, source, new Set([...seen, node.name]));
-    if (result) for (const event of objectFlows.get(node.name) ?? []) setEntry(result, event.poison ? UNKNOWN : event.key, event.value, bindings, source);
+/** @param {any} node @param {any} scope @param {string} source @param {Set<any>} [seen] @returns {Map<string, Entry>|null} */
+function objectEntries(node, scope, source, seen = new Set()) {
+  node = unwrapExpression(node).node;
+  const binding = node?.type === 'Identifier' ? scope.bindings.get(node.name) : null;
+  if (binding && !seen.has(binding)) {
+    const result = objectEntries(binding.node, binding.scope, source, new Set([...seen, binding]));
+    if (result) for (const event of binding.scope.objectFlows.get(node.name) ?? []) setEntry(result, event.poison ? UNKNOWN : event.key, event.value, binding.scope, source);
     return result;
   }
   if (node?.type !== 'ObjectExpression') return null;
   const result = new Map();
   for (const property of node.properties) {
     if (property.type === 'SpreadElement') {
-      const nested = objectEntries(property.argument, bindings, objectFlows, source, seen);
+      const nested = objectEntries(property.argument, scope, source, seen);
       if (!nested) for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
       else for (const [key, value] of nested) result.set(key, value);
       continue;
     }
     if (property.type !== 'Property') continue;
-    setEntry(result, property.computed ? staticValue(property.key, bindings) : property.key.name ?? property.key.value, property.value, bindings, source);
+    setEntry(result, property.computed ? staticValue(property.key, scope) : property.key.name ?? property.key.value, property.value, scope, source);
   }
   return result;
 }
 
-/** @param {any} node @param {Map<string, any>} bindings @param {Map<string, any[]>} objectFlows @param {string} source @returns {Map<string, Entry>} */
-function effectiveAttributes(node, bindings, objectFlows, source) {
+function effectiveAttributes(node, scope, source) {
   const result = new Map();
   for (const attribute of node.attributes ?? []) {
     if (attribute.type === 'SpreadAttribute') {
-      const entries = objectEntries(attribute.expression, bindings, objectFlows, source);
+      const entries = objectEntries(attribute.expression, scope, source);
       if (!entries) for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
       else for (const [key, value] of entries) result.set(key, value);
     } else if (attribute.type === 'Attribute' && RELEVANT.includes(keyOf(attribute.name))) {
-      result.set(keyOf(attribute.name), attributeEntry(attribute, bindings, source));
+      result.set(keyOf(attribute.name), attributeEntry(attribute, scope, source));
     }
   }
   return result;
@@ -211,21 +205,21 @@ function isLocalGain(file, kind, attributes) {
 /** @param {string} file @param {string} source @returns {Site[]} */
 export function auditSvelteSource(file, source) {
   const ast = parse(source, { modern: true, filename: file });
-  const { aliases, bindings, objectFlows, valueControls } = bindingsAndImports(ast, file);
+  const scope = bindingsAndImports(ast, file);
   /** @type {Site[]} */
   const sites = [];
   /** @param {any} node */
   const visit = (node) => {
     if (!node || typeof node !== 'object') return;
     let kind = null;
-    if (node.type === 'Component' && mayBeValueControl({ type: 'Identifier', name: node.name }, aliases, valueControls)) kind = 'ValueControl';
+    if (node.type === 'Component' && mayBeValueControl({ type: 'Identifier', name: node.name }, scope)) kind = 'ValueControl';
     if (node.type === 'RegularElement' && node.name === 'input') kind = 'input';
     if (node.type === 'SvelteElement') {
-      const tag = staticValue(node.tag, bindings);
+      const tag = staticValue(node.tag, scope);
       if (tag === 'input' || tag === UNKNOWN) kind = 'input';
     }
     if (kind) {
-      const attributes = effectiveAttributes(node, bindings, objectFlows, source);
+      const attributes = effectiveAttributes(node, scope, source);
       const type = attributes.get('type')?.value;
       if (kind === 'ValueControl' || type === 'range' || type === UNKNOWN) {
         const label = attributes.get(kind === 'input' ? 'aria-label' : 'label');

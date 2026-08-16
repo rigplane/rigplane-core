@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { auditSvelteSource, assertShrinkOnly, scanRepository } from '../../scripts/control-feedback-debt-inventory.mjs';
 
 const wrap = (markup: string, script = '') => `<script>${script}</script>${markup}`;
-const wrapTs = (markup: string, script: string) => `<script lang="ts">${script}</script>${markup}`;
+const scoped = (moduleScript: string, instanceScript: string, markup = '<input {...props}/>') => `<script module>${moduleScript}</script><script>${instanceScript}</script>${markup}`;
 const debt = (source: string, file = 'src/semantic/Fixture.svelte') =>
   auditSvelteSource(file, source).filter((site: { policy: string }) => site.policy === 'radio-backed');
 
@@ -29,6 +29,20 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
     expect(debt(wrap('<Wrong label="fake"/>', "import { ValueControl as Wrong } from '../controls/not-value-control/index.js';"))).toEqual([]);
     expect(debt(wrap('<Wrong label="fake"/>', "import Wrong from '../other/ValueControl.svelte';"))).toEqual([]);
     expect(debt(wrap('<Wrong label="fake"/>', "import { ValueControl as Wrong } from '../other/value-control/index.js';"))).toEqual([]);
+  });
+
+  it('keeps module and instance bindings, object flow, and imports lexically isolated', () => {
+    expect(debt(scoped("const props={type:'button'}", "const props={type:'range'}"))).toHaveLength(1);
+    expect(debt(scoped("const props={type:'range'}", "const props={type:'button'}"))).toEqual([]);
+    expect(debt(scoped("const props={type:'button'}; props.type='range'", "const props={type:'button'}"))).toEqual([]);
+    expect(debt(scoped("const props={type:'button'}", "const props={type:'button'}; props.type='range'"))).toHaveLength(1);
+    const canonical = "import VC from '../components-v2/controls/value-control/ValueControl.svelte'";
+    const namesake = "import VC from '../other/ValueControl.svelte'";
+    const imported = [
+      debt(scoped(canonical, namesake, '<VC label="shadowed"/>')).length,
+      debt(scoped(namesake, canonical, '<VC label="instance"/>')).length,
+    ];
+    expect(imported).toEqual([0, 1]);
   });
 
   it('conservatively discovers literal, expression, dynamic, and svelte:element ranges', () => {
@@ -80,7 +94,7 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
   });
 
   it('fails closed for TypeScript-wrapped mutation receivers and call escapes', () => {
-    const typed = (script: string) => debt(wrapTs('<input {...props} value={a}/>', `const props={type:'button'}, alias=props; ${script}; let a=0;`));
+    const typed = (script: string) => debt(`<script lang="ts">const props={type:'button'}, alias=props; ${script}; let a=0;</script><input {...props} value={a}/>`);
     expect(typed(`(props as Record<string, unknown>).type='range'`).map((site: { value: string }) => site.value)).toEqual(['a']);
     expect(() => typed(`mutate(alias as Record<string, unknown>)`)).toThrow(/static feedback policy/);
     expect(() => typed(`mutate(alias!)`)).toThrow(/static feedback policy/);
