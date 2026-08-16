@@ -68,11 +68,11 @@ _ACTIVE_RECEIVER_PATH = FieldPath.global_("slow_state", "active")
 
 
 def _exact_readback_value_matches(observed: Any, expected: Any) -> bool:
-    if type(observed) not in (bool, int, float, str) or type(observed) is not type(
-        expected
-    ):
+    kind = type(observed)
+    if kind not in (bool, int, float, str) or kind is not type(expected):
         return False
-    return bool(observed == expected)
+    finite = kind is not float or observed - observed == expected - expected == 0
+    return finite and bool(observed == expected)
 
 
 class YaesuCatPoller:

@@ -2260,8 +2260,8 @@ async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback
     truth_trap = MagicMock(**{"__bool__.side_effect": RuntimeError("truthiness trap")})
     untrusted = MagicMock()
     untrusted.__eq__.side_effect = (RuntimeError("equality trap"), object(), truth_trap)
-    for _ in range(3):
-        candidate = replace(observed, value=untrusted)
+    for value in [untrusted] * 3 + [float("nan"), float("inf"), float("-inf")]:
+        candidate = replace(observed, value=value)
         guarded = poller._annotate_yaesu_readbacks((candidate,))[0]  # noqa: SLF001
         accept((guarded,))
     matched = poller._annotate_yaesu_readbacks(  # noqa: SLF001
