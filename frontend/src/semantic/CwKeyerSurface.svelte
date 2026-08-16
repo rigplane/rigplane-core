@@ -128,6 +128,7 @@
     type ControlFeedbackPresentation,
     type ControlFeedbackPresentationInput,
     type ControlFeedbackPresentationState,
+    type PresentationPhase,
   } from '../primitives/control-feedback/control-feedback-presentation';
   import type { RadioViewModel } from './radio-view-model';
 
@@ -169,15 +170,54 @@
   function setLevel(field: CwLevelField, value: number): void {
     if (cw && usable(cw[field])) onLevelChange?.(field, value);
   }
+  const BUSY_BREAK_IN_DELAY_PHASES: ReadonlySet<PresentationPhase> = new Set([
+    'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
+  ]);
+  const TERMINAL_BREAK_IN_DELAY_PHASES: ReadonlySet<PresentationPhase> = new Set([
+    'confirmed', 'failed', 'timed-out', 'cancelled', 'superseded',
+  ]);
+  const BREAK_IN_DELAY_PHASES: ReadonlySet<PresentationPhase> = new Set([
+    'unavailable', 'idle', ...BUSY_BREAK_IN_DELAY_PHASES, ...TERMINAL_BREAK_IN_DELAY_PHASES,
+  ]);
+  const unavailableFeedback: Readonly<ControlFeedbackPresentationInput<number>> = Object.freeze({
+    confirmed: null, target: null, requestedTarget: null, phase: 'unavailable',
+    transitionId: null, outcome: null,
+  });
+  const breakInDelayDomain = CW_LEVELS.find(([field]) => field === 'breakInDelay')!;
+  const validLevel = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value)
+      && value >= breakInDelayDomain[2] && value <= breakInDelayDomain[3]
+      && (value - breakInDelayDomain[2]) % breakInDelayDomain[4] === 0;
+  function validFeedback(value: Readonly<ControlFeedbackPresentationInput<number>>): boolean {
+    const { confirmed, target, requestedTarget, phase, transitionId, outcome } = value;
+    if (!BREAK_IN_DELAY_PHASES.has(phase)) return false;
+    if (phase === 'unavailable') {
+      return confirmed === null && target === null && requestedTarget === null && outcome === null;
+    }
+    if (!validLevel(confirmed) || (target !== null && !validLevel(target))
+      || (requestedTarget !== null && !validLevel(requestedTarget))) return false;
+    if (phase === 'idle') return target === null && requestedTarget === null && outcome === null;
+    if (BUSY_BREAK_IN_DELAY_PHASES.has(phase)) {
+      return target !== null && requestedTarget !== null && outcome === null
+        && typeof transitionId === 'string' && transitionId.length > 0;
+    }
+    return target === null && requestedTarget !== null && outcome?.phase === phase
+      && typeof transitionId === 'string' && transitionId.length > 0;
+  }
   let effectiveBreakInDelayFeedback = $derived.by<Readonly<ControlFeedbackPresentationInput<number>>>(() => {
-    if (breakInDelayFeedback !== undefined) return breakInDelayFeedback;
-    const field = cw?.breakInDelay;
-    const confirmed = field?.reading.status === 'known' ? field.reading.value : null;
-    const phase = field !== undefined && usable(field) ? 'idle' : 'unavailable';
-    return {
-      confirmed, target: null, requestedTarget: null, phase,
-      transitionId: null, outcome: null,
-    };
+    let candidate: Readonly<ControlFeedbackPresentationInput<number>>;
+    if (breakInDelayFeedback !== undefined) candidate = breakInDelayFeedback;
+    else {
+      const field = cw?.breakInDelay;
+      const confirmed = field?.reading.status === 'known' ? field.reading.value : null;
+      const phase = field !== undefined && usable(field) ? 'idle' : 'unavailable';
+      candidate = {
+        confirmed, target: null, requestedTarget: null, phase,
+        transitionId: null, outcome: null,
+      };
+    }
+    try { return validFeedback(candidate) ? candidate : unavailableFeedback; }
+    catch { return unavailableFeedback; }
   });
   let hasBreakInDelayFeedback = $derived(breakInDelayFeedback !== undefined);
   let breakInDelayPresentationMemory: Readonly<{
@@ -197,9 +237,6 @@
     return Object.freeze({ ...next, announcement });
   });
 
-  const BUSY_BREAK_IN_DELAY_PHASES = new Set([
-    'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
-  ]);
   const INTEGRATED_RANGE_POLICY = { 'feedback-policy': 'feedback-integrated' } as const;
   const RADIO_BACKED_RANGE_POLICY = { 'feedback-policy': 'radio-backed' } as const;
   let breakInDelayBusy = $derived(BUSY_BREAK_IN_DELAY_PHASES.has(effectiveBreakInDelayFeedback.phase));
@@ -207,18 +244,26 @@
     cw !== undefined && usable(cw.breakInDelay)
       && effectiveBreakInDelayFeedback.phase !== 'unavailable',
   );
+  let breakInDelayAuthority = $derived(JSON.stringify([
+    effectiveBreakInDelayFeedback.transitionId, effectiveBreakInDelayFeedback.phase,
+    effectiveBreakInDelayFeedback.confirmed, effectiveBreakInDelayFeedback.target,
+    effectiveBreakInDelayFeedback.requestedTarget, effectiveBreakInDelayFeedback.outcome?.phase ?? null,
+  ]));
   let breakInDelayDraft: number | null = $state(null);
+  let breakInDelayDraftAuthority: string | null = $state(null);
+  let activeBreakInDelayDraft = $derived(
+    breakInDelayDraftAuthority === breakInDelayAuthority ? breakInDelayDraft : null,
+  );
   let breakInDelayDisplayed = $derived(
-    breakInDelayDraft
+    activeBreakInDelayDraft
       ?? (breakInDelayBusy
         ? (effectiveBreakInDelayFeedback.target
           ?? effectiveBreakInDelayFeedback.requestedTarget
           ?? effectiveBreakInDelayFeedback.confirmed)
-        : effectiveBreakInDelayFeedback.confirmed)
-      ?? 0,
+        : effectiveBreakInDelayFeedback.confirmed),
   );
   let breakInDelayPhaseLabel = $derived(
-    breakInDelayDraft !== null
+    activeBreakInDelayDraft !== null
       ? 'draft'
       : effectiveBreakInDelayFeedback.phase.replaceAll('-', ' '),
   );
@@ -227,8 +272,8 @@
     if (effectiveBreakInDelayFeedback.phase === 'unavailable' || confirmed === null) {
       return 'Break-in delay unavailable';
     }
-    if (breakInDelayDraft !== null) {
-      return `Draft ${breakInDelayDraft}; last confirmed ${confirmed}`;
+    if (activeBreakInDelayDraft !== null) {
+      return `Draft ${activeBreakInDelayDraft}; last confirmed ${confirmed}`;
     }
     if (breakInDelayBusy) {
       return `Requested ${breakInDelayDisplayed}; last confirmed ${confirmed}`;
@@ -247,7 +292,10 @@
   function noteBreakInDelayInput(target: HTMLInputElement): void {
     breakInDelayCancelled = false;
     const candidate = target.valueAsNumber;
-    if (breakInDelayEditable && Number.isSafeInteger(candidate)) breakInDelayDraft = candidate;
+    if (breakInDelayEditable && validLevel(candidate)) {
+      breakInDelayDraft = candidate;
+      breakInDelayDraftAuthority = breakInDelayAuthority;
+    }
   }
   function commitBreakInDelay(target: HTMLInputElement): void {
     if (breakInDelayCancelled) {
@@ -255,7 +303,13 @@
       restoreBreakInDelay(target);
       return;
     }
-    const candidate = breakInDelayDraft ?? target.valueAsNumber;
+    if (breakInDelayDraft !== null && breakInDelayDraftAuthority !== breakInDelayAuthority) {
+      breakInDelayDraft = null;
+      breakInDelayDraftAuthority = null;
+      restoreBreakInDelay(target);
+      return;
+    }
+    const candidate = activeBreakInDelayDraft ?? target.valueAsNumber;
     const min = Number(target.min);
     const max = Number(target.max);
     if (Number.isFinite(candidate) && Number.isFinite(min) && Number.isFinite(max)) {
@@ -264,10 +318,12 @@
       }
     }
     breakInDelayDraft = null;
+    breakInDelayDraftAuthority = null;
   }
   function cancelBreakInDelay(target: HTMLInputElement): void {
     breakInDelayCancelled = true;
     breakInDelayDraft = null;
+    breakInDelayDraftAuthority = null;
     restoreBreakInDelay(target);
   }
   function keyBreakInDelay(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {
@@ -332,13 +388,14 @@
           {#if field === 'breakInDelay'}
             <input
               {...INTEGRATED_RANGE_POLICY} type="range" {min} {max} {step}
-              value={breakInDelayDisplayed}
+              value={breakInDelayDisplayed ?? (hasBreakInDelayFeedback ? undefined : min)}
               disabled={hasBreakInDelayFeedback ? !breakInDelayEditable : !usable(f)}
               data-command-phase={hasBreakInDelayFeedback
                 ? breakInDelayPresentation.attributes['data-command-phase'] : undefined}
               aria-busy={hasBreakInDelayFeedback
                 ? breakInDelayPresentation.attributes['aria-busy'] : undefined}
-              aria-valuenow={hasBreakInDelayFeedback ? breakInDelayDisplayed : undefined}
+              aria-valuenow={hasBreakInDelayFeedback && breakInDelayDisplayed !== null
+                ? breakInDelayDisplayed : undefined}
               aria-valuetext={hasBreakInDelayFeedback ? breakInDelayValueText : undefined}
               oninput={(event) => noteBreakInDelayInput(event.currentTarget)}
               onchange={(event) => commitBreakInDelay(event.currentTarget)}
@@ -349,7 +406,8 @@
             <output
               data-testid="cw-keyer-breakInDelay-value"
               data-command-phase={effectiveBreakInDelayFeedback.phase}
-            >{effectiveBreakInDelayFeedback.phase === 'unavailable' ? UNKNOWN_TEXT : breakInDelayDisplayed}
+            >{effectiveBreakInDelayFeedback.phase === 'unavailable'
+              || breakInDelayDisplayed === null ? UNKNOWN_TEXT : breakInDelayDisplayed}
               <span class:command-pending={breakInDelayBusy}>{breakInDelayPhaseLabel}</span>
             </output>
             {#if breakInDelayPresentation.announcement !== null}
