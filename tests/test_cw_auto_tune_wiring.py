@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -20,6 +21,7 @@ from rigplane.radio_state import RadioState, ReceiverState
 from rigplane.web.handlers.control import ControlHandler
 
 _DEFAULT_RADIO = object()
+_UNOBSERVED = object()
 
 
 def _make_handler(
@@ -28,6 +30,8 @@ def _make_handler(
     radio: Any = _DEFAULT_RADIO,
     audio_fft_available: bool = True,
     active_observation: str = "fresh",
+    ptt: object = False,
+    ptt_stale: bool = False,
 ) -> ControlHandler:
     """Build a ControlHandler with a fake server and WebSocket."""
     ws = MagicMock()
@@ -58,6 +62,18 @@ def _make_handler(
             )
         )
         if active_observation == "stale":
+            state_store.mark_stale_due(now=2.0)
+    if ptt is not _UNOBSERVED:
+        state_store.apply(
+            Observation(
+                path=FieldPath.global_("tx_state", "ptt"),
+                value=ptt,
+                source=SourceMetadata(source="state_poller", provider="test"),
+                timestamp_monotonic=1.0,
+                max_age=0.5 if ptt_stale else None,
+            )
+        )
+        if ptt_stale:
             state_store.mark_stale_due(now=2.0)
 
     server = SimpleNamespace(
@@ -180,6 +196,30 @@ class TestCwAutoTuneWiring:
         cmd = q.put.call_args[0][0]
         assert cmd.freq == expected_freq
         assert cmd.receiver == receiver
+
+    @pytest.mark.parametrize(
+        ("ptt", "ptt_stale", "reason"),
+        [
+            (True, False, "RF state is TX"),
+            (_UNOBSERVED, False, "RF state is unknown"),
+            (False, True, "RF state is unknown"),
+            (1, False, "RF state is unknown"),
+        ],
+        ids=("tx", "missing", "stale", "invalid"),
+    )
+    async def test_correction_fails_closed_before_frequency_enqueue(
+        self, ptt: object, ptt_stale: bool, reason: str
+    ) -> None:
+        handler = _make_handler(ptt=ptt, ptt_stale=ptt_stale)
+        with patch("rigplane.cw_auto_tuner.CwAutoTuner") as mock_tuner:
+            mock_tuner.return_value.start_collection.side_effect = lambda callback: (
+                callback(650)
+            )
+
+            with pytest.raises(CommandError, match=reason):
+                await handler._cw_auto_tune()
+
+        handler._server.command_queue.put.assert_not_called()
 
     @pytest.mark.parametrize(
         ("active", "active_observation"),
