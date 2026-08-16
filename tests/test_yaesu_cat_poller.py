@@ -195,6 +195,7 @@ def _real_ftx1_control_path(
         command_queue=queue,
     )
     poller.bind_provider_generation(capture=lambda: store.provider_generation)
+    _set_fresh_ptt_observation(poller, active=False)
     return radio, handler, poller, store, accept
 
 
@@ -495,12 +496,32 @@ def _ptt_observation(
 
 
 def _set_fresh_ptt_observation(poller: YaesuCatPoller, *, active: bool) -> None:
-    poller._ptt_observation = _ptt_observation(  # noqa: SLF001
-        active, observed_at=10.0
+    poller._ptt_observation = replace(  # noqa: SLF001
+        _ptt_observation(active, observed_at=asyncio.get_running_loop().time()),
+        provider_generation=poller._captured_provider_generation(),  # noqa: SLF001
     )
     poller._ptt_connection_generation = (  # noqa: SLF001
         poller._current_tx_target_generation()  # noqa: SLF001
     )
+
+
+async def _drain_with_ptt(
+    poller: YaesuCatPoller,
+    clock: list[float],
+    now: float,
+    active: bool | None,
+) -> None:
+    clock[0] = now
+    if active is None:
+        poller._invalidate_ptt_observation()  # noqa: SLF001
+    else:
+        poller._ptt_observation = _ptt_observation(  # noqa: SLF001
+            active, observed_at=now
+        )
+        poller._ptt_connection_generation = (  # noqa: SLF001
+            poller._current_tx_target_generation()  # noqa: SLF001
+        )
+    await poller._drain_commands()  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -606,6 +627,98 @@ async def test_yaesu_known_rx_preserves_immediate_dispatch(
         NotImplementedError, match="SendCiv unsupported by Yaesu CAT dispatcher"
     ):
         await poller._execute_command(SendCiv(command=0x1C))  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_deferred_command_supersedes_without_extending_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [10.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_freq = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    service = MagicMock()
+    first = asyncio.get_running_loop().create_future()
+    second = asyncio.get_running_loop().create_future()
+    queue.put_ordered(
+        SetFreq(7_100_000),
+        future=first,
+        command_id="first",
+        command_service=service,
+    )
+    await _drain_with_ptt(poller, clock, 10.0, True)
+    assert not first.done()
+    queue.put_ordered(SetFreq(7_200_000), future=second)
+    await _drain_with_ptt(poller, clock, 12.5, True)
+    assert isinstance(first.exception(), CommandError)
+    assert "superseded" in str(first.exception())
+    assert not second.done()
+    assert service.emit_lifecycle.call_args.args[1] == "superseded"
+    await _drain_with_ptt(poller, clock, 13.0, False)
+    assert isinstance(second.exception(), TimeoutError)
+    radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_deferred_release_requires_continuous_fresh_rx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_freq = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetFreq(7_100_000), future=future)
+    await _drain_with_ptt(poller, clock, 20.0, True)
+    await _drain_with_ptt(poller, clock, 20.5, False)
+    await _drain_with_ptt(poller, clock, 21.0, None)
+    await _drain_with_ptt(poller, clock, 21.1, False)
+    await _drain_with_ptt(poller, clock, 22.099, False)
+    assert not future.done()
+    radio.set_freq.assert_not_awaited()
+    await _drain_with_ptt(poller, clock, 22.1, False)
+    await poller._drain_commands()  # noqa: SLF001
+    assert future.result() is None
+    radio.set_freq.assert_awaited_once_with(7_100_000, receiver=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("knownness", ("missing", "stale", "generation_mismatch"))
+async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
+    monkeypatch: pytest.MonkeyPatch,
+    knownness: str,
+) -> None:
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 30.0
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_freq = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    if knownness == "stale":
+        _set_fresh_ptt_observation(poller, active=True)
+        poller._ptt_observation = _ptt_observation(True, observed_at=28.0)  # noqa: SLF001
+    elif knownness == "generation_mismatch":
+        poller.bind_provider_generation(capture=lambda: 2)
+        _set_fresh_ptt_observation(poller, active=True)
+        poller._ptt_observation = replace(  # noqa: SLF001
+            poller._ptt_observation,  # noqa: SLF001
+            timestamp_monotonic=30.0,
+            provider_generation=1,
+        )
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetFreq(7_100_000), future=future)
+    await poller._drain_commands()  # noqa: SLF001
+    error = future.exception()
+    assert isinstance(error, CommandError)
+    assert "unknown" in str(error)
+    radio.set_freq.assert_not_awaited()
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -1839,6 +1952,7 @@ async def test_drain_commands_sets_future_exception_on_execution_failure() -> No
 
     queue = CommandQueue()
     poller = YaesuCatPoller(radio, callback=lambda s: None, command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=False)
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[None] = loop.create_future()
@@ -1908,6 +2022,7 @@ async def test_undeclared_queued_vfo_commands_set_future_exception_before_mutati
     radio.equalize_vfo_ab = AsyncMock()
     queue = CommandQueue()
     poller = YaesuCatPoller(radio, callback=lambda s: None, command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=False)
 
     assert getattr(radio.profile, profile_primitive) is None
     future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
