@@ -1035,8 +1035,7 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
     )
     future = asyncio.get_running_loop().create_future()
     service = MagicMock()
-    if boundary == "session":
-        queue.register_session("ws")
+    queue.register_session("ws")
     queue.put_ordered(
         SetFreq(7_100_000),
         future=future,
@@ -2258,6 +2257,13 @@ async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback
     ).observation(observed_path, 7_100_000)
     observed = replace(observed, provider_generation=store.provider_generation)
     assert poller._annotate_yaesu_readbacks((observed,))[0].correlation_id is None  # noqa: SLF001
+    truth_trap = MagicMock(**{"__bool__.side_effect": RuntimeError("truthiness trap")})
+    untrusted = MagicMock()
+    untrusted.__eq__.side_effect = (RuntimeError("equality trap"), object(), truth_trap)
+    for _ in range(3):
+        candidate = replace(observed, value=untrusted)
+        guarded = poller._annotate_yaesu_readbacks((candidate,))[0]  # noqa: SLF001
+        accept((guarded,))
     matched = poller._annotate_yaesu_readbacks(  # noqa: SLF001
         (replace(observed, value=7_200_000),)
     )[0]

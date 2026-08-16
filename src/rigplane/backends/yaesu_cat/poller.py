@@ -28,6 +28,7 @@ from collections.abc import Awaitable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
+from rigplane.core.command_service import _is_yaesu_cat_readback, _yaesu_receiver_alias
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
@@ -66,13 +67,12 @@ _TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
 _ACTIVE_RECEIVER_PATH = FieldPath.global_("slow_state", "active")
 
 
-def _yaesu_observation_path(path: FieldPath) -> FieldPath:
-    if path.scope.value != "receiver" or path.receiver_id not in {"0", "1"}:
-        return path
-    receiver = "main" if path.receiver_id == "0" else "sub"
-    if path.family.value == "freq_mode" and path.slot is None:
-        return FieldPath.active(receiver, path.family.value, path.name)
-    return FieldPath.receiver(receiver, path.family.value, path.name)
+def _exact_readback_value_matches(observed: Any, expected: Any) -> bool:
+    if type(observed) not in (bool, int, float, str) or type(observed) is not type(
+        expected
+    ):
+        return False
+    return bool(observed == expected)
 
 
 class YaesuCatPoller:
@@ -450,7 +450,7 @@ class YaesuCatPoller:
         for expectation in expectations or ():
             if expectation.path == _ACTIVE_RECEIVER_PATH:
                 self._pending_receiver_select = entry
-            self._pending_readbacks[_yaesu_observation_path(expectation.path)] = (
+            self._pending_readbacks[_yaesu_receiver_alias(expectation.path)] = (
                 expectation,
                 entry,
                 generation,
@@ -515,14 +515,12 @@ class YaesuCatPoller:
             )
             matches = (
                 expectation in expectations
-                and observation.value == expectation.value
+                and _exact_readback_value_matches(observation.value, expectation.value)
                 and observation.timestamp_monotonic >= dispatched_at
                 and generation[0] == self._current_tx_target_generation()
                 and generation[1] == self._captured_provider_generation()
                 and observation.provider_generation == generation[1]
-                and observation.source.source == "yaesu_poll_response"
-                and observation.source.provider == "yaesu_cat"
-                and observation.source.transport == "serial"
+                and _is_yaesu_cat_readback(observation.source)
             )
             if matches:
                 result[index] = replace(

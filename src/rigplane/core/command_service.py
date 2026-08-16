@@ -38,6 +38,7 @@ __all__ = [
 _UNSET = object()
 _MAX_READBACK_EXPECTATIONS = 128
 _READBACK_EXPECTATION_GRACE_SECONDS = 2.0
+_DISPATCHABLE_LIFECYCLE_STATES = ("accepted", "queued", "sent", "acknowledged")
 _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
     "set_af_level": "af_level",
     "set_rf_gain": "rf_gain",
@@ -359,12 +360,7 @@ class CommandService:
     ) -> tuple[PendingOverlay, ...] | None:
         """Refresh existing expectations at dispatch, or reject a terminal command."""
         event = self._last_event(command_id, source=source, session_id=session_id)
-        if event is None or event.state not in {
-            "accepted",
-            "queued",
-            "sent",
-            "acknowledged",
-        }:
+        if event is None or event.state not in _DISPATCHABLE_LIFECYCLE_STATES:
             return None
         matches = self.readback_expectations(
             source=source, session_id=session_id, command_id=command_id
@@ -949,10 +945,10 @@ def _is_external_rigctld_readback(source: SourceMetadata) -> bool:
 
 
 def _is_yaesu_cat_readback(source: SourceMetadata) -> bool:
-    return (
-        source.source == "yaesu_poll_response"
-        and source.provider == "yaesu_cat"
-        and source.transport == "serial"
+    return (source.source, source.provider, source.transport) == (
+        "yaesu_poll_response",
+        "yaesu_cat",
+        "serial",
     )
 
 
