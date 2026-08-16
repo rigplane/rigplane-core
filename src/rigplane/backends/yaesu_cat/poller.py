@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
@@ -107,6 +108,8 @@ class YaesuCatPoller:
         self._ema_s_main: float | None = None
         self._ema_s_sub: float | None = None
         self._last_ptt = bool(getattr(radio.radio_state, "ptt", False))
+        self._ptt_observation: Observation | None = None
+        self._ptt_connection_generation: tuple[str | None, int] | None = None
         self._tx_target_generation = self._current_tx_target_generation()
         self._tx_target_invalidation: tuple[str | None, int, int | None] | None = None
         self._tx_target_known_generation: tuple[str | None, int] | None = None
@@ -130,6 +133,33 @@ class YaesuCatPoller:
     def _provider_generation_is_current(self, generation: int | None) -> bool:
         capture = self._capture_provider_generation
         return capture is None or generation == capture()
+
+    def _invalidate_ptt_observation(self) -> None:
+        self._ptt_observation = None
+        self._ptt_connection_generation = None
+        self._last_ptt = False
+
+    def _current_ptt_observation(
+        self, *, now: float | None = None
+    ) -> Observation | None:
+        observation = self._ptt_observation
+        if observation is None or type(observation.value) is not bool:
+            return None
+        provider_generation = self._captured_provider_generation()
+        if provider_generation is not None and (
+            observation.provider_generation != provider_generation
+        ):
+            return None
+        if self._ptt_connection_generation != self._current_tx_target_generation():
+            return None
+        timestamp = time.monotonic() if now is None else now
+        if (
+            observation.max_age is None
+            or timestamp < observation.timestamp_monotonic
+            or timestamp >= observation.timestamp_monotonic + observation.max_age
+        ):
+            return None
+        return observation
 
     def _stamp_provider_generation(
         self,
@@ -237,7 +267,7 @@ class YaesuCatPoller:
             source="yaesu_poll_response",
             transport="serial",
         )
-        observations = (
+        observations: Sequence[Observation] = (
             adapter.observation(
                 _TX_TARGET_PATH,
                 UnknownTxTarget(reason="stale" if known else "not-observed"),
@@ -269,27 +299,40 @@ class YaesuCatPoller:
                 self._radio
             ).poll_medium()
         except (RadioConnectionError, ConnectionError, OSError, CatTransportError):
+            self._invalidate_ptt_observation()
             if not self._provider_generation_is_current(provider_generation):
                 return True
             self._invalidate_tx_target(provider_generation=provider_generation)
             raise
         if not self._provider_generation_is_current(provider_generation):
+            self._invalidate_ptt_observation()
             return True
         if self._current_tx_target_generation() != generation:
             observations = tuple(
-                item for item in observations if item.path != _TX_TARGET_PATH
+                item
+                for item in observations
+                if item.path not in (_TX_TARGET_PATH, YAESU_PTT_PATH)
             )
+            self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
         observations = self._stamp_provider_generation(
             observations, provider_generation
         )
+        ptt_observation: Observation | None = None
         for observation in observations:
             if observation.path == YAESU_PTT_PATH:
-                self._last_ptt = bool(observation.value)
+                if type(observation.value) is bool:
+                    ptt_observation = observation
             elif observation.path == _TX_TARGET_PATH:
                 self._tx_target_invalidation = None
                 if isinstance(observation.value, KnownTxTarget):
                     self._tx_target_known_generation = generation
+        if ptt_observation is None:
+            self._invalidate_ptt_observation()
+        else:
+            self._ptt_observation = ptt_observation
+            self._ptt_connection_generation = generation
+            self._last_ptt = ptt_observation.value
         self._observation_callback(observations)
         return True
 
@@ -421,6 +464,7 @@ class YaesuCatPoller:
         provider_generation = None if advance is None else advance()
         try:
             logger.warning("YaesuCatPoller: triggering auto-reconnect")
+            self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
             await transport.reconnect()
             logger.info("YaesuCatPoller: reconnected successfully")

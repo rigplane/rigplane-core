@@ -481,6 +481,18 @@ def _target_observation(
     )
 
 
+def _ptt_observation(
+    value: bool, *, observed_at: float, max_age: float = 1.0
+) -> Observation:
+    return replace(
+        ProviderObservationAdapter(
+            _profile_state_acquisition(), "yaesu_poll_response", "serial"
+        ).observation(FieldPath.global_("tx_state", "ptt"), value),
+        timestamp_monotonic=observed_at,
+        max_age=max_age,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error", (False, True))
 async def test_stale_yaesu_medium_has_no_side_effects(error: bool) -> None:
@@ -513,6 +525,104 @@ async def test_stale_yaesu_medium_has_no_side_effects(error: bool) -> None:
 
     assert not emitted and not poller._last_ptt  # noqa: SLF001
     assert poller._tx_target_known_generation is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", (False, True), ids=("rx", "tx"))
+async def test_fresh_yaesu_ptt_observation_is_known(
+    monkeypatch: pytest.MonkeyPatch, active: bool
+) -> None:
+    radio, store = _tx_target_radio(), StateStore()
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "poll_medium",
+        AsyncMock(return_value=(_ptt_observation(active, observed_at=10.0),)),
+    )
+    poller = YaesuCatPoller(radio, observation_callback=lambda _: None)
+    poller.bind_provider_generation(capture=lambda: store.provider_generation)
+
+    await poller._poll_medium()  # noqa: SLF001
+
+    observation = poller._current_ptt_observation(now=10.5)  # noqa: SLF001
+    assert observation is not None
+    assert (observation.value, observation.timestamp_monotonic) == (active, 10.0)
+    assert observation.provider_generation == store.provider_generation
+
+
+@pytest.mark.asyncio
+async def test_stale_yaesu_ptt_observation_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = _tx_target_radio()
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "poll_medium",
+        AsyncMock(return_value=(_ptt_observation(True, observed_at=10.0),)),
+    )
+    poller = YaesuCatPoller(radio, observation_callback=lambda _: None)
+    await poller._poll_medium()  # noqa: SLF001
+
+    assert poller._current_ptt_observation(now=11.0) is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("unread", "poll-error"))
+async def test_yaesu_ptt_failure_invalidates_known_state(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    radio = _tx_target_radio()
+    next_result: object = () if failure == "unread" else CatTimeoutError("lost")
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "poll_medium",
+        AsyncMock(
+            side_effect=[(_ptt_observation(True, observed_at=10.0),), next_result]
+        ),
+    )
+    poller = YaesuCatPoller(radio, observation_callback=lambda _: None)
+    await poller._poll_medium()  # noqa: SLF001
+
+    if failure == "poll-error":
+        with pytest.raises(CatTimeoutError, match="lost"):
+            await poller._poll_medium()  # noqa: SLF001
+    else:
+        await poller._poll_medium()  # noqa: SLF001
+
+    assert poller._current_ptt_observation(now=10.5) is None  # noqa: SLF001
+    assert not poller._last_ptt  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ("reconnect", "provider-generation"))
+async def test_yaesu_ptt_generation_change_is_unknown_until_newer_poll(
+    monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    radio, store = _tx_target_radio(), StateStore()
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "poll_medium",
+        AsyncMock(
+            side_effect=[
+                (_ptt_observation(True, observed_at=10.0),),
+                (_ptt_observation(False, observed_at=11.0),),
+            ]
+        ),
+    )
+    poller = YaesuCatPoller(radio, observation_callback=lambda _: None)
+    poller.bind_provider_generation(capture=lambda: store.provider_generation)
+    await poller._poll_medium()  # noqa: SLF001
+
+    if boundary == "reconnect":
+        radio._transport.stats.reconnects += 1
+        poller._sync_tx_target_generation()  # noqa: SLF001
+    else:
+        store.begin_provider_generation()
+    assert poller._current_ptt_observation(now=10.5) is None  # noqa: SLF001
+
+    await poller._poll_medium()  # noqa: SLF001
+    recovered = poller._current_ptt_observation(now=11.5)  # noqa: SLF001
+    assert recovered is not None and recovered.value is False
+    assert recovered.provider_generation == store.provider_generation
 
 
 @pytest.mark.asyncio
