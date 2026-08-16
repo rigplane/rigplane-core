@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -109,27 +109,6 @@ async def test_transport_timeout_eof_malformed_and_negative_rprt() -> None:
             await transport.close()
 
 
-async def test_radio_transport_loss_advances_provider_generation_once() -> None:
-    behavior = FakeRigctldBehavior(disconnect_commands={"f"})
-    async with FakeRigctldServer(behavior=behavior) as server:
-        radio = RigctldClientRadio(host=server.host, port=server.port)
-        await radio.connect()
-        transitions: list[bool] = []
-        radio.bind_provider_generation(
-            advance=lambda: transitions.append(radio.connected) or len(transitions)
-        )
-
-        with pytest.raises(RadioConnectionError, match="closed"):
-            await radio.get_freq()
-
-        assert transitions == [False]
-        with pytest.raises(RadioConnectionError, match="not connected"):
-            await radio.get_freq()
-        assert transitions == [False]
-        await radio.disconnect()
-        assert transitions == [False]
-
-
 @pytest.mark.parametrize(
     ("stage", "read_result", "message"),
     (
@@ -217,7 +196,9 @@ async def test_radio_transport_failures_advance_provider_generation_once(
         assert transitions == [False]
 
 
-async def test_radio_reconnect_does_not_double_advance_transport_generation() -> None:
+async def test_radio_reconnect_does_not_double_advance_transport_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     behavior = FakeRigctldBehavior(disconnect_commands={"f"})
     async with FakeRigctldServer(behavior=behavior) as server:
         radio = RigctldClientRadio(host=server.host, port=server.port)
@@ -230,15 +211,33 @@ async def test_radio_reconnect_does_not_double_advance_transport_generation() ->
         with pytest.raises(RadioConnectionError):
             await radio.get_freq()
         assert generations == [1]
+        with pytest.raises(RadioConnectionError, match="not connected"):
+            await radio.get_freq()
+        await radio.disconnect()
+        assert generations == [1]
 
         await radio.connect()
         assert radio.connected
         assert generations == [1]
 
-        await radio.disconnect()
+        old_writer = radio._transport._writer  # noqa: SLF001
+        assert old_writer is not None
+        close = MagicMock(side_effect=old_writer.close)
+        monkeypatch.setattr(old_writer, "is_closing", lambda: True)
+        monkeypatch.setattr(old_writer, "close", close)
+        monkeypatch.setattr(asyncio, "open_connection", AsyncMock(side_effect=OSError))
+        with pytest.raises(RadioConnectionError):
+            await radio.connect()
+        assert not radio.connected
+        monkeypatch.undo()
+        await radio.connect()
+        assert close.call_count == 1
         assert generations == [1, 2]
+
         await radio.disconnect()
-        assert generations == [1, 2]
+        assert generations == [1, 2, 3]
+        await radio.disconnect()
+        assert generations == [1, 2, 3]
 
 
 async def test_radio_core_frequency_mode_ptt_and_vfo() -> None:

@@ -49,6 +49,8 @@ class RigctldTransport:
     async def connect(self) -> None:
         if self.connected:
             return
+        if self._reader is not None or self._writer is not None:
+            await self.close()
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port),
