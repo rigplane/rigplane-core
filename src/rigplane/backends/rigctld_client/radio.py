@@ -10,6 +10,10 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
+from ...core.radio_protocol import (
+    PhysicalWriteReadbackResult,
+    PhysicalWriteReadbackStatus,
+)
 from ...core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
@@ -100,7 +104,7 @@ class RigctldClientObservationPoller:
             return
 
         def retire_and_advance() -> int:
-            self._discard_pending_readbacks()
+            self._finish_readbacks(self._pending_readback_entries, "provider_lost")
             return advance()
 
         self._radio.bind_provider_generation(advance=retire_and_advance)
@@ -134,7 +138,7 @@ class RigctldClientObservationPoller:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        self._discard_pending_readbacks()
+        self._finish_readbacks(self._pending_readback_entries, "cancelled")
 
     async def _run_loop(
         self,
@@ -168,7 +172,7 @@ class RigctldClientObservationPoller:
             await _read_drained_slow_control_readbacks(adapter, drained_entries)
         )
         if not self._provider_generation_is_current(provider_generation):
-            self._discard_pending_readbacks()
+            self._finish_readbacks(self._pending_readback_entries, "provider_lost")
             return
         self._callback(
             self._annotate_readback_observations(
@@ -184,7 +188,7 @@ class RigctldClientObservationPoller:
         adapter = RigctldClientObservationAdapter(self._radio, clock=self._clock)
         observations = await adapter.read_slow_controls()
         if not self._provider_generation_is_current(provider_generation):
-            self._discard_pending_readbacks()
+            self._finish_readbacks(self._pending_readback_entries, "provider_lost")
             return
         self._callback(
             self._annotate_readback_observations(
@@ -219,6 +223,8 @@ class RigctldClientObservationPoller:
                 if entry.future is not None and not entry.future.done():
                     entry.future.set_result(None)
             except Exception as exc:
+                if correlation is not None:
+                    self._finish_readbacks((correlation,), "rejected")
                 self._mark_queued_command_failed(entry, exc)
                 if entry.future is not None and not entry.future.done():
                     entry.future.set_exception(exc)
@@ -237,16 +243,34 @@ class RigctldClientObservationPoller:
             for entry in self._pending_readback_entries
             if _physical_command_targets_path(command, entry.path)
         ]
-        _discard_readback_correlations(replaced)
-        self._pending_readback_entries = [
-            entry for entry in self._pending_readback_entries if entry not in replaced
-        ]
+        self._finish_readbacks(replaced, "superseded")
         if correlation is not None:
             self._pending_readback_entries.append(correlation)
 
-    def _discard_pending_readbacks(self) -> None:
-        _discard_readback_correlations(self._pending_readback_entries)
-        self._pending_readback_entries = []
+    def _finish_readbacks(
+        self,
+        entries: Sequence[_ReadbackCorrelation],
+        status: PhysicalWriteReadbackStatus,
+        observation: Observation | None = None,
+    ) -> None:
+        self._pending_readback_entries = [
+            entry for entry in self._pending_readback_entries if entry not in entries
+        ]
+        if status != "reconciled":
+            _discard_readback_correlations(entries)
+        for entry in entries:
+            self._radio._publish_physical_write_result(  # noqa: SLF001
+                PhysicalWriteReadbackResult(
+                    status=status,
+                    command_id=entry.command_id,
+                    source=entry.source,
+                    session_id=entry.session_id,
+                    path=entry.path,
+                    expected_value=entry.value,
+                    observed_value=None if observation is None else observation.value,
+                    provider_generation=entry.provider_generation,
+                )
+            )
 
     def _annotate_readback_observations(
         self,
@@ -265,9 +289,31 @@ class RigctldClientObservationPoller:
                 annotated.append(observation)
                 continue
             entry = unmatched.pop(match_index)
+            self._finish_readbacks((entry,), "reconciled", observation)
             annotated.append(_with_command_metadata(observation, entry))
-        self._pending_readback_entries = []
-        _discard_readback_correlations(unmatched)
+        now = self._clock()
+        for entry in unmatched:
+            if not _correlation_is_live(entry, now, entry.provider_generation):
+                self._finish_readbacks(
+                    (entry,),
+                    "timed_out" if now >= entry.expires_at_monotonic else "cancelled",
+                )
+                continue
+            mismatch = next(
+                (
+                    item
+                    for item in observations
+                    if _is_external_rigctld_readback(item.source)
+                    and _correlation_is_live(entry, now, item.provider_generation)
+                    and entry.dispatched_at_monotonic
+                    < item.timestamp_monotonic
+                    < entry.expires_at_monotonic
+                    and _readback_paths_match(item.path, entry.path)
+                ),
+                None,
+            )
+            if mismatch is not None:
+                self._finish_readbacks((entry,), "mismatched", mismatch)
         return tuple(annotated)
 
     async def _execute_command(self, cmd: Any) -> None:
@@ -528,6 +574,23 @@ class RigctldClientRadio:
         self._model = model or "External rigctld"
         self._state = RadioState()
         self._vfo_supported = False
+        self._physical_write_result_callback: (
+            Callable[[PhysicalWriteReadbackResult], None] | None
+        ) = None
+
+    def set_physical_write_result_callback(
+        self, callback: Callable[[PhysicalWriteReadbackResult], None] | None
+    ) -> None:
+        self._physical_write_result_callback = callback
+
+    def _publish_physical_write_result(
+        self, result: PhysicalWriteReadbackResult
+    ) -> None:
+        try:
+            if self._physical_write_result_callback is not None:
+                self._physical_write_result_callback(result)
+        except Exception:
+            logger.warning("rigctld-client write-result callback failed", exc_info=True)
 
     def bind_provider_generation(
         self, *, advance: Callable[[], int] | None = None

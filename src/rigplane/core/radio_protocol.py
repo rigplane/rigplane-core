@@ -64,7 +64,7 @@ from .types import AudioCodec, BreakInMode, Mode
 if TYPE_CHECKING:
     from ._state_cache import StateCache
     from .acquisition_scheduler import AcquisitionPriority, EnsureFreshResult
-    from .state_pipeline_contracts import FieldPath, Observation
+    from .state_pipeline_contracts import CommandSource, FieldPath, Observation
     from .state_store import StateStore
     from rigplane.audio_bus import AudioBus
     from rigplane.runtime._poller_types import CommandQueue
@@ -110,6 +110,9 @@ __all__ = [
     "RigctldRoutingStrategy",
     "SplitCapable",
     "StateNotifyCapable",
+    "PhysicalWriteReadbackCapable",
+    "PhysicalWriteReadbackResult",
+    "PhysicalWriteReadbackStatus",
     "ObservationPollable",
     "ObservationPoller",
     "StatePollable",
@@ -802,6 +805,40 @@ class ObservationPoller(Protocol):
 
     async def stop(self) -> None:
         """Stop the polling loops and wait for them to finish."""
+        ...
+
+
+PhysicalWriteReadbackStatus = Literal[
+    "reconciled",
+    "mismatched",
+    "rejected",
+    "timed_out",
+    "provider_lost",
+    "cancelled",
+    "superseded",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class PhysicalWriteReadbackResult:
+    """Terminal provider evidence for one physically dispatched write."""
+
+    status: PhysicalWriteReadbackStatus
+    command_id: str
+    source: "CommandSource"
+    session_id: str | None
+    path: "FieldPath"
+    expected_value: Any
+    observed_value: Any | None = None
+    provider_generation: int | None = None
+
+
+@runtime_checkable
+class PhysicalWriteReadbackCapable(Protocol):
+    def set_physical_write_result_callback(
+        self, callback: Callable[[PhysicalWriteReadbackResult], None] | None
+    ) -> None:
+        """Register a result callback, or clear it with ``None``."""
         ...
 
 

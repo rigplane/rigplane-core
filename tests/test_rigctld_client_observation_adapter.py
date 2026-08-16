@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -29,7 +30,10 @@ from rigplane.backends.rigctld_client.observations import (
 )
 from rigplane.core.acquisition_scheduler import AcquisitionScheduler, AcquisitionStatus
 from rigplane.core.capabilities import CAP_POWER_CONTROL, CAP_TX
-from rigplane.core.radio_protocol import PowerControlCapable
+from rigplane.core.radio_protocol import (
+    PhysicalWriteReadbackCapable,
+    PowerControlCapable,
+)
 from rigplane.core.state_acquisition_policy import FieldAvailability
 from rigplane.core.command_service import (
     CommandExecutionResult,
@@ -210,6 +214,8 @@ async def test_newer_physical_dispatch_supersedes_older_readback(
                 callback=observations.extend,
                 command_queue=queue,
             )
+            results = []
+            radio.set_physical_write_result_callback(results.append)
 
             await poller._drain_commands()  # noqa: SLF001
 
@@ -230,6 +236,7 @@ async def test_newer_physical_dispatch_supersedes_older_readback(
             )
             await poller._drain_commands()  # noqa: SLF001
             assert poller._pending_readback_entries == []  # noqa: SLF001
+            assert results[-1].status == "superseded"
 
             await poller._poll_medium()  # noqa: SLF001
             for observation in observations:
@@ -283,6 +290,8 @@ async def test_observation_poller_does_not_reconcile_nonmatching_readback() -> N
                 command_service=service,
             )
             observations = []
+            results = []
+            radio.set_physical_write_result_callback(results.append)
             poller = radio.create_observation_poller(
                 callback=observations.extend,
                 command_queue=queue,
@@ -309,6 +318,8 @@ async def test_observation_poller_does_not_reconcile_nonmatching_readback() -> N
             )
             assert freq_observation.value == 7_050_000
             assert freq_observation.correlation_id is None
+            result = results.pop()
+            assert result.status == "mismatched"
             assert (
                 store.snapshot().field("receiver.main.active.freq_mode.freq_hz").value
                 == 7_050_000
@@ -403,17 +414,20 @@ async def test_observation_poller_discards_nonmatching_readback_expectation() ->
 
 
 @pytest.mark.asyncio
-async def test_observation_poller_discards_expectation_when_readback_unavailable() -> (
-    None
-):
+@pytest.mark.parametrize("cancel", (False, True))
+async def test_observation_poller_discards_expectation_when_readback_unavailable(
+    cancel: bool,
+) -> None:
     async with FakeRigctldServer() as server:
         radio = RigctldClientRadio(host=server.host, port=server.port)
         await radio.connect()
         try:
             queue = CommandQueue()
+            clock = FreshnessClock(start=70.0)
             service = CommandService(
                 executor=_NoopCommandExecutor(),
-                state_store=StateStore(),
+                state_store=StateStore(freshness_clock=clock),
+                clock=clock.now,
             )
             command_id = "ws-rigctld-no-readback"
             intent = command_intent_from_request(
@@ -429,13 +443,23 @@ async def test_observation_poller_discards_expectation_when_readback_unavailable
                 source="websocket",
                 command_service=service,
             )
-            poller = radio.create_observation_poller(
+            results = []
+            radio.set_physical_write_result_callback(results.append)
+            poller = RigctldClientObservationPoller(
+                radio,
                 callback=lambda _observations: None,
                 command_queue=queue,
+                clock=clock.now,
             )
 
             await poller._drain_commands()  # noqa: SLF001
             poller._annotate_readback_observations(())  # noqa: SLF001
+            assert not results and poller._pending_readback_entries  # noqa: SLF001
+            if cancel:
+                await poller.stop()
+            else:
+                clock.advance(20.0)
+                poller._annotate_readback_observations(())  # noqa: SLF001
 
             assert (
                 service.readback_expectations(
@@ -445,6 +469,7 @@ async def test_observation_poller_discards_expectation_when_readback_unavailable
                 )
                 == ()
             )
+            assert results.pop().status == ("cancelled" if cancel else "timed_out")
         finally:
             await radio.disconnect()
 
@@ -541,10 +566,21 @@ async def test_observation_poller_reconciles_slow_control_set_without_waiting_fo
                 command_service=service,
             )
             observations = []
+            results = []
             poller = radio.create_observation_poller(
                 callback=observations.extend,
                 command_queue=queue,
             )
+
+            def collect_reentrantly(result) -> None:  # type: ignore[no-untyped-def]
+                results.append(result)
+                if len(results) == 1:
+                    poller._finish_readbacks(  # noqa: SLF001
+                        poller._pending_readback_entries,
+                        result.status,  # noqa: SLF001
+                    )
+
+            radio.set_physical_write_result_callback(collect_reentrantly)
 
             await poller._poll_medium()  # noqa: SLF001
             for observation in observations:
@@ -569,6 +605,7 @@ async def test_observation_poller_reconciles_slow_control_set_without_waiting_fo
             assert readback.value == expected_value
             assert readback.source.source == "hamlib_response"
             assert readback.correlation_id == command_id
+            assert [result.status for result in results] == ["reconciled"]
         finally:
             await radio.disconnect()
 
@@ -723,6 +760,25 @@ async def test_observation_poller_unsupported_command_fails_future() -> None:
             assert future.done()
             with pytest.raises(CommandError, match="not supported"):
                 future.result()
+
+            service = CommandService(
+                executor=_NoopCommandExecutor(), state_store=StateStore()
+            )
+            make_intent = command_intent_from_request
+            await service.execute(
+                make_intent("set_freq", {"freq": 1}, source="http", command_id="r")
+            )
+            put = queue.put_ordered
+            put(SetFreq(1), command_id="r", source="http", command_service=service)
+            results = []
+            radio.set_physical_write_result_callback(
+                lambda result: (results.append(result), 1 / 0)
+            )
+            poller._execute_command = AsyncMock(  # type: ignore[method-assign]  # noqa: SLF001
+                side_effect=CommandError("RPRT -1")
+            )
+            await poller._drain_commands()  # noqa: SLF001
+            assert results.pop().status == "rejected"
         finally:
             await radio.disconnect()
 
@@ -789,6 +845,8 @@ async def test_stale_external_rigctld_poll_clears_correlation_at_generation_boun
                 callback=lambda batch: list(map(service.apply_observation, batch)),
                 command_queue=queue,
             )
+            results = []
+            radio.set_physical_write_result_callback(results.append)
             poller.bind_provider_generation(
                 capture=lambda: store.provider_generation,
                 advance=store.begin_provider_generation,
@@ -815,6 +873,7 @@ async def test_stale_external_rigctld_poll_clears_correlation_at_generation_boun
                 assert len(poller._pending_readback_entries) == 1  # noqa: SLF001
                 await radio.disconnect()
                 assert poller._pending_readback_entries == []  # noqa: SLF001
+                assert results.pop().status == "provider_lost"
                 assert not service.readback_expectations(
                     command_id="g2", source="websocket", session_id=None
                 )
@@ -921,6 +980,7 @@ async def test_tx_capability_excludes_power_control_with_unsupported_power() -> 
         try:
             # Capability set advertises PTT TX but never power control.
             assert CAP_TX in radio.capabilities
+            assert isinstance(radio, PhysicalWriteReadbackCapable)
             assert CAP_POWER_CONTROL not in radio.capabilities
             assert "power" not in radio.capabilities
             # The backend cannot honor power-set/get, so it must not
