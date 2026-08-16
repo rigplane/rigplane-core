@@ -11,6 +11,12 @@ import pytest
 from test_radio import MockTransport
 
 from rigplane import IC_7610_ADDR
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
@@ -43,6 +49,19 @@ async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 0.5) ->
             return
         await asyncio.sleep(0.005)
     assert predicate()
+
+
+def _seed_fresh_rx(store: StateStore) -> None:
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=store.snapshot().generated_at_monotonic,
+            max_age=5.0,
+            provider_generation=store.provider_generation,
+        )
+    )
 
 
 async def test_raw_transaction_holding_owner_blocks_competing_external_owner(
@@ -109,7 +128,11 @@ async def test_raw_transaction_quiesces_web_poller_and_defers_queue_until_releas
 ) -> None:
     queue = CommandQueue()
     queue.put_ordered(SetFreq(7_074_000))
-    poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
+    store = StateStore()
+    poller = RadioPoller(
+        radio, StateCache(), queue, radio_state=RadioState(), state_store=store
+    )
+    _seed_fresh_rx(store)
     poller._execute = AsyncMock()  # noqa: SLF001
     poller._send_query = AsyncMock()  # noqa: SLF001
     poller._poll_unselected_slot = AsyncMock()  # noqa: SLF001
