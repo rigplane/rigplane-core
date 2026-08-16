@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
@@ -415,9 +416,13 @@ class _RigctldCommandExecutor:
     handler: "RigctldHandler"
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
-        # B4-a establishes the exhaustive policy seam only. B4-b consumes this
-        # result to enforce BLOCK/DEFER; wire behavior remains unchanged here.
-        _classify_rigctld_tx_intent(intent)
+        classification = _classify_rigctld_tx_intent(intent)
+        if (
+            classification.disposition is TxInterlockDisposition.BLOCK
+            and self.handler._has_canonical_state_store
+            and self.handler._resolve_rigctld_rf_state() is not tx_interlock.RfState.RX
+        ):
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
         params = intent.params
         if intent.name == "set_freq":
             await self.handler._radio.set_freq(
@@ -641,6 +646,7 @@ class RigctldHandler:
         )
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
+        self._has_canonical_state_store = isinstance(state_store, StateStore)
         if not isinstance(state_store, StateStore):
             # Non-canonical, non-decaying fallback (MOR-432): used only when the
             # radio exposes no StateStore. Freshness decay requires a wired,
@@ -667,6 +673,41 @@ class RigctldHandler:
     def bind_provider_generation(self, capture: Callable[[], int]) -> None:
         """Bind the server-owned provider token capture for request ingress."""
         self._provider_generation_capture = capture
+
+    def _resolve_rigctld_rf_state(self) -> tx_interlock.RfState:
+        """Resolve strict, generation-bound RF truth for hard-block writes."""
+        snapshot = self._state_store.snapshot()
+        try:
+            field = snapshot.field(FieldPath.global_("tx_state", "ptt"))
+        except KeyError:
+            return tx_interlock.RfState.UNKNOWN
+        values = (
+            snapshot.generated_at_monotonic,
+            field.last_observed_monotonic,
+            field.max_age,
+        )
+        if (
+            field.freshness is not FreshnessState.FRESH
+            or type(field.value) is not bool
+            or any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                for value in values
+            )
+            or field.max_age is None
+            or field.max_age <= 0
+            or field.last_observed_monotonic < 0
+            or snapshot.generated_at_monotonic < field.last_observed_monotonic
+            or snapshot.generated_at_monotonic - field.last_observed_monotonic
+            >= field.max_age
+            or type(snapshot.provider_generation) is not int
+            or type(field.provider_generation) is not int
+            or snapshot.provider_generation < 0
+            or field.provider_generation != snapshot.provider_generation
+        ):
+            return tx_interlock.RfState.UNKNOWN
+        return tx_interlock.RfState.TX if field.value else tx_interlock.RfState.RX
 
     def _packet_data_mode_value(self) -> int | bool:
         value = self._config.wsjtx_data_mode

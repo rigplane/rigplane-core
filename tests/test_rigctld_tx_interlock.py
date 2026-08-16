@@ -1,13 +1,28 @@
 """Rigctld write-intent coverage for the shared TX interlock policy."""
 
+from dataclasses import replace
+from unittest.mock import AsyncMock, Mock
+
 import pytest
 
-from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.core.tx_interlock_contract import TxInterlockDisposition
-from rigplane.rigctld.contract import COMMAND_TABLE, ClientSession, RigctldResponse
-from rigplane.rigctld.handler import _classify_rigctld_tx_intent
+from rigplane.rigctld.contract import (
+    COMMAND_TABLE,
+    ClientSession,
+    HamlibError,
+    RigctldConfig,
+    RigctldResponse,
+)
+from rigplane.rigctld.handler import RigctldHandler, _classify_rigctld_tx_intent
 from rigplane.rigctld.protocol import format_response, parse_line
-from rigplane.runtime import _poller_types as commands
+from rigplane.runtime import _poller_types as commands, tx_interlock
 
 
 def _intent(name: str, **params: object) -> CommandIntent:
@@ -113,3 +128,131 @@ def test_non_writes_and_future_material_intents_fail_closed() -> None:
             _classify_rigctld_tx_intent(
                 _intent(name, level=key, func=key, value=1, on=True)
             )
+
+
+_BLOCK_WIRES = (b"T 1", b"U TUNER 1", b"w FE FE 98 E0 03 FD")
+
+
+def _store(case: str) -> tuple[StateStore, object | None]:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    if case == "absent":
+        return store, None
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=1 if case == "value" else case == "tx",
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic={"timestamp": float("nan"), "future": 11.0}.get(
+                case, 9.0
+            ),
+            max_age={"before": 1.1, "exact": 1.0, "after": 0.9}.get(
+                case, float("inf") if case == "max-age" else 2.0
+            ),
+        )
+    )
+    if case == "stale":
+        clock.advance(2.1)
+    snapshot = store.snapshot()
+    if case == "generation":
+        field = replace(snapshot.fields[0], provider_generation=1)
+        snapshot = replace(snapshot, fields=(field,))
+        return store, snapshot
+    return store, None
+
+
+def _handler(store: StateStore, *, public_store: bool = True):
+    radio = AsyncMock()
+    if public_store:
+        radio.state_store = store
+    else:
+        del radio.state_store
+    routing = Mock()
+    routing.set_func = AsyncMock(return_value=RigctldResponse())
+    routing.set_level = AsyncMock(return_value=RigctldResponse())
+    radio.rigctld_routing = Mock(return_value=routing)
+    radio._send_civ_raw = AsyncMock(return_value=None)
+    return RigctldHandler(radio, RigctldConfig(), state_store=store), radio, routing
+
+
+def _attempt(radio: AsyncMock, routing: Mock, wire: bytes) -> AsyncMock:
+    if wire.startswith(b"T"):
+        return radio.set_ptt
+    if wire.startswith(b"U"):
+        return routing.set_func
+    return radio._send_civ_raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["tx", "absent", "stale", "generation"])
+@pytest.mark.parametrize("wire", _BLOCK_WIRES)
+@pytest.mark.parametrize(
+    "public_store", [True, False], ids=["radio-store", "server-store"]
+)
+async def test_hard_blocks_require_fresh_known_rx(
+    case: str, wire: bytes, public_store: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, forced = _store(case)
+    handler, radio, routing = _handler(store, public_store=public_store)
+    if forced is not None:
+        monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
+    command = parse_line(wire)
+    response = await handler.execute(command)
+    assert response.error is HamlibError.ERJCTED
+    assert format_response(command, response, ClientSession()) == b"RPRT -9\n"
+    _attempt(radio, routing, wire).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wire", _BLOCK_WIRES)
+async def test_hard_blocks_dispatch_once_with_fresh_rx(wire: bytes) -> None:
+    handler, radio, routing = _handler(_store("rx")[0])
+    response = await handler.execute(parse_line(wire))
+    assert response.ok
+    _attempt(radio, routing, wire).assert_awaited_once()
+    if wire.startswith(b"w"):
+        radio._send_civ_raw.assert_awaited_once_with(b"\xfe\xfe\x98\xe0\x03\xfd")
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [("before", tx_interlock.RfState.RX)]
+    + [
+        (case, tx_interlock.RfState.UNKNOWN)
+        for case in ("exact", "after", "future", "timestamp", "max-age", "generation")
+    ],
+)
+def test_rf_truth_enforces_strict_age_and_shape(
+    case: str, expected: tx_interlock.RfState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, forced = _store(case)
+    handler, _, _ = _handler(store)
+    if forced is not None:
+        monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
+    assert handler._resolve_rigctld_rf_state() is expected  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["tx", "rx", "absent", "stale", "generation"])
+async def test_non_block_dispositions_never_resolve_rf_truth(
+    case: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler, radio, routing = _handler(_store(case)[0])
+    resolver = Mock(side_effect=AssertionError("RF truth inspected"))
+    monkeypatch.setattr(handler, "_resolve_rigctld_rf_state", resolver)
+    for wire in (
+        b"T 0",
+        b"U TUNER 0",
+        b"F 1",
+        b"M USB 2400",
+        b"V VFOA",
+        b"S 1 VFOA",
+        b"L AF 0.5",
+    ):
+        assert (await handler.execute(parse_line(wire))).ok
+    for intent in (_intent("set_rit", hz=1), _intent("set_xit", hz=1)):
+        await handler._command_service.execute(intent)  # noqa: SLF001
+    resolver.assert_not_called()
+    radio.set_ptt.assert_awaited_once_with(False)
+    routing.set_func.assert_awaited_once_with("TUNER", False, vfo=None)
