@@ -96,6 +96,11 @@
   let groups = $derived(groupDigitsForDisplay(allDigits));
 
   function handleWheel(digit: DigitInfo, event: WheelEvent) {
+    // MOR-1639: scrolling over a VFO readout is ordinary page navigation
+    // until the operator deliberately picks THIS digit. Do not consume an
+    // unarmed event: that both preserves page scrolling and guarantees no
+    // frequency intent reaches the command path by accident.
+    if (selectedDigitIndex !== digit.digitIndex) return;
     event.preventDefault();
     const direction = event.deltaY > 0 ? -1 : 1;
     const newFreq = adjustFreqByDigit(freq, digit.multiplier, direction, minFreq, maxFreq);

@@ -169,12 +169,52 @@ describe('FrequencyDisplayInteractive click-to-tune over the radio store (MOR-47
     const oneKhzDigit = digits[4];
     expect(oneKhzDigit).toBeDefined();
 
+    oneKhzDigit.click();
     oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     flushSync();
 
     // Relative tune steps from confirmed 14074000.
     expect(onFreqChange).toHaveBeenCalledTimes(1);
     expect(onFreqChange).toHaveBeenCalledWith(14075000);
+  });
+});
+
+describe('FrequencyDisplayInteractive deliberate wheel arming (MOR-1639)', () => {
+  it('lets an unarmed wheel event scroll normally and emits no frequency intent', () => {
+    const onFreqChange = vi.fn();
+    const t = mountDisplay({ freq: 14074000, onFreqChange });
+    const digit = t.querySelectorAll<HTMLElement>('.digit')[4];
+    const event = new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true });
+
+    expect(digit.dispatchEvent(event)).toBe(true);
+    flushSync();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('arms a clicked digit, consumes its wheel event, and emits exactly one digit step', () => {
+    const onFreqChange = vi.fn();
+    const t = mountDisplay({ freq: 14074000, onFreqChange });
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    const oneKhzDigit = digits[4];
+    const oneHzDigit = digits[digits.length - 1];
+
+    oneKhzDigit.click();
+    const armed = new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true });
+    expect(oneKhzDigit.dispatchEvent(armed)).toBe(false);
+    flushSync();
+
+    expect(armed.defaultPrevented).toBe(true);
+    expect(onFreqChange).toHaveBeenCalledTimes(1);
+    expect(onFreqChange).toHaveBeenLastCalledWith(14075000);
+
+    const rearmRequired = new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true });
+    expect(oneHzDigit.dispatchEvent(rearmRequired)).toBe(true);
+    flushSync();
+
+    expect(rearmRequired.defaultPrevented).toBe(false);
+    expect(onFreqChange).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -246,6 +286,7 @@ describe('FrequencyDisplayInteractive pending-target marker (MOR-1441)', () => {
     // The 1 kHz digit — same DOM position/multiplier convention as the
     // MOR-475 test above.
     const oneKhzDigit = t.querySelectorAll<HTMLElement>('.digit')[4];
+    oneKhzDigit.click();
     oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     flushSync();
 
