@@ -8,7 +8,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.state_store import StateStore
 
 
 class _Executor:
@@ -26,74 +26,80 @@ class _Trap:
         return self.result
 
 
-def _service() -> tuple[CommandService, StateStore, FreshnessClock]:
-    clock = FreshnessClock(start=10.0)
-    store = StateStore(freshness_clock=clock)
-    service = CommandService(executor=_Executor(), state_store=store, clock=clock.now)
-    return service, store, clock
+def _service() -> tuple[CommandService, StateStore]:
+    store = StateStore()
+    service = CommandService(executor=_Executor(), state_store=store)
+    return service, store
 
 
-def _intent(command_id: str, source: str, session_id: str | None) -> CommandIntent:
+def _intent(
+    command_id: str, source: str, session_id: str | None = None
+) -> CommandIntent:
     path = FieldPath.active("main", "freq_mode", "freq_hz")
+    params: dict[str, object] = {"freq_hz": 14_074_000}
+    if session_id is not None:
+        params["session_id"] = session_id
     return CommandIntent(
         id=command_id,
         name="set_freq",
-        params={"freq_hz": 14_074_000, "session_id": session_id},
+        params=params,
         source=cast(CommandSource, source),
         target=path,
         pending_policy="scoped",
-        expected_observations=(path,),
     )
 
 
 def test_terminate_active_commands_is_exact_scoped_and_idempotent() -> None:
-    service, _, _ = _service()
-    for state, command_id in zip(
-        ("accepted", "queued", "sent", "acknowledged"),
-        ("a", "q", "s", "k"),
-        strict=True,
-    ):
-        service.emit_lifecycle(_intent(command_id, "websocket", "ws-a"), state)
-    service.emit_lifecycle(_intent("a", "websocket", "ws-b"), "acknowledged")
-    service.emit_lifecycle(_intent("a", "http", None), "acknowledged")
-
+    service, _ = _service()
+    emit = service.emit_lifecycle
+    terminate = service.terminate_active_commands
+    states = ("accepted", "queued", "sent", "acknowledged")
+    for command_id, state in zip("aqsk", states, strict=True):
+        emit(_intent(command_id, "websocket", "ws-a"), state)
+    emit(_intent("a", "websocket", "ws-b"), "acknowledged")
+    emit(_intent("a", "http"), "acknowledged")
     scope = {"source": "websocket", "session_id": "ws-a"}
-    assert service.terminate_active_commands("control scope invalidated", **scope) == 4
-    assert service.terminate_active_commands("different reason", **scope) == 0
+    assert terminate("control scope invalidated", **scope) == 4
+    assert terminate("different reason", **scope) == 0
     failed = [event for event in service.lifecycle_events() if event.state == "failed"]
-    assert [(event.command_id, event.message) for event in failed] == [
-        (command_id, "control scope invalidated") for command_id in ("a", "q", "s", "k")
-    ]
-    assert service.terminate_active_commands("http gone", session_id=None) == 1
-    assert service.terminate_active_commands("socket gone", source="websocket") == 1
+    expected = [(command_id, "control scope invalidated") for command_id in "aqsk"]
+    assert [(event.command_id, event.message) for event in failed] == expected
+    assert terminate("http gone", session_id=None) == 1
+    assert terminate("socket gone", source="websocket") == 1
+    conflict = {"session_id": "other"}
+    public = _intent("p", "public_api")
+    emit(public, "accepted")
+    emit(public, "acknowledged", details=conflict)
+    assert terminate("public gone", source="public_api") == 1
+    other = emit(_intent("p", "public_api", "other"), "accepted")
+    emit(public, "acknowledged", details=conflict)
+    assert service._active_commands[("public_api", "other", "p")] is other  # noqa: SLF001
     for command_id in ("x", "y"):
-        service.emit_lifecycle(_intent(command_id, "websocket", "ws-a"), "accepted")
+        emit(_intent(command_id, "websocket", "ws-a"), "accepted")
     x_intent = _intent("x", "websocket", "ws-a")
-    service.emit_lifecycle(x_intent, "acknowledged", details={"session_id": "alias"})
-    nested: list[int] = []
+    emit(x_intent, "acknowledged", details={"session_id": "alias"})
 
     def reenter(event: object) -> None:
-        nested.append(service.terminate_active_commands("nested", source="websocket"))
+        assert terminate("nested", source="websocket") == 0
 
     unsubscribe = service.subscribe_lifecycle(reenter)  # type: ignore[arg-type]
-    assert service.terminate_active_commands("outer", source="websocket") == 2
-    assert nested == [0, 0]
+    assert terminate("outer", source="websocket") == 2
     failed = [event for event in service.lifecycle_events() if event.state == "failed"]
     assert [event.command_id for event in failed[-2:]] == ["x", "y"]
     assert {event.message for event in failed[-2:]} == {"outer"}
-    assert service.terminate_active_commands("alias", session_id="alias") == 0
+    assert terminate("alias", session_id="alias") == 0
     unsubscribe()
-    service.emit_lifecycle(_intent("z", "websocket", "ws-a"), "accepted")
+    emit(_intent("z", "websocket", "ws-a"), "accepted")
     before = service.lifecycle_events()
     for malformed in (_Trap(None), _Trap(True), object()):
-        assert service.terminate_active_commands("bad", source=malformed) == 0  # type: ignore[arg-type]
-        assert service.terminate_active_commands("bad", session_id=malformed) == 0
+        assert terminate("bad", source=malformed) == 0  # type: ignore[arg-type]
+        assert terminate("bad", session_id=malformed) == 0
     assert service.lifecycle_events() == before
 
 
 def test_terminate_active_commands_preserves_existing_terminal_states() -> None:
     for terminal in ("failed", "timed_out", "reconciled", "superseded"):
-        service, _, _ = _service()
+        service, _ = _service()
         intent = _intent(terminal, "websocket", "ws-a")
         service.emit_lifecycle(intent, "acknowledged")
         service.emit_lifecycle(intent, terminal, message="original")
@@ -102,7 +108,7 @@ def test_terminate_active_commands_preserves_existing_terminal_states() -> None:
 
 
 async def test_termination_clears_pending_and_late_readback_cannot_revive() -> None:
-    service, store, clock = _service()
+    service, store = _service()
     intent = _intent("late", "websocket", "ws-a")
     await service.execute(intent)
     scope = {"source": "websocket", "session_id": "ws-a"}
@@ -110,33 +116,27 @@ async def test_termination_clears_pending_and_late_readback_cannot_revive() -> N
     assert service.pending_overlays(**scope) == ()
     assert service.readback_expectations(**scope, command_id="late") == ()
     before = tuple(service.lifecycle_events())
-    service.apply_observation(
-        Observation(
-            path=intent.target,
-            value=14_074_000,
-            source=SourceMetadata(
-                source="yaesu_poll_response",
-                provider="yaesu_cat",
-                transport="serial",
-                command_source="websocket",
-                session_id="ws-a",
-            ),
-            timestamp_monotonic=clock.now(),
-            correlation_id="late",
-        )
+    source = SourceMetadata(
+        "yaesu_poll_response",
+        "yaesu_cat",
+        "serial",
+        command_source="websocket",
+        session_id="ws-a",
     )
+    observation = Observation(
+        intent.target, 14_074_000, source, 10.0, correlation_id="late"
+    )
+    service.apply_observation(observation)
     assert store.snapshot().field(intent.target).value == 14_074_000
     assert service.lifecycle_events() == before
 
 
 def test_active_command_registry_is_bounded_and_terminal_entries_do_not_leak() -> None:
-    service, _, _ = _service()
+    service, _ = _service()
     for index in range(128):
-        intent = _intent(str(index), "websocket", "ws-a")
-        service.emit_lifecycle(intent, "accepted")
+        service.emit_lifecycle(_intent(str(index), "websocket", "ws-a"), "accepted")
     service.emit_lifecycle(_intent("0", "websocket", "ws-a"), "acknowledged")
     service.emit_lifecycle(_intent("128", "websocket", "ws-a"), "accepted")
-
     assert len(service._active_commands) == 128  # noqa: SLF001
     assert service.lifecycle_events()[-2].command_id == "0"
     assert service.lifecycle_events()[-2].state == "failed"

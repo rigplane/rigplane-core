@@ -309,7 +309,7 @@ class CommandService:
             message=message,
             details=payload_details,
         )
-        key = (event.source, _event_session_id(event), event.command_id)
+        key = (intent.source, _session_id(intent), intent.id)
         if state in _DISPATCHABLE_LIFECYCLE_STATES:
             if key not in self._active_commands and (
                 len(self._active_commands) >= _MAX_ACTIVE_COMMANDS
