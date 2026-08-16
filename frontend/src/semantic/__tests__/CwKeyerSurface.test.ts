@@ -28,6 +28,8 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import CwKeyerSurface, {
   APF_CHOICES, BREAK_IN_CHOICES, BREAK_IN_REASON_KEY, CW_LEVELS, MUTEX_LABEL, POSTURE_LABEL,
   UNKNOWN_TEXT, breakInBlockedLabel, breakInPosture, type CwLevelField,
@@ -93,6 +95,20 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
     /** Every focusable control the surface renders, whatever its state. */
     controls: () => [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')],
   };
+}
+
+function renderReactiveFeedback(initial: ControlFeedbackPresentationInput<number>) {
+  const onLevelChange = vi.fn();
+  const props = proxy({ view: base(), onLevelChange, breakInDelayFeedback: initial });
+  const component = mount(CwKeyerSurface, { target, props });
+  flushSync();
+  const input = () => target.querySelector<HTMLInputElement>(
+    '[data-testid="cw-keyer-breakInDelay"] input',
+  )!;
+  const output = () => target.querySelector<HTMLElement>(
+    '[data-testid="cw-keyer-breakInDelay-value"]',
+  )!;
+  return { dispose: () => unmount(component), input, output, onLevelChange, props };
 }
 
 /** A real click, not `.click()`: `.click()` is a no-op on a disabled button, so
@@ -358,6 +374,80 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     input.dispatchEvent(new Event('input', { bubbles: true }));
     r.dispose();
     expect(onLevelChange).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['cancelled', 72, 'provider-replaced'],
+    ['failed', 73, 'failed-transition'],
+    ['timed-out', 74, 'timed-out-transition'],
+    ['superseded', 75, 'superseded-transition'],
+    ['idle', 76, null],
+  ] as const)('invalidates a stale draft when authority advances to %s', (phase, canonical, id) => {
+    const r = renderReactiveFeedback(feedback('idle'));
+    r.input().value = '111';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    const terminal = phase === 'idle' ? null : { phase };
+    r.props.breakInDelayFeedback = feedback(phase, {
+      confirmed: canonical, requestedTarget: phase === 'idle' ? null : 111,
+      transitionId: id, outcome: terminal,
+    });
+    flushSync();
+    expect(r.input().value).toBe(String(canonical));
+    expect(r.output().textContent).toContain(`${canonical} ${phase.replaceAll('-', ' ')}`);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+
+    r.input().value = '99';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('breakInDelay', 99);
+    r.dispose();
+  });
+
+  it('preserves an active draft while the same feedback authority is re-projected', () => {
+    const current = feedback('awaiting-confirmation', {
+      target: 80, requestedTarget: 80, transitionId: 'authority-a',
+    });
+    const r = renderReactiveFeedback(current);
+    r.input().value = '111';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    r.props.breakInDelayFeedback = { ...current };
+    flushSync();
+    expect(r.input().value).toBe('111');
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('breakInDelay', 111);
+    r.dispose();
+  });
+
+  it.each([
+    ['missing', null], ['not-a-number', Number.NaN], ['infinite', Number.POSITIVE_INFINITY],
+    ['below-domain', -1], ['above-domain', 256], ['off-lattice', 64.5],
+  ] as const)('fails closed for %s canonical truth', (_case, confirmed) => {
+    const r = renderReactiveFeedback(feedback('idle', { confirmed }));
+    expect(r.input().disabled).toBe(true);
+    expect(r.input().hasAttribute('aria-valuenow')).toBe(false);
+    expect(r.input().getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
+    expect(r.output().textContent).toContain('— unavailable');
+    r.input().value = '99';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it.each([
+    ['non-finite target', feedback('submitted', {
+      target: Number.NaN, requestedTarget: 111, transitionId: 'bad-target',
+    })],
+    ['mismatched terminal outcome', feedback('failed', {
+      requestedTarget: 111, transitionId: 'bad-outcome', outcome: { phase: 'confirmed' },
+    })],
+  ])('fails closed for %s', (_case, malformed) => {
+    const r = renderReactiveFeedback(malformed);
+    expect(r.input().disabled).toBe(true);
+    expect(r.input().hasAttribute('aria-valuenow')).toBe(false);
+    expect(r.output().textContent).toContain('— unavailable');
+    r.dispose();
   });
 });
 
