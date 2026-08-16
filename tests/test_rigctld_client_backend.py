@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -106,6 +107,89 @@ async def test_transport_timeout_eof_malformed_and_negative_rprt() -> None:
                 await transport.query("m", response_lines=2)
         finally:
             await transport.close()
+
+
+async def test_radio_transport_loss_advances_provider_generation_once() -> None:
+    behavior = FakeRigctldBehavior(disconnect_commands={"f"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        transitions: list[bool] = []
+        radio.bind_provider_generation(
+            advance=lambda: transitions.append(radio.connected) or len(transitions)
+        )
+
+        with pytest.raises(RadioConnectionError, match="closed"):
+            await radio.get_freq()
+
+        assert transitions == [False]
+        with pytest.raises(RadioConnectionError, match="not connected"):
+            await radio.get_freq()
+        assert transitions == [False]
+        await radio.disconnect()
+        assert transitions == [False]
+
+
+@pytest.mark.parametrize("failure", ("read_timeout", "write_timeout", "oserror"))
+async def test_radio_transport_failures_advance_provider_generation_once(
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    behavior = FakeRigctldBehavior(
+        command_delays={"f": 0.2} if failure == "read_timeout" else {}
+    )
+    async with FakeRigctldServer(behavior=behavior) as server:
+        radio = RigctldClientRadio(
+            host=server.host,
+            port=server.port,
+            timeout=0.01 if failure == "read_timeout" else 5.0,
+        )
+        await radio.connect()
+        transitions: list[bool] = []
+        radio.bind_provider_generation(
+            advance=lambda: transitions.append(radio.connected) or len(transitions)
+        )
+        writer = radio._transport._writer  # noqa: SLF001
+        assert writer is not None
+        if failure == "write_timeout":
+            monkeypatch.setattr(writer, "drain", AsyncMock(side_effect=TimeoutError))
+        elif failure == "oserror":
+            monkeypatch.setattr(writer, "drain", AsyncMock(side_effect=OSError("lost")))
+
+        error = RadioConnectionError if failure == "oserror" else RadioTimeoutError
+        operation = (
+            radio.set_freq(7_050_000) if failure != "read_timeout" else radio.get_freq()
+        )
+        with pytest.raises(error):
+            await operation
+
+        assert transitions == [False]
+        await radio.disconnect()
+        assert transitions == [False]
+
+
+async def test_radio_reconnect_does_not_double_advance_transport_generation() -> None:
+    behavior = FakeRigctldBehavior(disconnect_commands={"f"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        generations: list[int] = []
+        radio.bind_provider_generation(
+            advance=lambda: generations.append(len(generations) + 1) or generations[-1]
+        )
+
+        with pytest.raises(RadioConnectionError):
+            await radio.get_freq()
+        assert generations == [1]
+
+        await radio.connect()
+        assert radio.connected
+        assert generations == [1]
+
+        await radio.disconnect()
+        assert generations == [1, 2]
+        await radio.disconnect()
+        assert generations == [1, 2]
 
 
 async def test_radio_core_frequency_mode_ptt_and_vfo() -> None:
