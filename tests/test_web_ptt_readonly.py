@@ -18,6 +18,8 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.web import server as web_server
+from rigplane.web.protocol import decode_json
 from rigplane.web.radio_poller import SetTunerStatus
 from rigplane.web.handlers.control import ControlHandler
 
@@ -365,3 +367,37 @@ class TestWebTunerReadOnly:
         states = [event.state for event in handler._command_service.lifecycle_events()]
         assert states[-1] == "failed"
         assert "acknowledged" not in states
+
+    async def test_queued_backend_timeout_is_terminal_not_acknowledged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class StalledQueue:
+            calls = 0
+            future: asyncio.Future[object] | None = None
+
+            def put_ordered(
+                self, command: SetTunerStatus, *, future: asyncio.Future[object]
+            ) -> None:
+                self.calls += 1
+                self.future = future
+
+        monkeypatch.setattr(web_server, "_COMMAND_BATCH_STEP_TIMEOUT", 0.001)
+        handler, _ = _make_handler(
+            radio=SimpleNamespace(capabilities=frozenset()), ptt=False
+        )
+        handler._ws.send_text = AsyncMock()
+        queue = StalledQueue()
+        handler._server.command_queue = queue
+
+        await asyncio.wait_for(
+            handler._dispatch_command(1, "set_tuner_status", {"value": 2}),
+            timeout=0.1,
+        )
+
+        response = decode_json(handler._ws.send_text.await_args.args[0])
+        states = [event.state for event in handler._command_service.lifecycle_events()]
+        assert response["ok"] is False
+        assert queue.calls == 1
+        assert queue.future is not None and queue.future.cancelled()
+        assert states[-1] == "timed_out"
+        assert not {"acknowledged", "confirmed", "applied"} & set(states)

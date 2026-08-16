@@ -1672,6 +1672,8 @@ class ControlHandler:
         else:
             # Await the poller's real completion instead of acknowledging a
             # fire-and-forget enqueue that may subsequently fail.
+            from ..server import _COMMAND_BATCH_STEP_TIMEOUT  # noqa: TID251
+
             q = self._server.command_queue if self._server is not None else None
             if q is None:
                 raise RuntimeError("no command queue available")
@@ -1682,7 +1684,9 @@ class ControlHandler:
                 asyncio.get_running_loop().create_future()
             )
             put_ordered(command, future=completion)
-            outcome = await completion
+            outcome = await asyncio.wait_for(
+                completion, timeout=_COMMAND_BATCH_STEP_TIMEOUT
+            )
         if outcome is False:
             raise CommandError("tuner command was rejected by the backend")
         label = {0: "OFF", 1: "ON", 2: "TUNING"}[value]
