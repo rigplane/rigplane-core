@@ -717,7 +717,7 @@ class RadioPoller:
             field = snapshot.field(_PTT_PATH)
         except KeyError:
             return RfState.UNKNOWN
-        now = time.monotonic()
+        now = snapshot.generated_at_monotonic
         if (
             field.freshness is not FreshnessState.FRESH
             or type(field.value) is not bool

@@ -4,17 +4,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from rigplane.capabilities import (
-    CAP_ANTENNA,
-    CAP_POWER_CONTROL,
-    CAP_TUNER,
-)
+from rigplane.capabilities import CAP_ANTENNA, CAP_POWER_CONTROL, CAP_TUNER
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime._poller_types import (
@@ -47,18 +43,22 @@ def _radio() -> SimpleNamespace:
 
 
 def _observe_ptt(
-    store: StateStore, value: bool, *, age: float = 0.0, generation: int | None = None
+    store: StateStore,
+    value: bool,
+    *,
+    observed_at: float | None = None,
+    generation: int | None = None,
 ) -> None:
+    observed_at = time.monotonic() if observed_at is None else observed_at
+    generation = store.provider_generation if generation is None else generation
     store.apply(
         Observation(
             path=_PTT,
             value=value,
             source=SourceMetadata(source="poll_response", provider="test"),
-            timestamp_monotonic=time.monotonic() - age,
+            timestamp_monotonic=observed_at,
             max_age=1.0,
-            provider_generation=store.provider_generation
-            if generation is None
-            else generation,
+            provider_generation=generation,
         )
     )
 
@@ -82,7 +82,6 @@ _BLOCK_CASES = (
 )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(("cmd", "method"), _BLOCK_CASES)
 @pytest.mark.parametrize("ptt", (None, True), ids=("unknown", "tx"))
 async def test_disruptive_write_is_blocked_before_transport(
@@ -98,7 +97,6 @@ async def test_disruptive_write_is_blocked_before_transport(
     getattr(radio, method).assert_not_awaited()
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(("cmd", "method"), _BLOCK_CASES)
 async def test_disruptive_write_dispatches_once_in_fresh_rx(
     cmd: object, method: str
@@ -111,7 +109,6 @@ async def test_disruptive_write_dispatches_once_in_fresh_rx(
     getattr(radio, method).assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_fresh_rx_preserves_truthful_unsupported_failure() -> None:
     poller, radio, store = _poller()
     _observe_ptt(store, False)
@@ -120,7 +117,6 @@ async def test_fresh_rx_preserves_truthful_unsupported_failure() -> None:
         await _dispatch(poller, SendCiv(command=0x1A, data=b"\x01"))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("cmd", "method"),
     (
@@ -138,22 +134,26 @@ async def test_safety_stop_or_off_is_always_attempted(cmd: object, method: str) 
     getattr(radio, method).assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_stale_and_generation_rollover_fail_closed_then_fresh_rx_recovers() -> (
-    None
-):
-    poller, radio, store = _poller()
-    command = SendCiv(command=0x1A, data=b"\x01")
-    old_generation = store.provider_generation
-    _observe_ptt(store, False, age=2.0)
-
-    with pytest.raises(CommandError, match="RF state is unknown"):
-        await _dispatch(poller, command)
+def test_manual_clock_ttl_generation_and_recovery() -> None:
+    clock = FreshnessClock(start=10.0)
+    radio, store = _radio(), StateStore(freshness_clock=clock)
     store.begin_provider_generation()
-    _observe_ptt(store, False, generation=old_generation)
-    with pytest.raises(CommandError, match="RF state is unknown"):
-        await _dispatch(poller, command)
-
-    _observe_ptt(store, False)
-    await _dispatch(poller, command)
-    radio.send_civ.assert_awaited_once()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert store.snapshot().generated_at_monotonic == clock.now()
+    assert poller._current_rf_state().value == "rx"  # noqa: SLF001
+    clock.advance(0.999)
+    assert poller._current_rf_state().value == "rx"  # noqa: SLF001
+    clock.advance(0.001)
+    assert poller._current_rf_state().value == "unknown"  # noqa: SLF001
+    clock.advance(0.001)
+    assert poller._current_rf_state().value == "unknown"  # noqa: SLF001
+    old_generation = store.provider_generation
+    store.begin_provider_generation()
+    _observe_ptt(store, True, observed_at=clock.now(), generation=old_generation)
+    assert poller._current_rf_state().value == "unknown"  # noqa: SLF001
+    _observe_ptt(store, True, observed_at=clock.now())
+    assert poller._current_rf_state().value == "tx"  # noqa: SLF001
+    clock.advance(0.1)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._current_rf_state().value == "rx"  # noqa: SLF001
