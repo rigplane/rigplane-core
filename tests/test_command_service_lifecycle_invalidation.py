@@ -1,6 +1,13 @@
+import asyncio
 from typing import cast
 
-from rigplane.core.command_service import CommandExecutionResult, CommandService
+import pytest
+
+from rigplane.core.command_service import (
+    CommandExecutionInvalidatedError,
+    CommandExecutionResult,
+    CommandService,
+)
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     CommandSource,
@@ -14,6 +21,30 @@ from rigplane.core.state_store import StateStore
 class _Executor:
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         return CommandExecutionResult()
+
+
+class _GatedExecutor:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.fail = fail
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        self.started.set()
+        await self.release.wait()
+        if self.fail:
+            raise RuntimeError("executor failed")
+        return CommandExecutionResult(
+            observations=(
+                Observation(
+                    intent.target,
+                    14_074_000,
+                    SourceMetadata("command_response", "test", "memory"),
+                    10.0,
+                    correlation_id=intent.id,
+                ),
+            )
+        )
 
 
 class _Trap:
@@ -99,6 +130,47 @@ def test_terminate_active_commands_preserves_existing_terminal_states() -> None:
         service.emit_lifecycle(intent, "acknowledged")
         service.emit_lifecycle(intent, terminal, message="original")
         assert service.terminate_active_commands("invalidate") == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("executor_fails", [False, True])
+async def test_termination_fences_in_flight_executor_completion(
+    executor_fails: bool,
+) -> None:
+    executor = _GatedExecutor(fail=executor_fails)
+    store = StateStore()
+    service = CommandService(executor=executor, state_store=store)
+    intent = _intent("in-flight", "websocket", "ws-a")
+    execution = asyncio.create_task(service.execute(intent))
+    await executor.started.wait()
+    assert [event.state for event in service.lifecycle_events()] == [
+        "accepted",
+        "queued",
+        "sent",
+    ]
+
+    store.begin_provider_generation()
+    assert (
+        service.terminate_active_commands(
+            "provider replaced", source="websocket", session_id="ws-a"
+        )
+        == 1
+    )
+    executor.release.set()
+    error = RuntimeError if executor_fails else CommandExecutionInvalidatedError
+    message = "executor failed" if executor_fails else "provider generation change"
+    with pytest.raises(error, match=message):
+        await execution
+
+    assert [event.state for event in service.lifecycle_events()] == [
+        "accepted",
+        "queued",
+        "sent",
+        "failed",
+    ]
+    with pytest.raises(KeyError):
+        store.snapshot().field(intent.target)
+    assert service.terminate_active_commands("probe") == 0
 
 
 async def test_termination_clears_pending_and_late_readback_cannot_revive() -> None:
