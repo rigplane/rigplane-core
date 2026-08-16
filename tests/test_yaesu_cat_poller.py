@@ -21,6 +21,10 @@ from rigplane.core.state_acquisition_policy import (
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.core.tx_interlock_contract import (
+    TxInterlockCommandFamily,
+    TxInterlockDisposition,
+)
 from rigplane.exceptions import CommandError
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
@@ -92,6 +96,7 @@ def make_radio(
         "scan",
         "dial_lock",
     }
+    radio.profile.tx_interlock_disposition_overrides = {}
 
     radio.get_s_meter = AsyncMock(
         side_effect=lambda r=0: s_meter_main if r == 0 else s_meter_sub
@@ -628,6 +633,117 @@ async def test_yaesu_known_rx_preserves_immediate_dispatch(
         NotImplementedError, match="SendCiv unsupported by Yaesu CAT dispatcher"
     ):
         await poller._execute_command(SendCiv(command=0x1C))  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_profile_power_on_defer_is_command_bound_across_queue_and_execute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.runtime._poller_types import SetPowerstat
+
+    clock = [10.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_powerstat = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=True)
+    await poller._execute_command(SetPowerstat(on=True))  # noqa: SLF001
+    radio.set_powerstat.assert_awaited_once_with(True)
+    radio.set_powerstat.reset_mock()
+    poller._invalidate_ptt_observation()  # noqa: SLF001
+
+    radio.profile.tx_interlock_disposition_overrides = {
+        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER
+    }
+
+    with pytest.raises(CommandError, match="unknown"):
+        await poller._execute_command(SetPowerstat(on=True))  # noqa: SLF001
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+    future = asyncio.get_running_loop().create_future()
+    service = MagicMock()
+    queue.put_ordered(
+        SetPowerstat(on=True),
+        future=future,
+        command_id="profile-power-on",
+        command_service=service,
+    )
+    await _drain_with_ptt(poller, clock, 10.0, True)
+    assert not future.done()
+    assert poller._deferred_tx_lane.pending == SetPowerstat(on=True)  # noqa: SLF001
+    assert service.emit_lifecycle.call_args.args[1] == "queued"
+    assert service.emit_lifecycle.call_args.kwargs["details"] == {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": 13.0,
+    }
+    radio.set_powerstat.assert_not_awaited()
+
+    await _drain_with_ptt(poller, clock, 10.5, False)
+    await _drain_with_ptt(poller, clock, 11.5, False)
+    await poller._drain_commands()  # noqa: SLF001
+    assert future.result() is None
+    radio.set_powerstat.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_profile_override_unknown_and_invalid_mapping_never_fail_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.runtime._poller_types import SetPowerstat
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 30.0
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_powerstat = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    radio.profile.tx_interlock_disposition_overrides = {
+        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER
+    }
+    unknown = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetPowerstat(on=True), future=unknown)
+    await poller._drain_commands()  # noqa: SLF001
+    assert isinstance(unknown.exception(), CommandError)
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+    radio.profile.tx_interlock_disposition_overrides = {
+        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.ALWAYS_PASS
+    }
+    malformed = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetPowerstat(on=True), future=malformed)
+    await poller._drain_commands()  # noqa: SLF001
+    assert isinstance(malformed.exception(), ValueError)
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+    radio.set_powerstat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_profile_override_cannot_change_structural_floors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.runtime._poller_types import PttOff, PttOn, SetPowerstat
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 40.0
+    )
+    radio = make_radio()
+    radio.profile.tx_interlock_disposition_overrides = {
+        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER
+    }
+    radio.set_ptt = AsyncMock()
+    radio.set_powerstat = AsyncMock()
+    poller = YaesuCatPoller(radio)
+    _set_fresh_ptt_observation(poller, active=True)
+
+    with pytest.raises(CommandError, match="RF state is TX"):
+        await poller._execute_command(PttOn())  # noqa: SLF001
+    await poller._execute_command(PttOff())  # noqa: SLF001
+    await poller._execute_command(SetPowerstat(on=False))  # noqa: SLF001
+    radio.set_ptt.assert_awaited_once_with(False)
+    radio.set_powerstat.assert_awaited_once_with(False)
 
 
 @pytest.mark.asyncio
