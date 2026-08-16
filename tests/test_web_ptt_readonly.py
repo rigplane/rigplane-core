@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from queue import Queue
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +18,8 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.web import server as web_server
+from rigplane.web.protocol import decode_json
 from rigplane.web.radio_poller import SetTunerStatus
 from rigplane.web.handlers.control import ControlHandler
 
@@ -283,13 +286,26 @@ class TestWebTunerReadOnly:
         radio.set_tuner_status.assert_awaited_once_with(0)
 
     async def test_fresh_rx_queue_preserves_tuner_dispatch(self) -> None:
-        handler, q = _make_handler(
+        handler, _ = _make_handler(
             radio=SimpleNamespace(capabilities=frozenset()), ptt=False
         )
 
+        class SuccessfulQueue:
+            def __init__(self) -> None:
+                self.commands: list[SetTunerStatus] = []
+
+            def put_ordered(
+                self, command: SetTunerStatus, *, future: asyncio.Future[object]
+            ) -> None:
+                self.commands.append(command)
+                future.set_result(None)
+
+        q = SuccessfulQueue()
+        handler._server.command_queue = q
+
         await handler._enqueue_command("set_tuner_status", {"value": 2})
 
-        assert q.get_nowait() == SetTunerStatus(2)
+        assert q.commands == [SetTunerStatus(2)]
 
     @pytest.mark.parametrize("value", [True, 1.5, 3, "bogus"])
     async def test_invalid_tuner_value_fails_without_call(self, value: object) -> None:
@@ -301,3 +317,87 @@ class TestWebTunerReadOnly:
 
         radio.set_tuner_status.assert_not_awaited()
         assert q.empty()
+
+    @pytest.mark.parametrize("outcome", [False, RuntimeError("backend rejected")])
+    async def test_direct_backend_failure_is_failed_not_acknowledged(
+        self, outcome: object
+    ) -> None:
+        radio = self._make_tuner_radio()
+        if isinstance(outcome, BaseException):
+            radio.set_tuner_status.side_effect = outcome
+        else:
+            radio.set_tuner_status.return_value = outcome
+        handler, _ = _make_handler(radio=radio, ptt=False)
+
+        with pytest.raises((CommandError, RuntimeError), match="rejected"):
+            await handler._enqueue_command("set_tuner_status", {"value": 1})
+
+        radio.set_tuner_status.assert_awaited_once_with(1)
+        states = [event.state for event in handler._command_service.lifecycle_events()]
+        assert states[-1] == "failed"
+        assert "acknowledged" not in states
+
+    @pytest.mark.parametrize("outcome", [False, RuntimeError("backend rejected")])
+    async def test_queued_backend_failure_is_failed_not_acknowledged(
+        self, outcome: object
+    ) -> None:
+        class OutcomeQueue:
+            def __init__(self) -> None:
+                self.commands: list[SetTunerStatus] = []
+
+            def put_ordered(
+                self, command: SetTunerStatus, *, future: asyncio.Future[object]
+            ) -> None:
+                self.commands.append(command)
+                if isinstance(outcome, BaseException):
+                    future.set_exception(outcome)
+                else:
+                    future.set_result(outcome)
+
+        handler, _ = _make_handler(
+            radio=SimpleNamespace(capabilities=frozenset()), ptt=False
+        )
+        queue = OutcomeQueue()
+        handler._server.command_queue = queue
+
+        with pytest.raises((CommandError, RuntimeError)):
+            await handler._enqueue_command("set_tuner_status", {"value": 2})
+
+        assert queue.commands == [SetTunerStatus(2)]
+        states = [event.state for event in handler._command_service.lifecycle_events()]
+        assert states[-1] == "failed"
+        assert "acknowledged" not in states
+
+    async def test_queued_backend_timeout_is_terminal_not_acknowledged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class StalledQueue:
+            calls = 0
+            future: asyncio.Future[object] | None = None
+
+            def put_ordered(
+                self, command: SetTunerStatus, *, future: asyncio.Future[object]
+            ) -> None:
+                self.calls += 1
+                self.future = future
+
+        monkeypatch.setattr(web_server, "_COMMAND_BATCH_STEP_TIMEOUT", 0.001)
+        handler, _ = _make_handler(
+            radio=SimpleNamespace(capabilities=frozenset()), ptt=False
+        )
+        handler._ws.send_text = AsyncMock()
+        queue = StalledQueue()
+        handler._server.command_queue = queue
+
+        await asyncio.wait_for(
+            handler._dispatch_command(1, "set_tuner_status", {"value": 2}),
+            timeout=0.1,
+        )
+
+        response = decode_json(handler._ws.send_text.await_args.args[0])
+        states = [event.state for event in handler._command_service.lifecycle_events()]
+        assert response["ok"] is False
+        assert queue.calls == 1
+        assert queue.future is not None and queue.future.cancelled()
+        assert states[-1] == "timed_out"
+        assert not {"acknowledged", "confirmed", "applied"} & set(states)

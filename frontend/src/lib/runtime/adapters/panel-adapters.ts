@@ -32,6 +32,7 @@ import {
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
 import {
+  BREAK_IN_DELAY_COMMAND_DESCRIPTOR,
   FILTER_WIDTH_COMMAND_DESCRIPTOR,
   getCommandLifecycles,
   isCommandLifecycleSuperseded,
@@ -338,6 +339,14 @@ export function projectControlFeedback<T>(
     transitionId: JSON.stringify([latest.originalEpoch, latest.id, latest.status]),
     sessionEpoch: currentSessionEpoch, scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
   });
+}
+
+/** Read-only Break-in Delay projection; StateStore remains confirmed truth. */
+export function getBreakInDelayControlFeedback(): Readonly<ControlFeedback<number>> {
+  return projectControlFeedback(
+    BREAK_IN_DELAY_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
+    { control: 'break-in-delay', receiver: 0 }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
+  );
 }
 
 function filterWidthPresentation(

@@ -9,14 +9,17 @@ type FakeCommand = { id: string; name: string; params: Record<string, unknown>;
 };
 type FakeState = {
   active: 'MAIN' | 'SUB';
+  providerGeneration?: number;
+  breakInDelay?: number;
   main: Record<string, unknown>;
   sub: Record<string, unknown>;
   observationSeq?: number;
   fieldStatus?: Record<string, { observed?: boolean; freshness?: string; availability?: string; lastObservedMonotonic?: number | null }>;
 };
-const lifecycle = { commands: [] as FakeCommand[] };
+const lifecycle = { commands: [] as FakeCommand[], superseded: new Set<string>() };
 const runtimeState: { state: FakeState | null } = { state: null };
 const controlSession = vi.hoisted(() => ({ epoch: 7 }));
+const dispatch = vi.hoisted(() => vi.fn());
 const commandRadio = vi.hoisted(() => ({
   current: null as Record<string, unknown> | null,
   listeners: new Set<(value: Record<string, unknown> | null) => void>(),
@@ -26,12 +29,16 @@ vi.mock('$lib/stores/commands.svelte', async (importOriginal) => {
   return {
     ...actual,
     getCommandLifecycles: () => lifecycle.commands,
-    isCommandLifecycleSuperseded: () => false,
+    isCommandLifecycleSuperseded: (command: FakeCommand) => lifecycle.superseded.has(command.id),
   };
 });
 vi.mock('$lib/runtime/commands/radio-intents', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/commands/radio-intents')>();
-  return { ...actual, currentControlSessionEpoch: () => controlSession.epoch };
+  return {
+    ...actual,
+    currentControlSessionEpoch: () => controlSession.epoch,
+    dispatchRadioIntent: dispatch,
+  };
 });
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: () => commandRadio.current,
@@ -47,9 +54,14 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () => null }));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: () => null }));
 
-import { FILTER_WIDTH_FEEDBACK_DESCRIPTOR, getFilterWidthCommandLifecycle } from '../panel-adapters';
 import {
-  FILTER_WIDTH_COMMAND_DESCRIPTOR, STATE_BACKED_COMMAND_DESCRIPTORS,
+  FILTER_WIDTH_FEEDBACK_DESCRIPTOR,
+  getBreakInDelayControlFeedback,
+  getFilterWidthCommandLifecycle,
+} from '../panel-adapters';
+import {
+  BREAK_IN_DELAY_COMMAND_DESCRIPTOR, FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  STATE_BACKED_COMMAND_DESCRIPTORS,
   beginCommand, getStateBackedCommandDescriptor,
 } from '$lib/stores/commands.svelte';
 import {
@@ -72,10 +84,12 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   afterEach(() => {
     vi.useRealTimers();
     lifecycle.commands = [];
+    lifecycle.superseded.clear();
     controlSession.epoch = 7;
     runtimeState.state = null;
     commandRadio.current = null;
     commandRadio.listeners.clear();
+    dispatch.mockClear();
   });
   it('preserves real module exports while exposing a mutable control-session epoch', () => {
     expect(beginCommand).toBeTypeOf('function');
@@ -88,7 +102,9 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it('shares one canonical registered Filter Width descriptor and exact paths', () => {
     expect(FILTER_WIDTH_FEEDBACK_DESCRIPTOR).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
     expect(getStateBackedCommandDescriptor('set_filter_width')).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
-    expect(STATE_BACKED_COMMAND_DESCRIPTORS.size).toBe(1);
+    expect([...STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
+      'set_filter_width', 'set_break_in_delay',
+    ]);
     expect(RADIO_INTENT_NAMES).toContain(FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName);
     const main = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 0 } }))!;
     const sub = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 2100, receiver: 1 } }))!;
@@ -428,5 +444,150 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
     } });
     expect(getFilterWidthCommandLifecycle()).toMatchObject({ phase: 'idle', presentation: null });
+  });
+});
+
+const delayCommand = (over: Partial<FakeCommand> = {}): FakeCommand => ({
+  id: 'delay-1', name: 'set_break_in_delay', params: Object.freeze({ level: 64 }),
+  originalEpoch: controlSession.epoch, eventEpoch: controlSession.epoch,
+  createdAt: 1, status: 'pending', ...over,
+});
+const delayState = (over: Partial<FakeState> = {}): FakeState => ({
+  active: 'MAIN', providerGeneration: 3, breakInDelay: 32, main: {}, sub: {},
+  fieldStatus: { breakInDelay: {
+    observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4,
+  } }, ...over,
+});
+
+describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    lifecycle.commands = []; lifecycle.superseded.clear();
+    runtimeState.state = null; controlSession.epoch = 7; dispatch.mockClear();
+    commandRadio.current = null; commandRadio.listeners.clear();
+  });
+
+  it('registers one exact global descriptor without changing Filter Width', () => {
+    expect(getStateBackedCommandDescriptor('set_filter_width')).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
+    expect(getStateBackedCommandDescriptor('set_break_in_delay')).toBe(BREAK_IN_DELAY_COMMAND_DESCRIPTOR);
+    expect([...STATE_BACKED_COMMAND_DESCRIPTORS.entries()]).toEqual([
+      ['set_filter_width', FILTER_WIDTH_COMMAND_DESCRIPTOR],
+      ['set_break_in_delay', BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
+    ]);
+    const scope = BREAK_IN_DELAY_COMMAND_DESCRIPTOR.scope(delayCommand());
+    expect(scope).toEqual({ control: 'break-in-delay', receiver: 0 });
+    expect(BREAK_IN_DELAY_COMMAND_DESCRIPTOR.fieldPath(scope!)).toBe('breakInDelay');
+    expect(BREAK_IN_DELAY_COMMAND_DESCRIPTOR.target(delayCommand())).toBe(64);
+    expect(BREAK_IN_DELAY_COMMAND_DESCRIPTOR.repeatPolicy).toBe('latest-target-wins');
+  });
+
+  it.each([
+    ['missing', {}],
+    ['non-number', { level: '64' }],
+    ['NaN', { level: Number.NaN }],
+    ['infinite', { level: Number.POSITIVE_INFINITY }],
+    ['fractional', { level: 64.5 }],
+    ['unsafe', { level: Number.MAX_VALUE }],
+    ['wrong receiver', { level: 64, receiver: 1 }],
+    ['extra scope', { level: 64, slot: 'A' }],
+  ])('fails closed for %s target/scope input', (_case, params) => {
+    const candidate = delayCommand({ params });
+    expect(BREAK_IN_DELAY_COMMAND_DESCRIPTOR.target(candidate)).toBeNull();
+    if (Reflect.ownKeys(params).length > 1) {
+      expect(BREAK_IN_DELAY_COMMAND_DESCRIPTOR.scope(candidate)).toBeNull();
+    }
+  });
+
+  it('projects submitted and acknowledged facts without mutation or dispatch', () => {
+    runtimeState.state = delayState();
+    const pending = Object.freeze(delayCommand());
+    lifecycle.commands = [pending];
+    const before = JSON.stringify(lifecycle.commands);
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      confirmed: 32, target: 64, requestedTarget: 64, phase: 'submitted', busy: true,
+      availability: 'available', scope: { control: 'break-in-delay', receiver: 0 },
+    });
+    lifecycle.commands = [Object.freeze(delayCommand({ status: 'acknowledged' }))];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      confirmed: 32, target: 64, phase: 'awaiting-confirmation', busy: true,
+    });
+    expect(JSON.stringify([pending])).toBe(before);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing state', null],
+    ['missing value', delayState({ breakInDelay: undefined })],
+    ['non-integer value', delayState({ breakInDelay: 32.5 })],
+    ['missing field status', delayState({ fieldStatus: {} })],
+    ['stale field', delayState({ fieldStatus: { breakInDelay: {
+      observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5,
+    } } })],
+    ['unavailable field', delayState({ fieldStatus: { breakInDelay: {
+      observed: true, freshness: 'fresh', availability: 'unavailable', lastObservedMonotonic: 5,
+    } } })],
+  ])('returns unavailable for %s canonical truth', (_case, canonical) => {
+    runtimeState.state = canonical; lifecycle.commands = [delayCommand()];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      confirmed: null, target: null, phase: 'unavailable', busy: false,
+      availability: 'unavailable',
+    });
+  });
+
+  it('handles terminal, superseded, reversal, session/provider replacement, and out-of-band truth', () => {
+    runtimeState.state = delayState();
+    for (const [status, error] of [
+      ['failed', 'rejected'], ['timed-out', undefined], ['cancelled', 'session-disconnected'],
+    ] as const) {
+      lifecycle.commands = [delayCommand({ status, error })];
+      expect(getBreakInDelayControlFeedback()).toMatchObject({
+        confirmed: 32, target: null, requestedTarget: 64, phase: status, busy: false,
+        outcome: { phase: status, ...(error === undefined ? {} : { error }) },
+      });
+    }
+    lifecycle.commands = [delayCommand({ id: 'old', createdAt: 9 })];
+    lifecycle.superseded.add('old');
+    expect(getBreakInDelayControlFeedback()).toMatchObject({ phase: 'idle', confirmed: 32 });
+    lifecycle.commands = [delayCommand({ id: 'reverse', params: { level: 32 } })];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      phase: 'submitted', confirmed: 32, target: 32, busy: true,
+    });
+    controlSession.epoch = 8;
+    runtimeState.state = delayState({ providerGeneration: 4, breakInDelay: 48 });
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      phase: 'idle', confirmed: 48, target: null, sessionEpoch: 8,
+    });
+    lifecycle.commands = [];
+    runtimeState.state = delayState({ providerGeneration: 4, breakInDelay: 52 });
+    expect(getBreakInDelayControlFeedback()).toMatchObject({ phase: 'idle', confirmed: 52 });
+  });
+
+  it('confirms only from matching fresh canonical truth newer than the ACK boundary', async () => {
+    vi.useFakeTimers(); vi.doUnmock('$lib/stores/commands.svelte'); vi.resetModules();
+    const store = await import('$lib/stores/commands.svelte');
+    const { getBreakInDelayControlFeedback: getLiveFeedback } = await import('../panel-adapters');
+    runtimeState.state = delayState({ breakInDelay: 64 }); emitAcceptedState(runtimeState.state);
+    const record = store.beginCommand({
+      id: 'real-delay', name: 'set_break_in_delay', params: { level: 64 }, originalEpoch: 7,
+    });
+    store.acknowledgeCommand(record.id, 7, 7);
+    expect(store.getCommandLifecycle(record.id, 7)).toMatchObject({
+      status: 'acknowledged', ackFieldObservationTimes: { breakInDelay: 4 },
+    });
+    expect(getLiveFeedback()).toMatchObject({ phase: 'awaiting-confirmation', target: 64 });
+    emitAcceptedState(delayState({ breakInDelay: 64 }));
+    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('acknowledged');
+    emitAcceptedState(delayState({ breakInDelay: 48, fieldStatus: { breakInDelay: {
+      observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5,
+    } } }));
+    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('acknowledged');
+    runtimeState.state = delayState({ breakInDelay: 64, fieldStatus: { breakInDelay: {
+      observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6,
+    } } }); emitAcceptedState(runtimeState.state);
+    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('confirmed');
+    expect(getLiveFeedback()).toMatchObject({
+      phase: 'confirmed', confirmed: 64, target: null, outcome: { phase: 'confirmed' },
+    });
+    store.resetCommandLifecycle();
   });
 });
