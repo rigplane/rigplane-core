@@ -7,6 +7,7 @@ being corrected, and a missing union member cannot create a privileged path.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -59,6 +60,7 @@ __all__ = [
     "TxInterlockDeferredResult",
     "TxInterlockDecision",
     "TxInterlockDisposition",
+    "TxInterlockDispositionOverrides",
     "classify_tx_interlock",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
@@ -68,6 +70,10 @@ __all__ = [
 _METADATA_BY_FAMILY = {
     metadata.family: metadata for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
 }
+
+TxInterlockDispositionOverrides = Mapping[
+    TxInterlockCommandFamily, TxInterlockDisposition
+]
 
 
 class RfState(StrEnum):
@@ -94,6 +100,7 @@ class TxInterlockDecision:
     disposition: TxInterlockDisposition
     allowed: bool
     reason: str
+    rf_state: RfState | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +148,13 @@ class DeferredTxCommandLane:
 
         return self._entry.command if self._entry is not None else None
 
-    def defer(self, command: object, *, now: float) -> TxInterlockDeferredResult:
+    def defer(
+        self,
+        command: object,
+        *,
+        now: float,
+        decision: TxInterlockDecision | None = None,
+    ) -> TxInterlockDeferredResult:
         """Hold a ``DEFER`` command, explicitly replacing a prior held command.
 
         Active supersession carries forward the original absolute deadline but
@@ -150,9 +163,13 @@ class DeferredTxCommandLane:
         starts a separate fresh hold.
         """
 
-        decision = evaluate_tx_interlock(command, rf_state=RfState.TX)
-        if decision.disposition is not TxInterlockDisposition.DEFER:
-            raise ValueError("only commands with DEFER disposition may enter the lane")
+        effective = decision or evaluate_tx_interlock(command, rf_state=RfState.TX)
+        if (
+            effective.disposition is not TxInterlockDisposition.DEFER
+            or effective.allowed
+            or effective.rf_state is not RfState.TX
+        ):
+            raise ValueError("only denied DEFER decisions may be held in the lane")
 
         previous = self._entry
         if previous is not None and now < previous.expires_at:
@@ -339,7 +356,34 @@ def classify_tx_interlock(command: object) -> TxInterlockDisposition:
     return TxInterlockDisposition.TX_SAFE
 
 
-def evaluate_tx_interlock(command: object, *, rf_state: RfState) -> TxInterlockDecision:
+def _effective_tx_interlock_disposition(
+    command: object,
+    disposition_overrides: TxInterlockDispositionOverrides | None,
+) -> TxInterlockDisposition:
+    base = classify_tx_interlock(command)
+    if base is TxInterlockDisposition.ALWAYS_PASS or disposition_overrides is None:
+        return base
+    for family, override in disposition_overrides.items():
+        metadata = _METADATA_BY_FAMILY.get(family)
+        if (
+            not isinstance(family, TxInterlockCommandFamily)
+            or metadata is None
+            or metadata.base_disposition is not TxInterlockDisposition.TX_SAFE
+            or override is not TxInterlockDisposition.DEFER
+        ):
+            raise ValueError("invalid or loosening TX interlock override")
+    metadata = get_tx_interlock_command_family_metadata(command)
+    if metadata is None:
+        return base
+    return disposition_overrides.get(metadata.family, base)
+
+
+def evaluate_tx_interlock(
+    command: object,
+    *,
+    rf_state: RfState,
+    disposition_overrides: TxInterlockDispositionOverrides | None = None,
+) -> TxInterlockDecision:
     """Evaluate whether a command may be attempted now at an enforcement seat.
 
     Hard BLOCK and DEFER commands both require *known* RX for an immediate
@@ -347,26 +391,27 @@ def evaluate_tx_interlock(command: object, *, rf_state: RfState) -> TxInterlockD
     this pure policy only preserves the fail-closed result and truthful reason.
     """
 
-    disposition = classify_tx_interlock(command)
+    disposition = _effective_tx_interlock_disposition(command, disposition_overrides)
     if disposition in (
         TxInterlockDisposition.ALWAYS_PASS,
         TxInterlockDisposition.TX_SAFE,
     ):
         return TxInterlockDecision(
-            disposition, True, "TX interlock permits this command."
+            disposition, True, "TX interlock permits this command.", rf_state
         )
     if rf_state is RfState.RX:
-        return TxInterlockDecision(disposition, True, "RF state is known RX.")
+        return TxInterlockDecision(disposition, True, "RF state is known RX.", rf_state)
     if rf_state is RfState.UNKNOWN:
         return TxInterlockDecision(
             disposition,
             False,
             "RF state is unknown; this command must not be attempted yet.",
+            rf_state,
         )
     if disposition is TxInterlockDisposition.DEFER:
         return TxInterlockDecision(
-            disposition, False, "RF state is TX; command is deferred."
+            disposition, False, "RF state is TX; command is deferred.", rf_state
         )
     return TxInterlockDecision(
-        disposition, False, "RF state is TX; command is blocked."
+        disposition, False, "RF state is TX; command is blocked.", rf_state
     )

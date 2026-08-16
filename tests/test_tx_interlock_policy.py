@@ -280,6 +280,9 @@ def test_deferred_lane_reuses_effective_decision_without_reclassification(
     receiving_decision = evaluate_tx_interlock(
         second, rf_state=RfState.RX, disposition_overrides=overrides
     )
+    unknown_decision = evaluate_tx_interlock(
+        second, rf_state=RfState.UNKNOWN, disposition_overrides=overrides
+    )
     monkeypatch.setattr(
         "rigplane.runtime.tx_interlock.evaluate_tx_interlock",
         lambda *_args, **_kwargs: pytest.fail("effective decision was recomputed"),
@@ -295,12 +298,9 @@ def test_deferred_lane_reuses_effective_decision_without_reclassification(
         TxInterlockDeferredOutcome.EXPIRED
     )
 
-    with pytest.raises(ValueError, match="held"):
-        lane.defer(
-            SetPowerstat(on=True),
-            now=20.0,
-            decision=receiving_decision,
-        )
+    for refused in (receiving_decision, unknown_decision):
+        with pytest.raises(ValueError, match="held"):
+            lane.defer(SetPowerstat(on=True), now=20.0, decision=refused)
 
 
 def test_deferred_lane_resets_only_quiet_progress_for_unknown_or_renewed_tx() -> None:
