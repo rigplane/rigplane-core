@@ -1273,8 +1273,10 @@ describe('per-digit tuning (MOR-1322) — structural gating', () => {
 });
 
 describe('per-digit tuning (MOR-1322) — intents (R9: frequency, never TX)', () => {
-  const wheelOn = (el: Element, deltaY: number) =>
-    el.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+  const wheelOn = (el: Element, deltaY: number) => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return el.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+  };
 
   // Kills: dropping the receiver from the intent — MAIN and SUB tune different
   // radios' halves and a lost receiver silently moves the wrong one.
@@ -1299,6 +1301,26 @@ describe('per-digit tuning (MOR-1322) — intents (R9: frequency, never TX)', ()
     flushSync();
     expect(onTuneFrequency).toHaveBeenCalledTimes(1);
     expect(onTuneFrequency.mock.calls[0][0]).toBe(receiver);
+  });
+
+  it('requires a deliberate digit click before a VFO wheel event becomes a tuning intent', () => {
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: tunableTile, onTuneFrequency });
+    const digit = slots(t)[0].querySelectorAll<HTMLElement>('.digit')[4];
+    const unarmed = new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true });
+
+    expect(digit.dispatchEvent(unarmed)).toBe(true);
+    flushSync();
+    expect(unarmed.defaultPrevented).toBe(false);
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+
+    digit.click();
+    const armed = new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true });
+    expect(digit.dispatchEvent(armed)).toBe(false);
+    flushSync();
+    expect(armed.defaultPrevented).toBe(true);
+    expect(onTuneFrequency).toHaveBeenCalledOnce();
+    expect(onTuneFrequency).toHaveBeenCalledWith('MAIN', tunableTile.vfos[0].frequencyHz! + 1000);
   });
 
   // Kills: an inverted or constant step. Wheel up must raise, wheel down must
@@ -1430,6 +1452,7 @@ describe('pending-target affordance (MOR-1441)', () => {
 
         const digits = activeSlot(el).querySelectorAll<HTMLElement>('.digit');
         const oneKhzDigit = digits[digits.length - 4]; // 1 kHz place, robust to MHz digit-count trim
+        oneKhzDigit.click();
         oneKhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
         flushSync();
         vi.advanceTimersByTime(1); // flush the accumulator's paced emit
@@ -1451,8 +1474,10 @@ describe('pending-target affordance (MOR-1441)', () => {
 });
 
 describe('per-digit tuning (MOR-1322) — the operational guard, pinned independently', () => {
-  const wheel = (el: Element) =>
-    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+  const wheel = (el: Element) => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+  };
 
   // The MOR-1321 B2 lesson applied FROM THE START, and the reason `disabled` is
   // an OPERATIONAL gate rather than a structural one: the control still mounts,
@@ -1525,8 +1550,10 @@ describe('per-digit tuning (MOR-1322) — the operational guard, pinned independ
 });
 
 describe('per-digit tuning (MOR-1322) — the SLOT axis (verification B1)', () => {
-  const wheel = (el: Element) =>
-    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+  const wheel = (el: Element) => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+  };
 
   /**
    * The tune intent is RECEIVER-scoped: `set_freq {receiver}` writes that
@@ -1633,8 +1660,10 @@ describe('per-digit tuning (MOR-1322) — the SLOT axis (verification B1)', () =
 // landing on SUB) is impossible by construction, and the intra-receiver hazard
 // B1 found stays closed — an inactive slot of the SAME receiver never mounts.
 describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () => {
-  const wheelUp = (el: Element) =>
-    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+  const wheelUp = (el: Element) => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+  };
   /** The 1 Hz digit — a wheel here steps the frequency by exactly one. */
   const onesDigit = (sl: HTMLElement) => {
     const digits = sl.querySelectorAll('.digit');
