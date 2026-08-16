@@ -16,6 +16,17 @@ export function bindSemanticSurfaceHandlers() {
   });
 }
 
+/** No Break-in Delay truth or command lifecycle exists in the offline fixture. */
+export function getBreakInDelayControlFeedback() {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: 'break-in-delay', receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
 /**
  * MOR-1441 — `SemanticRadioSurfaces.svelte` now also imports
  * `getPendingFrequencyHz` from the real `panel-adapters` module. Per this
