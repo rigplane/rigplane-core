@@ -1968,6 +1968,83 @@ async def test_audio_handler_pushes_pcm_browser_tx_directly() -> None:
     radio._push_audio_tx_opus.assert_not_awaited()
 
 
+def _tx_frame_warning_messages(
+    caplog: pytest.LogCaptureFixture, action: str
+) -> list[str]:
+    return [
+        record.message
+        for record in caplog.records
+        if record.levelname == "WARNING" and action in record.message
+    ]
+
+
+async def test_tx_frame_warnings_throttled_not_logged_once_per_frame(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-1788: a stuck per-frame failure must not log once per frame.
+
+    Policy (same as the UDP error throttle in ``core.transport``): the first
+    three occurrences log in full, then every hundredth carries the count of
+    suppressed occurrences.  Frames are still dropped — behavior unchanged.
+    """
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_web_tx_radio(contract)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+    handler._tx_active = True  # _transcoder stays None → no-transcoder drop path
+
+    with caplog.at_level("WARNING", logger="rigplane.web.handlers.audio"):
+        for _ in range(250):
+            await handler._handle_tx_audio(
+                _make_web_tx_audio_frame(AUDIO_CODEC_OPUS, b"opus-frame")
+            )
+
+    messages = _tx_frame_warning_messages(caplog, "action=dropped_no_transcoder")
+    assert len(messages) == 5  # first 3 in full, then #100 and #200
+    assert "(#1)" in messages[0]
+    assert "(#3)" in messages[2]
+    assert "(#100, suppressed 96)" in messages[3]
+    assert "(#200, suppressed 99)" in messages[4]
+    radio._push_audio_tx_pcm.assert_not_awaited()
+    radio._push_audio_tx_opus.assert_not_awaited()
+
+
+async def test_tx_frame_warning_counters_reset_between_tx_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-1788: counters are per TX session — a recurrence in a later
+    session is never hidden behind a suppressed count from an earlier one."""
+    contract = _make_web_tx_contract(AudioCodec.PCM_1CH_16BIT)
+    radio = _make_web_tx_radio(contract)
+    ws = SimpleNamespace(recv=AsyncMock(), send_binary=AsyncMock())
+    handler = AudioHandler(ws, radio, None)
+    # Host-independent: the transcoder factory fails regardless of whether
+    # libopus exists on the machine, leaving the no-transcoder guard active.
+    monkeypatch.setattr(
+        audio_module,
+        "create_pcm_opus_transcoder",
+        MagicMock(side_effect=RuntimeError("factory failed")),
+    )
+
+    frame = _make_web_tx_audio_frame(AUDIO_CODEC_OPUS, b"opus-frame")
+    with caplog.at_level("WARNING", logger="rigplane.web.handlers.audio"):
+        await handler._handle_control({"type": "audio_start", "direction": "tx"})
+        for _ in range(4):
+            await handler._handle_tx_audio(frame)
+        await handler._handle_control({"type": "audio_stop", "direction": "tx"})
+
+        await handler._handle_control({"type": "audio_start", "direction": "tx"})
+        await handler._handle_tx_audio(frame)
+
+    messages = _tx_frame_warning_messages(caplog, "action=dropped_no_transcoder")
+    # Session 1: #1..#3 in full (4th suppressed); session 2 restarts at #1.
+    assert len(messages) == 4
+    for index, message in enumerate(messages[:3]):
+        assert f"(#{index + 1})" in message
+    assert "(#1)" in messages[-1]
+
+
 class _NeutralWebTxRadio(_WebTxRadio):
     def __init__(self, contract: AudioStreamContract) -> None:
         super().__init__(
