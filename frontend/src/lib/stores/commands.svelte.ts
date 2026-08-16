@@ -68,8 +68,26 @@ export const FILTER_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<numbe
   matches: (confirmed: number, target: number) => confirmed === target,
 });
 
+const breakInDelayTarget = (command: Pick<CommandLifecycle, 'params'>): number | null =>
+  Reflect.ownKeys(command.params).length === 1
+    && Object.prototype.hasOwnProperty.call(command.params, 'level')
+    ? safeInteger(command.params.level) : null;
+
+export const BREAK_IN_DELAY_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_break_in_delay', repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => breakInDelayTarget(command) === null
+    ? null : Object.freeze({ control: 'break-in-delay', receiver: 0 }),
+  fieldPath: () => 'breakInDelay',
+  target: breakInDelayTarget,
+  confirmed: (state: ServerState) => safeInteger(state.breakInDelay),
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
-  new Map([[FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR]]);
+  new Map([
+    [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
+    [BREAK_IN_DELAY_COMMAND_DESCRIPTOR.intentName, BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
+  ]);
 export const getStateBackedCommandDescriptor = (intentName: string): StateBackedCommandDescriptor<unknown> | undefined =>
   (STATE_BACKED_COMMAND_DESCRIPTORS as ReadonlyMap<string, StateBackedCommandDescriptor<unknown>>).get(intentName);
 
