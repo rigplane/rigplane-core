@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import logging
 import time
-from collections.abc import Iterable
+from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
@@ -19,6 +21,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 
 _DEFAULT_MAX_HISTORY_COUNT = 4096
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "FieldSnapshot",
@@ -258,6 +261,9 @@ class StateStore:
         "_history_floor_state_revision",
         "_max_history_count",
         "_observation_seq",
+        "_provider_generation_notifications",
+        "_provider_generation_notifying",
+        "_provider_generation_subscribers",
         "_provider_generation",
         "_relative_vfo_retention",
         "_state_revision",
@@ -277,6 +283,11 @@ class StateStore:
         self._freshness_revision = 0
         self._observation_seq = 0
         self._provider_generation = 0
+        self._provider_generation_subscribers: list[Callable[[int], None]] = []
+        self._provider_generation_notifications: deque[
+            tuple[int, tuple[Callable[[int], None], ...]]
+        ] = deque()
+        self._provider_generation_notifying = False
         self._relative_vfo_retention: _RelativeVfoRetention | None = None
         self._entries: dict[FieldPath, _FieldEntry] = {}
         self._history: list[SnapshotDelta] = []
@@ -311,7 +322,43 @@ class StateStore:
                 freshness=(),
                 reconciliation_requests=(),
             )
+        self._provider_generation_notifications.append(
+            (self._provider_generation, tuple(self._provider_generation_subscribers))
+        )
+        if self._provider_generation_notifying:
+            return self._provider_generation
+        self._provider_generation_notifying = True
+        try:
+            while self._provider_generation_notifications:
+                generation, subscribers = (
+                    self._provider_generation_notifications.popleft()
+                )
+                for subscriber in subscribers:
+                    try:
+                        subscriber(generation)
+                    except Exception:
+                        logger.warning(
+                            "provider generation subscriber failed", exc_info=True
+                        )
+        finally:
+            self._provider_generation_notifying = False
         return self._provider_generation
+
+    def subscribe_provider_generation(
+        self, subscriber: Callable[[int], None]
+    ) -> Callable[[], None]:
+        """Subscribe to synchronous generation invalidation notifications."""
+
+        self._provider_generation_subscribers.append(subscriber)
+
+        def unsubscribe() -> None:
+            self._provider_generation_subscribers[:] = [
+                item
+                for item in self._provider_generation_subscribers
+                if item is not subscriber
+            ]
+
+        return unsubscribe
 
     def apply(self, observation: Observation) -> ChangeSet:
         """Apply an explicitly generation-bound observation, or reject it."""

@@ -3257,6 +3257,126 @@ async def test_deferred_lifecycle_is_delivered_only_to_its_issuer() -> None:
     assert bystander_q.empty()
 
 
+@pytest.mark.asyncio
+async def test_provider_generation_invalidates_only_active_web_commands() -> None:
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    service = srv.command_service
+    service._executor = _StubCommandExecutor()  # noqa: SLF001
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq_hz": 1},
+            source="websocket",
+            command_id="same-id",
+            session_id="session-issuer",
+        )
+    )
+    await service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq_hz": 2},
+            source="public_api",
+            command_id="same-id",
+        )
+    )
+
+    def broken_subscriber(_generation: int) -> None:
+        raise RuntimeError("subscriber broke")
+
+    unsubscribe = srv.command_state_store.subscribe_provider_generation(
+        broken_subscriber
+    )
+    assert srv.command_state_store.begin_provider_generation() == 1
+    unsubscribe()
+    srv._broadcast_state_update(force=True)  # noqa: SLF001
+    issuer = []
+    while not issuer_q.empty():
+        issuer.append(issuer_q.get_nowait())
+    bystander = []
+    while not bystander_q.empty():
+        bystander.append(bystander_q.get_nowait())
+    assert [
+        item["state"] for item in issuer if item["type"] == "command_lifecycle"
+    ] == ["failed"]
+    assert not any(item["type"] == "command_lifecycle" for item in bystander)
+    assert service.terminate_active_commands("probe", source="websocket") == 0
+    assert service.terminate_active_commands("probe", source="public_api") == 1
+    service.apply_observation(
+        Observation(
+            path=FieldPath.receiver("0", "freq_mode", "freq_hz"),
+            value=1,
+            source=SourceMetadata(
+                source="poll_response",
+                provider="stale",
+                command_source="websocket",
+                session_id="session-issuer",
+            ),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id="same-id",
+            provider_generation=0,
+        )
+    )
+    assert issuer_q.empty() and bystander_q.empty()
+
+
+def test_provider_generation_subscribers_serialize_reentrant_advances() -> None:
+    store = StateStore()
+    trace: list[tuple[str, int]] = []
+
+    def first(generation: int) -> None:
+        trace.append(("first", generation))
+        if generation == 1:
+            store.begin_provider_generation()
+
+    store.subscribe_provider_generation(first)
+    unsubscribe = store.subscribe_provider_generation(
+        lambda value: trace.append(("second", value))
+    )
+    assert store.begin_provider_generation() == 2
+    assert trace == [("first", 1), ("second", 1), ("first", 2), ("second", 2)]
+    unsubscribe()
+    unsubscribe()
+
+
+@pytest.mark.asyncio
+async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None:
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    await _ack_held(srv)
+    malformed = _life(
+        state="reconciled",
+        message="confirmed by matching observation",
+        details={
+            "session_id": "session-issuer",
+            "revision": 1,
+            "observationSeq": 1,
+        },
+    )
+    srv._on_command_lifecycle_event(malformed)  # noqa: SLF001
+    assert issuer_q.empty() and bystander_q.empty()
+    srv.command_service.apply_observation(
+        Observation(
+            path=FieldPath.receiver("0", "freq_mode", "freq_hz"),
+            value=1,
+            source=SourceMetadata(
+                source="poll_response",
+                provider="physical",
+                command_source="websocket",
+                session_id="session-issuer",
+            ),
+            timestamp_monotonic=time.monotonic(),
+            correlation_id="cmd-held",
+            provider_generation=srv.command_state_store.provider_generation,
+        )
+    )
+    payload = issuer_q.get_nowait()
+    assert payload["state"] == "reconciled"
+    assert payload["details"] == {}
+    assert payload["commandId"] == "cmd-held" and issuer_q.empty()
+    assert bystander_q.empty()
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

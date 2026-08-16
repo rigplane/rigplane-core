@@ -758,6 +758,11 @@ class WebServer:
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
         )
+        self._unsubscribe_provider_generation = (
+            self.command_state_store.subscribe_provider_generation(
+                self._on_provider_generation
+            )
+        )
         # MOR-1445: a websocket-queued command can be acknowledged at enqueue
         # and only fail later, once RadioPoller actually executes it against
         # the radio (e.g. a validation error the poller surfaces post-ack).
@@ -1924,6 +1929,12 @@ class WebServer:
         """React to StateStore freshness changes produced by the shared service."""
         self._broadcast_state_update()
 
+    def _on_provider_generation(self, _generation: int) -> None:
+        """Fail active Web work at the canonical provider invalidation edge."""
+        self.command_service.terminate_active_commands(
+            "provider generation invalidated", source="websocket"
+        )
+
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
@@ -2094,7 +2105,8 @@ class WebServer:
         details = event.details
         timestamp = event.timestamp_monotonic
         if (
-            event.state not in ("queued", "superseded", "timed_out", "failed")
+            event.state
+            not in ("queued", "superseded", "timed_out", "failed", "reconciled")
             or event.source != "websocket"
             or not isinstance(event.command_id, str)
             or not event.command_id.strip()
@@ -2126,6 +2138,22 @@ class WebServer:
                 "reason": "tx_active",
                 "expiresAt": expires_at,
             }
+        elif event.state == "reconciled":
+            revision = details.get("revision")
+            observation_seq = details.get("observationSeq")
+            if (
+                set(details) != {"session_id", "revision", "observationSeq"}
+                or type(revision) is not int
+                or revision < 0
+                or type(observation_seq) is not int
+                or observation_seq < 0
+                or event.target is None
+                or event.message != "confirmed by matching observation"
+                or not any(
+                    prior is event for prior in self.command_service.lifecycle_events()
+                )
+            ):
+                return False
         elif set(details) != {"session_id"}:
             return False
         acknowledged = any(
@@ -2758,6 +2786,7 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        self._unsubscribe_provider_generation()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
         await stop_web_server(self)
