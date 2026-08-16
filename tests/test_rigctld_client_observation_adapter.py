@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -12,6 +13,7 @@ from rigplane._poller_types import (
     CommandQueue,
     EnableScope,
     PttOn,
+    SelectVfo,
     SetAfLevel,
     SetAttenuator,
     SetFreq,
@@ -22,6 +24,10 @@ from rigplane._poller_types import (
     SetRfGain,
 )
 from rigplane.backends.rigctld_client import RigctldClientRadio
+from rigplane.backends.rigctld_client.radio import (
+    RigctldClientObservationPoller,
+    _entry_matches_observation,
+)
 from rigplane.backends.rigctld_client.observations import (
     RigctldClientObservationAdapter,
     build_external_rigctld_acquisition_profile,
@@ -175,10 +181,12 @@ async def test_observation_poller_set_success_waits_for_rigctld_readback() -> No
         await radio.connect()
         try:
             queue = CommandQueue()
-            store = StateStore()
+            clock = FreshnessClock(start=50.0)
+            store = StateStore(freshness_clock=clock)
             service = CommandService(
                 executor=_NoopCommandExecutor(),
                 state_store=store,
+                clock=clock.now,
             )
             intent = command_intent_from_request(
                 "set_freq",
@@ -202,12 +210,37 @@ async def test_observation_poller_set_success_waits_for_rigctld_readback() -> No
                 command_service=service,
             )
             observations = []
-            poller = radio.create_observation_poller(
+            poller = RigctldClientObservationPoller(
+                radio,
                 callback=observations.extend,
                 command_queue=queue,
+                clock=clock.now,
+            )
+            poller.bind_provider_generation(
+                capture=lambda: store.provider_generation,
+                advance=store.begin_provider_generation,
             )
 
             await poller._drain_commands()  # noqa: SLF001
+            await service.execute(
+                command_intent_from_request(
+                    "set_freq",
+                    {"freq": 7_060_000},
+                    source="websocket",
+                    command_id="latest",
+                )
+            )
+            queue.put_ordered(
+                SetFreq(7_060_000),
+                command_id="latest",
+                source="websocket",
+                command_service=service,
+            )
+            await poller._drain_commands()  # noqa: SLF001
+            pending = poller._pending_readback_entries  # noqa: SLF001
+            assert [item.command_id for item in pending] == ["latest"]
+            entry = pending[0]
+            clock.advance(0.1)
 
             assert future.done()
             assert future.result() is None
@@ -215,6 +248,26 @@ async def test_observation_poller_set_success_waits_for_rigctld_readback() -> No
                 store.snapshot().field("receiver.0.freq_mode.freq_hz")
 
             await poller._poll_medium()  # noqa: SLF001
+            freq_observation = next(
+                item
+                for item in observations
+                if str(item.path) == "receiver.main.active.freq_mode.freq_hz"
+            )
+            assert _entry_matches_observation(entry, freq_observation, now=clock.now())
+            assert all(
+                not _entry_matches_observation(entry, sample, now=now)
+                for sample, now in (
+                    (replace(freq_observation, value=True), clock.now()),
+                    (
+                        replace(
+                            freq_observation,
+                            timestamp_monotonic=entry.dispatched_at_monotonic,
+                        ),
+                        clock.now(),
+                    ),
+                    (freq_observation, entry.expires_at_monotonic),
+                )
+            )
             for observation in observations:
                 service.apply_observation(observation)
 
@@ -222,28 +275,29 @@ async def test_observation_poller_set_success_waits_for_rigctld_readback() -> No
                 service.pending_overlays(
                     source="websocket",
                     session_id=None,
-                    command_id="ws-rigctld-set-freq",
+                    command_id="latest",
                 )
                 == ()
             )
             assert [
                 event.state
                 for event in service.lifecycle_events()
-                if event.command_id == "ws-rigctld-set-freq"
+                if event.command_id == "latest"
             ] == ["accepted", "queued", "sent", "acknowledged", "reconciled"]
             assert (
                 store.snapshot().field("receiver.main.active.freq_mode.freq_hz").value
-                == 7_050_000
-            )
-            freq_observation = next(
-                item
-                for item in observations
-                if str(item.path) == "receiver.main.active.freq_mode.freq_hz"
+                == 7_060_000
             )
             assert freq_observation.source.source == "hamlib_response"
             assert freq_observation.source.command_source == "websocket"
             assert freq_observation.source.session_id is None
-            assert freq_observation.correlation_id == "ws-rigctld-set-freq"
+            assert freq_observation.correlation_id == "latest"
+            assert not _entry_matches_observation(
+                entry, freq_observation, now=clock.now()
+            )
+            poller._track_readback_entry(entry)  # noqa: SLF001
+            await poller.stop()
+            assert poller._pending_readback_entries == []  # noqa: SLF001
         finally:
             await radio.disconnect()
 
@@ -488,6 +542,13 @@ async def test_observation_poller_discards_expectation_when_readback_unavailable
             "receiver.main.operator_toggles.nr",
             True,
         ),
+        (
+            "select_vfo",
+            {"vfo": "B"},
+            SelectVfo("B"),
+            "receiver.main.vfo.active_slot",
+            "B",
+        ),
     ),
 )
 async def test_observation_poller_reconciles_slow_control_set_without_waiting_for_slow_poll(
@@ -599,9 +660,11 @@ async def test_observation_poller_correlates_slow_control_after_overlay_ttl_edge
                 command_service=service,
             )
             observations = []
-            poller = radio.create_observation_poller(
+            poller = RigctldClientObservationPoller(
+                radio,
                 callback=observations.extend,
                 command_queue=queue,
+                clock=lambda: clock.advance(0.01),
             )
 
             await poller._poll_medium()  # noqa: SLF001
@@ -747,7 +810,7 @@ async def test_radio_observation_poller_emits_adapter_covered_reads() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("slow", (False, True))
-async def test_stale_external_rigctld_poll_preserves_correlation_for_next_cycle(
+async def test_stale_external_rigctld_poll_clears_correlation_at_generation_boundary(
     slow: bool,
 ) -> None:
     async with FakeRigctldServer() as server:
@@ -801,8 +864,8 @@ async def test_stale_external_rigctld_poll_preserves_correlation_for_next_cycle(
                 release.set()
                 await task
 
-            assert len(poller._pending_readback_entries) == 1  # noqa: SLF001
-            assert service.readback_expectations(
+            assert poller._pending_readback_entries == []  # noqa: SLF001
+            assert not service.readback_expectations(
                 command_id="g2", source="websocket", session_id=None
             )
             assert service.pending_overlays(
@@ -810,7 +873,7 @@ async def test_stale_external_rigctld_poll_preserves_correlation_for_next_cycle(
             )
             await poll()
             assert poller._pending_readback_entries == []  # noqa: SLF001
-            assert any(
+            assert not any(
                 event.state == "reconciled" for event in service.lifecycle_events()
             )
             await radio.disconnect()

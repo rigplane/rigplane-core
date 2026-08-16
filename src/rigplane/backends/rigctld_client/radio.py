@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Sequence
@@ -59,6 +60,9 @@ class _ReadbackCorrelation:
     path: FieldPath
     value: Any
     command_service: "CommandService"
+    provider_generation: int | None
+    dispatched_at_monotonic: float
+    expires_at_monotonic: float
 
 
 class RigctldClientObservationPoller:
@@ -72,6 +76,7 @@ class RigctldClientObservationPoller:
         medium_interval: float = 2.0,
         slow_interval: float = 30.0,
         command_queue: "CommandQueue | None" = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._radio = radio
         self._callback = callback
@@ -81,6 +86,7 @@ class RigctldClientObservationPoller:
         self._tasks: list[asyncio.Task[None]] = []
         self._pending_readback_entries: list[_ReadbackCorrelation] = []
         self._capture_provider_generation: Callable[[], int] | None = None
+        self._clock = clock
 
     def bind_provider_generation(
         self,
@@ -120,6 +126,7 @@ class RigctldClientObservationPoller:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        self._discard_pending_readbacks()
 
     async def _run_loop(
         self,
@@ -141,7 +148,7 @@ class RigctldClientObservationPoller:
         capture = self._capture_provider_generation
         provider_generation = None if capture is None else capture()
         drained_entries = await self._drain_commands()
-        adapter = RigctldClientObservationAdapter(self._radio)
+        adapter = RigctldClientObservationAdapter(self._radio, clock=self._clock)
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
@@ -153,11 +160,11 @@ class RigctldClientObservationPoller:
             await _read_drained_slow_control_readbacks(adapter, drained_entries)
         )
         if not self._provider_generation_is_current(provider_generation):
+            self._discard_pending_readbacks()
             return
         self._callback(
-            self._stamp_provider_generation(
-                self._annotate_readback_observations(observations),
-                provider_generation,
+            self._annotate_readback_observations(
+                self._stamp_provider_generation(observations, provider_generation)
             )
         )
 
@@ -166,13 +173,14 @@ class RigctldClientObservationPoller:
 
         capture = self._capture_provider_generation
         provider_generation = None if capture is None else capture()
-        adapter = RigctldClientObservationAdapter(self._radio)
+        adapter = RigctldClientObservationAdapter(self._radio, clock=self._clock)
         observations = await adapter.read_slow_controls()
         if not self._provider_generation_is_current(provider_generation):
+            self._discard_pending_readbacks()
             return
         self._callback(
-            self._stamp_provider_generation(
-                self._annotate_readback_observations(observations), provider_generation
+            self._annotate_readback_observations(
+                self._stamp_provider_generation(observations, provider_generation)
             )
         )
 
@@ -190,10 +198,16 @@ class RigctldClientObservationPoller:
                     type(cmd).__name__,
                 )
                 continue
+            capture = self._capture_provider_generation
+            correlation = _readback_correlation_for_entry(
+                entry,
+                dispatched_at=self._clock(),
+                provider_generation=None if capture is None else capture(),
+            )
             try:
                 await self._execute_command(cmd)
                 successful.append(entry)
-                self._track_readback_entry(entry)
+                self._track_readback_entry(correlation)
                 if entry.future is not None and not entry.future.done():
                     entry.future.set_result(None)
             except Exception as exc:
@@ -207,11 +221,23 @@ class RigctldClientObservationPoller:
                 )
         return tuple(successful)
 
-    def _track_readback_entry(self, entry: "CommandQueueEntry") -> None:
-        correlation = _readback_correlation_for_entry(entry)
+    def _track_readback_entry(self, correlation: _ReadbackCorrelation | None) -> None:
         if correlation is None:
             return
+        replaced = [
+            entry
+            for entry in self._pending_readback_entries
+            if _readback_paths_match(entry.path, correlation.path)
+        ]
+        self._pending_readback_entries = [
+            entry for entry in self._pending_readback_entries if entry not in replaced
+        ]
+        _discard_readback_correlations(replaced)
         self._pending_readback_entries.append(correlation)
+
+    def _discard_pending_readbacks(self) -> None:
+        _discard_readback_correlations(self._pending_readback_entries)
+        self._pending_readback_entries = []
 
     def _annotate_readback_observations(
         self,
@@ -223,7 +249,9 @@ class RigctldClientObservationPoller:
         unmatched = list(self._pending_readback_entries)
         annotated: list[Observation] = []
         for observation in observations:
-            match_index = _matching_readback_entry_index(observation, unmatched)
+            match_index = _matching_readback_entry_index(
+                observation, unmatched, now=self._clock()
+            )
             if match_index is None:
                 annotated.append(observation)
                 continue
@@ -317,6 +345,9 @@ async def _read_drained_slow_control_readbacks(
 
 def _readback_correlation_for_entry(
     entry: "CommandQueueEntry",
+    *,
+    dispatched_at: float,
+    provider_generation: int | None,
 ) -> _ReadbackCorrelation | None:
     if (
         entry.command_service is None
@@ -324,7 +355,7 @@ def _readback_correlation_for_entry(
         or entry.source is None
     ):
         return None
-    expectations = entry.command_service.readback_expectations(
+    expectations = entry.command_service.retain_readback_expectations_for_dispatch(
         source=entry.source,
         session_id=entry.session_id,
         command_id=entry.command_id,
@@ -339,6 +370,9 @@ def _readback_correlation_for_entry(
         path=expectation.path,
         value=expectation.value,
         command_service=entry.command_service,
+        provider_generation=provider_generation,
+        dispatched_at_monotonic=dispatched_at,
+        expires_at_monotonic=expectation.expires_at_monotonic,
     )
 
 
@@ -355,9 +389,11 @@ def _discard_readback_correlations(entries: Sequence[_ReadbackCorrelation]) -> N
 def _matching_readback_entry_index(
     observation: Observation,
     entries: Sequence[_ReadbackCorrelation],
+    *,
+    now: float,
 ) -> int | None:
     for index, entry in enumerate(entries):
-        if _entry_matches_observation(entry, observation):
+        if _entry_matches_observation(entry, observation, now=now):
             return index
     return None
 
@@ -365,11 +401,42 @@ def _matching_readback_entry_index(
 def _entry_matches_observation(
     entry: _ReadbackCorrelation,
     observation: Observation,
+    *,
+    now: float,
 ) -> bool:
-    if not _is_external_rigctld_readback(observation.source):
+    if not _is_external_rigctld_readback(
+        observation.source
+    ) or not _correlation_is_live(entry, now, observation.provider_generation):
         return False
-    return entry.value == observation.value and _readback_paths_match(
-        observation.path, entry.path
+    return (
+        entry.dispatched_at_monotonic
+        < observation.timestamp_monotonic
+        < entry.expires_at_monotonic
+        and type(entry.value) is type(observation.value)
+        and entry.value == observation.value
+        and _readback_paths_match(observation.path, entry.path)
+    )
+
+
+def _correlation_is_live(
+    entry: _ReadbackCorrelation, now: float, provider_generation: int | None
+) -> bool:
+    if (
+        now >= entry.expires_at_monotonic
+        or entry.provider_generation is not None
+        and provider_generation != entry.provider_generation
+    ):
+        return False
+    return any(
+        item.path == entry.path
+        and item.expires_at_monotonic == entry.expires_at_monotonic
+        and type(item.value) is type(entry.value)
+        and item.value == entry.value
+        for item in entry.command_service.readback_expectations(
+            source=entry.source,
+            session_id=entry.session_id,
+            command_id=entry.command_id,
+        )
     )
 
 
@@ -394,6 +461,8 @@ def _with_command_metadata(
         quality=observation.quality,
         correlation_id=entry.command_id,
         max_age=observation.max_age,
+        provider_generation=observation.provider_generation,
+        clock_domain=observation.clock_domain,
     )
 
 
