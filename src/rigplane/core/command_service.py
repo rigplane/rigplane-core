@@ -36,6 +36,7 @@ __all__ = [
 ]
 
 _UNSET = object()
+_MAX_ACTIVE_COMMANDS = 128
 _MAX_READBACK_EXPECTATIONS = 128
 _READBACK_EXPECTATION_GRACE_SECONDS = 2.0
 _DISPATCHABLE_LIFECYCLE_STATES = ("accepted", "queued", "sent", "acknowledged")
@@ -107,6 +108,7 @@ class CommandService:
     """Coordinate backend-neutral command execution and pending overlays."""
 
     __slots__ = (
+        "_active_commands",
         "_clock",
         "_default_pending_ttl",
         "_events",
@@ -131,6 +133,9 @@ class CommandService:
         self._state_store = state_store
         self._clock = clock or time.monotonic
         self._default_pending_ttl = default_pending_ttl
+        self._active_commands: dict[
+            tuple[CommandSource, str | None, str], CommandLifecycleEvent
+        ] = {}
         self._events: list[CommandLifecycleEvent] = []
         self._subscribers: list[LifecycleSubscriber] = []
         self._overlays: list[PendingOverlay] = []
@@ -248,6 +253,40 @@ class CommandService:
         )
         return True
 
+    def terminate_active_commands(
+        self,
+        reason: str,
+        *,
+        source: CommandSource | None = None,
+        session_id: str | None | object = _UNSET,
+    ) -> int:
+        """Fail active commands in an exact source/session lifecycle scope."""
+
+        if source is not None and type(source) is not str:
+            return 0
+        if (
+            session_id is not _UNSET
+            and session_id is not None
+            and type(session_id) is not str
+        ):
+            return 0
+        matches = [
+            key
+            for key in self._active_commands
+            if (source is None or key[0] == source)
+            and (session_id is _UNSET or key[1] == session_id)
+        ]
+        for key in matches:
+            self._active_commands.pop(key)
+        for scoped_source, scoped_session, command_id in matches:
+            self.fail_command(
+                command_id,
+                source=scoped_source,
+                session_id=scoped_session,
+                message=reason,
+            )
+        return len(matches)
+
     def emit_lifecycle(
         self,
         intent: CommandIntent,
@@ -260,7 +299,7 @@ class CommandService:
 
         payload_details = dict(details or {})
         if "session_id" in intent.params:
-            payload_details.setdefault("session_id", intent.params["session_id"])
+            payload_details["session_id"] = _session_id(intent)
         event = CommandLifecycleEvent(
             command_id=intent.id,
             state=state,
@@ -270,6 +309,21 @@ class CommandService:
             message=message,
             details=payload_details,
         )
+        key = (intent.source, _session_id(intent), intent.id)
+        if state in _DISPATCHABLE_LIFECYCLE_STATES:
+            while key not in self._active_commands and (
+                len(self._active_commands) >= _MAX_ACTIVE_COMMANDS
+            ):
+                oldest = next(iter(self._active_commands))
+                self.fail_command(
+                    oldest[2],
+                    source=oldest[0],
+                    session_id=oldest[1],
+                    message="active command capacity exceeded",
+                )
+            self._active_commands[key] = event
+        else:
+            self._active_commands.pop(key, None)
         self._events.append(event)
         for subscriber in tuple(self._subscribers):
             subscriber(event)
