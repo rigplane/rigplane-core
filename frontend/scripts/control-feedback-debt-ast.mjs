@@ -3,6 +3,7 @@ import { evaluateOrderedEffects } from './control-feedback-debt-evaluator.mjs';
 
 const WRAPPERS = new Set(['ParenthesizedExpression', 'TSAsExpression', 'TSSatisfiesExpression', 'TSTypeAssertion', 'TSNonNullExpression', 'ChainExpression', 'TSInstantiationExpression']);
 const SKIP = new Set(['parent', 'metadata', 'typeAnnotation', 'typeParameters', 'returnType', 'loc']);
+const FLOW_FUNCTION_SCOPE = Symbol('flowFunctionScope');
 
 /** @param {any} node */
 export function unwrapExpression(node) { let wrapped = false; while (node && WRAPPERS.has(node.type)) { wrapped = true; node = node.expression; } return { node, wrapped }; }
@@ -16,7 +17,7 @@ export function collectObjectFlow(program) {
   const fnScope = (s) => { while (s.parent && !s.fn) s = s.parent; return s; };
   const declare = (s, n) => s.bindings.get(n) ?? (s.bindings.set(n, { root: null, text: null }), s.bindings.get(n));
   const names = (s, p, kind = 'let') => boundNames(p).forEach((n) => declare(kind === 'var' ? fnScope(s) : s, n));
-  const predeclare = (body, s) => (body ?? []).forEach((n) => { if (n.type === 'VariableDeclaration') n.declarations.forEach((d) => names(s, d.id, n.kind)); if (n.type === 'FunctionDeclaration' && n.id) declare(s, n.id.name); });
+  const predeclare = (body, s) => (body ?? []).forEach((n) => { const d = /^Export/.test(n.type) ? n.declaration : n; if (d?.type === 'VariableDeclaration') d.declarations.forEach((x) => names(s, x.id, d.kind)); if (['FunctionDeclaration', 'ClassDeclaration'].includes(d?.type) && d.id) declare(s, d.id.name); if (n.type === 'ImportDeclaration') n.specifiers.forEach((x) => declare(s, x.local.name)); });
   const hoist = (n, s) => { if (!n || typeof n !== 'object' || /Function(?:Declaration|Expression)$/.test(n.type) || n.type === 'ArrowFunctionExpression') return; if (n.type === 'VariableDeclaration' && n.kind === 'var') n.declarations.forEach((d) => names(s, d.id, 'var')); Object.entries(n).forEach(([k, v]) => { if (!SKIP.has(k)) Array.isArray(v) ? v.forEach((x) => hoist(x, s)) : hoist(v, s); }); };
   const direct = (n, s) => { n = unwrapExpression(n).node; return n?.type === 'Identifier' ? get(s, n.name)?.root ?? null : null; };
   const text = (n, s) => { n = unwrapExpression(n).node; return n && Object.hasOwn(n, 'value') && (n.value === null || ['string', 'number', 'boolean', 'bigint'].includes(typeof n.value)) ? String(n.value) : n?.type === 'TemplateLiteral' && !n.expressions.length ? n.quasis[0].value.cooked : n?.type === 'Identifier' ? get(s, n.name)?.text ?? null : null; };
@@ -25,7 +26,7 @@ export function collectObjectFlow(program) {
   const indexFunction = (n, s) => { const child = scope(s, true); if (n.type === 'FunctionExpression' && n.id) declare(child, n.id.name); indexParams(n.params, child); if (n.body?.type === 'BlockStatement') { predeclare(n.body.body, child); hoist(n.body, child); n.body.body.forEach((x) => index(x, child)); } else index(n.body, child); };
   const index = (n, s) => { if (!n || typeof n !== 'object') return; scopes.set(n, s);
     if (n.type === 'Program') { predeclare(n.body, s); hoist(n, s); n.body.forEach((x) => index(x, s)); return; }
-    if (n.type === 'BlockStatement') { const child = scope(s); predeclare(n.body, child); n.body.forEach((x) => index(x, child)); return; }
+    if (n.type === 'BlockStatement') { const child = scope(s, n[FLOW_FUNCTION_SCOPE] === true); predeclare(n.body, child); n.body.forEach((x) => index(x, child)); return; }
     if (n.type === 'FunctionDeclaration') return indexFunction(n, s);
     if (/FunctionExpression$/.test(n.type) || n.type === 'ArrowFunctionExpression') return indexFunction(n, s);
     if (n.type === 'CatchClause') { const child = scope(s); names(child, n.param); index(n.body, child); return; }
@@ -53,4 +54,39 @@ export function collectObjectFlow(program) {
   });
   for (const events of exposed.values()) events.sort((a, b) => a.order - b.order).forEach((e) => delete e.order);
   return exposed;
+}
+
+/** Collect bindings owned by one script, including nested script-scope var declarations. */
+function collectScriptBindings(program) {
+  const bindings = new Set(), varBindings = new Set();
+  const declaration = (n) => /^Export/.test(n?.type) ? n.declaration : n;
+  const noteTopLevel = (n) => {
+    const d = declaration(n);
+    if (d?.type === 'VariableDeclaration') d.declarations.forEach((x) => boundNames(x.id).forEach((name) => bindings.add(name)));
+    if (['FunctionDeclaration', 'ClassDeclaration'].includes(d?.type) && d.id) bindings.add(d.id.name);
+    if (n?.type === 'ImportDeclaration') n.specifiers.forEach((x) => bindings.add(x.local.name));
+  };
+  const noteVars = (n) => {
+    n = declaration(n);
+    if (!n || typeof n !== 'object' || /Function(?:Declaration|Expression)$/.test(n.type) || n.type === 'ArrowFunctionExpression' || /Class(?:Declaration|Expression)$/.test(n.type)) return;
+    if (n.type === 'VariableDeclaration' && n.kind === 'var') n.declarations.forEach((x) => boundNames(x.id).forEach((name) => { bindings.add(name); varBindings.add(name); }));
+    Object.entries(n).forEach(([key, value]) => { if (!SKIP.has(key)) Array.isArray(value) ? value.forEach(noteVars) : noteVars(value); });
+  };
+  (program?.body ?? []).forEach((n) => { noteTopLevel(n); noteVars(n); });
+  return { bindings, varBindings };
+}
+
+/** Analyze Svelte module and instance programs as linked lexical scopes. */
+export function collectSvelteObjectFlows(moduleProgram, instanceProgram) {
+  const empty = () => new Map(), instanceOwn = instanceProgram ? collectObjectFlow(instanceProgram) : empty();
+  if (!moduleProgram) return { module: empty(), instance: instanceOwn };
+  const { bindings: shadowed, varBindings } = collectScriptBindings(instanceProgram);
+  const declarations = [...varBindings].map((name) => ({ type: 'VariableDeclarator', id: { type: 'Identifier', name }, init: null }));
+  const marker = declarations.length ? [{ type: 'VariableDeclaration', kind: 'let', declarations }] : [];
+  const instanceBlock = { type: 'BlockStatement', body: [...marker, ...(instanceProgram?.body ?? [])], start: instanceProgram?.start, end: instanceProgram?.end };
+  instanceBlock[FLOW_FUNCTION_SCOPE] = true;
+  const module = collectObjectFlow({ ...moduleProgram, body: [...(moduleProgram.body ?? []), instanceBlock] });
+  const instance = new Map([...module].filter(([name]) => !shadowed.has(name)));
+  instanceOwn.forEach((events, name) => instance.set(name, events));
+  return { module, instance };
 }
