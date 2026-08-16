@@ -110,8 +110,11 @@ from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.tx_interlock import (
+    DeferredTxCommandLane,
     RfState,
     TxInterlockCommandFamily,
+    TxInterlockDeferredOutcome,
+    TxInterlockDisposition,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
 )
@@ -706,13 +709,15 @@ class RadioPoller:
         # connect starts unarmed; overridable for tests.
         self._max_key_down_seconds: float = _MAX_KEY_DOWN_SECONDS
         self._max_key_down_timer: asyncio.TimerHandle | None = None
+        self._deferred_tx_lane = DeferredTxCommandLane()
+        self._deferred_tx_entry: CommandQueueEntry | None = None
 
     def _provider_generation(self) -> int:
         return cast(int, self._state_store.provider_generation)
 
-    def _current_rf_state(self) -> RfState:
+    def _current_rf_state(self, snapshot: StateSnapshot | None = None) -> RfState:
         """Return RF truth only from a fresh current-provider PTT observation."""
-        snapshot = self._state_store.snapshot()
+        snapshot = snapshot or self._state_store.snapshot()
         try:
             field = snapshot.field(_PTT_PATH)
         except KeyError:
@@ -731,11 +736,85 @@ class RadioPoller:
 
     def _enforce_tx_interlock(self, cmd: Command) -> None:
         metadata = get_tx_interlock_command_family_metadata(cmd)
-        if metadata is None or metadata.family not in _WEB_IMMEDIATE_BLOCK_FAMILIES:
+        if metadata is None or (
+            metadata.family not in _WEB_IMMEDIATE_BLOCK_FAMILIES
+            and metadata.base_disposition is not TxInterlockDisposition.DEFER
+        ):
             return
         decision = evaluate_tx_interlock(cmd, rf_state=self._current_rf_state())
         if not decision.allowed:
             raise CommandError(decision.reason)
+
+    @staticmethod
+    def _terminate_deferred_entry(
+        entry: CommandQueueEntry, outcome: TxInterlockDeferredOutcome
+    ) -> None:
+        if entry.future is not None and not entry.future.done():
+            entry.future.set_exception(
+                CommandError(f"deferred command {outcome.value}")
+            )
+
+    def _stage_tx_interlocked_entries(
+        self, entries: list[CommandQueueEntry]
+    ) -> list[CommandQueueEntry]:
+        """Stage DEFER entries before advancing the existing held slot."""
+        has_defer = self._deferred_tx_lane.pending is not None or any(
+            (metadata := get_tx_interlock_command_family_metadata(entry.command))
+            is not None
+            and metadata.base_disposition is TxInterlockDisposition.DEFER
+            for entry in entries
+        )
+        if not has_defer:
+            return entries
+
+        snapshot = self._state_store.snapshot()
+        now = snapshot.generated_at_monotonic
+        rf_state = self._current_rf_state(snapshot)
+        ready: list[CommandQueueEntry] = []
+        for entry in entries:
+            decision = evaluate_tx_interlock(entry.command, rf_state=rf_state)
+            if decision.disposition is not TxInterlockDisposition.DEFER:
+                ready.append(entry)
+                continue
+            if rf_state is RfState.UNKNOWN:
+                ready.append(entry)
+                continue
+            if decision.allowed and self._deferred_tx_lane.pending is None:
+                ready.append(entry)
+                continue
+            previous = self._deferred_tx_entry
+            result = self._deferred_tx_lane.defer(entry.command, now=now)
+            self._deferred_tx_entry = entry
+            if previous is not None and result.outcome in (
+                TxInterlockDeferredOutcome.EXPIRED,
+                TxInterlockDeferredOutcome.SUPERSEDED,
+            ):
+                self._terminate_deferred_entry(previous, result.outcome)
+
+        result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
+        if result is None or result.outcome is TxInterlockDeferredOutcome.HELD:
+            return ready
+        held = self._deferred_tx_entry
+        self._deferred_tx_entry = None
+        if held is None:
+            return ready
+        if result.outcome is TxInterlockDeferredOutcome.RELEASED:
+            ready.append(held)
+        else:
+            self._terminate_deferred_entry(held, result.outcome)
+        return ready
+
+    async def _execute_queued_entry(self, entry: CommandQueueEntry) -> None:
+        self._enforce_tx_interlock(entry.command)
+        await self._execute(
+            entry.command,
+            command_id=entry.command_id,
+            source=entry.source or "websocket",
+            session_id=entry.session_id,
+            command_service=entry.command_service,
+        )
+        if entry.future is not None and not entry.future.done():
+            entry.future.set_result(None)
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
         """Derive a finite tuple window from this provider's expected cadence."""
@@ -1717,8 +1796,10 @@ class RadioPoller:
                     continue
 
                 # 1. Drain command queue (fire-and-forget writes)
-                if self._queue.has_commands:
-                    for entry in self._queue.drain_entries():
+                queued = self._queue.drain_entries() if self._queue.has_commands else []
+                ready = self._stage_tx_interlocked_entries(queued)
+                if ready:
+                    for entry in ready:
                         cmd = entry.command
                         if entry.future is not None and entry.future.cancelled():
                             logger.debug(
@@ -1727,16 +1808,7 @@ class RadioPoller:
                             )
                             continue
                         try:
-                            self._enforce_tx_interlock(cmd)
-                            await self._execute(
-                                cmd,
-                                command_id=entry.command_id,
-                                source=entry.source or "websocket",
-                                session_id=entry.session_id,
-                                command_service=entry.command_service,
-                            )
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_result(None)
+                            await self._execute_queued_entry(entry)
                             _backoff = 0.0
                         except (TimeoutError, RigplaneTimeoutError) as exc:
                             self._mark_queued_command_failed(

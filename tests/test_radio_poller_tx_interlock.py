@@ -227,3 +227,16 @@ async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> 
 
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     radio.set_freq.assert_not_awaited()
+
+
+async def test_fresh_rx_deferred_class_dispatches_immediately_once() -> None:
+    poller, radio, store = _poller()
+    _observe_ptt(store, False)
+    future = asyncio.get_running_loop().create_future()
+    entry = CommandQueueEntry(SetFreq(14_074_000), future=future)
+
+    assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
+    await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+    assert future.result() is None
+    radio.set_freq.assert_awaited_once_with(14_074_000)
