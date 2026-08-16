@@ -264,6 +264,7 @@ def _classify_rigctld_tx_intent(
 ) -> _RigctldTxPolicyClassification:
     """Map one material rigctld intent into the canonical typed TX policy."""
     params = intent.params
+    command: tx_commands.Command
     if intent.name == "set_freq":
         command = tx_commands.SetFreq(int(params["freq_hz"]))
     elif intent.name == "set_mode":
