@@ -566,12 +566,16 @@ async def test_stale_yaesu_ptt_observation_is_unknown(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ("unread", "poll-error"))
+@pytest.mark.parametrize("failure", ("unread", "transport-error", "generic-error"))
 async def test_yaesu_ptt_failure_invalidates_known_state(
     monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     radio = _tx_target_radio()
-    next_result: object = () if failure == "unread" else CatTimeoutError("lost")
+    error_type = {
+        "transport-error": CatTimeoutError,
+        "generic-error": RuntimeError,
+    }.get(failure)
+    next_result: object = () if error_type is None else error_type("lost")
     monkeypatch.setattr(
         YaesuObservationAdapter,
         "poll_medium",
@@ -582,8 +586,8 @@ async def test_yaesu_ptt_failure_invalidates_known_state(
     poller = YaesuCatPoller(radio, observation_callback=lambda _: None)
     await poller._poll_medium()  # noqa: SLF001
 
-    if failure == "poll-error":
-        with pytest.raises(CatTimeoutError, match="lost"):
+    if error_type is not None:
+        with pytest.raises(error_type, match="lost"):
             await poller._poll_medium()  # noqa: SLF001
     else:
         await poller._poll_medium()  # noqa: SLF001
@@ -617,7 +621,17 @@ async def test_yaesu_ptt_generation_change_is_unknown_until_newer_poll(
         poller._sync_tx_target_generation()  # noqa: SLF001
     else:
         store.begin_provider_generation()
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 10.5
+    )
+    with patch.object(YaesuObservationAdapter, "from_radio") as adapter:
+        adapter.return_value.poll_rx_meters = AsyncMock(return_value=())
+        adapter.return_value.poll_tx_meters = AsyncMock(return_value=())
+        await poller._emit_fast_observations()  # noqa: SLF001
+        adapter.return_value.poll_rx_meters.assert_awaited_once()
+        adapter.return_value.poll_tx_meters.assert_not_awaited()
     assert poller._current_ptt_observation(now=10.5) is None  # noqa: SLF001
+    assert not poller._last_ptt  # noqa: SLF001
 
     await poller._poll_medium()  # noqa: SLF001
     recovered = poller._current_ptt_observation(now=11.5)  # noqa: SLF001

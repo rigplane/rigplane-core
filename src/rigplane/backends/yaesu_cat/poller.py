@@ -37,7 +37,7 @@ from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import YaesuStateExtension
-from .transport import CatTimeoutError, CatTransportError
+from .transport import CatTimeoutError
 
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue, CommandQueueEntry
@@ -144,13 +144,16 @@ class YaesuCatPoller:
     ) -> Observation | None:
         observation = self._ptt_observation
         if observation is None or type(observation.value) is not bool:
+            self._invalidate_ptt_observation()
             return None
         provider_generation = self._captured_provider_generation()
         if provider_generation is not None and (
             observation.provider_generation != provider_generation
         ):
+            self._invalidate_ptt_observation()
             return None
         if self._ptt_connection_generation != self._current_tx_target_generation():
+            self._invalidate_ptt_observation()
             return None
         timestamp = time.monotonic() if now is None else now
         if (
@@ -158,6 +161,7 @@ class YaesuCatPoller:
             or timestamp < observation.timestamp_monotonic
             or timestamp >= observation.timestamp_monotonic + observation.max_age
         ):
+            self._invalidate_ptt_observation()
             return None
         return observation
 
@@ -284,6 +288,7 @@ class YaesuCatPoller:
     def _sync_tx_target_generation(self) -> tuple[str | None, int]:
         generation = self._current_tx_target_generation()
         if generation != self._tx_target_generation:
+            self._invalidate_ptt_observation()
             self._invalidate_tx_target()
         return generation
 
@@ -298,7 +303,9 @@ class YaesuCatPoller:
             observations = await YaesuObservationAdapter.from_radio(
                 self._radio
             ).poll_medium()
-        except (RadioConnectionError, ConnectionError, OSError, CatTransportError):
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             self._invalidate_ptt_observation()
             if not self._provider_generation_is_current(provider_generation):
                 return True
@@ -353,7 +360,8 @@ class YaesuCatPoller:
             ema_sub = self._apply_ema(raw, ema_sub)
             return round(ema_sub)
 
-        if self._last_ptt:
+        ptt_observation = self._current_ptt_observation()
+        if ptt_observation is not None and ptt_observation.value:
             observations = await adapter.poll_tx_meters()
         else:
             observations = await adapter.poll_rx_meters(smooth_s_meter=_smooth)
