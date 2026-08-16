@@ -6,10 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from rigplane.capabilities import CAP_ANTENNA, CAP_POWER_CONTROL, CAP_TUNER
-from rigplane.core.command_service import (
-    CommandExecutionResult,
-    CommandService,
-)
+from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     FieldPath,
@@ -318,7 +315,7 @@ async def test_deferred_hold_lifecycle_is_single_and_release_stays_unconfirmed()
     clock.advance(0.5)
     _observe_ptt(store, False, observed_at=clock.now())
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
-    clock.advance(0.5)
+    clock.advance(1.0)
     _observe_ptt(store, False, observed_at=clock.now())
     assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
     await poller._execute_queued_entry(entry)  # noqa: SLF001
@@ -370,12 +367,14 @@ async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> 
         ("first", "superseded", ("replacement",)),
         ("replacement", "queued", ("replacement",)),
     ]
+    assert isinstance(first.future.exception(), CommandError)
     assert service.lifecycle_events()[-1].details["expiresAt"] == 23.0
 
     clock.advance(0.5)
     _observe_ptt(store, True, observed_at=clock.now())
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert service.lifecycle_events()[-1].state == "timed_out"
+    assert isinstance(replacement.future.exception(), CommandError)
     terminal_count = len(service.lifecycle_events())
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert len(service.lifecycle_events()) == terminal_count
