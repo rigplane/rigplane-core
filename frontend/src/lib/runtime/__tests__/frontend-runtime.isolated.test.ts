@@ -29,6 +29,8 @@ vi.mock('$lib/transport/ws-client', () => ({
   onMessage: vi.fn(() => () => {}),
   addMessageHandler: vi.fn(() => () => {}),
   getChannel: vi.fn(),
+  getControlSession: vi.fn(() => ({ state: 'disconnected', epoch: 0 })),
+  onControlSessionTransition: vi.fn(() => () => {}),
 }));
 vi.mock('$lib/runtime/commands/radio-intents', () => ({
   dispatchRadioIntent: vi.fn(() => ({ id: 'test-lifecycle', status: 'pending' })),
@@ -110,7 +112,7 @@ vi.mock('./system-controller', async () => {
 // ── Import modules under test after mocks are hoisted ──
 
 import { fetchCapabilities } from '$lib/transport/http-client';
-import { connect, getChannel, onMessage, sendRaw } from '$lib/transport/ws-client';
+import { connect, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw } from '$lib/transport/ws-client';
 import { setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
@@ -145,6 +147,19 @@ async function freshRuntime() {
   rt._capabilitiesUnsubscribe = null;
   return mod.runtime;
 }
+
+describe('FrontendRuntime control-session facade (MOR-1723)', () => {
+  it('reads through and directly delegates its disposer without transport effects', async () => {
+    const runtime = await freshRuntime();
+    vi.mocked(getControlSession).mockReturnValueOnce({ state: 'connected', epoch: 3 }).mockReturnValueOnce({ state: 'reconnecting', epoch: 4 });
+    expect(runtime.controlSession).toEqual({ state: 'connected', epoch: 3 });
+    expect(runtime.controlSession).toEqual({ state: 'reconnecting', epoch: 4 });
+    const disposer = vi.fn(); vi.mocked(onControlSessionTransition).mockReturnValueOnce(disposer);
+    const handler = vi.fn(); expect(runtime.subscribeControlSession(handler)).toBe(disposer);
+    expect(onControlSessionTransition).toHaveBeenCalledWith(handler);
+    expect(connect).not.toHaveBeenCalled(); expect(sendRaw).not.toHaveBeenCalled();
+  });
+});
 
 // ── Fixtures ──
 

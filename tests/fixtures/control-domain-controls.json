@@ -1,0 +1,66 @@
+{
+  "identity": {
+    "mapping": "identity",
+    "raw_min": -2,
+    "raw_max": 2,
+    "raw_step": 2,
+    "raw_origin": -2,
+    "display_min": "-2",
+    "display_max": "2",
+    "display_step": "2",
+    "display_origin": "-2",
+    "display_unit": "steps",
+    "quantization": "floor",
+    "restoration": "exact",
+    "style": "stepped"
+  },
+  "linear": {
+    "mapping": "linear",
+    "raw_min": 0,
+    "raw_max": 2,
+    "raw_step": 1,
+    "raw_origin": 0,
+    "display_min": "0",
+    "display_max": "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "display_step": "500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "display_origin": "0",
+    "display_unit": "huge",
+    "quantization": "nearest_ties_up",
+    "restoration": "exact"
+  },
+  "centered": {
+    "mapping": "centered",
+    "raw_min": -2,
+    "raw_max": 2,
+    "raw_step": 2,
+    "raw_origin": -2,
+    "display_min": "-0.00000000000000000001",
+    "display_max": "0.00000000000000000001",
+    "display_step": "0.00000000000000000001",
+    "display_origin": "-0.00000000000000000001",
+    "display_unit": "tiny",
+    "quantization": "nearest_ties_down",
+    "restoration": "exact",
+    "raw_center": 0,
+    "display_center": "0"
+  },
+  "lookup": {
+    "mapping": "lookup",
+    "raw_min": 0,
+    "raw_max": 4,
+    "raw_step": 2,
+    "raw_origin": 0,
+    "display_min": "-1",
+    "display_max": "1",
+    "display_step": "1",
+    "display_origin": "-1",
+    "display_unit": "label",
+    "quantization": "reject",
+    "restoration": "exact",
+    "lookup": [
+      { "raw": 0, "display": "-1" },
+      { "raw": 2, "display": "0" },
+      { "raw": 4, "display": "1" }
+    ]
+  }
+}

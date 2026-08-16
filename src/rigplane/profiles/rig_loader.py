@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 import tomllib
 import warnings
 from dataclasses import dataclass, field
 from decimal import Decimal
+from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any, cast
 
@@ -29,10 +32,19 @@ from rigplane.core.tx_interlock_contract import (
 )
 from rigplane.commands.command_map import CommandMap
 
-__all__ = ["RigConfig", "RigLoadError", "load_rig", "discover_rigs"]
+__all__ = [
+    "RigConfig",
+    "RigLoadError",
+    "load_rig",
+    "discover_rigs",
+    "discover_available_rigs",
+]
 from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
 from rigplane.profiles import (
     BandInfo,
+    ControlDomainSpec,
+    ControlLookupPoint,
+    EncodedControlChoice,
     ControlSpec,
     FilterWidthRule,
     FilterWidthSegment,
@@ -55,7 +67,7 @@ VALID_CONTROL_STYLES = {
     "toggle_and_level",
     "level_is_toggle",
 }
-VALID_CONTROL_MAPPINGS = {"identity", "linear", "centered", "lookup"}
+VALID_CONTROL_MAPPINGS = {"identity", "linear", "centered", "lookup", "encoded"}
 VALID_CONTROL_QUANTIZATION = {
     "nearest_ties_down",
     "nearest_ties_up",
@@ -83,6 +95,7 @@ _CONTROL_KEYS = {
     "quantization",
     "restoration",
     "lookup",
+    "choices",
 }
 _EXPLICIT_CONTROL_DOMAIN_KEYS = {
     "raw_step",
@@ -94,6 +107,7 @@ _EXPLICIT_CONTROL_DOMAIN_KEYS = {
     "quantization",
     "restoration",
     "lookup",
+    "choices",
 }
 VALID_RULE_KINDS = {"mutex", "disables", "requires", "value_limit"}
 VALID_KEYBOARD_MODIFIERS = {"SHIFT", "CTRL", "ALT", "META"}
@@ -117,7 +131,18 @@ class RigLoadError(Exception):
 
 
 _LookupPoint = tuple[int, Decimal]
-_ScalarControlDomain = dict[str, str | int | Decimal | tuple[_LookupPoint, ...]]
+_EncodedChoice = tuple[int, Decimal | str]
+_ScalarControlDomain = dict[
+    str, str | int | Decimal | tuple[_LookupPoint, ...] | tuple[_EncodedChoice, ...]
+]
+
+
+def _public_decimal(value: Decimal) -> str:
+    """Render an exact Decimal as the frontend's canonical fixed-point string."""
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return "0" if rendered in {"0", "-0"} else rendered
 
 
 def _control_number(value: object, path: str, *, integer: bool = False) -> int | float:
@@ -208,6 +233,55 @@ def _parse_control_lookup(
     return tuple(points)
 
 
+def _parse_encoded_control_choices(
+    raw_choices: object, prefix: str
+) -> tuple[_EncodedChoice, ...]:
+    if not isinstance(raw_choices, list) or not raw_choices:
+        raise RigLoadError(f"{prefix}.choices must be a non-empty array")
+
+    choices: list[_EncodedChoice] = []
+    numeric_values: list[Decimal] = []
+    labeled_choices: list[tuple[int, str, str]] = []
+    for index, choice in enumerate(raw_choices):
+        choice_prefix = f"{prefix}.choices[{index}]"
+        if not isinstance(choice, dict) or set(choice) not in (
+            {"raw", "label"},
+            {"raw", "display"},
+        ):
+            raise RigLoadError(
+                f"{choice_prefix} must contain exactly raw and one of label or display"
+            )
+        raw_value = int(
+            _control_number(choice["raw"], f"{choice_prefix}.raw", integer=True)
+        )
+        if "label" in choice:
+            label = choice["label"]
+            if not isinstance(label, str) or not label.strip():
+                raise RigLoadError(f"{choice_prefix}.label must be a non-empty string")
+            choices.append((raw_value, label))
+            labeled_choices.append((raw_value, label, choice_prefix))
+        else:
+            display = _control_decimal(choice["display"], f"{choice_prefix}.display")
+            choices.append((raw_value, display))
+            numeric_values.append(display)
+
+    raw_values = [choice[0] for choice in choices]
+    if len(set(raw_values)) != len(raw_values):
+        raise RigLoadError(f"{prefix}.choices raw values must be unique")
+    if len(set(numeric_values)) != len(numeric_values):
+        raise RigLoadError(f"{prefix}.choices display values must be unique")
+    if len(labeled_choices) != 1:
+        raise RigLoadError(
+            f"{prefix}.choices must contain exactly one default label choice"
+        )
+    default_raw, default_label, default_prefix = labeled_choices[0]
+    if default_raw != 0:
+        raise RigLoadError(f"{default_prefix}.label default must use raw code 0")
+    if default_label != "Default":
+        raise RigLoadError(f'{default_prefix}.label must be exactly "Default"')
+    return tuple(choices)
+
+
 def _parse_control_spec(
     filename: str, control_name: str, raw: object
 ) -> tuple[ControlSpec | None, _ScalarControlDomain | None]:
@@ -258,6 +332,23 @@ def _parse_control_spec(
         raise RigLoadError(
             f"{prefix}.mapping must be one of {sorted(VALID_CONTROL_MAPPINGS)!r}"
         )
+    if mapping != "encoded" and "choices" in raw:
+        raise RigLoadError(f"{prefix}.choices requires encoded mapping")
+    if mapping == "encoded":
+        if "choices" not in raw:
+            raise RigLoadError(f"{prefix}.choices is required for encoded mapping")
+        encoded_only = {"mapping", "choices", "style"}
+        unsupported = sorted(set(raw) - encoded_only)
+        if unsupported:
+            raise RigLoadError(
+                f"{prefix}.encoded mapping does not accept key(s): {unsupported!r}"
+            )
+        choices = _parse_encoded_control_choices(raw["choices"], prefix)
+        encoded_domain: _ScalarControlDomain = {"mapping": mapping, "choices": choices}
+        encoded_public_spec: ControlSpec | None = (
+            {"style": style} if style is not None else None
+        )
+        return encoded_public_spec, encoded_domain
     if mapping == "lookup" and "lookup" not in raw:
         raise RigLoadError(f"{prefix}.lookup is required for lookup mapping")
     if mapping != "lookup" and "lookup" in raw:
@@ -512,6 +603,81 @@ class RigConfig:
             )
             for r in self.freq_ranges
         )
+        controls = cast(
+            dict[str, ControlSpec | ControlDomainSpec] | None, self.controls
+        )
+        if self._control_domains:
+            published_controls = cast(
+                dict[str, ControlSpec | ControlDomainSpec],
+                {name: spec.copy() for name, spec in (self.controls or {}).items()},
+            )
+            for name, domain in self._control_domains.items():
+                if domain["mapping"] == "encoded":
+                    published_encoded_domain: dict[str, object] = {
+                        "mapping": "encoded",
+                        "choices": [
+                            (
+                                cast(EncodedControlChoice, {"raw": raw, "label": value})
+                                if isinstance(value, str)
+                                else cast(
+                                    EncodedControlChoice,
+                                    {"raw": raw, "display": _public_decimal(value)},
+                                )
+                            )
+                            for raw, value in cast(
+                                tuple[_EncodedChoice, ...], domain["choices"]
+                            )
+                        ],
+                    }
+                    legacy = published_controls.get(name)
+                    if legacy is not None and "style" in legacy:
+                        published_encoded_domain["style"] = legacy["style"]
+                    published_controls[name] = cast(
+                        ControlDomainSpec, published_encoded_domain
+                    )
+                    continue
+                published_domain: dict[str, object] = {
+                    "mapping": cast(str, domain["mapping"]),
+                    "raw_min": cast(int, domain["raw_min"]),
+                    "raw_max": cast(int, domain["raw_max"]),
+                    "raw_step": cast(int, domain["raw_step"]),
+                    "raw_origin": cast(int, domain["raw_origin"]),
+                    "display_min": _public_decimal(
+                        cast(Decimal, domain["display_min"])
+                    ),
+                    "display_max": _public_decimal(
+                        cast(Decimal, domain["display_max"])
+                    ),
+                    "display_step": _public_decimal(
+                        cast(Decimal, domain["display_step"])
+                    ),
+                    "display_origin": _public_decimal(
+                        cast(Decimal, domain["display_origin"])
+                    ),
+                    "display_unit": cast(str, domain["display_unit"]),
+                    "quantization": cast(str, domain["quantization"]),
+                    "restoration": cast(str, domain["restoration"]),
+                }
+                if published_domain["mapping"] == "centered":
+                    published_domain["raw_center"] = cast(int, domain["raw_center"])
+                    published_domain["display_center"] = _public_decimal(
+                        cast(Decimal, domain["display_center"])
+                    )
+                if published_domain["mapping"] == "lookup":
+                    published_domain["lookup"] = [
+                        ControlLookupPoint(raw=raw, display=_public_decimal(display))
+                        for raw, display in cast(
+                            tuple[_LookupPoint, ...], domain["lookup"]
+                        )
+                    ]
+                legacy = published_controls.get(name)
+                if legacy is not None and "style" in legacy:
+                    published_domain["style"] = legacy["style"]
+                # The loader has already established the mapping-specific
+                # shape above; this cast keeps the public discriminated union
+                # explicit without weakening its legacy counterpart.
+                published_controls[name] = cast(ControlDomainSpec, published_domain)
+            controls = published_controls
 
         return RadioProfile(
             id=self.id,
@@ -558,7 +724,7 @@ class RigConfig:
             set_mode_via_selected="set_selected_mode" in self.commands,
             protocol_type=self.protocol_type,
             hamlib_model_id=self.hamlib_model_id,
-            controls=self.controls,
+            controls=controls,
             meter_calibrations=self.meter_calibrations,
             meter_redlines=self.meter_redlines,
             rules=self.rules,
@@ -2152,3 +2318,39 @@ def discover_rigs(directory: Path) -> dict[str, RigConfig]:
         rigs[rig.model] = rig
 
     return rigs
+
+
+def _discover_resource_rigs(directory: Traversable) -> dict[str, RigConfig]:
+    """Load profiles from a package-resource directory.
+
+    Filesystem resources can use the normal loader directly. Non-filesystem
+    resources (for example, a zip import) are materialized together so profile
+    includes such as ``_keyboard-default.toml`` remain available as siblings.
+    """
+    if not directory.is_dir():
+        return {}
+    if isinstance(directory, Path):
+        return discover_rigs(directory)
+
+    with tempfile.TemporaryDirectory(prefix="rigplane-rigs-") as temp_dir:
+        materialized = Path(temp_dir)
+        for resource in directory.iterdir():
+            if resource.is_file() and resource.name.endswith(".toml"):
+                (materialized / resource.name).write_bytes(resource.read_bytes())
+        return discover_rigs(materialized)
+
+
+def discover_available_rigs(
+    fallback_directory: Path | None = None,
+) -> dict[str, RigConfig]:
+    """Discover bundled profiles, with an optional filesystem fallback.
+
+    Package resources are authoritative for installed distributions. The
+    fallback preserves source/editable checkouts whose profiles live at the
+    repository root.
+    """
+    package_rigs = resources.files("rigplane").joinpath("rigs")
+    rigs = _discover_resource_rigs(package_rigs)
+    if rigs or fallback_directory is None:
+        return rigs
+    return discover_rigs(fallback_directory)

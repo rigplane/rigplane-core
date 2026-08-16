@@ -21,15 +21,20 @@
 </script>
 
 <script lang="ts">
-  import { onDestroy, type Snippet } from 'svelte';
+  import { onDestroy, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { runtime } from '$lib/runtime';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+  import {
+    EMPTY_PBT_PRESENTATION, projectPbtPresentation, type PbtField,
+    type PbtPresentationEvidence, type PbtPresentationState,
+  } from '../../semantic/pbt-presentation-continuity';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
   import {
     bindSemanticSurfaceHandlers, getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
   } from '$lib/runtime/adapters/panel-adapters';
+  import { toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
   import {
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
@@ -333,6 +338,10 @@
    */
   const ritXitIntents = semanticHandlers.ritXit;
   const scanIntents = semanticHandlers.scan;
+  /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
+   * keeps legacy servers compatible; `null` is the adapter's fail-closed
+   * result for present-but-unusable metadata. */
+  let ritDomain = $derived(toRitXitProps(runtime.state, runtime.caps).ritDomain);
   /**
    * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
    * `makeCwPanelHandlers` rather than forked. MOR-1606 wires its existing
@@ -445,9 +454,95 @@
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
   // MOR-1312 slice 12B: the scope-display snapshot is the FIFTH.
-  let view: RadioViewModel | null = $derived(
+  let canonicalView: RadioViewModel | null = $derived(
     toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
   );
+  let pbtPresentation: PbtPresentationState = $state(EMPTY_PBT_PRESENTATION);
+  // A disconnect makes every currently-held PBT observation prior-session
+  // evidence. Floors are per provider/receiver/field: monotonic markers are
+  // only comparable inside one provider generation and receiver stream.
+  let pbtObservationFloors = $state(new Map<string, number>());
+  let view = $state<RadioViewModel | null>(null);
+  const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
+  const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
+  let controlSession = $state(readControlSession?.() ?? { state: 'disconnected', epoch: -1 });
+  const pbtFloorKey = (generation: number, receiver: 'MAIN' | 'SUB', field: PbtField) =>
+    `${generation}:${receiver}:${field}`;
+  const unsubscribePbtSession = subscribeControlSession?.((next) => {
+    if (next.state !== 'connected' || next.epoch !== controlSession.epoch) {
+      pbtPresentation = EMPTY_PBT_PRESENTATION;
+      const generation = runtime.state?.providerGeneration;
+      if (Number.isSafeInteger(generation)) for (const receiver of ['MAIN', 'SUB'] as const) {
+        for (const field of ['pbtInner', 'pbtOuter'] as const) {
+          const marker = runtime.state?.fieldStatus?.[`${receiver.toLowerCase()}.${field}`]?.lastObservedMonotonic;
+          if (typeof marker === 'number' && Number.isSafeInteger(marker)) {
+            const key = pbtFloorKey(generation as number, receiver, field);
+            pbtObservationFloors.set(key, Math.max(pbtObservationFloors.get(key) ?? -1, marker as number));
+          }
+        }
+      }
+    }
+    controlSession = next;
+  });
+  onDestroy(() => unsubscribePbtSession?.());
+  const pbtEvidence = (): PbtPresentationEvidence => {
+    const state = runtime.state, session = controlSession, generation = state?.providerGeneration;
+    const receiver = canonicalView?.activeReceiver;
+    const boundary = session.state === 'connected'
+      && receiver?.status === 'known'
+      && Number.isSafeInteger(generation)
+      && generation === runtime.caps?.providerGeneration
+      ? { providerGeneration: generation as number, receiver: receiver.receiver,
+        controlSession: session.state, epoch: session.epoch } : null;
+    const field = (name: PbtField) => {
+      const path = `${receiver?.status === 'known' && receiver.receiver === 'SUB' ? 'sub' : 'main'}.${name}`;
+      const status = state?.fieldStatus?.[path];
+      const observedAt = status?.lastObservedMonotonic;
+      return status?.observed && status.freshness === 'fresh' && status.availability === 'available'
+        && typeof observedAt === 'number' && Number.isSafeInteger(observedAt)
+        && observedAt > (typeof generation === 'number' && receiver?.status === 'known'
+          ? pbtObservationFloors.get(pbtFloorKey(generation, receiver.receiver, name)) ?? -1 : -1)
+        ? { status: 'fresh' as const, marker: { source: 'field' as const, value: observedAt as number } }
+        : { status: status?.freshness === 'stale' ? 'stale' as const : 'unavailable' as const };
+    };
+    return { boundary, fields: { pbtInner: field('pbtInner'), pbtOuter: field('pbtOuter') } };
+  };
+  $effect(() => {
+    const evidence = pbtEvidence();
+    const retainedMatchesCanonical = (field: PbtField) => {
+      const retained = untrack(() => pbtPresentation)[field];
+      const incoming = evidence.fields[field];
+      const current = canonicalView?.filterPassband?.[field];
+      return retained !== null && incoming.status === 'fresh'
+        && incoming.marker.source === retained.marker.source && incoming.marker.value === retained.marker.value
+        && current?.reading.status === 'known' && current.reading.value === retained.value
+        && current.availability.operational;
+    };
+    const previous = retainedMatchesCanonical('pbtInner') || retainedMatchesCanonical('pbtOuter') ? {
+      ...untrack(() => pbtPresentation),
+      ...(retainedMatchesCanonical('pbtInner') ? { pbtInner: null } : {}),
+      ...(retainedMatchesCanonical('pbtOuter') ? { pbtOuter: null } : {}),
+    } : untrack(() => pbtPresentation);
+    const pbtCanonical = canonicalView?.filterPassband && (
+      evidence.fields.pbtInner.status !== 'fresh' || evidence.fields.pbtOuter.status !== 'fresh'
+    ) ? {
+      ...canonicalView,
+      filterPassband: {
+        ...canonicalView.filterPassband,
+        ...(evidence.fields.pbtInner.status !== 'fresh' ? {
+          pbtInner: { reading: { status: 'unknown' as const }, availability: { ...canonicalView.filterPassband.pbtInner.availability, operational: false } },
+        } : {}),
+        ...(evidence.fields.pbtOuter.status !== 'fresh' ? {
+          pbtOuter: { reading: { status: 'unknown' as const }, availability: { ...canonicalView.filterPassband.pbtOuter.availability, operational: false } },
+        } : {}),
+      },
+    } : canonicalView;
+    const projected = pbtCanonical === null
+      ? { state: EMPTY_PBT_PRESENTATION, view: null }
+      : projectPbtPresentation(previous, pbtCanonical, evidence);
+    pbtPresentation = projected.state;
+    view = projected.view;
+  });
 
   /**
    * MOR-1441 leg 2 — active receiver's wire index (0=MAIN, 1=SUB) for the
@@ -1035,7 +1130,7 @@
   {#snippet ritXitScanSurface()}
     {#if view?.ritXit || view?.scan}
       <RitXitScanSurface
-        {view}
+        {view} {ritDomain}
         onRitToggle={ritXitIntents.onRitToggle}
         onXitToggle={ritXitIntents.onXitToggle}
         onRitOffsetChange={ritXitIntents.onRitOffsetChange}

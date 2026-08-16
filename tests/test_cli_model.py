@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+from importlib import resources
 from pathlib import Path
+from zipfile import ZipFile, Path as ZipPath
 
 import pytest
 
+from rigplane import cli
 from rigplane.cli import _build_backend_config, _build_parser
+from rigplane.rig_loader import discover_available_rigs
 
 
 @pytest.fixture()
@@ -20,6 +24,22 @@ def _parse(parser: argparse.ArgumentParser, args: list[str]) -> argparse.Namespa
 
 
 RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+
+def test_packaged_profiles_support_non_filesystem_resources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive_path = tmp_path / "rigplane.zip"
+    with ZipFile(archive_path, "w") as archive:
+        for name in ("ftx1.toml", "_keyboard-default.toml"):
+            archive.writestr(f"rigplane/rigs/{name}", (RIGS_DIR / name).read_bytes())
+
+    with ZipFile(archive_path) as archive:
+        package_root = ZipPath(archive, "rigplane/")
+        monkeypatch.setattr(resources, "files", lambda package: package_root)
+        rigs = discover_available_rigs(tmp_path / "missing-rigs")
+
+    assert rigs["FTX-1"].keyboard is not None
 
 
 class TestModelResolution:
@@ -132,6 +152,37 @@ class TestSerialBackend:
         assert cfg.radio_addr == 0x94
         assert cfg.model == "IC-7300"
         assert cfg.backend == "serial"
+
+    async def test_packaged_model_uses_package_resources(
+        self,
+        parser: argparse.ArgumentParser,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        package_root = tmp_path / "package"
+        package_rigs = package_root / "rigs"
+        package_rigs.mkdir(parents=True)
+        (package_rigs / "ftx1.toml").write_bytes((RIGS_DIR / "ftx1.toml").read_bytes())
+        monkeypatch.setattr(cli, "_rigs_dir", lambda: tmp_path / "missing-rigs")
+        monkeypatch.setattr(resources, "files", lambda package: package_root)
+
+        ns = _parse(
+            parser,
+            [
+                "--backend",
+                "serial",
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "--model",
+                "FTX-1",
+                "status",
+            ],
+        )
+
+        cfg = await _build_backend_config(ns)
+
+        assert cfg.model == "FTX-1"
+        assert cfg.baudrate == 38400
 
     async def test_serial_model_uses_profile_default_baud(
         self, parser: argparse.ArgumentParser

@@ -25,7 +25,8 @@
       unobserved present field, honestly disabled.
   (3) Every reading here is rendered exactly as the fact group states it. No
       range-fallback plumbing, no re-derivation of `controlRangeFromCaps` —
-      `nrLevel`/`nbDepth` already arrive display-scaled from the adapter.
+      `nrLevelProjection` carries NR value/domain/usability and `nbDepth`
+      already arrives display-scaled from the adapter.
   (4) `unknown` renders as `?`, never as a v2 fabricated default (0 dB, OFF,
       WIDE) — same fail-closed-presentation doctrine as `TxAuxSurface`.
 
@@ -42,7 +43,7 @@
   digits.
 -->
 <script module lang="ts">
-  import type { DspField } from './radio-view-model';
+  import type { DspField, DspViewModel } from './radio-view-model';
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { rawToPercentDisplay } from '../components-v2/controls/value-control/value-control-core';
@@ -66,6 +67,7 @@
   export type DspToggleField = (typeof DSP_TOGGLES)[number][0];
   export type DspLevelField = (typeof DSP_LEVELS)[number][0] | 'nbLevel';
   const NOTCH_MODES = ['off', 'auto', 'manual'] as const;
+  const [, , NR_FALLBACK_MIN, NR_FALLBACK_MAX, NR_FALLBACK_STEP] = DSP_LEVELS[0];
 
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it has been observed. */
   const usable = (f: DspField<unknown>): boolean =>
@@ -79,6 +81,53 @@
     const v = f.reading.value;
     return typeof v === 'boolean' ? (v ? 'on' : 'off') : format ? format(v as number) : String(v);
   };
+
+  type NrDomain = NonNullable<DspViewModel['nrLevelProjection']>['domain'];
+  type NrPresentation = Readonly<{
+    min: number; max: number; step: number; origin: number;
+    value: number; text: string; usable: boolean;
+  }>;
+
+  const safeNrInteger = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value);
+  const onNrLattice = (value: number, origin: number, step: number): boolean =>
+    (BigInt(value) - BigInt(origin)) % BigInt(step) === 0n;
+  const acceptsNrValue = (value: unknown, domain: NonNullable<NrDomain>): value is number =>
+    safeNrInteger(value) && safeNrInteger(domain.origin)
+    && safeNrInteger(domain.step) && domain.step > 0
+    && value >= domain.min && value <= domain.max
+    && onNrLattice(value, domain.origin, domain.step);
+
+  function nrPresentation(dsp: DspViewModel): NrPresentation {
+    const unavailable = {
+      min: NR_FALLBACK_MIN, max: NR_FALLBACK_MAX, step: NR_FALLBACK_STEP,
+      origin: NR_FALLBACK_MIN, value: NR_FALLBACK_MIN, text: '?', usable: false,
+    } as const;
+    try {
+      const projection = dsp.nrLevelProjection;
+      const domain = projection?.domain;
+      if (!projection || !domain
+        || !safeNrInteger(domain.min) || !safeNrInteger(domain.max)
+        || !safeNrInteger(domain.step) || domain.step <= 0
+        || !safeNrInteger(domain.origin)
+        || domain.min >= domain.max || domain.origin < domain.min || domain.origin > domain.max
+        || !onNrLattice(domain.min, domain.origin, domain.step)
+        || !onNrLattice(domain.max, domain.origin, domain.step)) {
+        return unavailable;
+      }
+      const projectionUsable = projection.adjustable === true
+        && usable(dsp.nrLevel)
+        && acceptsNrValue(projection.value, domain);
+      return {
+        ...domain,
+        value: projectionUsable ? projection.value : domain.origin,
+        text: projectionUsable ? String(projection.value) : '?',
+        usable: projectionUsable,
+      };
+    } catch {
+      return unavailable;
+    }
+  }
 </script>
 
 <script lang="ts">
@@ -125,7 +174,15 @@
     if (f && usable(f) && f.reading.status === 'known') onToggle?.(field, !f.reading.value);
   }
   function level(field: DspLevelField, value: number): void {
-    if (dsp && usable(dsp[field])) onLevelChange?.(field, value);
+    if (!dsp) return;
+    if (field === 'nrLevel') {
+      const presentation = nrPresentation(dsp);
+      if (presentation.usable && acceptsNrValue(value, presentation)) {
+        onLevelChange?.(field, value);
+      }
+      return;
+    }
+    if (usable(dsp[field])) onLevelChange?.(field, value);
   }
   function notch(mode: (typeof NOTCH_MODES)[number]): void {
     if (dsp && usable(dsp.notchMode)) onNotchModeChange?.(mode);
@@ -158,17 +215,19 @@
 
     {#each DSP_LEVELS as [field, label, min, max, step, format] (field)}
       {#if dsp[field].availability.structural}
+        {@const nr = field === 'nrLevel' ? nrPresentation(dsp) : null}
         <label
           class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
-          data-disabled-reason={reasonOf(dsp[field])}
+          data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}
         >
           <span class="dsp-name">{label}</span>
           <input
-            type="range" {min} {max} {step} value={numberOf(dsp[field], min)}
-            disabled={!usable(dsp[field])}
+            type="range" min={nr?.min ?? min} max={nr?.max ?? max} step={nr?.step ?? step}
+            value={nr?.value ?? numberOf(dsp[field], min)}
+            disabled={nr ? !nr.usable : !usable(dsp[field])}
             oninput={(event) => level(field, event.currentTarget.valueAsNumber)}
           />
-          <output>{fmt(dsp[field], format)}</output>
+          <output>{nr?.text ?? fmt(dsp[field], format)}</output>
         </label>
       {/if}
     {/each}

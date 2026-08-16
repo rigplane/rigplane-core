@@ -28,8 +28,9 @@ import { relativeVfoIdentityUnknown, resolveFilterModeConfig } from '../props/pa
 import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import {
-  mapIfShiftToPbt, nbDepthDisplayToRaw, nrDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
+  mapIfShiftToPbt, nbDepthDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
   quantizeFilterWidthToRule,
+  resolveNrLevelContract,
 } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
@@ -40,7 +41,9 @@ import { getSharedTuningAccumulator } from './tuning-accumulator';
 
 type Receiver = 0 | 1;
 
-function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver | null {
+function knownActiveReceiver(
+  field?: string, target?: 'MAIN' | 'SUB', receiverCount?: number | null,
+): Receiver | null {
   const state = getRadioState();
   if (!state) return null;
   // MOR-1418: on a single-receiver radio, `active` (MAIN/SUB) is
@@ -50,12 +53,12 @@ function knownActiveReceiver(field?: string, target?: 'MAIN' | 'SUB'): Receiver 
   // Dual-RX radios are unaffected: `active` observation is still required
   // whenever it is actually observed (or on any radio with receivers > 1).
   const activeObserved = isFieldAvailable(state, 'active');
-  const singleReceiver = getCapabilities()?.receivers === 1;
+  const receivers = receiverCount === undefined ? getCapabilities()?.receivers : receiverCount;
+  const singleReceiver = receivers === 1;
   const receiverName = target
     ?? (activeObserved ? state.active : singleReceiver ? 'MAIN' : undefined);
   if (receiverName !== 'MAIN' && receiverName !== 'SUB') return null;
   if (receiverName === 'SUB') {
-    const receivers = getCapabilities()?.receivers;
     if (!Number.isSafeInteger(receivers) || (receivers as number) < 2 || !state.sub) return null;
   } else if (!state.main) return null;
   const receiver = receiverName === 'SUB' ? 1 : 0;
@@ -67,8 +70,8 @@ function hasCapability(name: string): boolean {
   return getCapabilities()?.capabilities.includes(name) ?? false;
 }
 
-function knownReceiverField(field: string): Receiver | null {
-  const receiver = knownActiveReceiver(field);
+function knownReceiverField(field: string, receiverCount?: number | null): Receiver | null {
+  const receiver = knownActiveReceiver(field, undefined, receiverCount);
   if (receiver === null) return null;
   const state = getRadioState();
   const target = receiver === 1 ? state?.sub : state?.main;
@@ -567,10 +570,19 @@ export function makeDspHandlers() {
       dispatchRadioIntent({ name: 'set_nr', params: { on: mode > 0, receiver } });
     },
     onNrLevelChange: (level: number) => {
-      const receiver = knownReceiverField('nrLevel');
-      if (!hasCapability('nr') || receiver === null || !Number.isFinite(level)) return;
-      // MOR-490: slider is 0-15 (front-panel scale); wire is 0-255 BCD.
-      const raw = nrDisplayToRaw(level);
+      let receiver: Receiver;
+      let raw: number;
+      try {
+        const contract = resolveNrLevelContract(getCapabilities());
+        const resolvedReceiver = knownReceiverField('nrLevel', contract.receivers);
+        if (!contract.hasNr || resolvedReceiver === null || !Number.isFinite(level)) return;
+        const resolvedRaw = contract.displayToRaw(level);
+        if (resolvedRaw === null) return;
+        receiver = resolvedReceiver;
+        raw = resolvedRaw;
+      } catch {
+        return;
+      }
       dispatchRadioIntent({ name: 'set_nr_level', params: { level: raw, receiver } });
     },
     onNbToggle: (on: boolean) => {

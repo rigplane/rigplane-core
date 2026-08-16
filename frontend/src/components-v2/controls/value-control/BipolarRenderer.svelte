@@ -19,6 +19,8 @@
     min: number;
     max: number;
     step: number;
+    /** Larger increment for keyboard gestures; step remains the radio value lattice. */
+    keyboardStep?: number;
     defaultValue?: number;
     fineStepDivisor?: number;
     label: string;
@@ -44,6 +46,7 @@
     min,
     max,
     step,
+    keyboardStep,
     defaultValue = 0,
     fineStepDivisor = 10,
     label,
@@ -119,11 +122,12 @@
     return ((v: number) => onChange(v)) as (...args: unknown[]) => void;
   });
 
-  function emitChange(newValue: number, immediate = false) {
-    if (newValue !== localValue) {
+  function emitChange(newValue: number, immediate = false, emitWhenLocalValueChanges = false) {
+    const localValueChanged = newValue !== localValue;
+    if (localValueChanged) {
       localValue = newValue;
     }
-    if (newValue !== value) {
+    if (newValue !== value || (emitWhenLocalValueChanges && localValueChanged)) {
       if (immediate) {
         onChange(newValue);
       } else {
@@ -184,10 +188,46 @@
   function handleKeyDown(e: KeyboardEvent) {
     if (disabled) return;
 
-    const newValue = handleKeyboardStep(localValue, e.key, step, fineStepDivisor, min, max, e.shiftKey);
+    const keyboardIncrement = getKeyboardIncrement(e.shiftKey);
+    const newValue = keyboardIncrement === null
+      ? handleKeyboardStep(localValue, e.key, step, fineStepDivisor, min, max, e.shiftKey)
+      : handleBipolarKeyboardStep(localValue, e.key, keyboardIncrement);
     if (newValue !== null) {
       e.preventDefault();
-      emitChange(newValue);
+      emitChange(newValue, false, keyboardIncrement !== null);
+    }
+  }
+
+  function getKeyboardIncrement(shiftKey: boolean): number | null {
+    if (keyboardStep === undefined) return null;
+    if (!isLatticeCompatible(keyboardStep)) return isLatticeCompatible(step) ? step : null;
+
+    const increment = shiftKey ? keyboardStep / fineStepDivisor : keyboardStep;
+    return isLatticeCompatible(increment) ? increment : step;
+  }
+
+  function isLatticeCompatible(increment: number): boolean {
+    return Number.isFinite(increment)
+      && increment > 0
+      && Number.isFinite(step)
+      && step > 0
+      && Number.isInteger(increment / step);
+  }
+
+  function handleBipolarKeyboardStep(currentValue: number, key: string, increment: number): number | null {
+    switch (key) {
+      case 'ArrowRight':
+      case 'ArrowUp':
+        return clamp(defaultValue + Math.round((currentValue + increment - defaultValue) / increment) * increment, min, max);
+      case 'ArrowLeft':
+      case 'ArrowDown':
+        return clamp(defaultValue + Math.round((currentValue - increment - defaultValue) / increment) * increment, min, max);
+      case 'Home':
+        return min;
+      case 'End':
+        return max;
+      default:
+        return null;
     }
   }
 

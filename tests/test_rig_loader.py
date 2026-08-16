@@ -5,6 +5,7 @@ TDD: these tests were written FIRST, then the implementation.
 
 from __future__ import annotations
 
+import json
 import textwrap
 from decimal import Decimal
 from pathlib import Path
@@ -18,7 +19,13 @@ from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
     TxInterlockDisposition,
 )
-from rigplane.profiles import BandInfo, FreqRangeInfo, RadioProfile, get_radio_profile
+from rigplane.profiles import (
+    BandInfo,
+    ControlSpec,
+    FreqRangeInfo,
+    RadioProfile,
+    get_radio_profile,
+)
 from rigplane.rig_loader import RigConfig, RigLoadError, discover_rigs, load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
@@ -720,12 +727,43 @@ lookup = [
             ),
         ],
     )
-    def test_scalar_domain_is_private(self, tmp_path, mapping, declaration):
+    def test_scalar_domain_is_published_with_exact_normalized_shape(
+        self, tmp_path, mapping, declaration
+    ):
         rig = self._load(tmp_path, declaration)
 
         assert rig._control_domains["test_control"]["mapping"] == mapping
         assert rig.controls is None
-        assert rig.to_profile().controls is None
+        public = rig.to_profile().controls
+        assert public == {
+            "test_control": {
+                "mapping": mapping,
+                "raw_min": -10 if mapping == "centered" else 0,
+                "raw_max": 10,
+                "raw_step": 2,
+                "raw_origin": 0,
+                "display_min": "-1" if mapping == "centered" else "0",
+                "display_max": "10" if mapping == "identity" else "1",
+                "display_step": "2" if mapping == "identity" else "0.2",
+                "display_origin": "0",
+                "display_unit": "dimensionless" if mapping == "identity" else "ratio",
+                "quantization": "nearest_ties_up",
+                "restoration": "exact",
+                **(
+                    {"raw_center": 0, "display_center": "0"}
+                    if mapping == "centered"
+                    else {}
+                ),
+            }
+        }
+        assert "lookup" not in public["test_control"]
+        assert ("raw_center" in public["test_control"]) is (mapping == "centered")
+        assert ("display_center" in public["test_control"]) is (mapping == "centered")
+        assert json.loads(json.dumps(public)) == public
+        second = rig.to_profile().controls
+        assert second is not public
+        assert second is not None
+        assert second["test_control"] is not public["test_control"]
 
     @pytest.mark.parametrize(
         ("old", "new", "message"),
@@ -784,7 +822,7 @@ lookup = [
         with pytest.raises(RigLoadError, match="display_unit.*non-empty"):
             self._load(tmp_path, declaration)
 
-    def test_exact_lookup_is_private_complete_and_non_serialized(self, tmp_path):
+    def test_exact_lookup_is_published_as_json_safe_objects(self, tmp_path):
         rig = self._load(tmp_path, 'style = "stepped"\n' + self._LOOKUP)
 
         assert rig._control_domains["test_control"]["lookup"] == (
@@ -795,9 +833,144 @@ lookup = [
             (8, Decimal("0.8")),
             (10, Decimal("1.0")),
         )
-        public = {"test_control": {"style": "stepped"}}
-        assert rig.controls == public
+        public = {
+            "test_control": {
+                "style": "stepped",
+                "mapping": "lookup",
+                "raw_min": 0,
+                "raw_max": 10,
+                "raw_step": 2,
+                "raw_origin": 0,
+                "display_min": "0",
+                "display_max": "1",
+                "display_step": "0.2",
+                "display_origin": "0",
+                "display_unit": "ratio",
+                "quantization": "nearest_ties_up",
+                "restoration": "exact",
+                "lookup": [
+                    {"raw": 0, "display": "0"},
+                    {"raw": 2, "display": "0.2"},
+                    {"raw": 4, "display": "0.4"},
+                    {"raw": 6, "display": "0.6"},
+                    {"raw": 8, "display": "0.8"},
+                    {"raw": 10, "display": "1"},
+                ],
+            }
+        }
+        assert rig.controls == {"test_control": {"style": "stepped"}}
         assert rig.to_profile().controls == public
+        assert json.loads(json.dumps(public, allow_nan=False)) == public
+        assert "raw_center" not in public["test_control"]
+        assert "display_center" not in public["test_control"]
+
+    def test_encoded_domain_publishes_default_and_exact_numeric_choices(self, tmp_path):
+        declaration = """\
+mapping = "encoded"
+choices = [
+  { raw = 0, label = "Default" },
+  { raw = 1, display = 250 },
+  { raw = 4, display = 1250.5 },
+]
+"""
+
+        rig = self._load(tmp_path, declaration)
+
+        assert rig._control_domains["test_control"]["choices"] == (
+            (0, "Default"),
+            (1, Decimal("250")),
+            (4, Decimal("1250.5")),
+        )
+        public = rig.to_profile().controls
+        assert public == {
+            "test_control": {
+                "mapping": "encoded",
+                "choices": [
+                    {"raw": 0, "label": "Default"},
+                    {"raw": 1, "display": "250"},
+                    {"raw": 4, "display": "1250.5"},
+                ],
+            }
+        }
+        assert json.loads(json.dumps(public, allow_nan=False)) == public
+
+    @pytest.mark.parametrize(
+        ("choices", "message"),
+        [
+            (
+                '[{ raw = 0, label = "Default" }, { raw = 0, display = 250 }]',
+                "raw values.*unique",
+            ),
+            (
+                '[{ raw = 0, label = "Default" }, { raw = 1, display = 250 }, { raw = 2, display = 250 }]',
+                "display values.*unique",
+            ),
+            ('[{ raw = 0, label = "" }]', "label.*non-empty"),
+            ('[{ raw = true, label = "Default" }]', "raw.*integer"),
+            ("[{ raw = 0, display = 250 }]", "exactly one.*default"),
+            (
+                "[{ raw = 0, display = 250 }, { raw = 1, display = 500 }]",
+                "exactly one.*default",
+            ),
+            (
+                '[{ raw = 0, display = 250 }, { raw = 1, label = "Default" }]',
+                "default.*raw code 0",
+            ),
+            (
+                '[{ raw = 0, label = "Default" }, { raw = 1, label = "Default" }]',
+                "exactly one.*default",
+            ),
+            ('[{ raw = 0, label = "default" }]', 'label must be exactly "Default"'),
+            ('[{ raw = 0, label = "Default " }]', 'label must be exactly "Default"'),
+            (
+                '[{ raw = 0, label = "Default", display = 250 }]',
+                "exactly raw and one of label or display",
+            ),
+            (
+                '[{ raw = 0, label = "Default", extra = 1 }]',
+                "exactly raw and one of label or display",
+            ),
+            (
+                '[{ raw = 0, label = "Default" }, { raw = 1, display = nan }]',
+                "display.*finite",
+            ),
+        ],
+    )
+    def test_encoded_domain_rejects_ambiguous_or_malformed_choices(
+        self, tmp_path, choices, message
+    ):
+        declaration = 'mapping = "encoded"\nchoices = ' + choices + "\n"
+
+        with pytest.raises(RigLoadError, match=message):
+            self._load(tmp_path, declaration)
+
+    @pytest.mark.parametrize(
+        ("mapping", "declaration"),
+        [
+            (
+                "identity",
+                _LINEAR.replace("display_max = 1.0", "display_max = 10")
+                .replace("display_step = 0.2", "display_step = 2")
+                .replace('display_unit = "ratio"', 'display_unit = "dimensionless"')
+                .replace('mapping = "linear"', 'mapping = "identity"'),
+            ),
+            ("linear", _LINEAR),
+            (
+                "centered",
+                _LINEAR.replace("raw_min = 0", "raw_min = -10")
+                .replace("display_min = 0.0", "display_min = -1.0")
+                .replace('mapping = "linear"', 'mapping = "centered"')
+                + "raw_center = 0\ndisplay_center = 0.0\n",
+            ),
+            ("lookup", _LOOKUP),
+        ],
+    )
+    def test_non_encoded_domains_reject_choices(self, tmp_path, mapping, declaration):
+        with pytest.raises(RigLoadError, match="choices requires encoded mapping"):
+            self._load(
+                tmp_path,
+                declaration + 'choices = [{ raw = 0, label = "Default" }]\n',
+            )
 
     def test_exact_lookup_requires_every_raw_lattice_point(self, tmp_path):
         partial = self._LOOKUP.replace("  { raw = 4, display = 0.4 },\n", "")
@@ -923,8 +1096,83 @@ lookup = [
             path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
         ):
             rig = load_rig(path)
+            if path.name == "ftx1.toml":
+                assert rig._control_domains is not None
+                assert set(rig._control_domains) == {
+                    "rit",
+                    "nr_level",
+                    "manual_notch_freq",
+                    "if_shift",
+                    "cw_pitch",
+                }
+                assert rig.to_profile().controls is not rig.controls
+                continue
             assert rig._control_domains is None, path.name
             assert rig.to_profile().controls == rig.controls, path.name
+
+    def test_legacy_control_spec_remains_runtime_callable_with_its_exact_shape(self):
+        legacy = ControlSpec(
+            style="stepped",
+            raw_min=0,
+            raw_max=10,
+            raw_center=5,
+            display_min=0,
+            display_max=10,
+            display_unit="dimensionless",
+        )
+
+        assert legacy == {
+            "style": "stepped",
+            "raw_min": 0,
+            "raw_max": 10,
+            "raw_center": 5,
+            "display_min": 0,
+            "display_max": 10,
+            "display_unit": "dimensionless",
+        }
+
+    def test_malformed_domain_rejects_before_profile_production(self, tmp_path):
+        malformed = self._LINEAR.replace("raw_step = 2", "raw_step = 0")
+
+        with pytest.raises(RigLoadError, match="raw_step"):
+            self._load(tmp_path, malformed)
+
+    @pytest.mark.parametrize(
+        "maximum",
+        [
+            "9" * 400,
+            "9007199254740993",
+            "0.00000000000000000000000000000000000000000000000001",
+            "-0.00000000000000000000000000000000000000000000000001",
+        ],
+    )
+    def test_public_domain_displays_are_lossless_canonical_fixed_point(
+        self, tmp_path, maximum
+    ):
+        if maximum.startswith("-"):
+            magnitude = maximum.removeprefix("-")
+            declaration = self._LINEAR.replace(
+                "display_min = 0.0", f"display_min = {maximum}"
+            )
+            declaration = declaration.replace(
+                "display_step = 0.2", f"display_step = {magnitude}"
+            )
+            declaration = declaration.replace("display_max = 1.0", "display_max = 0")
+            expected_field = "display_min"
+        else:
+            declaration = self._LINEAR.replace(
+                "display_max = 1.0", f"display_max = {maximum}"
+            )
+            declaration = declaration.replace(
+                "display_step = 0.2", f"display_step = {maximum}"
+            )
+            expected_field = "display_max"
+        declaration = declaration.replace("display_origin = 0.0", "display_origin = 0")
+        public = self._load(tmp_path, declaration).to_profile().controls
+        assert public is not None
+        control = public["test_control"]
+        assert json.loads(json.dumps(control, allow_nan=False)) == control
+        assert control[expected_field] == maximum
 
 
 # ── RadioProfile building ───────────────────────────────────────
