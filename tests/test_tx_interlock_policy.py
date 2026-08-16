@@ -1,5 +1,9 @@
 """Focused contract tests for the shared TX interlock policy."""
 
+from dataclasses import asdict
+
+import pytest
+
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA as CORE_TX_INTERLOCK_METADATA,
 )
@@ -43,6 +47,7 @@ from rigplane.runtime.tx_interlock import (
     TxInterlockCommandFamily,
     TxInterlockCommandFamilyMetadata,
     TxInterlockDeferredOutcome,
+    TxInterlockDecision,
     TxInterlockDisposition,
     classify_tx_interlock,
     evaluate_tx_interlock,
@@ -55,6 +60,22 @@ def test_runtime_reexports_the_canonical_core_contract_by_identity() -> None:
     assert TxInterlockCommandFamily is CoreTxInterlockCommandFamily
     assert TxInterlockCommandFamilyMetadata is CoreTxInterlockCommandFamilyMetadata
     assert TX_INTERLOCK_COMMAND_FAMILY_METADATA is CORE_TX_INTERLOCK_METADATA
+
+
+def test_decision_preserves_legacy_equality_and_serialized_shape() -> None:
+    decision = evaluate_tx_interlock(PttOn(), rf_state=RfState.UNKNOWN)
+    expected = TxInterlockDecision(
+        TxInterlockDisposition.BLOCK,
+        False,
+        "RF state is unknown; this command must not be attempted yet.",
+    )
+
+    assert decision == expected
+    assert asdict(decision) == {
+        "disposition": TxInterlockDisposition.BLOCK,
+        "allowed": False,
+        "reason": "RF state is unknown; this command must not be attempted yet.",
+    }
 
 
 def test_emergency_stop_commands_take_structural_precedence() -> None:
@@ -145,6 +166,62 @@ def test_cw_and_modulation_input_controls_are_tx_safe() -> None:
         assert evaluate_tx_interlock(command, rf_state=RfState.UNKNOWN).allowed is True
 
 
+def test_validated_override_produces_one_fail_closed_effective_decision() -> None:
+    command = SetPowerstat(on=True)
+    overrides = {
+        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER,
+    }
+
+    base = evaluate_tx_interlock(command, rf_state=RfState.UNKNOWN)
+    assert base.disposition is TxInterlockDisposition.TX_SAFE
+    assert base.allowed is True
+
+    unknown = evaluate_tx_interlock(
+        command, rf_state=RfState.UNKNOWN, disposition_overrides=overrides
+    )
+    transmitting = evaluate_tx_interlock(
+        command, rf_state=RfState.TX, disposition_overrides=overrides
+    )
+    receiving = evaluate_tx_interlock(
+        command, rf_state=RfState.RX, disposition_overrides=overrides
+    )
+    assert (unknown.disposition, unknown.allowed) == (
+        TxInterlockDisposition.DEFER,
+        False,
+    )
+    assert (transmitting.disposition, transmitting.allowed) == (
+        TxInterlockDisposition.DEFER,
+        False,
+    )
+    assert (receiving.disposition, receiving.allowed) == (
+        TxInterlockDisposition.DEFER,
+        True,
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.TX_SAFE},
+        {TxInterlockCommandFamily.PTT_ON: TxInterlockDisposition.DEFER},
+        {"power-on": TxInterlockDisposition.DEFER},
+    ),
+)
+def test_invalid_or_loosening_override_cannot_yield_pass(overrides: object) -> None:
+    with pytest.raises(ValueError, match="override"):
+        evaluate_tx_interlock(
+            SetPowerstat(on=True),
+            rf_state=RfState.UNKNOWN,
+            disposition_overrides=overrides,
+        )
+
+    emergency = evaluate_tx_interlock(
+        PttOff(), rf_state=RfState.UNKNOWN, disposition_overrides=overrides
+    )
+    assert emergency.disposition is TxInterlockDisposition.ALWAYS_PASS
+    assert emergency.allowed is True
+
+
 def test_command_family_metadata_pins_typed_policy_without_classifying_defaults() -> (
     None
 ):
@@ -203,6 +280,52 @@ def test_deferred_lane_holds_then_releases_after_continuous_known_rx() -> None:
     assert released.outcome is TxInterlockDeferredOutcome.RELEASED
     assert released.command is command
     assert lane.pending is None
+
+
+def test_deferred_lane_applies_effective_decision_to_the_bound_command() -> None:
+    overrides = {
+        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER,
+    }
+    first = SetPowerstat(on=True)
+    second = SetPowerstat(on=True)
+
+    lane = DeferredTxCommandLane()
+    for refused in (RfState.UNKNOWN, RfState.RX):
+        with pytest.raises(ValueError, match="held"):
+            lane.defer(
+                first,
+                now=10.0,
+                rf_state=refused,
+                disposition_overrides=overrides,
+            )
+
+    held = lane.defer(
+        first, now=10.0, rf_state=RfState.TX, disposition_overrides=overrides
+    )
+    superseded = lane.defer(
+        second, now=12.5, rf_state=RfState.TX, disposition_overrides=overrides
+    )
+    assert held.expires_at == 13.0
+    assert superseded.outcome is TxInterlockDeferredOutcome.SUPERSEDED
+    assert superseded.expires_at == 13.0
+    assert lane.observe(rf_state=RfState.RX, now=13.0).outcome is (
+        TxInterlockDeferredOutcome.EXPIRED
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    (PttOn(), PttOff(), SetPowerstat(on=False)),
+)
+def test_deferred_lane_rejects_unbound_forged_decision(command: object) -> None:
+    forged = TxInterlockDecision(
+        TxInterlockDisposition.DEFER,
+        False,
+        "forged denied-DEFER/TX claim",
+    )
+
+    with pytest.raises(TypeError, match="decision"):
+        DeferredTxCommandLane().defer(command, now=10.0, decision=forged)
 
 
 def test_deferred_lane_resets_only_quiet_progress_for_unknown_or_renewed_tx() -> None:
