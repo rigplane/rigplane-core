@@ -49,7 +49,7 @@ from .transport import CatTimeoutError
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue, CommandQueueEntry
     from ...radio_state import RadioState
-    from ...core.state_pipeline_contracts import Observation
+    from ...core.state_pipeline_contracts import CommandSource, Observation
     from .radio import YaesuCatRadio
 
 __all__ = ["YaesuCatPoller"]
@@ -607,6 +607,9 @@ class YaesuCatPoller:
                 and rf_state is RfState.TX
             ):
                 transition = self._deferred_tx_lane.defer(cmd, now=now)
+                held = self._deferred_tx_lane.observe(rf_state=RfState.TX, now=now)
+                if held is None:
+                    raise RuntimeError("deferred command lane lost its replacement")
                 previous, self._deferred_tx_entry = self._deferred_tx_entry, entry
                 if (
                     previous is None
@@ -623,6 +626,7 @@ class YaesuCatPoller:
                             transition.outcome is TxInterlockDeferredOutcome.SUPERSEDED
                         ),
                     )
+                self._emit_deferred_entry_held(entry, expires_at=held.expires_at)
                 continue
             try:
                 if (
@@ -699,6 +703,41 @@ class YaesuCatPoller:
             cls._mark_queued_command_failed(entry, error)
         if entry.future is not None and not entry.future.done():
             entry.future.set_exception(error)
+
+    @staticmethod
+    def _emit_deferred_entry_held(
+        entry: CommandQueueEntry, *, expires_at: float
+    ) -> None:
+        if entry.command_service is None or entry.command_id is None:
+            return
+        source: CommandSource = entry.source or "internal_policy"
+        params = {} if entry.session_id is None else {"session_id": entry.session_id}
+        target = None
+        events = entry.command_service.lifecycle_events()
+        if isinstance(events, Sequence):
+            for event in reversed(events):
+                if (
+                    event.command_id == entry.command_id
+                    and event.source == source
+                    and (event.details or {}).get("session_id") == entry.session_id
+                ):
+                    target = event.target
+                    break
+        entry.command_service.emit_lifecycle(
+            CommandIntent(
+                id=entry.command_id,
+                name="queued_completion",
+                params=params,
+                source=source,
+                target=target,
+            ),
+            "queued",
+            details={
+                "heldBy": "tx_interlock",
+                "reason": "tx_active",
+                "expiresAt": expires_at,
+            },
+        )
 
     @staticmethod
     def _mark_queued_command_failed(entry: Any, exc: BaseException) -> None:
