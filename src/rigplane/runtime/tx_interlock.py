@@ -102,7 +102,8 @@ class TxInterlockDeferredResult:
 
     The lane never executes ``command`` and never emits lifecycle events.  For
     supersession or expiry while accepting a replacement, ``replacement`` is
-    the newly held command; it has its own fresh three-second TTL.
+    the newly held command.  Active supersession retains the current absolute
+    deadline; a replacement accepted after expiry starts a fresh hold.
     """
 
     outcome: TxInterlockDeferredOutcome
@@ -143,21 +144,29 @@ class DeferredTxCommandLane:
     def defer(self, command: object, *, now: float) -> TxInterlockDeferredResult:
         """Hold a ``DEFER`` command, explicitly replacing a prior held command.
 
-        The original command's TTL is never carried forward.  If it was already
-        expired when a new command arrives, expiry is reported truthfully while
-        the new command starts a separate fresh hold.
+        Active supersession carries forward the original absolute deadline but
+        resets quiet progress for the new payload.  If the prior command was
+        already expired, expiry is reported truthfully while the replacement
+        starts a separate fresh hold.
         """
 
         decision = evaluate_tx_interlock(command, rf_state=RfState.TX)
         if decision.disposition is not TxInterlockDisposition.DEFER:
             raise ValueError("only commands with DEFER disposition may enter the lane")
 
-        replacement = _DeferredTxCommand(
-            command=command,
-            deferred_at=now,
-            expires_at=now + self._TTL_SECONDS,
-        )
         previous = self._entry
+        if previous is not None and now < previous.expires_at:
+            replacement = _DeferredTxCommand(
+                command=command,
+                deferred_at=previous.deferred_at,
+                expires_at=previous.expires_at,
+            )
+        else:
+            replacement = _DeferredTxCommand(
+                command=command,
+                deferred_at=now,
+                expires_at=now + self._TTL_SECONDS,
+            )
         self._entry = replacement
         if previous is None:
             return self._result(TxInterlockDeferredOutcome.HELD, replacement)
