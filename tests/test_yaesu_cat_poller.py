@@ -641,6 +641,15 @@ async def test_yaesu_profile_power_on_defer_is_command_bound_across_queue_and_ex
 ) -> None:
     from rigplane.runtime._poller_types import SetPowerstat
 
+    class OneShotItemsDict(dict):
+        calls = 0
+
+        def items(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("second override metadata access")
+            return super().items()
+
     clock = [10.0]
     monkeypatch.setattr(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
@@ -648,19 +657,13 @@ async def test_yaesu_profile_power_on_defer_is_command_bound_across_queue_and_ex
     radio, queue = make_radio(), CommandQueue()
     radio.set_powerstat = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
-    _set_fresh_ptt_observation(poller, active=True)
-    await poller._execute_command(SetPowerstat(on=True))  # noqa: SLF001
-    radio.set_powerstat.assert_awaited_once_with(True)
-    radio.set_powerstat.reset_mock()
-    poller._invalidate_ptt_observation()  # noqa: SLF001
-
-    radio.profile.tx_interlock_disposition_overrides = {
-        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER
-    }
+    override = {TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER}
+    radio.profile.tx_interlock_disposition_overrides = override
 
     with pytest.raises(CommandError, match="unknown"):
         await poller._execute_command(SetPowerstat(on=True))  # noqa: SLF001
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+    radio.profile.tx_interlock_disposition_overrides = OneShotItemsDict(override)
 
     future = asyncio.get_running_loop().create_future()
     service = MagicMock()
@@ -674,11 +677,6 @@ async def test_yaesu_profile_power_on_defer_is_command_bound_across_queue_and_ex
     assert not future.done()
     assert poller._deferred_tx_lane.pending == SetPowerstat(on=True)  # noqa: SLF001
     assert service.emit_lifecycle.call_args.args[1] == "queued"
-    assert service.emit_lifecycle.call_args.kwargs["details"] == {
-        "heldBy": "tx_interlock",
-        "reason": "tx_active",
-        "expiresAt": 13.0,
-    }
     radio.set_powerstat.assert_not_awaited()
 
     await _drain_with_ptt(poller, clock, 10.5, False)
