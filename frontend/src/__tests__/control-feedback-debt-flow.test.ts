@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { parse } from 'svelte/compiler';
 // @ts-ignore -- intentionally plain Node ESM shared by the inventory script.
 import { collectObjectFlow, unwrapIdentifier } from '../../scripts/control-feedback-debt-flow.mjs';
+// @ts-ignore -- compatibility identity must remain delegated to the shared AST helper.
+import { collectObjectFlow as collectSharedObjectFlow } from '../../scripts/control-feedback-debt-ast.mjs';
 
 const program = (source: string) => parse(`<script lang="ts">${source}</script>`, { modern: true }).instance!.content;
 const flow = (source: string, root = 'props') => collectObjectFlow(program(source)).get(root) ?? [];
@@ -10,14 +12,21 @@ const summary = (source: string) => flow(source).map(({ key, value, poison }: an
 }));
 
 describe('control feedback object flow (MOR-1715)', () => {
-  it('unwraps only the supported identifier wrappers', () => {
+  it('delegates collection to the shared AST implementation', () => {
+    expect(collectObjectFlow).toBe(collectSharedObjectFlow);
+  });
+
+  it('unwraps supported wrappers, including TypeScript instantiation', () => {
     const identifier = { type: 'Identifier', name: 'props' };
     let wrapped: any = identifier;
-    for (const type of ['TSAsExpression', 'TSTypeAssertion', 'TSNonNullExpression', 'TSSatisfiesExpression', 'ParenthesizedExpression', 'ChainExpression']) {
+    for (const type of ['TSAsExpression', 'TSTypeAssertion', 'TSNonNullExpression', 'TSSatisfiesExpression', 'ParenthesizedExpression', 'ChainExpression', 'TSInstantiationExpression']) {
       wrapped = { type, expression: wrapped };
     }
     expect(unwrapIdentifier(wrapped)).toBe(identifier);
     expect(unwrapIdentifier({ type: 'SequenceExpression', expressions: [identifier] })).toBeNull();
+    expect(summary(`const props = {}; (props<string>).type = 'range';`)).toEqual([
+      { key: 'type', value: 'range', poison: false },
+    ]);
   });
 
   it('reports direct, computed, alias and multihop writes in source order', () => {
@@ -65,15 +74,42 @@ describe('control feedback object flow (MOR-1715)', () => {
 
   it('does not trust mutable or reassigned aliases', () => {
     expect(summary(`
-      const props = {}; let mutable = props; mutable.type = 'range';
-      const alias = props; alias = {}; alias.type = 'number';
-    `)).toEqual([{ key: null, value: null, poison: true }]);
+      const props = {}; let late; late = props; late.type = 'range';
+      let mutable = props; mutable.type = 'number';
+      const alias = props; alias = {}; alias.type = 'toggle';
+    `)).toEqual([
+      { key: null, value: null, poison: true },
+      { key: 'type', value: 'number', poison: false },
+      { key: null, value: null, poison: true },
+      { key: 'type', value: 'toggle', poison: false },
+    ]);
   });
 
-  it('fails closed for cyclic and unsupported aliases', () => {
+  it('fails closed for updates, deletes, nested escapes, and method receivers', () => {
+    expect(summary(`
+      const props = {}; props.type++; delete props.type;
+      sink({ nested: [props] }); props.items.push(1);
+    `)).toEqual([
+      { key: null, value: null, poison: true },
+      { key: null, value: null, poison: true },
+      { key: null, value: null, poison: true },
+      { key: null, value: null, poison: true },
+    ]);
+  });
+
+  it('declares named function-expression and destructured function/loop bindings', () => {
+    expect(summary(`
+      const props = {};
+      (function props() { props.type = 'range'; })();
+      function shadow({ props }: { props: Record<string, unknown> }) { props.type = 'number'; }
+      for (const { props } of []) { props.type = 'toggle'; }
+    `)).toEqual([]);
+  });
+
+  it('keeps cycles isolated and lets the shared evaluator resolve sequence aliases', () => {
     expect(collectObjectFlow(program(`const a = b; const b = a; a.type = 'range';`)).size).toBe(0);
     expect(summary(`const props = {}; const alias = (0, props); alias.type = 'range';`)).toEqual([
-      { key: null, value: null, poison: true },
+      { key: 'type', value: 'range', poison: false },
     ]);
   });
 });
