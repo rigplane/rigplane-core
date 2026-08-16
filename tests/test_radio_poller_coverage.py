@@ -63,7 +63,9 @@ from rigplane.web.radio_poller import (
     SetAfLevel,
     SetAgc,
     SetAttenuator,
+    SetBreakIn,
     SetBreakInDelay,
+    SetCwPitch,
     SetData1ModInput,
     SetDataMode,
     SetDigiSel,
@@ -72,6 +74,7 @@ from rigplane.web.radio_poller import (
     SetFilterWidth,
     SetFreq,
     SetIpPlus,
+    SetKeySpeed,
     SetMode,
     SetNB,
     SetNR,
@@ -1216,6 +1219,122 @@ async def test_execute_failed_set_break_in_delay_does_not_queue_readback() -> No
         await poller._execute(SetBreakInDelay(140))  # noqa: SLF001
 
     assert scheduler.pending_requests() == ()
+
+
+@pytest.mark.parametrize(
+    ("cmd", "field", "expected", "previous"),
+    (
+        (SetCwPitch(650), "cw_pitch", 650, 600),
+        (SetKeySpeed(24), "key_speed", 24, 20),
+        (SetBreakIn(1), "break_in", 1, 0),
+        (SetBreakIn(2), "break_in", 2, 0),
+    ),
+    ids=("cw-pitch", "key-speed", "break-in-semi", "break-in-full"),
+)
+@pytest.mark.asyncio
+async def test_cw_operator_write_requires_matching_radio_readback(
+    cmd: Any, field: str, expected: int, previous: int
+) -> None:
+    path = FieldPath.global_("operator_controls", field)
+    store = StateStore()
+    store.begin_provider_generation()
+    state = RadioState()
+    setattr(state, field, previous)
+    radio = _make_radio(model="IC-7300")
+    setter = AsyncMock()
+    getter = AsyncMock(return_value=expected)
+    setattr(radio, f"set_{field}", setter)
+    setattr(radio, f"get_{field}", getter)
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+
+    await poller._execute(cmd, command_id="cw-write-1")  # noqa: SLF001
+
+    setter.assert_awaited_once_with(expected)
+    getter.assert_awaited_once_with()
+    confirmed = store.snapshot().field(path)
+    assert (confirmed.value, confirmed.source.native_id) == (
+        expected,
+        f"{field}_readback",
+    )
+    assert getattr(state, field) == expected
+
+
+@pytest.mark.parametrize(
+    "outcome", ("failure", "timeout", "mismatch", "stale", "new-generation")
+)
+@pytest.mark.asyncio
+async def test_cw_operator_unconfirmed_write_preserves_radio_truth(
+    outcome: str,
+) -> None:
+    cmd, field, expected, previous = SetCwPitch(650), "cw_pitch", 650, 600
+    path = FieldPath.global_("operator_controls", field)
+    store = StateStore()
+    generation = store.begin_provider_generation()
+
+    def seed(value: int, provider_generation: int) -> None:
+        store.apply(
+            Observation(
+                path=path,
+                value=value,
+                source=SourceMetadata(source="poll_response", provider="test"),
+                timestamp_monotonic=time.monotonic(),
+                provider_generation=provider_generation,
+            )
+        )
+
+    seed(previous, generation)
+    before = store.snapshot().field(path)
+    state = RadioState()
+    setattr(state, field, previous)
+    radio = _make_radio(model="IC-7300")
+    setter = AsyncMock()
+
+    async def readback() -> int:
+        if outcome == "failure":
+            raise CommandError("readback failed")
+        if outcome == "timeout":
+            await asyncio.Event().wait()
+        if outcome == "mismatch":
+            return expected + 1
+        if outcome == "new-generation":
+            seed(previous, store.begin_provider_generation())
+        return expected
+
+    getter = AsyncMock(side_effect=readback)
+    setattr(radio, f"set_{field}", setter)
+    setattr(radio, f"get_{field}", getter)
+    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
+    if outcome == "stale":
+        poller._provider_generation = MagicMock(  # type: ignore[method-assign] # noqa: SLF001
+            side_effect=(generation, generation + 1)
+        )
+
+    with patch("rigplane.web.radio_poller._SEND_TIMEOUT", 0.001):
+        await poller._execute(cmd)  # noqa: SLF001
+
+    setter.assert_awaited_once_with(expected)
+    getter.assert_awaited_once_with()
+    after = store.snapshot().field(path)
+    if outcome != "new-generation":
+        assert after == before
+    else:
+        assert (after.value, after.provider_generation) == (
+            previous,
+            store.provider_generation,
+        )
+    assert getattr(state, field) == previous
+
+
+def test_ic7300_cw_operator_controls_have_paired_readback_routes() -> None:
+    poller = RadioPoller(_make_radio(model="IC-7300"), CommandQueue())
+    for name, route in {
+        "cw_pitch": (0x14, 0x09),
+        "key_speed": (0x14, 0x0C),
+        "break_in": (0x16, 0x47),
+    }.items():
+        assert poller._cmd_map.get(f"set_{name}") == route  # noqa: SLF001
+        assert poller._cmd_map.get(f"get_{name}") == route  # noqa: SLF001
+    assert poller._profile.break_in_modes == (0, 1, 2)  # noqa: SLF001
 
 
 @pytest.mark.parametrize(("receiver", "slot"), ((0, "main"), (1, "sub")))

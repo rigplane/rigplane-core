@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
@@ -1369,6 +1369,46 @@ class RadioPoller:
         else:
             self._state_store.apply(observation)
 
+    async def _confirm_global_operator_write(
+        self,
+        name: str,
+        expected: int,
+        getter: Callable[[], Awaitable[int]],
+        *,
+        command_id: str | None,
+        source: CommandSource,
+        session_id: str | None,
+        command_service: CommandService | None,
+        provider_generation: int,
+    ) -> None:
+        """Apply a global operator write only after a matching fresh readback."""
+
+        try:
+            confirmed = await asyncio.wait_for(getter(), timeout=_SEND_TIMEOUT)
+        except Exception:
+            logger.debug(
+                "radio-poller: %s post-write readback failed",
+                name,
+                exc_info=True,
+            )
+            return
+        if provider_generation != self._provider_generation():
+            logger.debug("radio-poller: discarded stale %s readback", name)
+            return
+        if confirmed != expected:
+            logger.warning("radio-poller: %s write readback mismatch", name)
+            return
+        self._apply_global_control_observation(
+            name,
+            confirmed,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+            command_service=command_service,
+            provider_generation=provider_generation,
+        )
+        self._apply_compatibility_mirror(lambda state: setattr(state, name, confirmed))
+
     def _apply_global_command_echo_observation(
         self,
         name: str,
@@ -2399,16 +2439,40 @@ class RadioPoller:
                 await _r.set_agc_time_constant(value, receiver=rx)
             case SetCwPitch(value=value):
                 await _r.set_cw_pitch(value)
-                if self._radio_state:
-                    self._radio_state.cw_pitch = value
+                await self._confirm_global_operator_write(
+                    "cw_pitch",
+                    value,
+                    _r.get_cw_pitch,
+                    command_id=command_id,
+                    source=command_source,
+                    session_id=session_id,
+                    command_service=command_service,
+                    provider_generation=provider_generation,
+                )
             case SetKeySpeed(speed=speed):
                 await _r.set_key_speed(speed)
-                if self._radio_state:
-                    self._radio_state.key_speed = speed
+                await self._confirm_global_operator_write(
+                    "key_speed",
+                    speed,
+                    _r.get_key_speed,
+                    command_id=command_id,
+                    source=command_source,
+                    session_id=session_id,
+                    command_service=command_service,
+                    provider_generation=provider_generation,
+                )
             case SetBreakIn(mode=mode):
                 await _r.set_break_in(mode)
-                if self._radio_state:
-                    self._radio_state.break_in = mode
+                await self._confirm_global_operator_write(
+                    "break_in",
+                    mode,
+                    _r.get_break_in,
+                    command_id=command_id,
+                    source=command_source,
+                    session_id=session_id,
+                    command_service=command_service,
+                    provider_generation=provider_generation,
+                )
             case SetApf(mode=mode, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_apf")
                 await _r.set_audio_peak_filter(mode, receiver=rx)
