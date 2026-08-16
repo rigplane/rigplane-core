@@ -30,10 +30,12 @@ from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.runtime.tx_interlock import (
+    DeferredTxCommandLane,
     RfState,
+    TxInterlockDeferredOutcome,
     TxInterlockDisposition,
     evaluate_tx_interlock,
 )
@@ -121,6 +123,8 @@ class YaesuCatPoller:
         self._capture_provider_generation: Callable[[], int] | None = None
         self._advance_provider_generation: Callable[[], int] | None = None
         self._pending_receiver_select: CommandQueueEntry | None = None
+        self._deferred_tx_lane = DeferredTxCommandLane()
+        self._deferred_tx_entry: CommandQueueEntry | None = None
 
     def bind_provider_generation(
         self,
@@ -554,10 +558,26 @@ class YaesuCatPoller:
 
     async def _drain_commands(self) -> None:
         """Process all pending commands from the web UI command queue."""
-        if self._command_queue is None or not self._command_queue.has_commands:
+        if self._command_queue is None:
             return
 
-        entries = self._command_queue.drain_entries()
+        now = time.monotonic()
+        transition = self._deferred_tx_lane.observe(
+            rf_state=self._current_rf_state(), now=now
+        )
+        entries: list[CommandQueueEntry] = []
+        if (
+            transition is not None
+            and transition.outcome is not TxInterlockDeferredOutcome.HELD
+        ):
+            entry, self._deferred_tx_entry = self._deferred_tx_entry, None
+            if entry is not None:
+                if transition.outcome is TxInterlockDeferredOutcome.RELEASED:
+                    entries.append(entry)
+                else:
+                    self._finish_deferred_entry(entry, superseded=False)
+        if self._command_queue.has_commands:
+            entries.extend(self._command_queue.drain_entries())
         for entry in entries:
             cmd = entry.command
             if entry.future is not None and entry.future.cancelled():
@@ -566,7 +586,30 @@ class YaesuCatPoller:
                     type(cmd).__name__,
                 )
                 continue
+            now = time.monotonic()
+            rf_state = self._current_rf_state()
+            decision = evaluate_tx_interlock(cmd, rf_state=rf_state)
+            if (
+                decision.disposition is TxInterlockDisposition.DEFER
+                and not decision.allowed
+                and rf_state is RfState.TX
+            ):
+                transition = self._deferred_tx_lane.defer(cmd, now=now)
+                previous, self._deferred_tx_entry = self._deferred_tx_entry, entry
+                if previous is not None:
+                    self._finish_deferred_entry(
+                        previous,
+                        superseded=(
+                            transition.outcome is TxInterlockDeferredOutcome.SUPERSEDED
+                        ),
+                    )
+                continue
             try:
+                if (
+                    decision.disposition is TxInterlockDisposition.DEFER
+                    and not decision.allowed
+                ):
+                    raise CommandError(decision.reason)
                 await self._execute_command(cmd)
                 self._track_receiver_select_readback(entry)
                 if entry.future is not None and not entry.future.done():
@@ -580,6 +623,37 @@ class YaesuCatPoller:
                     type(cmd).__name__,
                     exc_info=True,
                 )
+
+    @classmethod
+    def _finish_deferred_entry(cls, entry: Any, *, superseded: bool) -> None:
+        message = (
+            "deferred command superseded" if superseded else "deferred command expired"
+        )
+        error: BaseException = (
+            CommandError(message) if superseded else TimeoutError(message)
+        )
+        if superseded and entry.command_service is not None and entry.command_id:
+            entry.command_service.expire_command(
+                entry.command_id,
+                source=entry.source,
+                session_id=entry.session_id,
+            )
+            entry.command_service.emit_lifecycle(
+                CommandIntent(
+                    id=entry.command_id,
+                    name="queued_completion",
+                    params={}
+                    if entry.session_id is None
+                    else {"session_id": entry.session_id},
+                    source=entry.source or "internal_policy",
+                ),
+                "superseded",
+                message=message,
+            )
+        elif not superseded:
+            cls._mark_queued_command_failed(entry, error)
+        if entry.future is not None and not entry.future.done():
+            entry.future.set_exception(error)
 
     @staticmethod
     def _mark_queued_command_failed(entry: Any, exc: BaseException) -> None:
