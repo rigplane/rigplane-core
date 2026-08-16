@@ -183,7 +183,6 @@ function effectiveAttributes(node, scope, source) {
   return result;
 }
 
-/** @param {Map<string, Entry>} attributes @param {string} identity */
 function sitePolicy(attributes, identity) {
   const entry = attributes.get('feedback-policy');
   if (!entry) return 'radio-backed';
