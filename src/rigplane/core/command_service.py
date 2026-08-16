@@ -38,6 +38,7 @@ __all__ = [
 _UNSET = object()
 _MAX_READBACK_EXPECTATIONS = 128
 _READBACK_EXPECTATION_GRACE_SECONDS = 2.0
+_DISPATCHABLE_LIFECYCLE_STATES = ("accepted", "queued", "sent", "acknowledged")
 _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
     "set_af_level": "af_level",
     "set_rf_gain": "rf_gain",
@@ -350,6 +351,29 @@ class CommandService:
             and item.command_id == command_id
         )
 
+    def retain_readback_expectations_for_dispatch(
+        self,
+        *,
+        source: CommandSource,
+        session_id: str | None,
+        command_id: str,
+    ) -> tuple[PendingOverlay, ...] | None:
+        """Refresh existing expectations at dispatch, or reject a terminal command."""
+        event = self._last_event(command_id, source=source, session_id=session_id)
+        if event is None or event.state not in _DISPATCHABLE_LIFECYCLE_STATES:
+            return None
+        matches = self.readback_expectations(
+            source=source, session_id=session_id, command_id=command_id
+        )
+        expires_at = self._clock() + _READBACK_EXPECTATION_GRACE_SECONDS
+        retained = tuple(
+            replace(item, expires_at_monotonic=expires_at) for item in matches
+        )
+        self._readback_expectations = [
+            item for item in self._readback_expectations if item not in matches
+        ] + list(retained)
+        return retained
+
     def discard_readback_expectations(
         self,
         *,
@@ -521,7 +545,10 @@ class CommandService:
     ) -> None:
         if (
             observation.correlation_id is None
-            or not _is_external_rigctld_readback(observation.source)
+            or not (
+                _is_external_rigctld_readback(observation.source)
+                or _is_yaesu_cat_readback(observation.source)
+            )
             or observation.source.command_source is None
         ):
             return
@@ -898,6 +925,10 @@ def _paths_reconcile(observation: Observation, overlay_path: FieldPath) -> bool:
     observation_path = observation.path
     if observation_path == overlay_path:
         return True
+    if _is_yaesu_cat_readback(observation.source):
+        return _yaesu_receiver_alias(observation_path) == _yaesu_receiver_alias(
+            overlay_path
+        )
     if not _is_external_rigctld_readback(observation.source):
         return False
     return _external_rigctld_main_alias(observation_path) == (
@@ -911,6 +942,23 @@ def _is_external_rigctld_readback(source: SourceMetadata) -> bool:
         and source.provider == "external_rigctld"
         and source.transport == "rigctld"
     )
+
+
+def _is_yaesu_cat_readback(source: SourceMetadata) -> bool:
+    return (source.source, source.provider, source.transport) == (
+        "yaesu_poll_response",
+        "yaesu_cat",
+        "serial",
+    )
+
+
+def _yaesu_receiver_alias(path: FieldPath) -> FieldPath:
+    if path.scope.value != "receiver" or path.receiver_id not in {"0", "1"}:
+        return path
+    receiver = "main" if path.receiver_id == "0" else "sub"
+    if path.family.value == "freq_mode" and path.slot is None:
+        return FieldPath.active(receiver, path.family.value, path.name)
+    return FieldPath.receiver(receiver, path.family.value, path.name)
 
 
 def _external_rigctld_main_alias(path: FieldPath) -> FieldPath:

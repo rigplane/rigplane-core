@@ -28,6 +28,7 @@ from collections.abc import Awaitable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
+from rigplane.core.command_service import _is_yaesu_cat_readback, _yaesu_receiver_alias
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
@@ -64,6 +65,14 @@ _SLOW_INTERVAL: float = 1.000  # 1 Hz
 _EMA_ALPHA: float = 0.3
 _TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
 _ACTIVE_RECEIVER_PATH = FieldPath.global_("slow_state", "active")
+
+
+def _exact_readback_value_matches(observed: Any, expected: Any) -> bool:
+    kind = type(observed)
+    if kind not in (bool, int, float, str) or kind is not type(expected):
+        return False
+    finite = kind is not float or observed - observed == expected - expected == 0
+    return finite and bool(observed == expected)
 
 
 class YaesuCatPoller:
@@ -125,6 +134,7 @@ class YaesuCatPoller:
         self._capture_provider_generation: Callable[[], int] | None = None
         self._advance_provider_generation: Callable[[], int] | None = None
         self._pending_receiver_select: CommandQueueEntry | None = None
+        self._pending_readbacks: dict[FieldPath, tuple[Any, ...]] = {}
         self._deferred_tx_lane = DeferredTxCommandLane()
         self._deferred_tx_entry: CommandQueueEntry | None = None
         self._deferred_tx_generation: (
@@ -369,7 +379,7 @@ class YaesuCatPoller:
             self._ptt_observation = ptt_observation
             self._ptt_connection_generation = generation
             self._last_ptt = ptt_observation.value
-        self._observation_callback(observations)
+        self._observation_callback(self._annotate_yaesu_readbacks(observations))
         return True
 
     async def _emit_fast_observations(self) -> bool:
@@ -415,7 +425,7 @@ class YaesuCatPoller:
         if not self._provider_generation_is_current(provider_generation):
             return True
         self._observation_callback(
-            self._annotate_receiver_select_readback(
+            self._annotate_yaesu_readbacks(
                 self._stamp_provider_generation(observations, provider_generation)
             )
         )
@@ -428,13 +438,24 @@ class YaesuCatPoller:
             or entry.source is None
         ):
             return
-        expectations = entry.command_service.readback_expectations(
+        expectations = entry.command_service.retain_readback_expectations_for_dispatch(
             source=entry.source,
             session_id=entry.session_id,
             command_id=entry.command_id,
         )
-        if any(item.path == _ACTIVE_RECEIVER_PATH for item in expectations):
-            self._pending_receiver_select = entry
+        generation = (
+            self._current_tx_target_generation(),
+            self._captured_provider_generation(),
+        )
+        for expectation in expectations or ():
+            if expectation.path == _ACTIVE_RECEIVER_PATH:
+                self._pending_receiver_select = entry
+            self._pending_readbacks[_yaesu_receiver_alias(expectation.path)] = (
+                expectation,
+                entry,
+                generation,
+                time.monotonic(),
+            )
 
     def _annotate_receiver_select_readback(
         self, observations: Sequence[Observation]
@@ -476,6 +497,44 @@ class YaesuCatPoller:
                 )
                 self._pending_receiver_select = None
             result.append(observation)
+        return tuple(result)
+
+    def _annotate_yaesu_readbacks(
+        self, observations: Sequence[Observation]
+    ) -> tuple[Observation, ...]:
+        result = list(observations)
+        for index, observation in enumerate(result):
+            pending = self._pending_readbacks.get(observation.path)
+            if pending is None or observation.correlation_id is not None:
+                continue
+            expectation, entry, generation, dispatched_at = pending
+            expectations = entry.command_service.readback_expectations(
+                source=entry.source,
+                session_id=entry.session_id,
+                command_id=entry.command_id,
+            )
+            matches = (
+                expectation in expectations
+                and _exact_readback_value_matches(observation.value, expectation.value)
+                and observation.timestamp_monotonic >= dispatched_at
+                and generation[0] == self._current_tx_target_generation()
+                and generation[1] == self._captured_provider_generation()
+                and observation.provider_generation == generation[1]
+                and _is_yaesu_cat_readback(observation.source)
+            )
+            if matches:
+                result[index] = replace(
+                    observation,
+                    source=replace(
+                        observation.source,
+                        command_source=entry.source,
+                        session_id=entry.session_id,
+                    ),
+                    correlation_id=entry.command_id,
+                )
+                self._pending_readbacks.pop(observation.path, None)
+            elif expectation not in expectations:
+                self._pending_readbacks.pop(observation.path, None)
         return tuple(result)
 
     # ------------------------------------------------------------------
@@ -592,7 +651,8 @@ class YaesuCatPoller:
             self._deferred_tx_generation = None
             if entry is not None:
                 if transition.outcome is TxInterlockDeferredOutcome.RELEASED:
-                    entries.append(entry)
+                    if self._deferred_release_is_live(entry):
+                        entries.append(entry)
                 else:
                     self._finish_deferred_entry(entry, superseded=False)
         if self._command_queue.has_commands:
@@ -677,6 +737,36 @@ class YaesuCatPoller:
                     type(cmd).__name__,
                     exc_info=True,
                 )
+
+    def _deferred_release_is_live(self, entry: CommandQueueEntry) -> bool:
+        reason = None
+        if (
+            entry.source == "websocket"
+            and entry.session_id is not None
+            and self._command_queue is not None
+            and not self._command_queue.session_is_live(entry.session_id)
+        ):
+            reason = f"control session {entry.session_id} is gone"
+        elif (
+            entry.command_service is not None
+            and entry.command_id is not None
+            and entry.source is not None
+            and entry.command_service.retain_readback_expectations_for_dispatch(
+                source=entry.source,
+                session_id=entry.session_id,
+                command_id=entry.command_id,
+            )
+            is None
+        ):
+            reason = "deferred command no longer active"
+        if reason is None:
+            return True
+        error = CommandError(reason)
+        if "no longer active" not in reason:
+            self._mark_queued_command_failed(entry, error)
+        if entry.future is not None and not entry.future.done():
+            entry.future.set_exception(error)
+        return False
 
     def _deferred_generation_change(self) -> str | None:
         generation = self._deferred_tx_generation
