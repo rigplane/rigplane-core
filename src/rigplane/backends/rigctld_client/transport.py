@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
@@ -30,6 +31,16 @@ class RigctldTransport:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
+        self._provider_generation_advance: Callable[[], int] | None = None
+        self._connection_retired = True
+
+    def bind_provider_generation(
+        self, *, advance: Callable[[], int] | None = None
+    ) -> None:
+        """Bind the existing provider-generation lifecycle callback."""
+
+        self._provider_generation_advance = advance
 
     @property
     def connected(self) -> bool:
@@ -37,10 +48,16 @@ class RigctldTransport:
         return writer is not None and not writer.is_closing()
 
     async def connect(self) -> None:
+        async with self._lifecycle_lock:
+            await self._connect_locked()
+
+    async def _connect_locked(self) -> None:
         if self.connected:
             return
+        if self._reader is not None or self._writer is not None:
+            await self._close_locked()
         try:
-            self._reader, self._writer = await asyncio.wait_for(
+            reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port),
                 timeout=self.timeout,
             )
@@ -54,11 +71,28 @@ class RigctldTransport:
                 f"Failed to connect to external rigctld at "
                 f"{self.host}:{self.port}: {exc}"
             ) from exc
+        self._reader, self._writer = reader, writer
+        self._connection_retired = False
 
     async def close(self) -> None:
+        async with self._lifecycle_lock:
+            await self._close_locked()
+
+    async def _close_locked(self) -> None:
         writer = self._writer
+        had_connection = self._reader is not None or writer is not None
         self._reader = None
         self._writer = None
+        if had_connection and not self._connection_retired:
+            self._connection_retired = True
+            advance = self._provider_generation_advance
+            if advance is not None:
+                try:
+                    advance()
+                except Exception:
+                    _LOGGER.exception(
+                        "external rigctld provider generation callback failed"
+                    )
         if writer is None:
             return
         writer.close()
@@ -67,7 +101,7 @@ class RigctldTransport:
         except OSError:
             pass
 
-    async def _drain_stale(self) -> None:
+    async def _drain_stale(self, command: str) -> None:
         """Discard any unread bytes left in the socket buffer from a prior
         transaction (e.g. a late/out-of-band frame the bridge injected) so the
         next command reads only its own reply."""
@@ -79,8 +113,18 @@ class RigctldTransport:
                 chunk = await asyncio.wait_for(reader.read(4096), timeout=0.001)
             except (asyncio.TimeoutError, TimeoutError):
                 return
+            except OSError as exc:
+                await self.close()
+                raise RadioConnectionError(
+                    f"Connection to external rigctld at {self.host}:{self.port} "
+                    f"failed while reading response to {command!r}: {exc}"
+                ) from exc
             if not chunk:
-                return  # EOF
+                await self.close()
+                raise RadioConnectionError(
+                    f"External rigctld at {self.host}:{self.port} closed the "
+                    f"connection while handling {command!r}."
+                )
             _LOGGER.debug("rigctld transport: drained %d stale bytes", len(chunk))
 
     async def query(self, command: str, *, response_lines: int) -> list[str]:
@@ -89,7 +133,7 @@ class RigctldTransport:
             raise ValueError("response_lines must be > 0")
 
         async with self._lock:
-            await self._drain_stale()
+            await self._drain_stale(command)
             await self._write_line(command)
             lines: list[str] = []
             for _ in range(response_lines):
@@ -108,7 +152,7 @@ class RigctldTransport:
     async def command(self, command: str) -> None:
         """Send a write command and require ``RPRT 0`` success."""
         async with self._lock:
-            await self._drain_stale()
+            await self._drain_stale(command)
             await self._write_line(command)
             # Re-sync: do ONE blocking read for the server's response.
             # If it is not RPRT-shaped (stray value line that arrived in the
@@ -128,8 +172,18 @@ class RigctldTransport:
                 except (asyncio.TimeoutError, TimeoutError):
                     # Nothing else buffered — `line` is the actual response.
                     break
+                except OSError as exc:
+                    await self.close()
+                    raise RadioConnectionError(
+                        f"Connection to external rigctld at {self.host}:{self.port} "
+                        f"failed while reading response to {command!r}: {exc}"
+                    ) from exc
                 if not raw:
-                    break  # EOF
+                    await self.close()
+                    raise RadioConnectionError(
+                        f"External rigctld at {self.host}:{self.port} closed the "
+                        f"connection while handling {command!r}."
+                    )
                 _LOGGER.debug(
                     "rigctld transport: skipping non-RPRT line for %r: %r",
                     command,

@@ -441,24 +441,17 @@ class RigctldClientRadio:
         self._model = model or "External rigctld"
         self._state = RadioState()
         self._vfo_supported = False
-        self._provider_generation_advance: Callable[[], int] | None = None
-        self._has_connected = False
 
     def bind_provider_generation(
         self, *, advance: Callable[[], int] | None = None
     ) -> None:
-        """Let the Web fallback Store fence an explicit replacement connection."""
+        """Let the Web fallback Store fence transport lifecycle edges."""
 
-        self._provider_generation_advance = advance
+        self._transport.bind_provider_generation(advance=advance)
 
     async def connect(self) -> None:
-        if self._has_connected and not self.connected:
-            advance = self._provider_generation_advance
-            if advance is not None:
-                advance()
         await self._transport.connect()
         await self._probe_vfo_support()
-        self._has_connected = True
 
     async def disconnect(self) -> None:
         await self._transport.close()
