@@ -783,25 +783,28 @@ class RadioPoller:
                 ready.append(entry)
                 continue
             previous = self._deferred_tx_entry
-            result = self._deferred_tx_lane.defer(entry.command, now=now)
+            defer_result = self._deferred_tx_lane.defer(entry.command, now=now)
             self._deferred_tx_entry = entry
-            if previous is not None and result.outcome in (
+            if previous is not None and defer_result.outcome in (
                 TxInterlockDeferredOutcome.EXPIRED,
                 TxInterlockDeferredOutcome.SUPERSEDED,
             ):
-                self._terminate_deferred_entry(previous, result.outcome)
+                self._terminate_deferred_entry(previous, defer_result.outcome)
 
-        result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
-        if result is None or result.outcome is TxInterlockDeferredOutcome.HELD:
+        observe_result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
+        if (
+            observe_result is None
+            or observe_result.outcome is TxInterlockDeferredOutcome.HELD
+        ):
             return ready
         held = self._deferred_tx_entry
         self._deferred_tx_entry = None
         if held is None:
             return ready
-        if result.outcome is TxInterlockDeferredOutcome.RELEASED:
+        if observe_result.outcome is TxInterlockDeferredOutcome.RELEASED:
             ready.append(held)
         else:
-            self._terminate_deferred_entry(held, result.outcome)
+            self._terminate_deferred_entry(held, observe_result.outcome)
         return ready
 
     async def _execute_queued_entry(self, entry: CommandQueueEntry) -> None:
