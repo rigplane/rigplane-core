@@ -49,7 +49,7 @@ from .transport import CatTimeoutError
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue, CommandQueueEntry
     from ...radio_state import RadioState
-    from ...core.state_pipeline_contracts import Observation
+    from ...core.state_pipeline_contracts import CommandSource, Observation
     from .radio import YaesuCatRadio
 
 __all__ = ["YaesuCatPoller"]
@@ -705,10 +705,12 @@ class YaesuCatPoller:
             entry.future.set_exception(error)
 
     @staticmethod
-    def _emit_deferred_entry_held(entry: Any, *, expires_at: float) -> None:
+    def _emit_deferred_entry_held(
+        entry: CommandQueueEntry, *, expires_at: float
+    ) -> None:
         if entry.command_service is None or entry.command_id is None:
             return
-        source = entry.source or "internal_policy"
+        source: CommandSource = entry.source or "internal_policy"
         params = {} if entry.session_id is None else {"session_id": entry.session_id}
         target = None
         events = entry.command_service.lifecycle_events()
