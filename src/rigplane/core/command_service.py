@@ -26,6 +26,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_store import StateStore
 
 __all__ = [
+    "CommandExecutionInvalidatedError",
     "CommandExecutionResult",
     "CommandExecutor",
     "CommandService",
@@ -51,6 +52,10 @@ _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
 
 Clock = Callable[[], float]
 LifecycleSubscriber = Callable[[CommandLifecycleEvent], None]
+
+
+class CommandExecutionInvalidatedError(RuntimeError):
+    """Raised when an executor finishes after its command was invalidated."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,27 +153,38 @@ class CommandService:
         self.emit_lifecycle(intent, "accepted")
         self._record_intent_overlay(intent)
         self.emit_lifecycle(intent, "queued")
-        self.emit_lifecycle(intent, "sent")
+        sent_event = self.emit_lifecycle(intent, "sent")
+        key = (intent.source, _session_id(intent), intent.id)
         provider_generation = self._state_store.provider_generation
 
         try:
             executor_result = await self._executor.execute(intent)
         except (TimeoutError, RigplaneTimeoutError) as exc:
-            self.expire_command(
-                intent.id,
-                source=intent.source,
-                session_id=_session_id(intent),
-            )
-            self.emit_lifecycle(intent, "timed_out", message=str(exc) or None)
+            if self._active_commands.get(key) is sent_event:
+                self.expire_command(
+                    intent.id,
+                    source=intent.source,
+                    session_id=_session_id(intent),
+                )
+                self.emit_lifecycle(intent, "timed_out", message=str(exc) or None)
             raise
         except Exception as exc:
-            self.expire_command(
-                intent.id,
-                source=intent.source,
-                session_id=_session_id(intent),
-            )
-            self.emit_lifecycle(intent, "failed", message=str(exc) or None)
+            if self._active_commands.get(key) is sent_event:
+                self.expire_command(
+                    intent.id,
+                    source=intent.source,
+                    session_id=_session_id(intent),
+                )
+                self.emit_lifecycle(intent, "failed", message=str(exc) or None)
             raise
+
+        if self._active_commands.get(key) is not sent_event:
+            message = (
+                "command invalidated during provider generation change"
+                if self._state_store.provider_generation != provider_generation
+                else "command invalidated during execution"
+            )
+            raise CommandExecutionInvalidatedError(message)
 
         self.emit_lifecycle(intent, "acknowledged", details=executor_result.details)
         changes: list[ChangeSet] = []
