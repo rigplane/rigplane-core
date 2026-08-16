@@ -116,6 +116,21 @@ from rigplane.web.web_startup import stop_web_server
 from test_web_managed_tx_owner import _KEY, _TEARDOWN, _poller, _Radio, _Supervisor
 
 
+def _seed_fresh_rx(poller: RadioPoller) -> None:
+    """Give queued DEFER fixtures explicit current-provider RX authority."""
+    store = poller._state_store  # noqa: SLF001
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=store.snapshot().generated_at_monotonic,
+            max_age=5.0,
+            provider_generation=store.provider_generation,
+        )
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stale", (True, False), ids=("stale", "current"))
 async def test_direct_getter_uses_generation_captured_before_await(stale: bool) -> None:
@@ -1555,6 +1570,7 @@ async def test_scheduler_polling_does_not_starve_user_command_queue() -> None:
     queue = CommandQueue()
     queue.put_ordered(SetFreq(14_074_000))
     poller = RadioPoller(radio, queue, radio_state=RadioState())
+    _seed_fresh_rx(poller)
 
     async def _stop_after_first_wait(*args: object, **kwargs: object) -> None:
         raise asyncio.CancelledError
@@ -1825,6 +1841,7 @@ async def test_unknown_profileless_vfo_commands_fail_before_mutation(
     timestamp_before = poller._last_user_write_ts  # noqa: SLF001
 
     if queued:
+        _seed_fresh_rx(poller)
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         poller._queue.put_ordered(command(), future=future)  # noqa: SLF001
         poller.start()
@@ -3589,6 +3606,7 @@ async def test_queued_core_timeout_emits_timed_out_lifecycle_and_expires_overlay
         radio_state=state,
         state_store=store,
     )
+    _seed_fresh_rx(poller)
 
     await service.execute(
         command_intent_from_request(

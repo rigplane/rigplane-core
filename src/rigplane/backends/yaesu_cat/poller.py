@@ -125,6 +125,9 @@ class YaesuCatPoller:
         self._pending_receiver_select: CommandQueueEntry | None = None
         self._deferred_tx_lane = DeferredTxCommandLane()
         self._deferred_tx_entry: CommandQueueEntry | None = None
+        self._deferred_tx_generation: (
+            tuple[tuple[str | None, int], int | None] | None
+        ) = None
 
     def bind_provider_generation(
         self,
@@ -132,6 +135,8 @@ class YaesuCatPoller:
         capture: Callable[[], int],
         advance: Callable[[], int] | None = None,
     ) -> None:
+        if self._capture_provider_generation is not None:
+            self._cancel_deferred_entry("provider binding replaced")
         self._capture_provider_generation = capture
         self._advance_provider_generation = advance
 
@@ -216,6 +221,7 @@ class YaesuCatPoller:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        self._cancel_deferred_entry("poller stopped")
         logger.info("YaesuCatPoller: stopped")
 
     async def pause(self) -> None:
@@ -303,6 +309,7 @@ class YaesuCatPoller:
     def _sync_tx_target_generation(self) -> tuple[str | None, int]:
         generation = self._current_tx_target_generation()
         if generation != self._tx_target_generation:
+            self._cancel_deferred_entry("connection generation changed")
             self._invalidate_ptt_observation()
             self._invalidate_tx_target()
         return generation
@@ -483,6 +490,7 @@ class YaesuCatPoller:
             return  # Another loop is already reconnecting
 
         self._reconnecting = True
+        self._cancel_deferred_entry("serial reconnect")
         advance = self._advance_provider_generation
         provider_generation = None if advance is None else advance()
         try:
@@ -561,6 +569,9 @@ class YaesuCatPoller:
         if self._command_queue is None:
             return
 
+        boundary = self._deferred_generation_change()
+        if boundary is not None:
+            self._cancel_deferred_entry(boundary)
         now = time.monotonic()
         transition = self._deferred_tx_lane.observe(
             rf_state=self._current_rf_state(), now=now
@@ -571,6 +582,7 @@ class YaesuCatPoller:
             and transition.outcome is not TxInterlockDeferredOutcome.HELD
         ):
             entry, self._deferred_tx_entry = self._deferred_tx_entry, None
+            self._deferred_tx_generation = None
             if entry is not None:
                 if transition.outcome is TxInterlockDeferredOutcome.RELEASED:
                     entries.append(entry)
@@ -596,6 +608,14 @@ class YaesuCatPoller:
             ):
                 transition = self._deferred_tx_lane.defer(cmd, now=now)
                 previous, self._deferred_tx_entry = self._deferred_tx_entry, entry
+                if (
+                    previous is None
+                    or transition.outcome is TxInterlockDeferredOutcome.EXPIRED
+                ):
+                    self._deferred_tx_generation = (
+                        self._current_tx_target_generation(),
+                        self._captured_provider_generation(),
+                    )
                 if previous is not None:
                     self._finish_deferred_entry(
                         previous,
@@ -623,6 +643,31 @@ class YaesuCatPoller:
                     type(cmd).__name__,
                     exc_info=True,
                 )
+
+    def _deferred_generation_change(self) -> str | None:
+        generation = self._deferred_tx_generation
+        if generation is None:
+            return None
+        connection, provider = generation
+        if connection != self._current_tx_target_generation():
+            return "connection generation changed"
+        if provider != self._captured_provider_generation():
+            return "provider generation changed"
+        return None
+
+    def _cancel_deferred_entry(self, reason: str) -> None:
+        entry = self._deferred_tx_entry
+        (
+            self._deferred_tx_entry,
+            self._deferred_tx_generation,
+            self._deferred_tx_lane,
+        ) = (None, None, DeferredTxCommandLane())
+        if entry is None:
+            return
+        error = CommandError(f"deferred command cancelled: {reason}")
+        self._mark_queued_command_failed(entry, error)
+        if entry.future is not None and not entry.future.done():
+            entry.future.set_exception(error)
 
     @classmethod
     def _finish_deferred_entry(cls, entry: Any, *, superseded: bool) -> None:

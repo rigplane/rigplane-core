@@ -722,6 +722,76 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("boundary", "reason"),
+    (
+        ("stop", "stopped"),
+        ("reconnect", "serial reconnect"),
+        ("provider-generation", "provider generation changed"),
+        ("provider-replacement", "provider binding replaced"),
+        ("connection-generation", "connection generation changed"),
+    ),
+)
+async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    reason: str,
+) -> None:
+    clock = [10.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue, store = _tx_target_radio(), CommandQueue(), StateStore()
+    radio.set_freq = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    future = asyncio.get_running_loop().create_future()
+    service = MagicMock()
+    queue.put_ordered(
+        SetFreq(7_100_000),
+        future=future,
+        command_id="held",
+        source="websocket",
+        command_service=service,
+    )
+    _set_fresh_ptt_observation(poller, active=True)
+    await poller._drain_commands()  # noqa: SLF001
+    assert not future.done()
+
+    if boundary == "stop":
+        await poller.stop()
+    elif boundary == "reconnect":
+        radio._transport._maybe_reconnect_needed = lambda: True
+        await poller._try_reconnect()  # noqa: SLF001
+    elif boundary == "provider-generation":
+        store.begin_provider_generation()
+    elif boundary == "provider-replacement":
+        poller.bind_provider_generation(capture=lambda: 1)
+    else:
+        radio._transport.stats.reconnects += 1
+        poller._sync_tx_target_generation()  # noqa: SLF001
+    await poller._drain_commands()  # noqa: SLF001
+
+    error = future.exception()
+    assert isinstance(error, CommandError)
+    assert reason in str(error)
+    assert service.fail_command.call_args.kwargs["timed_out"] is False
+    assert poller._deferred_tx_entry is None  # noqa: SLF001
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+    clock[0] = 10.5
+    _set_fresh_ptt_observation(poller, active=False)
+    await poller._drain_commands()  # noqa: SLF001
+    clock[0] = 11.5
+    _set_fresh_ptt_observation(poller, active=False)
+    await poller._drain_commands()  # noqa: SLF001
+    radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_yaesu_unhandled_always_pass_command_fails_truthfully() -> None:
     from rigplane.runtime._poller_types import ScanStop
 
