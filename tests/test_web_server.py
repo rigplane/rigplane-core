@@ -3354,6 +3354,7 @@ class TestRadioPoller:
 
         radio = self._make_radio()
         radio.set_key_speed = AsyncMock()
+        radio.get_key_speed = AsyncMock(return_value=24)
         queue = CommandQueue()
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
@@ -3372,6 +3373,7 @@ class TestRadioPoller:
 
         radio = self._make_radio()
         radio.set_break_in = AsyncMock()
+        radio.get_break_in = AsyncMock(return_value=1)
         queue = CommandQueue()
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
@@ -3830,6 +3832,7 @@ class TestSwitchScopeReceiver:
 
         radio = self._make_radio()
         radio.set_cw_pitch = AsyncMock()
+        radio.get_cw_pitch = AsyncMock(return_value=600)
         queue = CommandQueue()
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
