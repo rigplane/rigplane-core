@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,6 +14,12 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles import resolve_radio_profile
 from rigplane.audio.route import AudioConfigSource, AudioStreamContract
 from rigplane.core.radio_protocol import AudioCapable
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.runtime.radio import IcomRadio
 from rigplane.scope import ScopeFrame
 from rigplane.types import AudioCodec
@@ -316,9 +323,22 @@ def _control_handler(
     radio: object | None = None,
     server: object | None = None,
     session_id: str | None = None,
+    ptt: bool | None = None,
 ) -> ControlHandler:
     if ws is None:
         ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    if ptt is not None and server is None:
+        store = StateStore()
+        store.apply(
+            Observation(
+                path=FieldPath.global_("tx_state", "ptt"),
+                value=ptt,
+                source=SourceMetadata("poll_response", "test", "fake", "test"),
+                timestamp_monotonic=time.monotonic(),
+                max_age=1.0,
+            )
+        )
+        server = SimpleNamespace(command_state_store=store, command_queue=None)
     return ControlHandler(
         ws,
         radio,
@@ -2474,7 +2494,7 @@ async def test_set_tuner_status_ws_command() -> None:
     """set_tuner_status fires the radio method and returns label."""
     radio = _capable_radio()
     radio.set_tuner_status = AsyncMock()
-    handler = _control_handler(radio=radio)
+    handler = _control_handler(radio=radio, ptt=False)
     result = await handler._enqueue_command("set_tuner_status", {"value": 2})
     assert result == {"value": 2, "label": "TUNING"}
     radio.set_tuner_status.assert_awaited_once_with(2)
@@ -2483,7 +2503,7 @@ async def test_set_tuner_status_ws_command() -> None:
 @pytest.mark.asyncio
 async def test_set_tuner_status_ws_command_no_radio() -> None:
     """set_tuner_status raises when radio is not connected."""
-    handler = _control_handler(radio=None)
+    handler = _control_handler(radio=None, ptt=False)
     with pytest.raises(RuntimeError, match="no command queue available"):
         await handler._enqueue_command("set_tuner_status", {"value": 1})
 
