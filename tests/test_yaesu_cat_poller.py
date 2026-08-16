@@ -20,6 +20,7 @@ from rigplane.core.state_acquisition_policy import (
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.exceptions import CommandError
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
@@ -491,6 +492,136 @@ def _ptt_observation(
         timestamp_monotonic=observed_at,
         max_age=max_age,
     )
+
+
+def _set_fresh_ptt_observation(poller: YaesuCatPoller, *, active: bool) -> None:
+    poller._ptt_observation = _ptt_observation(  # noqa: SLF001
+        active, observed_at=10.0
+    )
+    poller._ptt_connection_generation = (  # noqa: SLF001
+        poller._current_tx_target_generation()  # noqa: SLF001
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active", "message"),
+    [(True, "RF state is TX"), (None, "RF state is unknown")],
+    ids=("tx", "unknown"),
+)
+async def test_yaesu_immediate_hard_block_families_fail_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    active: bool | None,
+    message: str,
+) -> None:
+    from rigplane.runtime._poller_types import (
+        PttOn,
+        ScanStart,
+        SendCiv,
+        SetAntenna1,
+        SetAntenna2,
+        SetCivOutputAnt,
+        SetRxAntenna,
+        SetRxAntennaAnt1,
+        SetRxAntennaAnt2,
+        SetTunerStatus,
+    )
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 10.5
+    )
+    commands = (
+        PttOn(),
+        SendCiv(command=0x1C),
+        ScanStart(),
+        SetTunerStatus(1),
+        SetTunerStatus(2),
+        SetAntenna1(True),
+        SetAntenna2(True),
+        SetRxAntenna(antenna=1, on=True),
+        SetRxAntennaAnt1(True),
+        SetRxAntennaAnt2(True),
+        SetCivOutputAnt(True),
+    )
+
+    for command in commands:
+        radio = make_radio()
+        radio.set_ptt = AsyncMock()
+        radio.set_tuner = AsyncMock()
+        poller = YaesuCatPoller(radio, callback=lambda _: None)
+        if active is not None:
+            _set_fresh_ptt_observation(poller, active=active)
+
+        with pytest.raises(CommandError, match=message):
+            await poller._execute_command(command)  # noqa: SLF001
+
+        radio.set_ptt.assert_not_awaited()
+        radio.set_tuner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", (True, None), ids=("tx", "unknown"))
+async def test_yaesu_emergency_off_commands_bypass_immediate_gate(
+    monkeypatch: pytest.MonkeyPatch, active: bool | None
+) -> None:
+    from rigplane.runtime._poller_types import PttOff, SetPowerstat, SetTunerStatus
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 10.5
+    )
+    radio = make_radio()
+    radio.set_ptt = AsyncMock()
+    radio.set_powerstat = AsyncMock()
+    radio.set_tuner = AsyncMock()
+    poller = YaesuCatPoller(radio, callback=lambda _: None)
+    if active is not None:
+        _set_fresh_ptt_observation(poller, active=active)
+
+    await poller._execute_command(PttOff())  # noqa: SLF001
+    await poller._execute_command(SetPowerstat(on=False))  # noqa: SLF001
+    await poller._execute_command(SetTunerStatus(0))  # noqa: SLF001
+
+    radio.set_ptt.assert_awaited_once_with(False)
+    radio.set_powerstat.assert_awaited_once_with(False)
+    radio.set_tuner.assert_awaited_once_with(0)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_known_rx_preserves_immediate_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.runtime._poller_types import PttOn, SendCiv
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 10.5
+    )
+    radio = make_radio()
+    radio.set_ptt = AsyncMock()
+    poller = YaesuCatPoller(radio, callback=lambda _: None)
+    _set_fresh_ptt_observation(poller, active=False)
+
+    await poller._execute_command(PttOn())  # noqa: SLF001
+    radio.set_ptt.assert_awaited_once_with(True)
+    with pytest.raises(
+        NotImplementedError, match="SendCiv unsupported by Yaesu CAT dispatcher"
+    ):
+        await poller._execute_command(SendCiv(command=0x1C))  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_unhandled_always_pass_command_fails_truthfully() -> None:
+    from rigplane.runtime._poller_types import ScanStop
+
+    queue = CommandQueue()
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    queue.put_ordered(ScanStop(), future=future)
+    poller = YaesuCatPoller(make_radio(), command_queue=queue)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    error = future.exception()
+    assert isinstance(error, NotImplementedError)
+    assert "ScanStop unsupported by Yaesu CAT dispatcher" in str(error)
 
 
 @pytest.mark.asyncio

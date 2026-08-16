@@ -107,6 +107,34 @@ jobs:
       - name: Build package
         run: uv build
 
+      - name: Smoke installed radio profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          mapfile -t wheels < <(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -name '*.whl' -print)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "expected exactly one wheel, found ${#wheels[@]}" >&2
+            exit 1
+          fi
+          wheel_name="$(basename "${wheels[0]}")"
+          cp "${wheels[0]}" "$smoke_dir/$wheel_name"
+          cp .github/scripts/installed_profile_smoke.py "$smoke_dir/"
+          uv venv --python 3.13 "$smoke_dir/.venv"
+          uv pip install --python "$smoke_dir/.venv/bin/python" "$smoke_dir/$wheel_name"
+          cd "$smoke_dir"
+          UV_OFFLINE=true .venv/bin/python installed_profile_smoke.py \
+            --artifact "$wheel_name" \
+            --candidate-sha "$GITHUB_SHA" \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/installed-profile-smoke.json"
+
+      - name: Upload installed-profile smoke evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: installed-profile-smoke
+          path: installed-profile-smoke.json
+
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v7
         with:
