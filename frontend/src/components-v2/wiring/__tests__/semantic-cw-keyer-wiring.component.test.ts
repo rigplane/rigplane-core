@@ -52,7 +52,7 @@ const h = vi.hoisted(() => ({
   listeners: new Set<(next: unknown) => void>(),
   txStart: vi.fn(),
   txRelease: vi.fn(),
-  session: { state: 'connected' as const, epoch: 1 },
+  session: { state: 'connected' as ControlSessionTransition['state'], epoch: 1 },
   delivery: undefined as ((event: CommandDeliveryEvent) => void) | undefined,
   transition: undefined as ((event: ControlSessionTransition) => void) | undefined,
 }));
