@@ -37,6 +37,8 @@ from rigplane.runtime.tx_interlock import (
     RfState,
     TxInterlockDeferredOutcome,
     TxInterlockDisposition,
+    TxInterlockDispositionOverrides,
+    classify_tx_interlock,
     evaluate_tx_interlock,
 )
 
@@ -184,6 +186,11 @@ class YaesuCatPoller:
         if observation is None:
             return RfState.UNKNOWN
         return RfState.TX if observation.value else RfState.RX
+
+    def _tx_interlock_disposition_overrides(
+        self,
+    ) -> TxInterlockDispositionOverrides:
+        return self._radio.profile.tx_interlock_disposition_overrides
 
     def _stamp_provider_generation(
         self,
@@ -600,13 +607,34 @@ class YaesuCatPoller:
                 continue
             now = time.monotonic()
             rf_state = self._current_rf_state()
-            decision = evaluate_tx_interlock(cmd, rf_state=rf_state)
+            overrides = self._tx_interlock_disposition_overrides()
+            try:
+                decision = evaluate_tx_interlock(
+                    cmd,
+                    rf_state=rf_state,
+                    disposition_overrides=overrides,
+                )
+            except Exception as exc:
+                self._mark_queued_command_failed(entry, exc)
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_exception(exc)
+                logger.warning(
+                    "YaesuCatPoller: command %s failed policy validation",
+                    type(cmd).__name__,
+                    exc_info=True,
+                )
+                continue
             if (
                 decision.disposition is TxInterlockDisposition.DEFER
                 and not decision.allowed
                 and rf_state is RfState.TX
             ):
-                transition = self._deferred_tx_lane.defer(cmd, now=now)
+                transition = self._deferred_tx_lane.defer(
+                    cmd,
+                    now=now,
+                    rf_state=rf_state,
+                    disposition_overrides=overrides,
+                )
                 held = self._deferred_tx_lane.observe(rf_state=RfState.TX, now=now)
                 if held is None:
                     raise RuntimeError("deferred command lane lost its replacement")
@@ -775,10 +803,14 @@ class YaesuCatPoller:
         Commands come from the web UI CommandQueue.  The dispatcher handles
         all command types; unsupported commands fail truthfully.
         """
-        decision = evaluate_tx_interlock(cmd, rf_state=self._current_rf_state())
-        if (
+        decision = evaluate_tx_interlock(
+            cmd,
+            rf_state=self._current_rf_state(),
+            disposition_overrides=self._tx_interlock_disposition_overrides(),
+        )
+        if not decision.allowed and (
             decision.disposition is TxInterlockDisposition.BLOCK
-            and not decision.allowed
+            or classify_tx_interlock(cmd) is TxInterlockDisposition.TX_SAFE
         ):
             raise CommandError(decision.reason)
 
