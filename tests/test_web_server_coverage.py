@@ -3290,7 +3290,6 @@ async def test_provider_generation_invalidates_only_active_web_commands() -> Non
     assert srv.command_state_store.begin_provider_generation() == 1
     unsubscribe()
     srv._broadcast_state_update(force=True)  # noqa: SLF001
-
     issuer = []
     while not issuer_q.empty():
         issuer.append(issuer_q.get_nowait())
@@ -3321,6 +3320,25 @@ async def test_provider_generation_invalidates_only_active_web_commands() -> Non
     assert issuer_q.empty() and bystander_q.empty()
 
 
+def test_provider_generation_subscribers_serialize_reentrant_advances() -> None:
+    store = StateStore()
+    trace: list[tuple[str, int]] = []
+
+    def first(generation: int) -> None:
+        trace.append(("first", generation))
+        if generation == 1:
+            store.begin_provider_generation()
+
+    store.subscribe_provider_generation(first)
+    unsubscribe = store.subscribe_provider_generation(
+        lambda value: trace.append(("second", value))
+    )
+    assert store.begin_provider_generation() == 2
+    assert trace == [("first", 1), ("second", 1), ("first", 2), ("second", 2)]
+    unsubscribe()
+    unsubscribe()
+
+
 @pytest.mark.asyncio
 async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None:
     srv = WebServer()
@@ -3337,7 +3355,6 @@ async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None
     )
     srv._on_command_lifecycle_event(malformed)  # noqa: SLF001
     assert issuer_q.empty() and bystander_q.empty()
-
     srv.command_service.apply_observation(
         Observation(
             path=FieldPath.receiver("0", "freq_mode", "freq_hz"),
@@ -3353,7 +3370,6 @@ async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None
             provider_generation=srv.command_state_store.provider_generation,
         )
     )
-
     payload = issuer_q.get_nowait()
     assert payload["state"] == "reconciled"
     assert payload["details"] == {}
