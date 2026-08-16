@@ -82,8 +82,16 @@ class _UdpProtocol(asyncio.DatagramProtocol):
         if n <= 3:
             logger.warning("UDP error [peer=%s] (#%d): %s", self._peer, n, exc)
         elif n % 100 == 0:
+            # MOR-1789: exact count of occurrences not logged since the
+            # previous emitted line (last full line #3, or the previous
+            # hundredth) — 96 at n=100, 99 at every later hundredth.
+            prev_logged = 3 if n == 100 else n - 100
             logger.warning(
-                "UDP error [peer=%s] (#%d, suppressed 97): %s", self._peer, n, exc
+                "UDP error [peer=%s] (#%d, suppressed %d): %s",
+                self._peer,
+                n,
+                n - prev_logged - 1,
+                exc,
             )
 
     def connection_lost(self, exc: Exception | None) -> None:
