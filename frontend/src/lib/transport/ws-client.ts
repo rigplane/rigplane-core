@@ -19,17 +19,33 @@ export interface CommandDeliveryEvent {
   error?: string;
   cancelled?: boolean;
 }
+export type CommandLifecycleDeliveryKind = 'held' | 'superseded' | 'timed-out' | 'failed';
+export interface CommandLifecycleDeliveryEvent {
+  commandId: string;
+  kind: CommandLifecycleDeliveryKind;
+  originalEpoch: number;
+  eventEpoch: number;
+  reason?: string;
+  expiresAt?: number;
+  error?: string;
+}
 type MessageHandler = (msg: WsIncoming) => void;
 type BinaryHandler = (data: ArrayBuffer) => void;
 type StateHandler = (state: ConnectionState) => void;
 export type ControlSessionTransitionHandler = (transition: ControlSessionTransition) => void;
 type CommandDeliveryHandler = (event: CommandDeliveryEvent) => void;
+type CommandLifecycleDeliveryHandler = (event: CommandLifecycleDeliveryEvent) => void;
 type PendingPttRelease = { command: WsCommand; originalEpoch: number };
 type TrackedPttCommand = PendingPttRelease & {
   seen: Set<CommandDeliveryKind>;
 };
 type PendingNonPttCommand = { command: WsCommand; originalEpoch: number };
 type TrackedNonPttCommand = TrackedPttCommand & { eventEpoch: number };
+type TrackedLifecycleCommand = {
+  originalEpoch: number;
+  eventEpoch: number;
+  seen: Set<CommandLifecycleDeliveryKind>;
+};
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
@@ -38,6 +54,7 @@ const KEEPALIVE_INTERVAL_MS = 15_000; // send ping to prevent idle timeout
 const MAX_QUEUE_SIZE = 20;
 const MAX_TRACKED_PTT_COMMANDS = 100;
 const MAX_TRACKED_NON_PTT_COMMANDS = 100;
+const MAX_TRACKED_LIFECYCLE_COMMANDS = 100;
 
 // Command types where only the latest value matters (last write wins)
 const IDEMPOTENT_TYPES = new Set(['set_freq', 'set_mode', 'set_filter']);
@@ -57,6 +74,11 @@ function calcBackoff(attempt: number): number {
 
 function isTabHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 // ─── Close observability (MOR-1424) ─────────────────────────────────────────
@@ -91,7 +113,9 @@ export class WsChannel {
   private transportEpoch = 0;
   private trackedPttCommands = new Map<string, TrackedPttCommand>();
   private trackedNonPttCommands = new Map<string, TrackedNonPttCommand>();
+  private trackedLifecycleCommands = new Map<string, TrackedLifecycleCommand>();
   private commandDeliveryHandlers = new Set<CommandDeliveryHandler>();
+  private commandLifecycleDeliveryHandlers = new Set<CommandLifecycleDeliveryHandler>();
   private messageHandlers = new Set<MessageHandler>();
   private binaryHandlers = new Set<BinaryHandler>();
   private stateHandlers = new Set<StateHandler>();
@@ -210,6 +234,10 @@ export class WsChannel {
       } else {
         try {
           const raw = JSON.parse(event.data as string) as Record<string, unknown>;
+          if (raw['type'] === 'command_lifecycle') {
+            this._emitCommandLifecycle(raw, socketEpoch);
+            return;
+          }
           this._emitCommandResult(raw, socketEpoch);
           // Handle status-based error responses ({"status":"error", ...})
           if (raw['status'] === 'error') {
@@ -251,6 +279,7 @@ export class WsChannel {
       console.info('[ws] closed', _lastCloseInfo);
       this._clearHeartbeat();
       this.trackedNonPttCommands.clear();
+      this.trackedLifecycleCommands.clear();
       this.ws = null;
       this.setState('disconnected');
       if (!this.intentionalClose) {
@@ -285,6 +314,7 @@ export class WsChannel {
     const { ws } = this;
     this.ws = null;
     this.trackedNonPttCommands.clear();
+    this.trackedLifecycleCommands.clear();
     if (ws) {
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING) {
         ws.close();
@@ -383,6 +413,11 @@ export class WsChannel {
     return () => this.commandDeliveryHandlers.delete(handler);
   }
 
+  onCommandLifecycleDelivery(handler: CommandLifecycleDeliveryHandler): () => void {
+    this.commandLifecycleDeliveryHandlers.add(handler);
+    return () => this.commandLifecycleDeliveryHandlers.delete(handler);
+  }
+
   get sessionEpoch(): number {
     return this.transportEpoch;
   }
@@ -396,6 +431,7 @@ export class WsChannel {
       this._rejectNonPtt(tracked.command.id, tracked.originalEpoch, error, this.transportEpoch, true);
     }
     this.trackedNonPttCommands.clear();
+    this.trackedLifecycleCommands.clear();
   }
 
   private _sendPtt(ws: WebSocket, pending: PendingPttRelease, eventEpoch: number): boolean {
@@ -438,6 +474,16 @@ export class WsChannel {
     }
     const tracked: TrackedNonPttCommand = { ...pending, eventEpoch, seen: new Set() };
     this.trackedNonPttCommands.set(pending.command.id, tracked);
+    const lifecycleId = pending.command.id;
+    if (typeof lifecycleId === 'string' && lifecycleId.trim().length > 0) {
+      this.trackedLifecycleCommands.delete(lifecycleId);
+      if (this.trackedLifecycleCommands.size >= MAX_TRACKED_LIFECYCLE_COMMANDS) {
+        this.trackedLifecycleCommands.delete(this.trackedLifecycleCommands.keys().next().value!);
+      }
+      this.trackedLifecycleCommands.set(lifecycleId, {
+        originalEpoch: pending.originalEpoch, eventEpoch, seen: new Set(),
+      });
+    }
     this._emitTracked(tracked, 'transport-sent', tracked.eventEpoch);
     return true;
   }
@@ -467,6 +513,45 @@ export class WsChannel {
       this._emitTracked(generic, 'error', generic.eventEpoch, String(raw.message ?? raw.error ?? 'Command failed'));
       this.trackedNonPttCommands.delete(id);
     }
+    const lifecycle = this.trackedLifecycleCommands.get(id);
+    if (lifecycle?.eventEpoch === eventEpoch && (
+      (raw.type === 'response' && raw.ok === false) || raw.type === 'error' || raw.status === 'error'
+    )) this.trackedLifecycleCommands.delete(id);
+  }
+
+  private _emitCommandLifecycle(raw: Record<string, unknown>, eventEpoch: number): void {
+    if (!isPlainRecord(raw)) return;
+    const id = raw.commandId;
+    const state = raw.state;
+    if (typeof id !== 'string' || id.trim().length === 0) return;
+    if (state !== 'queued' && state !== 'superseded' && state !== 'timed_out' && state !== 'failed') return;
+    const tracked = this.trackedLifecycleCommands.get(id);
+    if (!tracked || tracked.eventEpoch !== eventEpoch) return;
+
+    let kind: CommandLifecycleDeliveryKind;
+    let reason: string | undefined;
+    let expiresAt: number | undefined;
+    let error: string | undefined;
+    if (state === 'queued') {
+      const details = raw.details;
+      if (!isPlainRecord(details) || details.heldBy !== 'tx_interlock' || details.reason !== 'tx_active') return;
+      if (typeof details.expiresAt !== 'number' || !Number.isFinite(details.expiresAt) || details.expiresAt < 0) return;
+      kind = 'held';
+      reason = 'tx_active';
+      expiresAt = details.expiresAt;
+    } else {
+      if (raw.message !== undefined && raw.message !== null && typeof raw.message !== 'string') return;
+      kind = state === 'timed_out' ? 'timed-out' : state;
+      if (typeof raw.message === 'string') error = raw.message;
+    }
+    if (tracked.seen.has(kind)) return;
+    tracked.seen.add(kind);
+    this.commandLifecycleDeliveryHandlers.forEach((handler) => handler({
+      commandId: id, kind, originalEpoch: tracked.originalEpoch, eventEpoch,
+      ...(reason ? { reason } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}),
+      ...(error !== undefined ? { error } : {}),
+    }));
+    if (kind !== 'held') this.trackedLifecycleCommands.delete(id);
   }
 
   private _rejectNonPtt(
@@ -860,6 +945,10 @@ export function disconnect() {
 
 export function onCommandDelivery(handler: CommandDeliveryHandler): () => void {
   return _ctrl.onCommandDelivery(handler);
+}
+
+export function onCommandLifecycleDelivery(handler: CommandLifecycleDeliveryHandler): () => void {
+  return _ctrl.onCommandLifecycleDelivery(handler);
 }
 
 export function onControlSessionTransition(handler: ControlSessionTransitionHandler): () => void {

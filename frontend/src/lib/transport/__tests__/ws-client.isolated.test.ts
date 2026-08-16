@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WsCommand, WsMessage } from '../../types/protocol';
 import type { ReceiverState, ServerState } from '../../types/state';
-import type { CommandDeliveryEvent, ControlSessionTransition } from '../ws-client';
+import type { CommandDeliveryEvent, CommandLifecycleDeliveryEvent, ControlSessionTransition } from '../ws-client';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
 
 type ServerStateWithObservation = ServerState & {
@@ -348,6 +348,114 @@ describe('WsChannel', () => {
       { commandId: 'freq', kind: 'ack', originalEpoch: 1, eventEpoch: 1 },
       { commandId: 'freq', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1 },
     ]);
+  });
+
+  it('strictly decodes correlated private command lifecycle frames', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const lifecycle: CommandLifecycleDeliveryEvent[] = [];
+    const ordinary: CommandDeliveryEvent[] = [];
+    const messages: WsMessage[] = [];
+    ch.onCommandLifecycleDelivery((event) => lifecycle.push(event));
+    ch.onCommandDelivery((event) => ordinary.push(event));
+    ch.onMessage((message) => messages.push(message));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    for (const id of ['held', 'timeout', 'failed']) {
+      expect(ch.send({ type: 'cmd', name: 'set_freq', id, params: { freq: 1 } })).toBe(true);
+    }
+    const held = {
+      type: 'command_lifecycle', commandId: 'held', state: 'queued',
+      details: { heldBy: 'tx_interlock', reason: 'tx_active', expiresAt: 12.5, secret: 'drop' },
+      source: 'websocket', session: 'private', target: 'main', timestampMonotonic: 10,
+      originalEpoch: 999, eventEpoch: 999,
+    };
+    instances[0].simulateMessage(JSON.stringify(held));
+    instances[0].simulateMessage(JSON.stringify(held));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'held', ok: true }));
+    instances[0].simulateMessage(JSON.stringify({ ...held, state: 'superseded', message: null, details: {} }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'command_lifecycle', commandId: 'timeout', state: 'timed_out', message: 'expired', details: {} }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'timeout', ok: true }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'failed', ok: true }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'command_lifecycle', commandId: 'failed', state: 'failed', message: 'blocked', details: {} }));
+
+    expect(lifecycle).toEqual([
+      { commandId: 'held', kind: 'held', originalEpoch: 1, eventEpoch: 1, reason: 'tx_active', expiresAt: 12.5 },
+      { commandId: 'held', kind: 'superseded', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'timeout', kind: 'timed-out', originalEpoch: 1, eventEpoch: 1, error: 'expired' },
+      { commandId: 'failed', kind: 'failed', originalEpoch: 1, eventEpoch: 1, error: 'blocked' },
+    ]);
+    expect(ordinary.filter((event) => event.kind === 'response-ok')).toHaveLength(3);
+    expect(messages).not.toContainEqual(expect.objectContaining({ type: 'command_lifecycle' }));
+  });
+
+  it('rejects malformed, stale, cancelled, and evicted lifecycle delivery', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandLifecycleDeliveryEvent[] = [];
+    ch.onCommandLifecycleDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'valid', params: {} });
+    const invalid: unknown[] = [null, [], 'text',
+      { type: 'command_lifecycle', commandId: '', state: 'failed' },
+      { type: 'command_lifecycle', commandId: 'unknown', state: 'failed' },
+      { type: 'command_lifecycle', commandId: 'valid', state: 'other' },
+      { type: 'command_lifecycle', commandId: 'valid', state: 'queued', details: null },
+      { type: 'command_lifecycle', commandId: 'valid', state: 'queued', details: { heldBy: 'other', reason: 'tx_active', expiresAt: 1 } },
+      { type: 'command_lifecycle', commandId: 'valid', state: 'queued', details: { heldBy: 'tx_interlock', reason: 'tx_active', expiresAt: true } },
+      { type: 'command_lifecycle', commandId: 'valid', state: 'queued', details: { heldBy: 'tx_interlock', reason: 'tx_active', expiresAt: -1 } },
+      { type: 'command_lifecycle', commandId: 'valid', state: 'failed', message: 3 },
+    ];
+    for (const frame of invalid) instances[0].simulateMessage(JSON.stringify(frame));
+    expect(events).toEqual([]);
+
+    ch.cancelNonPtt('provider changed');
+    instances[0].simulateMessage(JSON.stringify({ type: 'command_lifecycle', commandId: 'valid', state: 'failed', message: null }));
+    for (let i = 0; i <= 100; i += 1) {
+      ch.send({ type: 'cmd', name: 'set_freq', id: `evict-${i}`, params: {} });
+      instances[0].simulateMessage(JSON.stringify({ type: 'response', id: `evict-${i}`, ok: true }));
+    }
+    instances[0].simulateMessage(JSON.stringify({ type: 'command_lifecycle', commandId: 'evict-0', state: 'failed' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'command_lifecycle', commandId: 'evict-100', state: 'failed' }));
+    expect(events).toEqual([{ commandId: 'evict-100', kind: 'failed', originalEpoch: 1, eventEpoch: 1 }]);
+    expect(instances[0].sent).toHaveLength(102);
+  });
+
+  it('fences lifecycle correlation to its sending socket without consuming responses', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const lifecycle: CommandLifecycleDeliveryEvent[] = [];
+    const ordinary: CommandDeliveryEvent[] = [];
+    ch.onCommandLifecycleDelivery((event) => lifecycle.push(event));
+    ch.onCommandDelivery((event) => ordinary.push(event));
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'offline', params: {} });
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateMessage(JSON.stringify({ type: 'command_lifecycle', commandId: 'offline', state: 'failed' }));
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'before-response', params: {} });
+    instances[0].simulateMessage(JSON.stringify({ type: 'command_lifecycle', commandId: 'before-response', state: 'failed' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'before-response', ok: true }));
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'sync-error', params: {} });
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'sync-error', ok: false }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'command_lifecycle', commandId: 'sync-error', state: 'failed' }));
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reused', params: {} });
+    instances[0].simulateClose();
+    vi.advanceTimersByTime(1_300);
+    instances[1].simulateOpen();
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reused', params: {} });
+    const terminal = JSON.stringify({ type: 'command_lifecycle', commandId: 'reused', state: 'failed' });
+    instances[0].simulateMessage(terminal);
+    instances[1].simulateMessage(terminal);
+
+    expect(lifecycle).toEqual([
+      { commandId: 'offline', kind: 'failed', originalEpoch: 0, eventEpoch: 1 },
+      { commandId: 'before-response', kind: 'failed', originalEpoch: 1, eventEpoch: 1 },
+      { commandId: 'reused', kind: 'failed', originalEpoch: 2, eventEpoch: 2 },
+    ]);
+    expect(ordinary).toContainEqual(expect.objectContaining({ commandId: 'before-response', kind: 'response-ok' }));
+    expect(ordinary).toContainEqual(expect.objectContaining({ commandId: 'sync-error', kind: 'response-error' }));
   });
 
   it('rejects the 101st direct generic send before the wire without evicting correlation', async () => {
