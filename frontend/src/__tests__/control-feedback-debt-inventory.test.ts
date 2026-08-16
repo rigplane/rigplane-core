@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { auditSvelteSource, assertShrinkOnly, scanRepository } from '../../scripts/control-feedback-debt-inventory.mjs';
 
 const wrap = (markup: string, script = '') => `<script>${script}</script>${markup}`;
-const scoped = (moduleScript: string, instanceScript: string, markup = '<input {...props}/>') => `<script module>${moduleScript}</script><script>${instanceScript}</script>${markup}`;
+const scoped = (moduleScript: string, instanceScript: string, markup = '<input {...props}/>') => `<script module lang="ts">${moduleScript}</script><script lang="ts">${instanceScript}</script>${markup}`;
 const debt = (source: string, file = 'src/semantic/Fixture.svelte') =>
   auditSvelteSource(file, source).filter((site: { policy: string }) => site.policy === 'radio-backed');
 
@@ -43,6 +43,14 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
       debt(scoped(namesake, canonical, '<VC label="instance"/>')).length,
     ];
     expect(imported).toEqual([0, 1]);
+    const inherited = (props: string, script: string) => scoped(`const props=${props}`, script);
+    expect(debt(inherited("{type:'button'}", "props.type='range'"))).toHaveLength(1);
+    expect(debt(inherited("{type:'button'}", "const alias=props; alias.type='range'"))).toHaveLength(1);
+    expect(() => debt(inherited("{type:'button'}", "let key='type'; props[key]='range'"))).toThrow(/static feedback policy/);
+    expect(() => debt(inherited("{type:'button'}", 'const alias=props; mutate(alias)'))).toThrow(/static feedback policy/);
+    expect(debt(inherited("{type:'button'}", "(props as Record<string, unknown>).type='range'"))).toHaveLength(1);
+    expect(debt(inherited("{type:'range',feedbackPolicy:'feedback-integrated'}", "props.feedbackPolicy='radio-backed'"))).toHaveLength(1);
+    expect(debt(inherited("{type:'range',feedbackPolicy:'radio-backed'}", "props.feedbackPolicy='feedback-integrated'"))).toEqual([]);
   });
 
   it('conservatively discovers literal, expression, dynamic, and svelte:element ranges', () => {

@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'svelte/compiler';
-import { boundNames, collectObjectFlow, unwrapExpression } from './control-feedback-debt-ast.mjs';
+import { boundNames, collectSvelteObjectFlows, unwrapExpression } from './control-feedback-debt-ast.mjs';
 import { CONTROL_FEEDBACK_DEBT_BASELINE } from './control-feedback-debt-baseline.mjs';
 
 const UNKNOWN = Symbol('dynamic');
@@ -19,12 +19,9 @@ const EXACT_DEMO_FILES = new Set([
 const RELEVANT = ['type', 'feedback-policy', 'aria-label', 'label', 'value'];
 const VALUE_CONTROL_DIR = 'src/components-v2/controls/value-control';
 const FROZEN_RADIO_DEBT = new Set(CONTROL_FEEDBACK_DEBT_BASELINE);
-/** @typedef {{value: any, text: string}} Entry */
 /** @typedef {{identity: string, file: string, kind: string, label: string, value: string, policy: string}} Site */
-/** @param {string} key */
 const keyOf = (key) => key === 'feedbackPolicy' ? 'feedback-policy' : key;
 
-/** @param {string} source @param {string} file */
 function valueControlImport(source, file) {
   const clean = source.split(/[?#]/, 1)[0];
   const importer = posix.dirname(posix.normalize(file.replaceAll('\\', '/')));
@@ -36,13 +33,14 @@ function valueControlImport(source, file) {
 }
 
 function bindingsAndImports(ast, file) {
-  const makeScope = (outer) => ({
+  const flows = collectSvelteObjectFlows(ast.module?.content, ast.instance?.content);
+  const makeScope = (outer, objectFlows) => ({
     bindings: new Map(outer?.bindings), aliases: new Map(outer?.aliases),
-    objectFlows: new Map(outer?.objectFlows), valueControls: new Set(outer?.valueControls),
+    objectFlows, valueControls: new Set(outer?.valueControls),
   });
-  let scope = makeScope();
+  let scope;
   const addAlias = (name, value) => scope.aliases.set(name, [...(scope.aliases.get(name) ?? []), { node: value, scope }]);
-  const shadow = (name) => { scope.aliases.delete(name); scope.bindings.delete(name); scope.objectFlows.delete(name); scope.valueControls.delete(name); };
+  const shadow = (name) => { scope.aliases.delete(name); scope.bindings.delete(name); scope.valueControls.delete(name); };
   const collectAssignments = (node) => {
     if (!node || typeof node !== 'object') return;
     if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier') addAlias(node.left.name, node.right);
@@ -51,8 +49,10 @@ function bindingsAndImports(ast, file) {
       else if (value && typeof value === 'object') collectAssignments(value);
     }
   };
-  for (const program of [ast.module?.content, ast.instance?.content].filter(Boolean)) {
-    if (program === ast.instance?.content && ast.module?.content) scope = makeScope(scope);
+  for (const [program, objectFlows] of [[ast.module?.content, flows.module], [ast.instance?.content, flows.instance]]) {
+    if (!program) continue;
+    scope = makeScope(scope, objectFlows);
+    if (program === ast.instance?.content) for (const name of flows.module.keys()) if (!objectFlows.has(name)) shadow(name);
     for (const statement of program.body) {
       if (statement.id?.type === 'Identifier') shadow(statement.id.name);
       if (statement.type === 'ImportDeclaration') {
@@ -75,13 +75,11 @@ function bindingsAndImports(ast, file) {
         }
       }
     }
-    for (const [name, events] of collectObjectFlow(program)) scope.objectFlows.set(name, events);
     collectAssignments(program);
   }
-  return scope;
+  return scope ?? makeScope(null, flows.instance);
 }
 
-/** @param {any} node @param {any} scope @param {Set<any>} [seen] @returns {any} */
 function staticValue(node, scope, seen = new Set()) {
   node = unwrapExpression(node).node;
   if (!node) return UNKNOWN;
@@ -99,7 +97,6 @@ function staticValue(node, scope, seen = new Set()) {
   return UNKNOWN;
 }
 
-/** @param {any} node @param {any} scope @param {Set<any>} [seen] @returns {boolean} */
 function mayBeValueControl(node, scope, seen = new Set()) {
   node = unwrapExpression(node).node;
   if (!node) return false;
@@ -145,7 +142,6 @@ function setEntry(result, rawKey, value, scope, source) {
   } : { value: UNKNOWN, text: 'dynamic' });
 }
 
-/** @param {any} node @param {any} scope @param {string} source @param {Set<any>} [seen] @returns {Map<string, Entry>|null} */
 function objectEntries(node, scope, source, seen = new Set()) {
   node = unwrapExpression(node).node;
   const binding = node?.type === 'Identifier' ? scope.bindings.get(node.name) : null;
@@ -191,7 +187,6 @@ function sitePolicy(attributes, identity) {
   return entry.value;
 }
 
-/** @param {string} file @param {string} kind @param {Map<string, Entry>} attributes */
 function isLocalGain(file, kind, attributes) {
   const normalizedFile = posix.normalize(file.replaceAll('\\', '/'));
   if (kind !== 'input' || normalizedFile !== 'src/components-v2/panels/AudioRoutingControl.svelte') return false;
@@ -205,9 +200,7 @@ function isLocalGain(file, kind, attributes) {
 export function auditSvelteSource(file, source) {
   const ast = parse(source, { modern: true, filename: file });
   const scope = bindingsAndImports(ast, file);
-  /** @type {Site[]} */
   const sites = [];
-  /** @param {any} node */
   const visit = (node) => {
     if (!node || typeof node !== 'object') return;
     let kind = null;
@@ -250,7 +243,6 @@ export function assertShrinkOnly(sites, frozen = FROZEN_RADIO_DEBT) {
   return current;
 }
 
-/** @param {string} directory @returns {string[]} */
 function svelteFiles(directory) {
   return readdirSync(directory).flatMap((name) => {
     const path = resolve(directory, name);
