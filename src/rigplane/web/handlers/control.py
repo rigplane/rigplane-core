@@ -1659,18 +1659,7 @@ class ControlHandler:
         if self._read_only and value == 2:
             raise PermissionError("read-only mode: set_tuner_status TUNING rejected")
 
-        rf_state = RfState.UNKNOWN
-        state_store = getattr(self._server, "command_state_store", None)
-        if isinstance(state_store, StateStore):
-            try:
-                ptt = state_store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
-            except KeyError:
-                pass
-            else:
-                if ptt.freshness is FreshnessState.FRESH and ptt.value is False:
-                    rf_state = RfState.RX
-                elif ptt.freshness is FreshnessState.FRESH and ptt.value is True:
-                    rf_state = RfState.TX
+        rf_state = self._observed_rf_state()
 
         command = SetTunerStatus(value)
         decision = evaluate_tx_interlock(command, rf_state=rf_state)
@@ -1679,15 +1668,44 @@ class ControlHandler:
 
         # Try direct call if the radio has the method
         if radio is not None and CAP_TUNER in radio.capabilities:
-            await radio.set_tuner_status(value)
+            outcome = await radio.set_tuner_status(value)
         else:
-            # Route through command queue
+            # Await the poller's real completion instead of acknowledging a
+            # fire-and-forget enqueue that may subsequently fail.
+            from ..server import _COMMAND_BATCH_STEP_TIMEOUT  # noqa: TID251
+
             q = self._server.command_queue if self._server is not None else None
             if q is None:
                 raise RuntimeError("no command queue available")
-            q.put(command)
+            put_ordered = getattr(q, "put_ordered", None)
+            if not callable(put_ordered):
+                raise RuntimeError("tuner command completion is unavailable")
+            completion: asyncio.Future[object] = (
+                asyncio.get_running_loop().create_future()
+            )
+            put_ordered(command, future=completion)
+            outcome = await asyncio.wait_for(
+                completion, timeout=_COMMAND_BATCH_STEP_TIMEOUT
+            )
+        if outcome is False:
+            raise CommandError("tuner command was rejected by the backend")
         label = {0: "OFF", 1: "ON", 2: "TUNING"}[value]
         return {"value": value, "label": label}
+
+    def _observed_rf_state(self) -> RfState:
+        """Resolve current RF state from fresh, strictly boolean PTT evidence."""
+        state_store = getattr(self._server, "command_state_store", None)
+        if isinstance(state_store, StateStore):
+            try:
+                ptt = state_store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
+            except KeyError:
+                pass
+            else:
+                if ptt.freshness is FreshnessState.FRESH and ptt.value is False:
+                    return RfState.RX
+                elif ptt.freshness is FreshnessState.FRESH and ptt.value is True:
+                    return RfState.TX
+        return RfState.UNKNOWN
 
     async def _ro_get_ref_adjust(
         self, params: dict[str, Any], radio: "Radio | None"
@@ -1893,8 +1911,14 @@ class ControlHandler:
 
         if abs(delta) > 5:
             # Shift VFO frequency to zero-beat
+            command = SetFreq(freq + delta, receiver=receiver)
+            decision = evaluate_tx_interlock(
+                command, rf_state=self._observed_rf_state()
+            )
+            if not decision.allowed:
+                raise CommandError(decision.reason)
             q = self._server.command_queue
-            q.put(SetFreq(freq + delta, receiver=receiver))
+            q.put(command)
 
         return {
             "detected": hz,
