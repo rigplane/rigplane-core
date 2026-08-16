@@ -2154,6 +2154,10 @@ class WebServer:
                 )
             ):
                 return False
+            public_details = {
+                "revision": revision,
+                "observationSeq": observation_seq,
+            }
         elif set(details) != {"session_id"}:
             return False
         acknowledged = any(
