@@ -24,7 +24,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import type { Capabilities } from '$lib/types/capabilities';
+import type { Capabilities, ControlDomain } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 
 type Snapshot = {
@@ -128,7 +128,9 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
   } as unknown as ServerState;
 }
 
-const liveCaps = (tags: readonly string[]): Capabilities => ({
+const liveCaps = (
+  tags: readonly string[], controls?: Capabilities['controls'],
+): Capabilities => ({
   model: 'fixture', scope: false, audio: false, tx: true,
   capabilities: tags, receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
@@ -136,7 +138,15 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
   stateContractVersion: 1, providerGeneration: 0,
+  ...(controls === undefined ? {} : { controls }),
 } as unknown as Capabilities);
+
+const FTX_RIT_DOMAIN: ControlDomain = {
+  mapping: 'identity', raw_min: -9999, raw_max: 9999, raw_step: 1, raw_origin: 0,
+  display_min: '-9999' as never, display_max: '9999' as never,
+  display_step: '1' as never, display_origin: '0' as never, display_unit: 'Hz',
+  quantization: 'reject', restoration: 'exact',
+};
 
 /** `rit`/`xit` capability tags make the ritXit group present; the explicit
  *  scan commands additionally require the declared `scan` capability. */
@@ -217,6 +227,114 @@ describe('O1: editing via either gate reaches the wire as the identical command'
     for (const name of ['onScanStart', 'onScanStop', 'onResumeChange']) {
       expect(typeof (real.makeScanHandlers() as Record<string, unknown>)[name]).toBe('function');
     }
+  });
+});
+
+describe('MOR-1731 exact RIT domain', () => {
+  function renderExact(state: ServerState = liveState()): HTMLInputElement {
+    const caps = liveCaps(RIT_XIT_TAGS, { rit: FTX_RIT_DOMAIN });
+    h.caps = caps;
+    setCapabilities(caps);
+    useState(state);
+    render();
+    return q<HTMLInputElement>('[data-testid="ritxit-offset"] input')!;
+  }
+
+  function pressAt(raw: number, key: string): void {
+    if (component) unmount(component);
+    component = null;
+    document.body.innerHTML = '';
+    const input = renderExact(liveState({ ritFreq: raw }));
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    flushSync();
+  }
+
+  it('renders exact zero on the declared one-Hz native lattice without an intent', () => {
+    const input = renderExact(liveState({ ritFreq: 0 }));
+    expect([input.min, input.max, input.step, input.value]).toEqual(['-9999', '9999', '1', '0']);
+    expect(el('ritxit-offset-value')!.textContent).toBe('0');
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['horizontal', 'ArrowRight', 'ArrowLeft'],
+    ['vertical', 'ArrowUp', 'ArrowDown'],
+  ])('separates %s 50 Hz gestures from the native lattice and preserves endpoints',
+    (_axis, increase, decrease) => {
+      pressAt(0, increase);
+      pressAt(50, decrease);
+      pressAt(0, decrease);
+      pressAt(-50, increase);
+      pressAt(0, 'Home');
+      pressAt(0, 'End');
+      expect(vi.mocked(sendCommand).mock.calls).toEqual([
+        ['set_rit_frequency', { freq: 50 }],
+        ['set_rit_frequency', { freq: 0 }],
+        ['set_rit_frequency', { freq: -50 }],
+        ['set_rit_frequency', { freq: 0 }],
+        ['set_rit_frequency', { freq: -9999 }],
+        ['set_rit_frequency', { freq: 9999 }],
+      ]);
+    });
+
+  it.each([
+    ['RIT-leading', { ritOn: true, ritTx: false }, 50],
+    ['XIT-leading', { ritOn: false, ritTx: true }, -50],
+  ] as const)('%s exact input reaches exactly one existing offset handler', (_name, flags, freq) => {
+    const input = renderExact(liveState(flags));
+    input.value = String(freq);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_frequency', { freq });
+  });
+
+  it('keeps the legacy constants when capability domains are absent', () => {
+    render();
+    const input = q<HTMLInputElement>('[data-testid="ritxit-offset"] input')!;
+    expect([input.min, input.max, input.step]).toEqual(['-9999', '9999', '50']);
+  });
+
+  it.each([
+    ['malformed domain', liveState(), { rit: { mapping: 'identity' } }],
+    ['invalid current raw value', liveState({ ritFreq: 10000 }), { rit: FTX_RIT_DOMAIN }],
+    ['failed exact encode', liveState({ ritFreq: 0 }), { rit: {
+      ...FTX_RIT_DOMAIN, raw_min: -10000, raw_max: 10000, raw_step: 2,
+      display_min: '-10000' as never, display_max: '10000' as never, display_step: '2' as never,
+    } }],
+  ] as const)('%s refuses adjustment and emits nothing', (_name, state, controls) => {
+    const caps = liveCaps(RIT_XIT_TAGS, controls as never);
+    h.caps = caps;
+    setCapabilities(caps);
+    useState(state);
+    render();
+    const input = q<HTMLInputElement>('[data-testid="ritxit-offset"] input')!;
+    if (_name !== 'failed exact encode') expect(input.disabled).toBe(true);
+    input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['unknown receiver', liveState({ active: undefined } as Partial<ServerState>)],
+    ['wrong VFO', liveState({ active: 'OTHER' } as never)],
+    ['unread offset', (() => { const state = liveState({ ritFreq: undefined }); return state; })()],
+    ['stale offset', (() => {
+      const state = liveState();
+      return { ...state, fieldStatus: { ...state.fieldStatus,
+        ritFreq: { ...fresh, freshness: 'stale', availability: 'stale' } } } as ServerState;
+    })()],
+  ] as const)('%s emits no exact-domain offset intent', (_name, state) => {
+    const input = renderExact(state);
+    expect(input.disabled).toBe(true);
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'ArrowRight', bubbles: true, cancelable: true,
+    }));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
   });
 });
 

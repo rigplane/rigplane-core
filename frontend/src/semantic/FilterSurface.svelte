@@ -79,6 +79,8 @@
     usable(f) ? undefined : 'field-not-observed';
   const textOf = (f: TxAuxField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : '?';
+  const presentationOf = (f: TxAuxField<unknown>): 'confirmed' | 'retained' | 'unknown' =>
+    usable(f) ? 'confirmed' : f.reading.status === 'known' ? 'retained' : 'unknown';
   const numberOf = (f: TxAuxField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
   /** Never fabricates a selection: `usable` alone cannot narrow `reading` for
@@ -210,19 +212,31 @@
       {/if}
       {#each FILTER_PASSBAND_LEVELS as [field, label, min, max, step] (field)}
         {#if field === 'ifShift' ? filterPassband.ifShiftControlStructural : filterPassband[field].availability.structural}
-          <label
-            class="filter-level" data-testid={`filter-${field}`}
-            data-disabled-reason={reasonOf(filterPassband[field])}
-          >
-            <span class="filter-level-name">{label}</span>
-            <input
-              type="range" {min} {max} {step}
-              value={numberOf(filterPassband[field], min)}
-              disabled={!usable(filterPassband[field])}
-              oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
-            />
-            <output>{textOf(filterPassband[field])}</output>
-          </label>
+          {#if (field === 'pbtInner' || field === 'pbtOuter') && filterPassband[field].reading.status !== 'known'}
+            <div
+              class="filter-level" data-testid={`filter-${field}`} role="status"
+              aria-label={`${label}: unavailable; value not observed`}
+              data-disabled-reason={reasonOf(filterPassband[field])} data-presentation="unknown"
+            >
+              <span class="filter-level-name">{label}</span>
+              <span>Unavailable — value not observed</span>
+            </div>
+          {:else}
+            <label
+              class="filter-level" data-testid={`filter-${field}`}
+              data-disabled-reason={reasonOf(filterPassband[field])}
+              data-presentation={presentationOf(filterPassband[field])}
+            >
+              <span class="filter-level-name">{label}</span>
+              <input
+                type="range" {min} {max} {step}
+                value={numberOf(filterPassband[field], min)}
+                disabled={!usable(filterPassband[field])}
+                oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
+              />
+              <output>{textOf(filterPassband[field])}</output>
+            </label>
+          {/if}
         {/if}
       {/each}
       {#if filterPassband.dataMode.availability.structural}

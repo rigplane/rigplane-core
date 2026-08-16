@@ -189,6 +189,11 @@ const DSP_STATE = {
   autoNotch: false, manualNotch: false, notchFilter: 0, manualNotchWidth: 1,
   agc: 2, agcTimeConstant: 3,
 } as const;
+const EXACT_NR_DOMAIN = {
+  mapping: 'identity', raw_min: 0, raw_max: 10, raw_step: 1, raw_origin: 0,
+  display_min: '0', display_max: '10', display_step: '1', display_origin: '0',
+  display_unit: 'level', quantization: 'reject', restoration: 'exact',
+} as const;
 const DSP_PATHS = [
   'main.nr', 'main.nrLevel', 'main.nb', 'main.nbLevel', 'main.autoNotch',
   'main.manualNotch', 'main.manualNotchWidth', 'main.agc', 'main.agcTimeConstant',
@@ -382,6 +387,57 @@ describe('every dsp intent reaches its own command-bus handler', () => {
     q<HTMLButtonElement>('[data-testid="dsp-agcMode-1"]')!.click();
     flushSync();
     expect(h.agcMode).toHaveBeenCalledExactlyOnceWith(1);
+  });
+});
+
+describe('mounted exact NR projection (MOR-1737)', () => {
+  function exactState(raw: number): ServerState {
+    const state = liveState(true);
+    return { ...state, main: { ...state.main, nrLevel: raw } };
+  }
+
+  function exactCaps(): Capabilities {
+    const caps = liveCaps(true);
+    return {
+      ...caps,
+      controls: { ...caps.controls, nr_level: EXACT_NR_DOMAIN },
+    } as unknown as Capabilities;
+  }
+
+  it.each([0, 1, 4, 10])(
+    'carries FTX-1 runtime raw %i through the real semantic adapter and mounted surface',
+    (raw) => {
+      h.state = exactState(raw);
+      h.caps = exactCaps();
+      render();
+      const input = q<HTMLInputElement>('[data-testid="dsp-nrLevel"] input')!;
+      expect(input.min).toBe('0');
+      expect(input.max).toBe('10');
+      expect(input.step).toBe('1');
+      expect(input.valueAsNumber).toBe(raw);
+      expect(input.disabled).toBe(false);
+    },
+  );
+
+  it('routes display/raw 4 only to the terminal NR-level handler', () => {
+    h.state = exactState(4);
+    h.caps = exactCaps();
+    render();
+    const input = q<HTMLInputElement>('[data-testid="dsp-nrLevel"] input')!;
+    input.value = '4';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.nrLevel).toHaveBeenCalledExactlyOnceWith(4);
+  });
+
+  it('preserves the safely absent exact-metadata legacy 0..15 projection', () => {
+    render();
+    const input = q<HTMLInputElement>('[data-testid="dsp-nrLevel"] input')!;
+    expect(input.min).toBe('0');
+    expect(input.max).toBe('15');
+    expect(input.step).toBe('1');
+    expect(input.valueAsNumber).toBe(8);
+    expect(input.disabled).toBe(false);
   });
 });
 

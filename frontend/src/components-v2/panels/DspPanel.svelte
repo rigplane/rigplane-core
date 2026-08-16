@@ -48,7 +48,24 @@
   );
 
   let nrMode = $derived(p.nrMode);
-  let nrLevel = $derived(p.nrLevel);
+  // MOR-1735: this fallback panel must render the same projection contract as
+  // the semantic DSP surface.  The legacy shape is only retained for older
+  // test/embedding callers that do not supply a projection at all.
+  const LEGACY_NR_LEVEL_DOMAIN = { min: 0, max: 15, step: 1, origin: 0 };
+  let nrLevelProjection = $derived(p.nrLevelProjection);
+  let nrLevelDomain = $derived(
+    nrLevelProjection?.domain
+      ?? (nrLevelProjection === undefined ? LEGACY_NR_LEVEL_DOMAIN : null),
+  );
+  let nrLevel = $derived(
+    nrLevelProjection?.value
+      ?? (nrLevelProjection === undefined ? p.nrLevel : nrLevelDomain?.origin ?? null),
+  );
+  let nrLevelAdjustable = $derived(
+    nrLevel !== null
+      && nrLevelDomain !== null
+      && (nrLevelProjection === undefined || nrLevelProjection.adjustable),
+  );
   let nbActive = $derived(p.nbActive);
   let nbLevel = $derived(p.nbLevel);
   let nbDepth = $derived(p.nbDepth ?? 0);
@@ -166,6 +183,19 @@
     onNrModeChange(n);
   }
 
+  function handleNrLevelChange(value: number): void {
+    const domain = nrLevelDomain;
+    if (
+      !nrLevelAdjustable
+      || domain === null
+      || !Number.isSafeInteger(value)
+      || value < domain.min
+      || value > domain.max
+      || (value - domain.origin) % domain.step !== 0
+    ) return;
+    onNrLevelChange(value);
+  }
+
   function handleNotchModalMode(v: string | number): void {
     const m = v as 'off' | 'auto' | 'manual';
     onNotchModeChange(m);
@@ -260,7 +290,7 @@
           onpointerup={endLongPressPointer}
           onpointercancel={endLongPressPointer}
           onpointerleave={endLongPressPointer}
-        >NR{nrActive ? ` ${nrLevel}` : ''}</HardwareButton>
+        >NR{nrActive ? ` ${nrLevel ?? 'unavailable'}` : ''}</HardwareButton>
       </div>
     {/if}
 
@@ -346,18 +376,26 @@
         </HardwareButton>
       {/each}
     </div>
-    <ValueControl
-      label="NR Level"
-      value={nrLevel}
-      min={0}
-      max={15}
-      step={1}
-      renderer="discrete"
-      tickStyle="notch"
-      accentColor="var(--v2-accent-cyan)"
-      onChange={onNrLevelChange}
-      variant="hardware-illuminated"
-    />
+    {#if nrLevel !== null && nrLevelDomain !== null}
+      {#if nrLevelAdjustable}
+        <ValueControl
+          label="NR Level"
+          value={nrLevel}
+          min={nrLevelDomain.min}
+          max={nrLevelDomain.max}
+          step={nrLevelDomain.step}
+          renderer="discrete"
+          tickStyle="notch"
+          accentColor="var(--v2-accent-cyan)"
+          onChange={handleNrLevelChange}
+          variant="hardware-illuminated"
+        />
+      {:else}
+        <div class="nr-level-unavailable">NR Level {nrLevel} unavailable</div>
+      {/if}
+    {:else}
+      <div class="nr-level-unavailable">NR Level unavailable</div>
+    {/if}
   </div>
 {/if}
 
@@ -577,6 +615,12 @@
   .dsp-mode-grid {
     display: flex;
     gap: 4px;
+  }
+
+  .nr-level-unavailable {
+    color: var(--v2-text-subdued);
+    font-family: 'Roboto Mono', monospace;
+    font-size: 11px;
   }
 
   .dsp-mode-grid > :global(button) {

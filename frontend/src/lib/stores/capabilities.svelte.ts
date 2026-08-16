@@ -193,7 +193,8 @@ export function vfoLabel(slot: 'A' | 'B'): string {
 }
 
 export function getControlRange(name: string): ControlRange | null {
-  return capabilities?.controls?.[name] ?? null;
+  const control = capabilities?.controls?.[name];
+  return control && !('mapping' in control) ? control : null;
 }
 
 export function getMeterCalibration(

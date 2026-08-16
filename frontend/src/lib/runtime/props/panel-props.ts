@@ -12,13 +12,16 @@
  */
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
-import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
+import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
   deriveIfShift,
   nbDepthRawToDisplay,
   nrRawToDisplay,
   pbtRawToHz,
+  projectNrLevel,
 } from '$lib/radio/filter-controls';
+import type { NrLevelProjection } from '$lib/radio/filter-controls';
+import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
@@ -33,7 +36,11 @@ function activeReceiverKey(state: ServerState): 'main' | 'sub' {
 }
 
 function hasCap(caps: Capabilities | null, name: string): boolean {
-  return caps?.capabilities?.includes(name) ?? false;
+  try {
+    return caps?.capabilities?.includes(name) ?? false;
+  } catch {
+    return false;
+  }
 }
 
 function topFieldAvailable(state: ServerState | null, field: string): boolean {
@@ -491,6 +498,30 @@ export interface RitXitProps {
   xitOffset: number;
   hasRit: boolean;
   hasXit: boolean;
+  /** Exact RIT control contract, when supplied by a normalized capability payload. */
+  ritDomain: ControlDomain | null | undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validatedRitDomain(caps: Capabilities | null): ControlDomain | null | undefined {
+  try {
+    const controls = caps?.controls;
+    if (controls === undefined) return undefined;
+    if (!isRecord(controls)) return null;
+    if (!Object.hasOwn(controls, 'rit')) return undefined;
+    const candidate = controls.rit;
+    if (!isRecord(candidate)) return null;
+    const domain = candidate as ControlDomain;
+    if (!['identity', 'linear', 'centered', 'lookup'].includes(domain.mapping)
+      || !Number.isSafeInteger(domain.raw_origin)) return null;
+    const display = decodeControlDomain(domain, domain.raw_origin);
+    return display !== null && encodeControlDomain(domain, display) === domain.raw_origin ? domain : null;
+  } catch {
+    return null;
+  }
 }
 
 export function toRitXitProps(
@@ -500,7 +531,7 @@ export function toRitXitProps(
   const ritOnAvailable = topFieldAvailable(state, 'ritOn');
   const ritFreqAvailable = topFieldAvailable(state, 'ritFreq');
   const ritTxAvailable = topFieldAvailable(state, 'ritTx');
-  return {
+  const props = {
     ritActive: state?.ritOn ?? false,
     ritOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
     xitActive: state?.ritTx ?? false,
@@ -508,6 +539,11 @@ export function toRitXitProps(
     hasRit: hasCap(caps, 'rit') && ritOnAvailable,
     hasXit: hasCap(caps, 'xit') && ritTxAvailable,
   };
+  Object.defineProperty(props, 'ritDomain', {
+    value: validatedRitDomain(caps),
+    enumerable: false,
+  });
+  return props as RitXitProps;
 }
 
 /* ── Mode Panel ──────────────────────────────────────────────── */
@@ -562,6 +598,7 @@ export function toModeProps(
 export interface DspProps {
   nrMode: number;
   nrLevel: number;
+  nrLevelProjection: NrLevelProjection;
   nbActive: boolean;
   nbLevel: number;
   nbDepth: number;
@@ -595,6 +632,7 @@ export function toDspProps(
 
   const nbAvailable = activeFieldAvailable(state, 'nb');
   const nrAvailable = activeFieldAvailable(state, 'nr');
+  const nrLevelAvailable = activeFieldAvailable(state, 'nrLevel');
   const manualNotchAvailable = activeFieldAvailable(state, 'manualNotch');
   const autoNotchAvailable = activeFieldAvailable(state, 'autoNotch');
   // MOR-502: NB depth/width exist only on rigs that expose an nb_depth control
@@ -612,6 +650,7 @@ export function toDspProps(
     nrMode: rx?.nr ? 1 : 0,
     // MOR-490: store holds the raw 0-255 wire value; the slider is 0-15.
     nrLevel: nrRawToDisplay(rx?.nrLevel ?? 0),
+    nrLevelProjection: projectNrLevel(caps, rx?.nrLevel, nrLevelAvailable),
     nbActive: rx?.nb ?? false,
     nbLevel: rx?.nbLevel ?? 0,
     // MOR-498: store holds the 0-9 wire value; the slider is 1-10.

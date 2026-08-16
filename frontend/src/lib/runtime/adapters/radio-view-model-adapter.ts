@@ -45,8 +45,9 @@ import {
 } from '$lib/runtime/props/panel-props';
 import {
   deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
-  controlRangeFromCapsOrDefault, nrRawToDisplay, nbDepthRawToDisplay,
+  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel,
 } from '$lib/radio/filter-controls';
+import type { NrLevelProjection } from '$lib/radio/filter-controls';
 import {
   derivePresentationCapabilities, type ReceiverId, type VfoSlotId,
 } from './presentation-capabilities';
@@ -573,28 +574,15 @@ function deriveDsp(
   const rx = onSub ? state?.sub : state?.main;
   const base = onSub ? 'sub.' : 'main.';
 
-  // The ONE shipped display-scale conversions (`nrRawToDisplay`/
-  // `nbDepthRawToDisplay`, `$lib/radio/filter-controls`) — called with the
-  // range explicitly derived from THIS function's own `caps` argument
-  // (`controlRangeFromCapsOrDefault`, mirroring `filterPassband`'s
-  // `pbtRangeFromCaps`, MOR-1284 F1), not the capabilities STORE singleton
-  // they otherwise fall back to. MOR-1290 F1 (verify round 1): the plain
-  // `controlRangeFromCaps` alone still returns `undefined` when `caps`
-  // declares no range for the key, and passing `undefined` as `range` makes
-  // `nrRawToDisplay`/`nbDepthRawToDisplay` fall through to THEIR OWN store
-  // lookup — reintroducing the exact module-global dependency this is meant
-  // to close, for the one case (`caps` omitting the key) that matters most
-  // (a server whose capabilities haven't fully landed yet). The `…OrDefault`
-  // wrapper always returns a CONCRETE range — this module's own
-  // `CONTROL_DEFAULTS`, the same ones `nrRawToDisplay`/`nbDepthRawToDisplay`
-  // fall back to today — so the store is NEVER consulted here, in either
-  // branch: the fact is a pure function of `(state, caps)` unconditionally.
-  // See the determinism pin in `__tests__/dsp-adapter.isolated.test.ts`. Computed only
-  // from the field's OWN raw value — never from a `?? 0` stand-in — so an
-  // unobserved nrLevel/nbDepth never silently reports a fabricated reading.
-  const nrLevelRange = controlRangeFromCapsOrDefault('nr_level', caps);
+  // NR readback is projected through the one shared exact/legacy contract;
+  // the semantic reading comes back from that same projection, so the two
+  // cannot disagree. NB depth retains its shipped explicit-range conversion.
+  // Both are computed from the field's own raw value, never a `?? 0` stand-in.
   const nrLevelRaw = numOrUndef(rx?.nrLevel);
-  const nrLevelValue = nrLevelRaw !== undefined ? nrRawToDisplay(nrLevelRaw, nrLevelRange) : undefined;
+  const nrLevelReadable = topFieldAvailable(state, `${base}nrLevel`);
+  const nrLevelProjection: NrLevelProjection = projectNrLevel(
+    caps, nrLevelRaw, nrLevelReadable,
+  );
 
   const nbDepthRange = controlRangeFromCapsOrDefault('nb_depth', caps);
   const nbDepthRaw = numOrUndef(state?.nbDepth);
@@ -614,7 +602,8 @@ function deriveDsp(
 
   return {
     nrActive: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nr`), boolOrUndef(rx?.nr)),
-    nrLevel: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nrLevel`), nrLevelValue),
+    nrLevel: txAuxField(hasNrCap, nrLevelReadable, nrLevelProjection.value ?? undefined),
+    nrLevelProjection,
     nbActive: txAuxField(hasNbCap, topFieldAvailable(state, `${base}nb`), boolOrUndef(rx?.nb)),
     nbLevel: txAuxField(hasNbCap, topFieldAvailable(state, `${base}nbLevel`), numOrUndef(rx?.nbLevel)),
     nbDepth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbDepth'), nbDepthValue),
