@@ -161,6 +161,7 @@ def _store(case: str) -> tuple[StateStore, object | None]:
 
 def _handler(store: StateStore) -> tuple[RigctldHandler, AsyncMock, Mock]:
     radio = AsyncMock()
+    radio.state_store = store
     routing = Mock()
     routing.set_func = AsyncMock(return_value=RigctldResponse())
     routing.set_level = AsyncMock(return_value=RigctldResponse())
