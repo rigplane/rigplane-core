@@ -607,6 +607,7 @@ class YaesuCatPoller:
                 continue
             now = time.monotonic()
             rf_state = self._current_rf_state()
+            transition = None
             try:
                 overrides = self._tx_interlock_disposition_overrides()
                 decision = evaluate_tx_interlock(
@@ -614,6 +615,17 @@ class YaesuCatPoller:
                     rf_state=rf_state,
                     disposition_overrides=overrides,
                 )
+                if (
+                    decision.disposition is TxInterlockDisposition.DEFER
+                    and not decision.allowed
+                    and rf_state is RfState.TX
+                ):
+                    transition = self._deferred_tx_lane.defer(
+                        cmd,
+                        now=now,
+                        rf_state=rf_state,
+                        disposition_overrides=overrides,
+                    )
             except Exception as exc:
                 self._mark_queued_command_failed(entry, exc)
                 if entry.future is not None and not entry.future.done():
@@ -624,17 +636,7 @@ class YaesuCatPoller:
                     exc_info=True,
                 )
                 continue
-            if (
-                decision.disposition is TxInterlockDisposition.DEFER
-                and not decision.allowed
-                and rf_state is RfState.TX
-            ):
-                transition = self._deferred_tx_lane.defer(
-                    cmd,
-                    now=now,
-                    rf_state=rf_state,
-                    disposition_overrides=overrides,
-                )
+            if transition is not None:
                 held = self._deferred_tx_lane.observe(rf_state=RfState.TX, now=now)
                 if held is None:
                     raise RuntimeError("deferred command lane lost its replacement")
