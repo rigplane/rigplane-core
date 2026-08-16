@@ -15,6 +15,7 @@ from rigplane.transport import (
     PACKET_QUEUE_MAXSIZE,
     PRESSURE_THRESHOLD,
 )
+from rigplane.core.transport import _UdpProtocol
 from rigplane.types import HEADER_SIZE, PacketType
 
 
@@ -709,3 +710,38 @@ class TestQueuePressure:
 
     def test_pressure_threshold_value(self) -> None:
         assert PRESSURE_THRESHOLD == 0.7
+
+
+# ---------------------------------------------------------------------------
+# UDP error throttling (MOR-1789)
+# ---------------------------------------------------------------------------
+
+
+class TestUdpErrorThrottling:
+    """Throttled UDP error warnings must report the exact number of
+    suppressed occurrences — the count of errors not logged since the
+    previous emitted line — not a hardcoded literal."""
+
+    def test_suppressed_count_is_computed_exactly(
+        self, transport: IcomTransport, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        protocol = _UdpProtocol(transport)
+
+        with caplog.at_level(logging.WARNING, logger="rigplane.core.transport"):
+            for _ in range(250):
+                protocol.error_received(OSError("Broken pipe"))
+
+        records = [
+            rec
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING and "UDP error" in rec.message
+        ]
+        # Cadence unchanged: first three in full, then every hundredth.
+        assert len(records) == 5
+        assert "(#1)" in records[0].message
+        assert "(#2)" in records[1].message
+        assert "(#3)" in records[2].message
+        # The n=100 line accounts for 4..99 not logged: 96 suppressed.
+        assert "(#100, suppressed 96)" in records[3].message
+        # The n=200 line accounts for 101..199 not logged: 99 suppressed.
+        assert "(#200, suppressed 99)" in records[4].message
