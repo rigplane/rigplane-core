@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call as mock_call, patch
 
 import pytest
 
+from rigplane.core.command_service import CommandService
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
     FieldCapability,
@@ -663,6 +664,135 @@ async def test_yaesu_deferred_command_supersedes_without_extending_expiry(
 
 
 @pytest.mark.asyncio
+async def test_yaesu_deferred_command_emits_held_lifecycle_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [10.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    service = CommandService(
+        executor=MagicMock(), state_store=StateStore(), clock=lambda: clock[0]
+    )
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    queue.put_ordered(SetFreq(7_100_000), command_id="held", command_service=service)
+
+    await _drain_with_ptt(poller, clock, 10.0, True)
+    event = service.lifecycle_events()[0]
+    assert (event.command_id, event.state, event.timestamp_monotonic) == (
+        "held",
+        "queued",
+        10.0,
+    )
+    assert event.details == {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": 13.0,
+    }
+
+    await _drain_with_ptt(poller, clock, 10.5, True)
+    await _drain_with_ptt(poller, clock, 10.75, False)
+    await _drain_with_ptt(poller, clock, 11.0, None)
+    assert service.lifecycle_events() == (event,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "expected_session"),
+    (("websocket", "ws-ftx1"), ("http", None)),
+)
+async def test_ftx1_web_deferred_hold_preserves_ingress_lifecycle_context(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    expected_session: str | None,
+) -> None:
+    clock = [10.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "rigplane.core.command_service.time.monotonic", lambda: clock[0]
+    )
+    radio, handler, poller, _store, _accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    params = {"freq": 7_100_000, "receiver": 1}
+    original_params = dict(params)
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "set_freq", params, command_id=f"held-{source}", source=source
+    )
+    ingress = service.lifecycle_events()[0]
+    assert params == original_params
+    await _drain_with_ptt(poller, clock, 10.0, True)
+
+    held = service.lifecycle_events()[-1]
+    expected_details = {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": 13.0,
+    }
+    if expected_session is not None:
+        expected_details["session_id"] = expected_session
+    assert (held.command_id, held.state, held.source, held.target) == (
+        ingress.command_id,
+        "queued",
+        ingress.source,
+        ingress.target,
+    )
+    assert held.details == expected_details
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replacement_at", "terminal_state", "replacement_expiry"),
+    ((22.5, "superseded", 23.0), (23.0, "timed_out", 26.0)),
+)
+async def test_yaesu_deferred_replacement_lifecycle_preserves_deadline_truth(
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_at: float,
+    terminal_state: str,
+    replacement_expiry: float,
+) -> None:
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    service = CommandService(
+        executor=MagicMock(), state_store=StateStore(), clock=lambda: clock[0]
+    )
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    first = asyncio.get_running_loop().create_future()
+    queue.put_ordered(
+        SetFreq(7_100_000),
+        future=first,
+        command_id="first",
+        command_service=service,
+    )
+    await _drain_with_ptt(poller, clock, 20.0, True)
+    queue.put_ordered(
+        SetFreq(7_200_000), command_id="replacement", command_service=service
+    )
+    await _drain_with_ptt(poller, clock, replacement_at, True)
+
+    events = service.lifecycle_events()
+    assert [(event.command_id, event.state) for event in events] == [
+        ("first", "queued"),
+        ("first", terminal_state),
+        ("replacement", "queued"),
+    ]
+    assert events[-1].timestamp_monotonic == replacement_at
+    assert events[-1].details == {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": replacement_expiry,
+    }
+    assert first.exception() is not None
+
+
+@pytest.mark.asyncio
 async def test_yaesu_deferred_release_requires_continuous_fresh_rx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -700,6 +830,7 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
     radio, queue = make_radio(), CommandQueue()
     radio.set_freq = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
+    service = MagicMock()
     if knownness == "stale":
         _set_fresh_ptt_observation(poller, active=True)
         poller._ptt_observation = _ptt_observation(True, observed_at=28.0)  # noqa: SLF001
@@ -712,13 +843,19 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
             provider_generation=1,
         )
     future = asyncio.get_running_loop().create_future()
-    queue.put_ordered(SetFreq(7_100_000), future=future)
+    queue.put_ordered(
+        SetFreq(7_100_000),
+        future=future,
+        command_id="unknown",
+        command_service=service,
+    )
     await poller._drain_commands()  # noqa: SLF001
     error = future.exception()
     assert isinstance(error, CommandError)
     assert "unknown" in str(error)
     radio.set_freq.assert_not_awaited()
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+    service.emit_lifecycle.assert_not_called()
 
 
 @pytest.mark.asyncio
