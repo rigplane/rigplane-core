@@ -35,6 +35,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
 
 type Snapshot = {
   phase: string; intent: string | null; guard: { leaseId: string } | null;
@@ -51,13 +52,22 @@ const h = vi.hoisted(() => ({
   listeners: new Set<(next: unknown) => void>(),
   txStart: vi.fn(),
   txRelease: vi.fn(),
+  session: { state: 'connected' as ControlSessionTransition['state'], epoch: 1 },
+  delivery: undefined as ((event: CommandDeliveryEvent) => void) | undefined,
+  transition: undefined as ((event: ControlSessionTransition) => void) | undefined,
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
-  getControlSession: () => ({ epoch: 1 }),
-  onCommandDelivery: vi.fn(),
-  onControlSessionTransition: vi.fn(),
+  getControlSession: () => h.session,
+  onCommandDelivery: vi.fn((handler: (event: CommandDeliveryEvent) => void) => {
+    h.delivery = handler;
+    return () => { if (h.delivery === handler) h.delivery = undefined; };
+  }),
+  onControlSessionTransition: vi.fn((handler: (event: ControlSessionTransition) => void) => {
+    h.transition = handler;
+    return () => { if (h.transition === handler) h.transition = undefined; };
+  }),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
@@ -120,7 +130,10 @@ const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
   mayOwnKey: false, fault: null,
 };
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 10,
+};
 const slot = (freqHz: number, mode: string) => ({ freqHz, mode, filterNum: 1, dataMode: 0 });
 
 /**
@@ -214,11 +227,55 @@ function useState(state: ServerState): void {
   setRadioState(state);
 }
 
+function delayState(
+  value: number | undefined, marker: number,
+  status: Partial<(typeof fresh)> = {},
+): ServerState {
+  const state = liveState({
+    breakInDelay: value, revision: marker, stateRevision: marker,
+    freshnessRevision: marker, observationSeq: marker,
+  });
+  return {
+    ...state,
+    fieldStatus: {
+      ...state.fieldStatus,
+      breakInDelay: { ...fresh, lastObservedMonotonic: marker, ...status },
+    },
+  } as unknown as ServerState;
+}
+
+function advanceDelay(value: number, marker: number): void {
+  const state = delayState(value, marker);
+  h.state = state;
+  setRadioState(state);
+  flushSync();
+}
+
+function delayInput(): HTMLInputElement {
+  return el('breakInDelay')!.querySelector('input') as HTMLInputElement;
+}
+
+function submitDelay(value: number): string {
+  const input = delayInput();
+  input.value = String(value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  flushSync();
+  return vi.mocked(sendCommand).mock.calls.at(-1)![2] as string;
+}
+
+function deliver(commandId: string, kind: CommandDeliveryEvent['kind'], error?: string): void {
+  expect(h.delivery).toBeTypeOf('function');
+  h.delivery!({ commandId, kind, originalEpoch: 1, eventEpoch: 1, error });
+  flushSync();
+}
+
 beforeEach(() => {
   setCapabilities(liveCaps(CW_TAGS));
   useState(liveState());
   h.caps = liveCaps(CW_TAGS);
   h.snapshot = { ...IDLE };
+  h.session = { state: 'connected', epoch: 1 };
   h.listeners.clear();
   vi.mocked(sendCommand).mockClear();
   resetCommandLifecycle();
@@ -231,6 +288,7 @@ afterEach(() => {
   component = null;
   document.body.innerHTML = '';
   resetCommandLifecycle();
+  vi.useRealTimers();
 });
 
 /* ── (a) THE NO-KEY-PATH PIN ───────────────────────────────────── */
@@ -305,6 +363,9 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     useState(liveState());
     render();
     const input = el('breakInDelay')!.querySelector('input') as HTMLInputElement;
+    expect(input.dataset.commandPhase).toBe('idle');
+    expect(input.getAttribute('aria-busy')).toBe('false');
+    expect(el('breakInDelay-value')!.textContent).toContain('64 idle');
     for (const value of [80, 96, 111]) {
       input.value = String(value);
       input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -320,10 +381,124 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(getCommandLifecycle(commandId, 1)).toMatchObject({
       id: commandId, name: 'set_break_in_delay', params: { level: 111 }, status: 'pending',
     });
-    expect(input.value).toBe('64');
-    expect(el('breakInDelay-value')!.textContent!.trim()).toBe('64');
+    expect(input.value).toBe('111');
+    expect(input.dataset.commandPhase).toBe('submitted');
+    expect(input.getAttribute('aria-busy')).toBe('true');
+    expect(input.getAttribute('aria-valuetext')).toBe('Requested 111; last confirmed 64');
+    expect(el('breakInDelay-value')!.textContent).toContain('111 submitted');
     expect(h.txStart).not.toHaveBeenCalled();
     expect(h.txRelease).not.toHaveBeenCalled();
+  });
+
+  it('projects acknowledgement and only newer matching radio truth as confirmed', () => {
+    render();
+    const commandId = submitDelay(111);
+    deliver(commandId, 'ack');
+    expect(delayInput().dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(delayInput().value).toBe('111');
+
+    advanceDelay(64, 11);
+    expect(delayInput().dataset.commandPhase).toBe('awaiting-confirmation');
+    advanceDelay(111, 12);
+    expect(delayInput().dataset.commandPhase).toBe('confirmed');
+    expect(delayInput().value).toBe('111');
+    expect(delayInput().getAttribute('aria-busy')).toBe('false');
+    const live = q<HTMLElement>('[data-control-feedback-status]');
+    expect(live?.getAttribute('aria-live')).toBe('polite');
+    expect(live?.textContent).toContain('111');
+  });
+
+  it('restores canonical truth after transport failure and timeout', () => {
+    render();
+    const failedId = submitDelay(111);
+    deliver(failedId, 'response-error', 'radio rejected write');
+    expect(delayInput().dataset.commandPhase).toBe('failed');
+    expect(delayInput().value).toBe('64');
+    expect(el('breakInDelay-value')!.textContent).toContain('64 failed');
+
+    unmount(component!); component = null;
+    resetCommandLifecycle(); vi.mocked(sendCommand).mockClear();
+    vi.useFakeTimers();
+    render();
+    submitDelay(99);
+    vi.advanceTimersByTime(5_000); flushSync();
+    expect(delayInput().dataset.commandPhase).toBe('timed-out');
+    expect(delayInput().value).toBe('64');
+    expect(delayInput().getAttribute('aria-busy')).toBe('false');
+  });
+
+  it('keeps only the newest target and invalidates its draft on provider cancellation', () => {
+    render();
+    const oldId = submitDelay(80);
+    const currentId = submitDelay(111);
+    expect(sendCommand).toHaveBeenCalledTimes(2);
+    expect(delayInput().value).toBe('111');
+    deliver(oldId, 'response-error', 'late superseded failure');
+    expect(delayInput().dataset.commandPhase).toBe('submitted');
+    expect(getCommandLifecycle(currentId, 1)?.status).toBe('pending');
+
+    delayInput().value = '99';
+    delayInput().dispatchEvent(new Event('input', { bubbles: true }));
+    h.session = { state: 'disconnected', epoch: 1 };
+    h.transition!({ state: 'disconnected', epoch: 1 }); flushSync();
+    expect(delayInput().dataset.commandPhase).toBe('cancelled');
+    expect(delayInput().value).toBe('64');
+    delayInput().dispatchEvent(new Event('change', { bubbles: true })); flushSync();
+    expect(sendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('presents out-of-band truth and fails closed for stale or malformed truth', () => {
+    render();
+    unmount(component!); component = null;
+    useState(delayState(72, 11)); render();
+    expect(delayInput().dataset.commandPhase).toBe('idle');
+    expect(delayInput().value).toBe('72');
+    expect(sendCommand).not.toHaveBeenCalled();
+
+    unmount(component!); component = null;
+    useState(delayState(72, 12, { freshness: 'stale' })); render();
+    expect(delayInput().disabled).toBe(true);
+    expect(delayInput().dataset.commandPhase).toBe('unavailable');
+    expect(delayInput().hasAttribute('aria-valuenow')).toBe(false);
+    expect(delayInput().getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
+    expect(el('breakInDelay-value')!.textContent).toContain('— unavailable');
+
+    unmount(component!); component = null;
+    useState(delayState(256, 13)); render();
+    expect(delayInput().disabled).toBe(true);
+    delayInput().value = '99';
+    delayInput().dispatchEvent(new Event('change', { bubbles: true })); flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each(['pointer release', 'keyboard release'])('commits exactly once on %s', (gesture) => {
+    render();
+    const input = delayInput();
+    input.value = '111';
+    if (gesture === 'keyboard release') {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    }
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (gesture === 'keyboard release') {
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    } else input.dispatchEvent(new Event('pointerup', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith(
+      'set_break_in_delay', { level: 111 }, expect.any(String),
+    );
+  });
+
+  it.each(['Escape', 'pointercancel'])('routes %s cancellation without a commit', (event) => {
+    render();
+    const input = delayInput();
+    input.value = '111';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (event === 'Escape') {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    } else input.dispatchEvent(new Event('pointercancel', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
+    expect(input.value).toBe('64');
+    expect(sendCommand).not.toHaveBeenCalled();
   });
 
   // MUTATION KILLED: the surface reacting to the transmit bit or the App TX

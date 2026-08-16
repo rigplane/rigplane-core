@@ -31,7 +31,7 @@
   } from '../../semantic/pbt-presentation-continuity';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
   import {
-    bindSemanticSurfaceHandlers, getPendingFrequencyHz,
+    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
@@ -350,6 +350,7 @@
    * exactly one `<RxTxSurface>` stays the key/unkey authority (decomposition R9).
    */
   const cwIntents = semanticHandlers.cw;
+  let breakInDelayFeedback = $derived(getBreakInDelayControlFeedback());
   let autoTuneAvailable = $derived(
     runtime.caps?.capabilities.includes('cw') === true
       && runtime.caps?.capabilities.includes('audio') === true
@@ -1165,6 +1166,7 @@
     {#if view?.cwKeyer}
       <CwKeyerSurface
         {view}
+        {breakInDelayFeedback}
         {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
         onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
