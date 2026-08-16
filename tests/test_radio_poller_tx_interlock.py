@@ -1,3 +1,4 @@
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -19,10 +20,11 @@ from rigplane.runtime._poller_types import (
     ScanStop,
     SendCiv,
     SetAntenna1,
+    SetFreq,
     SetPowerstat,
     SetTunerStatus,
 )
-from rigplane.web.radio_poller import CommandQueue, RadioPoller
+from rigplane.web.radio_poller import CommandQueue, CommandQueueEntry, RadioPoller
 
 
 _PTT = FieldPath.global_("tx_state", "ptt")
@@ -36,6 +38,7 @@ def _radio() -> SimpleNamespace:
         scan_start=AsyncMock(),
         scan_stop=AsyncMock(),
         set_antenna_1=AsyncMock(),
+        set_freq=AsyncMock(),
         set_tuner_status=AsyncMock(),
         set_powerstat=AsyncMock(),
         set_ptt=AsyncMock(),
@@ -157,3 +160,83 @@ def test_manual_clock_ttl_generation_and_recovery() -> None:
     clock.advance(0.1)
     _observe_ptt(store, False, observed_at=clock.now())
     assert poller._current_rf_state().value == "rx"  # noqa: SLF001
+
+
+async def test_deferred_entry_releases_once_with_its_original_future() -> None:
+    clock = FreshnessClock(start=10.0)
+    radio, store, queue = _radio(), StateStore(freshness_clock=clock), CommandQueue()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, queue, state_store=store)
+    _observe_ptt(store, True, observed_at=clock.now())
+    future = asyncio.get_running_loop().create_future()
+    entry = CommandQueueEntry(SetFreq(14_074_000), future=future)
+
+    assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
+    assert future.done() is False
+    radio.set_freq.assert_not_awaited()
+
+    clock.advance(0.1)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    clock.advance(0.5)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    clock.advance(0.5)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
+
+    await poller._execute_queued_entry(entry)  # noqa: SLF001
+    assert future.result() is None
+    radio.set_freq.assert_awaited_once_with(14_074_000)
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    radio.set_freq.assert_awaited_once()
+
+
+async def test_supersession_keeps_deadline_and_expiry_wins_over_release() -> None:
+    clock = FreshnessClock(start=20.0)
+    radio, store, queue = _radio(), StateStore(freshness_clock=clock), CommandQueue()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, queue, state_store=store)
+    _observe_ptt(store, True, observed_at=clock.now())
+    old_future = asyncio.get_running_loop().create_future()
+    old = CommandQueueEntry(SetFreq(7_074_000), future=old_future)
+    assert poller._stage_tx_interlocked_entries([old]) == []  # noqa: SLF001
+
+    clock.advance(2.5)
+    _observe_ptt(store, False, observed_at=clock.now())
+    new_future = asyncio.get_running_loop().create_future()
+    new = CommandQueueEntry(SetFreq(14_074_000), future=new_future)
+    assert poller._stage_tx_interlocked_entries([new]) == []  # noqa: SLF001
+    assert "superseded" in str(old_future.exception())
+    radio.set_freq.assert_not_awaited()
+
+    clock.advance(0.5)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    assert "expired" in str(new_future.exception())
+    radio.set_freq.assert_not_awaited()
+
+
+async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> None:
+    poller, radio, _store = _poller()
+    entry = CommandQueueEntry(SetFreq(14_074_000))
+
+    assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
+    with pytest.raises(CommandError, match="RF state is unknown"):
+        await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    radio.set_freq.assert_not_awaited()
+
+
+async def test_fresh_rx_deferred_class_dispatches_immediately_once() -> None:
+    poller, radio, store = _poller()
+    _observe_ptt(store, False)
+    future = asyncio.get_running_loop().create_future()
+    entry = CommandQueueEntry(SetFreq(14_074_000), future=future)
+
+    assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
+    await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+    assert future.result() is None
+    radio.set_freq.assert_awaited_once_with(14_074_000)
