@@ -644,14 +644,9 @@ class RigctldHandler:
         self._routing = create_routing(
             radio, self._cache, getattr(config, "max_power_w", 100.0)
         )
-        radio_state_store = (
-            radio.state_store if isinstance(radio, StateStoreCapable) else None
-        )
-        if state_store is None:
-            state_store = radio_state_store
-        self._has_canonical_state_store = (
-            isinstance(state_store, StateStore) and state_store is radio_state_store
-        )
+        if state_store is None and isinstance(radio, StateStoreCapable):
+            state_store = radio.state_store
+        self._has_canonical_state_store = isinstance(state_store, StateStore)
         if not isinstance(state_store, StateStore):
             # Non-canonical, non-decaying fallback (MOR-432): used only when the
             # radio exposes no StateStore. Freshness decay requires a wired,
@@ -705,7 +700,7 @@ class RigctldHandler:
             or field.last_observed_monotonic < 0
             or snapshot.generated_at_monotonic < field.last_observed_monotonic
             or snapshot.generated_at_monotonic - field.last_observed_monotonic
-            > field.max_age
+            >= field.max_age
             or type(snapshot.provider_generation) is not int
             or type(field.provider_generation) is not int
             or snapshot.provider_generation < 0
