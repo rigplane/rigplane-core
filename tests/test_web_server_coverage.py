@@ -3371,10 +3371,49 @@ async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None
         )
     )
     payload = issuer_q.get_nowait()
+    reconciled = srv.command_service.lifecycle_events()[-1]
     assert payload["state"] == "reconciled"
-    assert payload["details"] == {}
+    assert payload["details"] == {
+        "revision": reconciled.details["revision"],
+        "observationSeq": reconciled.details["observationSeq"],
+    }
     assert payload["commandId"] == "cmd-held" and issuer_q.empty()
     assert bystander_q.empty()
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"session_id": "session-issuer", "observationSeq": 1},
+        {"session_id": "session-issuer", "revision": 1},
+        {"session_id": "session-issuer", "revision": True, "observationSeq": 1},
+        {"session_id": "session-issuer", "revision": -1, "observationSeq": 1},
+        {"session_id": "session-issuer", "revision": 1.0, "observationSeq": 1},
+        {"session_id": "session-issuer", "revision": 1, "observationSeq": False},
+        {"session_id": "session-issuer", "revision": 1, "observationSeq": -1},
+        {
+            "session_id": "session-issuer",
+            "revision": 1,
+            "observationSeq": 1,
+            "private": "drop",
+        },
+    ],
+)
+@pytest.mark.asyncio
+async def test_malformed_reconciled_evidence_is_not_delivered(
+    details: dict[str, object],
+) -> None:
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    await _ack_held(srv)
+    event = _life(
+        state="reconciled",
+        message="confirmed by matching observation",
+        details=details,
+    )
+    srv.command_service._events.append(event)  # noqa: SLF001
+    srv._on_command_lifecycle_event(event)  # noqa: SLF001
+    assert issuer_q.empty() and bystander_q.empty()
 
 
 @pytest.mark.parametrize(
