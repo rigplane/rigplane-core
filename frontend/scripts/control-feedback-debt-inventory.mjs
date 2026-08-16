@@ -4,6 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'svelte/compiler';
+import { collectObjectFlow, unwrapExpression } from './control-feedback-debt-ast.mjs';
 import { CONTROL_FEEDBACK_DEBT_BASELINE } from './control-feedback-debt-baseline.mjs';
 
 const UNKNOWN = Symbol('dynamic');
@@ -23,12 +24,7 @@ const FROZEN_RADIO_DEBT = new Set(CONTROL_FEEDBACK_DEBT_BASELINE);
 const keyOf = (key) => key === 'feedbackPolicy' ? 'feedback-policy' : key;
 
 /** @param {any} node @returns {any} */
-const unwrap = (node) => {
-  while (node && ['TSAsExpression', 'TSTypeAssertion', 'TSNonNullExpression', 'ChainExpression', 'ParenthesizedExpression'].includes(node.type)) {
-    node = node.expression;
-  }
-  return node;
-};
+const unwrap = (node) => unwrapExpression(node).node;
 
 /** @param {any} ast @returns {any[]} */
 function programs(ast) {
@@ -50,30 +46,21 @@ function valueControlImport(source, file) {
 function bindingsAndImports(ast, file) {
   const bindings = new Map();
   /** @type {Map<string, any[]>} */ const aliases = new Map();
-  /** @type {Map<string, any[]>} */ const mutations = new Map();
+  /** @type {Map<string, any[]>} */ const objectFlows = new Map();
   const valueControls = new Set();
   /** @param {string} name @param {any} value */
   const addAlias = (name, value) => aliases.set(name, [...(aliases.get(name) ?? []), value]);
-  /** @param {string} name @param {any} key @param {any} value */
-  const addMutation = (name, key, value) => mutations.set(name, [...(mutations.get(name) ?? []), { key, value }]);
   /** @param {any} node */
   const collectAssignments = (node) => {
     if (!node || typeof node !== 'object') return;
     if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier') addAlias(node.left.name, node.right);
-    const member = node.type === 'AssignmentExpression' && node.left.type === 'MemberExpression' ? node.left : null;
-    if (member?.object.type === 'Identifier' && bindings.has(member.object.name)) {
-      const key = member.computed ? staticValue(member.property, bindings) : member.property.name;
-      addMutation(member.object.name, key, node.operator === '=' ? node.right : null);
-    }
-    if (node.type === 'CallExpression' || node.type === 'NewExpression') {
-      for (const argument of node.arguments) if (argument.type === 'Identifier' && bindings.has(argument.name)) addMutation(argument.name, UNKNOWN, null);
-    }
     for (const value of Object.values(node)) {
       if (Array.isArray(value)) value.forEach(collectAssignments);
       else if (value && typeof value === 'object') collectAssignments(value);
     }
   };
   for (const program of programs(ast)) {
+    for (const [name, events] of collectObjectFlow(program)) objectFlows.set(name, [...(objectFlows.get(name) ?? []), ...events]);
     for (const statement of program.body) {
       if (statement.type === 'ImportDeclaration') {
         const source = String(statement.source.value);
@@ -95,7 +82,7 @@ function bindingsAndImports(ast, file) {
     }
     collectAssignments(program);
   }
-  return { aliases, bindings, mutations, valueControls };
+  return { aliases, bindings, objectFlows, valueControls };
 }
 
 /** @param {any} node @param {Map<string, any>} bindings @param {Set<string>} [seen] @returns {any} */
@@ -164,19 +151,19 @@ function setEntry(result, rawKey, value, bindings, source) {
   } : { value: UNKNOWN, text: 'dynamic' });
 }
 
-/** @param {any} node @param {Map<string, any>} bindings @param {Map<string, any[]>} mutations @param {string} source @param {Set<string>} [seen] @returns {Map<string, Entry>|null} */
-function objectEntries(node, bindings, mutations, source, seen = new Set()) {
+/** @param {any} node @param {Map<string, any>} bindings @param {Map<string, any[]>} objectFlows @param {string} source @param {Set<string>} [seen] @returns {Map<string, Entry>|null} */
+function objectEntries(node, bindings, objectFlows, source, seen = new Set()) {
   node = unwrap(node);
   if (node?.type === 'Identifier' && bindings.has(node.name) && !seen.has(node.name)) {
-    const result = objectEntries(bindings.get(node.name), bindings, mutations, source, new Set([...seen, node.name]));
-    if (result) for (const mutation of mutations.get(node.name) ?? []) setEntry(result, mutation.key, mutation.value, bindings, source);
+    const result = objectEntries(bindings.get(node.name), bindings, objectFlows, source, new Set([...seen, node.name]));
+    if (result) for (const event of objectFlows.get(node.name) ?? []) setEntry(result, event.poison ? UNKNOWN : event.key, event.value, bindings, source);
     return result;
   }
   if (node?.type !== 'ObjectExpression') return null;
   const result = new Map();
   for (const property of node.properties) {
     if (property.type === 'SpreadElement') {
-      const nested = objectEntries(property.argument, bindings, mutations, source, seen);
+      const nested = objectEntries(property.argument, bindings, objectFlows, source, seen);
       if (!nested) for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
       else for (const [key, value] of nested) result.set(key, value);
       continue;
@@ -187,12 +174,12 @@ function objectEntries(node, bindings, mutations, source, seen = new Set()) {
   return result;
 }
 
-/** @param {any} node @param {Map<string, any>} bindings @param {Map<string, any[]>} mutations @param {string} source @returns {Map<string, Entry>} */
-function effectiveAttributes(node, bindings, mutations, source) {
+/** @param {any} node @param {Map<string, any>} bindings @param {Map<string, any[]>} objectFlows @param {string} source @returns {Map<string, Entry>} */
+function effectiveAttributes(node, bindings, objectFlows, source) {
   const result = new Map();
   for (const attribute of node.attributes ?? []) {
     if (attribute.type === 'SpreadAttribute') {
-      const entries = objectEntries(attribute.expression, bindings, mutations, source);
+      const entries = objectEntries(attribute.expression, bindings, objectFlows, source);
       if (!entries) for (const key of RELEVANT) result.set(key, { value: UNKNOWN, text: 'dynamic' });
       else for (const [key, value] of entries) result.set(key, value);
     } else if (attribute.type === 'Attribute' && RELEVANT.includes(keyOf(attribute.name))) {
@@ -224,7 +211,7 @@ function isLocalGain(file, kind, attributes) {
 /** @param {string} file @param {string} source @returns {Site[]} */
 export function auditSvelteSource(file, source) {
   const ast = parse(source, { modern: true, filename: file });
-  const { aliases, bindings, mutations, valueControls } = bindingsAndImports(ast, file);
+  const { aliases, bindings, objectFlows, valueControls } = bindingsAndImports(ast, file);
   /** @type {Site[]} */
   const sites = [];
   /** @param {any} node */
@@ -238,7 +225,7 @@ export function auditSvelteSource(file, source) {
       if (tag === 'input' || tag === UNKNOWN) kind = 'input';
     }
     if (kind) {
-      const attributes = effectiveAttributes(node, bindings, mutations, source);
+      const attributes = effectiveAttributes(node, bindings, objectFlows, source);
       const type = attributes.get('type')?.value;
       if (kind === 'ValueControl' || type === 'range' || type === UNKNOWN) {
         const label = attributes.get(kind === 'input' ? 'aria-label' : 'label');

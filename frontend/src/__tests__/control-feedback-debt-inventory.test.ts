@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { auditSvelteSource, assertShrinkOnly, scanRepository } from '../../scripts/control-feedback-debt-inventory.mjs';
 
 const wrap = (markup: string, script = '') => `<script>${script}</script>${markup}`;
+const wrapTs = (markup: string, script: string) => `<script lang="ts">${script}</script>${markup}`;
 const debt = (source: string, file = 'src/semantic/Fixture.svelte') =>
   auditSvelteSource(file, source).filter((site: { policy: string }) => site.policy === 'radio-backed');
 
@@ -67,14 +68,22 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
 
   it('applies spread-object mutations and poisons unknown writes or escapes', () => {
     const script = `const aProps={type:'button'}, bProps={type:'button'}, pProps={type:'range','feedback-policy':'radio-backed'}, key='type';
-      aProps.type='range'; bProps[key]='range'; pProps['feedback-policy']='feedback-integrated'; let a=0,b=0,c=0;`;
-    const source = wrap('<input {...aProps} value={a}/><input {...bProps} value={b}/><input {...pProps} value={c}/>', script);
+      const aAlias=aProps,bAlias=bProps,pAlias=pProps;
+      aAlias.type='range'; bAlias[key]='range'; pAlias.feedbackPolicy='feedback-integrated'; let a=0,b=0,c=0;`;
+    const source = wrap('<input {...aAlias} value={a}/><input {...bAlias} value={b}/><input {...pAlias} value={c}/>', script);
     expect(auditSvelteSource('src/semantic/Fixture.svelte', source).map((site: { value: string }) => site.value)).toEqual(['a', 'b', 'c']);
     expect(debt(source).map((site: { value: string }) => site.value)).toEqual(['a', 'b']);
     const unknown = `const props={type:'button'}; let key='type'; props[key]='range';`;
     expect(() => debt(wrap('<input {...props}/>', unknown))).toThrow(/static feedback policy/);
     expect(debt(wrap('<input {...props} type="button" feedback-policy="radio-backed"/>', unknown))).toEqual([]);
-    expect(() => debt(wrap('<input {...props}/>', `const props={type:'button'}; mutate(props);`))).toThrow(/static feedback policy/);
+    expect(() => debt(wrap('<input {...props}/>', `const props={type:'button'}, alias=props; mutate(alias);`))).toThrow(/static feedback policy/);
+  });
+
+  it('fails closed for TypeScript-wrapped mutation receivers and call escapes', () => {
+    const typed = (script: string) => debt(wrapTs('<input {...props} value={a}/>', `const props={type:'button'}, alias=props; ${script}; let a=0;`));
+    expect(typed(`(props as Record<string, unknown>).type='range'`).map((site: { value: string }) => site.value)).toEqual(['a']);
+    expect(() => typed(`mutate(alias as Record<string, unknown>)`)).toThrow(/static feedback policy/);
+    expect(() => typed(`mutate(alias!)`)).toThrow(/static feedback policy/);
   });
 
   it('rejects unknown or dynamic policies and accepts the closed vocabulary', () => {
