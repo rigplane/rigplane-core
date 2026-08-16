@@ -607,6 +607,9 @@ class YaesuCatPoller:
                 and rf_state is RfState.TX
             ):
                 transition = self._deferred_tx_lane.defer(cmd, now=now)
+                held = self._deferred_tx_lane.observe(rf_state=RfState.TX, now=now)
+                if held is None:
+                    raise RuntimeError("deferred command lane lost its replacement")
                 previous, self._deferred_tx_entry = self._deferred_tx_entry, entry
                 if (
                     previous is None
@@ -623,6 +626,7 @@ class YaesuCatPoller:
                             transition.outcome is TxInterlockDeferredOutcome.SUPERSEDED
                         ),
                     )
+                self._emit_deferred_entry_held(entry, expires_at=held.expires_at)
                 continue
             try:
                 if (
@@ -699,6 +703,25 @@ class YaesuCatPoller:
             cls._mark_queued_command_failed(entry, error)
         if entry.future is not None and not entry.future.done():
             entry.future.set_exception(error)
+
+    @staticmethod
+    def _emit_deferred_entry_held(entry: Any, *, expires_at: float) -> None:
+        if entry.command_service is None or entry.command_id is None:
+            return
+        entry.command_service.emit_lifecycle(
+            CommandIntent(
+                id=entry.command_id,
+                name="queued_completion",
+                params={},
+                source=entry.source or "internal_policy",
+            ),
+            "queued",
+            details={
+                "heldBy": "tx_interlock",
+                "reason": "tx_active",
+                "expiresAt": expires_at,
+            },
+        )
 
     @staticmethod
     def _mark_queued_command_failed(entry: Any, exc: BaseException) -> None:

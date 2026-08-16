@@ -676,9 +676,7 @@ async def test_yaesu_deferred_command_emits_held_lifecycle_once(
         executor=MagicMock(), state_store=StateStore(), clock=lambda: clock[0]
     )
     poller = YaesuCatPoller(radio, command_queue=queue)
-    queue.put_ordered(
-        SetFreq(7_100_000), command_id="held", command_service=service
-    )
+    queue.put_ordered(SetFreq(7_100_000), command_id="held", command_service=service)
 
     await _drain_with_ptt(poller, clock, 10.0, True)
     event = service.lifecycle_events()[0]
@@ -785,6 +783,7 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
     radio, queue = make_radio(), CommandQueue()
     radio.set_freq = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
+    service = MagicMock()
     if knownness == "stale":
         _set_fresh_ptt_observation(poller, active=True)
         poller._ptt_observation = _ptt_observation(True, observed_at=28.0)  # noqa: SLF001
@@ -797,13 +796,19 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
             provider_generation=1,
         )
     future = asyncio.get_running_loop().create_future()
-    queue.put_ordered(SetFreq(7_100_000), future=future)
+    queue.put_ordered(
+        SetFreq(7_100_000),
+        future=future,
+        command_id="unknown",
+        command_service=service,
+    )
     await poller._drain_commands()  # noqa: SLF001
     error = future.exception()
     assert isinstance(error, CommandError)
     assert "unknown" in str(error)
     radio.set_freq.assert_not_awaited()
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+    service.emit_lifecycle.assert_not_called()
 
 
 @pytest.mark.asyncio
