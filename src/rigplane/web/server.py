@@ -2061,6 +2061,7 @@ class WebServer:
         Recomputing from history has no such failure mode: nothing to leak.
         """
         if event.state not in ("failed", "timed_out"):
+            self._send_command_lifecycle_event(event)
             return
         was_acknowledged = any(
             e.command_id == event.command_id and e.state == "acknowledged"
@@ -2082,6 +2083,65 @@ class WebServer:
             code="commandExecutionFailed",
             params={"reason": reason},
         )
+        self._send_command_lifecycle_event(event)
+
+    def _send_command_lifecycle_event(self, event: CommandLifecycleEvent) -> None:
+        """Deliver validated additive lifecycle truth to its issuer only."""
+        details = event.details
+        timestamp = event.timestamp_monotonic
+        if (
+            event.state not in ("queued", "superseded", "timed_out", "failed")
+            or event.source != "websocket"
+            or not isinstance(event.command_id, str)
+            or not event.command_id.strip()
+            or isinstance(timestamp, bool)
+            or not isinstance(timestamp, (int, float))
+            or not math.isfinite(timestamp)
+            or (event.target is not None and not isinstance(event.target, FieldPath))
+            or (event.message is not None and not isinstance(event.message, str))
+            or not isinstance(details, dict)
+        ):
+            return
+        session_id = details.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            return
+        public_details: dict[str, Any] = {}
+        if event.state == "queued":
+            expires_at = details.get("expiresAt")
+            if (
+                set(details) != {"session_id", "heldBy", "reason", "expiresAt"}
+                or details.get("heldBy") != "tx_interlock"
+                or details.get("reason") != "tx_active"
+                or isinstance(expires_at, bool)
+                or not isinstance(expires_at, (int, float))
+                or not math.isfinite(expires_at)
+            ):
+                return
+            public_details = {
+                "heldBy": "tx_interlock",
+                "reason": "tx_active",
+                "expiresAt": expires_at,
+            }
+        elif set(details) != {"session_id"}:
+            return
+        if not any(
+            prior.command_id == event.command_id
+            and prior.source == event.source
+            and prior.state == "acknowledged"
+            and (prior.details or {}).get("session_id") == session_id
+            for prior in self.command_service.lifecycle_events()
+        ):
+            return
+        q = self._session_queues.get(session_id)
+        if q is None:
+            logger.debug("command lifecycle issuer is disconnected: %s", session_id)
+            return
+        payload = {"type": "command_lifecycle", **event.to_dict()}
+        payload["details"] = public_details
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            logger.debug("command lifecycle issuer queue is full: %s", session_id)
 
     def _broadcast_dx_spot(self, spot: Any) -> None:
         """Add DX spot to buffer and push dx_spot message to all control clients."""

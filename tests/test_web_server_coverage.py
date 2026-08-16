@@ -3239,23 +3239,21 @@ async def test_deferred_lifecycle_is_delivered_only_to_its_issuer() -> None:
     srv._on_command_lifecycle_event(_held_lifecycle())  # noqa: SLF001
 
     payload = issuer_q.get_nowait()
-    assert tuple(
-        payload[key]
-        for key in (
-            "type",
-            "commandId",
-            "state",
-            "timestampMonotonic",
-            "source",
-        )
-    ) == ("command_lifecycle", "cmd-held", "queued", 12.5, "websocket")
+    assert payload["type"] == "command_lifecycle"
+    assert payload["commandId"] == "cmd-held"
+    assert payload["state"] == "queued"
+    assert payload["timestampMonotonic"] == 12.5
+    assert payload["source"] == "websocket"
     assert payload["target"] == "receiver.main.active.freq_mode.freq_hz"
-    assert payload["message"] is None
     assert payload["details"] == {
         "heldBy": "tx_interlock",
         "reason": "tx_active",
         "expiresAt": 15.0,
     }
+    srv._on_command_lifecycle_event(
+        _held_lifecycle(state="superseded", details={"session_id": "session-issuer"})
+    )  # noqa: SLF001
+    assert issuer_q.get_nowait()["state"] == "superseded"
     assert issuer_q.empty()
     assert bystander_q.empty()
 
@@ -3311,6 +3309,13 @@ async def test_deferred_lifecycle_ack_identity_and_bounded_queue() -> None:
     srv.unregister_control_event_queue(issuer_q, session_id="session-issuer")
     _drain_queue(bystander_q)
     srv._on_command_lifecycle_event(event)  # noqa: SLF001
+    assert bystander_q.empty()
+    srv.command_service._events.append(
+        _held_lifecycle(state="acknowledged", details={"session_id": "unknown"})
+    )  # noqa: SLF001
+    srv._on_command_lifecycle_event(
+        _held_lifecycle(details=_held_details(session_id="unknown"))
+    )  # noqa: SLF001
     assert bystander_q.empty()
 
 
