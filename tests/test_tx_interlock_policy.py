@@ -254,8 +254,12 @@ def test_newer_deferred_command_explicitly_supersedes_the_single_slot() -> None:
     first = SetFreq(7_100_000)
     second = SetMode("USB")
     lane.defer(first, now=10.0)
+    assert (
+        lane.observe(rf_state=RfState.RX, now=10.0).outcome
+        is TxInterlockDeferredOutcome.HELD
+    )
 
-    superseded = lane.defer(second, now=10.5)
+    superseded = lane.defer(second, now=11.1)
 
     assert superseded.outcome is TxInterlockDeferredOutcome.SUPERSEDED
     assert superseded.command is first
@@ -263,12 +267,65 @@ def test_newer_deferred_command_explicitly_supersedes_the_single_slot() -> None:
     assert superseded.expires_at == 13.0
     assert lane.pending is second
     assert (
-        lane.observe(rf_state=RfState.RX, now=10.5).outcome
+        lane.observe(rf_state=RfState.RX, now=11.1).outcome
         is TxInterlockDeferredOutcome.HELD
     )
     assert (
-        lane.observe(rf_state=RfState.RX, now=11.5).outcome
+        lane.observe(rf_state=RfState.RX, now=12.099).outcome
+        is TxInterlockDeferredOutcome.HELD
+    )
+    assert (
+        lane.observe(rf_state=RfState.RX, now=12.1).outcome
         is TxInterlockDeferredOutcome.RELEASED
+    )
+
+
+def test_superseding_deferred_command_retains_the_original_deadline() -> None:
+    lane = DeferredTxCommandLane()
+    first = SetFreq(7_100_000)
+    second = SetMode("USB")
+    lane.defer(first, now=10.0)
+
+    superseded = lane.defer(second, now=12.5)
+
+    assert superseded.outcome is TxInterlockDeferredOutcome.SUPERSEDED
+    assert superseded.command is first
+    assert superseded.replacement is second
+    assert superseded.expires_at == 13.0
+    assert lane.pending is second
+    assert (
+        lane.observe(rf_state=RfState.RX, now=12.5).outcome
+        is TxInterlockDeferredOutcome.HELD
+    )
+
+    expired = lane.observe(rf_state=RfState.RX, now=13.0)
+
+    assert expired.outcome is TxInterlockDeferredOutcome.EXPIRED
+    assert expired.command is second
+    assert expired.expires_at == 13.0
+    assert lane.pending is None
+
+
+def test_command_after_expired_entry_starts_a_new_deadline() -> None:
+    lane = DeferredTxCommandLane()
+    first = SetFreq(7_100_000)
+    second = SetMode("USB")
+    lane.defer(first, now=10.0)
+
+    expired = lane.defer(second, now=13.0)
+
+    assert expired.outcome is TxInterlockDeferredOutcome.EXPIRED
+    assert expired.command is first
+    assert expired.replacement is second
+    assert expired.expires_at == 13.0
+    assert lane.pending is second
+    assert (
+        lane.observe(rf_state=RfState.TX, now=15.999).outcome
+        is TxInterlockDeferredOutcome.HELD
+    )
+    assert (
+        lane.observe(rf_state=RfState.RX, now=16.0).outcome
+        is TxInterlockDeferredOutcome.EXPIRED
     )
 
 
