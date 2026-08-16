@@ -133,22 +133,87 @@ async def test_radio_core_frequency_mode_ptt_and_vfo() -> None:
 
             assert await radio.get_freq() == 14_074_000
             await radio.set_freq(7_050_000)
+            assert radio.radio_state.main.freq == 14_074_000
+            assert await radio.get_freq() == 7_050_000
             assert radio.radio_state.main.freq == 7_050_000
 
             assert await radio.get_mode() == ("USB", 2400)
             await radio.set_mode("LSB", 1800)
+            assert radio.radio_state.main.mode == "USB"
+            assert radio.radio_state.main.filter_width == 2400
+            assert await radio.get_mode() == ("LSB", 1800)
             assert radio.radio_state.main.mode == "LSB"
             assert radio.radio_state.main.filter_width == 1800
 
             assert await radio.get_ptt() is False
             await radio.set_ptt(True)
+            assert radio.radio_state.ptt is False
+            assert await radio.get_ptt() is True
             assert radio.radio_state.ptt is True
 
             assert await radio.get_vfo_slot() == "A"
             await radio.set_vfo_slot("B")
+            assert radio.radio_state.main.active_slot == "A"
+            assert await radio.get_vfo_slot() == "B"
             assert radio.radio_state.main.active_slot == "B"
         finally:
             await radio.disconnect()
+
+    assert server.commands_seen == [
+        "v",
+        "f",
+        "F 7050000",
+        "f",
+        "m",
+        "M LSB 1800",
+        "m",
+        "t",
+        "T 1",
+        "t",
+        "v",
+        "V VFOB",
+        "v",
+    ]
+
+
+async def test_failed_core_setters_leave_radio_state_unchanged() -> None:
+    behavior = FakeRigctldBehavior(unsupported_commands={"F", "M", "T", "V"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            assert await radio.get_freq() == 14_074_000
+            assert await radio.get_mode() == ("USB", 2400)
+            assert await radio.get_ptt() is False
+            assert await radio.get_vfo_slot() == "A"
+
+            for setter in (
+                radio.set_freq(7_050_000),
+                radio.set_mode("LSB", 1800),
+                radio.set_ptt(True),
+                radio.set_vfo_slot("B"),
+            ):
+                with pytest.raises(CommandError, match="unsupported"):
+                    await setter
+                assert radio.radio_state.main.freq == 14_074_000
+                assert radio.radio_state.main.mode == "USB"
+                assert radio.radio_state.main.filter_width == 2400
+                assert radio.radio_state.ptt is False
+                assert radio.radio_state.main.active_slot == "A"
+        finally:
+            await radio.disconnect()
+
+    assert server.commands_seen == [
+        "v",
+        "f",
+        "m",
+        "t",
+        "v",
+        "F 7050000",
+        "M LSB 1800",
+        "T 1",
+        "V VFOB",
+    ]
 
 
 async def test_radio_reports_actionable_connection_failure() -> None:

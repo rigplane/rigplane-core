@@ -543,7 +543,6 @@ class RigctldClientRadio:
         if freq <= 0:
             raise ValueError("freq must be > 0 Hz")
         await self._transport.command(f"F {int(freq)}")
-        self._state.main.freq = int(freq)
 
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
         self._require_main_receiver(receiver, "get_mode")
@@ -577,8 +576,6 @@ class RigctldClientRadio:
                 raise ValueError("filter_width must be >= 0")
             command = f"{command} {int(filter_width)}"
         await self._transport.command(command)
-        self._state.main.mode = normalized
-        self._state.main.filter_width = filter_width
 
     async def get_data_mode(self) -> bool:
         # Flat unavailable value — external rigctld has no data-mode read.
@@ -604,7 +601,6 @@ class RigctldClientRadio:
 
     async def set_ptt(self, on: bool) -> None:
         await self._transport.command(f"T {1 if on else 0}")
-        self._state.ptt = bool(on)
 
     async def get_vfo_slot(self, receiver: int = 0) -> str:
         self._require_main_receiver(receiver, "get_vfo_slot")
@@ -617,7 +613,6 @@ class RigctldClientRadio:
         self._require_main_receiver(receiver, "set_vfo_slot")
         normalized = _normalize_vfo_slot(slot)
         await self._transport.command(f"V VFO{normalized}")
-        self._state.main.active_slot = normalized
 
     async def get_rf_gain(self, receiver: int = 0) -> int:
         self._require_main_receiver(receiver, "get_rf_gain")
