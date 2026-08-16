@@ -607,8 +607,8 @@ class YaesuCatPoller:
                 continue
             now = time.monotonic()
             rf_state = self._current_rf_state()
-            overrides = self._tx_interlock_disposition_overrides()
             try:
+                overrides = self._tx_interlock_disposition_overrides()
                 decision = evaluate_tx_interlock(
                     cmd,
                     rf_state=rf_state,
