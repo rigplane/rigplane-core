@@ -31,6 +31,7 @@ class RigctldTransport:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
         self._provider_generation_advance: Callable[[], int] | None = None
         self._connection_retired = True
 
@@ -47,10 +48,14 @@ class RigctldTransport:
         return writer is not None and not writer.is_closing()
 
     async def connect(self) -> None:
+        async with self._lifecycle_lock:
+            await self._connect_locked()
+
+    async def _connect_locked(self) -> None:
         if self.connected:
             return
         if self._reader is not None or self._writer is not None:
-            await self.close()
+            await self._close_locked()
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port),
@@ -70,6 +75,10 @@ class RigctldTransport:
         self._connection_retired = False
 
     async def close(self) -> None:
+        async with self._lifecycle_lock:
+            await self._close_locked()
+
+    async def _close_locked(self) -> None:
         writer = self._writer
         had_connection = self._reader is not None or writer is not None
         self._reader = None

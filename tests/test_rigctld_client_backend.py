@@ -110,22 +110,16 @@ async def test_transport_timeout_eof_malformed_and_negative_rprt() -> None:
 
 
 @pytest.mark.parametrize(
-    ("stage", "read_result", "message"),
-    (
-        ("stale", b"", "closed"),
-        ("stale", OSError("stale read lost"), "failed while reading"),
-        ("resync", b"", "closed"),
-        ("resync", OSError("resync read lost"), "failed while reading"),
-    ),
+    "failure",
+    "stale_eof stale_oserror resync_eof resync_oserror read_timeout "
+    "write_timeout write_oserror".split(),
 )
-async def test_radio_buffered_read_loss_retires_without_subsequent_write(
-    stage: str,
-    read_result: bytes | OSError,
-    message: str,
-    monkeypatch: pytest.MonkeyPatch,
+async def test_radio_transport_loss_retires_exactly_once(
+    failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async with FakeRigctldServer() as server:
-        radio = RigctldClientRadio(host=server.host, port=server.port)
+        timeout = 0.01 if failure == "read_timeout" else 5.0
+        radio = RigctldClientRadio(host=server.host, port=server.port, timeout=timeout)
         await radio.connect()
         transitions: list[bool] = []
         radio.bind_provider_generation(
@@ -136,62 +130,31 @@ async def test_radio_buffered_read_loss_retires_without_subsequent_write(
         assert reader is not None and writer is not None
         writes: list[bytes] = []
         monkeypatch.setattr(writer, "write", writes.append)
-        failing_read = (
-            AsyncMock(side_effect=read_result)
-            if isinstance(read_result, OSError)
-            else AsyncMock(return_value=read_result)
-        )
-        if stage == "stale":
+        read_result = OSError("read lost") if failure.endswith("oserror") else b""
+        failing_read = AsyncMock(side_effect=[read_result])
+        if failure.startswith("stale"):
             monkeypatch.setattr(reader, "read", failing_read)
-        else:
+        elif failure.startswith("resync"):
             monkeypatch.setattr(reader, "read", AsyncMock(side_effect=TimeoutError))
             monkeypatch.setattr(
                 reader, "readline", AsyncMock(side_effect=[b"stray\n", read_result])
             )
-
-        with pytest.raises(RadioConnectionError, match=message):
-            await (radio.get_freq() if stage == "stale" else radio.set_freq(7_050_000))
-
-        assert writes == ([] if stage == "stale" else [b"F 7050000\n"])
-        assert transitions == [False]
-        await radio.disconnect()
-        assert transitions == [False]
-
-
-@pytest.mark.parametrize("failure", ("read_timeout", "write_timeout", "oserror"))
-async def test_radio_transport_failures_advance_provider_generation_once(
-    failure: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    behavior = FakeRigctldBehavior(
-        command_delays={"f": 0.2} if failure == "read_timeout" else {}
-    )
-    async with FakeRigctldServer(behavior=behavior) as server:
-        radio = RigctldClientRadio(
-            host=server.host,
-            port=server.port,
-            timeout=0.01 if failure == "read_timeout" else 5.0,
+        elif failure.startswith("write"):
+            error = TimeoutError if failure.endswith("timeout") else OSError("lost")
+            monkeypatch.setattr(writer, "drain", AsyncMock(side_effect=error))
+        error_type = (
+            RadioTimeoutError if failure.endswith("timeout") else RadioConnectionError
         )
-        await radio.connect()
-        transitions: list[bool] = []
-        radio.bind_provider_generation(
-            advance=lambda: transitions.append(radio.connected) or len(transitions)
-        )
-        writer = radio._transport._writer  # noqa: SLF001
-        assert writer is not None
-        if failure == "write_timeout":
-            monkeypatch.setattr(writer, "drain", AsyncMock(side_effect=TimeoutError))
-        elif failure == "oserror":
-            monkeypatch.setattr(writer, "drain", AsyncMock(side_effect=OSError("lost")))
-
-        error = RadioConnectionError if failure == "oserror" else RadioTimeoutError
         operation = (
-            radio.set_freq(7_050_000) if failure != "read_timeout" else radio.get_freq()
+            radio.get_freq()
+            if failure.startswith("stale") or failure == "read_timeout"
+            else radio.set_freq(7_050_000)
         )
-        with pytest.raises(error):
+        with pytest.raises(error_type):
             await operation
-
-        assert transitions == [False]
+        expected_write = b"f\n" if failure == "read_timeout" else b"F 7050000\n"
+        expected = [] if failure.startswith("stale") else [expected_write]
+        assert writes == expected and transitions == [False]
         await radio.disconnect()
         assert transitions == [False]
 
@@ -203,23 +166,17 @@ async def test_radio_reconnect_does_not_double_advance_transport_generation(
     async with FakeRigctldServer(behavior=behavior) as server:
         radio = RigctldClientRadio(host=server.host, port=server.port)
         await radio.connect()
-        generations: list[int] = []
-        radio.bind_provider_generation(
-            advance=lambda: generations.append(len(generations) + 1) or generations[-1]
-        )
-
+        advance = MagicMock(return_value=1)
+        radio.bind_provider_generation(advance=advance)
         with pytest.raises(RadioConnectionError):
             await radio.get_freq()
-        assert generations == [1]
+        assert advance.call_count == 1
         with pytest.raises(RadioConnectionError, match="not connected"):
             await radio.get_freq()
         await radio.disconnect()
-        assert generations == [1]
-
+        assert advance.call_count == 1
         await radio.connect()
-        assert radio.connected
-        assert generations == [1]
-
+        assert radio.connected and advance.call_count == 1
         old_writer = radio._transport._writer  # noqa: SLF001
         assert old_writer is not None
         close = MagicMock(side_effect=old_writer.close)
@@ -232,12 +189,45 @@ async def test_radio_reconnect_does_not_double_advance_transport_generation(
         monkeypatch.undo()
         await radio.connect()
         assert close.call_count == 1
-        assert generations == [1, 2]
+        assert advance.call_count == 2
+        await radio.disconnect()
+        assert advance.call_count == 3
+        await radio.disconnect()
+        assert advance.call_count == 3
 
-        await radio.disconnect()
-        assert generations == [1, 2, 3]
-        await radio.disconnect()
-        assert generations == [1, 2, 3]
+
+async def test_transport_concurrent_connect_owns_one_cycle(monkeypatch) -> None:
+    transport = RigctldTransport(host="127.0.0.1")
+    entered, release = asyncio.Event(), asyncio.Event()
+    writers: list[MagicMock] = []
+
+    async def open_connection(*args: object) -> tuple[MagicMock, MagicMock]:
+        if not writers:
+            entered.set()
+            await release.wait()
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        writer.wait_closed = AsyncMock()
+        writers.append(writer)
+        return MagicMock(), writer
+
+    monkeypatch.setattr(asyncio, "open_connection", open_connection)
+    advance = MagicMock(return_value=1)
+    transport.bind_provider_generation(advance=advance)
+    tasks = [asyncio.create_task(transport.connect())]
+    await entered.wait()
+    tasks.append(asyncio.create_task(transport.connect()))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(*tasks)
+    assert len(writers) == 1 and advance.call_count == 0
+    await transport.connect()
+    assert len(writers) == 1
+    await transport.close()
+    await transport.connect()
+    await transport.close()
+    assert advance.call_count == 2
+    assert [writer.close.call_count for writer in writers] == [1, 1]
 
 
 async def test_radio_core_frequency_mode_ptt_and_vfo() -> None:
