@@ -16,7 +16,7 @@ export function collectObjectFlow(program) {
   const fnScope = (s) => { while (s.parent && !s.fn) s = s.parent; return s; };
   const declare = (s, n) => s.bindings.get(n) ?? (s.bindings.set(n, { root: null, text: null }), s.bindings.get(n));
   const names = (s, p, kind = 'let') => boundNames(p).forEach((n) => declare(kind === 'var' ? fnScope(s) : s, n));
-  const predeclare = (body, s) => (body ?? []).forEach((n) => { if (n.type === 'VariableDeclaration') n.declarations.forEach((d) => names(s, d.id, n.kind)); if (n.type === 'FunctionDeclaration' && n.id) declare(s, n.id.name); });
+  const predeclare = (body, s) => (body ?? []).forEach((n) => { const d = /^Export/.test(n.type) ? n.declaration : n; if (d?.type === 'VariableDeclaration') d.declarations.forEach((x) => names(s, x.id, d.kind)); if (['FunctionDeclaration', 'ClassDeclaration'].includes(d?.type) && d.id) declare(s, d.id.name); if (n.type === 'ImportDeclaration') n.specifiers.forEach((x) => declare(s, x.local.name)); });
   const hoist = (n, s) => { if (!n || typeof n !== 'object' || /Function(?:Declaration|Expression)$/.test(n.type) || n.type === 'ArrowFunctionExpression') return; if (n.type === 'VariableDeclaration' && n.kind === 'var') n.declarations.forEach((d) => names(s, d.id, 'var')); Object.entries(n).forEach(([k, v]) => { if (!SKIP.has(k)) Array.isArray(v) ? v.forEach((x) => hoist(x, s)) : hoist(v, s); }); };
   const direct = (n, s) => { n = unwrapExpression(n).node; return n?.type === 'Identifier' ? get(s, n.name)?.root ?? null : null; };
   const text = (n, s) => { n = unwrapExpression(n).node; return n && Object.hasOwn(n, 'value') && (n.value === null || ['string', 'number', 'boolean', 'bigint'].includes(typeof n.value)) ? String(n.value) : n?.type === 'TemplateLiteral' && !n.expressions.length ? n.quasis[0].value.cooked : n?.type === 'Identifier' ? get(s, n.name)?.text ?? null : null; };
@@ -53,4 +53,23 @@ export function collectObjectFlow(program) {
   });
   for (const events of exposed.values()) events.sort((a, b) => a.order - b.order).forEach((e) => delete e.order);
   return exposed;
+}
+
+/** Analyze Svelte module and instance programs as linked lexical scopes. */
+export function collectSvelteObjectFlows(moduleProgram, instanceProgram) {
+  const empty = () => new Map(), instanceOwn = instanceProgram ? collectObjectFlow(instanceProgram) : empty();
+  if (!moduleProgram) return { module: empty(), instance: instanceOwn };
+  const shadowed = new Set();
+  const note = (n) => {
+    const d = /^Export/.test(n?.type) ? n.declaration : n;
+    if (d?.type === 'VariableDeclaration') d.declarations.forEach((x) => boundNames(x.id).forEach((name) => shadowed.add(name)));
+    if (['FunctionDeclaration', 'ClassDeclaration'].includes(d?.type) && d.id) shadowed.add(d.id.name);
+    if (n?.type === 'ImportDeclaration') n.specifiers.forEach((x) => shadowed.add(x.local.name));
+  };
+  (instanceProgram?.body ?? []).forEach(note);
+  const instanceBlock = { type: 'BlockStatement', body: instanceProgram?.body ?? [], start: instanceProgram?.start, end: instanceProgram?.end };
+  const module = collectObjectFlow({ ...moduleProgram, body: [...(moduleProgram.body ?? []), instanceBlock] });
+  const instance = new Map([...module].filter(([name]) => !shadowed.has(name)));
+  instanceOwn.forEach((events, name) => instance.set(name, events));
+  return { module, instance };
 }
