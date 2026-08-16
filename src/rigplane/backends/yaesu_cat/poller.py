@@ -32,6 +32,11 @@ from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.runtime.tx_interlock import (
+    RfState,
+    TxInterlockDisposition,
+    evaluate_tx_interlock,
+)
 
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...exceptions import CommandError
@@ -164,6 +169,12 @@ class YaesuCatPoller:
             self._invalidate_ptt_observation()
             return None
         return observation
+
+    def _current_rf_state(self) -> RfState:
+        observation = self._current_ptt_observation()
+        if observation is None:
+            return RfState.UNKNOWN
+        return RfState.TX if observation.value else RfState.RX
 
     def _stamp_provider_generation(
         self,
@@ -604,9 +615,15 @@ class YaesuCatPoller:
         """Dispatch a single command to the radio.
 
         Commands come from the web UI CommandQueue.  The dispatcher handles
-        all command types; unsupported commands for this radio are silently
-        dropped.
+        all command types; unsupported commands fail truthfully.
         """
+        decision = evaluate_tx_interlock(cmd, rf_state=self._current_rf_state())
+        if (
+            decision.disposition is TxInterlockDisposition.BLOCK
+            and not decision.allowed
+        ):
+            raise CommandError(decision.reason)
+
         from ..._poller_types import (
             PttOff,
             PttOn,
@@ -646,6 +663,7 @@ class YaesuCatPoller:
             SetPbtInner,
             SetPbtOuter,
             SetPower,
+            SetPowerstat,
             SetPreamp,
             SetRfGain,
             SetRitFrequency,
@@ -717,6 +735,8 @@ class YaesuCatPoller:
                 await radio.set_ptt(True)
             case PttOff():
                 await radio.set_ptt(False)
+            case SetPowerstat(on=on):
+                await radio.set_powerstat(on)
 
             # ── Audio / RF Levels ──
             case SetAfLevel(level=level):
@@ -763,13 +783,17 @@ class YaesuCatPoller:
 
             # ── Filters ──
             case SetFilter(filter_num=_num):
-                pass  # FTX-1 uses filter_width, not discrete filter numbers
+                raise NotImplementedError(
+                    "SetFilter unsupported by Yaesu CAT dispatcher"
+                )
             case SetFilterWidth(width=width):
                 await radio.set_filter_width(width)
             case SetFilterShape(shape=_shape):
-                pass  # Not available on FTX-1
+                raise NotImplementedError(
+                    "SetFilterShape unsupported by Yaesu CAT dispatcher"
+                )
             case SetPbtInner() | SetPbtOuter():
-                pass  # Not available on FTX-1
+                raise NotImplementedError(f"{name} unsupported by Yaesu CAT dispatcher")
 
             # ── IF Shift ──
             case SetIfShift(offset=offset):
@@ -827,11 +851,10 @@ class YaesuCatPoller:
 
             # ── IC-7610-specific (not applicable) ──
             case SetIpPlus() | SetTwinPeak() | SetDigiSel():
-                pass  # Icom-only DSP features
+                raise NotImplementedError(f"{name} unsupported by Yaesu CAT dispatcher")
 
             case _:
-                logger.debug("CMD: unhandled %s — ignoring", name)
-                return
+                raise NotImplementedError(f"{name} unsupported by Yaesu CAT dispatcher")
 
         logger.info("CMD: %s", name)
 
