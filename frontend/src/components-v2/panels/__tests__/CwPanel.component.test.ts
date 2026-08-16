@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 
 const mockProps = {
   cwPitch: 600,
@@ -29,9 +30,17 @@ const mockHandlers = {
   onAutoTune: vi.fn(),
 };
 
+const mockFeedback = {
+  confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
+  availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 },
+  repeatPolicy: 'latest-target-wins',
+} as ControlFeedback<number>;
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveCwProps: () => mockProps,
   getCwHandlers: () => mockHandlers,
+  getBreakInDelayControlFeedback: () => mockFeedback,
 }));
 
 import CwPanel from '../CwPanel.svelte';
@@ -58,6 +67,10 @@ beforeEach(() => {
     autoTuneAvailable: false,
   });
   Object.values(mockHandlers).forEach((fn) => fn.mockClear());
+  Object.assign(mockFeedback, {
+    confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  });
 });
 
 afterEach(() => {
@@ -219,5 +232,57 @@ describe('CwPanel — no "NaN" leak for unobserved pitch/speed (MOR-1409 A12)', 
     const t = mountPanel({ cwPitch: 700, keySpeed: 25 });
     expect(vcValueFor(t, 'CW Pitch')).toBe('700\u00a0Hz');
     expect(vcValueFor(t, 'Key Speed')).toBe('25\u00a0WPM');
+  });
+});
+
+describe('CwPanel Break-in Delay release gesture (MOR-1754)', () => {
+  const delay = (t: HTMLElement) =>
+    t.querySelector<HTMLInputElement>('[data-testid="cw-break-in-delay"]')!;
+
+  it.each(['pointer', 'keyboard'] as const)(
+    'shows draft input immediately and commits one bounded command on %s release',
+    (gesture) => {
+    const t = mountPanel({ breakIn: 1 });
+    const input = delay(t);
+    input.dispatchEvent(gesture === 'pointer'
+      ? new PointerEvent('pointerdown', { bubbles: true })
+      : new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    for (const value of ['80', '96', '111']) {
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    flushSync();
+    expect(mockHandlers.onBreakInDelayChange).not.toHaveBeenCalled();
+    expect(t.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent).toBe('44%');
+    input.dispatchEvent(gesture === 'pointer'
+      ? new PointerEvent('pointerup', { bubbles: true })
+      : new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(mockHandlers.onBreakInDelayChange).toHaveBeenCalledExactlyOnceWith(111);
+    },
+  );
+
+  it('cancels pointer and keyboard gestures without a trailing commit', () => {
+    for (const event of [
+      new Event('pointercancel', { bubbles: true }),
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    ]) {
+      const t = mountPanel({ breakIn: 1 });
+      const input = delay(t);
+      input.value = '111';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(event);
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      flushSync();
+      expect(input.value).toBe('64');
+    }
+    expect(mockHandlers.onBreakInDelayChange).not.toHaveBeenCalled();
+  });
+
+  it('disables the actual range when canonical feedback is unavailable', () => {
+    Object.assign(mockFeedback, { confirmed: null, phase: 'unavailable', availability: 'unavailable' });
+    const t = mountPanel({ breakIn: 1 });
+    expect(delay(t).disabled).toBe(true);
+    expect(delay(t).getAttribute('aria-valuetext')).toMatch(/unavailable/i);
   });
 });
