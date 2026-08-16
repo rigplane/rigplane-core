@@ -3192,18 +3192,17 @@ def _register_two_sessions(
     return issuer_q, bystander_q
 
 
-def _held_details(**overrides: object) -> dict[str, object]:
+def _hold(**overrides: object) -> dict[str, object]:
     details: dict[str, object] = {
         "session_id": "session-issuer",
         "heldBy": "tx_interlock",
         "reason": "tx_active",
         "expiresAt": 15.0,
     }
-    details.update(overrides)
-    return details
+    return details | overrides
 
 
-def _held_lifecycle(**overrides: object) -> CommandLifecycleEvent:
+def _life(**overrides: object) -> CommandLifecycleEvent:
     values: dict[str, object] = {
         "command_id": "cmd-held",
         "state": "queued",
@@ -3211,10 +3210,13 @@ def _held_lifecycle(**overrides: object) -> CommandLifecycleEvent:
         "source": "websocket",
         "target": FieldPath.active("main", "freq_mode", "freq_hz"),
         "message": None,
-        "details": _held_details(),
+        "details": _hold(),
     }
-    values.update(overrides)
-    return CommandLifecycleEvent(**values)  # type: ignore[arg-type]
+    return CommandLifecycleEvent(**(values | overrides))  # type: ignore[arg-type]
+
+
+def _terminal(**overrides: object) -> dict[str, object]:
+    return {"state": "failed", "details": {"session_id": "session-issuer"}, **overrides}
 
 
 async def _ack_held(srv: WebServer) -> None:
@@ -3236,13 +3238,11 @@ async def test_deferred_lifecycle_is_delivered_only_to_its_issuer() -> None:
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
 
-    srv._on_command_lifecycle_event(_held_lifecycle())  # noqa: SLF001
+    srv._on_command_lifecycle_event(_life())  # noqa: SLF001
 
     payload = issuer_q.get_nowait()
-    assert payload["type"] == "command_lifecycle"
-    assert payload["commandId"] == "cmd-held"
-    assert payload["state"] == "queued"
-    assert payload["timestampMonotonic"] == 12.5
+    assert payload["type"] == "command_lifecycle" and payload["commandId"] == "cmd-held"
+    assert payload["state"] == "queued" and payload["timestampMonotonic"] == 12.5
     assert payload["source"] == "websocket"
     assert payload["target"] == "receiver.main.active.freq_mode.freq_hz"
     assert payload["details"] == {
@@ -3251,10 +3251,9 @@ async def test_deferred_lifecycle_is_delivered_only_to_its_issuer() -> None:
         "expiresAt": 15.0,
     }
     srv._on_command_lifecycle_event(
-        _held_lifecycle(state="superseded", details={"session_id": "session-issuer"})
+        _life(state="superseded", details={"session_id": "session-issuer"})
     )  # noqa: SLF001
-    assert issuer_q.get_nowait()["state"] == "superseded"
-    assert issuer_q.empty()
+    assert issuer_q.get_nowait()["state"] == "superseded" and issuer_q.empty()
     assert bystander_q.empty()
 
 
@@ -3262,16 +3261,16 @@ async def test_deferred_lifecycle_is_delivered_only_to_its_issuer() -> None:
     "overrides",
     [
         {"command_id": ""},
-        {"source": "public_api"},
+        _terminal(source="public_api"),
         {"state": "confirmed"},
-        {"timestamp_monotonic": True},
-        {"timestamp_monotonic": float("nan")},
+        _terminal(timestamp_monotonic=True),
+        _terminal(state="timed_out", timestamp_monotonic=float("nan")),
         {"target": "not-a-field-path"},
         {"message": 7},
         {"details": {"session_id": "session-issuer"}},
-        {"details": _held_details(heldBy="wrong")},
-        {"details": _held_details(expiresAt=False)},
-        {"details": _held_details(expiresAt=float("inf"), extra=1)},
+        {"details": _hold(heldBy="wrong")},
+        {"details": _hold(expiresAt=False)},
+        {"details": _hold(expiresAt=float("inf"), extra=1)},
     ],
 )
 @pytest.mark.asyncio
@@ -3282,24 +3281,21 @@ async def test_malformed_deferred_lifecycle_is_ignored(
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
 
-    srv._on_command_lifecycle_event(_held_lifecycle(**overrides))  # noqa: SLF001
+    srv._on_command_lifecycle_event(_life(**overrides))  # noqa: SLF001
 
-    assert issuer_q.empty()
-    assert bystander_q.empty()
+    assert issuer_q.empty() and bystander_q.empty()
 
 
 @pytest.mark.asyncio
 async def test_deferred_lifecycle_ack_identity_and_bounded_queue() -> None:
     srv = WebServer()
     issuer_q, bystander_q = _register_two_sessions(srv)
-    event = _held_lifecycle()
+    event = _life()
     srv._on_command_lifecycle_event(event)  # noqa: SLF001
     assert issuer_q.empty()
 
     await _ack_held(srv)
-    cross_session = _held_lifecycle(
-        details={**event.details, "session_id": "session-bystander"}
-    )
+    cross_session = _life(state="failed", details={"session_id": "session-bystander"})
     srv._on_command_lifecycle_event(cross_session)  # noqa: SLF001
     assert issuer_q.empty() and bystander_q.empty()
 
@@ -3311,11 +3307,9 @@ async def test_deferred_lifecycle_ack_identity_and_bounded_queue() -> None:
     srv._on_command_lifecycle_event(event)  # noqa: SLF001
     assert bystander_q.empty()
     srv.command_service._events.append(
-        _held_lifecycle(state="acknowledged", details={"session_id": "unknown"})
+        _life(state="acknowledged", details={"session_id": "unknown"})
     )  # noqa: SLF001
-    srv._on_command_lifecycle_event(
-        _held_lifecycle(details=_held_details(session_id="unknown"))
-    )  # noqa: SLF001
+    srv._on_command_lifecycle_event(_life(details=_hold(session_id="unknown")))  # noqa: SLF001
     assert bystander_q.empty()
 
 
@@ -3358,13 +3352,10 @@ async def test_post_ack_command_failure_notifies_issuer_only() -> None:
     assert n["code"] == "commandExecutionFailed"
     assert "Attenuator level" in n["params"]["reason"]
     lifecycle = issuer_q.get_nowait()
-    assert (lifecycle["type"], lifecycle["state"], lifecycle["details"]) == (
-        "command_lifecycle",
-        "failed",
-        {},
-    )
-    assert lifecycle["commandId"] == "cmd-att-1"
-    assert issuer_q.empty()
+    assert lifecycle["type"] == "command_lifecycle"
+    assert lifecycle["state"] == "failed"
+    assert lifecycle["details"] == {}
+    assert lifecycle["commandId"] == "cmd-att-1" and issuer_q.empty()
     assert bystander_q.empty()  # zero — never broadcast
 
 
