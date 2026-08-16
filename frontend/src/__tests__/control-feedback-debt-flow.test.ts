@@ -199,5 +199,12 @@ describe('control feedback object flow (MOR-1715)', () => {
       { key: 'type', value: 'instance', poison: false },
     ]);
     expect(functionLocal.instance.get('props')).toBe(functionLocal.module.get('props'));
+
+    const varAlias = linked(moduleSource, `var alias = props; alias.type = 'alias';`);
+    expect(eventSummary(varAlias.module.get('props'))).toEqual([
+      { key: 'type', value: 'module', poison: false },
+      { key: 'type', value: 'alias', poison: false },
+    ]);
+    expect(varAlias.instance.get('props')).toBe(varAlias.module.get('props'));
   });
 });
