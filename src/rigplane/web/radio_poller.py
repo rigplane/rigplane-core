@@ -87,6 +87,7 @@ from ..core.acquisition_scheduler import (
     split_ctl_mem_sub,
 )
 from ..core.state_pipeline_contracts import (
+    CommandIntent,
     CommandSource,
     FieldPath,
     Observation,
@@ -746,12 +747,60 @@ class RadioPoller:
             raise CommandError(decision.reason)
 
     @staticmethod
+    def _deferred_intent(entry: CommandQueueEntry) -> CommandIntent | None:
+        if entry.command_service is None or entry.command_id is None:
+            return None
+        source: CommandSource = entry.source or "internal_policy"
+        target = next(
+            (
+                event.target
+                for event in reversed(entry.command_service.lifecycle_events())
+                if event.command_id == entry.command_id
+                and event.source == source
+                and (event.details or {}).get("session_id") == entry.session_id
+            ),
+            None,
+        )
+        params = {} if entry.session_id is None else {"session_id": entry.session_id}
+        return CommandIntent(
+            id=entry.command_id,
+            name="queued_completion",
+            params=params,
+            source=source,
+            target=target,
+        )
+
     def _terminate_deferred_entry(
-        entry: CommandQueueEntry, outcome: TxInterlockDeferredOutcome
+        self, entry: CommandQueueEntry, outcome: TxInterlockDeferredOutcome
     ) -> None:
+        message = f"deferred command {outcome.value}"
+        intent = self._deferred_intent(entry)
+        if outcome is TxInterlockDeferredOutcome.SUPERSEDED and intent is not None:
+            assert entry.command_service is not None
+            entry.command_service.expire_command(
+                intent.id, source=intent.source, session_id=entry.session_id
+            )
+            entry.command_service.emit_lifecycle(intent, "superseded", message=message)
+        elif outcome is TxInterlockDeferredOutcome.EXPIRED:
+            self._mark_queued_command_failed(
+                entry, CommandError(message), timed_out=True
+            )
         if entry.future is not None and not entry.future.done():
-            entry.future.set_exception(
-                CommandError(f"deferred command {outcome.value}")
+            entry.future.set_exception(CommandError(message))
+
+    def _emit_deferred_entry_held(
+        self, entry: CommandQueueEntry, *, expires_at: float
+    ) -> None:
+        intent = self._deferred_intent(entry)
+        if intent is not None and entry.command_service is not None:
+            entry.command_service.emit_lifecycle(
+                intent,
+                "queued",
+                details={
+                    "heldBy": "tx_interlock",
+                    "reason": "tx_active",
+                    "expiresAt": expires_at,
+                },
             )
 
     def _stage_tx_interlocked_entries(
@@ -790,6 +839,7 @@ class RadioPoller:
                 TxInterlockDeferredOutcome.SUPERSEDED,
             ):
                 self._terminate_deferred_entry(previous, defer_result.outcome)
+            self._emit_deferred_entry_held(entry, expires_at=defer_result.expires_at)
 
         observe_result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
         if (

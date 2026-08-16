@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from rigplane.capabilities import CAP_ANTENNA, CAP_POWER_CONTROL, CAP_TUNER
+from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -28,6 +30,7 @@ from rigplane.web.radio_poller import CommandQueue, CommandQueueEntry, RadioPoll
 
 
 _PTT = FieldPath.global_("tx_state", "ptt")
+_FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
 
 
 def _radio() -> SimpleNamespace:
@@ -70,6 +73,39 @@ def _poller() -> tuple[RadioPoller, SimpleNamespace, StateStore]:
     radio, store = _radio(), StateStore()
     store.begin_provider_generation()
     return RadioPoller(radio, CommandQueue(), state_store=store), radio, store
+
+
+def _service(clock: FreshnessClock, store: StateStore) -> CommandService:
+    executor = SimpleNamespace(execute=AsyncMock(return_value=CommandExecutionResult()))
+    return CommandService(executor=executor, state_store=store, clock=clock.now)
+
+
+async def _lifecycle_entry(
+    service: CommandService,
+    *,
+    command_id: str,
+    freq: int,
+) -> CommandQueueEntry:
+    await service.execute(
+        CommandIntent(
+            id=command_id,
+            name="set_freq",
+            params={"freq_hz": freq, "session_id": "ws-a"},
+            source="websocket",
+            target=_FREQ,
+            timeout=3.0,
+            pending_policy="scoped",
+            expected_observations=(_FREQ,),
+        )
+    )
+    return CommandQueueEntry(
+        SetFreq(freq),
+        future=asyncio.get_running_loop().create_future(),
+        command_id=command_id,
+        source="websocket",
+        session_id="ws-a",
+        command_service=service,
+    )
 
 
 async def _dispatch(poller: RadioPoller, cmd: object) -> None:
@@ -218,14 +254,20 @@ async def test_supersession_keeps_deadline_and_expiry_wins_over_release() -> Non
 
 
 async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> None:
-    poller, radio, _store = _poller()
-    entry = CommandQueueEntry(SetFreq(14_074_000))
+    clock = FreshnessClock(start=10.0)
+    radio, store = _radio(), StateStore(freshness_clock=clock)
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    service = _service(clock, store)
+    entry = await _lifecycle_entry(service, command_id="unknown", freq=14_074_000)
+    before = service.lifecycle_events()
 
     assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
     with pytest.raises(CommandError, match="RF state is unknown"):
         await poller._execute_queued_entry(entry)  # noqa: SLF001
 
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    assert service.lifecycle_events() == before
     radio.set_freq.assert_not_awaited()
 
 
@@ -240,3 +282,100 @@ async def test_fresh_rx_deferred_class_dispatches_immediately_once() -> None:
 
     assert future.result() is None
     radio.set_freq.assert_awaited_once_with(14_074_000)
+
+
+async def test_deferred_hold_lifecycle_is_single_and_release_stays_unconfirmed() -> (
+    None
+):
+    clock = FreshnessClock(start=10.0)
+    radio, store = _radio(), StateStore(freshness_clock=clock)
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    service = _service(clock, store)
+    entry = await _lifecycle_entry(service, command_id="held", freq=14_074_000)
+    _observe_ptt(store, True, observed_at=clock.now())
+
+    assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
+    held = service.lifecycle_events()[-1]
+    assert (held.command_id, held.state, held.source, held.target) == (
+        "held",
+        "queued",
+        "websocket",
+        _FREQ,
+    )
+    assert held.details == {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": 13.0,
+        "session_id": "ws-a",
+    }
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    assert service.lifecycle_events()[-1] is held
+
+    clock.advance(0.5)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    clock.advance(1.0)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
+    await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+    assert service.lifecycle_events()[-1] is held
+    assert service.pending_overlays(source="websocket", session_id="ws-a")
+    radio.set_freq.assert_awaited_once_with(14_074_000)
+
+
+async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> None:
+    clock = FreshnessClock(start=20.0)
+    radio, store = _radio(), StateStore(freshness_clock=clock)
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    service = _service(clock, store)
+    first = await _lifecycle_entry(service, command_id="first", freq=7_074_000)
+    _observe_ptt(store, True, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([first]) == []  # noqa: SLF001
+
+    clock.advance(2.5)
+    replacement = await _lifecycle_entry(
+        service, command_id="replacement", freq=14_074_000
+    )
+    _observe_ptt(store, True, observed_at=clock.now())
+    snapshots: list[tuple[str, str, tuple[str, ...]]] = []
+    service.subscribe_lifecycle(
+        lambda event: snapshots.append(
+            (
+                event.command_id,
+                event.state,
+                tuple(
+                    overlay.command_id
+                    for overlay in service.pending_overlays(
+                        source="websocket", session_id="ws-a"
+                    )
+                ),
+            )
+        )
+    )
+    assert poller._stage_tx_interlocked_entries([replacement]) == []  # noqa: SLF001
+
+    assert [
+        (event.command_id, event.state) for event in service.lifecycle_events()[-2:]
+    ] == [
+        ("first", "superseded"),
+        ("replacement", "queued"),
+    ]
+    assert snapshots == [
+        ("first", "superseded", ("replacement",)),
+        ("replacement", "queued", ("replacement",)),
+    ]
+    assert isinstance(first.future.exception(), CommandError)
+    assert service.lifecycle_events()[-1].details["expiresAt"] == 23.0
+
+    clock.advance(0.5)
+    _observe_ptt(store, True, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    assert service.lifecycle_events()[-1].state == "timed_out"
+    assert isinstance(replacement.future.exception(), CommandError)
+    terminal_count = len(service.lifecycle_events())
+    assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+    assert len(service.lifecycle_events()) == terminal_count
+    radio.set_freq.assert_not_awaited()
