@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import ctypes.util
+import importlib.abc
+import importlib.machinery
+import sys
 import types
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -532,6 +537,121 @@ async def test_bridge_rx_via_bus():
     assert bridge._rx_sub._inner._received == 2
 
     await bridge.stop()
+
+
+# ---------------------------------------------------------------------------
+# Opus RX decoder — native library discovery (MOR-1786)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOpuslibFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Meta-path finder that simulates opuslib's import-time native lookup.
+
+    Mirrors the real ``opuslib`` package: at import time it calls
+    ``ctypes.util.find_library("opus")`` and raises a bare ``Exception``
+    when the lookup returns ``None``. Keeps these tests deterministic on any
+    host — with or without libopus installed, including CI containers.
+    """
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: object = None,
+        target: object = None,
+    ) -> importlib.machinery.ModuleSpec | None:
+        if fullname != "opuslib":
+            return None
+        return importlib.machinery.ModuleSpec(fullname, self)
+
+    def create_module(self, spec: importlib.machinery.ModuleSpec) -> None:
+        return None  # default module creation semantics
+
+    def exec_module(self, module: types.ModuleType) -> None:
+        from ctypes.util import find_library
+
+        lib_location = find_library("opus")
+        if lib_location is None:
+            raise Exception("Could not find Opus library. Make sure it is installed.")
+        module.lib_location = lib_location
+
+        class Decoder:
+            """Minimal stand-in for ``opuslib.Decoder``."""
+
+            def __init__(self, sample_rate: int, channels: int) -> None:
+                self.sample_rate = sample_rate
+                self.channels = channels
+
+        module.Decoder = Decoder
+
+
+def _install_fake_opuslib(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route ``import opuslib`` to the fake finder for the test duration."""
+    monkeypatch.delitem(sys.modules, "opuslib", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_FakeOpuslibFinder(), *sys.meta_path])
+
+
+async def test_bridge_opus_decoder_found_via_fallback_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MOR-1786: the platform lookup finds no libopus (``find_library``
+    returns ``None``) but the library exists in a known package-manager
+    prefix — the bridge RX decoder must still be created, exactly like the
+    transcoder-side fix (MOR-1782)."""
+    from rigplane.types import AudioCodec
+
+    _install_fake_opuslib(monkeypatch)
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    fallback = tmp_path / "libopus.dylib"
+    fallback.write_bytes(b"")
+    monkeypatch.setattr(
+        "rigplane.audio._transcoder._OPUS_LIBRARY_FALLBACK_PATHS",
+        (str(fallback),),
+    )
+
+    radio = _make_radio()
+    radio.audio_codec = AudioCodec.OPUS_1CH
+    bridge = AudioBridge(
+        radio, device_name="BlackHole", tx_enabled=False, backend=_bridge_backend()
+    )
+
+    await bridge.start()
+    try:
+        assert bridge._decoder is not None
+        assert bridge._decoder.sample_rate == SAMPLE_RATE
+        assert bridge._decoder.channels == CHANNELS
+        assert sys.modules["opuslib"].lib_location == str(fallback)
+    finally:
+        await bridge.stop()
+
+
+async def test_bridge_opus_decoder_absent_everywhere_stays_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MOR-1786: with libopus absent from the platform lookup AND every
+    fallback prefix, the bridge degrades exactly as it does today — the
+    opuslib error propagates out of ``start()`` after teardown, no decoder
+    is created, and no radio RX demand is left armed."""
+    from rigplane.types import AudioCodec
+
+    _install_fake_opuslib(monkeypatch)
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    monkeypatch.setattr(
+        "rigplane.audio._transcoder._OPUS_LIBRARY_FALLBACK_PATHS",
+        (str(tmp_path / "libopus.dylib"),),  # deliberately absent
+    )
+
+    radio = _make_radio()
+    radio.audio_codec = AudioCodec.OPUS_1CH
+    bridge = AudioBridge(
+        radio, device_name="BlackHole", tx_enabled=False, backend=_bridge_backend()
+    )
+
+    with pytest.raises(Exception, match="Could not find Opus library"):
+        await bridge.start()
+
+    assert bridge._decoder is None
+    assert bridge.bridge_state == BridgeState.IDLE
+    radio.start_audio_rx_opus.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
