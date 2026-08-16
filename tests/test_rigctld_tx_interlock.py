@@ -145,8 +145,16 @@ def _store(case: str) -> tuple[StateStore, object | None]:
             path=_PTT,
             value=1 if case == "value" else case == "tx",
             source=SourceMetadata(source="test", provider="tests"),
-            timestamp_monotonic=float("nan") if case == "timestamp" else 9.0,
-            max_age=float("inf") if case == "max-age" else 2.0,
+            timestamp_monotonic=(
+                float("nan")
+                if case == "timestamp"
+                else 11.0
+                if case == "future"
+                else 9.0
+            ),
+            max_age={"before": 1.1, "exact": 1.0, "after": 0.9}.get(
+                case, float("inf") if case == "max-age" else 2.0
+            ),
         )
     )
     if case == "stale":
@@ -159,9 +167,14 @@ def _store(case: str) -> tuple[StateStore, object | None]:
     return store, None
 
 
-def _handler(store: StateStore) -> tuple[RigctldHandler, AsyncMock, Mock]:
+def _handler(
+    store: StateStore, *, public_store: bool = True
+) -> tuple[RigctldHandler, AsyncMock, Mock]:
     radio = AsyncMock()
-    radio.state_store = store
+    if public_store:
+        radio.state_store = store
+    else:
+        del radio.state_store
     routing = Mock()
     routing.set_func = AsyncMock(return_value=RigctldResponse())
     routing.set_level = AsyncMock(return_value=RigctldResponse())
@@ -181,11 +194,14 @@ def _attempt(radio: AsyncMock, routing: Mock, wire: bytes) -> AsyncMock:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["tx", "absent", "stale", "generation"])
 @pytest.mark.parametrize("wire", _BLOCK_WIRES)
+@pytest.mark.parametrize(
+    "public_store", [True, False], ids=["radio-store", "server-store"]
+)
 async def test_hard_blocks_require_fresh_known_rx(
-    case: str, wire: bytes, monkeypatch: pytest.MonkeyPatch
+    case: str, wire: bytes, public_store: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, forced = _store(case)
-    handler, radio, routing = _handler(store)
+    handler, radio, routing = _handler(store, public_store=public_store)
     if forced is not None:
         monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
     command = parse_line(wire)
@@ -206,10 +222,22 @@ async def test_hard_blocks_dispatch_once_with_fresh_rx(wire: bytes) -> None:
         radio._send_civ_raw.assert_awaited_once_with(b"\xfe\xfe\x98\xe0\x03\xfd")
 
 
-@pytest.mark.parametrize("case", ["value", "timestamp", "max-age"])
-def test_rf_truth_rejects_malformed_samples(case: str) -> None:
-    handler, _, _ = _handler(_store(case)[0])
-    assert handler._resolve_rigctld_rf_state() is RfState.UNKNOWN  # noqa: SLF001
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [("before", RfState.RX)]
+    + [
+        (case, RfState.UNKNOWN)
+        for case in ("exact", "after", "future", "timestamp", "max-age", "generation")
+    ],
+)
+def test_rf_truth_enforces_strict_age_and_shape(
+    case: str, expected: RfState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, forced = _store(case)
+    handler, _, _ = _handler(store)
+    if forced is not None:
+        monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
+    assert handler._resolve_rigctld_rf_state() is expected  # noqa: SLF001
 
 
 @pytest.mark.asyncio
