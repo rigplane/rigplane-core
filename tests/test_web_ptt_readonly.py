@@ -10,19 +10,53 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.capabilities import CAP_CW, CAP_TUNER
+from rigplane.core.exceptions import CommandError
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.web.radio_poller import SetTunerStatus
 from rigplane.web.handlers.control import ControlHandler
+
+_UNOBSERVED = object()
 
 
 def _make_handler(
-    *, read_only: bool = False, radio: Any = None
+    *,
+    read_only: bool = False,
+    radio: Any = None,
+    ptt: object = False,
+    stale: bool = False,
 ) -> tuple[ControlHandler, Queue[Any]]:
     """Build a ControlHandler with a fake server and return (handler, command_queue)."""
     ws = MagicMock()
 
     command_queue: Queue[Any] = Queue()
+    clock = FreshnessClock(start=10.0)
+    state_store = StateStore(freshness_clock=clock)
+    if ptt is not _UNOBSERVED:
+        state_store.apply(
+            Observation(
+                path=FieldPath.global_("tx_state", "ptt"),
+                value=ptt,
+                source=SourceMetadata(
+                    source="poll_response",
+                    provider="test",
+                    transport="fake",
+                    native_id="test",
+                ),
+                timestamp_monotonic=clock.now(),
+                max_age=1.0,
+            )
+        )
+        if stale:
+            state_store.mark_stale_due(now=12.0)
 
     server = SimpleNamespace(
         command_queue=command_queue,
+        command_state_store=state_store,
     )
 
     if radio is None:
@@ -196,3 +230,74 @@ class TestWebTunerReadOnly:
 
         assert result == {"value": 2, "label": "TUNING"}
         radio.set_tuner_status.assert_awaited_once_with(2)
+
+    @pytest.mark.parametrize("value", [1, 2])
+    @pytest.mark.parametrize(
+        ("ptt", "stale", "reason"),
+        [
+            (True, False, "RF state is TX"),
+            (_UNOBSERVED, False, "RF state is unknown"),
+            (False, True, "RF state is unknown"),
+            (1, False, "RF state is unknown"),
+        ],
+        ids=["tx", "missing", "stale", "invalid"],
+    )
+    async def test_tuner_engage_fails_closed_before_direct_call(
+        self, value: int, ptt: object, stale: bool, reason: str
+    ) -> None:
+        radio = self._make_tuner_radio()
+        handler, q = _make_handler(radio=radio, ptt=ptt, stale=stale)
+
+        with pytest.raises(CommandError, match=reason):
+            await handler._enqueue_command("set_tuner_status", {"value": value})
+
+        radio.set_tuner_status.assert_not_awaited()
+        assert q.empty()
+
+    @pytest.mark.parametrize("value", [1, 2])
+    @pytest.mark.parametrize("ptt", [True, _UNOBSERVED], ids=["tx", "unknown"])
+    async def test_tuner_engage_fails_closed_before_queue(
+        self, value: int, ptt: object
+    ) -> None:
+        radio = SimpleNamespace(capabilities=frozenset())
+        handler, q = _make_handler(radio=radio, ptt=ptt)
+
+        with pytest.raises(CommandError):
+            await handler._enqueue_command("set_tuner_status", {"value": value})
+
+        assert q.empty()
+
+    @pytest.mark.parametrize(
+        ("ptt", "stale"),
+        [(True, False), (_UNOBSERVED, False), (False, True)],
+        ids=["tx", "missing", "stale"],
+    )
+    async def test_tuner_off_is_always_attempted(
+        self, ptt: object, stale: bool
+    ) -> None:
+        radio = self._make_tuner_radio()
+        handler, _ = _make_handler(radio=radio, ptt=ptt, stale=stale)
+
+        await handler._enqueue_command("set_tuner_status", {"value": 0})
+
+        radio.set_tuner_status.assert_awaited_once_with(0)
+
+    async def test_fresh_rx_queue_preserves_tuner_dispatch(self) -> None:
+        handler, q = _make_handler(
+            radio=SimpleNamespace(capabilities=frozenset()), ptt=False
+        )
+
+        await handler._enqueue_command("set_tuner_status", {"value": 2})
+
+        assert q.get_nowait() == SetTunerStatus(2)
+
+    @pytest.mark.parametrize("value", [True, 1.5, 3, "bogus"])
+    async def test_invalid_tuner_value_fails_without_call(self, value: object) -> None:
+        radio = self._make_tuner_radio()
+        handler, q = _make_handler(radio=radio)
+
+        with pytest.raises(ValueError, match="tuner value"):
+            await handler._enqueue_command("set_tuner_status", {"value": value})
+
+        radio.set_tuner_status.assert_not_awaited()
+        assert q.empty()
