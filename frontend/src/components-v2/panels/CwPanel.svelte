@@ -40,7 +40,29 @@
   let showTwinPeak = $derived(p.hasTwinPeak);
   let showAutoTune = $derived(p.autoTuneAvailable);
   let apfActive = $derived(isApfActive(apfMode));
-  let breakInDelayFeedback = $derived(getBreakInDelayControlFeedback());
+  const BUSY_DELAY_PHASES = new Set(['submitted', 'queued', 'dispatched', 'awaiting-confirmation']);
+  const TERMINAL_DELAY_PHASES = new Set(['confirmed', 'failed', 'timed-out', 'cancelled', 'superseded']);
+  const validDelay = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 255;
+  function validDelayFeedback(feedback: ReturnType<typeof getBreakInDelayControlFeedback>): boolean {
+    if (feedback.availability === 'unavailable') return feedback.phase === 'unavailable'
+      && feedback.confirmed === null && feedback.target === null && feedback.requestedTarget === null
+      && !feedback.busy && feedback.outcome === null;
+    if (feedback.availability !== 'available' || !validDelay(feedback.confirmed)) return false;
+    const busy = BUSY_DELAY_PHASES.has(feedback.phase);
+    if (feedback.busy !== busy) return false;
+    if (busy) return validDelay(feedback.target) && validDelay(feedback.requestedTarget)
+      && feedback.outcome === null;
+    if (feedback.phase === 'idle') return feedback.target === null
+      && feedback.requestedTarget === null && feedback.outcome === null;
+    return TERMINAL_DELAY_PHASES.has(feedback.phase) && feedback.target === null
+      && validDelay(feedback.requestedTarget) && feedback.outcome?.phase === feedback.phase;
+  }
+  let candidateBreakInDelayFeedback = $derived(getBreakInDelayControlFeedback());
+  let breakInDelayFeedback = $derived(validDelayFeedback(candidateBreakInDelayFeedback)
+    ? candidateBreakInDelayFeedback : { ...candidateBreakInDelayFeedback,
+      confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
+      busy: false, availability: 'unavailable' as const, outcome: null, transitionId: null });
   let breakInDelayAvailable = $derived(
     breakInDelayFeedback.availability === 'available'
       && breakInDelayFeedback.confirmed !== null,
@@ -53,6 +75,7 @@
   let breakInDelayDraft = $state(0);
   let breakInDelayEditing = $state(false);
   let breakInDelayCancelled = $state(false);
+  let breakInDelayDraftAuthority = $state('');
   let breakInDelayAnnouncement = $state<string | null>(null);
   const announcedBreakInDelayTransitions = new Set<string>();
   const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
@@ -61,9 +84,16 @@
     { announcedTransitionIds: [] },
     rawToPercentDisplay,
   ));
-
+  let breakInDelayAuthority = $derived(JSON.stringify([
+    breakInDelayFeedback.sessionEpoch, breakInDelayFeedback.transitionId,
+    breakInDelayFeedback.phase, breakInDelayFeedback.confirmed,
+  ]));
   $effect(() => {
-    const truth = breakInDelayTruth;
+    const truth = breakInDelayTruth, authority = breakInDelayAuthority;
+    if (breakInDelayEditing && breakInDelayDraftAuthority !== authority) {
+      breakInDelayCancelled = true;
+      breakInDelayEditing = false;
+    }
     if (!breakInDelayEditing && truth !== null) breakInDelayDraft = truth;
   });
   $effect(() => {
@@ -77,41 +107,27 @@
       );
     }
   });
-
   const delayText = (value: number | null): string =>
     value === null ? '—' : rawToPercentDisplay(value);
   const delayLabel = (): string =>
     getLocale() === 'ru-RU' ? 'Задержка break-in' : 'Break-in Delay';
-  function breakInDelayMessage(
-    phase: PresentationPhase,
-    target: number | null,
-    confirmed: number | null,
-  ): string {
+  const DELAY_PHASE_COPY: Record<'en' | 'ru', Record<PresentationPhase, string>> = {
+    en: { unavailable: 'Control unavailable', idle: 'Confirmed', submitted: 'Requested',
+      queued: 'Queued', dispatched: 'Dispatched', 'awaiting-confirmation': 'Awaiting',
+      confirmed: 'Radio confirmed', failed: 'Failed', 'timed-out': 'Timed out',
+      cancelled: 'Cancelled', superseded: 'Superseded' },
+    ru: { unavailable: 'Управление недоступно', idle: 'Подтверждено', submitted: 'Запрошено',
+      queued: 'В очереди', dispatched: 'Отправлено', 'awaiting-confirmation': 'Ожидание',
+      confirmed: 'Радио подтвердило', failed: 'Ошибка', 'timed-out': 'Время истекло',
+      cancelled: 'Запрос отменён', superseded: 'Запрос заменён' },
+  };
+  function breakInDelayMessage(phase: PresentationPhase, target: number | null,
+    confirmed: number | null): string {
     const ru = getLocale() === 'ru-RU';
-    const requested = delayText(target);
-    const canonical = delayText(confirmed);
-    const copy: Record<PresentationPhase, string> = ru ? {
-      unavailable: 'Управление недоступно', idle: `Подтверждено: ${canonical}`,
-      submitted: `Запрошено ${requested}; подтверждено ${canonical}`,
-      queued: `В очереди ${requested}; подтверждено ${canonical}`,
-      dispatched: `Отправлено ${requested}; подтверждено ${canonical}`,
-      'awaiting-confirmation': `Ожидание ${requested}; подтверждено ${canonical}`,
-      confirmed: `Радио подтвердило ${canonical}`, failed: `Ошибка ${requested}; осталось ${canonical}`,
-      'timed-out': `Время ожидания ${requested} истекло; осталось ${canonical}`,
-      cancelled: `Запрос ${requested} отменён; осталось ${canonical}`,
-      superseded: `Запрос ${requested} заменён; осталось ${canonical}`,
-    } : {
-      unavailable: 'Control unavailable', idle: `Confirmed: ${canonical}`,
-      submitted: `Requested ${requested}; last confirmed ${canonical}`,
-      queued: `Queued ${requested}; last confirmed ${canonical}`,
-      dispatched: `Dispatched ${requested}; last confirmed ${canonical}`,
-      'awaiting-confirmation': `Awaiting ${requested}; last confirmed ${canonical}`,
-      confirmed: `Radio confirmed ${canonical}`, failed: `Failed ${requested}; confirmed remains ${canonical}`,
-      'timed-out': `Timed out ${requested}; confirmed remains ${canonical}`,
-      cancelled: `Cancelled ${requested}; confirmed remains ${canonical}`,
-      superseded: `Superseded ${requested}; confirmed remains ${canonical}`,
-    };
-    return copy[phase];
+    const label = DELAY_PHASE_COPY[ru ? 'ru' : 'en'][phase], canonical = delayText(confirmed);
+    if (phase === 'unavailable') return label;
+    if (phase === 'idle' || phase === 'confirmed') return `${label}: ${canonical}`;
+    return `${label} ${delayText(target)}; ${ru ? 'подтверждено' : 'confirmed'} ${canonical}`;
   }
   let breakInDelayValueText = $derived(
     !breakInDelayAvailable
@@ -124,13 +140,13 @@
           breakInDelayFeedback.confirmed,
         ),
   );
-
   function restoreBreakInDelay(): void {
     breakInDelayEditing = false;
     breakInDelayDraft = breakInDelayTruth ?? 0;
   }
   function updateBreakInDelayDraft(event: Event): void {
     if (!breakInDelayAvailable) return;
+    if (!breakInDelayEditing) breakInDelayDraftAuthority = breakInDelayAuthority;
     breakInDelayCancelled = false;
     breakInDelayEditing = true;
     breakInDelayDraft = Math.min(255, Math.max(0, Math.round(
@@ -338,8 +354,7 @@
   }
 
   .break-in-delay-control input { width: 100%; accent-color: var(--v2-accent-cyan); }
-  .break-in-delay-phase { font-size: 9px; text-transform: uppercase; }
-  .break-in-delay-phase { opacity: 0.8; }
+  .break-in-delay-phase { font-size: 9px; text-transform: uppercase; opacity: 0.8; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
   @media (forced-colors: active) {
