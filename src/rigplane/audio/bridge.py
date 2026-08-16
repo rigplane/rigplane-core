@@ -44,6 +44,7 @@ from rigplane.core.types import _AUDIO_CODEC_CHANNELS
 
 from ._bridge_metrics import BridgeMetrics
 from ._bridge_state import BridgeState, BridgeStateChange
+from ._transcoder import _opus_library_lookup
 from .backend import (
     AudioBackend,
     AudioDeviceInfo,
@@ -512,8 +513,12 @@ class AudioBridge:
         )
 
         if self._is_opus:
-            _require_opuslib()
-            import opuslib
+            # Share the MOR-1782 discovery window: the platform
+            # ``find_library("opus")`` does not see Homebrew prefixes on
+            # macOS, so let the same fallback list resolve the import.
+            with _opus_library_lookup():
+                _require_opuslib()
+                import opuslib
 
             self._decoder = opuslib.Decoder(self._sample_rate, self._channels)
         else:
