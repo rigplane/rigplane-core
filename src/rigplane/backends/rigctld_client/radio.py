@@ -223,9 +223,8 @@ class RigctldClientObservationPoller:
                 if entry.future is not None and not entry.future.done():
                     entry.future.set_result(None)
             except Exception as exc:
-                self._finish_readbacks(
-                    () if correlation is None else (correlation,), "rejected"
-                )
+                if correlation is not None:
+                    self._finish_readbacks((correlation,), "rejected")
                 self._mark_queued_command_failed(entry, exc)
                 if entry.future is not None and not entry.future.done():
                     entry.future.set_exception(exc)
@@ -245,9 +244,6 @@ class RigctldClientObservationPoller:
             if _physical_command_targets_path(command, entry.path)
         ]
         self._finish_readbacks(replaced, "superseded")
-        self._pending_readback_entries = [
-            entry for entry in self._pending_readback_entries if entry not in replaced
-        ]
         if correlation is not None:
             self._pending_readback_entries.append(correlation)
 
@@ -257,6 +253,11 @@ class RigctldClientObservationPoller:
         status: PhysicalWriteReadbackStatus,
         observation: Observation | None = None,
     ) -> None:
+        self._pending_readback_entries = [
+            entry for entry in self._pending_readback_entries if entry not in entries
+        ]
+        if status != "reconciled":
+            _discard_readback_correlations(entries)
         for entry in entries:
             self._radio._publish_physical_write_result(  # noqa: SLF001
                 PhysicalWriteReadbackResult(
@@ -270,11 +271,6 @@ class RigctldClientObservationPoller:
                     provider_generation=entry.provider_generation,
                 )
             )
-        if status != "reconciled":
-            _discard_readback_correlations(entries)
-        self._pending_readback_entries = [
-            entry for entry in self._pending_readback_entries if entry not in entries
-        ]
 
     def _annotate_readback_observations(
         self,
@@ -297,6 +293,12 @@ class RigctldClientObservationPoller:
             annotated.append(_with_command_metadata(observation, entry))
         now = self._clock()
         for entry in unmatched:
+            if not _correlation_is_live(entry, now, entry.provider_generation):
+                self._finish_readbacks(
+                    (entry,),
+                    "timed_out" if now >= entry.expires_at_monotonic else "cancelled",
+                )
+                continue
             mismatch = next(
                 (
                     item
@@ -310,14 +312,8 @@ class RigctldClientObservationPoller:
                 ),
                 None,
             )
-            status: PhysicalWriteReadbackStatus = (
-                "timed_out" if mismatch is None else "mismatched"
-            )
-            if not _correlation_is_live(entry, now, entry.provider_generation):
-                status = (
-                    "timed_out" if now >= entry.expires_at_monotonic else "cancelled"
-                )
-            self._finish_readbacks((entry,), status, mismatch)
+            if mismatch is not None:
+                self._finish_readbacks((entry,), "mismatched", mismatch)
         return tuple(annotated)
 
     async def _execute_command(self, cmd: Any) -> None:

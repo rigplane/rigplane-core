@@ -453,6 +453,8 @@ async def test_observation_poller_discards_expectation_when_readback_unavailable
             )
 
             await poller._drain_commands()  # noqa: SLF001
+            poller._annotate_readback_observations(())  # noqa: SLF001
+            assert not results and poller._pending_readback_entries  # noqa: SLF001
             if cancel:
                 await poller.stop()
             else:
@@ -565,11 +567,20 @@ async def test_observation_poller_reconciles_slow_control_set_without_waiting_fo
             )
             observations = []
             results = []
-            radio.set_physical_write_result_callback(results.append)
             poller = radio.create_observation_poller(
                 callback=observations.extend,
                 command_queue=queue,
             )
+
+            def collect_reentrantly(result) -> None:  # type: ignore[no-untyped-def]
+                results.append(result)
+                if len(results) == 1:
+                    poller._finish_readbacks(  # noqa: SLF001
+                        poller._pending_readback_entries,
+                        result.status,  # noqa: SLF001
+                    )
+
+            radio.set_physical_write_result_callback(collect_reentrantly)
 
             await poller._poll_medium()  # noqa: SLF001
             for observation in observations:
@@ -594,7 +605,7 @@ async def test_observation_poller_reconciles_slow_control_set_without_waiting_fo
             assert readback.value == expected_value
             assert readback.source.source == "hamlib_response"
             assert readback.correlation_id == command_id
-            assert results.pop().status == "reconciled"
+            assert [result.status for result in results] == ["reconciled"]
         finally:
             await radio.disconnect()
 
@@ -753,20 +764,12 @@ async def test_observation_poller_unsupported_command_fails_future() -> None:
             service = CommandService(
                 executor=_NoopCommandExecutor(), state_store=StateStore()
             )
+            make_intent = command_intent_from_request
             await service.execute(
-                command_intent_from_request(
-                    "set_freq",
-                    {"freq": 7_050_000},
-                    source="rigctld",
-                    command_id="rejected",
-                )
+                make_intent("set_freq", {"freq": 1}, source="http", command_id="r")
             )
-            queue.put_ordered(
-                SetFreq(7_050_000),
-                command_id="rejected",
-                source="rigctld",
-                command_service=service,
-            )
+            put = queue.put_ordered
+            put(SetFreq(1), command_id="r", source="http", command_service=service)
             results = []
             radio.set_physical_write_result_callback(
                 lambda result: (results.append(result), 1 / 0)
