@@ -776,6 +776,7 @@ class RadioPoller:
         message = f"deferred command {outcome.value}"
         intent = self._deferred_intent(entry)
         if outcome is TxInterlockDeferredOutcome.SUPERSEDED and intent is not None:
+            assert entry.command_service is not None
             entry.command_service.expire_command(
                 intent.id, source=intent.source, session_id=entry.session_id
             )
