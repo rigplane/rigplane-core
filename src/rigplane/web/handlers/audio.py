@@ -1314,6 +1314,9 @@ class AudioHandler:
         # path) or when TX is not active.
         self._tx_lease: TxLease | None = None
         self._tx_facts: BrowserTxAudioFacts | None = None
+        # Per-key counters for once-per-frame TX warnings (MOR-1788), applied
+        # by ``_warn_tx_throttled``; cleared at every TX session start.
+        self._tx_warn_counts: dict[str, int] = {}
         self._tx_stop_lock = asyncio.Lock()
         self._seq: int = 0
         # Latest client-reported link-quality snapshot from the periodic
@@ -1482,6 +1485,9 @@ class AudioHandler:
                     raise
                 self._tx_facts = facts
                 self._tx_active = True
+                # New TX session: clear the MOR-1788 warning counters so a
+                # recurrence is never hidden by an earlier session's backlog.
+                self._tx_warn_counts.clear()
                 logger.info("audio: TX active")
         elif msg_type == "audio_stop":
             if direction == "rx":
@@ -1850,6 +1856,33 @@ class AudioHandler:
         await self._broadcaster.unsubscribe(self._frame_queue)
         logger.info("audio: unsubscribed from RX broadcast")
 
+    def _warn_tx_throttled(
+        self, key: str, message: str, *args: Any, exc_info: bool = False
+    ) -> None:
+        """Log a once-per-frame TX warning with repeat throttling (MOR-1788).
+
+        TX warnings fire once per inbound frame (~50/s) and would otherwise
+        bury the single diagnostic line that explains the cause.  Same policy
+        as the UDP error site in ``rigplane.core.transport``: the first three
+        occurrences are logged in full, then every hundredth is logged along
+        with the number of occurrences suppressed since the last emitted
+        line, so no information is lost.  Counters are kept per site key in
+        ``self._tx_warn_counts`` and cleared at TX session start.
+        """
+        n = self._tx_warn_counts.get(key, 0) + 1
+        self._tx_warn_counts[key] = n
+        if n <= 3:
+            logger.warning(message + " (#%d)", *args, n, exc_info=exc_info)
+        elif n % 100 == 0:
+            prev_logged = 3 if n == 100 else n - 100
+            logger.warning(
+                message + " (#%d, suppressed %d)",
+                *args,
+                n,
+                n - prev_logged - 1,
+                exc_info=exc_info,
+            )
+
     async def _handle_tx_audio(self, payload: bytes) -> None:
         """Forward TX audio from browser to radio."""
         if not self._tx_active:
@@ -1859,23 +1892,31 @@ class AudioHandler:
             return
         facts = self._tx_facts
         if facts is None and not self._radio:
-            logger.warning("audio: TX frame ignored (no radio), size=%d", len(payload))
+            self._warn_tx_throttled(
+                "no_radio", "audio: TX frame ignored (no radio), size=%d", len(payload)
+            )
             return
         if facts is None and CAP_AUDIO not in self._radio.capabilities:  # type: ignore[union-attr]
-            logger.warning(
+            self._warn_tx_throttled(
+                "no_capability",
                 "audio: TX frame ignored (radio missing audio capability), size=%d",
                 len(payload),
             )
             return
         if len(payload) < AUDIO_HEADER_SIZE:
-            logger.warning(
+            self._warn_tx_throttled(
+                "frame_too_small",
                 "audio: TX frame too small (%d < %d), ignoring",
                 len(payload),
                 AUDIO_HEADER_SIZE,
             )
             return
         if payload[0] != MSG_TYPE_AUDIO_TX:
-            logger.warning("audio: TX frame wrong type 0x%02x, ignoring", payload[0])
+            self._warn_tx_throttled(
+                "wrong_type",
+                "audio: TX frame wrong type 0x%02x, ignoring",
+                payload[0],
+            )
             return
         browser_codec = payload[1]
         audio_data = payload[AUDIO_HEADER_SIZE:]
@@ -1893,7 +1934,8 @@ class AudioHandler:
                     and tx_codec == AudioCodec.PCM_1CH_16BIT
                 ):
                     if self._transcoder is None:
-                        logger.warning(
+                        self._warn_tx_throttled(
+                            "dropped_no_transcoder",
                             "audio: TX frame dropped incoming_codec=opus "
                             "radio_tx_codec=%s sample_rate=%d "
                             "action=dropped_no_transcoder",
@@ -1907,7 +1949,8 @@ class AudioHandler:
                         await self._push_tx(pcm_data, legacy_method="push_audio_tx_pcm")
                         tx_data_desc = f"{len(pcm_data)} bytes pcm"
                     except Exception as e:
-                        logger.warning(
+                        self._warn_tx_throttled(
+                            "dropped_transcode_failed",
                             "audio: TX frame dropped incoming_codec=opus "
                             "radio_tx_codec=%s sample_rate=%d "
                             "action=dropped_transcode_failed error=%s",
@@ -1921,7 +1964,8 @@ class AudioHandler:
                     await self._push_tx(audio_data, legacy_method="push_audio_tx_opus")
                     tx_data_desc = f"{len(audio_data)} bytes opus"
                 else:
-                    logger.warning(
+                    self._warn_tx_throttled(
+                        "unsupported_codec",
                         "audio: unsupported browser TX codec 0x%02x, dropping frame",
                         browser_codec,
                     )
@@ -1938,7 +1982,9 @@ class AudioHandler:
                         tx_data_desc,
                     )
             except Exception:
-                logger.warning("audio: push TX error", exc_info=True)
+                self._warn_tx_throttled(
+                    "push_tx_error", "audio: push TX error", exc_info=True
+                )
 
     async def _sender_loop(self) -> None:
         """Send queued audio frames to the WebSocket client."""
