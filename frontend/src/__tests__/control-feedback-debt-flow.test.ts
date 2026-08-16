@@ -173,4 +173,31 @@ describe('control feedback object flow (MOR-1715)', () => {
       { key: 'type', value: 'button', poison: false },
     ]);
   });
+
+  it('hoists instance script var shadows without crossing function boundaries', () => {
+    const moduleSource = `const props = {}; props.type = 'module';`;
+    const expectShadowed = (instanceSource: string) => {
+      const scopes = linked(moduleSource, instanceSource);
+      expect(eventSummary(scopes.module.get('props'))).toEqual([
+        { key: 'type', value: 'module', poison: false },
+      ]);
+      expect(scopes.instance.get('props')).not.toBe(scopes.module.get('props'));
+    };
+
+    expectShadowed(`var props = props; props.type = 'self';`);
+    expectShadowed(`if (flag) { var props = {}; } props.type = 'block';`);
+    expectShadowed(`for (var props of values) {} props.type = 'loop';`);
+    expectShadowed(`try {} catch (error) { var { props } = error; } props.type = 'catch';`);
+
+    const functionLocal = linked(
+      moduleSource,
+      `function mutateLocal() { var props = {}; props.type = 'local'; }
+       props.type = 'instance';`,
+    );
+    expect(eventSummary(functionLocal.module.get('props'))).toEqual([
+      { key: 'type', value: 'module', poison: false },
+      { key: 'type', value: 'instance', poison: false },
+    ]);
+    expect(functionLocal.instance.get('props')).toBe(functionLocal.module.get('props'));
+  });
 });
