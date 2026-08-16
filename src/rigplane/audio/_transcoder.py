@@ -7,6 +7,10 @@ Opus APIs.
 
 from __future__ import annotations
 
+import contextlib
+import ctypes.util
+import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -63,9 +67,57 @@ class _OpuslibBackend:
         return out
 
 
+# Known package-manager prefixes for libopus that the platform library
+# search does not consult (MOR-1782): Homebrew on Apple Silicon
+# (``/opt/homebrew``) and Intel Homebrew / manual installs (``/usr/local``).
+# Kept explicit on purpose -- no filesystem walking.
+_OPUS_LIBRARY_FALLBACK_PATHS: tuple[str, ...] = (
+    "/opt/homebrew/lib/libopus.dylib",
+    "/usr/local/lib/libopus.dylib",
+    "/usr/local/lib/libopus.so",
+)
+
+
+def _find_opus_library_fallback() -> str | None:
+    """Return the first libopus fallback candidate that exists, or ``None``."""
+    for candidate in _OPUS_LIBRARY_FALLBACK_PATHS:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+@contextlib.contextmanager
+def _opus_library_lookup() -> Iterator[None]:
+    """Let ``import opuslib`` find libopus in known package-manager prefixes.
+
+    opuslib locates the native library with ``ctypes.util.find_library("opus")``
+    at import time. On macOS the dyld fallback search does not cover the
+    Homebrew Apple Silicon prefix ``/opt/homebrew/lib``, and CPython's
+    ``find_library`` ignores already-loaded dyld images, so preloading via
+    ``ctypes.CDLL`` cannot make the lookup succeed (MOR-1782). Wrap
+    ``find_library`` for the duration of the import instead: the platform
+    lookup runs first, and only a failed ``opus`` lookup falls back to the
+    explicit prefix list.
+    """
+    real_find_library = ctypes.util.find_library
+
+    def _find_library(name: str) -> str | None:
+        location = real_find_library(name)
+        if location is None and name == "opus":
+            return _find_opus_library_fallback()
+        return location
+
+    ctypes.util.find_library = _find_library
+    try:
+        yield
+    finally:
+        ctypes.util.find_library = real_find_library
+
+
 def _load_default_backend() -> _OpusBackend | None:
     try:
-        import opuslib  # noqa: F401
+        with _opus_library_lookup():
+            import opuslib  # noqa: F401
     except Exception:
         # opuslib raises bare ``Exception`` (not ImportError) when the native
         # libopus cannot be located — catch both cases so the backend falls

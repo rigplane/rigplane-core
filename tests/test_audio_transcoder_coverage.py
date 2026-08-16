@@ -13,7 +13,11 @@ Covers:
 
 from __future__ import annotations
 
+import ctypes.util
+import importlib.abc
+import importlib.machinery
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -159,6 +163,126 @@ class TestLoadDefaultBackend:
         with patch.dict(sys.modules, {"opuslib": None}):
             result = _load_default_backend()
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Native Opus library discovery (MOR-1782)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOpuslibFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Meta-path finder that simulates opuslib's import-time native lookup.
+
+    Mirrors the real ``opuslib`` package: at import time it calls
+    ``ctypes.util.find_library('opus')`` and raises a bare ``Exception``
+    when the lookup returns ``None``. This keeps the discovery tests
+    deterministic on any host, with or without a real libopus installed.
+    """
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: object = None,
+        target: object = None,
+    ) -> importlib.machinery.ModuleSpec | None:
+        if fullname != "opuslib":
+            return None
+        return importlib.machinery.ModuleSpec(fullname, self)
+
+    def create_module(self, spec: importlib.machinery.ModuleSpec) -> None:
+        return None  # default module creation semantics
+
+    def exec_module(self, module: object) -> None:
+        from ctypes.util import find_library
+
+        lib_location = find_library("opus")
+        if lib_location is None:
+            raise Exception("Could not find Opus library. Make sure it is installed.")
+        module.lib_location = lib_location  # type: ignore[attr-defined]
+
+
+def _install_fake_opuslib(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route ``import opuslib`` to the fake finder for the test duration."""
+    monkeypatch.delitem(sys.modules, "opuslib", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_FakeOpuslibFinder(), *sys.meta_path])
+
+
+class TestOpusLibraryDiscovery:
+    """Pin MOR-1782: libopus living in a package-manager prefix that the
+    platform lookup does not consult must still yield a working backend."""
+
+    def test_uses_platform_lookup_when_library_already_discoverable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Normal path is not regressed: fallback prefixes are not consulted
+        when the platform lookup already finds the library."""
+        _install_fake_opuslib(monkeypatch)
+        monkeypatch.setattr(
+            ctypes.util, "find_library", lambda name: "/usr/lib/libopus.dylib"
+        )
+        fallback = tmp_path / "libopus.dylib"
+        fallback.write_bytes(b"")
+        monkeypatch.setattr(
+            "rigplane.audio._transcoder._OPUS_LIBRARY_FALLBACK_PATHS",
+            (str(fallback),),
+        )
+
+        backend = _load_default_backend()
+
+        assert isinstance(backend, _OpuslibBackend)
+        assert backend._opuslib.lib_location == "/usr/lib/libopus.dylib"
+
+    def test_discovers_library_in_fallback_prefix_when_platform_lookup_fails(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Apple Silicon Homebrew case: find_library('opus') returns None, but
+        libopus exists in a known prefix, so the backend must still load."""
+        _install_fake_opuslib(monkeypatch)
+        monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+        fallback = tmp_path / "libopus.dylib"
+        fallback.write_bytes(b"")
+        monkeypatch.setattr(
+            "rigplane.audio._transcoder._OPUS_LIBRARY_FALLBACK_PATHS",
+            (str(fallback),),
+        )
+
+        backend = _load_default_backend()
+
+        assert isinstance(backend, _OpuslibBackend)
+        assert backend._opuslib.lib_location == str(fallback)
+
+    def test_returns_none_when_library_absent_everywhere(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Fail-closed: no platform hit and no fallback file still yields
+        None, with no exception escaping the factory."""
+        _install_fake_opuslib(monkeypatch)
+        monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+        monkeypatch.setattr(
+            "rigplane.audio._transcoder._OPUS_LIBRARY_FALLBACK_PATHS",
+            (str(tmp_path / "libopus.dylib"),),
+        )
+
+        assert _load_default_backend() is None
+
+    def test_find_library_restored_after_failed_import(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The find_library wrapper is removed again even when the import
+        fails, leaving no global state behind."""
+        _install_fake_opuslib(monkeypatch)
+
+        def patched_find_library(name: str) -> None:
+            return None
+
+        monkeypatch.setattr(ctypes.util, "find_library", patched_find_library)
+        monkeypatch.setattr(
+            "rigplane.audio._transcoder._OPUS_LIBRARY_FALLBACK_PATHS",
+            (str(tmp_path / "libopus.dylib"),),
+        )
+
+        assert _load_default_backend() is None
+        assert ctypes.util.find_library is patched_find_library
 
 
 # ---------------------------------------------------------------------------
