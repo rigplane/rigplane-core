@@ -100,7 +100,6 @@ class TxInterlockDecision:
     disposition: TxInterlockDisposition
     allowed: bool
     reason: str
-    rf_state: RfState | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +152,8 @@ class DeferredTxCommandLane:
         command: object,
         *,
         now: float,
-        decision: TxInterlockDecision | None = None,
+        rf_state: RfState = RfState.TX,
+        disposition_overrides: TxInterlockDispositionOverrides | None = None,
     ) -> TxInterlockDeferredResult:
         """Hold a ``DEFER`` command, explicitly replacing a prior held command.
 
@@ -163,11 +163,15 @@ class DeferredTxCommandLane:
         starts a separate fresh hold.
         """
 
-        effective = decision or evaluate_tx_interlock(command, rf_state=RfState.TX)
+        effective = evaluate_tx_interlock(
+            command,
+            rf_state=rf_state,
+            disposition_overrides=disposition_overrides,
+        )
         if (
             effective.disposition is not TxInterlockDisposition.DEFER
             or effective.allowed
-            or effective.rf_state is not RfState.TX
+            or rf_state is not RfState.TX
         ):
             raise ValueError("only denied DEFER decisions may be held in the lane")
 
@@ -397,21 +401,20 @@ def evaluate_tx_interlock(
         TxInterlockDisposition.TX_SAFE,
     ):
         return TxInterlockDecision(
-            disposition, True, "TX interlock permits this command.", rf_state
+            disposition, True, "TX interlock permits this command."
         )
     if rf_state is RfState.RX:
-        return TxInterlockDecision(disposition, True, "RF state is known RX.", rf_state)
+        return TxInterlockDecision(disposition, True, "RF state is known RX.")
     if rf_state is RfState.UNKNOWN:
         return TxInterlockDecision(
             disposition,
             False,
             "RF state is unknown; this command must not be attempted yet.",
-            rf_state,
         )
     if disposition is TxInterlockDisposition.DEFER:
         return TxInterlockDecision(
-            disposition, False, "RF state is TX; command is deferred.", rf_state
+            disposition, False, "RF state is TX; command is deferred."
         )
     return TxInterlockDecision(
-        disposition, False, "RF state is TX; command is blocked.", rf_state
+        disposition, False, "RF state is TX; command is blocked."
     )

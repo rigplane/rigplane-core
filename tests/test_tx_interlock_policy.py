@@ -321,8 +321,7 @@ def test_deferred_lane_rejects_unbound_forged_decision(command: object) -> None:
     forged = TxInterlockDecision(
         TxInterlockDisposition.DEFER,
         False,
-        "forged TX decision",
-        RfState.TX,
+        "forged denied-DEFER/TX claim",
     )
 
     with pytest.raises(TypeError, match="decision"):
