@@ -28,6 +28,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from serial_stub import SerialMockRadio
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.scope import ScopeFrame
@@ -72,6 +78,19 @@ _requires_static_index = pytest.mark.skipif(
 def _addr(server: WebServer) -> tuple[str, int]:
     assert server._server is not None
     return server._server.sockets[0].getsockname()
+
+
+def _seed_fresh_rx(store: StateStore) -> None:
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=store.snapshot().generated_at_monotonic,
+            max_age=5.0,
+            provider_generation=store.provider_generation,
+        )
+    )
 
 
 def _ws_accept(key: str) -> str:
@@ -983,6 +1002,7 @@ class TestControlChannel:
     async def test_vfo_swap_command(
         self, server: WebServer, mock_radio: MagicMock
     ) -> None:
+        _seed_fresh_rx(server.command_state_store)
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
@@ -3301,6 +3321,7 @@ class TestRadioPoller:
         cache = StateCache()
         queue = CommandQueue()
         poller = RadioPoller(radio, cache, queue)
+        _seed_fresh_rx(poller._state_store)  # noqa: SLF001
 
         poller.start()
         queue.put(SetFreq(7074000))
@@ -3525,6 +3546,7 @@ class TestSwitchScopeReceiver:
         radio = self._make_radio()
         queue = CommandQueue()
         poller = RadioPoller(radio, StateCache(), queue)
+        _seed_fresh_rx(poller._state_store)  # noqa: SLF001
 
         poller.start()
         queue.put(SelectVfo("SUB"))
@@ -3595,6 +3617,7 @@ class TestSwitchScopeReceiver:
         radio.set_split = AsyncMock()
         queue = CommandQueue()
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
+        _seed_fresh_rx(poller._state_store)  # noqa: SLF001
 
         poller.start()
         queue.put(SetSplit(True))
@@ -3631,6 +3654,7 @@ class TestSwitchScopeReceiver:
         radio.set_rit_tx_status = AsyncMock()
         queue = CommandQueue()
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
+        _seed_fresh_rx(poller._state_store)  # noqa: SLF001
 
         poller.start()
         queue.put(SetRitTxStatus(True))
@@ -3649,6 +3673,7 @@ class TestSwitchScopeReceiver:
         radio.set_rit_frequency = AsyncMock()
         queue = CommandQueue()
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
+        _seed_fresh_rx(poller._state_store)  # noqa: SLF001
 
         poller.start()
         queue.put(SetRitFrequency(-200))

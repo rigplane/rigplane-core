@@ -13,6 +13,11 @@ import pytest
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio_bridge import AudioBridge
 from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from serial_stub import SerialMockRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -322,6 +327,18 @@ async def test_rigctld_smoke_with_serial_mock_backend() -> None:
     await server.start()
     try:
         assert server._server is not None
+        assert server._state_store is not None
+        store = server._state_store
+        store.apply(
+            Observation(
+                path=FieldPath.global_("tx_state", "ptt"),
+                value=False,
+                source=SourceMetadata(source="poll_response", provider="test"),
+                timestamp_monotonic=store.snapshot().generated_at_monotonic,
+                max_age=5.0,
+                provider_generation=store.provider_generation,
+            )
+        )
         host, port = _addr_from_asyncio_server(server._server)
         reader, writer = await asyncio.open_connection(host, port)
         try:
