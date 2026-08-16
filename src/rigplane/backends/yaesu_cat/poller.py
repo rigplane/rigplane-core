@@ -708,12 +708,26 @@ class YaesuCatPoller:
     def _emit_deferred_entry_held(entry: Any, *, expires_at: float) -> None:
         if entry.command_service is None or entry.command_id is None:
             return
+        source = entry.source or "internal_policy"
+        params = {} if entry.session_id is None else {"session_id": entry.session_id}
+        target = None
+        events = entry.command_service.lifecycle_events()
+        if isinstance(events, Sequence):
+            for event in reversed(events):
+                if (
+                    event.command_id == entry.command_id
+                    and event.source == source
+                    and (event.details or {}).get("session_id") == entry.session_id
+                ):
+                    target = event.target
+                    break
         entry.command_service.emit_lifecycle(
             CommandIntent(
                 id=entry.command_id,
                 name="queued_completion",
-                params={},
-                source=entry.source or "internal_policy",
+                params=params,
+                source=source,
+                target=target,
             ),
             "queued",
             details={
