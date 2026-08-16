@@ -721,6 +721,45 @@ async def test_yaesu_profile_override_unknown_and_invalid_mapping_never_fail_ope
 
 
 @pytest.mark.asyncio
+async def test_yaesu_trapping_profile_override_accessor_terminally_fails_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.runtime._poller_types import SetPowerstat
+
+    class TrappingProfile:
+        state_acquisition = None
+
+        @property
+        def tx_interlock_disposition_overrides(self) -> object:
+            raise RuntimeError("trapping profile override accessor")
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 35.0
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.profile = TrappingProfile()
+    radio.set_powerstat = AsyncMock()
+    radio._transport.reconnect = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    future = asyncio.get_running_loop().create_future()
+    service = MagicMock()
+    queue.put_ordered(
+        SetPowerstat(on=True),
+        future=future,
+        command_id="trapping-profile",
+        command_service=service,
+    )
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert isinstance(future.exception(), RuntimeError)
+    service.fail_command.assert_called_once()
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+    radio.set_powerstat.assert_not_awaited()
+    radio._transport.reconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_yaesu_profile_override_cannot_change_structural_floors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
