@@ -130,6 +130,43 @@ async def test_radio_transport_loss_advances_provider_generation_once() -> None:
         assert transitions == [False]
 
 
+@pytest.mark.parametrize(
+    ("read_result", "message"),
+    ((b"", "closed"), (OSError("stale read lost"), "failed while reading")),
+)
+async def test_radio_stale_drain_loss_retires_before_command_write(
+    read_result: bytes | OSError,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        transitions: list[bool] = []
+        radio.bind_provider_generation(
+            advance=lambda: transitions.append(radio.connected) or len(transitions)
+        )
+        reader = radio._transport._reader  # noqa: SLF001
+        writer = radio._transport._writer  # noqa: SLF001
+        assert reader is not None and writer is not None
+        writes: list[bytes] = []
+        monkeypatch.setattr(writer, "write", writes.append)
+        read = (
+            AsyncMock(side_effect=read_result)
+            if isinstance(read_result, OSError)
+            else AsyncMock(return_value=read_result)
+        )
+        monkeypatch.setattr(reader, "read", read)
+
+        with pytest.raises(RadioConnectionError, match=message):
+            await radio.get_freq()
+
+        assert writes == []
+        assert transitions == [False]
+        await radio.disconnect()
+        assert transitions == [False]
+
+
 @pytest.mark.parametrize("failure", ("read_timeout", "write_timeout", "oserror"))
 async def test_radio_transport_failures_advance_provider_generation_once(
     failure: str,

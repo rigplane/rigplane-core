@@ -90,7 +90,7 @@ class RigctldTransport:
         except OSError:
             pass
 
-    async def _drain_stale(self) -> None:
+    async def _drain_stale(self, command: str) -> None:
         """Discard any unread bytes left in the socket buffer from a prior
         transaction (e.g. a late/out-of-band frame the bridge injected) so the
         next command reads only its own reply."""
@@ -102,8 +102,18 @@ class RigctldTransport:
                 chunk = await asyncio.wait_for(reader.read(4096), timeout=0.001)
             except (asyncio.TimeoutError, TimeoutError):
                 return
+            except OSError as exc:
+                await self.close()
+                raise RadioConnectionError(
+                    f"Connection to external rigctld at {self.host}:{self.port} "
+                    f"failed while reading response to {command!r}: {exc}"
+                ) from exc
             if not chunk:
-                return  # EOF
+                await self.close()
+                raise RadioConnectionError(
+                    f"External rigctld at {self.host}:{self.port} closed the "
+                    f"connection while handling {command!r}."
+                )
             _LOGGER.debug("rigctld transport: drained %d stale bytes", len(chunk))
 
     async def query(self, command: str, *, response_lines: int) -> list[str]:
@@ -112,7 +122,7 @@ class RigctldTransport:
             raise ValueError("response_lines must be > 0")
 
         async with self._lock:
-            await self._drain_stale()
+            await self._drain_stale(command)
             await self._write_line(command)
             lines: list[str] = []
             for _ in range(response_lines):
@@ -131,7 +141,7 @@ class RigctldTransport:
     async def command(self, command: str) -> None:
         """Send a write command and require ``RPRT 0`` success."""
         async with self._lock:
-            await self._drain_stale()
+            await self._drain_stale(command)
             await self._write_line(command)
             # Re-sync: do ONE blocking read for the server's response.
             # If it is not RPRT-shaped (stray value line that arrived in the
