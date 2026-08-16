@@ -161,8 +161,18 @@ class RigctldTransport:
                 except (asyncio.TimeoutError, TimeoutError):
                     # Nothing else buffered — `line` is the actual response.
                     break
+                except OSError as exc:
+                    await self.close()
+                    raise RadioConnectionError(
+                        f"Connection to external rigctld at {self.host}:{self.port} "
+                        f"failed while reading response to {command!r}: {exc}"
+                    ) from exc
                 if not raw:
-                    break  # EOF
+                    await self.close()
+                    raise RadioConnectionError(
+                        f"External rigctld at {self.host}:{self.port} closed the "
+                        f"connection while handling {command!r}."
+                    )
                 _LOGGER.debug(
                     "rigctld transport: skipping non-RPRT line for %r: %r",
                     command,

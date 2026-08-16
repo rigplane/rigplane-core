@@ -131,10 +131,16 @@ async def test_radio_transport_loss_advances_provider_generation_once() -> None:
 
 
 @pytest.mark.parametrize(
-    ("read_result", "message"),
-    ((b"", "closed"), (OSError("stale read lost"), "failed while reading")),
+    ("stage", "read_result", "message"),
+    (
+        ("stale", b"", "closed"),
+        ("stale", OSError("stale read lost"), "failed while reading"),
+        ("resync", b"", "closed"),
+        ("resync", OSError("resync read lost"), "failed while reading"),
+    ),
 )
-async def test_radio_stale_drain_loss_retires_before_command_write(
+async def test_radio_buffered_read_loss_retires_without_subsequent_write(
+    stage: str,
     read_result: bytes | OSError,
     message: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -151,17 +157,23 @@ async def test_radio_stale_drain_loss_retires_before_command_write(
         assert reader is not None and writer is not None
         writes: list[bytes] = []
         monkeypatch.setattr(writer, "write", writes.append)
-        read = (
+        failing_read = (
             AsyncMock(side_effect=read_result)
             if isinstance(read_result, OSError)
             else AsyncMock(return_value=read_result)
         )
-        monkeypatch.setattr(reader, "read", read)
+        if stage == "stale":
+            monkeypatch.setattr(reader, "read", failing_read)
+        else:
+            monkeypatch.setattr(reader, "read", AsyncMock(side_effect=TimeoutError))
+            monkeypatch.setattr(
+                reader, "readline", AsyncMock(side_effect=[b"stray\n", read_result])
+            )
 
         with pytest.raises(RadioConnectionError, match=message):
-            await radio.get_freq()
+            await (radio.get_freq() if stage == "stale" else radio.set_freq(7_050_000))
 
-        assert writes == []
+        assert writes == ([] if stage == "stale" else [b"F 7050000\n"])
         assert transitions == [False]
         await radio.disconnect()
         assert transitions == [False]
