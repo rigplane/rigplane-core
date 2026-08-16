@@ -17,9 +17,11 @@ from ...core.command_service import (
     _raw_int_level_from_param,
     command_intent_from_request,
 )
+from ...core.exceptions import CommandError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.state_store import FreshnessState, StateStore
 from ...profiles import RadioProfile, resolve_radio_profile
+from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -98,6 +100,7 @@ from ..radio_poller import (  # noqa: TID251
     SetSystemDate,
     SetSystemTime,
     SetTwinPeak,
+    SetTunerStatus,
     SetDriveGain,
     SetUsbModLevel,
     SetVox,
@@ -1650,22 +1653,39 @@ class ControlHandler:
     ) -> dict[str, Any]:
         if "value" not in params:
             raise ValueError("missing required 'value' parameter")
-        value = int(params["value"])
-        if value not in (0, 1, 2):
-            raise ValueError(f"tuner value must be 0, 1, or 2, got {value}")
+        value = params["value"]
+        if type(value) is not int or value not in (0, 1, 2):
+            raise ValueError(f"tuner value must be 0, 1, or 2; got {value!r}")
         if self._read_only and value == 2:
             raise PermissionError("read-only mode: set_tuner_status TUNING rejected")
+
+        rf_state = RfState.UNKNOWN
+        state_store = getattr(self._server, "command_state_store", None)
+        if isinstance(state_store, StateStore):
+            try:
+                ptt = state_store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
+            except KeyError:
+                pass
+            else:
+                if ptt.freshness is FreshnessState.FRESH and ptt.value is False:
+                    rf_state = RfState.RX
+                elif ptt.freshness is FreshnessState.FRESH and ptt.value is True:
+                    rf_state = RfState.TX
+
+        command = SetTunerStatus(value)
+        decision = evaluate_tx_interlock(command, rf_state=rf_state)
+        if not decision.allowed:
+            raise CommandError(decision.reason)
+
         # Try direct call if the radio has the method
         if radio is not None and CAP_TUNER in radio.capabilities:
             await radio.set_tuner_status(value)
         else:
             # Route through command queue
-            from ..radio_poller import SetTunerStatus  # noqa: TID251
-
             q = self._server.command_queue if self._server is not None else None
             if q is None:
                 raise RuntimeError("no command queue available")
-            q.put(SetTunerStatus(value))
+            q.put(command)
         label = {0: "OFF", 1: "ON", 2: "TUNING"}[value]
         return {"value": value, "label": label}
 
