@@ -22,8 +22,7 @@ from rigplane.rigctld.contract import (
 )
 from rigplane.rigctld.handler import RigctldHandler, _classify_rigctld_tx_intent
 from rigplane.rigctld.protocol import format_response, parse_line
-from rigplane.runtime import _poller_types as commands
-from rigplane.runtime.tx_interlock import RfState
+from rigplane.runtime import _poller_types as commands, tx_interlock
 
 
 def _intent(name: str, **params: object) -> CommandIntent:
@@ -131,7 +130,6 @@ def test_non_writes_and_future_material_intents_fail_closed() -> None:
             )
 
 
-_PTT = FieldPath.global_("tx_state", "ptt")
 _BLOCK_WIRES = (b"T 1", b"U TUNER 1", b"w FE FE 98 E0 03 FD")
 
 
@@ -142,15 +140,11 @@ def _store(case: str) -> tuple[StateStore, object | None]:
         return store, None
     store.apply(
         Observation(
-            path=_PTT,
+            path=FieldPath.global_("tx_state", "ptt"),
             value=1 if case == "value" else case == "tx",
             source=SourceMetadata(source="test", provider="tests"),
-            timestamp_monotonic=(
-                float("nan")
-                if case == "timestamp"
-                else 11.0
-                if case == "future"
-                else 9.0
+            timestamp_monotonic={"timestamp": float("nan"), "future": 11.0}.get(
+                case, 9.0
             ),
             max_age={"before": 1.1, "exact": 1.0, "after": 0.9}.get(
                 case, float("inf") if case == "max-age" else 2.0
@@ -167,9 +161,7 @@ def _store(case: str) -> tuple[StateStore, object | None]:
     return store, None
 
 
-def _handler(
-    store: StateStore, *, public_store: bool = True
-) -> tuple[RigctldHandler, AsyncMock, Mock]:
+def _handler(store: StateStore, *, public_store: bool = True):
     radio = AsyncMock()
     if public_store:
         radio.state_store = store
@@ -224,14 +216,14 @@ async def test_hard_blocks_dispatch_once_with_fresh_rx(wire: bytes) -> None:
 
 @pytest.mark.parametrize(
     ("case", "expected"),
-    [("before", RfState.RX)]
+    [("before", tx_interlock.RfState.RX)]
     + [
-        (case, RfState.UNKNOWN)
+        (case, tx_interlock.RfState.UNKNOWN)
         for case in ("exact", "after", "future", "timestamp", "max-age", "generation")
     ],
 )
 def test_rf_truth_enforces_strict_age_and_shape(
-    case: str, expected: RfState, monkeypatch: pytest.MonkeyPatch
+    case: str, expected: tx_interlock.RfState, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, forced = _store(case)
     handler, _, _ = _handler(store)
