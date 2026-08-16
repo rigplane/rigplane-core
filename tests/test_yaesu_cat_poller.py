@@ -1013,6 +1013,8 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
         ("provider-generation", "provider generation changed"),
         ("provider-replacement", "provider binding replaced"),
         ("connection-generation", "connection generation changed"),
+        ("command-terminal", "no longer active"),
+        ("session", "gone"),
     ),
 )
 async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
@@ -1033,11 +1035,14 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
     )
     future = asyncio.get_running_loop().create_future()
     service = MagicMock()
+    if boundary == "session":
+        queue.register_session("ws")
     queue.put_ordered(
         SetFreq(7_100_000),
         future=future,
         command_id="held",
         source="websocket",
+        session_id="ws",
         command_service=service,
     )
     _set_fresh_ptt_observation(poller, active=True)
@@ -1053,15 +1058,23 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
         store.begin_provider_generation()
     elif boundary == "provider-replacement":
         poller.bind_provider_generation(capture=lambda: 1)
+    elif boundary == "command-terminal":
+        service.retain_readback_expectations_for_dispatch.return_value = None
+    elif boundary == "session":
+        queue.unregister_session("ws")
     else:
         radio._transport.stats.reconnects += 1
         poller._sync_tx_target_generation()  # noqa: SLF001
+    if boundary in {"command-terminal", "session"}:
+        poller._deferred_tx_lane._entry.quiet_since = 9.0  # type: ignore[union-attr]  # noqa: SLF001
+        poller._ptt_observation = _ptt_observation(False, observed_at=10.0)  # noqa: SLF001
     await poller._drain_commands()  # noqa: SLF001
 
     error = future.exception()
     assert isinstance(error, CommandError)
     assert reason in str(error)
-    assert service.fail_command.call_args.kwargs["timed_out"] is False
+    if boundary != "command-terminal":
+        assert service.fail_command.call_args.kwargs["timed_out"] is False
     assert poller._deferred_tx_entry is None  # noqa: SLF001
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
 
@@ -2227,6 +2240,33 @@ async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback
         mock_call("VS0;"),
     ]
     assert store.snapshot().field(active_path).value == "SUB"
+    observed_path = FieldPath.active("sub", "freq_mode", "freq_hz")
+    for command_id, freq in (("old", 7_100_000), ("latest", 7_200_000)):
+        await handler._enqueue_command(  # noqa: SLF001
+            "set_freq", {"freq": freq, "receiver": 1}, command_id=command_id
+        )
+        dispatched_at = asyncio.get_running_loop().time()
+        await poller._drain_commands()  # noqa: SLF001
+    [latest] = service.readback_expectations(
+        source="websocket", session_id="ws-ftx1", command_id="latest"
+    )
+    assert 1.9 < latest.expires_at_monotonic - dispatched_at <= 2.01
+    observed = ProviderObservationAdapter(
+        radio.profile.state_acquisition,
+        source="yaesu_poll_response",
+        transport="serial",
+    ).observation(observed_path, 7_100_000)
+    observed = replace(observed, provider_generation=store.provider_generation)
+    assert poller._annotate_yaesu_readbacks((observed,))[0].correlation_id is None  # noqa: SLF001
+    matched = poller._annotate_yaesu_readbacks(  # noqa: SLF001
+        (replace(observed, value=7_200_000),)
+    )[0]
+    assert matched.correlation_id == "latest"
+    assert matched.source == replace(
+        observed.source, command_source="websocket", session_id="ws-ftx1"
+    )
+    accept((matched,))
+    assert service.lifecycle_events()[-1].state == "reconciled"
 
 
 @pytest.mark.asyncio
