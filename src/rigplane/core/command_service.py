@@ -262,39 +262,30 @@ class CommandService:
     ) -> int:
         """Fail active commands in an exact source/session lifecycle scope."""
 
+        if source is not None and type(source) is not str:
+            return 0
+        if (
+            session_id is not _UNSET
+            and session_id is not None
+            and type(session_id) is not str
+        ):
+            return 0
         matches = [
-            (key, event)
-            for key, event in self._active_commands.items()
+            key
+            for key in self._active_commands
             if (source is None or key[0] == source)
             and (session_id is _UNSET or key[1] == session_id)
         ]
-        terminated = 0
-        for key, event in matches:
-            if key not in self._active_commands:
-                continue
-            scoped_source, scoped_session, command_id = key
-            self.expire_command(
+        for key in matches:
+            self._active_commands.pop(key)
+        for scoped_source, scoped_session, command_id in matches:
+            self.fail_command(
                 command_id,
                 source=scoped_source,
                 session_id=scoped_session,
-            )
-            self.emit_lifecycle(
-                CommandIntent(
-                    id=command_id,
-                    name="scope_termination",
-                    params={"session_id": scoped_session},
-                    source=scoped_source,
-                    target=event.target,
-                    priority="user",
-                    timeout=None,
-                    pending_policy="none",
-                    expected_observations=(),
-                ),
-                "failed",
                 message=reason,
             )
-            terminated += 1
-        return terminated
+        return len(matches)
 
     def emit_lifecycle(
         self,
@@ -308,7 +299,7 @@ class CommandService:
 
         payload_details = dict(details or {})
         if "session_id" in intent.params:
-            payload_details.setdefault("session_id", intent.params["session_id"])
+            payload_details["session_id"] = _session_id(intent)
         event = CommandLifecycleEvent(
             command_id=intent.id,
             state=state,
@@ -330,7 +321,6 @@ class CommandService:
                     session_id=oldest[1],
                     message="active command capacity exceeded",
                 )
-            self._active_commands.pop(key, None)
             self._active_commands[key] = event
         else:
             self._active_commands.pop(key, None)
