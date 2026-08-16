@@ -699,6 +699,53 @@ async def test_yaesu_deferred_command_emits_held_lifecycle_once(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("source", "expected_session"),
+    (("websocket", "ws-ftx1"), ("http", None)),
+)
+async def test_ftx1_web_deferred_hold_preserves_ingress_lifecycle_context(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    expected_session: str | None,
+) -> None:
+    clock = [10.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "rigplane.core.command_service.time.monotonic", lambda: clock[0]
+    )
+    radio, handler, poller, _store, _accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    params = {"freq": 7_100_000, "receiver": 1}
+    original_params = dict(params)
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "set_freq", params, command_id=f"held-{source}", source=source
+    )
+    ingress = service.lifecycle_events()[0]
+    assert params == original_params
+    await _drain_with_ptt(poller, clock, 10.0, True)
+
+    held = service.lifecycle_events()[-1]
+    expected_details = {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": 13.0,
+    }
+    if expected_session is not None:
+        expected_details["session_id"] = expected_session
+    assert (held.command_id, held.state, held.source, held.target) == (
+        ingress.command_id,
+        "queued",
+        ingress.source,
+        ingress.target,
+    )
+    assert held.details == expected_details
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("replacement_at", "terminal_state", "replacement_expiry"),
     ((22.5, "superseded", 23.0), (23.0, "timed_out", 26.0)),
 )
