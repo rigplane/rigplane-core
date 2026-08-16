@@ -26,6 +26,7 @@ from rigplane.core.acquisition_scheduler import (
 )
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
+    CommandLifecycleEvent,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -3191,6 +3192,128 @@ def _register_two_sessions(
     return issuer_q, bystander_q
 
 
+def _held_details(**overrides: object) -> dict[str, object]:
+    details: dict[str, object] = {
+        "session_id": "session-issuer",
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": 15.0,
+    }
+    details.update(overrides)
+    return details
+
+
+def _held_lifecycle(**overrides: object) -> CommandLifecycleEvent:
+    values: dict[str, object] = {
+        "command_id": "cmd-held",
+        "state": "queued",
+        "timestamp_monotonic": 12.5,
+        "source": "websocket",
+        "target": FieldPath.active("main", "freq_mode", "freq_hz"),
+        "message": None,
+        "details": _held_details(),
+    }
+    values.update(overrides)
+    return CommandLifecycleEvent(**values)  # type: ignore[arg-type]
+
+
+async def _ack_held(srv: WebServer) -> None:
+    srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
+    await srv.command_service.execute(
+        command_intent_from_request(
+            "set_freq",
+            {"freq_hz": 1},
+            source="websocket",
+            command_id="cmd-held",
+            session_id="session-issuer",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_deferred_lifecycle_is_delivered_only_to_its_issuer() -> None:
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    await _ack_held(srv)
+
+    srv._on_command_lifecycle_event(_held_lifecycle())  # noqa: SLF001
+
+    payload = issuer_q.get_nowait()
+    assert tuple(
+        payload[key]
+        for key in (
+            "type",
+            "commandId",
+            "state",
+            "timestampMonotonic",
+            "source",
+        )
+    ) == ("command_lifecycle", "cmd-held", "queued", 12.5, "websocket")
+    assert payload["target"] == "receiver.main.active.freq_mode.freq_hz"
+    assert payload["message"] is None
+    assert payload["details"] == {
+        "heldBy": "tx_interlock",
+        "reason": "tx_active",
+        "expiresAt": 15.0,
+    }
+    assert issuer_q.empty()
+    assert bystander_q.empty()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"command_id": ""},
+        {"source": "public_api"},
+        {"state": "confirmed"},
+        {"timestamp_monotonic": True},
+        {"timestamp_monotonic": float("nan")},
+        {"target": "not-a-field-path"},
+        {"message": 7},
+        {"details": {"session_id": "session-issuer"}},
+        {"details": _held_details(heldBy="wrong")},
+        {"details": _held_details(expiresAt=False)},
+        {"details": _held_details(expiresAt=float("inf"), extra=1)},
+    ],
+)
+@pytest.mark.asyncio
+async def test_malformed_deferred_lifecycle_is_ignored(
+    overrides: dict[str, object],
+) -> None:
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    await _ack_held(srv)
+
+    srv._on_command_lifecycle_event(_held_lifecycle(**overrides))  # noqa: SLF001
+
+    assert issuer_q.empty()
+    assert bystander_q.empty()
+
+
+@pytest.mark.asyncio
+async def test_deferred_lifecycle_ack_identity_and_bounded_queue() -> None:
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    event = _held_lifecycle()
+    srv._on_command_lifecycle_event(event)  # noqa: SLF001
+    assert issuer_q.empty()
+
+    await _ack_held(srv)
+    cross_session = _held_lifecycle(
+        details={**event.details, "session_id": "session-bystander"}
+    )
+    srv._on_command_lifecycle_event(cross_session)  # noqa: SLF001
+    assert issuer_q.empty() and bystander_q.empty()
+
+    issuer_q.put_nowait({"sentinel": True})
+    srv._on_command_lifecycle_event(event)  # noqa: SLF001
+    assert issuer_q.get_nowait() == {"sentinel": True}
+    srv.unregister_control_event_queue(issuer_q, session_id="session-issuer")
+    _drain_queue(bystander_q)
+    srv._on_command_lifecycle_event(event)  # noqa: SLF001
+    assert bystander_q.empty()
+
+
 @pytest.mark.asyncio
 async def test_post_ack_command_failure_notifies_issuer_only() -> None:
     """A command that fails AFTER being acknowledged reaches the session
@@ -3229,7 +3352,14 @@ async def test_post_ack_command_failure_notifies_issuer_only() -> None:
     assert n["category"] == "command"
     assert n["code"] == "commandExecutionFailed"
     assert "Attenuator level" in n["params"]["reason"]
-    assert issuer_q.empty()  # exactly one notification, not more
+    lifecycle = issuer_q.get_nowait()
+    assert (lifecycle["type"], lifecycle["state"], lifecycle["details"]) == (
+        "command_lifecycle",
+        "failed",
+        {},
+    )
+    assert lifecycle["commandId"] == "cmd-att-1"
+    assert issuer_q.empty()
     assert bystander_q.empty()  # zero — never broadcast
 
 
@@ -3292,6 +3422,9 @@ async def test_command_timed_out_after_ack_notifies_issuer_only() -> None:
     assert n["level"] == "error"
     assert n["code"] == "commandExecutionFailed"
     assert n["params"]["reason"] == "radio did not respond"
+    lifecycle = issuer_q.get_nowait()
+    assert lifecycle["state"] == "timed_out"
+    assert lifecycle["details"] == {}
     assert bystander_q.empty()
 
 
