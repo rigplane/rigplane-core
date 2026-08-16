@@ -109,6 +109,12 @@ from ..core.tx_target import (
 from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
+from ..runtime.tx_interlock import (
+    RfState,
+    TxInterlockCommandFamily,
+    evaluate_tx_interlock,
+    get_tx_interlock_command_family_metadata,
+)
 from ..types import AudioCodec
 
 if TYPE_CHECKING:
@@ -203,6 +209,13 @@ _DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
+_PTT_PATH = FieldPath.global_("tx_state", "ptt")
+_WEB_IMMEDIATE_BLOCK_FAMILIES = (
+    TxInterlockCommandFamily.RAW_CIV,
+    TxInterlockCommandFamily.SCAN_START,
+    TxInterlockCommandFamily.ANTENNA_SWITCH,
+    TxInterlockCommandFamily.TUNER_ENGAGE,
+)
 
 # Fallback for the derived tx_target field's own freshness TTL when a
 # profile has no [state_acquisition] block at all (MOR-1496 review R3, F1
@@ -696,6 +709,33 @@ class RadioPoller:
 
     def _provider_generation(self) -> int:
         return cast(int, self._state_store.provider_generation)
+
+    def _current_rf_state(self) -> RfState:
+        """Return RF truth only from a fresh current-provider PTT observation."""
+        snapshot = self._state_store.snapshot()
+        try:
+            field = snapshot.field(_PTT_PATH)
+        except KeyError:
+            return RfState.UNKNOWN
+        now = snapshot.generated_at_monotonic
+        if (
+            field.freshness is not FreshnessState.FRESH
+            or type(field.value) is not bool
+            or field.provider_generation != self._provider_generation()
+            or field.max_age is None
+            or now < field.last_observed_monotonic
+            or now >= field.last_observed_monotonic + field.max_age
+        ):
+            return RfState.UNKNOWN
+        return RfState.TX if field.value else RfState.RX
+
+    def _enforce_tx_interlock(self, cmd: Command) -> None:
+        metadata = get_tx_interlock_command_family_metadata(cmd)
+        if metadata is None or metadata.family not in _WEB_IMMEDIATE_BLOCK_FAMILIES:
+            return
+        decision = evaluate_tx_interlock(cmd, rf_state=self._current_rf_state())
+        if not decision.allowed:
+            raise CommandError(decision.reason)
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
         """Derive a finite tuple window from this provider's expected cadence."""
@@ -1687,6 +1727,7 @@ class RadioPoller:
                             )
                             continue
                         try:
+                            self._enforce_tx_interlock(cmd)
                             await self._execute(
                                 cmd,
                                 command_id=entry.command_id,
