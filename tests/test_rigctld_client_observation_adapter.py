@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 
 import pytest
 
@@ -13,7 +12,6 @@ from rigplane._poller_types import (
     CommandQueue,
     EnableScope,
     PttOn,
-    SelectVfo,
     SetAfLevel,
     SetAttenuator,
     SetFreq,
@@ -24,10 +22,7 @@ from rigplane._poller_types import (
     SetRfGain,
 )
 from rigplane.backends.rigctld_client import RigctldClientRadio
-from rigplane.backends.rigctld_client.radio import (
-    RigctldClientObservationPoller,
-    _entry_matches_observation,
-)
+from rigplane.backends.rigctld_client.radio import RigctldClientObservationPoller
 from rigplane.backends.rigctld_client.observations import (
     RigctldClientObservationAdapter,
     build_external_rigctld_acquisition_profile,
@@ -175,18 +170,19 @@ async def test_observation_poller_drains_web_commands_before_readback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_observation_poller_set_success_waits_for_rigctld_readback() -> None:
+@pytest.mark.parametrize("terminal", (False, True))
+async def test_newer_physical_dispatch_supersedes_older_readback(
+    terminal: bool,
+) -> None:
     async with FakeRigctldServer() as server:
         radio = RigctldClientRadio(host=server.host, port=server.port)
         await radio.connect()
         try:
             queue = CommandQueue()
-            clock = FreshnessClock(start=50.0)
-            store = StateStore(freshness_clock=clock)
+            store = StateStore()
             service = CommandService(
                 executor=_NoopCommandExecutor(),
                 state_store=store,
-                clock=clock.now,
             )
             intent = command_intent_from_request(
                 "set_freq",
@@ -210,94 +206,51 @@ async def test_observation_poller_set_success_waits_for_rigctld_readback() -> No
                 command_service=service,
             )
             observations = []
-            poller = RigctldClientObservationPoller(
-                radio,
+            poller = radio.create_observation_poller(
                 callback=observations.extend,
                 command_queue=queue,
-                clock=clock.now,
-            )
-            poller.bind_provider_generation(
-                capture=lambda: store.provider_generation,
-                advance=store.begin_provider_generation,
             )
 
             await poller._drain_commands()  # noqa: SLF001
-            await service.execute(
-                command_intent_from_request(
-                    "set_freq",
-                    {"freq": 7_060_000},
-                    source="websocket",
-                    command_id="latest",
-                )
-            )
-            queue.put_ordered(
-                SetFreq(7_060_000),
-                command_id="latest",
-                source="websocket",
-                command_service=service,
-            )
-            await poller._drain_commands()  # noqa: SLF001
-            pending = poller._pending_readback_entries  # noqa: SLF001
-            assert [item.command_id for item in pending] == ["latest"]
-            entry = pending[0]
-            clock.advance(0.1)
 
             assert future.done()
             assert future.result() is None
             with pytest.raises(KeyError):
                 store.snapshot().field("receiver.0.freq_mode.freq_hz")
 
+            if terminal:
+                service.fail_command(
+                    "ws-rigctld-set-freq", source="websocket", session_id=None
+                )
+            queue.put_ordered(
+                SetFreq(7_050_000),
+                command_id="ws-rigctld-set-freq" if terminal else None,
+                source="websocket",
+                command_service=service,
+            )
+            await poller._drain_commands()  # noqa: SLF001
+            assert poller._pending_readback_entries == []  # noqa: SLF001
+
             await poller._poll_medium()  # noqa: SLF001
+            for observation in observations:
+                service.apply_observation(observation)
+
             freq_observation = next(
                 item
                 for item in observations
                 if str(item.path) == "receiver.main.active.freq_mode.freq_hz"
             )
-            assert _entry_matches_observation(entry, freq_observation, now=clock.now())
-            assert all(
-                not _entry_matches_observation(entry, sample, now=now)
-                for sample, now in (
-                    (replace(freq_observation, value=True), clock.now()),
-                    (
-                        replace(
-                            freq_observation,
-                            timestamp_monotonic=entry.dispatched_at_monotonic,
-                        ),
-                        clock.now(),
-                    ),
-                    (freq_observation, entry.expires_at_monotonic),
-                )
+            assert not any(
+                event.state == "reconciled" for event in service.lifecycle_events()
             )
-            for observation in observations:
-                service.apply_observation(observation)
-
-            assert (
-                service.pending_overlays(
-                    source="websocket",
-                    session_id=None,
-                    command_id="latest",
-                )
-                == ()
-            )
-            assert [
-                event.state
-                for event in service.lifecycle_events()
-                if event.command_id == "latest"
-            ] == ["accepted", "queued", "sent", "acknowledged", "reconciled"]
             assert (
                 store.snapshot().field("receiver.main.active.freq_mode.freq_hz").value
-                == 7_060_000
+                == 7_050_000
             )
             assert freq_observation.source.source == "hamlib_response"
-            assert freq_observation.source.command_source == "websocket"
+            assert freq_observation.source.command_source is None
             assert freq_observation.source.session_id is None
-            assert freq_observation.correlation_id == "latest"
-            assert not _entry_matches_observation(
-                entry, freq_observation, now=clock.now()
-            )
-            poller._track_readback_entry(entry)  # noqa: SLF001
-            await poller.stop()
-            assert poller._pending_readback_entries == []  # noqa: SLF001
+            assert freq_observation.correlation_id is None
         finally:
             await radio.disconnect()
 
@@ -543,11 +496,11 @@ async def test_observation_poller_discards_expectation_when_readback_unavailable
             True,
         ),
         (
-            "select_vfo",
-            {"vfo": "B"},
-            SelectVfo("B"),
-            "receiver.main.vfo.active_slot",
-            "B",
+            "set_mode",
+            {"mode": "USB"},
+            SetMode("USB"),
+            "receiver.main.active.freq_mode.mode",
+            "USB",
         ),
     ),
 )
@@ -860,7 +813,12 @@ async def test_stale_external_rigctld_poll_clears_correlation_at_generation_boun
                 task = asyncio.create_task(poll())
                 await started.wait()
                 assert len(poller._pending_readback_entries) == 1  # noqa: SLF001
-                store.begin_provider_generation()
+                await radio.disconnect()
+                assert poller._pending_readback_entries == []  # noqa: SLF001
+                assert not service.readback_expectations(
+                    command_id="g2", source="websocket", session_id=None
+                )
+                await radio.connect()
                 release.set()
                 await task
 

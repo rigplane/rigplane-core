@@ -95,7 +95,15 @@ class RigctldClientObservationPoller:
         advance: Callable[[], int] | None = None,
     ) -> None:
         self._capture_provider_generation = capture
-        self._radio.bind_provider_generation(advance=advance)
+        if advance is None:
+            self._radio.bind_provider_generation()
+            return
+
+        def retire_and_advance() -> int:
+            self._discard_pending_readbacks()
+            return advance()
+
+        self._radio.bind_provider_generation(advance=retire_and_advance)
 
     def _stamp_provider_generation(
         self, observations: Sequence[Observation], generation: int | None
@@ -207,7 +215,7 @@ class RigctldClientObservationPoller:
             try:
                 await self._execute_command(cmd)
                 successful.append(entry)
-                self._track_readback_entry(correlation)
+                self._track_readback_entry(cmd, correlation)
                 if entry.future is not None and not entry.future.done():
                     entry.future.set_result(None)
             except Exception as exc:
@@ -221,19 +229,20 @@ class RigctldClientObservationPoller:
                 )
         return tuple(successful)
 
-    def _track_readback_entry(self, correlation: _ReadbackCorrelation | None) -> None:
-        if correlation is None:
-            return
+    def _track_readback_entry(
+        self, command: Any, correlation: _ReadbackCorrelation | None
+    ) -> None:
         replaced = [
             entry
             for entry in self._pending_readback_entries
-            if _readback_paths_match(entry.path, correlation.path)
+            if _physical_command_targets_path(command, entry.path)
         ]
+        _discard_readback_correlations(replaced)
         self._pending_readback_entries = [
             entry for entry in self._pending_readback_entries if entry not in replaced
         ]
-        _discard_readback_correlations(replaced)
-        self._pending_readback_entries.append(correlation)
+        if correlation is not None:
+            self._pending_readback_entries.append(correlation)
 
     def _discard_pending_readbacks(self) -> None:
         _discard_readback_correlations(self._pending_readback_entries)
@@ -471,6 +480,15 @@ def _readback_paths_match(readback_path: FieldPath, overlay_path: FieldPath) -> 
         return True
     return _external_rigctld_main_alias(readback_path) == (
         _external_rigctld_main_alias(overlay_path)
+    )
+
+
+def _physical_command_targets_path(command: Any, path: FieldPath) -> bool:
+    command_name = type(command).__name__.lower()
+    target_name = path.name.replace("_", "")
+    return target_name in command_name or (target_name, command_name) in (
+        ("freqhz", "setfreq"),
+        ("activeslot", "selectvfo"),
     )
 
 
