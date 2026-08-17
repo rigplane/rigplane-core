@@ -47,6 +47,34 @@ export type TxTransition = { state: TxState; effects: TxEffect[] };
 export function initialTxState(authorityEpoch: number, baseline: PttMarker): TxState {
   return { phase: 'idle', intent: null, sourceId: null, leaseId: null, generation: 0, guard: null, cleanupGuard: null, timerRevision: { audio: 0, on: 0, off: 0 }, authorityEpoch, epochBaseline: baseline, pttMarker: baseline, leaseTarget: null, startPttBaseline: null, modBarrier: null, onCommandId: null, onDispatch: null, onConfirmed: null, localAudio: 'stopped', radioTx: 'unknown', txRisk: 'none', mayOwnKey: false, modRestorePending: false, pendingOff: null, fault: null, faultDetail: null };
 }
+/**
+ * MOR-1784 — the obligation that stands between a latched fault and the
+ * operator dismissing it, or `null` when nothing does.
+ *
+ * This IS the `reset-fault` guard below, lifted out and named so an operator
+ * surface can offer the reset exactly when the reducer would accept it, and say
+ * which obligation is outstanding when it would not. A surface re-deriving this
+ * list would eventually disagree with the reducer and either dead-end the
+ * operator or promise a reset that silently no-ops; there is one list, and the
+ * transition consults the same function the UI does.
+ *
+ * Reading it changes nothing and keys nothing: dismissing still goes through
+ * `transition`, which re-checks this guard at the moment of the event. The
+ * order is by consequence — an unconfirmed de-key first — and each condition
+ * keeps its own name rather than collapsing into the one before it, so a state
+ * only reachable in future never degrades to a generic refusal.
+ */
+export type TxFaultObligation = 'dekey-pending' | 'key-held' | 'mod-restore' | 'cleanup';
+export type TxFaultObligationInputs = Readonly<{
+  pendingOff: object | null; mayOwnKey: boolean; modRestorePending: boolean; cleanupGuard: object | null;
+}>;
+export function txFaultObligation(state: TxFaultObligationInputs): TxFaultObligation | null {
+  if (state.pendingOff) return 'dekey-pending';
+  if (state.mayOwnKey) return 'key-held';
+  if (state.modRestorePending) return 'mod-restore';
+  if (state.cleanupGuard) return 'cleanup';
+  return null;
+}
 const sameGuard = (state: TxState, guard: TxGuard) => state.guard?.leaseId === guard.leaseId && state.guard.generation === guard.generation && state.guard.authorityEpoch === guard.authorityEpoch;
 const sameTarget = (a: TxTarget, b: TxTarget) => a !== null && b !== null && a.receiver === b.receiver && a.slot === b.slot && a.frequencyHz === b.frequencyHz;
 const newer = (barrier: PttMarker, observation: PttObservation) => {
@@ -137,7 +165,7 @@ export function transition(state: TxState, event: TxEvent): TxTransition {
   }
   if (event.type === 'intent') return sameGuard(state, event.guard) && event.sourceId === state.sourceId && state.phase !== 'releasing' && state.phase !== 'failed' ? { state: { ...state, intent: event.intent }, effects: [] } : { state, effects: [] };
   if (event.type === 'release') return sameGuard(state, event.guard) && (event.sourceId === undefined || event.sourceId === state.sourceId) ? release(state, event.commandId) : { state, effects: [] };
-  if (event.type === 'reset-fault' && state.phase === 'failed' && !state.pendingOff && !state.modRestorePending && !state.mayOwnKey && !state.cleanupGuard) return { state: { ...clearLease(state), phase: 'idle', txRisk: 'none', fault: null, faultDetail: null }, effects: [] };
+  if (event.type === 'reset-fault' && state.phase === 'failed' && txFaultObligation(state) === null) return { state: { ...clearLease(state), phase: 'idle', txRisk: 'none', fault: null, faultDetail: null }, effects: [] };
   if (event.type === 'audio-ready' && sameGuard(state, event.guard) && state.phase === 'audio-start-pending' && state.onCommandId === null) {
     const next = { ...state, localAudio: 'streaming' as const, onCommandId: event.commandId, onDispatch: state.pttMarker, mayOwnKey: true, txRisk: 'uncertain' as const, timerRevision: { ...state.timerRevision, audio: state.timerRevision.audio + 1, on: state.timerRevision.on + 1 } };
     return { state: next, effects: [effect('cancel-timers', next), effect('dispatch-on', next, event.commandId), armEffect('arm-on-timeout', next, next.timerRevision.on, event.commandId)] };

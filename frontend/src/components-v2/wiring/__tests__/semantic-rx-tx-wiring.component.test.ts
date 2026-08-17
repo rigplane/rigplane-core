@@ -18,10 +18,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
 
 type Snapshot = {
   phase: string; intent: string | null; guard: { leaseId: string } | null;
   radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
+  // MOR-1784: the three remaining fields of the reducer's `reset-fault` guard.
+  // Present here so a fixture can put a real outstanding obligation on the
+  // authority, which is what separates a dismissable fault from a blocked one.
+  pendingOff: { commandId: string } | null; modRestorePending: boolean;
+  cleanupGuard: { leaseId: string } | null;
 };
 
 const h = vi.hoisted(() => ({
@@ -180,6 +186,7 @@ import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 const IDLE: Snapshot = {
   phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
   mayOwnKey: false, fault: null,
+  pendingOff: null, modRestorePending: false, cleanupGuard: null,
 };
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
@@ -470,6 +477,111 @@ describe('a failed phase has an App-owned way out', () => {
     flushSync();
     expect(h.resetFault).not.toHaveBeenCalled();
     expect(h.start).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * MOR-1784 — the recovery affordance the operator can actually find and read.
+ *
+ * The bench finding it exists to close: after a `not-eligible` fault the key
+ * read "an unresolved TX fault is blocking the key" with no stated way out, and
+ * only a page reload restored the transmitter. The reset event existed and the
+ * reducer would have accepted it; the affordance sat at the far end of the
+ * single/default column, unlabelled as to what it does and silent about the
+ * cases where the reducer refuses.
+ */
+describe('MOR-1784 — a cleared TX fault is dismissable where the fault is displayed', () => {
+  // MUTATION KILLED: parking the recovery block back at the bottom of the
+  // column. It renders in DOM order right behind the surface that prints the
+  // fault line and the blocked list — the operator reads the verdict and the
+  // way out without hunting.
+  it.each(['single', 'dual'] as const)(
+    'renders immediately after the RX/TX surface — %s composition', (strips) => {
+      // The MOD-input banner is a zone member too, and in the dual composition
+      // it shares the box: made visible so "immediately after" is a real
+      // ordering claim rather than an artefact of an empty sibling.
+      h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
+      render({ strips });
+      push({ phase: 'failed', fault: 'not-eligible' });
+      const surface = q('[data-testid="rx-tx-surface"]')!;
+      const recovery = q('[data-testid="tx-fault-recovery"]')!;
+      expect(recovery).not.toBeNull();
+      expect(surface.nextElementSibling).toBe(recovery);
+      expect(recovery.contains(q('[data-testid="tx-fault-reset"]'))).toBe(true);
+    },
+  );
+
+  // MUTATION KILLED: an unlabelled button. "Dismiss" alone cannot tell an
+  // operator mid-contact whether pressing it will put the radio on the air.
+  it('states what dismissing does — and that it does not transmit', () => {
+    render();
+    push({ phase: 'failed', fault: 'not-eligible' });
+
+    expect(q('[data-testid="tx-fault-reset"]')!.textContent!.trim()).toBe('Dismiss TX fault');
+    expect(q('[data-testid="tx-fault-reset-note"]')!.textContent!.trim())
+      .toBe('Clears the fault and re-enables the key. It does not transmit.');
+    expect(q('[data-testid="tx-fault-reset-blocked"]')).toBeNull();
+
+    q<HTMLButtonElement>('[data-testid="tx-fault-reset"]')!.click();
+    flushSync();
+    expect(h.resetFault).toHaveBeenCalledTimes(1);
+    // Dismissing is the ONLY thing the control may do.
+    expect(h.start).not.toHaveBeenCalled();
+    expect(h.release).not.toHaveBeenCalled();
+  });
+
+  // MUTATION KILLED: offering the dismiss unconditionally. The reducer refuses
+  // a reset while a de-key obligation, a MOD restore or a cleanup generation is
+  // still outstanding; a button that silently no-ops there is the same dead end
+  // as no button at all, one click further in.
+  it.each([
+    ['a de-key the radio has not confirmed', { pendingOff: { commandId: 'off' }, mayOwnKey: true, modRestorePending: true },
+      'dekey-pending', 'the unkey command has not been confirmed by the radio'],
+    ['a key this session may still hold', { mayOwnKey: true, modRestorePending: true },
+      'key-held', 'this session may still be holding the key down'],
+    ['a MOD input not yet switched back', { modRestorePending: true },
+      'mod-restore', "the radio's audio input has not been switched back yet"],
+    ['a cleanup still outstanding', { cleanupGuard: { leaseId: 'lease' } },
+      'cleanup', 'the previous transmission has not finished cleaning up'],
+  ] as const)('refuses the dismiss and names the obligation — %s', (
+    _label, obligation, reason, sentence,
+  ) => {
+    render();
+    push({ phase: 'failed', fault: 'release-not-confirmed', ...obligation });
+
+    expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
+    const blocked = q('[data-testid="tx-fault-reset-blocked"]')!;
+    expect(blocked).not.toBeNull();
+    expect(blocked.dataset.reason).toBe(reason);
+    expect(blocked.textContent).toContain(sentence);
+    // The wording must not stop at "no": it says what makes it dismissable.
+    expect(blocked.textContent).toContain('once the radio confirms the transmitter is off');
+  });
+
+  it('shows nothing at all while no fault is latched', () => {
+    render();
+    expect(q('[data-testid="tx-fault-recovery"]')).toBeNull();
+    push({ phase: 'failed', fault: 'not-eligible' });
+    expect(q('[data-testid="tx-fault-recovery"]')).not.toBeNull();
+    push({ phase: 'idle', fault: null });
+    expect(q('[data-testid="tx-fault-recovery"]')).toBeNull();
+  });
+
+  // MUTATION KILLED: hardcoding the English literals. Every string here is
+  // operator-facing safety wording and must route through the catalog.
+  it('routes both wordings through the locale catalog', () => {
+    setLocale('ru-RU');
+    try {
+      render();
+      push({ phase: 'failed', fault: 'not-eligible' });
+      expect(q('[data-testid="tx-fault-reset"]')!.textContent!.trim()).toBe('Сбросить ошибку TX');
+
+      push({ phase: 'failed', fault: 'release-not-confirmed', modRestorePending: true });
+      expect(q('[data-testid="tx-fault-reset-blocked"]')!.textContent)
+        .toContain('аудиовход радио ещё не переключён обратно');
+    } finally {
+      _resetLocale();
+    }
   });
 });
 
