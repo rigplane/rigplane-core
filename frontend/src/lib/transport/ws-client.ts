@@ -29,12 +29,21 @@ export interface CommandLifecycleDeliveryEvent {
   expiresAt?: number;
   error?: string;
 }
+export interface CommandReconciliationDeliveryEvent {
+  commandId: string;
+  kind: 'reconciled';
+  originalEpoch: number;
+  eventEpoch: number;
+  revision: number;
+  observationSeq: number;
+}
 type MessageHandler = (msg: WsIncoming) => void;
 type BinaryHandler = (data: ArrayBuffer) => void;
 type StateHandler = (state: ConnectionState) => void;
 export type ControlSessionTransitionHandler = (transition: ControlSessionTransition) => void;
 type CommandDeliveryHandler = (event: CommandDeliveryEvent) => void;
 type CommandLifecycleDeliveryHandler = (event: CommandLifecycleDeliveryEvent) => void;
+type CommandReconciliationDeliveryHandler = (event: CommandReconciliationDeliveryEvent) => void;
 type PendingPttRelease = { command: WsCommand; originalEpoch: number };
 type TrackedPttCommand = PendingPttRelease & {
   seen: Set<CommandDeliveryKind>;
@@ -81,6 +90,24 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
     && Object.getPrototypeOf(value) === Object.prototype;
 }
 
+const FIELD_TOKEN = '[a-z0-9_]+';
+const FIELD_FAMILY = '(?:freq_mode|vfo|operator_toggles|operator_controls|meters|tx_state|slow_state|display|connection|health)';
+const LIFECYCLE_TARGET = new RegExp(
+  `^(?:receiver\\.${FIELD_TOKEN}\\.(?:(?:slot\\.[AB]|active|unselected)\\.freq_mode\\.${FIELD_TOKEN}|${FIELD_FAMILY}\\.${FIELD_TOKEN})|(?:global|connection|health)\\.${FIELD_FAMILY}\\.${FIELD_TOKEN}|scope_controls\\.(?:receiver\\.${FIELD_TOKEN}|global)\\.display\\.${FIELD_TOKEN})$`,
+);
+
+function reconciliationEvidence(value: unknown): { revision: number; observationSeq: number } | null {
+  if (!isPlainRecord(value)) return null;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== 2 || !keys.includes('revision') || !keys.includes('observationSeq')) return null;
+  const revision = Object.getOwnPropertyDescriptor(value, 'revision');
+  const observationSeq = Object.getOwnPropertyDescriptor(value, 'observationSeq');
+  if (!revision || !('value' in revision) || !observationSeq || !('value' in observationSeq)) return null;
+  if (!Number.isSafeInteger(revision.value) || revision.value < 0) return null;
+  if (!Number.isSafeInteger(observationSeq.value) || observationSeq.value < 0) return null;
+  return { revision: revision.value as number, observationSeq: observationSeq.value as number };
+}
+
 // ─── Close observability (MOR-1424) ─────────────────────────────────────────
 //
 // The client previously discarded the WS CloseEvent entirely (onerror just
@@ -116,6 +143,7 @@ export class WsChannel {
   private trackedLifecycleCommands = new Map<string, TrackedLifecycleCommand>();
   private commandDeliveryHandlers = new Set<CommandDeliveryHandler>();
   private commandLifecycleDeliveryHandlers = new Set<CommandLifecycleDeliveryHandler>();
+  private commandReconciliationDeliveryHandlers = new Set<CommandReconciliationDeliveryHandler>();
   private messageHandlers = new Set<MessageHandler>();
   private binaryHandlers = new Set<BinaryHandler>();
   private stateHandlers = new Set<StateHandler>();
@@ -418,6 +446,11 @@ export class WsChannel {
     return () => this.commandLifecycleDeliveryHandlers.delete(handler);
   }
 
+  onCommandReconciliationDelivery(handler: CommandReconciliationDeliveryHandler): () => void {
+    this.commandReconciliationDeliveryHandlers.add(handler);
+    return () => this.commandReconciliationDeliveryHandlers.delete(handler);
+  }
+
   get sessionEpoch(): number {
     return this.transportEpoch;
   }
@@ -524,9 +557,38 @@ export class WsChannel {
     const id = raw.commandId;
     const state = raw.state;
     if (typeof id !== 'string' || id.trim().length === 0) return;
-    if (state !== 'queued' && state !== 'superseded' && state !== 'timed_out' && state !== 'failed') return;
+    if (state !== 'queued' && state !== 'superseded' && state !== 'timed_out' && state !== 'failed' && state !== 'reconciled') return;
     const tracked = this.trackedLifecycleCommands.get(id);
     if (!tracked || tracked.eventEpoch !== eventEpoch) return;
+
+    if (state === 'reconciled') {
+      if (
+        raw.source !== 'websocket'
+        || typeof raw.target !== 'string'
+        || !LIFECYCLE_TARGET.test(raw.target)
+        || typeof raw.timestampMonotonic !== 'number'
+        || !Number.isFinite(raw.timestampMonotonic)
+        || raw.message !== 'confirmed by matching observation'
+      ) return;
+      const evidence = reconciliationEvidence(raw.details);
+      if (!evidence) return;
+      // Consume the terminal correlation before dispatch: a reentrant or duplicate
+      // frame must find nothing to correlate, and one throwing subscriber must not
+      // starve the rest or keep the correlation alive.
+      this.trackedLifecycleCommands.delete(id);
+      const delivery: CommandReconciliationDeliveryEvent = {
+        commandId: id, kind: 'reconciled', originalEpoch: tracked.originalEpoch, eventEpoch,
+        ...evidence,
+      };
+      for (const handler of [...this.commandReconciliationDeliveryHandlers]) {
+        try {
+          handler(delivery);
+        } catch (error) {
+          console.error('[ws] reconciliation subscriber failed', error);
+        }
+      }
+      return;
+    }
 
     let kind: CommandLifecycleDeliveryKind;
     let reason: string | undefined;
@@ -949,6 +1011,10 @@ export function onCommandDelivery(handler: CommandDeliveryHandler): () => void {
 
 export function onCommandLifecycleDelivery(handler: CommandLifecycleDeliveryHandler): () => void {
   return _ctrl.onCommandLifecycleDelivery(handler);
+}
+
+export function onCommandReconciliationDelivery(handler: CommandReconciliationDeliveryHandler): () => void {
+  return _ctrl.onCommandReconciliationDelivery(handler);
 }
 
 export function onControlSessionTransition(handler: ControlSessionTransitionHandler): () => void {

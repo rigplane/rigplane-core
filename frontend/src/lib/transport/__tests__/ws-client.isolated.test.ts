@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WsCommand, WsMessage } from '../../types/protocol';
 import type { ReceiverState, ServerState } from '../../types/state';
-import type { CommandDeliveryEvent, CommandLifecycleDeliveryEvent, ControlSessionTransition } from '../ws-client';
+import type { CommandDeliveryEvent, CommandLifecycleDeliveryEvent, CommandReconciliationDeliveryEvent, ControlSessionTransition } from '../ws-client';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
 
 type ServerStateWithObservation = ServerState & {
@@ -388,6 +388,186 @@ describe('WsChannel', () => {
     ]);
     expect(ordinary.filter((event) => event.kind === 'response-ok')).toHaveLength(3);
     expect(messages).not.toContainEqual(expect.objectContaining({ type: 'command_lifecycle' }));
+  });
+
+  it('emits only sanitized reconciliation evidence after physical lifecycle truth', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const lifecycle: CommandReconciliationDeliveryEvent[] = [];
+    const ordinary: CommandDeliveryEvent[] = [];
+    ch.onCommandReconciliationDelivery((event) => lifecycle.push(event));
+    ch.onCommandDelivery((event) => ordinary.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 4, observationSeq: 8 })));
+    const stateBefore = radioStoreMock.current;
+    const writesBefore = vi.mocked(setRadioState).mock.calls.length;
+
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reconciled', params: { freq: 1 } });
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'reconciled' }));
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'reconciled', ok: true }));
+    expect(lifecycle).toEqual([]);
+    expect(ordinary.map((event) => event.kind)).toEqual(['transport-sent', 'ack', 'response-ok']);
+
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'command_lifecycle', commandId: 'reconciled', state: 'reconciled',
+      source: 'websocket', target: 'receiver.0.freq_mode.freq_hz',
+      timestampMonotonic: 12.5, message: 'confirmed by matching observation',
+      details: { revision: 5, observationSeq: 9 },
+    }));
+
+    expect(lifecycle).toEqual([{
+      commandId: 'reconciled', kind: 'reconciled', originalEpoch: 1, eventEpoch: 1,
+      revision: 5, observationSeq: 9,
+    }]);
+    expect(radioStoreMock.current).toBe(stateBefore);
+    expect(setRadioState).toHaveBeenCalledTimes(writesBefore);
+  });
+
+  it('rejects malformed, cancelled, and stale-socket reconciliation evidence', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandReconciliationDeliveryEvent[] = [];
+    ch.onCommandReconciliationDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'strict', params: {} });
+    const valid = {
+      type: 'command_lifecycle', commandId: 'strict', state: 'reconciled',
+      source: 'websocket', target: 'receiver.0.freq_mode.freq_hz',
+      timestampMonotonic: 12.5, message: 'confirmed by matching observation',
+      details: { revision: 5, observationSeq: 9 },
+    };
+    const invalid = [
+      { ...valid, source: 'public_api' },
+      { ...valid, source: undefined },
+      { ...valid, commandId: ' ' },
+      { ...valid, commandId: undefined },
+      { ...valid, target: null },
+      { ...valid, target: 'not-a-field-path' },
+      { ...valid, target: 'receiver.0.private.secret' },
+      { ...valid, timestampMonotonic: true },
+      { ...valid, timestampMonotonic: Number.NaN },
+      { ...valid, timestampMonotonic: Number.POSITIVE_INFINITY },
+      { ...valid, message: null },
+      { ...valid, message: 'confirmed' },
+      { ...valid, details: null },
+      { ...valid, details: { observationSeq: 9 } },
+      { ...valid, details: { revision: 5 } },
+      { ...valid, details: { revision: true, observationSeq: 9 } },
+      { ...valid, details: { revision: -1, observationSeq: 9 } },
+      { ...valid, details: { revision: 5.5, observationSeq: 9 } },
+      { ...valid, details: { revision: '5', observationSeq: 9 } },
+      { ...valid, details: { revision: Number.MAX_SAFE_INTEGER + 1, observationSeq: 9 } },
+      { ...valid, details: { revision: 5, observationSeq: true } },
+      { ...valid, details: { revision: 5, observationSeq: -1 } },
+      { ...valid, details: { revision: 5, observationSeq: 9.5 } },
+      { ...valid, details: { revision: 5, observationSeq: '9' } },
+      { ...valid, details: { revision: 5, observationSeq: Number.MAX_SAFE_INTEGER + 1 } },
+      { ...valid, details: { revision: 5, observationSeq: Number.POSITIVE_INFINITY } },
+      { ...valid, details: { revision: 5, observationSeq: 9, private: 'drop' } },
+    ];
+    for (const frame of invalid) instances[0].simulateMessage(JSON.stringify(frame));
+    instances[0].simulateMessage('{"type":"command_lifecycle","commandId":"strict","state":"reconciled","source":"websocket","target":"receiver.0.freq_mode.freq_hz","timestampMonotonic":12.5,"message":"confirmed by matching observation","details":{"revision":5,"observationSeq":9,"__proto__":{"private":true}}}');
+    const accessorDetails = {};
+    Object.defineProperties(accessorDetails, {
+      revision: { enumerable: true, get: () => { throw new Error('trap'); } },
+      observationSeq: { enumerable: true, value: 9 },
+    });
+    const parse = vi.spyOn(JSON, 'parse').mockReturnValueOnce({ ...valid, details: accessorDetails });
+    expect(() => instances[0].simulateMessage('{}')).not.toThrow();
+    parse.mockRestore();
+    expect(events).toEqual([]);
+
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'cancelled', params: {} });
+    ch.cancelNonPtt('provider session replaced');
+    instances[0].simulateMessage(JSON.stringify({ ...valid, commandId: 'cancelled' }));
+    expect(events).toEqual([]);
+
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reused', params: {} });
+    instances[0].simulateClose();
+    vi.advanceTimersByTime(1_300);
+    instances[1].simulateOpen();
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reused', params: {} });
+    instances[0].simulateMessage(JSON.stringify({ ...valid, commandId: 'reused' }));
+    instances[1].simulateMessage(JSON.stringify({ ...valid, commandId: 'reused' }));
+    expect(events).toEqual([{
+      commandId: 'reused', kind: 'reconciled', originalEpoch: 2, eventEpoch: 2,
+      revision: 5, observationSeq: 9,
+    }]);
+  });
+
+  it('isolates throwing reconciliation subscribers and consumes the correlation first', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    const frame = JSON.stringify({
+      type: 'command_lifecycle', commandId: 'robust', state: 'reconciled',
+      source: 'websocket', target: 'receiver.0.freq_mode.freq_hz',
+      timestampMonotonic: 12.5, message: 'confirmed by matching observation',
+      details: { revision: 5, observationSeq: 9 },
+    });
+    const received: CommandReconciliationDeliveryEvent[] = [];
+    const throwing = vi.fn(() => { throw new Error('faulty consumer'); });
+    ch.onCommandReconciliationDelivery(throwing);
+    ch.onCommandReconciliationDelivery((event) => received.push(event));
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'robust', params: {} });
+    expect(() => instances[0].simulateMessage(frame)).not.toThrow();
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(received).toEqual([{
+      commandId: 'robust', kind: 'reconciled', originalEpoch: 1, eventEpoch: 1,
+      revision: 5, observationSeq: 9,
+    }]);
+
+    instances[0].simulateMessage(frame);
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(received).toHaveLength(1);
+  });
+
+  it('deduplicates reentrant reconciliation delivery over a stable subscriber snapshot', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    const frame = JSON.stringify({
+      type: 'command_lifecycle', commandId: 'reentrant', state: 'reconciled',
+      source: 'websocket', target: 'receiver.0.freq_mode.freq_hz',
+      timestampMonotonic: 12.5, message: 'confirmed by matching observation',
+      details: { revision: 5, observationSeq: 9 },
+    });
+    const first: CommandReconciliationDeliveryEvent[] = [];
+    const second: CommandReconciliationDeliveryEvent[] = [];
+    const added: CommandReconciliationDeliveryEvent[] = [];
+    let armed = true;
+    ch.onCommandReconciliationDelivery((event) => {
+      first.push(event);
+      if (armed) {
+        armed = false;
+        instances[0].simulateMessage(frame);
+        unsubscribeSecond();
+        ch.onCommandReconciliationDelivery((e) => added.push(e));
+      }
+    });
+    const unsubscribeSecond = ch.onCommandReconciliationDelivery((event) => second.push(event));
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reentrant', params: {} });
+    instances[0].simulateMessage(frame);
+
+    const delivered = {
+      commandId: 'reentrant', kind: 'reconciled', originalEpoch: 1, eventEpoch: 1,
+      revision: 5, observationSeq: 9,
+    };
+    expect(first).toEqual([delivered]);
+    expect(second).toEqual([delivered]);
+    expect(added).toEqual([]);
+
+    expect(() => { unsubscribeSecond(); unsubscribeSecond(); }).not.toThrow();
+
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reentrant', params: {} });
+    instances[0].simulateMessage(frame);
+    expect(first).toHaveLength(2);
+    expect(second).toHaveLength(1);
+    expect(added).toEqual([delivered]);
   });
 
   it('rejects malformed, stale, cancelled, and evicted lifecycle delivery', async () => {
