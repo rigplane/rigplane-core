@@ -1,15 +1,15 @@
 # CLAUDE.md — Control Plane
 
-**rigplane** v2.0.0 — Python 3.11+ asyncio library + Web UI for Icom transceivers over LAN/USB.
-Live bench: **IC-7300, FTX-1, X6200**. *(IC-7610 retired 2026-08-04.)* Context: `docs/PROJECT.md`.
+**rigplane** — Python 3.11+ asyncio library + Web UI for Icom transceivers over LAN/USB. Version: see `pyproject.toml`.
+Live bench: **IC-7300, FTX-1**. *(IC-7610 retired 2026-08-04; X6200 destroyed by lightning 2026-08-11.)* Context: `docs/PROJECT.md`.
 
 ---
 
 ## Commands (always `uv run`)
 
 ```bash
-uv run pytest tests/ -q --tb=short                    # all tests
-uv run pytest tests/ -q --tb=short --ignore=tests/integration  # skip hw
+uv run pytest tests/ --ignore=tests/integration -n auto -q --tb=short --timeout=300 --timeout-method=thread  # standard suite (CI parity, ~2 min)
+uv run pytest tests/ -q --tb=short                    # serial, incl. integration hooks (profiling/hardware only)
 uv run mypy src/                                       # type check
 uv run ruff check src/ tests/ && uv run ruff format src/ tests/  # lint+format
 ```
@@ -152,7 +152,7 @@ published artifact source of truth, and release-branch hotfixes must return to
 ## Completion criteria
 
 Work is complete ONLY when ALL pass:
-1. `uv run pytest tests/ -q --tb=short` — zero failures
+1. `uv run pytest tests/ --ignore=tests/integration -n auto -q --tb=short --timeout=300 --timeout-method=thread` — zero failures
 2. `uv run ruff check src/ tests/` — zero violations
 3. `git diff` — no unintended changes
 
@@ -171,6 +171,13 @@ and keep fields current while working. See
 Use subagents for large exploration/review — keep the main session lean. The
 implementation agent never reviews its own work; independent review and the
 Agent Review Gate mechanics are described in Language & Git above.
+
+Subagent roles with pinned models live in `.claude/agents/`: `scout` (haiku,
+read-only status/fact collection), `builder` (sonnet, implementation from a
+spec), `verifier` (opus, independent review and gate verdicts), `researcher`
+(sonnet, read-only exploration with synthesis). Dispatch through these roles
+by default; a dispatch outside them must pass an explicit model — never let a
+subagent silently inherit the root session's model.
 
 Slash commands for scoped workflows live in `.claude/commands/` (`scan-issues`,
 `solve-issue`, `next`, `regression-check`, `generate-tests`, `analyze-failure`,
