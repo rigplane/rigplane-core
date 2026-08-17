@@ -21,7 +21,11 @@ from rigplane.rigctld.contract import (
     RigctldConfig,
     RigctldResponse,
 )
-from rigplane.rigctld.handler import RigctldHandler, _classify_rigctld_tx_intent
+from rigplane.rigctld.handler import (
+    RigctldHandler,
+    _classify_rigctld_tx_intent,
+    _RigctldCommandFailure,
+)
 from rigplane.rigctld.protocol import format_response, parse_line
 from rigplane.runtime import _poller_types as commands, tx_interlock
 
@@ -310,11 +314,21 @@ async def test_defer_writes_fail_closed_on_unknown_rf_state_without_entering_lan
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(5)
 async def test_defer_write_still_holds_before_the_quiet_window_completes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The lane must not release early: it needs a FULL 1.0s of continuous
     known RX, not merely "RX has been observed at least once".
+
+    The checkpoint waits for ``ticks_done == 3``, not ``2``: entering the
+    coroutine's THIRD ``asyncio.sleep`` call is only possible after the
+    SECOND tick's ``observe()`` has already run and decided HELD. Checking
+    right after ``ticks_done`` reaches 2 (as an earlier version of this test
+    did) inspects state while the task is still suspended inside that
+    tick's ``fake_sleep``, before its ``observe()`` call -- at that point
+    the task cannot possibly be done regardless of the quiet-window length,
+    so the assertion does not actually discriminate 1.0s from 0.4s.
     """
     clock = FreshnessClock(start=50.0)
     store = StateStore(freshness_clock=clock)
@@ -333,11 +347,12 @@ async def test_defer_write_still_holds_before_the_quiet_window_completes(
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     task = asyncio.create_task(handler._await_deferred_tx(command))  # noqa: SLF001
-    while ticks_done < 2:
+    while ticks_done < 3:
         await real_sleep(0)
 
-    # Two 0.4s ticks of RX (0.4s of continuous quiet) is short of the 1.0s
-    # quiet window: still held, not yet released.
+    # Two full 0.4s ticks of continuous RX (0.8s of quiet, both observe()
+    # calls having already run) is still short of the 1.0s quiet window:
+    # still held, not yet released.
     assert not task.done()
     assert handler._deferred_tx_lane.pending is command  # noqa: SLF001
     radio.set_freq.assert_not_awaited()
@@ -393,6 +408,7 @@ async def test_defer_write_never_releases_after_ttl_expiry(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(5)
 async def test_supersession_produces_truthful_failure_for_the_superseded_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -432,3 +448,78 @@ async def test_supersession_produces_truthful_failure_for_the_superseded_session
     task_b.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task_b
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_cancelling_the_wait_releases_the_slot_for_a_full_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-1881 B2: a cancelled wait (e.g. the server's own command_timeout
+    firing, or a dropped connection) must not orphan the lane slot.
+
+    Before this fix, ``_await_deferred_tx`` had no ``try/finally``, so a
+    cancelled coroutine left its entry sitting in the lane forever. Because
+    ``DeferredTxCommandLane.defer`` preserves the PREVIOUS absolute deadline
+    across a live supersession, the next legitimate deferred write would
+    silently inherit the orphan's truncated remaining window instead of a
+    full fresh 3.0s TTL.
+    """
+    clock = FreshnessClock(start=60.0)
+    store = StateStore(freshness_clock=clock)
+    _apply_ptt(store, clock, True)
+    handler, _radio, _routing = _handler(store)
+    command_a = commands.SetFreq(7_074_000)
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(_interval: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    task = asyncio.create_task(handler._await_deferred_tx(command_a))  # noqa: SLF001
+    await real_sleep(0)
+    assert handler._deferred_tx_lane.pending is command_a  # noqa: SLF001
+
+    clock.advance(1.0)  # time passes before the caller (e.g. server) gives up
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert handler._deferred_tx_lane.pending is None  # noqa: SLF001
+
+    command_b = commands.SetFreq(14_074_000)
+    result = handler._deferred_tx_lane.defer(command_b, now=clock.now())  # noqa: SLF001
+    assert result.expires_at == clock.now() + 3.0
+
+
+# ── MOR-1881 N3: RIT/XIT have no wire-level command definition at all      ──
+# (COMMAND_TABLE has no "set_rit" / "set_xit" / "get_xit" entry -- a
+# pre-existing gap, not introduced here), so the only reachable path in
+# tests -- matching the old, now-corrected test -- is the CommandIntent
+# directly through CommandService, bypassing wire parsing.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["absent", "stale", "generation"])
+@pytest.mark.parametrize("name", ["set_rit", "set_xit"])
+async def test_rit_xit_intents_fail_closed_on_unknown_rf_state(
+    name: str, case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, forced = _store(case)
+    handler, radio, _routing = _handler(store)
+    if forced is not None:
+        monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
+    with pytest.raises(_RigctldCommandFailure) as excinfo:
+        await handler._command_service.execute(_intent(name, hz=1))  # noqa: SLF001
+    assert excinfo.value.error is HamlibError.ERJCTED
+    assert handler._deferred_tx_lane.pending is None  # noqa: SLF001
+    radio.set_rit_frequency.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["set_rit", "set_xit"])
+async def test_rit_xit_intents_in_known_rx_dispatch_immediately(name: str) -> None:
+    handler, radio, _routing = _handler(_store("rx")[0])
+    await handler._command_service.execute(_intent(name, hz=1))  # noqa: SLF001
+    radio.set_rit_frequency.assert_awaited_once_with(1)

@@ -1396,6 +1396,44 @@ class TestSemiIntegrationSerialMockRadio:
             await _close(writer)
 
 
+async def test_deferred_write_gets_truthful_erjcted_not_etimeout_under_command_timeout(
+    cfg: RigctldConfig,
+) -> None:
+    """MOR-1881 B3: end-to-end over a real socket, not the lane's internals.
+
+    The wire-visible contract for a DEFER write held during known TX is
+    ``min(lane TTL, RigctldConfig.command_timeout)``. ``cfg``'s
+    ``command_timeout`` (0.3s) is well under the lane's 3.0s TTL, so without
+    a self-imposed bound inside ``_await_deferred_tx``, the server's own
+    ``asyncio.wait_for`` would cancel the wait first and report ``RPRT -5``
+    (ETIMEOUT -- "the radio did not answer") for a write that was in fact
+    deferred and never released. The client must see a truthful ``RPRT -9``
+    (ERJCTED) instead, and see it before ``command_timeout`` elapses.
+    """
+    radio = SerialMockRadio()
+    await radio.connect()
+    srv = RigctldServer(radio, cfg)
+    await srv.start()
+    _apply_store_value(
+        srv._state_store, FieldPath.global_("tx_state", "ptt"), True, max_age=1e9
+    )
+    try:
+        reader, writer = await _connect(srv)
+        try:
+            start = time.monotonic()
+            writer.write(b"F 14074000\n")
+            await writer.drain()
+            data = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+            elapsed = time.monotonic() - start
+        finally:
+            await _close(writer)
+    finally:
+        await srv.stop()
+
+    assert data == b"RPRT -9\n"
+    assert elapsed < cfg.command_timeout
+
+
 # ---------------------------------------------------------------------------
 # Quit command
 # ---------------------------------------------------------------------------

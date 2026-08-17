@@ -736,25 +736,53 @@ class RigctldHandler:
         ``YaesuCatPoller`` already enforce against the same
         ``DeferredTxCommandLane``; PTT OFF and the other
         ``_ALWAYS_PASS_TYPES`` never reach this method (MOR-1881).
+
+        The wire-visible wait is additionally bounded by ``min(lane TTL,
+        RigctldConfig.command_timeout)`` (MOR-1881 B3): the caller sits
+        inside the server's own per-command timeout
+        (``src/rigplane/rigctld/server.py``), and that timeout defaults to
+        2.0s against the lane's 3.0s TTL. Without a self-imposed bound, the
+        server's ``asyncio.wait_for`` would cancel this coroutine first and
+        report ``RPRT -5`` (ETIMEOUT, "the radio did not answer") for a
+        write that was in fact deferred and never released. Self-refusing a
+        poll tick early gives a truthful ``RPRT -9`` (ERJCTED) instead.
         """
         rf_state = self._resolve_rigctld_rf_state()
         if rf_state is not tx_interlock.RfState.TX:
             return rf_state is tx_interlock.RfState.RX
         now = self._state_store.snapshot().generated_at_monotonic
-        self._deferred_tx_lane.defer(command, now=now)
-        while True:
-            await asyncio.sleep(_RIGCTLD_DEFER_POLL_SECONDS)
-            if self._deferred_tx_lane.pending is not command:
-                return False  # superseded by a newer deferred command
-            rf_state = self._resolve_rigctld_rf_state()
-            now = self._state_store.snapshot().generated_at_monotonic
-            result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
-            if result is None:
-                return False
-            if result.outcome is tx_interlock.TxInterlockDeferredOutcome.RELEASED:
-                return True
-            if result.outcome is not tx_interlock.TxInterlockDeferredOutcome.HELD:
-                return False  # expired
+        defer_result = self._deferred_tx_lane.defer(command, now=now)
+        effective_deadline = min(
+            defer_result.expires_at,
+            now + max(0.0, self._config.command_timeout - _RIGCTLD_DEFER_POLL_SECONDS),
+        )
+        try:
+            while True:
+                await asyncio.sleep(_RIGCTLD_DEFER_POLL_SECONDS)
+                if self._deferred_tx_lane.pending is not command:
+                    return False  # superseded by a newer deferred command
+                rf_state = self._resolve_rigctld_rf_state()
+                now = self._state_store.snapshot().generated_at_monotonic
+                if now >= effective_deadline:
+                    return False  # truthful refusal, ahead of the server's own timeout
+                result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
+                if result is None:
+                    return False
+                if result.outcome is tx_interlock.TxInterlockDeferredOutcome.RELEASED:
+                    return True
+                if result.outcome is not tx_interlock.TxInterlockDeferredOutcome.HELD:
+                    return False  # expired
+        finally:
+            if self._deferred_tx_lane.pending is command:
+                # MOR-1881 (B2): a cancelled wait (server command_timeout,
+                # dropped connection) must not orphan the slot -- an
+                # abandoned entry would otherwise donate its truncated
+                # remaining deadline to the next legitimate deferred write
+                # via DeferredTxCommandLane.defer's supersession-preserves-
+                # deadline rule. Matches the shape
+                # YaesuCatPoller._cancel_deferred_entry uses: replace the
+                # whole lane rather than reaching into its private state.
+                self._deferred_tx_lane = tx_interlock.DeferredTxCommandLane()
 
     def _packet_data_mode_value(self) -> int | bool:
         value = self._config.wsjtx_data_mode
