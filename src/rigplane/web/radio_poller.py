@@ -710,6 +710,10 @@ class RadioPoller:
         # connect starts unarmed; overridable for tests.
         self._max_key_down_seconds: float = _MAX_KEY_DOWN_SECONDS
         self._max_key_down_timer: asyncio.TimerHandle | None = None
+        # MOR-1878: identity of the session whose key-ON this poller last wrote
+        # on the unmanaged branch, so automated teardown housekeeping releases
+        # only its own keyer. A single remembered identity, not a lease.
+        self._last_keyer: tuple[CommandSource, str | None] | None = None
         self._deferred_tx_lane = DeferredTxCommandLane()
         self._deferred_tx_entry: CommandQueueEntry | None = None
 
@@ -967,6 +971,27 @@ class RadioPoller:
             entry.command_id,
             **params,
         )
+
+    def teardown_unkey_permitted(
+        self, source: CommandSource, session_id: str | None
+    ) -> bool:
+        """Whether an automated teardown unkey from this session may enqueue.
+
+        MOR-1878: deliberate operator unkeys never consult this — I1 (PTT OFF
+        always attemptable) covers operator action; this gate exists solely so
+        one session's teardown housekeeping cannot drop another session's live
+        transmission on an unmanaged rig. The bias is toward the unkey: no
+        recorded keyer, an observed OFF (nothing left to protect — the stale
+        record is voided), or the keyer itself tearing down all permit it.
+        Only a live record naming a DIFFERENT session withholds it.
+        """
+        keyer = self._last_keyer
+        if keyer is None:
+            return True
+        if self._current_rf_state() is RfState.RX:
+            self._last_keyer = None
+            return True
+        return keyer == (source, session_id)
 
     def _arm_max_key_down(self, source: CommandSource, session_id: str | None) -> None:
         """Bound a key this poller just issued on an unmanaged radio (MOR-1220).
@@ -2430,6 +2455,10 @@ class RadioPoller:
                     # only, so the managed path keeps the supervisor's watchdog
                     # as its single bound and an EXTERNAL key stays untouched.
                     self._arm_max_key_down(command_source, session_id)
+                    # MOR-1878: same placement discipline as the bound above.
+                    # The managed branch records nothing — its lease already
+                    # answers STALE to a non-owner's release.
+                    self._last_keyer = (command_source, session_id)
                 else:
                     transition = await managed.set_ptt(True)
                     if transition.outcome not in _KEY_ACCEPTED:
@@ -2476,6 +2505,10 @@ class RadioPoller:
                     # RAISED left the rig keyed, and must not drop the bound.
                     self._cancel_max_key_down()
                 finally:
+                    # MOR-1878: cleared on the ATTEMPT, not on success — if the
+                    # unkey write raised, the rig may still be keyed and the
+                    # next teardown must be free to send OFF again.
+                    self._last_keyer = None
                     await self._stop_tx_audio_leg()
             case SetPower(level=level, unit=unit):
                 if unit != "raw_255":

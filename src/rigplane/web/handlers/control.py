@@ -1315,7 +1315,9 @@ class ControlHandler:
     def _release_ptt_on_teardown(self) -> None:
         """Request best-effort PTT OFF whenever a writable session tears down.
 
-        Unconditional by design (MOR-1013). This release used to be reachable
+        Near-unconditional by design (MOR-1013); MOR-1878 adds exactly one
+        withholding condition — the poller's recorded keyer names a different
+        live session. This release used to be reachable
         only through the MOD-input arm, so a session that keyed the radio but
         never armed a restore disconnected with no unkey enqueued at all and
         stranded the rig in TX. Unkeying is the safe direction, so no session
@@ -1349,6 +1351,27 @@ class ControlHandler:
         queue = getattr(self._server, "command_queue", None)
         if queue is None:
             return
+        # MOR-1878: automated housekeeping releases only its own keyer. The
+        # poller remembers who keyed the unmanaged rig; a different session's
+        # teardown must not drop that transmission mid-over. Every failure of
+        # this consultation (no poller, error) falls through to the unkey —
+        # dropping a transmission is recoverable, a stuck transmitter is not.
+        # Operator-pressed ptt_off never routes through here and stays ungated.
+        poller = getattr(self._server, "_radio_poller", None)
+        if poller is not None:
+            try:
+                permitted = poller.teardown_unkey_permitted(
+                    "websocket", self._session_id
+                )
+            except Exception:
+                permitted = True
+            if not permitted:
+                logger.info(
+                    "control: teardown PTT OFF withheld — another session's "
+                    "key is live (session=%s)",
+                    self._session_id,
+                )
+                return
         try:
             _CommandMetadataQueue(
                 queue,
