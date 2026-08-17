@@ -15,6 +15,11 @@ from rigplane.rigctld.state_cache import StateCache
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq, SetMode
 
+# MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
+# dispatch bodies; the interlock seat now lives at its head, so the RF
+# premise is stated once here (see the fixture docstring in conftest.py).
+pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+
 
 def _dual_radio_mock() -> MagicMock:
     profile = resolve_radio_profile(model="IC-7610")

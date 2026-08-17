@@ -20,6 +20,7 @@ from rigplane.runtime._poller_types import (
     PttOff,
     ScanStart,
     ScanStop,
+    SelectVfo,
     SendCiv,
     SetAntenna1,
     SetFreq,
@@ -379,3 +380,64 @@ async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> 
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert len(service.lifecycle_events()) == terminal_count
     radio.set_freq.assert_not_awaited()
+
+
+# ── MOR-1884 (MOR-1500 B1-e): the seat guards _execute itself ────────────────
+
+
+@pytest.mark.parametrize("ptt", (None, True), ids=("unknown", "tx"))
+async def test_direct_defer_family_emit_is_refused_at_the_execute_seat(
+    ptt: bool | None,
+) -> None:
+    """An uncommanded internal emit shares the queued commands' seat."""
+    poller, radio, store = _poller()
+    radio.set_vfo_slot = AsyncMock()
+    if ptt is not None:
+        _observe_ptt(store, ptt)
+
+    with pytest.raises(CommandError, match="RF state is (unknown|TX)"):
+        await poller._execute(SelectVfo(vfo="A"))  # noqa: SLF001
+
+    radio.set_vfo_slot.assert_not_awaited()
+
+
+async def test_bootstrap_exemption_passes_the_seat_under_unknown_rf() -> None:
+    """At connection start RF is structurally UNKNOWN; the one exempted write
+    must reach the dispatch body instead of being refused (MOR-1443).
+
+    Discriminated by WHICH failure it hits: the same command without the
+    exemption never leaves the seat ("RF state is unknown"), while the
+    exempted one gets all the way into the SelectVfo dispatch and fails on
+    that command's own readback contract — proof it passed the interlock.
+    """
+    poller, _radio, _store = _poller()
+
+    with pytest.raises(CommandError, match="RF state is unknown"):
+        await poller._execute(SelectVfo(vfo="A"))  # noqa: SLF001
+
+    with pytest.raises(CommandError) as exempted:
+        await poller._execute(  # noqa: SLF001
+            SelectVfo(vfo="A"), connection_epoch_bootstrap=True
+        )
+    assert "RF state" not in str(exempted.value)
+    assert "VFO selection" in str(exempted.value)
+
+
+def test_bootstrap_exemption_has_exactly_one_production_call_site() -> None:
+    from pathlib import Path
+
+    import rigplane.web.radio_poller as radio_poller_module
+
+    source = Path(radio_poller_module.__file__).read_text()
+    assert source.count("connection_epoch_bootstrap=True") == 1
+
+
+async def test_teardown_drain_unkey_stays_outside_the_execute_seat() -> None:
+    """The drain's PttOff is structurally ALWAYS_PASS — no exemption needed."""
+    poller, radio, store = _poller()
+    _observe_ptt(store, True)
+    poller._queue.put(PttOff())  # noqa: SLF001
+
+    await poller.drain_tx_safety_commands(timeout=1.0)
+
+    radio.set_ptt.assert_awaited_once_with(False)

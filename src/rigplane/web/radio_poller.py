@@ -862,7 +862,8 @@ class RadioPoller:
         return ready
 
     async def _execute_queued_entry(self, entry: CommandQueueEntry) -> None:
-        self._enforce_tx_interlock(entry.command)
+        # MOR-1884: the interlock seat lives at the head of ``_execute`` now,
+        # so queued commands and uncommanded internal emits share one seat.
         await self._execute(
             entry.command,
             command_id=entry.command_id,
@@ -2223,7 +2224,18 @@ class RadioPoller:
         source: CommandSource = "websocket",
         session_id: str | None = None,
         command_service: CommandService | None = None,
+        connection_epoch_bootstrap: bool = False,
     ) -> None:
+        # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
+        # write this poller issues — queued commands and uncommanded internal
+        # emits alike. The single exemption is the connection-epoch bootstrap
+        # ``SelectVfo`` in :meth:`establish_vfo_identity`: at connection start
+        # RF is structurally UNKNOWN, and that one ruled write (MOR-1443) is
+        # what makes RF/VFO truth observable at all. Emergency commands need
+        # no exemption — ``_enforce_tx_interlock`` is structurally incapable
+        # of blocking them before any table is consulted.
+        if not connection_epoch_bootstrap:
+            self._enforce_tx_interlock(cmd)
         radio = self._radio
         provider_generation = self._provider_generation()
         _r: Any = radio  # cast for capability methods not on base Radio protocol
@@ -3987,7 +3999,10 @@ class RadioPoller:
             "auto-commanding VFO A once (MOR-1443, receiver=%d)",
             receiver,
         )
-        await self._execute(SelectVfo(vfo="A"))
+        # MOR-1884: the ONE exempted write. RF is structurally UNKNOWN at
+        # connection start, and this ruled bootstrap (MOR-1443) is what makes
+        # identity observable — the seat would otherwise fail it closed forever.
+        await self._execute(SelectVfo(vfo="A"), connection_epoch_bootstrap=True)
 
     def _vfo_identity_paths(self, receiver: int) -> tuple[FieldPath, ...]:
         receiver_id = str(receiver)
