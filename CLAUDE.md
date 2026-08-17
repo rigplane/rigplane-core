@@ -160,7 +160,7 @@ Incomplete → continue or FAILED. Never skip.
 
 ---
 
-## Autonomous pipeline
+## Agent working rules
 
 **GitHub Project control plane:** non-trivial work should be tracked in
 `RigPlane Core Roadmap` (https://github.com/orgs/rigplane/projects/2). Work
@@ -168,69 +168,14 @@ from GitHub issues with acceptance criteria, add missing issues to the Project,
 and keep fields current while working. See
 `docs/internals/github-project-workflow.md`.
 
-Strictly linear. No phase may be skipped or reordered. No exceptions.
-State files (`.claude/workflow/*.md`) are the sole source of truth — not memory or reasoning.
-CLAUDE.md controls all workflow transitions. Agents must not self-direct transitions.
+Use subagents for large exploration/review — keep the main session lean. The
+implementation agent never reviews its own work; independent review and the
+Agent Review Gate mechanics are described in Language & Git above.
 
-```
-EXPLORE → PLAN → EXECUTE → regression-check → REVIEW → TEST → PR
-                                                         ↓ (on FAILED)
-                                                    analyze-failure
-                                              generate-tests (optional, post-PR)
-```
-
-**REVIEW, TEST, and regression-check are mandatory.** Skipping any is `workflow_violation` → STOP + FAILED.
-**analyze-failure** runs automatically on every FAILED outcome.
-
-| Command | Action |
-|---------|--------|
-| `/scan-issues` | score open issues → `.claude/queue/queue.json` |
-| `/solve-issue N` | full pipeline for issue #N |
-| `/next` | pick highest-priority pending, solve it |
-| `/regression-check` | run tests, compare against baseline |
-| `/generate-tests` | generate targeted tests for changed code |
-| `/analyze-failure` | classify and analyze a pipeline failure |
-| `/refactor <target>` | test-safe refactoring (no behavior change, no fast path) |
-| `/release [type]` | full release pipeline (precheck → validate → tag → push) |
-| `/decompose-issue N` | break epic/large issue into atomic tasks → enqueue |
-
-### Entry conditions (must ALL be true to start)
-
-- Issue has clear expected outcome
-- Scope fits guardrails (≤3 files, ≤400 LOC) — if not, `/decompose-issue` first
-- No hardware dependency (unless mockable)
-- Not an epic or parent issue — only atomic/decomposed tasks
-- Otherwise → SKIP or DECOMPOSE
-
-### Fast path
-
-Skip PLAN if ALL true: single file, <20 LOC, no protocol/transport/state, no public API.
-Never skip EXPLORE, REVIEW, or TEST.
-
-### Phase state machine
-
-| Phase | Agent | Owns | Gate (ALL required to proceed) |
-|-------|-------|------|-------------------------------|
-| EXPLORE | researcher | `research.md` | confidence ≥ 0.6 |
-| PLAN | planner | `plan.md` | explicit steps written |
-| EXECUTE | executor | `progress.md` | implementation done |
-| REGCHECK | — | `regression.md` | no new test failures vs baseline |
-| REVIEW | reviewer | `review.md` | diff matches plan + no unplanned changes |
-| TEST | qa | — | pytest zero + ruff zero + verification ran |
-
-- A phase cannot start until the previous phase gate is satisfied. No shortcuts.
-- Each agent has explicit permissions (allowed/forbidden actions) — see agent definitions.
-- Each phase writes ONLY its own file. Do not modify other phase files.
-- Phase is complete ONLY when its output file is written AND gate condition met.
-- Re-read CLAUDE.md before PLAN to prevent drift.
-- PLAN is immutable during EXECUTE. Wrong plan → FAIL and restart, do not patch.
-- EXECUTE: implement plan exactly. No extras, no refactors, no scope expansion.
-- REVIEW: independently compare diff against plan. Do not trust EXECUTE assumptions. Reject deviations.
-- TEST: must run after REVIEW, not before. Results must be verified, not assumed.
-- TEST reuses the REGCHECK full-suite result when the working tree is unchanged since REGCHECK; it then runs only ruff (lint + format check) + type check + the issue's verification. A new full run is required whenever code changed after REGCHECK.
-
-Definitions: `.claude/agents/{researcher,planner,executor,reviewer,qa}.md`
-Use subagents for large exploration/review — keep main session lean.
+Slash commands for scoped workflows live in `.claude/commands/` (`scan-issues`,
+`solve-issue`, `next`, `regression-check`, `generate-tests`, `analyze-failure`,
+`refactor`, `decompose-issue`) plus the `release` skill; each file is
+self-documenting.
 
 ### Guardrails
 
@@ -240,15 +185,15 @@ Use subagents for large exploration/review — keep main session lean.
 | LOC delta | 400 |
 | New abstractions/layers | forbidden unless issue requires |
 | Speculative improvements | forbidden |
-| Min confidence | 0.6 |
+
+Scope exceeding the guardrails → decompose first (`/decompose-issue`).
 
 ### Failure handling
 
 - 2 consecutive failures or no progress → **STOP**, mark FAILED
 - Max cycles: 2 execution, 2 review, 2 test-fix. Exceeded → FAILED.
-- On FAILED, classify: `invalid_plan` / `impl_error` / `test_failure` / `env_issue` / `workflow_violation`
-- Log classification + reason to `.claude/knowledge/failures.md`
-- Load `.claude/knowledge/` ONLY on keyword match or prior failure pattern — not by default
+- On FAILED, classify (`invalid_plan` / `impl_error` / `test_failure` /
+  `env_issue` / `workflow_violation`) and record the reason in the PR/ticket.
 
 ### Workspace lifecycle
 
