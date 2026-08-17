@@ -857,12 +857,21 @@ display_max = 900
 display_unit = "Hz"
 
 [controls.rit]
+# MOR-1883: exact-form translation of the previously declared range,
+# preserved verbatim (wfview cites RIT Min/Max +/-999; no hardware to
+# verify against, so no new range claim is made here).
+mapping = "identity"
 raw_min = -999
 raw_max = 999
-raw_center = 0
+raw_step = 1
+raw_origin = 0
 display_min = -999
 display_max = 999
+display_step = 1
+display_origin = 0
 display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
 
 # SWR meter calibration — piecewise-linear lookup from raw 0–255 to SWR ratio.
 # First four points (0=1.0, 48=1.5, 80=2.0, 120=3.0) match the firmware-anchored

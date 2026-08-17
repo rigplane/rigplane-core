@@ -1091,24 +1091,32 @@ choices = [
         with pytest.raises(RigLoadError, match="lookup.*mapping"):
             self._load(tmp_path, self._LINEAR + self._LOOKUP_POINTS)
 
-    def test_shipped_legacy_profiles_remain_publicly_shape_compatible(self):
+    # MOR-1883: every profile that declares controls.rit now declares the
+    # exact validated form (the legacy raw_center shape fail-closes the
+    # RIT/XIT control in the MOR-1730 frontend contract).
+    _EXACT_DOMAIN_REGISTER = {
+        "ftx1.toml": {"rit", "nr_level", "manual_notch_freq", "if_shift", "cw_pitch"},
+        "ic705.toml": {"rit"},
+        "ic7300.toml": {"rit"},
+        "ic7610.toml": {"rit"},
+        "ic9700.toml": {"rit"},
+        "x6100.toml": {"rit"},
+        "x6200.toml": {"rit"},
+    }
+
+    def test_shipped_profiles_declare_only_validated_exact_domains(self):
         for path in sorted(
             path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
         ):
             rig = load_rig(path)
-            if path.name == "ftx1.toml":
-                assert rig._control_domains is not None
-                assert set(rig._control_domains) == {
-                    "rit",
-                    "nr_level",
-                    "manual_notch_freq",
-                    "if_shift",
-                    "cw_pitch",
-                }
-                assert rig.to_profile().controls is not rig.controls
+            expected = self._EXACT_DOMAIN_REGISTER.get(path.name)
+            if expected is None:
+                assert rig._control_domains is None, path.name
+                assert rig.to_profile().controls == rig.controls, path.name
                 continue
-            assert rig._control_domains is None, path.name
-            assert rig.to_profile().controls == rig.controls, path.name
+            assert rig._control_domains is not None, path.name
+            assert set(rig._control_domains) == expected, path.name
+            assert rig.to_profile().controls is not rig.controls, path.name
 
     def test_legacy_control_spec_remains_runtime_callable_with_its_exact_shape(self):
         legacy = ControlSpec(

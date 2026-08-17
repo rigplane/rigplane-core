@@ -1347,12 +1347,23 @@ display_max = 900
 display_unit = "Hz"
 
 [controls.rit]
-raw_min = -999
-raw_max = 999
-raw_center = 0
-display_min = -999
-display_max = 999
+# MOR-1883: exact-form domain (MOR-1730 frontend contract). Range is the
+# shared CI-V builder's +/-9999 Hz in 1 Hz BCD steps (commands/system.py
+# set_rit_frequency), confirmed by a live 4701 Hz write on the bench
+# IC-7300 (2026-08-15) and the Full Manual RIT range of +/-9.999 kHz.
+# The previous legacy +/-999 contradicted all three sources.
+mapping = "identity"
+raw_min = -9999
+raw_max = 9999
+raw_step = 1
+raw_origin = 0
+display_min = -9999
+display_max = 9999
+display_step = 1
+display_origin = 0
 display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
 
 # SWR meter calibration — piecewise-linear lookup from raw 0–255 to SWR ratio.
 # First four points are firmware-anchored per the IC-7300 CI-V Reference (00=1.0,
