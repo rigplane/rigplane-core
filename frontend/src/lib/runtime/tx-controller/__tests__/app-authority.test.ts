@@ -55,25 +55,36 @@ describe('App TX authority projector', () => {
       facts: null, modInputSource: { status: 'unknown' },
     });
   });
-  it('advances only for genuinely newer qualifying field-specific evidence', () => {
+  it('reads the server freshness contract instead of re-deriving delivery cadence (MOR-1792)', () => {
     const project = createAppAuthorityProjector();
+    // The very first qualifying projection is fresh: no baseline suppression.
     expect(project(radio(), capabilities(), session(1)).ptt).toMatchObject({
-      observed: true, fresh: false, source: 'radio-readback',
-      marker: { pttObservationSeq: 1 },
+      observed: true, fresh: true, source: 'radio-readback',
+      marker: { authorityEpoch: 1, pttObservationSeq: null, pttLastObservedMonotonic: 1 },
+    });
+    // Decay regression: a second delivery carrying the SAME fieldStatus stays
+    // fresh with the same server marker — no delta-cadence re-derivation.
+    expect(project(radio(), capabilities(), session(1)).ptt).toMatchObject({
+      fresh: true, marker: { pttObservationSeq: null, pttLastObservedMonotonic: 1 },
     });
     const newer = withPtt(field(2, 'civ_unsolicited'));
     expect(project(newer, capabilities(), session(1)).ptt).toMatchObject({
       value: false, observed: true, fresh: true, source: 'backend-observation',
-      marker: { pttObservationSeq: 2, pttLastObservedMonotonic: 2 },
+      marker: { pttObservationSeq: null, pttLastObservedMonotonic: 2 },
     });
-    const duplicate = project(radio({ ptt: true, revision: 1_000, fieldStatus: { ...radio().fieldStatus, ptt: field(2, 'civ_unsolicited') } }), capabilities(), session(1));
-    expect(duplicate.ptt).toMatchObject({ value: true, fresh: false, marker: { pttObservationSeq: 2 } });
+    // A lower server timestamp is reported verbatim, never re-minted: the
+    // reducer's newer() is what refuses to advance on it.
+    expect(project(withPtt(field(1, 'civ_unsolicited')), capabilities(), session(1)).ptt)
+      .toMatchObject({ fresh: true, marker: { pttLastObservedMonotonic: 1 } });
     for (const malicious of ['toString', 'constructor', '__proto__'])
-      expect(project(withPtt(field(3, malicious)), capabilities(), session(1)).ptt).toMatchObject({ source: 'other', fresh: false, marker: { pttObservationSeq: 2, pttLastObservedMonotonic: 2 } });
+      expect(project(withPtt(field(3, malicious)), capabilities(), session(1)).ptt)
+        .toMatchObject({ source: 'other', fresh: false, marker: { pttObservationSeq: null, pttLastObservedMonotonic: null } });
     expect(project(withPtt(field(3, 'hamlib_response')), capabilities(), session(1)).ptt.source).toBe('radio-readback');
     expect(project(withPtt(field(4, 'yaesu_poll_response')), capabilities(), session(1)).ptt.fresh).toBe(true);
   });
-  it('rejects bad evidence and retains a per-epoch baseline against stale epochs', () => {
+  it('rejects bad evidence with a marker that can never advance, and epochs stay honest', () => {
+    // MOR-1694/1695 counterexample set, preserved verbatim: generic command
+    // responses and non-field authorities never become fresh PTT truth.
     const rejected = [
       field(2, 'command_response'), field(3, 'state_poller'),
       field(4, 'local_reconcile'), field(5, 'test'), field(6, 'unknown'),
@@ -84,17 +95,25 @@ describe('App TX authority projector', () => {
     for (const evidence of rejected) {
       const project = createAppAuthorityProjector();
       const first = project(withPtt(evidence), capabilities(), session(1));
-      expect(first.ptt).toMatchObject({ fresh: false, marker: { pttObservationSeq: 0 } });
+      expect(first.ptt).toMatchObject({
+        fresh: false,
+        marker: { pttObservationSeq: null, pttLastObservedMonotonic: null },
+      });
     }
     const project = createAppAuthorityProjector();
     project(radio(), capabilities(), session(1));
     project(withPtt(field(2)), capabilities(), session(1));
+    // Baseline regression: the FIRST projection after an epoch change is
+    // fresh — the old needsBaseline suppression is gone.
     const baseline = project(withPtt(field(10)), capabilities(), session(2));
-    expect(baseline.ptt).toMatchObject({ fresh: false, marker: { authorityEpoch: 2, pttObservationSeq: 3 } });
+    expect(baseline.ptt).toMatchObject({
+      fresh: true,
+      marker: { authorityEpoch: 2, pttObservationSeq: null, pttLastObservedMonotonic: 10 },
+    });
+    // A stale epoch can never be fresh or advance anything.
     expect(project(withPtt(field(11)), capabilities(), session(1)))
-      .toMatchObject({ epoch: 2, eligibility: { controlLive: false }, ptt: { fresh: false } });
-    expect(project(withPtt(field(10)), capabilities(), session(2)).ptt.fresh).toBe(false);
+      .toMatchObject({ epoch: 2, eligibility: { controlLive: false }, ptt: { fresh: false, marker: { pttLastObservedMonotonic: null } } });
     expect(project(withPtt(field(12), true), capabilities(), session(2)).ptt)
-      .toMatchObject({ value: true, fresh: true, marker: { pttObservationSeq: 4 } });
+      .toMatchObject({ value: true, fresh: true, marker: { pttLastObservedMonotonic: 12 } });
   });
 });

@@ -76,7 +76,7 @@ describe('browser TxController dependencies', () => {
     factory.dependencies.sendPtt('on', 'on-1', correlation, (report) => reports.push(report));
     expect(h.send).toHaveBeenCalledWith('ptt_on', { target, originalEpoch: 4 }, 'on-1');
     expect(reports).toEqual([{ outcome: 'sent', eventEpoch: 7,
-      barrier: { authorityEpoch: 7, pttObservationSeq: 2, pttLastObservedMonotonic: 2 } }]);
+      barrier: { authorityEpoch: 7, pttObservationSeq: null, pttLastObservedMonotonic: 2 } }]);
     emit({ commandId: 'foreign', kind: 'error', originalEpoch: 4, eventEpoch: 7 });
     emit({ commandId: 'on-1', kind: 'ack', originalEpoch: 3, eventEpoch: 7 }); expect(reports).toHaveLength(1);
     for (const [kind, outcome] of [['ack', 'ack'], ['response-ok', 'response-ok']] as const) {

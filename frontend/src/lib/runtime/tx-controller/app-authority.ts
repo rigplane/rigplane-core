@@ -49,18 +49,11 @@ function controllerTarget(facts: TxCapabilityFacts | null): TxTarget {
     : null;
 }
 export function createAppAuthorityProjector() {
-  let epoch = -1; let ordinal = 0;
-  let lastPttAt: number | null = null;
-  let needsBaseline = true;
+  let epoch = -1;
   return (state: ServerState | null, capabilities: Capabilities | null,
     session: ControlSessionTransition): AppAuthorityProjection => {
     const validEpoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0;
-    const lowerEpoch = !validEpoch || session.epoch < epoch;
-    if (!lowerEpoch && session.epoch > epoch) {
-      epoch = session.epoch;
-      lastPttAt = null;
-      needsBaseline = true;
-    }
+    if (validEpoch && session.epoch > epoch) epoch = session.epoch;
     const currentSession = validEpoch && session.epoch === epoch;
     const controlLive = currentSession && session.state === 'connected';
     const inputs = projectInputs(state);
@@ -73,26 +66,37 @@ export function createAppAuthorityProjector() {
     const status = state?.fieldStatus?.ptt;
     const source = authoritySource(status?.source?.source);
     const at = status?.lastObservedMonotonic;
-    const qualifies = controlLive
+    const validAt = typeof at === 'number' && Number.isFinite(at);
+    // MOR-1792 (slice 2): `fresh` IS the server's freshness contract —
+    // `freshness === 'fresh' && availability === 'available'` — read off the
+    // delivered fieldStatus, plus the structural validity of the reading
+    // itself (live session, boolean value, observed, finite timestamp,
+    // field-specific authority). The old projector additionally required
+    // this DELIVERY to carry a strictly newer timestamp than the previous
+    // delivery consumed (`lastPttAt`) and suppressed the first qualifying
+    // edge per epoch (`needsBaseline`): both re-derived radio freshness from
+    // the delta cadence and produced the intermittent first-press refusal.
+    // Deleted, together with the client-minted `ordinal`.
+    const fresh = controlLive
       && typeof state?.ptt === 'boolean'
       && status?.observed === true
       && status.freshness === 'fresh'
       && status.availability === 'available'
-      && typeof at === 'number'
-      && Number.isFinite(at)
-      && source !== 'other'
-      && (lastPttAt === null || at > lastPttAt);
-    const baseline = qualifies && needsBaseline;
-    if (qualifies) { ordinal += 1; lastPttAt = at; needsBaseline = false; }
+      && validAt
+      && source !== 'other';
     return {
       epoch, facts, modInputSource: inputs.modInputSource, eligibility,
       ptt: {
         value: typeof state?.ptt === 'boolean' ? state.ptt : false,
-        observed: status?.observed === true, fresh: qualifies && !baseline, source,
+        observed: status?.observed === true, fresh, source,
+        // The marker is the server's own observation timestamp, never a
+        // client mint. A non-fresh projection carries a null timestamp, so
+        // `newer()` in the reducer can never advance on it — the property
+        // the deleted `ordinal` used to provide (#2744 review invariant).
         marker: {
           authorityEpoch: epoch,
-          pttObservationSeq: ordinal,
-          pttLastObservedMonotonic: lastPttAt,
+          pttObservationSeq: null,
+          pttLastObservedMonotonic: fresh && validAt ? at : null,
         },
       },
     };
