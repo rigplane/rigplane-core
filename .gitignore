@@ -109,3 +109,9 @@ run-dev.sh
 
 # Logs
 logs/
+
+# Local scratch directories holding third-party documentation artifacts
+# (root-anchored so nested output/ or tmp/ elsewhere in the tree stays
+# tracked; never committed to the public repo — MOR-1790)
+/output/
+/tmp/
