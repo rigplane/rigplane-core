@@ -18,6 +18,7 @@ import { TxMic } from '../tx-mic';
 import { AUDIO_HEADER_SIZE, CODEC_PCM16, SAMPLE_RATE } from '../constants';
 
 const setTxCodecFallbackMock = vi.fn();
+const setTxEnabledMock = vi.fn();
 
 vi.mock('../rx-player', () => ({
   RxPlayer: class {
@@ -44,7 +45,7 @@ vi.mock('../../stores/connection.svelte', () => ({
 
 vi.mock('../../stores/audio.svelte', () => ({
   setRxEnabled: vi.fn(),
-  setTxEnabled: vi.fn(),
+  setTxEnabled: setTxEnabledMock,
   setTxCodecFallback: setTxCodecFallbackMock,
 }));
 
@@ -96,14 +97,71 @@ async function openManager() {
   return { audioManager, ws };
 }
 
+function sentTypes(ws: FakeWebSocket): string[] {
+  return ws.sent.map((s) => (JSON.parse(s as string) as { type: string }).type);
+}
+
+/**
+ * Install a browser media environment with BOTH capture paths available.
+ *
+ * `contextSampleRate` is what the AudioContext actually gives us: anything
+ * other than `SAMPLE_RATE` makes `startPcmFallback()` refuse, which is the
+ * only way the PCM16 leg can fail on a browser that has WebCodecs.
+ */
+function installMediaGlobals({ contextSampleRate = SAMPLE_RATE } = {}) {
+  const track = { stop: vi.fn(), kind: 'audio' };
+  const reader = {
+    read: vi.fn(() => Promise.resolve({ done: true })),
+    cancel: vi.fn().mockResolvedValue(undefined),
+  };
+  const encoder = { configure: vi.fn(), encode: vi.fn(), close: vi.fn(), state: 'configured' };
+  let processor: any = null;
+  const context = {
+    sampleRate: contextSampleRate,
+    destination: {},
+    createMediaStreamSource: vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() })),
+    createScriptProcessor: vi.fn(() => {
+      processor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
+      return processor;
+    }),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+  (globalThis as any).AudioEncoder = function (this: any) {
+    Object.assign(this, encoder);
+    return encoder;
+  };
+  (globalThis as any).MediaStreamTrackProcessor = function () {
+    return { readable: { getReader: () => reader } };
+  };
+  (globalThis as any).AudioContext = vi.fn(function () { return context; });
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue(stream) } },
+    writable: true,
+    configurable: true,
+  });
+  return { track, reader, encoder, context, getProcessor: () => processor };
+}
+
+function clearMediaGlobals(): void {
+  delete (globalThis as any).AudioEncoder;
+  delete (globalThis as any).MediaStreamTrackProcessor;
+  delete (globalThis as any).AudioContext;
+}
+
 describe('AudioManager consumes the server TX codec ack', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.unstubAllGlobals();
     setTxCodecFallbackMock.mockClear();
+    setTxEnabledMock.mockClear();
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:5173' });
+  });
+
+  afterEach(() => {
+    clearMediaGlobals();
   });
 
   it('raises the fallback indication when the server cannot decode Opus', async () => {
@@ -154,49 +212,62 @@ describe('AudioManager consumes the server TX codec ack', () => {
     expect(audioManager.txCodecFallback).toBe(false);
     expect(setTxCodecFallbackMock).toHaveBeenLastCalledWith(false);
   });
+
+  it('never claims a working fallback when the PCM16 path refuses to start', async () => {
+    // The one way the switch can fail on a WebCodecs browser: the
+    // AudioContext will not give us 48 kHz.
+    installMediaGlobals({ contextSampleRate: 44100 });
+    const { audioManager } = await import('../audio-manager');
+    expect(await audioManager.startTx()).toBeNull(); // Opus capture is up
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.sent = [];
+
+    ws.serverText({ type: 'audio_tx_format', codec: 'pcm16', opus_decode: false });
+
+    // The chip must never say "Transmission is working" while the radio is
+    // keyed and the switch did not happen.
+    expect(audioManager.txCodecFallback).toBe(false);
+    expect(setTxCodecFallbackMock).not.toHaveBeenCalledWith(true);
+    // The TX audio session ends through the existing teardown: the server
+    // releases the TX lease, disarming the radio's TX audio leg.
+    expect(sentTypes(ws)).toContain('audio_stop');
+    expect(setTxEnabledMock).toHaveBeenLastCalledWith(false);
+    expect(audioManager.txEnabled).toBe(false);
+    // And the next key reports it as a TX audio START failure — the exact
+    // input the TX controller turns into `audio-failed` and de-keys on.
+    expect(await audioManager.startTx()).toContain('sample rate');
+  });
+
+  it('leaves the pin alone when the ack names a codec it does not know', async () => {
+    installMediaGlobals();
+    const { audioManager } = await import('../audio-manager');
+    await audioManager.startTx();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.serverText({ type: 'audio_tx_format', codec: 'pcm16', opus_decode: false });
+    expect(audioManager.txCodecFallback).toBe(true);
+
+    // Fail-safe, not fail-open: an unrecognized codec must not clear a pin
+    // that a previous ack established.
+    ws.serverText({ type: 'audio_tx_format', codec: 'flac', opus_decode: false });
+
+    expect(audioManager.txCodecFallback).toBe(true);
+    audioManager.stopTx();
+    expect(await audioManager.startTx()).toBeNull();
+    expect(audioManager.txCodec).toBe('pcm16');
+  });
 });
 
 describe('TxMic adopts the codec the server can accept', () => {
-  let mockTrack: any, mockEncoder: any, mockReader: any, context: any, processor: any;
+  let media: ReturnType<typeof installMediaGlobals>;
 
   beforeEach(() => {
-    mockTrack = { stop: vi.fn(), kind: 'audio' };
-    mockReader = {
-      read: vi.fn(() => Promise.resolve({ done: true })),
-      cancel: vi.fn().mockResolvedValue(undefined),
-    };
-    mockEncoder = { configure: vi.fn(), encode: vi.fn(), close: vi.fn(), state: 'configured' };
-    (globalThis as any).AudioEncoder = function (this: any) {
-      Object.assign(this, mockEncoder);
-      return mockEncoder;
-    };
-    (globalThis as any).MediaStreamTrackProcessor = function () {
-      return { readable: { getReader: () => mockReader } };
-    };
-    processor = null;
-    context = {
-      sampleRate: SAMPLE_RATE,
-      destination: {},
-      createMediaStreamSource: vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() })),
-      createScriptProcessor: vi.fn(() => {
-        processor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
-        return processor;
-      }),
-      close: vi.fn().mockResolvedValue(undefined),
-    };
-    (globalThis as any).AudioContext = vi.fn(function () { return context; });
-    const stream = { getTracks: () => [mockTrack], getAudioTracks: () => [mockTrack] };
-    Object.defineProperty(globalThis, 'navigator', {
-      value: { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue(stream) } },
-      writable: true,
-      configurable: true,
-    });
+    media = installMediaGlobals();
   });
 
   afterEach(() => {
-    delete (globalThis as any).AudioEncoder;
-    delete (globalThis as any).MediaStreamTrackProcessor;
-    delete (globalThis as any).AudioContext;
+    clearMediaGlobals();
   });
 
   it('switches a live Opus capture to PCM16 without reacquiring the microphone', async () => {
@@ -205,16 +276,16 @@ describe('TxMic adopts the codec the server can accept', () => {
     expect(await mic.start()).toBeNull();
     expect(mic.codec).toBe('opus');
 
-    expect(mic.applyServerCodec('pcm16')).toBe(true);
+    expect(mic.applyServerCodec('pcm16')).toEqual({ switched: true, error: null });
 
     expect(mic.codec).toBe('pcm16');
-    expect(mockEncoder.close).toHaveBeenCalled();
-    expect(mockReader.cancel).toHaveBeenCalled();
+    expect(media.encoder.close).toHaveBeenCalled();
+    expect(media.reader.cancel).toHaveBeenCalled();
     // Same MediaStream — no second permission prompt, no second capture path.
-    expect(mockTrack.stop).not.toHaveBeenCalled();
+    expect(media.track.stop).not.toHaveBeenCalled();
     expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
 
-    processor.onaudioprocess({
+    media.getProcessor().onaudioprocess({
       inputBuffer: { getChannelData: () => new Float32Array(960).fill(0.25) },
     });
     expect(sent).toHaveBeenCalledOnce();
@@ -230,12 +301,12 @@ describe('TxMic adopts the codec the server can accept', () => {
     await mic.start();
     mic.applyServerCodec('pcm16');
     mic.stop();
-    mockEncoder.configure.mockClear();
+    media.encoder.configure.mockClear();
 
     expect(await mic.start()).toBeNull();
 
     expect(mic.codec).toBe('pcm16');
-    expect(mockEncoder.configure).not.toHaveBeenCalled();
+    expect(media.encoder.configure).not.toHaveBeenCalled();
     mic.stop();
   });
 
@@ -243,11 +314,33 @@ describe('TxMic adopts the codec the server can accept', () => {
     const mic = new TxMic(vi.fn());
     await mic.start();
 
-    expect(mic.applyServerCodec('opus')).toBe(false);
+    expect(mic.applyServerCodec('opus')).toEqual({ switched: false, error: null });
 
     expect(mic.codec).toBe('opus');
-    expect(mockEncoder.close).not.toHaveBeenCalled();
-    expect(context.createScriptProcessor).not.toHaveBeenCalled();
+    expect(media.encoder.close).not.toHaveBeenCalled();
+    expect(media.context.createScriptProcessor).not.toHaveBeenCalled();
+    mic.stop();
+  });
+
+  it('keeps the live capture whole when the PCM16 leg refuses to start', async () => {
+    // The failure must not kill capture out from under a keyed transmitter:
+    // PCM16 is brought up BEFORE the Opus leg is torn down, so a refusal
+    // leaves the running capture exactly as it was.
+    clearMediaGlobals();
+    media = installMediaGlobals({ contextSampleRate: 44100 });
+    const sent = vi.fn();
+    const mic = new TxMic(sent);
+    await mic.start();
+
+    const result = mic.applyServerCodec('pcm16');
+
+    expect(result.switched).toBe(false);
+    expect(result.error).toContain('sample rate');
+    expect(mic.active).toBe(true);
+    expect(mic.codec).toBe('opus');
+    expect(media.encoder.close).not.toHaveBeenCalled();
+    expect(media.reader.cancel).not.toHaveBeenCalled();
+    expect(media.track.stop).not.toHaveBeenCalled();
     mic.stop();
   });
 });

@@ -9,7 +9,7 @@
  */
 
 import { RxPlayer, type RxAudioFocus } from './rx-player';
-import { TxMic } from './tx-mic';
+import { TxMic, type TxCodec } from './tx-mic';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback } from '../stores/audio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
@@ -320,6 +320,9 @@ class AudioManager {
    *  decode Opus. Surfaced to the operator as a quiet status hint. */
   get txCodecFallback(): boolean { return this._txCodecFallback; }
 
+  /** Codec the microphone is currently emitting, or null when not capturing. */
+  get txCodec(): TxCodec | null { return this.txMic.codec; }
+
   private _txCodecFallback = false;
 
   private _handleServerMessage(raw: string): void {
@@ -330,14 +333,39 @@ class AudioManager {
       return;
     }
     if (msg?.type !== 'audio_tx_format') return;
-    // Only an explicit pcm16 answer redirects us; anything else leaves the
-    // client's own codec choice untouched, exactly as before this existed.
-    const codec = msg.codec === 'pcm16' ? 'pcm16' : 'opus';
-    const switched = this.txMic.applyServerCodec(codec);
+    // Fail-safe on an unrecognized codec: ignore the whole ack rather than
+    // guessing. Defaulting to 'opus' would CLEAR a sticky PCM16 pin, i.e.
+    // fail open on exactly the condition this negotiation exists for.
+    const codec = msg.codec === 'pcm16' ? 'pcm16' : msg.codec === 'opus' ? 'opus' : null;
+    if (codec === null) return;
+
+    const { switched, error } = this.txMic.applyServerCodec(codec);
+    if (error !== null) {
+      this._failTxAudio(error);
+      return;
+    }
     if (switched) {
       console.warn('[audio-ws] server cannot decode Opus — TX switched to PCM16');
     }
     this._setTxCodecFallback(msg.opus_decode === false);
+  }
+
+  /**
+   * End browser TX audio after the codec switch could not be completed.
+   *
+   * The server cannot decode Opus and the PCM16 leg refused to start, so no
+   * audio can reach the air on this session. Ending it takes the same
+   * teardown a failed TX audio start takes — `stopTx()` releases the
+   * server-side TX lease, which disarms the radio's TX audio leg — and the
+   * fallback indication is cleared so nothing claims transmission is working
+   * while the transmitter is keyed. The next key re-runs `txMic.start()` on
+   * the pinned PCM16 path and returns this same error from `startTx()`, the
+   * input the TX controller turns into `audio-failed` and de-keys on.
+   */
+  private _failTxAudio(reason: string): void {
+    console.error(`[audio-ws] TX codec switch failed, stopping TX audio: ${reason}`);
+    this._setTxCodecFallback(false);
+    this.stopTx();
   }
 
   private _setTxCodecFallback(active: boolean): void {
