@@ -726,7 +726,9 @@ values = [0, 1, 2]
 labels = { "0" = "OFF", "1" = "SEMI", "2" = "FULL" }
 
 [rit]
-# CI-V 0x21 0x00: ±9.999 kHz in 10 Hz steps
+# CI-V 0x21 0x00: ±9.999 kHz. The operator-facing domain is [controls.rit]
+# (±9999 Hz, 1 Hz steps per the shared CI-V builder, MOR-1883); nothing
+# reads range_hz.
 range_hz = 9999
 
 [cw]

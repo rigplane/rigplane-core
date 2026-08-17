@@ -156,7 +156,9 @@ values = [0, 1, 2]
 labels = { "0" = "OFF", "1" = "SEMI", "2" = "FULL" }
 
 [rit]
-# CI-V 0x21 0x00: wfview RIT Min/Max ±999 (10 Hz BCD steps; same as [controls.rit] raw range)
+# CI-V 0x21 0x00: wfview RIT Min/Max ±999. [controls.rit] is the operator-
+# facing authority and preserves this same ±999 verbatim (MOR-1883), but
+# in 1 Hz steps per the shared CI-V builder. Nothing reads range_hz.
 range_hz = 999
 
 [cw]
