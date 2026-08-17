@@ -12,7 +12,7 @@ reclassification without a corresponding line here is incomplete.
 None of the items below produces false transmit state or routes RF incorrectly;
 that class of defect is release-blocking by definition and is not on this list.
 
-## Receive-control feedback and precision (both radios)
+## Receive-control feedback and precision
 
 - **PBT values can briefly blank or show a transient endpoint during
   acquisition gaps.** The radio state is unaffected; the last confirmed values
@@ -40,23 +40,26 @@ that class of defect is release-blocking by definition and is not on this list.
   audio-peak-filter field**; its rendered state may not reflect the radio.
   (MOR-1647)
 - **A power-state control is offered on radios whose power cannot be switched
-  over CAT**; the affordance is inert there, and unknown power state is not
-  always rendered neutrally. (MOR-1673)
+  over CAT**; it presents a readiness the radio does not have, and unknown
+  power state is not always rendered neutrally. (MOR-1673)
 
 ## FTX-1 specific
 
-- **NR level uses a scaled 0–100 projection instead of the radio's native
-  0–10 domain**; consecutive UI steps can map to the same radio value.
-  (MOR-1678)
+- **NR level does not honor the radio's native 0–10 domain**; the UI exposes
+  a finer projected scale whose consecutive steps can map to the same radio
+  value. (MOR-1678)
 - **Filter-width (SH) codes and mode routing do not follow CAT 2508-C Table 5
   in every mode**; the wrong width-table family can be offered for some modes.
   (MOR-1679)
 - **Manual-notch position does not use the documented CAT 001..320 code
-  range**; endpoint positions are unreachable. (MOR-1680)
+  range**; endpoint positions are unreachable and the excluded code 000 can be
+  emitted. (MOR-1680)
 - **IF Shift does not use the official 20 Hz lattice**; requested values are
   quantized by the radio. (MOR-1681)
-- **CW Pitch does not expose the exact 300..1050 Hz / 10 Hz lattice**;
-  intermediate values are quantized by the radio. (MOR-1682)
+- **CW Pitch is exposed as 300–900 Hz in 5 Hz steps although the radio
+  supports 300–1050 Hz in exact 10 Hz steps**; pitch above 900 Hz is
+  unreachable from the UI, and off-lattice requests are floored by the
+  software before reaching the radio. (MOR-1682)
 - **The band picker omits 6 m, 2 m, and 70 cm** although the radio supports
   them; use the frequency entry or the radio's own controls for those bands.
   (MOR-1674)
