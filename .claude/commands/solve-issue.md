@@ -23,7 +23,7 @@ Use `.claude/agents/planner.md`.
 - Enter Plan Mode first — do NOT start coding
 - Design minimal fix based on research
 - Write plan to `.claude/workflow/plan.md`
-- **STOP if plan violates guardrails** (>3 files, >200 LOC, architecture change)
+- **STOP if plan violates guardrails** (>3 files, >400 LOC, architecture change)
 
 ### Phase 3: EXECUTE
 Use `.claude/agents/executor.md`.
@@ -49,6 +49,7 @@ Use `.claude/agents/reviewer.md`.
 ### Phase 6: TEST
 Use `.claude/agents/qa.md`.
 - Full test suite, lint, format, type check
+- If the working tree is unchanged since REGCHECK, reuse that full-suite result (do not re-run an identical suite on the same code) and run only lint, format, and type check; any code change after REGCHECK requires a fresh full run
 - If fails → back to EXECUTE (max 2 fix cycles)
 
 ### Phase 7: PR
@@ -81,7 +82,7 @@ Use `.claude/agents/qa.md`.
 ## Guardrails (hard limits)
 
 - Max 3 files modified per change
-- Max 200 lines of code added/changed
+- Max 400 lines of code added/changed
 - No architecture changes (no new modules, no protocol changes)
 - No speculative improvements beyond the issue scope
 - Stop immediately if confidence < 0.6 at any phase
@@ -92,4 +93,4 @@ Use `.claude/agents/qa.md`.
 - Missing reproduction steps for a bug
 - Hardware dependency that cannot be mocked
 - Issue requires changes to >3 files
-- Issue requires >200 LOC
+- Issue requires >400 LOC
