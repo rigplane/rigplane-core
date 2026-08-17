@@ -90,7 +90,7 @@ When making changes:
 
 - TDD — test first, implement second
 - Batch all fixes, run tests once (not per fix)
-- One full-suite run per HEAD: if the commit is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
+- One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
 
 ---
@@ -227,7 +227,7 @@ Never skip EXPLORE, REVIEW, or TEST.
 - EXECUTE: implement plan exactly. No extras, no refactors, no scope expansion.
 - REVIEW: independently compare diff against plan. Do not trust EXECUTE assumptions. Reject deviations.
 - TEST: must run after REVIEW, not before. Results must be verified, not assumed.
-- TEST reuses the REGCHECK full-suite result when HEAD is unchanged since REGCHECK; it then runs only ruff + type check + the issue's verification. A new full run is required whenever code changed after REGCHECK.
+- TEST reuses the REGCHECK full-suite result when the working tree is unchanged since REGCHECK; it then runs only ruff (lint + format check) + type check + the issue's verification. A new full run is required whenever code changed after REGCHECK.
 
 Definitions: `.claude/agents/{researcher,planner,executor,reviewer,qa}.md`
 Use subagents for large exploration/review — keep main session lean.

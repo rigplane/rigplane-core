@@ -49,7 +49,7 @@ Use `.claude/agents/reviewer.md`.
 ### Phase 6: TEST
 Use `.claude/agents/qa.md`.
 - Full test suite, lint, format, type check
-- If HEAD is unchanged since REGCHECK, reuse that full-suite result (do not re-run an identical suite on the same commit) and run only lint, format, and type check
+- If the working tree is unchanged since REGCHECK, reuse that full-suite result (do not re-run an identical suite on the same code) and run only lint, format, and type check; any code change after REGCHECK requires a fresh full run
 - If fails → back to EXECUTE (max 2 fix cycles)
 
 ### Phase 7: PR

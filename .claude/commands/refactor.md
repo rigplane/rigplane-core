@@ -42,7 +42,7 @@ Write `.claude/workflow/refactor-plan.md`:
 - **Risks:** what could break, how to verify it didn't
 - **Rollback:** `git checkout -- <files>` for each step
 
-Guardrails apply: ≤3 files, ≤200 LOC delta, no new abstractions unless explicitly targeted.
+Guardrails apply: ≤3 files, ≤400 LOC delta, no new abstractions unless explicitly targeted.
 
 ### Phase 4: EXECUTE (strict)
 
