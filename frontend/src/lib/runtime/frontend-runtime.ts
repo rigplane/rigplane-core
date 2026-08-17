@@ -412,6 +412,11 @@ class FrontendRuntime {
     audioManager.stopTx();
   }
 
+  /** MOR-1796: subscribe to mid-transmission local TX capture death. */
+  onTxAudioDied(callback: () => void): () => void {
+    return audioManager.onTxAudioDied(callback);
+  }
+
   setVolume(v: number): void {
     setVolume(v);
   }

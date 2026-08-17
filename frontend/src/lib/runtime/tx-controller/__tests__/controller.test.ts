@@ -7,6 +7,7 @@ const eligible: Eligibility = { catPtt: true, browserTxAudio: true, controlLive:
 const start = (): TxEvent => ({ type: 'start', sourceId: 'desktop', leaseId: 'lease', intent: 'momentary', eligibility: eligible, ptt: ptt(false, 1) });
 function harness(audio: Promise<string | null> = Promise.resolve(null), failure: 'off' | 'on' | 'cancel' | 'audio' | 'reentrant' | 'callback-throw' | 10 | 20 | 30 | null = null) {
   const log: string[] = []; const reports: Array<{ command: 'on' | 'off'; report: Parameters<TxControllerDependencies['sendPtt']>[3] }> = [];
+  const audioDied: Array<() => void> = [];
   let id = 0;
   const dependencies: TxControllerDependencies = {
     startAudio: vi.fn(() => { log.push('audio'); if (failure === 'audio') throw new Error('audio'); return audio; }),
@@ -15,12 +16,26 @@ function harness(audio: Promise<string | null> = Promise.resolve(null), failure:
     commandId: vi.fn((command) => `${command}-${++id}`), schedule: vi.fn((callback, delay) => { if (failure === 'callback-throw') { callback(); throw new Error('clock'); } if (delay === failure) throw new Error('clock'); return setTimeout(callback, delay); }),
     cancel: vi.fn((handle) => { clearTimeout(handle as ReturnType<typeof setTimeout>); if (failure === 'cancel') throw new Error('cancel'); }),
     timeoutMs: { 'audio-start': 10, 'on-confirmation': 20, 'off-confirmation': 30 },
+    onAudioDied: vi.fn((callback) => { audioDied.push(callback); return () => {}; }),
   };
-  return { controller: new TxController(1, marker(0), dependencies), dependencies, log, reports };
+  return { controller: new TxController(1, marker(0), dependencies), dependencies, log, reports, audioDied };
 }
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 describe('TxController', () => {
   afterEach(() => vi.useRealTimers());
+  it('routes a mid-lease local audio death to the release path, never without a lease (MOR-1796)', async () => {
+    vi.useFakeTimers(); const h = harness();
+    expect(h.audioDied).toHaveLength(1);
+    h.audioDied[0]();
+    expect(h.controller.snapshot()).toMatchObject({ phase: 'idle', fault: null }); expect(h.log).toEqual([]);
+    h.controller.dispatch(start()); await flush();
+    h.reports[0].report({ outcome: 'sent', eventEpoch: 1, barrier: marker(2) });
+    h.audioDied[0]();
+    expect(h.controller.snapshot()).toMatchObject({ phase: 'releasing', fault: 'audio-failed', pendingOff: { leaseId: 'lease' } });
+    expect(h.log).toEqual(['audio', 'on', 'off', 'stop']);
+    h.audioDied[0]();
+    expect(h.log).toEqual(['audio', 'on', 'off', 'stop']);
+  });
   it('runs audio before one ON and command acknowledgements never create RF truth', async () => {
     vi.useFakeTimers(); const h = harness(); h.controller.dispatch(start()); expect(h.log).toEqual(['audio']);
     await flush(); expect(h.log).toEqual(['audio', 'on']); expect(h.reports.filter((item) => item.command === 'on')).toHaveLength(1);

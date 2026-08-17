@@ -10,6 +10,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({ getRadioState: () => h.radio }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({ getCapabilities: () => h.caps }));
 vi.mock('$lib/types/protocol', () => ({ makeCommandId: () => `cmd-${++h.ids}` }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({ getTxAudioControl: () => ({
+  onTxAudioDied: () => () => {},
   startTx: h.start, stopLocalAudio: h.stop, restoreModAfterConfirmedOff: h.restore,
 }) }));
 vi.mock('$lib/transport/ws-client', () => ({

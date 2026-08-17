@@ -13,6 +13,9 @@ export interface TxControllerDependencies {
   schedule(callback: () => void, delayMs: number): unknown;
   cancel(handle: unknown): void;
   timeoutMs: Record<Timer, number>;
+  /** MOR-1796: mid-lease local capture death. Optional so pure harnesses need
+   *  no timer plumbing; production wiring subscribes the real audio manager. */
+  onAudioDied?(callback: () => void): () => void;
 }
 const sameGuard = (a: TxGuard, b: TxGuard) =>
   a.leaseId === b.leaseId && a.generation === b.generation && a.authorityEpoch === b.authorityEpoch;
@@ -25,6 +28,14 @@ export class TxController {
   #processing = false;
   constructor(authorityEpoch: number, baseline: PttMarker, private readonly dependencies: TxControllerDependencies) {
     this.#state = initialTxState(authorityEpoch, baseline);
+    // MOR-1796: a death without a lease is not this controller's to act on;
+    // with one, the reducer decides (and its guard check keeps foreign leases
+    // untouchable). Unsubscription rides the dependencies' own disposal.
+    dependencies.onAudioDied?.(() => {
+      const guard = this.#state.guard;
+      if (!guard) return;
+      this.dispatch({ type: 'audio-died', guard, offCommandId: this.dependencies.commandId('off') });
+    });
   }
   snapshot(): TxState { return this.#state; }
   subscribe(listener: (state: TxState) => void): () => void {

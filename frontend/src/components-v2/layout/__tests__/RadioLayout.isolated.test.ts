@@ -38,6 +38,7 @@ vi.mock('../../../lib/media/media-session', () => ({
 vi.mock('../../../lib/runtime/frontend-runtime', () => ({
   runtime: {
     state: null,
+    onTxAudioDied: () => () => {},
     caps: { scope: true },
     connectionStatus: 'disconnected',
     radioPowerOn: null,

@@ -325,6 +325,15 @@ class AudioManager {
 
   private _txCodecFallback = false;
 
+  private txAudioDiedCallbacks = new Set<() => void>();
+
+  /** MOR-1796: notified when mid-transmission TX capture dies and the TX
+   *  audio leg is torn down. The TX controller turns this into a de-key. */
+  onTxAudioDied(callback: () => void): () => void {
+    this.txAudioDiedCallbacks.add(callback);
+    return () => this.txAudioDiedCallbacks.delete(callback);
+  }
+
   private _handleServerMessage(raw: string): void {
     let msg: { type?: unknown; codec?: unknown; opus_decode?: unknown };
     try {
@@ -366,6 +375,14 @@ class AudioManager {
     console.error(`[audio-ws] TX codec switch failed, stopping TX audio: ${reason}`);
     this._setTxCodecFallback(false);
     this.stopTx();
+    // Snapshot + isolate: one throwing subscriber must not starve the rest.
+    for (const callback of [...this.txAudioDiedCallbacks]) {
+      try {
+        callback();
+      } catch (error) {
+        console.error('[audio-ws] TX audio-died subscriber failed', error);
+      }
+    }
   }
 
   private _setTxCodecFallback(active: boolean): void {

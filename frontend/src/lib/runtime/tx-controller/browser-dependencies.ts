@@ -39,6 +39,7 @@ export function createBrowserTxControllerDependencies() {
       } });
     },
     commandId: () => makeCommandId(),
+    onAudioDied: (callback) => disposed ? noop : track(audio.onTxAudioDied(() => { if (!disposed) callback(); })),
     schedule: (callback, delayMs) => {
       if (disposed) return null;
       let handle: ReturnType<typeof globalThis.setTimeout>;

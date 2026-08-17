@@ -147,5 +147,6 @@ export function getTxAudioControl() {
     startTx,
     stopLocalAudio,
     restoreModAfterConfirmedOff,
+    onTxAudioDied: (callback: () => void) => runtime.onTxAudioDied(callback),
   };
 }

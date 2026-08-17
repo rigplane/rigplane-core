@@ -42,6 +42,7 @@ export type TxEvent =
   | ({ type: 'timer-fired'; timer: 'audio-start' | 'on-confirmation' | 'off-confirmation'; commandId: string | null; armRevision: number } & TxCorrelation)
   | ({ type: 'command-result'; command: 'on' | 'off'; outcome: 'sent' | 'ack' | 'response-ok' | 'response-error' | 'transport-error'; commandId: string; barrier: PttMarker | null } & TxCorrelation)
   | { type: 'reset-fault' }
+  | { type: 'audio-died'; guard: TxGuard; offCommandId: string }
   | { type: 'epoch'; epoch: number; baseline: PttMarker; offCommandId: string };
 export type TxTransition = { state: TxState; effects: TxEffect[] };
 export function initialTxState(authorityEpoch: number, baseline: PttMarker): TxState {
@@ -190,6 +191,16 @@ export function transition(state: TxState, event: TxEvent): TxTransition {
   if (event.type === 'fail' && sameGuard(state, event.guard)) {
     if (state.mayOwnKey) return release({ ...state, fault: event.fault }, event.offCommandId);
     return failLocal(state, event.fault);
+  }
+  if (event.type === 'audio-died' && sameGuard(state, event.guard)
+    && (state.phase === 'audio-start-pending' || state.phase === 'key-confirm-pending' || state.phase === 'active')) {
+    // MOR-1796: mid-lease local capture death. With the key owed, de-key
+    // through the normal release path; pre-key it is the same local failure an
+    // arm error is. Releasing/failed are excluded so a late echo can neither
+    // overwrite the standing fault nor disturb an obligation in flight, and
+    // sameGuard means a foreign lease can never be de-keyed from here.
+    if (state.mayOwnKey) return release({ ...state, fault: 'audio-failed' }, event.offCommandId);
+    return failLocal(state, 'audio-failed');
   }
   if (event.type === 'on-sent' && state.onCommandId !== null && state.mayOwnKey && sameGuard(state, event.guard) && state.phase === 'audio-start-pending' && state.onCommandId === event.commandId && event.barrier.authorityEpoch === state.authorityEpoch) {
     return bindOn(state, event.commandId, event.barrier);

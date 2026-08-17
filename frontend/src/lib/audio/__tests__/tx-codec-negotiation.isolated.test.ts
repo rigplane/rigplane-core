@@ -239,6 +239,29 @@ describe('AudioManager consumes the server TX codec ack', () => {
     expect(await audioManager.startTx()).toContain('sample rate');
   });
 
+  it('notifies onTxAudioDied subscribers exactly on the mid-TX failure path (MOR-1796)', async () => {
+    installMediaGlobals({ contextSampleRate: 44100 });
+    const { audioManager } = await import('../audio-manager');
+    const died: string[] = [];
+    const throwing = () => { died.push('throwing'); throw new Error('faulty subscriber'); };
+    const unsubscribeThrowing = audioManager.onTxAudioDied(throwing);
+    const unsubscribed = audioManager.onTxAudioDied(() => died.push('unsubscribed'));
+    audioManager.onTxAudioDied(() => died.push('kept'));
+    unsubscribed();
+
+    expect(await audioManager.startTx()).toBeNull();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    expect(died).toEqual([]); // a healthy start notifies nobody
+
+    ws.serverText({ type: 'audio_tx_format', codec: 'pcm16', opus_decode: false });
+
+    // The throwing subscriber is isolated; the removed one stays silent.
+    expect(died).toEqual(['throwing', 'kept']);
+    unsubscribeThrowing();
+    unsubscribeThrowing(); // idempotent
+  });
+
   it('leaves the pin alone when the ack names a codec it does not know', async () => {
     installMediaGlobals();
     const { audioManager } = await import('../audio-manager');

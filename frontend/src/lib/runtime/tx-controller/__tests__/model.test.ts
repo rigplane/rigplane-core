@@ -347,4 +347,40 @@ describe('TX reducer', () => {
     ] as const;
     for (const [state, timer] of timers) for (const patch of [{ leaseId: 'wrong' }, { generation: timer.generation + 1 }, { originalEpoch: 2 }, { eventEpoch: 2 }, { commandId: 'wrong' }]) expect(transition(state, { ...timer, ...patch })).toEqual({ state, effects: [] });
   });
+  it('de-keys through the normal release path when local audio dies mid-lease (MOR-1796)', () => {
+    // Keyed (active): the full release route with the OFF obligation.
+    const keyed = active(); const died = transition(keyed, { type: 'audio-died', guard: keyed.guard!, offCommandId: 'off-died' });
+    expect(types(died)).toEqual(['cancel-timers', 'dispatch-off', 'arm-off-timeout', 'stop-local-audio']);
+    expect(died.state).toMatchObject({ phase: 'releasing', fault: 'audio-failed', txRisk: 'confirmed-on', pendingOff: { commandId: 'off-died', leaseId: 'lease' } });
+    // Keying (key-confirm-pending): same route, risk uncertain.
+    const keying = keyPending(); const diedKeying = transition(keying, { type: 'audio-died', guard: keying.guard!, offCommandId: 'off-died' });
+    expect(types(diedKeying)).toEqual(['cancel-timers', 'dispatch-off', 'arm-off-timeout', 'stop-local-audio']);
+    expect(diedKeying.state).toMatchObject({ phase: 'releasing', fault: 'audio-failed', pendingOff: { commandId: 'off-died' } });
+    // Arming post-audio-ready (ON dispatched, still audio-start-pending): the OFF obligation exists.
+    const pending = start(); const dispatched = transition(pending.state, { type: 'audio-ready', guard: pending.state.guard!, commandId: 'on' });
+    const diedArmed = transition(dispatched.state, { type: 'audio-died', guard: dispatched.state.guard!, offCommandId: 'off-died' });
+    expect(types(diedArmed)).toEqual(['cancel-timers', 'dispatch-off', 'arm-off-timeout', 'stop-local-audio']);
+    expect(diedArmed.state).toMatchObject({ phase: 'releasing', fault: 'audio-failed', pendingOff: { commandId: 'off-died' } });
+    // Arming pre-audio-ready (no key owed): a local failure, no OFF dispatched.
+    const arming = start(); const diedArming = transition(arming.state, { type: 'audio-died', guard: arming.state.guard!, offCommandId: 'off-died' });
+    expect(types(diedArming)).toEqual(['cancel-timers', 'stop-local-audio']);
+    expect(diedArming.state).toMatchObject({ phase: 'failed', fault: 'audio-failed', mayOwnKey: false, pendingOff: null });
+  });
+  it('never de-keys a foreign lease and never disturbs terminal phases on audio-died (MOR-1796)', () => {
+    const keyed = active(); const guard = keyed.guard!;
+    for (const foreign of [{ ...guard, leaseId: 'other' }, { ...guard, generation: guard.generation + 1 }, { ...guard, authorityEpoch: guard.authorityEpoch + 1 }]) {
+      expect(transition(keyed, { type: 'audio-died', guard: foreign, offCommandId: 'off-died' })).toEqual({ state: keyed, effects: [] });
+    }
+    // idle: nothing to release.
+    const idle = initialTxState(1, marker(1));
+    expect(transition(idle, { type: 'audio-died', guard, offCommandId: 'off-died' })).toEqual({ state: idle, effects: [] });
+    // releasing: a late echo must not overwrite the standing obligation or fault.
+    const releasing = transition(keyed, { type: 'release', guard, commandId: 'off' }).state;
+    expect(transition(releasing, { type: 'audio-died', guard: releasing.guard!, offCommandId: 'off-late' })).toEqual({ state: releasing, effects: [] });
+    // failed: the recorded fault survives.
+    const failed = transition(start(initialTxState(1, marker(1)), { eligibility: { ...eligible, catPtt: false } }).state, { type: 'audio-died', guard, offCommandId: 'off-late' });
+    expect(failed.effects).toEqual([]); expect(failed.state.fault).toBe('not-eligible');
+    // malformed offCommandId fails closed.
+    expect(transition(keyed, { type: 'audio-died', guard, offCommandId: 42 as unknown as string })).toEqual({ state: keyed, effects: [] });
+  });
 });
