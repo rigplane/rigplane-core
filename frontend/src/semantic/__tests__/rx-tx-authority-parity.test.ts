@@ -12,13 +12,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   initialTxState, transition,
-  type Eligibility, type PttMarker, type PttObservation, type TxFault, type TxState,
+  type Eligibility, type PttMarker, type PttObservation, type TxFault, type TxIneligibility, type TxState,
 } from '$lib/runtime/tx-controller/model';
 import {
-  keyBlockedReasons, rfState, txOrigin, txSessionState,
+  FAULT_REASON_CODES, faultMessage, keyBlockedReasons, rfState, txOrigin, txSessionState,
   type TxAuthoritySnapshot,
 } from '../rx-tx-surface';
 import { topologyFixtures } from '../fixtures/topologies';
+import { t } from '$lib/i18n';
 
 const marker = (seq: number, authorityEpoch = 1): PttMarker => ({
   authorityEpoch, pttObservationSeq: seq, pttLastObservedMonotonic: seq,
@@ -144,5 +145,32 @@ describe('surface vocabulary against real reducer states', () => {
       expect(txSessionState(state)).toBe('failed');
       expect(keyBlockedReasons(topologyFixtures['1/single'], state)).toContain('tx-fault');
     }
+  });
+
+  /**
+   * MOR-1792 — the surface re-declares the reducer's eligibility-leg codes (ADR
+   * invariant 11 forbids it importing the reducer), so the two lists must be
+   * pinned exactly as `TxAuthoritySnapshot` is pinned to `TxState`. The
+   * compile-time halves below fail the build in BOTH directions: a leg the
+   * reducer gains and the surface has no sentence for, or a sentence for a leg
+   * the reducer can never emit.
+   */
+  it('has a surface sentence for exactly the legs the reducer can emit', () => {
+    type MissingReason = Exclude<TxIneligibility, (typeof FAULT_REASON_CODES)[number]>;
+    type ExtraReason = Exclude<(typeof FAULT_REASON_CODES)[number], TxIneligibility>;
+    const everyLegCovered: [MissingReason] extends [never] ? true : false = true;
+    const noInventedLeg: [ExtraReason] extends [never] ? true : false = true;
+    expect(everyLegCovered).toBe(true);
+    expect(noInventedLeg).toBe(true);
+  });
+
+  /** The real reducer's refusal, rendered: causes in words, code in the DOM data. */
+  it('renders a real not-eligible refusal as its causes, not as the code', () => {
+    const refused = notEligible();
+    expect(refused.fault).toBe('not-eligible');
+    expect(refused.faultDetail).toEqual(['tx-permit-not-allowed']);
+    const message = faultMessage(asSnapshot(refused));
+    expect(message).toBe(t('core.rxTx.fault.causes', { reasons: t('core.rxTx.fault.reason.permitNotAllowed') }));
+    expect(message).not.toContain('not-eligible');
   });
 });

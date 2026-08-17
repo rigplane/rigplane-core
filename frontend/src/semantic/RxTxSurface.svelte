@@ -15,7 +15,7 @@
   import { renderSlot } from './design-language-renderers';
   import type { RadioViewModel } from './radio-view-model';
   import {
-    RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, keyBlockedReasons, nextSurfaceId,
+    RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, faultMessage, keyBlockedReasons, nextSurfaceId,
     rfState, targetUnknownMessage, txDisabledReasons, txOrigin, txSessionState,
     type TxAuthoritySnapshot,
   } from './rx-tx-surface';
@@ -76,8 +76,14 @@
     <span class="rx-tx-origin">· {txOrigin(tx)}</span>
   </p>
 
+  <!-- MOR-1792: `data-fault` stays the machine channel and gains
+       `data-fault-legs` (the authority's own per-leg codes, space separated);
+       the TEXT is the operator's sentence, never the bare enum word. -->
   {#if tx.fault}
-    <p class="rx-tx-fault" data-testid="rx-tx-fault" data-fault={tx.fault}>TX fault: {tx.fault}</p>
+    <p
+      class="rx-tx-fault" data-testid="rx-tx-fault" data-fault={tx.fault}
+      data-fault-legs={tx.faultDetail && tx.faultDetail.length > 0 ? tx.faultDetail.join(' ') : undefined}
+    >{faultMessage(tx)}</p>
   {/if}
 
   {#if known}

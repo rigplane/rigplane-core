@@ -7,13 +7,25 @@ export type Eligibility = { catPtt: boolean; browserTxAudio: boolean; controlLiv
 export type TxGuard = { leaseId: string; generation: number; authorityEpoch: number };
 export type PendingOff = { commandId: string; leaseId: string; generation: number; originalEpoch: number; deliveryEpoch: number | null; deliveryPttBarrier: PttMarker | null; deliveryRebound: boolean };
 export type TxFault = 'not-eligible' | 'audio-failed' | 'audio-timeout' | 'ptt-on-rejected' | 'on-command-failed' | 'on-timeout' | 'release-not-confirmed' | 'backend-dekeyed' | null;
+/**
+ * MOR-1792 — the individual conjuncts of the `start` eligibility predicate,
+ * reported alongside `fault: 'not-eligible'` so a refusal names WHICH leg
+ * failed. Observability only: every code below is a read of the same term the
+ * predicate already evaluates, and `ineligibility()` returning empty is
+ * pinned to `ok` being true by an exhaustive test matrix. Nothing here gates
+ * anything — the predicate on the `start` branch is untouched.
+ */
+export type TxIneligibility =
+  | 'cat-ptt-unavailable' | 'browser-tx-audio-unavailable' | 'control-not-live'
+  | 'tx-permit-not-allowed' | 'tx-target-unknown' | 'ptt-not-off'
+  | 'ptt-not-authoritative' | 'no-confirmed-ptt-off' | 'authority-epoch-mismatch';
 export interface TxState {
   phase: TxPhase; intent: TxIntent; sourceId: string | null; leaseId: string | null; generation: number; guard: TxGuard | null;
   cleanupGuard: TxGuard | null; timerRevision: { audio: number; on: number; off: number };
   authorityEpoch: number; epochBaseline: PttMarker; pttMarker: PttMarker; leaseTarget: TxTarget;
   startPttBaseline: PttMarker | null; modBarrier: PttMarker | null; onCommandId: string | null; onDispatch: PttMarker | null; onConfirmed: PttMarker | null;
   localAudio: 'stopped' | 'starting' | 'streaming'; radioTx: 'off' | 'on' | 'unknown'; txRisk: 'none' | 'uncertain' | 'confirmed-on';
-  mayOwnKey: boolean; modRestorePending: boolean; pendingOff: PendingOff | null; fault: TxFault; }
+  mayOwnKey: boolean; modRestorePending: boolean; pendingOff: PendingOff | null; fault: TxFault; faultDetail: readonly TxIneligibility[] | null; }
 export type TxEffectType = 'start-audio' | 'dispatch-on' | 'dispatch-off' | 'stop-local-audio' | 'restore-mod' | 'arm-audio-timeout' | 'arm-on-timeout' | 'arm-off-timeout' | 'cancel-timers';
 export type TxEffect = { type: TxEffectType; guard?: TxGuard; commandId?: string; barrier?: PttMarker; armRevision?: number };
 export type TxCorrelation = { leaseId: string; generation: number; originalEpoch: number; eventEpoch: number; offCommandId: string };
@@ -33,7 +45,7 @@ export type TxEvent =
   | { type: 'epoch'; epoch: number; baseline: PttMarker; offCommandId: string };
 export type TxTransition = { state: TxState; effects: TxEffect[] };
 export function initialTxState(authorityEpoch: number, baseline: PttMarker): TxState {
-  return { phase: 'idle', intent: null, sourceId: null, leaseId: null, generation: 0, guard: null, cleanupGuard: null, timerRevision: { audio: 0, on: 0, off: 0 }, authorityEpoch, epochBaseline: baseline, pttMarker: baseline, leaseTarget: null, startPttBaseline: null, modBarrier: null, onCommandId: null, onDispatch: null, onConfirmed: null, localAudio: 'stopped', radioTx: 'unknown', txRisk: 'none', mayOwnKey: false, modRestorePending: false, pendingOff: null, fault: null };
+  return { phase: 'idle', intent: null, sourceId: null, leaseId: null, generation: 0, guard: null, cleanupGuard: null, timerRevision: { audio: 0, on: 0, off: 0 }, authorityEpoch, epochBaseline: baseline, pttMarker: baseline, leaseTarget: null, startPttBaseline: null, modBarrier: null, onCommandId: null, onDispatch: null, onConfirmed: null, localAudio: 'stopped', radioTx: 'unknown', txRisk: 'none', mayOwnKey: false, modRestorePending: false, pendingOff: null, fault: null, faultDetail: null };
 }
 const sameGuard = (state: TxState, guard: TxGuard) => state.guard?.leaseId === guard.leaseId && state.guard.generation === guard.generation && state.guard.authorityEpoch === guard.authorityEpoch;
 const sameTarget = (a: TxTarget, b: TxTarget) => a !== null && b !== null && a.receiver === b.receiver && a.slot === b.slot && a.frequencyHz === b.frequencyHz;
@@ -49,6 +61,27 @@ const sameMarker = (marker: PttMarker, observation: PttObservation) =>
   && marker.pttLastObservedMonotonic === observation.marker.pttLastObservedMonotonic;
 const authoritative = (observation: PttObservation) => observation.observed && observation.fresh && (observation.source === 'radio-readback' || observation.source === 'backend-observation');
 const ready = (eligibility: Eligibility) => eligibility.catPtt && eligibility.browserTxAudio && eligibility.controlLive && eligibility.permit === 'allowed' && eligibility.target !== null;
+/**
+ * MOR-1792 — every failing conjunct of the `start` predicate, in predicate
+ * order and WITHOUT short-circuiting, so one refusal reports every leg rather
+ * than only the first. Reporting-only: this reads the same terms the `ok`
+ * expression below evaluates and never feeds back into it. The empty-result
+ * ⇔ `ok` equivalence is the invariant a reviewer should check, and it is
+ * pinned exhaustively in `__tests__/not-eligible-legs.test.ts`.
+ */
+function ineligibility(state: TxState, eligibility: Eligibility, ptt: PttObservation, currentConfirmedOff: boolean): TxIneligibility[] {
+  const legs: TxIneligibility[] = [];
+  if (!eligibility.catPtt) legs.push('cat-ptt-unavailable');
+  if (!eligibility.browserTxAudio) legs.push('browser-tx-audio-unavailable');
+  if (!eligibility.controlLive) legs.push('control-not-live');
+  if (eligibility.permit !== 'allowed') legs.push('tx-permit-not-allowed');
+  if (eligibility.target === null) legs.push('tx-target-unknown');
+  if (ptt.value !== false) legs.push('ptt-not-off');
+  if (!authoritative(ptt)) legs.push('ptt-not-authoritative');
+  if (!newer(state.pttMarker, ptt) && !currentConfirmedOff) legs.push('no-confirmed-ptt-off');
+  if (ptt.marker.authorityEpoch !== state.authorityEpoch) legs.push('authority-epoch-mismatch');
+  return legs;
+}
 const effect = (type: TxEffectType, state: TxState, commandId?: string, barrier?: PttMarker, guard: TxGuard | null = state.guard): TxEffect => ({ type, ...(guard ? { guard } : {}), ...(commandId !== undefined ? { commandId } : {}), ...(barrier ? { barrier } : {}) });
 const armEffect = (type: 'arm-audio-timeout' | 'arm-on-timeout' | 'arm-off-timeout', state: TxState, armRevision: number, commandId?: string, barrier?: PttMarker): TxEffect => ({ ...effect(type, state, commandId, barrier), armRevision });
 const clearLease = (state: TxState): TxState => ({ ...state, intent: null, sourceId: null, leaseId: null, guard: null, cleanupGuard: null, timerRevision: { audio: 0, on: 0, off: 0 }, leaseTarget: null, startPttBaseline: null, modBarrier: null, onCommandId: null, onDispatch: null, onConfirmed: null, localAudio: 'stopped', mayOwnKey: false, pendingOff: null });
@@ -96,15 +129,15 @@ export function transition(state: TxState, event: TxEvent): TxTransition {
     if (state.phase !== 'idle') return { state, effects: [] };
     const currentConfirmedOff = state.radioTx === 'off' && sameMarker(state.pttMarker, event.ptt);
     const ok = ready(event.eligibility) && event.ptt.value === false && authoritative(event.ptt) && (newer(state.pttMarker, event.ptt) || currentConfirmedOff) && event.ptt.marker.authorityEpoch === state.authorityEpoch;
-    if (!ok) return { state: { ...state, phase: 'failed', fault: 'not-eligible', txRisk: 'none', sourceId: null, leaseId: null, guard: null }, effects: [] };
+    if (!ok) return { state: { ...state, phase: 'failed', fault: 'not-eligible', faultDetail: ineligibility(state, event.eligibility, event.ptt, currentConfirmedOff), txRisk: 'none', sourceId: null, leaseId: null, guard: null }, effects: [] };
     const generation = state.generation + 1;
     const guard = { leaseId: event.leaseId, generation, authorityEpoch: state.authorityEpoch };
-    const next = { ...clearLease(state), phase: 'audio-start-pending' as const, intent: event.intent, sourceId: event.sourceId, leaseId: event.leaseId, generation, guard, cleanupGuard: guard, timerRevision: { audio: 1, on: 0, off: 0 }, leaseTarget: event.eligibility.target, startPttBaseline: event.ptt.marker, modBarrier: event.ptt.marker, pttMarker: event.ptt.marker, localAudio: 'starting' as const, radioTx: 'off' as const, txRisk: 'none' as const, modRestorePending: true, fault: null };
+    const next = { ...clearLease(state), phase: 'audio-start-pending' as const, intent: event.intent, sourceId: event.sourceId, leaseId: event.leaseId, generation, guard, cleanupGuard: guard, timerRevision: { audio: 1, on: 0, off: 0 }, leaseTarget: event.eligibility.target, startPttBaseline: event.ptt.marker, modBarrier: event.ptt.marker, pttMarker: event.ptt.marker, localAudio: 'starting' as const, radioTx: 'off' as const, txRisk: 'none' as const, modRestorePending: true, fault: null, faultDetail: null };
     return { state: next, effects: [effect('start-audio', next), armEffect('arm-audio-timeout', next, next.timerRevision.audio)] };
   }
   if (event.type === 'intent') return sameGuard(state, event.guard) && event.sourceId === state.sourceId && state.phase !== 'releasing' && state.phase !== 'failed' ? { state: { ...state, intent: event.intent }, effects: [] } : { state, effects: [] };
   if (event.type === 'release') return sameGuard(state, event.guard) && (event.sourceId === undefined || event.sourceId === state.sourceId) ? release(state, event.commandId) : { state, effects: [] };
-  if (event.type === 'reset-fault' && state.phase === 'failed' && !state.pendingOff && !state.modRestorePending && !state.mayOwnKey && !state.cleanupGuard) return { state: { ...clearLease(state), phase: 'idle', txRisk: 'none', fault: null }, effects: [] };
+  if (event.type === 'reset-fault' && state.phase === 'failed' && !state.pendingOff && !state.modRestorePending && !state.mayOwnKey && !state.cleanupGuard) return { state: { ...clearLease(state), phase: 'idle', txRisk: 'none', fault: null, faultDetail: null }, effects: [] };
   if (event.type === 'audio-ready' && sameGuard(state, event.guard) && state.phase === 'audio-start-pending' && state.onCommandId === null) {
     const next = { ...state, localAudio: 'streaming' as const, onCommandId: event.commandId, onDispatch: state.pttMarker, mayOwnKey: true, txRisk: 'uncertain' as const, timerRevision: { ...state.timerRevision, audio: state.timerRevision.audio + 1, on: state.timerRevision.on + 1 } };
     return { state: next, effects: [effect('cancel-timers', next), effect('dispatch-on', next, event.commandId), armEffect('arm-on-timeout', next, next.timerRevision.on, event.commandId)] };
@@ -161,7 +194,7 @@ export function transition(state: TxState, event: TxEvent): TxTransition {
       const barrier = bound && bound.authorityEpoch < state.authorityEpoch ? state.epochBaseline : bound;
       if (barrier && newer(barrier, event.ptt)) {
         const cleanupGuard = state.cleanupGuard ?? state.guard;
-        const discharged = state.phase === 'releasing' ? { ...clearLease(next), phase: 'idle' as const, txRisk: 'none' as const, modRestorePending: false, fault: null } : state.fault === 'release-not-confirmed' ? { ...clearLease(next), phase: 'failed' as const, txRisk: 'none' as const, modRestorePending: false, fault: state.fault } : { ...next, cleanupGuard: null, modRestorePending: false };
+        const discharged = state.phase === 'releasing' ? { ...clearLease(next), phase: 'idle' as const, txRisk: 'none' as const, modRestorePending: false, fault: null, faultDetail: null } : state.fault === 'release-not-confirmed' ? { ...clearLease(next), phase: 'failed' as const, txRisk: 'none' as const, modRestorePending: false, fault: state.fault } : { ...next, cleanupGuard: null, modRestorePending: false };
         return { state: discharged, effects: [effect('cancel-timers', state, undefined, undefined, cleanupGuard), effect('restore-mod', state, undefined, barrier, cleanupGuard)] };
       }
     }
