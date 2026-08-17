@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { initialTxState, transition, type Eligibility, type PttObservation, type TxEvent, type TxState } from '../model';
+import { initialTxState, transition, txFaultObligation, type Eligibility, type PttObservation, type TxEvent, type TxState } from '../model';
 const marker = (seq: number, authorityEpoch = 1) => ({ authorityEpoch, pttObservationSeq: seq, pttLastObservedMonotonic: seq });
 const target = { receiver: 'MAIN', slot: 'A', frequencyHz: 14_074_000 } as const;
 const eligible: Eligibility = { catPtt: true, browserTxAudio: true, controlLive: true, permit: 'allowed', target };
@@ -99,6 +99,32 @@ describe('TX reducer', () => {
     const dekeyed = transition(active(), { type: 'authority', epoch: 1, ptt: ptt(false, 4), eligibility: eligible, offCommandId: 'off' }); const recovered = transition(dekeyed.state, { type: 'reset-fault' }); expect(recovered.state).toMatchObject({ phase: 'idle', fault: null, radioTx: 'off', onCommandId: null }); expect(start(recovered.state, { ptt: ptt(false, 5) }).state.phase).toBe('audio-start-pending');
     const pending = start(); const failed = transition(pending.state, { type: 'fail', guard: pending.state.guard!, fault: 'audio-failed', offCommandId: 'off' }); expect(transition(failed.state, { type: 'reset-fault' })).toEqual({ state: failed.state, effects: [] });
     const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' }); expect(transition(released.state, { type: 'reset-fault' })).toEqual({ state: released.state, effects: [] });
+  });
+  // MOR-1784. The operator-facing reset affordance asks THIS predicate whether a
+  // latched fault may be dismissed and, when it may not, which obligation is in
+  // the way. It is the reducer's own `reset-fault` guard — never a second
+  // opinion — so every row below asserts both halves: the name the surface will
+  // print, and that `transition` agrees byte-for-byte about accepting the reset.
+  // Each state is built BY the reducer above, never hand-written.
+  it('names the obligation behind a refused fault reset, and never disagrees with the reducer', () => {
+    const notEligible = start(initialTxState(1, marker(1)), { eligibility: { ...eligible, permit: 'unknown' } }).state;
+    const dekeyed = transition(active(), { type: 'authority', epoch: 1, ptt: ptt(false, 4), eligibility: eligible, offCommandId: 'off' }).state;
+    const pending = start(); const audioFailed = transition(pending.state, { type: 'fail', guard: pending.state.guard!, fault: 'audio-failed', offCommandId: 'off' }).state;
+    const keyed = active(); const released = transition(keyed, { type: 'release', guard: keyed.guard!, commandId: 'off' });
+    const delivered = transition(released.state, { type: 'command-result', command: 'off', outcome: 'sent', barrier: marker(4), ...correlation(released.state, 'off') });
+    const notConfirmed = transition(delivered.state, timerEvent(delivered.state, 'off-confirmation', 'off')).state;
+    const discharged = transition(notConfirmed, { type: 'authority', epoch: 1, ptt: ptt(false, 5), eligibility: eligible, offCommandId: 'off' }).state;
+    const rows = [[notEligible, null], [dekeyed, null], [discharged, null], [audioFailed, 'mod-restore'], [notConfirmed, 'dekey-pending']] as const;
+    for (const [state, obligation] of rows) {
+      expect(state.phase).toBe('failed');
+      expect(txFaultObligation(state)).toBe(obligation);
+      expect(transition(state, { type: 'reset-fault' }).state !== state).toBe(obligation === null);
+    }
+    // The two residual conditions of the same guard, each named rather than
+    // collapsed into the one before it: a key this session may still hold, and
+    // a cleanup generation still outstanding. Fail-closed either way.
+    expect(txFaultObligation({ pendingOff: null, mayOwnKey: true, modRestorePending: false, cleanupGuard: null })).toBe('key-held');
+    expect(txFaultObligation({ pendingOff: null, mayOwnKey: false, modRestorePending: false, cleanupGuard: { leaseId: 'lease', generation: 1, authorityEpoch: 1 } })).toBe('cleanup');
   });
   it('correlates audio deadlines and performs one local failure cleanup', () => {
     const pending = start(); const timer = timerEvent(pending.state, 'audio-start', null);

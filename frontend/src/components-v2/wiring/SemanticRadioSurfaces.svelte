@@ -30,6 +30,7 @@
     type PbtPresentationEvidence, type PbtPresentationState,
   } from '../../semantic/pbt-presentation-continuity';
   import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
+  import { txFaultObligation, type TxFaultObligation } from '$lib/runtime/tx-controller/model';
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
@@ -590,6 +591,29 @@
   function clearFault(): void {
     tx.resetFault();
   }
+  /**
+   * MOR-1784 — is the latched fault dismissable right now, and if not, which
+   * obligation is in the way?
+   *
+   * `txFaultObligation` is the reducer's OWN `reset-fault` guard (exported from
+   * `model.ts` for exactly this), not a copy of it: this wiring can never offer
+   * a reset the controller would refuse, nor withhold one it would accept. The
+   * bench finding (owner session, IC-7300): a fault latched, the key read
+   * "an unresolved TX fault is blocking the key", and the only recovery found
+   * was reloading the page — the reset was permitted the whole time and simply
+   * unreachable. Dismissing clears the surface's latch and nothing else: it
+   * issues no command, so it can neither key a radio nor discharge a pending
+   * de-key obligation, and while one is outstanding the reducer refuses it and
+   * this reads out WHY instead of offering a button that silently no-ops.
+   */
+  let faultObligation = $derived(txState.phase === 'failed' ? txFaultObligation(txState) : null);
+  let faultDismissable = $derived(txState.phase === 'failed' && faultObligation === null);
+  const FAULT_OBLIGATION_KEY: Record<TxFaultObligation, string> = {
+    'dekey-pending': 'core.rxTx.fault.reset.reason.dekeyPending',
+    'key-held': 'core.rxTx.fault.reset.reason.keyHeld',
+    'mod-restore': 'core.rxTx.fault.reset.reason.modRestore',
+    cleanup: 'core.rxTx.fault.reset.reason.cleanup',
+  };
 
   /**
    * ATU TUNE emits a CARRIER — a transmit-causing action (MOR-1262 §2 slice 1
@@ -819,8 +843,49 @@
   {/snippet}
 
   <!--
-    MOR-1258 (owner decision, 2026-08-04, gate item (b)). The three
-    conditional TX-adjacent alerts — `tx-fault-reset` and the two
+    MOR-1784. The fault-recovery block, split out of `txAdjacentAlerts` below
+    so it can render where the fault is READ — directly behind the surface
+    that prints "TX fault: <code>" and the blocked list — in both
+    compositions. It stayed an rx-tx zone member either way (MOR-1258 owner
+    ruling, gate item (b)); what changed is that in the single/default path
+    (sdr-test / LCD / mobile) it no longer sits at the far end of a scrolling
+    column, which is how the owner's IC-7300 session concluded there was no
+    way out of a fault at all.
+
+    Deliberately NOT under `{#if view}` or `zoneShows` (see the render sites):
+    a fault latched by another lease source — the mobile PTT surface, TxPanel,
+    a keyboard key — must stay dismissable even on a screen whose view model
+    or workspace plan has no RX/TX surface. Recovery availability only ever
+    widens here; it never narrows.
+
+    The refusal branch is not decoration: while the reducer would refuse the
+    reset (`txFaultObligation` above), a button would silently no-op, which is
+    the same dead end one click further in. It states the obligation instead,
+    and what discharges it. `role="status"` because the swap between the two
+    branches is a live change an operator may be reading rather than watching.
+  -->
+  {#snippet txFaultRecovery()}
+    {#if txState.phase === 'failed'}
+      <div class="tx-fault-recovery" data-testid="tx-fault-recovery" data-dismissable={faultDismissable}>
+        {#if faultDismissable}
+          <button
+            type="button" class="tx-fault-reset" data-testid="tx-fault-reset" onclick={clearFault}
+          >{t('core.rxTx.fault.reset.action')}</button>
+          <span class="tx-fault-note" data-testid="tx-fault-reset-note"
+          >{t('core.rxTx.fault.reset.note')}</span>
+        {:else}
+          <p
+            class="tx-fault-note" data-testid="tx-fault-reset-blocked" role="status"
+            data-reason={faultObligation}
+          >{t('core.rxTx.fault.reset.blocked', { reason: t(FAULT_OBLIGATION_KEY[faultObligation!]) })}</p>
+        {/if}
+      </div>
+    {/if}
+  {/snippet}
+
+  <!--
+    MOR-1258 (owner decision, 2026-08-04, gate item (b)). The conditional
+    TX-adjacent alerts — the fault recovery above and the two
     ModInputTxWarning buttons ("Set LAN" / dismiss) — are formal members of
     the rx-tx zone: they render beside RxTxSurface (inside its bound zone
     element in the dual composition) rather than in a new `alerts` zone or
@@ -840,11 +905,6 @@
   -->
   {#snippet txAdjacentAlerts()}
     <ModInputTxWarning />
-    {#if txState.phase === 'failed'}
-      <button
-        type="button" class="tx-fault-reset" data-testid="tx-fault-reset" onclick={clearFault}
-      >Clear TX fault</button>
-    {/if}
   {/snippet}
 
   <!--
@@ -1242,6 +1302,9 @@
     -->
     <div class="rx-tx-zone" data-zone-id="rx-tx">
       {#if zoneShows('rx-tx', 'rxTx')}{@render rxTxSurface()}{/if}
+      <!-- MOR-1784: behind the surface that prints the fault, ahead of the
+           MOD-input banner; outside the workspace gate, like the alerts. -->
+      {@render txFaultRecovery()}
       {@render txAdjacentAlerts()}
     </div>
     {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
@@ -1264,6 +1327,12 @@
       {#if surface === 'vfo'}{@render vfoSurface()}
       {:else if surface === 'rxTx'}{@render rxTxSurface()}{/if}
     {/each}
+    <!-- MOR-1784: `singleOrder` ends in `rxTx` in every shipped layout
+         (`SINGLE_COMPOSITION`, and a plan can only reorder or subtract), so
+         this lands directly behind the fault line instead of at the bottom of
+         the column — while still rendering unconditionally, so a fault raised
+         by any lease source keeps a way out even if `rxTx` is absent. -->
+    {@render txFaultRecovery()}
     {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
     {@render zoned('meters', view?.meters !== undefined, metersSurface)}
     {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface)}
@@ -1292,6 +1361,18 @@
     overflow: auto;
     font-family: 'Roboto Mono', monospace;
     color: var(--v2-text-primary, #e8e8e8);
+  }
+  /* MOR-1784: structure only — the action and the sentence that explains it
+     stack as one block, so neither can be read without the other. */
+  .tx-fault-recovery {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .tx-fault-note {
+    margin: 0;
+    font-size: 0.85em;
   }
   .tx-fault-reset {
     align-self: flex-start;

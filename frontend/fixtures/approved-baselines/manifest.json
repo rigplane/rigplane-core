@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-08-13T04:49:58.000Z",
-  "commit": "7da03bf058059b7fb5d87c01158d9b3a5b4613bf",
-  "commitShort": "7da03bf0",
-  "branch": "codex/mor-1474-tx-wording-surfaces",
+  "generatedAt": "2026-08-17T01:45:03.000Z",
+  "commit": "fac797a9e6330579edf9cc9c5f0126c78f99ae0c",
+  "commitShort": "fac797a9",
+  "branch": "codex/mor-1784-tx-fault-reset",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",
