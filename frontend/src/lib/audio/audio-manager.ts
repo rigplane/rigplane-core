@@ -11,7 +11,7 @@
 import { RxPlayer, type RxAudioFocus } from './rx-player';
 import { TxMic } from './tx-mic';
 import { setAudioConnected } from '../stores/connection.svelte';
-import { setRxEnabled, setTxEnabled } from '../stores/audio.svelte';
+import { setRxEnabled, setTxEnabled, setTxCodecFallback } from '../stores/audio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 
 export type AudioFocus = RxAudioFocus;
@@ -277,6 +277,10 @@ class AudioManager {
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
         this.rxPlayer.feed(ev.data);
+        return;
+      }
+      if (typeof ev.data === 'string') {
+        this._handleServerMessage(ev.data);
       }
     };
 
@@ -290,6 +294,10 @@ class AudioManager {
       this._clearStatsTimer();
       this.ws = null;
       setAudioConnected(false);
+      // Decoder availability is a fact about the server we are talking to;
+      // once the link is gone we no longer know it. Re-learned at the next
+      // TX start (MOR-1791).
+      this._setTxCodecFallback(false);
       this.notify();
       if (!this._rxEnabled && !this._txEnabled) return;
       // Reconnect with backoff
@@ -297,6 +305,46 @@ class AudioManager {
       this.backoff = Math.min(Math.floor(this.backoff * 1.7), BACKOFF_MAX);
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
     };
+  }
+
+  // ── TX codec negotiation (MOR-1791) ──
+  //
+  // The server answers every ``audio_start direction=tx`` with an
+  // ``audio_tx_format`` ack naming the codec it can actually accept. Without
+  // it, a server with no native opus codec drops every browser Opus frame
+  // fail-closed: the radio keys and nothing reaches the air. Text frames on
+  // this socket were previously discarded, so consuming them is additive on
+  // both sides — an older server simply never sends one and we keep Opus.
+
+  /** True while browser TX is pinned to PCM16 because the server cannot
+   *  decode Opus. Surfaced to the operator as a quiet status hint. */
+  get txCodecFallback(): boolean { return this._txCodecFallback; }
+
+  private _txCodecFallback = false;
+
+  private _handleServerMessage(raw: string): void {
+    let msg: { type?: unknown; codec?: unknown; opus_decode?: unknown };
+    try {
+      msg = JSON.parse(raw) as typeof msg;
+    } catch {
+      return;
+    }
+    if (msg?.type !== 'audio_tx_format') return;
+    // Only an explicit pcm16 answer redirects us; anything else leaves the
+    // client's own codec choice untouched, exactly as before this existed.
+    const codec = msg.codec === 'pcm16' ? 'pcm16' : 'opus';
+    const switched = this.txMic.applyServerCodec(codec);
+    if (switched) {
+      console.warn('[audio-ws] server cannot decode Opus — TX switched to PCM16');
+    }
+    this._setTxCodecFallback(msg.opus_decode === false);
+  }
+
+  private _setTxCodecFallback(active: boolean): void {
+    if (active === this._txCodecFallback) return;
+    this._txCodecFallback = active;
+    setTxCodecFallback(active);
+    this.notify();
   }
 
   // ── Link-quality uplink (MOR-585, ADR §3.6) ──

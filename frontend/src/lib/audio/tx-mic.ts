@@ -21,6 +21,8 @@ type NavigatorWithLegacyMedia = Navigator & {
   mozGetUserMedia?: LegacyGetUserMedia;
 };
 
+export type TxCodec = 'opus' | 'pcm16';
+
 export class TxMic {
   private stream: MediaStream | null = null;
   private encoder: AudioEncoder | null = null;
@@ -32,6 +34,9 @@ export class TxMic {
   private seq = 0;
   private _active = false;
   private sendFn: TxSendFn;
+  // Sticky: the server told us it cannot decode Opus (MOR-1791). Kept across
+  // start/stop so every later PTT opens on PCM16 from the very first frame.
+  private pcm16Pinned = false;
 
   constructor(sendFn: TxSendFn) {
     this.sendFn = sendFn;
@@ -39,6 +44,38 @@ export class TxMic {
 
   get active(): boolean {
     return this._active;
+  }
+
+  /** Codec currently being emitted, or null when not capturing. */
+  get codec(): TxCodec | null {
+    if (!this._active) return null;
+    return this.encoder !== null ? 'opus' : 'pcm16';
+  }
+
+  /**
+   * Adopt the codec the server says it can accept (MOR-1791).
+   *
+   * The server cannot decode Opus on hosts without a native opus codec; it
+   * knows this at TX start and now says so. Rather than key the radio while
+   * every Opus frame is dropped fail-closed, switch to the PCM16 capture
+   * path that already exists below — same path, same MediaStream, no second
+   * permission prompt, no new transport.
+   *
+   * `'opus'` restores the default and never tears down a running capture:
+   * when the decoder is available the client keeps its own codec choice,
+   * exactly as before this negotiation existed.
+   *
+   * Returns true when a live capture was switched to PCM16.
+   */
+  applyServerCodec(codec: TxCodec): boolean {
+    if (codec === 'opus') {
+      this.pcm16Pinned = false;
+      return false;
+    }
+    this.pcm16Pinned = true;
+    if (!this._active || this.encoder === null) return false;
+    this.stopOpusCapture();
+    return this.startPcmFallback() === null;
   }
 
   /** Check if browser supports TX mic */
@@ -110,7 +147,7 @@ export class TxMic {
     this.seq = 0;
     this.pcmPending = [];
 
-    if (!TxMic.supportsWebCodecs()) {
+    if (this.pcm16Pinned || !TxMic.supportsWebCodecs()) {
       return this.startPcmFallback();
     }
 
@@ -166,6 +203,15 @@ export class TxMic {
       this.audioContext = null;
     }
     this.pcmPending = [];
+    this.stopOpusCapture();
+    if (this.stream) {
+      this.stream.getTracks().forEach(t => t.stop());
+      this.stream = null;
+    }
+  }
+
+  /** Tear down the WebCodecs encoder leg, leaving the MediaStream open. */
+  private stopOpusCapture(): void {
     if (this.reader) {
       this.reader.cancel().catch(() => {});
       this.reader = null;
@@ -173,10 +219,6 @@ export class TxMic {
     if (this.encoder) {
       try { this.encoder.close(); } catch { /* ok */ }
       this.encoder = null;
-    }
-    if (this.stream) {
-      this.stream.getTracks().forEach(t => t.stop());
-      this.stream = null;
     }
   }
 

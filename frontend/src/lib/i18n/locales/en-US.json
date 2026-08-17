@@ -26,6 +26,8 @@
   "core.statusbar.indicator.scope": "Scope WebSocket: {state}",
   "core.statusbar.indicator.audio": "Audio WebSocket: {state}",
   "core.statusbar.indicator.http": "State HTTP: {state}",
+  "core.statusbar.txCodecFallback.label": "PCM16",
+  "core.statusbar.txCodecFallback.tooltip": "TX audio: this server cannot decode Opus, so the microphone is sending PCM16 instead. Transmission is working.",
   "core.statusbar.health.radioLinkLost": "radio link lost",
   "core.statusbar.health.radioResponseDelayed": "radio response delayed",
   "core.statusbar.health.radioNotResponding": "radio not responding",
