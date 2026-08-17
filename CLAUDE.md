@@ -8,8 +8,8 @@ Live bench: **IC-7300, FTX-1, X6200**. *(IC-7610 retired 2026-08-04.)* Context: 
 ## Commands (always `uv run`)
 
 ```bash
-uv run pytest tests/ -q --tb=short                    # all tests
-uv run pytest tests/ -q --tb=short --ignore=tests/integration  # skip hw
+uv run pytest tests/ --ignore=tests/integration -n auto -q --tb=short --timeout=300 --timeout-method=thread  # standard suite (CI parity, ~2 min)
+uv run pytest tests/ -q --tb=short                    # serial, incl. integration hooks (profiling/hardware only)
 uv run mypy src/                                       # type check
 uv run ruff check src/ tests/ && uv run ruff format src/ tests/  # lint+format
 ```
@@ -152,7 +152,7 @@ published artifact source of truth, and release-branch hotfixes must return to
 ## Completion criteria
 
 Work is complete ONLY when ALL pass:
-1. `uv run pytest tests/ -q --tb=short` — zero failures
+1. `uv run pytest tests/ --ignore=tests/integration -n auto -q --tb=short --timeout=300 --timeout-method=thread` — zero failures
 2. `uv run ruff check src/ tests/` — zero violations
 3. `git diff` — no unintended changes
 
