@@ -387,6 +387,15 @@ async def server_serial_radio(
     await radio.connect()
     srv = RigctldServer(radio, cfg)
     await srv.start()
+    # MOR-1881: DEFER-classified rigctld writes (F/M/V/S/RIT/XIT) now fail
+    # closed on unknown RF state instead of executing unconditionally. This
+    # bootstrapped fallback StateStore never observes a real PTT sample, so
+    # seed a known-RX one (a huge max_age so it never ages out against the
+    # real monotonic clock) to keep the TX interlock out of these tests'
+    # unrelated freq/mode round-trip coverage.
+    _apply_store_value(
+        srv._state_store, FieldPath.global_("tx_state", "ptt"), False, max_age=1e9
+    )
     try:
         yield srv, radio
     finally:

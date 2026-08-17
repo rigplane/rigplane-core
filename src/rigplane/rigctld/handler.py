@@ -82,6 +82,11 @@ _RIGCTLD_PROVIDER_GENERATION: ContextVar[int | None] = ContextVar(
     "rigctld_provider_generation",
     default=None,
 )
+# MOR-1881: how often a session blocked on the shared deferred-TX lane
+# re-samples RF truth while a DEFER-classified write is held. Bounded by the
+# lane's own 3.0s TTL / 1.0s quiet window (tx_interlock.py) — this is only
+# the sampling grain, not a policy constant.
+_RIGCTLD_DEFER_POLL_SECONDS = 0.1
 
 # ---------------------------------------------------------------------------
 # IC-7610 hardcoded dump_state (hamlib protocol v0 positional format)
@@ -423,6 +428,12 @@ class _RigctldCommandExecutor:
             and self.handler._resolve_rigctld_rf_state() is not tx_interlock.RfState.RX
         ):
             raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if (
+            classification.disposition is TxInterlockDisposition.DEFER
+            and self.handler._has_canonical_state_store
+            and not await self.handler._await_deferred_tx(classification.command)
+        ):
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
         params = intent.params
         if intent.name == "set_freq":
             await self.handler._radio.set_freq(
@@ -669,6 +680,10 @@ class RigctldHandler:
             executor=_RigctldCommandExecutor(self),
             state_store=state_store,
         )
+        # MOR-1881: one bounded single-slot lane, shared across every
+        # concurrent rigctld session on this handler (there is exactly one
+        # RigctldHandler per radio; see RigctldServer).
+        self._deferred_tx_lane = tx_interlock.DeferredTxCommandLane()
 
     def bind_provider_generation(self, capture: Callable[[], int]) -> None:
         """Bind the server-owned provider token capture for request ingress."""
@@ -708,6 +723,38 @@ class RigctldHandler:
         ):
             return tx_interlock.RfState.UNKNOWN
         return tx_interlock.RfState.TX if field.value else tx_interlock.RfState.RX
+
+    async def _await_deferred_tx(self, command: object) -> bool:
+        """Hold one DEFER-classified command in the shared single-slot lane.
+
+        Blocks the calling rigctld session until ``command`` may execute
+        (returns ``True``), or until it must not: unknown/stale RF state
+        fails closed immediately without ever entering the lane; TTL expiry
+        and supersession by a newer deferred command — from this session or
+        any concurrent one, since the lane is shared — both fail truthfully
+        once discovered. Mirrors the timing semantics ``RadioPoller`` and
+        ``YaesuCatPoller`` already enforce against the same
+        ``DeferredTxCommandLane``; PTT OFF and the other
+        ``_ALWAYS_PASS_TYPES`` never reach this method (MOR-1881).
+        """
+        rf_state = self._resolve_rigctld_rf_state()
+        if rf_state is not tx_interlock.RfState.TX:
+            return rf_state is tx_interlock.RfState.RX
+        now = self._state_store.snapshot().generated_at_monotonic
+        self._deferred_tx_lane.defer(command, now=now)
+        while True:
+            await asyncio.sleep(_RIGCTLD_DEFER_POLL_SECONDS)
+            if self._deferred_tx_lane.pending is not command:
+                return False  # superseded by a newer deferred command
+            rf_state = self._resolve_rigctld_rf_state()
+            now = self._state_store.snapshot().generated_at_monotonic
+            result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
+            if result is None:
+                return False
+            if result.outcome is tx_interlock.TxInterlockDeferredOutcome.RELEASED:
+                return True
+            if result.outcome is not tx_interlock.TxInterlockDeferredOutcome.HELD:
+                return False  # expired
 
     def _packet_data_mode_value(self) -> int | bool:
         value = self._config.wsjtx_data_mode
