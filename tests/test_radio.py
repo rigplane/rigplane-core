@@ -44,6 +44,11 @@ from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
 
+# MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
+# dispatch bodies; the interlock seat now lives at its head, so the RF
+# premise is stated once here (see the fixture docstring in conftest.py).
+pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+
 # ---------------------------------------------------------------------------
 # Helpers — build fake radio responses as UDP packets wrapping CI-V frames
 # ---------------------------------------------------------------------------

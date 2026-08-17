@@ -215,3 +215,29 @@ async def connected_radio(mock_radio: MockIcomRadio) -> AsyncGenerator[IcomRadio
         await radio.connect()
     yield radio
     await radio.disconnect()
+
+
+@pytest.fixture
+def observed_rx_dispatch_premise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """State the RF premise for suites that call ``RadioPoller._execute`` directly.
+
+    MOR-1884 moved the TX-interlock seat to the head of ``_execute`` so that
+    uncommanded internal emits are gated exactly like queued commands. Suites
+    that reach into ``_execute`` to exercise a *dispatch body* therefore have to
+    say what the radio was doing — an un-seeded StateStore reads UNKNOWN, and
+    the seat correctly fails closed on it.
+
+    These suites test dispatch, never the seat: the seat's own matrix (RX pass /
+    TX refuse / UNKNOWN refuse, emergency structural pass, the DEFER lane, the
+    single bootstrap exemption) lives in ``test_radio_poller_tx_interlock.py``.
+    Opt in with ``pytestmark = pytest.mark.usefixtures(...)``; a suite that wants
+    to assert refusal must not use this fixture.
+    """
+    from rigplane.runtime.tx_interlock import RfState
+    from rigplane.web.radio_poller import RadioPoller
+
+    monkeypatch.setattr(
+        RadioPoller,
+        "_current_rf_state",
+        lambda self, snapshot=None: RfState.RX,
+    )

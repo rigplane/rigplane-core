@@ -18,6 +18,11 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq
 
+# MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
+# dispatch bodies; the interlock seat now lives at its head, so the RF
+# premise is stated once here (see the fixture docstring in conftest.py).
+pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+
 
 def _make_radio(*, model: str = "IC-7610", active: str = "MAIN") -> MagicMock:
     """A CI-V-capable radio mock: ``send_civ`` is the lane the poller hits.

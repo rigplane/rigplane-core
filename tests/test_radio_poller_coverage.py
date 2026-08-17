@@ -115,6 +115,11 @@ from rigplane.web.web_startup import stop_web_server
 # reuses MOR-1013's harness rather than re-mocking either of them.
 from test_web_managed_tx_owner import _KEY, _TEARDOWN, _poller, _Radio, _Supervisor
 
+# MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
+# dispatch bodies; the interlock seat now lives at its head, so the RF
+# premise is stated once here (see the fixture docstring in conftest.py).
+pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+
 
 def _seed_fresh_rx(poller: RadioPoller) -> None:
     """Give queued DEFER fixtures explicit current-provider RX authority."""
