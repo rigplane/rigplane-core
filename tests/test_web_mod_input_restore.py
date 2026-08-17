@@ -407,3 +407,130 @@ class TestCommandRouting:
         assert not q.has_commands
         sent: Any = handler._ws.send_text.await_args.args[0]
         assert '"ok":true' in sent and '"armed":false' in sent
+
+
+class TestKeyerAttributedTeardown:
+    """MOR-1878: an automated teardown unkey releases only its own keyer.
+
+    Deliberate operator unkeys never consult the record — I1 (PTT OFF always
+    attemptable) applies to operator action; this gate covers housekeeping only.
+    """
+
+    @staticmethod
+    def _wired(
+        *, sessions: tuple[str, ...]
+    ) -> tuple[list[ControlHandler], CommandQueue, RadioPoller, MagicMock]:
+        from rigplane.core.state_store import StateStore
+
+        command_queue = CommandQueue()
+        radio = MagicMock()
+        radio.profile = resolve_radio_profile(model="IC-7610")
+        radio.capabilities = set(radio.profile.capabilities) - {"audio"}
+        radio.managed_tx = None  # unmanaged: the MOR-1878 path under test
+        radio.set_ptt = AsyncMock()
+        store = StateStore()
+        store.begin_provider_generation()
+        poller = RadioPoller(radio, command_queue, state_store=store)
+        server = SimpleNamespace(command_queue=command_queue, _radio_poller=poller)
+        handlers = [
+            ControlHandler(
+                ws=MagicMock(),
+                radio=radio,
+                server_version="test",
+                radio_model="IC-7610",
+                server=server,
+                session_id=session,
+            )
+            for session in sessions
+        ]
+        return handlers, command_queue, poller, radio
+
+    @staticmethod
+    def _observe_rx(poller: RadioPoller) -> None:
+        import time as _time
+
+        from rigplane.core.state_pipeline_contracts import (
+            FieldPath,
+            Observation,
+            SourceMetadata,
+        )
+
+        store = poller._state_store
+        store.apply(
+            Observation(
+                path=FieldPath.global_("tx_state", "ptt"),
+                value=False,
+                source=SourceMetadata(source="poll_response", provider="test"),
+                timestamp_monotonic=_time.monotonic(),
+                max_age=5.0,
+                provider_generation=store.provider_generation,
+            )
+        )
+
+    async def test_foreign_session_teardown_leaves_the_keyer_on_the_air(self) -> None:
+        (a, b), q, poller, radio = self._wired(sessions=("ws-a", "ws-b"))
+        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        radio.set_ptt.assert_awaited_once_with(True)
+
+        _teardown(b)
+
+        assert q.drain() == []
+
+    async def test_own_session_teardown_still_unkeys(self) -> None:
+        (a, _b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
+        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+
+        _teardown(a)
+
+        assert q.drain() == [PttOff()]
+
+    async def test_observed_off_voids_the_record_and_restores_the_unkey(self) -> None:
+        (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
+        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        self._observe_rx(poller)
+
+        _teardown(b)
+
+        assert q.drain() == [PttOff()]
+
+    async def test_no_recorded_keyer_biases_toward_the_unkey(self) -> None:
+        (_a, b), q, _poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
+
+        _teardown(b)
+
+        assert q.drain() == [PttOff()]
+
+    async def test_ptt_off_write_clears_the_record(self) -> None:
+        (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
+        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        await poller._execute(PttOff(), source="websocket", session_id=a._session_id)
+
+        _teardown(b)
+
+        assert q.drain() == [PttOff()]
+
+    async def test_operator_unkey_ignores_the_record(self) -> None:
+        (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
+        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+
+        result = b._enqueue_rc_power("ptt_off", {}, q, b._radio)
+
+        assert result == {}
+        assert q.drain() == [PttOff()]
+
+    async def test_managed_path_records_nothing(self) -> None:
+        (a, b), q, poller, radio = self._wired(sessions=("ws-a", "ws-b"))
+        managed = MagicMock()
+        managed.set_ptt = AsyncMock(
+            return_value=SimpleNamespace(
+                outcome=__import__(
+                    "rigplane.core.tx_safety", fromlist=["TxOutcome"]
+                ).TxOutcome.ACCEPTED
+            )
+        )
+        poller._managed_tx = lambda source, session: managed  # type: ignore[method-assign]
+        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+
+        _teardown(b)
+
+        assert q.drain() == [PttOff()]
