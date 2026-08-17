@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
+from rigplane.core.exceptions import CommandError
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
     TxInterlockCommandFamily,
@@ -74,6 +75,20 @@ _METADATA_BY_FAMILY = {
 TxInterlockDispositionOverrides = Mapping[
     TxInterlockCommandFamily, TxInterlockDisposition
 ]
+
+
+class TxInterlockRefusal(CommandError):
+    """Interlock refusal carrying a machine-readable reason for the issuer.
+
+    Lives beside the policy it reports rather than at a seat that raises it:
+    the reason codes are policy vocabulary, and every enforcement seat may
+    need them. ``reason_code`` rides the failed-lifecycle details whitelist so
+    a localized UI never has to parse English prose off the wire (MOR-1879).
+    """
+
+    def __init__(self, message: str, *, reason_code: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class RfState(StrEnum):

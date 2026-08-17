@@ -116,6 +116,7 @@ from ..runtime.tx_interlock import (
     TxInterlockCommandFamily,
     TxInterlockDeferredOutcome,
     TxInterlockDisposition,
+    TxInterlockRefusal,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
 )
@@ -219,7 +220,12 @@ _WEB_IMMEDIATE_BLOCK_FAMILIES = (
     TxInterlockCommandFamily.SCAN_START,
     TxInterlockCommandFamily.ANTENNA_SWITCH,
     TxInterlockCommandFamily.TUNER_ENGAGE,
+    # MOR-1879 (MOR-1500 slice 1, owner re-ruling 2026-08-17): Web ptt_on
+    # passes the server interlock on equal terms. On an unmanaged rig the
+    # browser reducer was the only RF gate on this path.
+    TxInterlockCommandFamily.PTT_ON,
 )
+
 
 # Fallback for the derived tx_target field's own freshness TTL when a
 # profile has no [state_acquisition] block at all (MOR-1496 review R3, F1
@@ -746,9 +752,17 @@ class RadioPoller:
             and metadata.base_disposition is not TxInterlockDisposition.DEFER
         ):
             return
-        decision = evaluate_tx_interlock(cmd, rf_state=self._current_rf_state())
+        rf_state = self._current_rf_state()
+        decision = evaluate_tx_interlock(cmd, rf_state=rf_state)
         if not decision.allowed:
-            raise CommandError(decision.reason)
+            raise TxInterlockRefusal(
+                decision.reason,
+                reason_code=(
+                    "radio_transmitting"
+                    if rf_state is RfState.TX
+                    else "rf_state_unknown"
+                ),
+            )
 
     @staticmethod
     def _deferred_intent(entry: CommandQueueEntry) -> CommandIntent | None:
@@ -968,6 +982,11 @@ class RadioPoller:
         }
         if entry.source is not None:
             params["source"] = entry.source
+        if isinstance(exc, TxInterlockRefusal):
+            params["details"] = {
+                "blockedBy": "tx_interlock",
+                "reason": exc.reason_code,
+            }
         entry.command_service.fail_command(
             entry.command_id,
             **params,

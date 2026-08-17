@@ -224,6 +224,7 @@ class CommandService:
         timed_out: bool = False,
         source: CommandSource | None = None,
         session_id: str | None | object = _UNSET,
+        details: Mapping[str, Any] | None = None,
     ) -> bool:
         """Mark a previously acknowledged command as failed and expire overlays."""
 
@@ -266,6 +267,7 @@ class CommandService:
             ),
             "timed_out" if timed_out else "failed",
             message=message,
+            details=details,
         )
         return True
 

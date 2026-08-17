@@ -2158,6 +2158,33 @@ class WebServer:
                 "revision": revision,
                 "observationSeq": observation_seq,
             }
+        elif event.state == "failed" and set(details) == {
+            "session_id",
+            "blockedBy",
+            "reason",
+        }:
+            # MOR-1879: a TX-interlock refusal reaches its issuer machine-
+            # readably; the reason codes map onto the existing i18n keys
+            # (core.rxTx.blocked.rfStateUnknown / radioTransmitting).
+            # Rebuilt from literals, never passed through: the membership test
+            # is ``__eq__``-based, so an object merely EQUAL to a known code
+            # would otherwise ride onto the wire — the same doctrine as the
+            # ``type(x) is int`` checks in the sibling branches above.
+            reason = details.get("reason")
+            if details.get("blockedBy") != "tx_interlock" or type(reason) is not str:
+                return False
+            if reason == "rf_state_unknown":
+                public_details = {
+                    "blockedBy": "tx_interlock",
+                    "reason": "rf_state_unknown",
+                }
+            elif reason == "radio_transmitting":
+                public_details = {
+                    "blockedBy": "tx_interlock",
+                    "reason": "radio_transmitting",
+                }
+            else:
+                return False
         elif set(details) != {"session_id"}:
             return False
         acknowledged = any(

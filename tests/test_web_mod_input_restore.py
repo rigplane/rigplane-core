@@ -25,6 +25,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
 
+
 _MOD_COMMANDS = (
     "set_data_off_mod_input",
     "set_data1_mod_input",
@@ -445,6 +446,41 @@ class TestKeyerAttributedTeardown:
         ]
         return handlers, command_queue, poller, radio
 
+    @classmethod
+    async def _key(cls, poller: RadioPoller, session_id: str) -> None:
+        """Key the rig the way an operator does: observed RX, then the write.
+
+        MOR-1879 gates ``ptt_on`` at the interlock seat, so a key request needs
+        a fresh RX observation to pass. The rig is transmitting afterwards, so
+        the TX observation that follows is what the poll loop would report —
+        and it is what keeps the keyer record live for the teardown gate.
+        """
+        cls._observe_ptt(poller, value=False)
+        await poller._execute(PttOn(), source="websocket", session_id=session_id)  # noqa: SLF001
+        cls._observe_ptt(poller, value=True)
+
+    @staticmethod
+    def _observe_ptt(poller: RadioPoller, *, value: bool) -> None:
+        import time as _time
+
+        from rigplane.core.state_pipeline_contracts import (
+            FieldPath,
+            Observation,
+            SourceMetadata,
+        )
+
+        store = poller._state_store  # noqa: SLF001
+        store.apply(
+            Observation(
+                path=FieldPath.global_("tx_state", "ptt"),
+                value=value,
+                source=SourceMetadata(source="poll_response", provider="test"),
+                timestamp_monotonic=_time.monotonic(),
+                max_age=5.0,
+                provider_generation=store.provider_generation,
+            )
+        )
+
     @staticmethod
     def _observe_rx(poller: RadioPoller) -> None:
         import time as _time
@@ -469,7 +505,7 @@ class TestKeyerAttributedTeardown:
 
     async def test_foreign_session_teardown_leaves_the_keyer_on_the_air(self) -> None:
         (a, b), q, poller, radio = self._wired(sessions=("ws-a", "ws-b"))
-        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        await self._key(poller, a._session_id)
         radio.set_ptt.assert_awaited_once_with(True)
 
         _teardown(b)
@@ -478,7 +514,7 @@ class TestKeyerAttributedTeardown:
 
     async def test_own_session_teardown_still_unkeys(self) -> None:
         (a, _b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        await self._key(poller, a._session_id)
 
         _teardown(a)
 
@@ -486,7 +522,7 @@ class TestKeyerAttributedTeardown:
 
     async def test_observed_off_voids_the_record_and_restores_the_unkey(self) -> None:
         (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        await self._key(poller, a._session_id)
         self._observe_rx(poller)
 
         _teardown(b)
@@ -502,7 +538,7 @@ class TestKeyerAttributedTeardown:
 
     async def test_ptt_off_write_clears_the_record(self) -> None:
         (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        await self._key(poller, a._session_id)
         await poller._execute(PttOff(), source="websocket", session_id=a._session_id)
 
         _teardown(b)
@@ -511,7 +547,7 @@ class TestKeyerAttributedTeardown:
 
     async def test_operator_unkey_ignores_the_record(self) -> None:
         (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        await self._key(poller, a._session_id)
 
         result = b._enqueue_rc_power("ptt_off", {}, q, b._radio)
 
@@ -529,7 +565,7 @@ class TestKeyerAttributedTeardown:
             )
         )
         poller._managed_tx = lambda source, session: managed  # type: ignore[method-assign]
-        await poller._execute(PttOn(), source="websocket", session_id=a._session_id)
+        await self._key(poller, a._session_id)
 
         _teardown(b)
 

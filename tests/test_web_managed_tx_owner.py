@@ -71,6 +71,11 @@ from rigplane.web import radio_poller as radio_poller_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
 
+# MOR-1879: this suite drives PTT dispatch directly; the interlock seat at
+# ``_execute`` now gates ptt_on too, so the RF premise (radio observed in
+# RX before keying) is stated once here — see the conftest fixture.
+pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+
 _KEY, _TEARDOWN = ["start_tx", "set_ptt(True)"], ["stop_tx", "restart_rx"]
 _WS1, _WS2 = TxOwner(TxSource.WEBSOCKET, "ws-1"), TxOwner(TxSource.WEBSOCKET, "ws-2")
 
