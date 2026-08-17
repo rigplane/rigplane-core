@@ -22,6 +22,9 @@ import type { DisabledReason, RadioViewModel, TxTargetViewModel } from './radio-
  * without adaptation (pinned against the real reducer in
  * `__tests__/rx-tx-authority-parity.test.ts`). `fault` stays `string | null`
  * deliberately: a fault code this surface has never heard of must still show.
+ * `faultDetail` (MOR-1792) is `string[]` for the same reason and is OPTIONAL,
+ * so a caller that predates it — or a fault that carries no detail — renders
+ * exactly as before.
  */
 export interface TxAuthoritySnapshot {
   phase: 'idle' | 'audio-start-pending' | 'key-confirm-pending' | 'active' | 'releasing' | 'failed';
@@ -30,6 +33,7 @@ export interface TxAuthoritySnapshot {
   txRisk: 'none' | 'uncertain' | 'confirmed-on';
   mayOwnKey: boolean;
   fault: string | null;
+  faultDetail?: readonly string[] | null;
 }
 
 export type RfState = 'receiving' | 'transmitting' | 'uncertain' | 'unknown';
@@ -118,6 +122,58 @@ export const targetUnknownReason = (reason: TxTargetUnknownReason): string =>
  *  fragment without the surrounding verdict. */
 export const targetUnknownMessage = (reason: TxTargetUnknownReason): string =>
   t('core.rxTx.target.unknown', { reason: targetUnknownReason(reason) });
+
+/**
+ * MOR-1792: the `not-eligible` refusal's per-leg codes, re-declared here for
+ * the same reason `TxAuthoritySnapshot` re-declares the TxState subset — ADR
+ * invariant 11 forbids this zone importing the TX reducer. Member parity with
+ * the reducer's own `TxIneligibility` is pinned in
+ * `__tests__/rx-tx-authority-parity.test.ts`.
+ */
+export const FAULT_REASON_CODES = [
+  'cat-ptt-unavailable', 'browser-tx-audio-unavailable', 'control-not-live',
+  'tx-permit-not-allowed', 'tx-target-unknown', 'ptt-not-off',
+  'ptt-not-authoritative', 'no-confirmed-ptt-off', 'authority-epoch-mismatch',
+] as const;
+export type TxIneligibilityReason = (typeof FAULT_REASON_CODES)[number];
+/**
+ * Per-leg catalog keys. Same F4 doctrine as `TARGET_REASON_KEY` above: each
+ * code gets its OWN sentence rather than having the raw enum word
+ * interpolated into prose, and none of them fabricates a remedy the operator
+ * cannot perform. `ptt-not-authoritative` and `no-confirmed-ptt-off` are the
+ * two the MOR-1792 bench session needed and never got.
+ */
+const FAULT_REASON_KEY: Record<TxIneligibilityReason, string> = {
+  'cat-ptt-unavailable': 'core.rxTx.fault.reason.catPttUnavailable',
+  'browser-tx-audio-unavailable': 'core.rxTx.fault.reason.browserTxAudioUnavailable',
+  'control-not-live': 'core.rxTx.fault.reason.controlNotLive',
+  'tx-permit-not-allowed': 'core.rxTx.fault.reason.permitNotAllowed',
+  'tx-target-unknown': 'core.rxTx.fault.reason.targetUnknown',
+  'ptt-not-off': 'core.rxTx.fault.reason.pttNotOff',
+  'ptt-not-authoritative': 'core.rxTx.fault.reason.pttNotAuthoritative',
+  'no-confirmed-ptt-off': 'core.rxTx.fault.reason.noConfirmedPttOff',
+  'authority-epoch-mismatch': 'core.rxTx.fault.reason.authorityEpochMismatch',
+};
+const isFaultReason = (code: string): code is TxIneligibilityReason =>
+  Object.prototype.hasOwnProperty.call(FAULT_REASON_KEY, code);
+/** One failing eligibility leg, as the operator's own sentence. */
+export const faultReasonLabel = (code: TxIneligibilityReason): string => t(FAULT_REASON_KEY[code]);
+/** The legs this surface can put into words, in the order the authority reported them. */
+export const faultReasons = (tx: TxAuthoritySnapshot): readonly TxIneligibilityReason[] =>
+  (tx.faultDetail ?? []).filter(isFaultReason);
+/**
+ * The operator-legible fault line (MOR-1792, per the MOR-1783 owner decision
+ * that fault text names the CAUSE). A fault the authority annotated with legs
+ * reads as the causes; anything else keeps showing its raw code, because a
+ * code this surface has never heard of must still reach the operator rather
+ * than being swallowed by a friendly generic sentence.
+ */
+export function faultMessage(tx: TxAuthoritySnapshot): string {
+  const reasons = faultReasons(tx);
+  return reasons.length > 0
+    ? t('core.rxTx.fault.causes', { reasons: reasons.map(faultReasonLabel).join('; ') })
+    : t('core.rxTx.fault.code', { code: tx.fault ?? '' });
+}
 
 const SESSION_BY_PHASE: Record<TxAuthoritySnapshot['phase'], TxSessionState> = {
   idle: 'idle', 'audio-start-pending': 'pending', 'key-confirm-pending': 'pending', active: 'keyed', releasing: 'releasing', failed: 'failed',

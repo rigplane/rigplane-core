@@ -17,7 +17,10 @@ import { flushSync, mount, unmount } from 'svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import type { RadioViewModel } from '../radio-view-model';
-import { blockedLabel, targetUnknownMessage, type KeyBlockedReason, type TxAuthoritySnapshot } from '../rx-tx-surface';
+import {
+  FAULT_REASON_CODES, blockedLabel, faultReasonLabel, targetUnknownMessage,
+  type KeyBlockedReason, type TxAuthoritySnapshot,
+} from '../rx-tx-surface';
 import { t } from '$lib/i18n';
 
 const IDS: readonly TopologyFixtureId[] = ['1/single', '1/ab', '2/ab_shared', '2/main_sub'];
@@ -190,6 +193,63 @@ describe('fault display without a second authority', () => {
     withSurface(topologyFixtures['1/single'], IDLE_RX, () => {
       expect(target.querySelector('[data-testid="rx-tx-fault"]')).toBeNull();
     });
+  });
+
+  /**
+   * MOR-1792 — a refusal the authority annotated with its failing eligibility
+   * legs reads as the CAUSE, in the operator's language, per the MOR-1783 owner
+   * decision. Kill-mutation: render `tx.faultDetail` (or `tx.fault`) raw. The
+   * bench signature that cost eight minutes was `not-eligible` with nothing
+   * else; the operator needed the words, not the enum.
+   */
+  it('renders the failing eligibility legs as operator language, not codes', () => {
+    const tx = snap({ phase: 'failed', fault: 'not-eligible', faultDetail: ['ptt-not-authoritative'] });
+    withSurface(topologyFixtures['1/single'], tx, () => {
+      const fault = target.querySelector('[data-testid="rx-tx-fault"]') as HTMLElement;
+      expect(fault.textContent).toBe(
+        t('core.rxTx.fault.causes', { reasons: t('core.rxTx.fault.reason.pttNotAuthoritative') }),
+      );
+      expect(fault.textContent).not.toContain('not-eligible');
+      expect(fault.textContent).not.toContain('ptt-not-authoritative');
+      // The machine channels survive: the code, plus the legs for a bug report.
+      expect(fault.dataset.fault).toBe('not-eligible');
+      expect(fault.dataset.faultLegs).toBe('ptt-not-authoritative');
+    });
+  });
+
+  it('joins several failing legs into one sentence, in authority order', () => {
+    const tx = snap({
+      phase: 'failed', fault: 'not-eligible',
+      faultDetail: ['control-not-live', 'no-confirmed-ptt-off'],
+    });
+    withSurface(topologyFixtures['1/single'], tx, () => {
+      const fault = target.querySelector('[data-testid="rx-tx-fault"]') as HTMLElement;
+      expect(fault.textContent).toBe(t('core.rxTx.fault.causes', {
+        reasons: `${t('core.rxTx.fault.reason.controlNotLive')}; ${t('core.rxTx.fault.reason.noConfirmedPttOff')}`,
+      }));
+      expect(fault.dataset.faultLegs).toBe('control-not-live no-confirmed-ptt-off');
+    });
+  });
+
+  it('keeps showing an un-annotated or unrecognised code rather than swallowing it', () => {
+    for (const faultDetail of [undefined, null, [], ['no-such-leg-4711']]) {
+      withSurface(topologyFixtures['1/single'], snap({ phase: 'failed', fault: 'audio-timeout', faultDetail }), () => {
+        const fault = target.querySelector('[data-testid="rx-tx-fault"]') as HTMLElement;
+        expect(fault.textContent).toBe(t('core.rxTx.fault.code', { code: 'audio-timeout' }));
+        expect(fault.textContent).toContain('audio-timeout');
+      });
+    }
+  });
+
+  /** Every leg the reducer can emit must have a sentence — see the parity test
+   *  for the member list itself; this pins that none of them renders as a code. */
+  it('has operator language for every leg the surface recognises', () => {
+    for (const code of FAULT_REASON_CODES) {
+      const label = faultReasonLabel(code);
+      expect(label).not.toContain('missing:');
+      expect(label).not.toBe(code);
+      expect(label.length).toBeGreaterThan(0);
+    }
   });
 
   it('does not claim the assertive/alert channel owned by the global TX lamp (MOR-1059)', () => {
