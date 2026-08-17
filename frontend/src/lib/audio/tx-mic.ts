@@ -21,6 +21,21 @@ type NavigatorWithLegacyMedia = Navigator & {
   mozGetUserMedia?: LegacyGetUserMedia;
 };
 
+export type TxCodec = 'opus' | 'pcm16';
+
+/** Outcome of adopting a server-advertised TX codec. */
+export interface TxCodecSwitch {
+  /** True when a live capture was actually moved onto PCM16. */
+  switched: boolean;
+  /**
+   * Non-null when the PCM16 leg refused to start. The capture is left
+   * untouched and still running on Opus — which the server cannot decode —
+   * so the caller must end the TX session rather than report a working
+   * fallback.
+   */
+  error: string | null;
+}
+
 export class TxMic {
   private stream: MediaStream | null = null;
   private encoder: AudioEncoder | null = null;
@@ -32,6 +47,9 @@ export class TxMic {
   private seq = 0;
   private _active = false;
   private sendFn: TxSendFn;
+  // Sticky: the server told us it cannot decode Opus (MOR-1791). Kept across
+  // start/stop so every later PTT opens on PCM16 from the very first frame.
+  private pcm16Pinned = false;
 
   constructor(sendFn: TxSendFn) {
     this.sendFn = sendFn;
@@ -39,6 +57,44 @@ export class TxMic {
 
   get active(): boolean {
     return this._active;
+  }
+
+  /** Codec currently being emitted, or null when not capturing. */
+  get codec(): TxCodec | null {
+    if (!this._active) return null;
+    return this.encoder !== null ? 'opus' : 'pcm16';
+  }
+
+  /**
+   * Adopt the codec the server says it can accept (MOR-1791).
+   *
+   * The server cannot decode Opus on hosts without a native opus codec; it
+   * knows this at TX start and now says so. Rather than key the radio while
+   * every Opus frame is dropped fail-closed, switch to the PCM16 capture
+   * path that already exists below — same path, same MediaStream, no second
+   * permission prompt, no new transport.
+   *
+   * `'opus'` restores the default and never tears down a running capture:
+   * when the decoder is available the client keeps its own codec choice,
+   * exactly as before this negotiation existed.
+   *
+   * PCM16 is brought up BEFORE the Opus leg is torn down. A refusal must
+   * never kill capture out from under a keyed transmitter, so on failure the
+   * running Opus capture is left whole and the error is returned for the
+   * caller to act on — it is never swallowed.
+   */
+  applyServerCodec(codec: TxCodec): TxCodecSwitch {
+    if (codec === 'opus') {
+      this.pcm16Pinned = false;
+      return { switched: false, error: null };
+    }
+    this.pcm16Pinned = true;
+    if (!this._active || this.encoder === null) return { switched: false, error: null };
+
+    const error = this.startPcmFallback({ abortCapture: false });
+    if (error !== null) return { switched: false, error };
+    this.stopOpusCapture();
+    return { switched: true, error: null };
   }
 
   /** Check if browser supports TX mic */
@@ -110,7 +166,7 @@ export class TxMic {
     this.seq = 0;
     this.pcmPending = [];
 
-    if (!TxMic.supportsWebCodecs()) {
+    if (this.pcm16Pinned || !TxMic.supportsWebCodecs()) {
       return this.startPcmFallback();
     }
 
@@ -166,6 +222,15 @@ export class TxMic {
       this.audioContext = null;
     }
     this.pcmPending = [];
+    this.stopOpusCapture();
+    if (this.stream) {
+      this.stream.getTracks().forEach(t => t.stop());
+      this.stream = null;
+    }
+  }
+
+  /** Tear down the WebCodecs encoder leg, leaving the MediaStream open. */
+  private stopOpusCapture(): void {
     if (this.reader) {
       this.reader.cancel().catch(() => {});
       this.reader = null;
@@ -174,22 +239,35 @@ export class TxMic {
       try { this.encoder.close(); } catch { /* ok */ }
       this.encoder = null;
     }
-    if (this.stream) {
-      this.stream.getTracks().forEach(t => t.stop());
-      this.stream = null;
-    }
   }
 
-  private startPcmFallback(): string | null {
+  /**
+   * Bring up the PCM16 capture leg.
+   *
+   * `abortCapture` is true when this IS the capture (called from `start()`),
+   * so a refusal must tear the whole attempt down. It is false when swapping
+   * a live Opus capture over (`applyServerCodec`), where the running capture
+   * must survive a refusal rather than die under a keyed transmitter.
+   */
+  private startPcmFallback({ abortCapture = true } = {}): string | null {
     const audioContextCtor = TxMic.audioContextCtor();
     if (!audioContextCtor || !this.stream) {
       return 'TX MIC: PCM capture not supported';
     }
 
     this.audioContext = new audioContextCtor({ sampleRate: SAMPLE_RATE });
-    if (Math.round(this.audioContext.sampleRate) !== SAMPLE_RATE) {
-      this.stop();
-      return `TX MIC: unsupported mic sample rate ${this.audioContext.sampleRate} Hz`;
+    const actualRate = this.audioContext.sampleRate;
+    if (Math.round(actualRate) !== SAMPLE_RATE) {
+      // Read the rate BEFORE tearing down: both teardowns null out
+      // `audioContext`, and reading it afterwards threw a TypeError instead
+      // of returning this error string.
+      if (abortCapture) {
+        this.stop();
+      } else {
+        this.audioContext.close().catch(() => {});
+        this.audioContext = null;
+      }
+      return `TX MIC: unsupported mic sample rate ${actualRate} Hz`;
     }
 
     this.pcmSource = this.audioContext.createMediaStreamSource(this.stream);

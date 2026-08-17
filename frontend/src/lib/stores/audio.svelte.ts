@@ -6,6 +6,10 @@ let audioState = $state({
   muted: false,
   micEnabled: false,
   bridgeRunning: false,
+  // MOR-1791: the server reported it cannot decode Opus, so browser TX runs
+  // on the PCM16 capture path instead. A working state, not a fault — it is
+  // surfaced as a quiet status hint, never as a modal or a blocking error.
+  txCodecFallback: false,
 });
 
 export function getAudioState(): typeof audioState {
@@ -38,4 +42,8 @@ export function setMicEnabled(v: boolean): void {
 
 export function setBridgeRunning(v: boolean): void {
   audioState.bridgeRunning = v;
+}
+
+export function setTxCodecFallback(v: boolean): void {
+  audioState.txCodecFallback = v;
 }

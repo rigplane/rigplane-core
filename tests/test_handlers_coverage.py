@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import struct
 import time
 from types import SimpleNamespace
@@ -2197,7 +2198,13 @@ async def test_transcoder_failure_arms_tx_and_drops_only_opus_frames(
     assert handler._tx_lease is lease
     # PCM16 reached the radio; the Opus frame stayed fail-closed.
     assert lease.pushed == [b"pcm-frame"]
-    ws.send_text.assert_not_awaited()
+    # The session is never denied — but since MOR-1791 the client IS told
+    # which codec survives, so it can stop feeding Opus into a missing
+    # decoder.  Advisory ack only: no error envelope is sent.
+    sent = [json.loads(call.args[0]) for call in ws.send_text.await_args_list]
+    assert [m["type"] for m in sent] == ["audio_tx_format"]
+    assert sent[0]["codec"] == "pcm16"
+    assert sent[0]["opus_decode"] is False
     messages = [record.message for record in caplog.records]
     assert any("action=dropped_no_transcoder" in message for message in messages)
     assert any("TX Opus decoder unavailable" in message for message in messages)

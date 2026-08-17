@@ -1489,6 +1489,7 @@ class AudioHandler:
                 # recurrence is never hidden by an earlier session's backlog.
                 self._tx_warn_counts.clear()
                 logger.info("audio: TX active")
+                await self._send_tx_format(transcoder_ready)
         elif msg_type == "audio_stop":
             if direction == "rx":
                 await self._stop_rx()
@@ -1727,6 +1728,31 @@ class AudioHandler:
     async def _send_error(self, message: str) -> None:
         """Send an error message envelope to the WS client."""
         await self._send_json({"type": "error", "message": message})
+
+    async def _send_tx_format(self, opus_decode: bool) -> None:
+        """Advertise the TX codec this server can accept (MOR-1791).
+
+        The TX mirror of the RX-side ``audio_format`` ack (MOR-584), sent
+        once per armed ``audio_start direction=tx``.  Purely additive: no
+        field is removed and no version is bumped, so a client that ignores
+        audio-WS text frames is affected in no way.
+
+        ``opus_decode`` is the same fact the server already logs — whether a
+        browser Opus TX frame can be decoded at all on the radio's PCM TX
+        leg.  ``codec`` restates it as the codec the client should send, so
+        a browser facing a missing native opus codec can switch to its
+        existing PCM16 capture path instead of keying the radio while every
+        frame is dropped fail-closed.  When Opus IS decodable the ack names
+        Opus and the client keeps its own choice, exactly as before.
+        """
+        await self._send_json(
+            {
+                "type": "audio_tx_format",
+                "codec": "opus" if opus_decode else "pcm16",
+                "opus_decode": opus_decode,
+                "sample_rate": self._tx_sample_rate(),
+            }
+        )
 
     def _ensure_tx_transcoder(self) -> bool:
         """Create (or recreate) the TX Opus→PCM transcoder at the radio's rate.

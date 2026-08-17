@@ -26,6 +26,8 @@
   "core.statusbar.indicator.scope": "WebSocket панорамы: {state}",
   "core.statusbar.indicator.audio": "Аудио WebSocket: {state}",
   "core.statusbar.indicator.http": "HTTP состояния: {state}",
+  "core.statusbar.txCodecFallback.label": "PCM16",
+  "core.statusbar.txCodecFallback.tooltip": "TX-аудио: сервер не умеет декодировать Opus, поэтому микрофон передаёт PCM16. Передача работает.",
   "core.statusbar.health.radioLinkLost": "связь с трансивером потеряна",
   "core.statusbar.health.radioResponseDelayed": "трансивер отвечает с задержкой",
   "core.statusbar.health.radioNotResponding": "трансивер не отвечает",

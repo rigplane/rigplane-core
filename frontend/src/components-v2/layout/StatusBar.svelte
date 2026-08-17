@@ -69,6 +69,7 @@
     getRadioHealth,
   } from '$lib/stores/connection.svelte';
   import { getActiveFrequencyHz } from '$lib/runtime/adapters/panel-adapters';
+  import { getAudioState } from '$lib/stores/audio.svelte';
   import { hasAnyScope, hasAudio, hasSpectrum } from '$lib/stores/capabilities.svelte';
   import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
@@ -141,6 +142,10 @@
     deriveScopeIndicatorState(runtime.defaultScopeStatus, isPoweredOff),
   );
   let audioState = $derived(isPoweredOff ? 'disconnected' : (isAudioConnected() ? 'connected' : 'disconnected'));
+  // MOR-1791: the server cannot decode Opus, so browser TX runs on the PCM16
+  // capture path. Transmission works — this is a quiet hint next to the audio
+  // indicator, deliberately not a fault chip and not a modal.
+  let txCodecFallback = $derived(!isPoweredOff && getAudioState().txCodecFallback);
   // MOR-1419: derived from the same live WS transport signal as `controlState`
   // (there is no separate HTTP transport anymore, post A10) refined by
   // `radioHealth.serverReachable` when that's been observed — honest, not a
@@ -300,6 +305,11 @@
         <span class="indicator-dot"></span>
         <Volume2 size={12} color="currentColor" strokeWidth={2.5} />
       </span>
+      {#if txCodecFallback}
+        <span class="indicator tx-codec-fallback" role="status" data-testid="tx-codec-fallback" title={t('core.statusbar.txCodecFallback.tooltip')} style="--indicator-color: {stateColor('degraded')}">
+          <span class="codec-fallback-label">{t('core.statusbar.txCodecFallback.label')}</span>
+        </span>
+      {/if}
     {/if}
     <span class="indicator" role="status" title={t('core.statusbar.indicator.http', { state: httpState })} style="--indicator-color: {stateColor(httpState)}">
       <span class="indicator-dot"></span>
@@ -438,6 +448,16 @@
     color: var(--v2-accent-red, #ef4444);
     font-weight: 700;
     margin-left: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* MOR-1791: TX codec fallback — a working state, so it borrows the
+     yellow "degraded" tone rather than the red fault tone. */
+  .codec-fallback-label {
+    font-size: 9px;
+    color: var(--v2-accent-yellow, #facc15);
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }

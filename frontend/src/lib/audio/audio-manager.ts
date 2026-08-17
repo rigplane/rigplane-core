@@ -9,9 +9,9 @@
  */
 
 import { RxPlayer, type RxAudioFocus } from './rx-player';
-import { TxMic } from './tx-mic';
+import { TxMic, type TxCodec } from './tx-mic';
 import { setAudioConnected } from '../stores/connection.svelte';
-import { setRxEnabled, setTxEnabled } from '../stores/audio.svelte';
+import { setRxEnabled, setTxEnabled, setTxCodecFallback } from '../stores/audio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 
 export type AudioFocus = RxAudioFocus;
@@ -277,6 +277,10 @@ class AudioManager {
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
         this.rxPlayer.feed(ev.data);
+        return;
+      }
+      if (typeof ev.data === 'string') {
+        this._handleServerMessage(ev.data);
       }
     };
 
@@ -290,6 +294,10 @@ class AudioManager {
       this._clearStatsTimer();
       this.ws = null;
       setAudioConnected(false);
+      // Decoder availability is a fact about the server we are talking to;
+      // once the link is gone we no longer know it. Re-learned at the next
+      // TX start (MOR-1791).
+      this._setTxCodecFallback(false);
       this.notify();
       if (!this._rxEnabled && !this._txEnabled) return;
       // Reconnect with backoff
@@ -297,6 +305,74 @@ class AudioManager {
       this.backoff = Math.min(Math.floor(this.backoff * 1.7), BACKOFF_MAX);
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
     };
+  }
+
+  // ── TX codec negotiation (MOR-1791) ──
+  //
+  // The server answers every ``audio_start direction=tx`` with an
+  // ``audio_tx_format`` ack naming the codec it can actually accept. Without
+  // it, a server with no native opus codec drops every browser Opus frame
+  // fail-closed: the radio keys and nothing reaches the air. Text frames on
+  // this socket were previously discarded, so consuming them is additive on
+  // both sides — an older server simply never sends one and we keep Opus.
+
+  /** True while browser TX is pinned to PCM16 because the server cannot
+   *  decode Opus. Surfaced to the operator as a quiet status hint. */
+  get txCodecFallback(): boolean { return this._txCodecFallback; }
+
+  /** Codec the microphone is currently emitting, or null when not capturing. */
+  get txCodec(): TxCodec | null { return this.txMic.codec; }
+
+  private _txCodecFallback = false;
+
+  private _handleServerMessage(raw: string): void {
+    let msg: { type?: unknown; codec?: unknown; opus_decode?: unknown };
+    try {
+      msg = JSON.parse(raw) as typeof msg;
+    } catch {
+      return;
+    }
+    if (msg?.type !== 'audio_tx_format') return;
+    // Fail-safe on an unrecognized codec: ignore the whole ack rather than
+    // guessing. Defaulting to 'opus' would CLEAR a sticky PCM16 pin, i.e.
+    // fail open on exactly the condition this negotiation exists for.
+    const codec = msg.codec === 'pcm16' ? 'pcm16' : msg.codec === 'opus' ? 'opus' : null;
+    if (codec === null) return;
+
+    const { switched, error } = this.txMic.applyServerCodec(codec);
+    if (error !== null) {
+      this._failTxAudio(error);
+      return;
+    }
+    if (switched) {
+      console.warn('[audio-ws] server cannot decode Opus — TX switched to PCM16');
+    }
+    this._setTxCodecFallback(msg.opus_decode === false);
+  }
+
+  /**
+   * End browser TX audio after the codec switch could not be completed.
+   *
+   * The server cannot decode Opus and the PCM16 leg refused to start, so no
+   * audio can reach the air on this session. Ending it takes the same
+   * teardown a failed TX audio start takes — `stopTx()` releases the
+   * server-side TX lease, which disarms the radio's TX audio leg — and the
+   * fallback indication is cleared so nothing claims transmission is working
+   * while the transmitter is keyed. The next key re-runs `txMic.start()` on
+   * the pinned PCM16 path and returns this same error from `startTx()`, the
+   * input the TX controller turns into `audio-failed` and de-keys on.
+   */
+  private _failTxAudio(reason: string): void {
+    console.error(`[audio-ws] TX codec switch failed, stopping TX audio: ${reason}`);
+    this._setTxCodecFallback(false);
+    this.stopTx();
+  }
+
+  private _setTxCodecFallback(active: boolean): void {
+    if (active === this._txCodecFallback) return;
+    this._txCodecFallback = active;
+    setTxCodecFallback(active);
+    this.notify();
   }
 
   // ── Link-quality uplink (MOR-585, ADR §3.6) ──
