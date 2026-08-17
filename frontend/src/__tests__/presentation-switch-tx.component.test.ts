@@ -73,6 +73,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({
+    onTxAudioDied: () => () => {},
     startTx: h.start,
     stopLocalAudio: h.stop,
     restoreModAfterConfirmedOff: h.restore,
