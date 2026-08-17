@@ -155,9 +155,17 @@ async def test_record_is_per_poller_instance_no_leakage() -> None:
 
     await poller_a._execute(PttOn(), source="websocket", session_id="ws-a")
 
-    # poller_b never recorded anything: its own gate must not see poller_a's
-    # keyer, even for the identical (source, session_id) pair.
-    assert poller_b.teardown_unkey_permitted("websocket", "ws-a") is True
+    # Probe poller_b with a THIRD session id, distinct from "ws-a" (the one
+    # poller_a just keyed with). Reusing "ws-a" here would be vacuous: it
+    # returns True under BOTH per-instance semantics (poller_b recorded
+    # nothing, so the no-recorded-keyer branch fires) AND under a leaked
+    # shared record (poller_b would see keyer == ("websocket", "ws-a"),
+    # matching the very session_id being asked about, so the
+    # `keyer == (source, session_id)` branch also returns True). Only a
+    # session id that differs from the recorded keyer's discriminates: it
+    # stays True on isolation (still no recorded keyer) but flips to False
+    # if state leaked (a live foreign-session record would withhold it).
+    assert poller_b.teardown_unkey_permitted("websocket", "ws-z") is True
     # poller_a, meanwhile, still withholds against a foreign session.
     assert poller_a.teardown_unkey_permitted("websocket", "ws-b") is False
 
