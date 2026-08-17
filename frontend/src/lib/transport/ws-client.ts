@@ -572,11 +572,21 @@ export class WsChannel {
       ) return;
       const evidence = reconciliationEvidence(raw.details);
       if (!evidence) return;
-      this.commandReconciliationDeliveryHandlers.forEach((handler) => handler({
+      // Consume the terminal correlation before dispatch: a reentrant or duplicate
+      // frame must find nothing to correlate, and one throwing subscriber must not
+      // starve the rest or keep the correlation alive.
+      this.trackedLifecycleCommands.delete(id);
+      const delivery: CommandReconciliationDeliveryEvent = {
         commandId: id, kind: 'reconciled', originalEpoch: tracked.originalEpoch, eventEpoch,
         ...evidence,
-      }));
-      this.trackedLifecycleCommands.delete(id);
+      };
+      for (const handler of [...this.commandReconciliationDeliveryHandlers]) {
+        try {
+          handler(delivery);
+        } catch (error) {
+          console.error('[ws] reconciliation subscriber failed', error);
+        }
+      }
       return;
     }
 

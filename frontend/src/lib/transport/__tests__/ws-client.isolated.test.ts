@@ -497,6 +497,79 @@ describe('WsChannel', () => {
     }]);
   });
 
+  it('isolates throwing reconciliation subscribers and consumes the correlation first', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    const frame = JSON.stringify({
+      type: 'command_lifecycle', commandId: 'robust', state: 'reconciled',
+      source: 'websocket', target: 'receiver.0.freq_mode.freq_hz',
+      timestampMonotonic: 12.5, message: 'confirmed by matching observation',
+      details: { revision: 5, observationSeq: 9 },
+    });
+    const received: CommandReconciliationDeliveryEvent[] = [];
+    const throwing = vi.fn(() => { throw new Error('faulty consumer'); });
+    ch.onCommandReconciliationDelivery(throwing);
+    ch.onCommandReconciliationDelivery((event) => received.push(event));
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'robust', params: {} });
+    expect(() => instances[0].simulateMessage(frame)).not.toThrow();
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(received).toEqual([{
+      commandId: 'robust', kind: 'reconciled', originalEpoch: 1, eventEpoch: 1,
+      revision: 5, observationSeq: 9,
+    }]);
+
+    instances[0].simulateMessage(frame);
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(received).toHaveLength(1);
+  });
+
+  it('deduplicates reentrant reconciliation delivery over a stable subscriber snapshot', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    const frame = JSON.stringify({
+      type: 'command_lifecycle', commandId: 'reentrant', state: 'reconciled',
+      source: 'websocket', target: 'receiver.0.freq_mode.freq_hz',
+      timestampMonotonic: 12.5, message: 'confirmed by matching observation',
+      details: { revision: 5, observationSeq: 9 },
+    });
+    const first: CommandReconciliationDeliveryEvent[] = [];
+    const second: CommandReconciliationDeliveryEvent[] = [];
+    const added: CommandReconciliationDeliveryEvent[] = [];
+    let armed = true;
+    ch.onCommandReconciliationDelivery((event) => {
+      first.push(event);
+      if (armed) {
+        armed = false;
+        instances[0].simulateMessage(frame);
+        unsubscribeSecond();
+        ch.onCommandReconciliationDelivery((e) => added.push(e));
+      }
+    });
+    const unsubscribeSecond = ch.onCommandReconciliationDelivery((event) => second.push(event));
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reentrant', params: {} });
+    instances[0].simulateMessage(frame);
+
+    const delivered = {
+      commandId: 'reentrant', kind: 'reconciled', originalEpoch: 1, eventEpoch: 1,
+      revision: 5, observationSeq: 9,
+    };
+    expect(first).toEqual([delivered]);
+    expect(second).toEqual([delivered]);
+    expect(added).toEqual([]);
+
+    expect(() => { unsubscribeSecond(); unsubscribeSecond(); }).not.toThrow();
+
+    ch.send({ type: 'cmd', name: 'set_freq', id: 'reentrant', params: {} });
+    instances[0].simulateMessage(frame);
+    expect(first).toHaveLength(2);
+    expect(second).toHaveLength(1);
+    expect(added).toEqual([delivered]);
+  });
+
   it('rejects malformed, stale, cancelled, and evicted lifecycle delivery', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
