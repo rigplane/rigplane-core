@@ -298,12 +298,20 @@ display_max = 1200
 display_unit = "Hz"
 
 [controls.rit]
+# MOR-1883: exact-form translation of the previously declared range;
+# step 1 from the shared CI-V builder (+/-9999 Hz, 1 Hz BCD).
+mapping = "identity"
 raw_min = -9999
 raw_max = 9999
-raw_center = 0
+raw_step = 1
+raw_origin = 0
 display_min = -9999
 display_max = 9999
+display_step = 1
+display_origin = 0
 display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
 
 # Same HF coverage envelope as X6100 (Xiegu HF/50MHz portables).
 [[freq_ranges.ranges]]

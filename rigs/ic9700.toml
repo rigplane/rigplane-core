@@ -156,7 +156,9 @@ values = [0, 1, 2]
 labels = { "0" = "OFF", "1" = "SEMI", "2" = "FULL" }
 
 [rit]
-# CI-V 0x21 0x00: wfview RIT Min/Max ±999 (10 Hz BCD steps; same as [controls.rit] raw range)
+# CI-V 0x21 0x00: wfview RIT Min/Max ±999. [controls.rit] is the operator-
+# facing authority and preserves this same ±999 verbatim (MOR-1883), but
+# in 1 Hz steps per the shared CI-V builder. Nothing reads range_hz.
 range_hz = 999
 
 [cw]
@@ -857,12 +859,21 @@ display_max = 900
 display_unit = "Hz"
 
 [controls.rit]
+# MOR-1883: exact-form translation of the previously declared range,
+# preserved verbatim (wfview cites RIT Min/Max +/-999; no hardware to
+# verify against, so no new range claim is made here).
+mapping = "identity"
 raw_min = -999
 raw_max = 999
-raw_center = 0
+raw_step = 1
+raw_origin = 0
 display_min = -999
 display_max = 999
+display_step = 1
+display_origin = 0
 display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
 
 # SWR meter calibration — piecewise-linear lookup from raw 0–255 to SWR ratio.
 # First four points (0=1.0, 48=1.5, 80=2.0, 120=3.0) match the firmware-anchored
