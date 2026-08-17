@@ -172,6 +172,13 @@ Use subagents for large exploration/review — keep the main session lean. The
 implementation agent never reviews its own work; independent review and the
 Agent Review Gate mechanics are described in Language & Git above.
 
+Subagent roles with pinned models live in `.claude/agents/`: `scout` (haiku,
+read-only status/fact collection), `builder` (sonnet, implementation from a
+spec), `verifier` (opus, independent review and gate verdicts), `researcher`
+(sonnet, read-only exploration with synthesis). Dispatch through these roles
+by default; a dispatch outside them must pass an explicit model — never let a
+subagent silently inherit the root session's model.
+
 Slash commands for scoped workflows live in `.claude/commands/` (`scan-issues`,
 `solve-issue`, `next`, `regression-check`, `generate-tests`, `analyze-failure`,
 `refactor`, `decompose-issue`) plus the `release` skill; each file is
