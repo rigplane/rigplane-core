@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -2043,28 +2045,56 @@ async def test_reobservation_failure_never_fails_the_command() -> None:
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
-async def test_coroutine_ensure_fresh_is_skipped_not_awaited() -> None:
+async def test_coroutine_ensure_fresh_is_skipped_not_called() -> None:
     """The service contract is synchronous fire-and-queue.
 
-    An implementation that returns a coroutine would leave it un-awaited (a
-    warning, and no request queued), so it is skipped deliberately instead.
+    Calling a coroutine implementation would produce an un-awaited coroutine
+    object, never a queued request, so it is skipped instead.
+
+    The probe has to record the call at call time, not inside the coroutine
+    body — a body that never runs cannot witness the bug it is meant to
+    catch. ``AsyncMock`` does exactly that, and ``asyncio.iscoroutinefunction``
+    recognises it, so removing the guard makes this row fail rather than
+    merely emit a warning. (PR #2758 review: the first version of this row
+    counted inside the body and killed no mutation.)
     """
-
-    class AsyncService:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        async def ensure_fresh(self, *args: Any, **kwargs: Any) -> None:
-            self.calls += 1
-
-    freshness = AsyncService()
+    freshness = SimpleNamespace(ensure_fresh=AsyncMock())
     service = CommandService(
         executor=FakeExecutor(),
         state_store=StateStore(),
-        state_model_service=freshness,
+        state_model_service=cast(Any, freshness),
     )
 
     result = await service.execute(_intent())
 
-    assert freshness.calls == 0
+    freshness.ensure_fresh.assert_not_called()
     assert _states(result.lifecycle_events)[-1] == "acknowledged"
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_no_reobservation_when_the_executor_already_observed_it() -> None:
+    """A write that came back confirmed needs no confirming read.
+
+    Asking again would be pure traffic on a serial budget that is already
+    tight, and it would arrive after an observation that is already newer
+    than the write.
+    """
+    executor = FakeExecutor(
+        observations=(_observation(_freq_path(), 14_074_000, at=1.0),)
+    )
+    service, freshness = _service_with_freshness(executor)
+
+    await service.execute(_intent())
+
+    assert freshness.requests == []
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_reobservation_still_requested_for_an_unrelated_observation() -> None:
+    """Only an observation OF THE TARGET counts as the write's own confirmation."""
+    executor = FakeExecutor(observations=(_observation(_mode_path(), "USB", at=1.0),))
+    service, freshness = _service_with_freshness(executor)
+
+    await service.execute(_intent())
+
+    assert [request["paths"] for request in freshness.requests] == [(_freq_path(),)]

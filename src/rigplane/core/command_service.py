@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
-from rigplane.core.acquisition_scheduler import AcquisitionPriority
+from rigplane.core.acquisition_scheduler import AcquisitionPriority, AcquisitionStatus
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
@@ -265,6 +265,18 @@ class CommandService:
         command. It is also synchronous and fire-and-queue by the
         ``StateModelService`` contract: nothing here awaits the radio, so a
         write's reply is never delayed by its own confirmation.
+
+        **Reach, measured rather than assumed** (PR #2758 review): only paths
+        an acquisition profile actually declares can be re-observed, and today
+        that means the global-scope targets — ``global.tx_state.ptt`` among
+        them, which is the one this ticket needs. Receiver-scoped targets do
+        NOT resolve: :func:`_command_target` builds them as
+        ``receiver.<index>.<family>.<name>`` while profiles and the StateStore
+        use ``receiver.<main|sub>.active.<family>.<name>``, so the scheduler
+        answers ``UNAVAILABLE`` and the request is a no-op (logged, not
+        swallowed). That divergence is older than this method and is tracked
+        separately; until it is closed, this does not subsume the web poller's
+        per-command readback table, which builds the canonical paths itself.
         """
         service = self._state_model_service
         target = intent.target
@@ -281,12 +293,22 @@ class CommandService:
                 # contract; calling it would leave an un-awaited coroutine
                 # behind instead of a queued request.
                 return
-            ensure_fresh(
+            result = ensure_fresh(
                 (target,),
                 max_age=_WRITE_CONFIRMATION_MAX_AGE,
                 priority=AcquisitionPriority.COMMAND,
                 reason=f"post_write:{intent.name}",
             )
+            status = getattr(result, "status", None)
+            if status is not None and str(status) == AcquisitionStatus.UNAVAILABLE:
+                # Not an error, but not a confirmation either: say so rather
+                # than let a silent no-op read as coverage.
+                logger.debug(
+                    "command service: %s cannot be re-observed after %s — "
+                    "no acquisition capability declared for that path",
+                    target,
+                    intent.name,
+                )
         except Exception:
             logger.warning(
                 "command service: could not queue write confirmation for %s",
