@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.core.acquisition_scheduler import AcquisitionStatus
 from rigplane.core.command_service import (
     CommandExecutionResult,
     CommandService,
@@ -2068,6 +2070,36 @@ async def test_coroutine_ensure_fresh_is_skipped_not_called() -> None:
     result = await service.execute(_intent())
 
     freshness.ensure_fresh.assert_not_called()
+    assert _states(result.lifecycle_events)[-1] == "acknowledged"
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_unavailable_confirmation_is_logged_not_swallowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A path the profile cannot acquire is a miss, and it has to say so.
+
+    This is the remediation for the review finding that the reach of the
+    confirmation is narrower than it looks: receiver-scoped targets answer
+    ``UNAVAILABLE`` today (MOR-1897). Discarding that answer would let a
+    permanent no-op read as coverage.
+    """
+
+    class UnavailableService:
+        def ensure_fresh(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(status=AcquisitionStatus.UNAVAILABLE)
+
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(),
+        state_model_service=cast(Any, UnavailableService()),
+    )
+    caplog.set_level(logging.DEBUG, logger="rigplane.core.command_service")
+
+    result = await service.execute(_intent())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(str(_freq_path()) in message for message in messages)
     assert _states(result.lifecycle_events)[-1] == "acknowledged"
 
 

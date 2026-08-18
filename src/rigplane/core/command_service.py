@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 # it. ``ensure_fresh`` can only express that as an age no prior observation
 # can satisfy, so the request is never short-circuited by a FRESH pre-write
 # value. Same value and same reasoning as the freshness pipeline's own
-# reconciliation path and as the web poller's older per-command table
-# (``_POST_WRITE_READBACK_MAX_AGE``, MOR-1484), which this generalises.
+# reconciliation path and as the web poller's own per-command table
+# (``_POST_WRITE_READBACK_MAX_AGE``, MOR-1484).
 _WRITE_CONFIRMATION_MAX_AGE = 1e-9
 
 __all__ = [
@@ -266,17 +266,26 @@ class CommandService:
         ``StateModelService`` contract: nothing here awaits the radio, so a
         write's reply is never delayed by its own confirmation.
 
-        **Reach, measured rather than assumed** (PR #2758 review): only paths
-        an acquisition profile actually declares can be re-observed, and today
-        that means the global-scope targets — ``global.tx_state.ptt`` among
-        them, which is the one this ticket needs. Receiver-scoped targets do
-        NOT resolve: :func:`_command_target` builds them as
-        ``receiver.<index>.<family>.<name>`` while profiles and the StateStore
-        use ``receiver.<main|sub>.active.<family>.<name>``, so the scheduler
-        answers ``UNAVAILABLE`` and the request is a no-op (logged, not
-        swallowed). That divergence is older than this method and is tracked
-        separately; until it is closed, this does not subsume the web poller's
-        per-command readback table, which builds the canonical paths itself.
+        **Reach, probed rather than assumed** (PR #2758 review). A target is
+        re-observable only where the acquisition profile declares a capability
+        for that exact path; anything else answers ``UNAVAILABLE``. Against the
+        IC-7300 profile:
+
+        * ``global.tx_state.ptt`` — queued. That is the one this ticket needs.
+        * ``global.tx_state.power_on`` — unavailable. Global scope is not by
+          itself enough.
+        * every receiver-scoped target — unavailable, because
+          :func:`_command_target` names the receiver by index
+          (``receiver.0.operator_controls.rf_gain``) while profiles and the
+          StateStore name it (``receiver.main.operator_controls.rf_gain``, and
+          ``receiver.main.active.freq_mode.freq_hz`` for the ``freq_mode``
+          family — the only family where a VFO slot is legal at all).
+
+        Those misses are no-ops, logged rather than swallowed so that a silent
+        miss cannot read as coverage. The divergence is older than this method
+        and is tracked in MOR-1897; until it is closed this does NOT subsume
+        the web poller's per-command readback table, which builds the
+        canonical paths itself.
         """
         service = self._state_model_service
         target = intent.target
