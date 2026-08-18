@@ -47,9 +47,10 @@ robots: noindex, follow
 - **Effort**: Medium (requires protocol change)
 
 ### 5. Test Parallelization
-- **Current**: Sequential test execution
-- **Opportunity**: Use pytest-xdist for parallel test runs
-- **Impact**: High (3-4x speedup on multi-core)
+- **Current**: Parallel test execution via pytest-xdist (`-n auto`)
+- **Opportunity**: Realized — `-n auto` is the standard invocation in both CI
+  workflows and the canonical local command
+- **Impact**: High (3-4x speedup on multi-core), realized
 - **Effort**: Low (pytest plugin)
 
 ## Completed Optimizations (M4-M5)
@@ -107,9 +108,9 @@ robots: noindex, follow
 - [ ] Optimize command matrix lookups
 
 ### Not Viable
-- ❌ pytest-xdist for parallel testing — incompatible with asyncio test mode
-  - All radio tests use asyncio; xdist requires isolation that breaks shared fixtures
-  - Test suite already fast (79s total); further optimization has diminishing returns
+- ✅ pytest-xdist for parallel testing — adopted, not rejected; both CI
+  workflows and the canonical local command run the suite with `-n auto`,
+  and the asyncio test suite runs cleanly under it
 
 ## Testing Performance
 
