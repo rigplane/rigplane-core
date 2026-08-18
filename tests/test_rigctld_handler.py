@@ -203,6 +203,17 @@ def _apply_store_value(
     )
 
 
+def _seed_known_rx(store: StateStore) -> None:
+    """MOR-1881: DEFER-classified rigctld writes (freq/mode/vfo/split) now
+    fail closed on unknown RF state instead of executing unconditionally.
+    The tests using this helper exercise unrelated store/overlay behavior,
+    so seed a known-RX PTT observation (a huge ``max_age`` so it never ages
+    out against the real monotonic clock these bare ``StateStore()``
+    fixtures use) to keep the TX interlock out of their way.
+    """
+    _apply_store_value(store, "global.tx_state.ptt", False, max_age=1e9)
+
+
 def _apply_handler_value(
     handler: RigctldHandler,
     path: str,
@@ -551,6 +562,7 @@ async def test_set_freq_enters_command_service_without_confirming_state(
 ) -> None:
     store = StateStore()
     mock_radio.state_store = store
+    _seed_known_rx(store)
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(set_cmd("set_freq", "14074000"))
@@ -1016,6 +1028,7 @@ async def test_get_mode_read_after_write_uses_pending_overlays_until_reconciled(
     _apply_store_value(store, "receiver.main.active.freq_mode.filter_width", 3000)
     _apply_store_value(store, "receiver.main.active.freq_mode.filter_num", 1)
     _apply_store_value(store, "receiver.main.active.freq_mode.data_mode", False)
+    _seed_known_rx(store)
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(set_cmd("set_mode", "PKTUSB", "2400"))
@@ -1084,6 +1097,7 @@ async def test_get_mode_pending_overlays_are_scoped_to_rigctld_session(
     _apply_store_value(store, "receiver.main.active.freq_mode.filter_width", 3000)
     _apply_store_value(store, "receiver.main.active.freq_mode.filter_num", 1)
     _apply_store_value(store, "receiver.main.active.freq_mode.data_mode", False)
+    _seed_known_rx(store)
     handler = RigctldHandler(mock_radio, RigctldConfig())
 
     resp = await handler.execute(
@@ -1707,6 +1721,7 @@ async def test_get_split_vfo_reads_state_store_split_and_protocol_local_tx_vfo(
     mock_radio.state_store = store
     handler = RigctldHandler(mock_radio, RigctldConfig())
     _apply_store_value(store, "global.tx_state.split", True)
+    _seed_known_rx(store)
 
     set_resp = await handler.execute(set_cmd("set_split_vfo", "1", "VFOB"))
     assert set_resp.ok
@@ -4347,6 +4362,7 @@ async def test_set_vfo_dual_rx_projects_pending_active_receiver_by_session(
     handler = RigctldHandler(dual_rx_radio, RigctldConfig())
     path = FieldPath.global_("slow_state", "active")
     _apply_store_value(store, "global.slow_state.active", "MAIN")
+    _seed_known_rx(store)
 
     resp = await handler.execute(
         set_cmd("set_vfo", "VFOB"),
@@ -5570,6 +5586,7 @@ async def test_set_mode_does_not_clobber_filter_width_with_filter_number() -> No
     radio = _ContractModeRadio(mode="USB", filter_width=1, data_mode=True)
     store = StateStore()
     _seed_civ_canonical_state(store)
+    _seed_known_rx(store)
 
     handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
 

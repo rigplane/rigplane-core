@@ -709,6 +709,71 @@ class RigctldHandler:
             return tx_interlock.RfState.UNKNOWN
         return tx_interlock.RfState.TX if field.value else tx_interlock.RfState.RX
 
+    def _defer_write_gate(self, intent: CommandIntent) -> RigctldResponse | None:
+        """Decide a DEFER-classified write's fate before it can touch state.
+
+        Superseded design (MOR-1881, owner ruling 2026-08-17): holding a
+        DEFER write in a shared lane blocks the rigctld connection in-band,
+        which measurably delayed a same-connection PTT OFF by up to two
+        seconds — a straight violation of the hard safety barrier this
+        programme protects, and the reason that design was rejected on
+        review evidence (PR #2755).
+
+        This gate is called by each ``_cmd_set_*`` handler BEFORE
+        :meth:`CommandService.execute`, not from inside the injected
+        executor — ``CommandService.execute`` records an optimistic pending
+        overlay and emits "accepted"/"queued" lifecycle events before the
+        executor ever runs, so a write refused *inside* the executor would
+        still have already told our own state model (and therefore our own
+        UI) that the write was in flight. Returning a terminal response here
+        means a dropped write never reaches any of that.
+
+        Two outcomes when the disposition is DEFER (``None`` for everything
+        else — RX, non-DEFER, or no canonical store to check against):
+
+        * **Known TX** — silently skip the write and answer ``RPRT 0``,
+          mirroring hamlib's own core (``rig_set_mode``,
+          ``rig_set_split_vfo``, ``rig_set_split_mode``, and the
+          ``set_freq`` RX-VFO skip, all in hamlib's ``src/rig.c``), written
+          there to avoid breaking WSJT-X: any non-zero RPRT mid-sequence
+          drives ``TransceiverBase::offline()`` -> ``shutdown()``, which
+          itself sends a PTT-off and, on a repeat, opens a modal error
+          dialog. This seat already made the identical trade once for a
+          policy-declined unkey — see :meth:`_route_ptt`'s docstring.
+          Web's seat can refuse with a reason envelope because it talks to
+          our own UI, which has vocabulary for "not now"; a third-party
+          hamlib client on this wire protocol does not, so this seat
+          behaves like the radio's own front panel: transmit and the
+          button press is simply ignored, and the rig "beeps" only in our
+          logs (operator-visible feedback in the web UI is MOR-1890).
+          A known-TX drop is a bounded, self-clearing policy state — it
+          ends the moment the operator unkeys — which is why it may
+          honestly report success. UNKNOWN below may not: it is a fault of
+          unbounded duration, not a condition that resolves on its own.
+        * **Unknown/stale RF truth** — truthful refusal, unchanged from
+          before this design and from what BLOCK-classified families still
+          do inside the executor.
+        """
+        classification = _classify_rigctld_tx_intent(intent)
+        if (
+            classification.disposition is not TxInterlockDisposition.DEFER
+            or not self._has_canonical_state_store
+        ):
+            return None
+        rf_state = self._resolve_rigctld_rf_state()
+        if rf_state is tx_interlock.RfState.RX:
+            return None
+        if rf_state is tx_interlock.RfState.UNKNOWN:
+            return _err(HamlibError.ERJCTED)
+        # A client that polls and re-issues a write while transmitting (e.g.
+        # every fast-poll tick) can hit this repeatedly; bounding that is not
+        # cheap without new state, so this logs once per drop, unbounded.
+        logger.warning(
+            "rigctld: dropped %s while transmitting — radio state unchanged",
+            intent.name,
+        )
+        return _ok()
+
     def _packet_data_mode_value(self) -> int | bool:
         value = self._config.wsjtx_data_mode
         if value is None:
@@ -1273,6 +1338,9 @@ class RigctldHandler:
             command_id=f"rigctld-set-freq-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
+        dropped = self._defer_write_gate(intent)
+        if dropped is not None:
+            return dropped
         await self._command_service.execute(intent)
         return _ok()
 
@@ -1439,6 +1507,9 @@ class RigctldHandler:
                 command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
                 session_id=self._session_id(),
             )
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
             await self._command_service.execute(intent)
             # ``filter_width`` (the local var) is a filter NUMBER, so the
             # readback overlay belongs on ``filter_num`` — that is the key the
@@ -1468,6 +1539,9 @@ class RigctldHandler:
             command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
+        dropped = self._defer_write_gate(intent)
+        if dropped is not None:
+            return dropped
         await self._command_service.execute(intent)
         self._cache.update_mode(base_mode_str, filter_width)
         if requested_mode in packet_modes:
@@ -1797,15 +1871,17 @@ class RigctldHandler:
         info = self._profile_vfo_info()
         if info is not None:
             params["receiver_count"] = info[0]
-        await self._command_service.execute(
-            command_intent_from_request(
-                "set_vfo",
-                params,
-                source="rigctld",
-                command_id=f"rigctld-set-vfo-{time.monotonic_ns()}",
-                session_id=self._session_id(),
-            )
+        intent = command_intent_from_request(
+            "set_vfo",
+            params,
+            source="rigctld",
+            command_id=f"rigctld-set-vfo-{time.monotonic_ns()}",
+            session_id=self._session_id(),
         )
+        dropped = self._defer_write_gate(intent)
+        if dropped is not None:
+            return dropped
+        await self._command_service.execute(intent)
         return _ok()
 
     async def _execute_set_vfo(self, vfo: str) -> HamlibError:
@@ -2249,20 +2325,22 @@ class RigctldHandler:
         # Single-RX profiles only have receiver=0; per-VFO state is selected
         # via set_vfo_slot, not receiver= (issue #1354).
         receiver = self._receiver_index_for(target)
-        await self._command_service.execute(
-            command_intent_from_request(
-                "set_func",
-                {
-                    "func": func,
-                    "on": on,
-                    "receiver": receiver,
-                    "vfo_arg": cmd.vfo_arg,
-                },
-                source="rigctld",
-                command_id=f"rigctld-set-func-{time.monotonic_ns()}",
-                session_id=self._session_id(),
-            )
+        intent = command_intent_from_request(
+            "set_func",
+            {
+                "func": func,
+                "on": on,
+                "receiver": receiver,
+                "vfo_arg": cmd.vfo_arg,
+            },
+            source="rigctld",
+            command_id=f"rigctld-set-func-{time.monotonic_ns()}",
+            session_id=self._session_id(),
         )
+        dropped = self._defer_write_gate(intent)
+        if dropped is not None:
+            return dropped
+        await self._command_service.execute(intent)
         return _ok()
 
     async def _execute_set_func(
@@ -2340,15 +2418,17 @@ class RigctldHandler:
         except ValueError:
             return _err(HamlibError.EINVAL)
         tx_vfo = cmd.args[1].upper()
-        await self._command_service.execute(
-            command_intent_from_request(
-                "set_split_vfo",
-                {"on": on, "tx_vfo": tx_vfo},
-                source="rigctld",
-                command_id=f"rigctld-set-split-vfo-{time.monotonic_ns()}",
-                session_id=self._session_id(),
-            )
+        intent = command_intent_from_request(
+            "set_split_vfo",
+            {"on": on, "tx_vfo": tx_vfo},
+            source="rigctld",
+            command_id=f"rigctld-set-split-vfo-{time.monotonic_ns()}",
+            session_id=self._session_id(),
         )
+        dropped = self._defer_write_gate(intent)
+        if dropped is not None:
+            return dropped
+        await self._command_service.execute(intent)
         return _ok()
 
     async def _execute_set_split_vfo(self, on: bool, tx_vfo: str) -> HamlibError:
@@ -2485,15 +2565,17 @@ class RigctldHandler:
             return _err(HamlibError.EINVAL)
         if CAP_RIT not in self._radio.capabilities:
             return _err(HamlibError.ENIMPL)
-        await self._command_service.execute(
-            command_intent_from_request(
-                "set_rit",
-                {"hz": hz},
-                source="rigctld",
-                command_id=f"rigctld-set-rit-{time.monotonic_ns()}",
-                session_id=self._session_id(),
-            )
+        intent = command_intent_from_request(
+            "set_rit",
+            {"hz": hz},
+            source="rigctld",
+            command_id=f"rigctld-set-rit-{time.monotonic_ns()}",
+            session_id=self._session_id(),
         )
+        dropped = self._defer_write_gate(intent)
+        if dropped is not None:
+            return dropped
+        await self._command_service.execute(intent)
         return _ok()
 
     async def _cmd_get_xit(self, cmd: RigctldCommand) -> RigctldResponse:
@@ -2514,15 +2596,17 @@ class RigctldHandler:
             return _err(HamlibError.EINVAL)
         if CAP_RIT not in self._radio.capabilities:
             return _err(HamlibError.ENIMPL)
-        await self._command_service.execute(
-            command_intent_from_request(
-                "set_xit",
-                {"hz": hz},
-                source="rigctld",
-                command_id=f"rigctld-set-xit-{time.monotonic_ns()}",
-                session_id=self._session_id(),
-            )
+        intent = command_intent_from_request(
+            "set_xit",
+            {"hz": hz},
+            source="rigctld",
+            command_id=f"rigctld-set-xit-{time.monotonic_ns()}",
+            session_id=self._session_id(),
         )
+        dropped = self._defer_write_gate(intent)
+        if dropped is not None:
+            return dropped
+        await self._command_service.execute(intent)
         return _ok()
 
     # ------------------------------------------------------------------

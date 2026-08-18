@@ -387,6 +387,15 @@ async def server_serial_radio(
     await radio.connect()
     srv = RigctldServer(radio, cfg)
     await srv.start()
+    # MOR-1881: DEFER-classified rigctld writes (F/M/V/S/RIT/XIT) now fail
+    # closed on unknown RF state instead of executing unconditionally. This
+    # bootstrapped fallback StateStore never observes a real PTT sample, so
+    # seed a known-RX one (a huge max_age so it never ages out against the
+    # real monotonic clock) to keep the TX interlock out of these tests'
+    # unrelated freq/mode round-trip coverage.
+    _apply_store_value(
+        srv._state_store, FieldPath.global_("tx_state", "ptt"), False, max_age=1e9
+    )
     try:
         yield srv, radio
     finally:
@@ -1385,6 +1394,54 @@ class TestSemiIntegrationSerialMockRadio:
             assert filt_core == 2
         finally:
             await _close(writer)
+
+
+async def test_deferred_write_and_unkey_both_answer_immediately_on_one_connection(
+    cfg: RigctldConfig,
+) -> None:
+    """MOR-1881: the exact regression the rejected deferred-lane design
+    failed at (PR #2755).
+
+    One connection, ``F <freq>`` then ``T 0``, PTT seeded known TX. The lane
+    build held the ``F`` command in-band and answered the unkey at +2.003s.
+    This seat now never holds anything in-band for a DEFER-classified write
+    -- known TX is dropped immediately (``RPRT 0``, radio untouched) -- so
+    both replies must land essentially instantly, and the frequency write
+    must never have reached the radio.
+    """
+    radio = SerialMockRadio()
+    await radio.connect()
+    srv = RigctldServer(radio, cfg)
+    await srv.start()
+    _apply_store_value(
+        srv._state_store, FieldPath.global_("tx_state", "ptt"), True, max_age=1e9
+    )
+    try:
+        reader, writer = await _connect(srv)
+        try:
+            start = time.monotonic()
+            writer.write(b"F 7050000\n")
+            await writer.drain()
+            data_freq = await asyncio.wait_for(reader.read(4096), timeout=1.0)
+            elapsed_freq = time.monotonic() - start
+
+            start_ptt = time.monotonic()
+            writer.write(b"T 0\n")
+            await writer.drain()
+            data_ptt = await asyncio.wait_for(reader.read(4096), timeout=1.0)
+            elapsed_ptt = time.monotonic() - start_ptt
+        finally:
+            await _close(writer)
+    finally:
+        await srv.stop()
+
+    assert data_freq == b"RPRT 0\n"
+    assert elapsed_freq < 0.1
+    assert data_ptt == b"RPRT 0\n"
+    assert elapsed_ptt < 0.1
+    # The write was dropped, not applied: SerialMockRadio's default frequency
+    # (14074000) is unchanged, not the 7050000 that was requested.
+    assert await radio.get_freq() == 14_074_000
 
 
 # ---------------------------------------------------------------------------
