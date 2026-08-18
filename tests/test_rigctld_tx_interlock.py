@@ -1,11 +1,12 @@
 """Rigctld write-intent coverage for the shared TX interlock policy."""
 
-import asyncio
+import logging
 from dataclasses import replace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from rigplane.capabilities import CAP_RIT
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     FieldPath,
@@ -18,14 +19,11 @@ from rigplane.rigctld.contract import (
     COMMAND_TABLE,
     ClientSession,
     HamlibError,
+    RigctldCommand,
     RigctldConfig,
     RigctldResponse,
 )
-from rigplane.rigctld.handler import (
-    RigctldHandler,
-    _classify_rigctld_tx_intent,
-    _RigctldCommandFailure,
-)
+from rigplane.rigctld.handler import RigctldHandler, _classify_rigctld_tx_intent
 from rigplane.rigctld.protocol import format_response, parse_line
 from rigplane.runtime import _poller_types as commands, tx_interlock
 
@@ -168,6 +166,7 @@ def _store(case: str) -> tuple[StateStore, object | None]:
 
 def _handler(store: StateStore, *, public_store: bool = True):
     radio = AsyncMock()
+    radio.capabilities = {CAP_RIT}
     if public_store:
         radio.state_store = store
     else:
@@ -268,38 +267,42 @@ async def test_structural_exemptions_never_resolve_rf_truth(
     routing.set_func.assert_awaited_once_with("TUNER", False, vfo=None)
 
 
-# ── MOR-1881: DEFER-classified writes now consume the shared single-slot ────
-# lane exactly as ``RadioPoller`` and ``YaesuCatPoller`` already do.
+# ── MOR-1881 (owner ruling 2026-08-17, superseding the deferred-TX-lane ─────
+# design in PR #2755): DEFER-classified writes are silently dropped (RPRT 0,
+# radio untouched) during known TX, and truthfully refused under UNKNOWN/
+# stale RF -- never held in-band. See ``RigctldHandler._defer_write_gate``.
 
 
-def _apply_ptt(store: StateStore, clock: FreshnessClock, value: bool) -> None:
-    store.apply(
-        Observation(
-            path=FieldPath.global_("tx_state", "ptt"),
-            value=value,
-            source=SourceMetadata(source="test", provider="tests"),
-            timestamp_monotonic=clock.now(),
-            max_age=2.0,
-        )
-    )
+_DEFER_WIRES = (b"F 1", b"M USB 2400", b"V VFOA", b"S 1 VFOA", b"U SPLIT 1")
 
 
-_DEFER_WIRES = (b"F 1", b"M USB 2400", b"V VFOA", b"S 1 VFOA")
+def _defer_wire_method(radio: AsyncMock, wire: bytes) -> AsyncMock:
+    if wire.startswith(b"F"):
+        return radio.set_freq
+    if wire.startswith(b"M"):
+        return radio.set_mode
+    if wire.startswith(b"V"):
+        return radio.set_vfo
+    return radio.set_split  # b"S ..." (set_split_vfo) and b"U SPLIT ..."
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("wire", _DEFER_WIRES)
 async def test_defer_writes_in_known_rx_dispatch_immediately(wire: bytes) -> None:
+    # Not asserting the specific underlying radio call here: which method
+    # set_vfo/set_func(SPLIT) route to depends on profile/receiver routing
+    # this generic mock radio doesn't model. The contrast that matters (the
+    # write reaches the radio in RX but never does in TX) is asserted by
+    # test_defer_writes_are_dropped_silently_during_known_tx below.
     handler, _radio, _routing = _handler(_store("rx")[0])
     response = await handler.execute(parse_line(wire))
     assert response.ok
-    assert handler._deferred_tx_lane.pending is None  # noqa: SLF001
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["absent", "stale", "generation"])
 @pytest.mark.parametrize("wire", _DEFER_WIRES)
-async def test_defer_writes_fail_closed_on_unknown_rf_state_without_entering_lane(
+async def test_defer_writes_fail_closed_on_unknown_rf_state(
     wire: bytes, case: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, forced = _store(case)
@@ -308,218 +311,118 @@ async def test_defer_writes_fail_closed_on_unknown_rf_state_without_entering_lan
         monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
     response = await handler.execute(parse_line(wire))
     assert response.error is HamlibError.ERJCTED
-    assert handler._deferred_tx_lane.pending is None  # noqa: SLF001
-    radio.set_freq.assert_not_awaited()
-    radio.set_mode.assert_not_awaited()
+    _defer_wire_method(radio, wire).assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(5)
-async def test_defer_write_still_holds_before_the_quiet_window_completes(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("wire", _DEFER_WIRES)
+async def test_defer_writes_are_dropped_silently_during_known_tx(
+    wire: bytes,
 ) -> None:
-    """The lane must not release early: it needs a FULL 1.0s of continuous
-    known RX, not merely "RX has been observed at least once".
-
-    The checkpoint waits for ``ticks_done == 3``, not ``2``: entering the
-    coroutine's THIRD ``asyncio.sleep`` call is only possible after the
-    SECOND tick's ``observe()`` has already run and decided HELD. Checking
-    right after ``ticks_done`` reaches 2 (as an earlier version of this test
-    did) inspects state while the task is still suspended inside that
-    tick's ``fake_sleep``, before its ``observe()`` call -- at that point
-    the task cannot possibly be done regardless of the quiet-window length,
-    so the assertion does not actually discriminate 1.0s from 0.4s.
+    """The owner-ruled outcome (MOR-1881): during known TX, a DEFER write is
+    not sent to the radio at all -- it is dropped and answered ``RPRT 0``,
+    mirroring hamlib's own core (``rig_set_mode`` / ``rig_set_split_vfo`` /
+    ``rig_set_split_mode`` / the ``set_freq`` RX-VFO skip in hamlib's
+    ``src/rig.c``), which is written that way to avoid WSJT-X treating a
+    non-zero RPRT mid-sequence as a hard rig-control failure.
     """
-    clock = FreshnessClock(start=50.0)
-    store = StateStore(freshness_clock=clock)
-    _apply_ptt(store, clock, True)
-    handler, radio, _routing = _handler(store)
-    command = commands.SetFreq(14_074_000)
-    real_sleep = asyncio.sleep
-    ticks_done = 0
-
-    async def fake_sleep(_interval: float) -> None:
-        nonlocal ticks_done
-        ticks_done += 1
-        clock.advance(0.4)
-        _apply_ptt(store, clock, False)
-        await real_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    task = asyncio.create_task(handler._await_deferred_tx(command))  # noqa: SLF001
-    while ticks_done < 3:
-        await real_sleep(0)
-
-    # Two full 0.4s ticks of continuous RX (0.8s of quiet, both observe()
-    # calls having already run) is still short of the 1.0s quiet window:
-    # still held, not yet released.
-    assert not task.done()
-    assert handler._deferred_tx_lane.pending is command  # noqa: SLF001
-    radio.set_freq.assert_not_awaited()
-
-    assert await task is True
+    handler, radio, _routing = _handler(_store("tx")[0])
+    response = await handler.execute(parse_line(wire))
+    assert response.ok
+    assert format_response(parse_line(wire), response, ClientSession()) == b"RPRT 0\n"
+    _defer_wire_method(radio, wire).assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_defer_write_releases_after_continuous_rx_inside_ttl(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock = FreshnessClock(start=30.0)
-    store = StateStore(freshness_clock=clock)
-    _apply_ptt(store, clock, True)
+async def test_dropped_write_leaves_state_store_and_lifecycle_untouched() -> None:
+    """The single most important test in this file (MOR-1881 AC2).
+
+    A dropped write must be invisible to our own state model: no pending
+    overlay, no lifecycle event of any kind, no observation -- nothing that
+    could make our own UI show a value the radio never took. This is what
+    "refuse above CommandService.execute" (rather than inside the injected
+    executor) buys: ``_record_intent_overlay`` and the "accepted"/"queued"
+    lifecycle events run INSIDE ``execute``, so a write that never reaches
+    ``execute`` cannot produce any of them.
+    """
+    store = _store("tx")[0]
     handler, radio, _routing = _handler(store)
 
-    async def fake_sleep(_interval: float) -> None:
-        # Deterministic tick: 0.4s of simulated time per poll, continuous
-        # known RX from the first tick onward — release after the lane's
-        # 1.0s quiet window, well inside its 3.0s TTL. No real waiting.
-        clock.advance(0.4)
-        _apply_ptt(store, clock, False)
+    response = await handler.execute(parse_line(b"F 7050000"))
 
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    assert response.ok
+    radio.set_freq.assert_not_awaited()
+    assert handler._command_service.lifecycle_events() == ()  # noqa: SLF001
+    assert (
+        handler._command_service.pending_overlays(  # noqa: SLF001
+            source="rigctld", session_id=None
+        )
+        == ()
+    )
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.main.active.freq_mode.freq_hz")
+
+
+@pytest.mark.asyncio
+async def test_known_tx_drop_is_logged_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="rigplane.rigctld.handler")
+    handler, _radio, _routing = _handler(_store("tx")[0])
+
     response = await handler.execute(parse_line(b"F 14074000"))
 
     assert response.ok
-    radio.set_freq.assert_awaited_once_with(14_074_000, receiver=0)
-    assert handler._deferred_tx_lane.pending is None  # noqa: SLF001
+    drop_records = [r for r in caplog.records if "dropped" in r.getMessage()]
+    assert len(drop_records) == 1
+    assert drop_records[0].levelno == logging.WARNING
+    message = drop_records[0].getMessage()
+    assert "set_freq" in message
+    assert "transmitting" in message
 
 
-@pytest.mark.asyncio
-async def test_defer_write_never_releases_after_ttl_expiry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock = FreshnessClock(start=40.0)
-    store = StateStore(freshness_clock=clock)
-    _apply_ptt(store, clock, True)
-    handler, radio, _routing = _handler(store)
-
-    async def fake_sleep(_interval: float) -> None:
-        # TX never clears: the lane must expire at the 3.0s TTL and must
-        # never release, no matter how long it is held.
-        clock.advance(0.4)
-        _apply_ptt(store, clock, True)
-
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    response = await handler.execute(parse_line(b"F 14074000"))
-
-    assert response.error is HamlibError.ERJCTED
-    radio.set_freq.assert_not_awaited()
-    assert handler._deferred_tx_lane.pending is None  # noqa: SLF001
+# ── RIT/XIT have no wire-level command definition at all (COMMAND_TABLE has
+# no "set_rit" / "set_xit" / "get_xit" entry -- a pre-existing gap, not
+# introduced here), so these tests build a RigctldCommand directly rather
+# than going through parse_line. They still go through handler.execute(),
+# which dispatches to _cmd_set_rit / _cmd_set_xit and therefore through
+# _defer_write_gate exactly as the wire-reachable commands above do --
+# unlike the previous version of these tests, which called
+# CommandService.execute() directly and so bypassed the gate entirely.
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(5)
-async def test_supersession_produces_truthful_failure_for_the_superseded_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Two concurrent rigctld sessions share exactly ONE lane.
-
-    A second session's newer DEFER command replaces the first session's
-    held command; the first session's blocked wait must resolve to a
-    truthful failure rather than hang until TTL expiry, and ownership of
-    the single slot is deterministic (always the most recent command).
-    """
-    clock = FreshnessClock(start=20.0)
-    store = StateStore(freshness_clock=clock)
-    _apply_ptt(store, clock, True)
-    handler, _radio, _routing = _handler(store)
-
-    command_a = commands.SetFreq(7_074_000)
-    command_b = commands.SetFreq(14_074_000)
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(_interval: float) -> None:
-        # Yield control without advancing simulated time or RF state, so
-        # only the interleaving of the two sessions is under test here.
-        await real_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-
-    task_a = asyncio.create_task(handler._await_deferred_tx(command_a))  # noqa: SLF001
-    await real_sleep(0)
-    assert handler._deferred_tx_lane.pending is command_a  # noqa: SLF001
-
-    task_b = asyncio.create_task(handler._await_deferred_tx(command_b))  # noqa: SLF001
-    await real_sleep(0)
-    assert handler._deferred_tx_lane.pending is command_b  # noqa: SLF001
-
-    assert await task_a is False
-
-    task_b.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task_b
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(5)
-async def test_cancelling_the_wait_releases_the_slot_for_a_full_ttl(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """MOR-1881 B2: a cancelled wait (e.g. the server's own command_timeout
-    firing, or a dropped connection) must not orphan the lane slot.
-
-    Before this fix, ``_await_deferred_tx`` had no ``try/finally``, so a
-    cancelled coroutine left its entry sitting in the lane forever. Because
-    ``DeferredTxCommandLane.defer`` preserves the PREVIOUS absolute deadline
-    across a live supersession, the next legitimate deferred write would
-    silently inherit the orphan's truncated remaining window instead of a
-    full fresh 3.0s TTL.
-    """
-    clock = FreshnessClock(start=60.0)
-    store = StateStore(freshness_clock=clock)
-    _apply_ptt(store, clock, True)
-    handler, _radio, _routing = _handler(store)
-    command_a = commands.SetFreq(7_074_000)
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(_interval: float) -> None:
-        await real_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-
-    task = asyncio.create_task(handler._await_deferred_tx(command_a))  # noqa: SLF001
-    await real_sleep(0)
-    assert handler._deferred_tx_lane.pending is command_a  # noqa: SLF001
-
-    clock.advance(1.0)  # time passes before the caller (e.g. server) gives up
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert handler._deferred_tx_lane.pending is None  # noqa: SLF001
-
-    command_b = commands.SetFreq(14_074_000)
-    result = handler._deferred_tx_lane.defer(command_b, now=clock.now())  # noqa: SLF001
-    assert result.expires_at == clock.now() + 3.0
-
-
-# ── MOR-1881 N3: RIT/XIT have no wire-level command definition at all      ──
-# (COMMAND_TABLE has no "set_rit" / "set_xit" / "get_xit" entry -- a
-# pre-existing gap, not introduced here), so the only reachable path in
-# tests -- matching the old, now-corrected test -- is the CommandIntent
-# directly through CommandService, bypassing wire parsing.
+def _rit_xit_cmd(name: str, hz: int) -> RigctldCommand:
+    return RigctldCommand(short_cmd=name, long_cmd=name, args=(str(hz),), is_set=True)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["absent", "stale", "generation"])
 @pytest.mark.parametrize("name", ["set_rit", "set_xit"])
-async def test_rit_xit_intents_fail_closed_on_unknown_rf_state(
+async def test_rit_xit_fail_closed_on_unknown_rf_state(
     name: str, case: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, forced = _store(case)
     handler, radio, _routing = _handler(store)
     if forced is not None:
         monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
-    with pytest.raises(_RigctldCommandFailure) as excinfo:
-        await handler._command_service.execute(_intent(name, hz=1))  # noqa: SLF001
-    assert excinfo.value.error is HamlibError.ERJCTED
-    assert handler._deferred_tx_lane.pending is None  # noqa: SLF001
+    response = await handler.execute(_rit_xit_cmd(name, 1))
+    assert response.error is HamlibError.ERJCTED
     radio.set_rit_frequency.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["set_rit", "set_xit"])
-async def test_rit_xit_intents_in_known_rx_dispatch_immediately(name: str) -> None:
+async def test_rit_xit_dispatch_immediately_in_known_rx(name: str) -> None:
     handler, radio, _routing = _handler(_store("rx")[0])
-    await handler._command_service.execute(_intent(name, hz=1))  # noqa: SLF001
+    response = await handler.execute(_rit_xit_cmd(name, 1))
+    assert response.ok
     radio.set_rit_frequency.assert_awaited_once_with(1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["set_rit", "set_xit"])
+async def test_rit_xit_are_dropped_silently_during_known_tx(name: str) -> None:
+    handler, radio, _routing = _handler(_store("tx")[0])
+    response = await handler.execute(_rit_xit_cmd(name, 1))
+    assert response.ok
+    radio.set_rit_frequency.assert_not_awaited()

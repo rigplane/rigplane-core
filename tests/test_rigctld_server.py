@@ -1396,19 +1396,18 @@ class TestSemiIntegrationSerialMockRadio:
             await _close(writer)
 
 
-async def test_deferred_write_gets_truthful_erjcted_not_etimeout_under_command_timeout(
+async def test_deferred_write_and_unkey_both_answer_immediately_on_one_connection(
     cfg: RigctldConfig,
 ) -> None:
-    """MOR-1881 B3: end-to-end over a real socket, not the lane's internals.
+    """MOR-1881: the exact regression the rejected deferred-lane design
+    failed at (PR #2755).
 
-    The wire-visible contract for a DEFER write held during known TX is
-    ``min(lane TTL, RigctldConfig.command_timeout)``. ``cfg``'s
-    ``command_timeout`` (0.3s) is well under the lane's 3.0s TTL, so without
-    a self-imposed bound inside ``_await_deferred_tx``, the server's own
-    ``asyncio.wait_for`` would cancel the wait first and report ``RPRT -5``
-    (ETIMEOUT -- "the radio did not answer") for a write that was in fact
-    deferred and never released. The client must see a truthful ``RPRT -9``
-    (ERJCTED) instead, and see it before ``command_timeout`` elapses.
+    One connection, ``F <freq>`` then ``T 0``, PTT seeded known TX. The lane
+    build held the ``F`` command in-band and answered the unkey at +2.003s.
+    This seat now never holds anything in-band for a DEFER-classified write
+    -- known TX is dropped immediately (``RPRT 0``, radio untouched) -- so
+    both replies must land essentially instantly, and the frequency write
+    must never have reached the radio.
     """
     radio = SerialMockRadio()
     await radio.connect()
@@ -1421,17 +1420,28 @@ async def test_deferred_write_gets_truthful_erjcted_not_etimeout_under_command_t
         reader, writer = await _connect(srv)
         try:
             start = time.monotonic()
-            writer.write(b"F 14074000\n")
+            writer.write(b"F 7050000\n")
             await writer.drain()
-            data = await asyncio.wait_for(reader.read(4096), timeout=2.0)
-            elapsed = time.monotonic() - start
+            data_freq = await asyncio.wait_for(reader.read(4096), timeout=1.0)
+            elapsed_freq = time.monotonic() - start
+
+            start_ptt = time.monotonic()
+            writer.write(b"T 0\n")
+            await writer.drain()
+            data_ptt = await asyncio.wait_for(reader.read(4096), timeout=1.0)
+            elapsed_ptt = time.monotonic() - start_ptt
         finally:
             await _close(writer)
     finally:
         await srv.stop()
 
-    assert data == b"RPRT -9\n"
-    assert elapsed < cfg.command_timeout
+    assert data_freq == b"RPRT 0\n"
+    assert elapsed_freq < 0.1
+    assert data_ptt == b"RPRT 0\n"
+    assert elapsed_ptt < 0.1
+    # The write was dropped, not applied: SerialMockRadio's default frequency
+    # (14074000) is unchanged, not the 7050000 that was requested.
+    assert await radio.get_freq() == 14_074_000
 
 
 # ---------------------------------------------------------------------------
