@@ -89,7 +89,9 @@ that class of defect is release-blocking by definition and is not on this list.
   `RPRT -5` (timeout) instead of an empty success.** Nothing is known about
   whether such a frame was applied, so reporting success was a lie. Clients
   that treated the old empty success as "sent OK" will now see an error on
-  frames that time out. WSJT-X and fldigi do not use `w`. (MOR-1882)
+  frames that time out. `w` is a raw CI-V escape hatch for diagnostics and
+  advanced tooling, not part of the frequency/mode/PTT command flow a
+  logging or digital-mode client uses for normal operation. (MOR-1882)
 
 ## Dual-receiver topology (permanent limitation)
 

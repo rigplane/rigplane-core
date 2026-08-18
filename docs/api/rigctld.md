@@ -333,9 +333,11 @@ Behavior details:
   the handler answers `ETIMEOUT` (`RPRT -5`) with no values: the radio never
   replied, so there is no evidence the raw frame was applied. (Before
   MOR-1882 this answered a successful empty response.)
-- A radio that legitimately sends no reply (fire-and-forget frames) still
-  produces a successful empty response — that is a completed write, not a
-  timeout.
+- A backend that returns no response object at all still produces a
+  successful empty response — that is a completed write, not a timeout.
+  On the shipped Icom backend the rigctld path always waits for a reply or
+  an ACK, so in practice that branch belongs to the handler contract rather
+  than to any current backend.
 - If backend does not implement `_send_civ_raw`, returns `ENIMPL` (`RPRT -4`).
 
 ---
