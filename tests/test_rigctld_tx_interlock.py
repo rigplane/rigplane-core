@@ -7,14 +7,17 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from rigplane.capabilities import CAP_RIT
+from rigplane.core.command_service import CommandServiceResult
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
+    CommandLifecycleEvent,
     FieldPath,
     Observation,
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.core.tx_interlock_contract import TxInterlockDisposition
+from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.rigctld.contract import (
     COMMAND_TABLE,
     ClientSession,
@@ -426,3 +429,192 @@ async def test_rit_xit_are_dropped_silently_during_known_tx(name: str) -> None:
     response = await handler.execute(_rit_xit_cmd(name, 1))
     assert response.ok
     radio.set_rit_frequency.assert_not_awaited()
+
+
+# ── MOR-1882: the two-sided rule for answering a write with ``RPRT 0`` ─────
+# Success may be claimed for a write the radio never saw in exactly one case:
+# the deliberate pre-send policy drop above (known TX, MOR-1881), which is
+# bounded because it ends when the operator unkeys, and which is taken before
+# the command service is ever entered -- so it leaves no lifecycle record at
+# all. Every other way a write can fail to land (timeout, in-flight
+# invalidation, any terminal lifecycle state that is not evidence the write
+# was applied) is reported truthfully. Without both halves pinned the
+# carve-out widens into a loophole that swallows real failures.
+
+
+class _TerminalStateService:
+    """Real command service with one extra terminal lifecycle event appended.
+
+    Models an executor seam that reports a non-applied terminal outcome by
+    returning it rather than by raising -- the case the handler used to
+    answer ``RPRT 0`` because it discarded the result entirely.
+
+    ``command_id=None`` attributes the extra event to a *different* command,
+    which is what makes the id filter in ``_terminal_lifecycle_state``
+    testable: the returned event slice is a window on a shared log, so a
+    concurrent command's terminal event can be the last one in it.
+    """
+
+    def __init__(self, inner: object, state: str, command_id: str | None) -> None:
+        self._inner = inner
+        self._state = state
+        self._command_id = command_id
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def execute(self, intent: CommandIntent) -> CommandServiceResult:
+        result = await self._inner.execute(intent)  # type: ignore[attr-defined]
+        return replace(
+            result,
+            lifecycle_events=result.lifecycle_events
+            + (
+                CommandLifecycleEvent(
+                    command_id=intent.id
+                    if self._command_id is None
+                    else self._command_id,
+                    state=self._state,  # type: ignore[arg-type]
+                    timestamp_monotonic=0.0,
+                    source="rigctld",
+                ),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_applied_write_still_answers_rprt_0() -> None:
+    """Positive control: an ordinary write is unaffected by the new checks."""
+    handler, radio, _routing = _handler(_store("rx")[0])
+
+    response = await handler.execute(parse_line(b"F 14074000"))
+
+    assert response.ok
+    radio.set_freq.assert_awaited_once()
+    states = [e.state for e in handler._command_service.lifecycle_events()]  # noqa: SLF001
+    assert states[-1] == "acknowledged"
+
+
+@pytest.mark.asyncio
+async def test_write_timeout_answers_etimeout_not_rprt_0() -> None:
+    handler, radio, _routing = _handler(_store("rx")[0])
+    radio.set_freq = AsyncMock(side_effect=RigplaneTimeoutError("no CI-V reply"))
+
+    response = await handler.execute(parse_line(b"F 14074000"))
+
+    assert response.error is HamlibError.ETIMEOUT
+    states = [e.state for e in handler._command_service.lifecycle_events()]  # noqa: SLF001
+    assert states[-1] == "timed_out"
+
+
+@pytest.mark.asyncio
+async def test_write_invalidated_in_flight_is_neither_success_nor_einternal() -> None:
+    """Supersession/invalidation is a real terminal outcome, not an internal bug.
+
+    The write completed at the backend but was no longer the live command when
+    it did, so nothing may be claimed about the radio's state.
+    """
+    handler, radio, _routing = _handler(_store("rx")[0])
+
+    async def _invalidate(*_args: object, **_kwargs: object) -> None:
+        service = handler._command_service  # noqa: SLF001
+        sent = [e for e in service.lifecycle_events() if e.state == "sent"]
+        service.fail_command(sent[-1].command_id, source="rigctld", session_id=None)
+
+    radio.set_freq = AsyncMock(side_effect=_invalidate)
+
+    response = await handler.execute(parse_line(b"F 14074000"))
+
+    assert response.error is HamlibError.ERJCTED
+    assert response.error is not HamlibError.EINTERNAL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("failed", HamlibError.ERJCTED),
+        ("timed_out", HamlibError.ETIMEOUT),
+        ("superseded", HamlibError.ERJCTED),
+    ],
+)
+async def test_unapplied_terminal_state_is_never_answered_with_rprt_0(
+    state: str, expected: HamlibError
+) -> None:
+    handler, _radio, _routing = _handler(_store("rx")[0])
+    handler._command_service = _TerminalStateService(  # type: ignore[assignment]  # noqa: SLF001
+        handler._command_service,  # noqa: SLF001
+        state,
+        None,
+    )
+
+    response = await handler.execute(parse_line(b"F 14074000"))
+
+    assert response.error is expected
+
+
+@pytest.mark.asyncio
+async def test_another_commands_terminal_state_does_not_fail_this_write() -> None:
+    """Truthfulness is per command, not per event log.
+
+    ``CommandServiceResult.lifecycle_events`` is a window on a shared log, so
+    a concurrent command's terminal event can be the last entry in it. Reading
+    the log without matching the command id would fail an unrelated healthy
+    write -- and, on the other side of the same bug, let a foreign
+    ``acknowledged`` vouch for a write that never landed.
+    """
+    handler, radio, _routing = _handler(_store("rx")[0])
+    handler._command_service = _TerminalStateService(  # type: ignore[assignment]  # noqa: SLF001
+        handler._command_service,  # noqa: SLF001
+        "failed",
+        "rigctld-set-freq-someone-elses-command",
+    )
+
+    response = await handler.execute(parse_line(b"F 14074000"))
+
+    assert response.ok
+    radio.set_freq.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_raw_write_timeout_answers_etimeout_not_empty_success() -> None:
+    """``w`` used to swallow its own timeout and answer ``RPRT 0`` with no data."""
+    handler, radio, _routing = _handler(_store("rx")[0])
+    radio._send_civ_raw = AsyncMock(side_effect=RigplaneTimeoutError("no reply"))
+
+    response = await handler.execute(parse_line(b"w FE FE 98 E0 03 FD"))
+
+    assert response.error is HamlibError.ETIMEOUT
+    assert response.values == []
+    states = [e.state for e in handler._command_service.lifecycle_events()]  # noqa: SLF001
+    assert states[-1] == "timed_out"
+
+
+@pytest.mark.asyncio
+async def test_success_without_a_lifecycle_record_is_only_the_tx_drop() -> None:
+    """The narrow half, stated as a property rather than as a single case.
+
+    A write answered ``RPRT 0`` either never entered the command service at
+    all -- the known-TX policy drop, the one success this seat may report for
+    a write the radio never saw -- or ended in an applied terminal state.
+
+    The property is about *shape*, not about the drop being the only
+    deliberate silence: :meth:`RigctldHandler._route_ptt` also answers
+    ``RPRT 0`` for a policy-declined unkey without writing, and it satisfies
+    this property from the other side, because that decision is taken inside
+    the executor and does leave an ``acknowledged`` record.
+    """
+    dropped_handler, dropped_radio, _ = _handler(_store("tx")[0])
+    dropped = await dropped_handler.execute(parse_line(b"F 14074000"))
+    assert dropped.ok
+    dropped_radio.set_freq.assert_not_awaited()
+    assert dropped_handler._command_service.lifecycle_events() == ()  # noqa: SLF001
+
+    applied_handler, applied_radio, _ = _handler(_store("rx")[0])
+    applied = await applied_handler.execute(parse_line(b"F 14074000"))
+    assert applied.ok
+    applied_radio.set_freq.assert_awaited_once()
+    states = [
+        e.state
+        for e in applied_handler._command_service.lifecycle_events()  # noqa: SLF001
+    ]
+    assert states[-1] == "acknowledged"

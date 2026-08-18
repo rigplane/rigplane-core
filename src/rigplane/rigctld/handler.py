@@ -25,8 +25,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from ..commands import build_civ_frame
 from ..core.acquisition_scheduler import AcquisitionStatus, EnsureFreshResult
 from ..core.command_service import (
+    CommandExecutionInvalidatedError,
     CommandExecutionResult,
     CommandService,
+    CommandServiceResult,
     PendingOverlay,
     command_intent_from_request,
 )
@@ -319,6 +321,32 @@ def _err(code: HamlibError) -> RigctldResponse:
     return RigctldResponse(error=code)
 
 
+def _terminal_lifecycle_state(
+    result: CommandServiceResult, intent: CommandIntent
+) -> str | None:
+    """Return the last lifecycle state recorded for ``intent`` in ``result``."""
+
+    for event in reversed(result.lifecycle_events):
+        if event.command_id == intent.id:
+            return str(event.state)
+    return None
+
+
+# Terminal lifecycle states that are evidence the write was actually carried
+# out: the executor ran to completion and the command was still the live one
+# when it did (``acknowledged``), or a readback has since confirmed it.
+_APPLIED_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {"acknowledged", "confirmed", "reconciled"}
+)
+
+# Truthful Hamlib answers for the terminal states that mean "not applied".
+# Anything not named here is a write whose fate we cannot vouch for, which is
+# reported as a rejection rather than as success.
+_UNAPPLIED_LIFECYCLE_ERRORS: dict[str, HamlibError] = {
+    "timed_out": HamlibError.ETIMEOUT,
+}
+
+
 def _profile_data_mode_count(radio: Any) -> int:
     profile = getattr(radio, "profile", None)
     count = getattr(profile, "data_mode_count", 1)
@@ -505,11 +533,13 @@ class _RigctldCommandExecutor:
             if send_fn is None:
                 raise _RigctldCommandFailure(HamlibError.ENIMPL)
             frame_bytes = params["frame_bytes"]
-            try:
-                resp = await send_fn(frame_bytes)
-            except (RigplaneTimeoutError, TimeoutError, asyncio.TimeoutError):
-                logger.debug("send_raw: timeout — returning empty response")
-                return CommandExecutionResult(details={"values": []})
+            # A timeout here is deliberately NOT swallowed (MOR-1882): the
+            # radio never answered, so there is no evidence the raw frame was
+            # applied. Letting it propagate gives the command a ``timed_out``
+            # terminal lifecycle and the client an ``RPRT -5``, where the old
+            # empty-but-successful response claimed a write that may never
+            # have landed.
+            resp = await send_fn(frame_bytes)
             if resp is None:
                 return CommandExecutionResult(details={"values": []})
             raw = _civ_frame_to_bytes(resp)
@@ -773,6 +803,69 @@ class RigctldHandler:
             intent.name,
         )
         return _ok()
+
+    async def _execute_write(self, intent: CommandIntent) -> CommandServiceResult:
+        """Run one material write and report only the outcome we actually have.
+
+        This seat answers ``RPRT 0`` for a write the radio never saw in
+        exactly one case: the deliberate pre-send policy drop in
+        :meth:`_defer_write_gate` (known TX, MOR-1881's owner ruling). That
+        exception is bounded — it ends the moment the operator unkeys — and it
+        is taken *before* this method is entered, so nothing here can widen
+        it. Any write that gets this far was sent, and its terminal result is
+        reported truthfully (MOR-1882):
+
+        * **Timeout** — ``ETIMEOUT``, with the ``timed_out`` terminal
+          lifecycle :class:`CommandService` emits on the way past.
+        * **Invalidation / supersession** — the backend call completed but
+          this command was no longer the live one when it did (a newer
+          command took its place, the provider generation changed under it,
+          or another seat failed it), so nothing may be claimed about the
+          radio's state. Reported as ``ERJCTED`` rather than as the
+          ``EINTERNAL`` this used to fall through to: it is a real terminal
+          outcome, not a bug in us.
+        * **Any other non-applied terminal state** — reported rather than
+          discarded. Only the applied states let the caller answer
+          ``RPRT 0``: ``acknowledged`` (the executor completed while this
+          command was still live) and the confirmed/reconciled states a
+          readback can promote it to.
+
+        The truthful codes travel as :class:`_RigctldCommandFailure` so every
+        write path shares the one mapping in :meth:`execute`, rather than each
+        ``_cmd_set_*`` inventing its own.
+
+        Note on evidence: what counts as an ACK is a property of the backend
+        beneath the executor, not of this seat. An Icom ``set_freq`` is
+        dispatched without waiting for a reply, so ``acknowledged`` there means
+        "sent, uncontested" — not "the radio took it". The provider-owned
+        readback seam (:class:`PhysicalWriteReadbackCapable`, MOR-1779) cannot
+        strengthen that here: it only correlates commands dispatched through
+        the observation poller's queue, which rigctld writes deliberately do
+        not use, and waiting on a poll cycle in-band is what MOR-1881 measured
+        as a 2 s delay to a same-connection unkey. Closing that gap means
+        routing rigctld writes through the correlated queue without holding
+        the socket — post-beta work, tracked separately.
+        """
+        try:
+            result = await self._command_service.execute(intent)
+        except CommandExecutionInvalidatedError as exc:
+            logger.warning(
+                "rigctld: %s was invalidated in flight (%s) — reporting failure",
+                intent.name,
+                exc,
+            )
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+        state = _terminal_lifecycle_state(result, intent)
+        if state in _APPLIED_LIFECYCLE_STATES:
+            return result
+        logger.warning(
+            "rigctld: %s ended in terminal state %r — not reporting success",
+            intent.name,
+            state,
+        )
+        raise _RigctldCommandFailure(
+            _UNAPPLIED_LIFECYCLE_ERRORS.get(str(state), HamlibError.ERJCTED)
+        )
 
     def _packet_data_mode_value(self) -> int | bool:
         value = self._config.wsjtx_data_mode
@@ -1341,7 +1434,7 @@ class RigctldHandler:
         dropped = self._defer_write_gate(intent)
         if dropped is not None:
             return dropped
-        await self._command_service.execute(intent)
+        await self._execute_write(intent)
         return _ok()
 
     # ------------------------------------------------------------------
@@ -1510,7 +1603,7 @@ class RigctldHandler:
             dropped = self._defer_write_gate(intent)
             if dropped is not None:
                 return dropped
-            await self._command_service.execute(intent)
+            await self._execute_write(intent)
             # ``filter_width`` (the local var) is a filter NUMBER, so the
             # readback overlay belongs on ``filter_num`` — that is the key the
             # get_mode projection now reads for the passband. (MOR-895.)
@@ -1542,7 +1635,7 @@ class RigctldHandler:
         dropped = self._defer_write_gate(intent)
         if dropped is not None:
             return dropped
-        await self._command_service.execute(intent)
+        await self._execute_write(intent)
         self._cache.update_mode(base_mode_str, filter_width)
         if requested_mode in packet_modes:
             self._cache.update_data_mode(True)
@@ -1711,7 +1804,7 @@ class RigctldHandler:
             self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
-        await self._command_service.execute(
+        await self._execute_write(
             command_intent_from_request(
                 "set_ptt",
                 {"on": on},
@@ -1881,7 +1974,7 @@ class RigctldHandler:
         dropped = self._defer_write_gate(intent)
         if dropped is not None:
             return dropped
-        await self._command_service.execute(intent)
+        await self._execute_write(intent)
         return _ok()
 
     async def _execute_set_vfo(self, vfo: str) -> HamlibError:
@@ -2187,7 +2280,7 @@ class RigctldHandler:
         # Single-RX profiles only have receiver=0; per-VFO state is selected
         # via set_vfo_slot, not receiver= (issue #1354).
         receiver = self._receiver_index_for(target)
-        await self._command_service.execute(
+        await self._execute_write(
             command_intent_from_request(
                 "set_level",
                 {
@@ -2340,7 +2433,7 @@ class RigctldHandler:
         dropped = self._defer_write_gate(intent)
         if dropped is not None:
             return dropped
-        await self._command_service.execute(intent)
+        await self._execute_write(intent)
         return _ok()
 
     async def _execute_set_func(
@@ -2428,7 +2521,7 @@ class RigctldHandler:
         dropped = self._defer_write_gate(intent)
         if dropped is not None:
             return dropped
-        await self._command_service.execute(intent)
+        await self._execute_write(intent)
         return _ok()
 
     async def _execute_set_split_vfo(self, on: bool, tx_vfo: str) -> HamlibError:
@@ -2575,7 +2668,7 @@ class RigctldHandler:
         dropped = self._defer_write_gate(intent)
         if dropped is not None:
             return dropped
-        await self._command_service.execute(intent)
+        await self._execute_write(intent)
         return _ok()
 
     async def _cmd_get_xit(self, cmd: RigctldCommand) -> RigctldResponse:
@@ -2606,7 +2699,7 @@ class RigctldHandler:
         dropped = self._defer_write_gate(intent)
         if dropped is not None:
             return dropped
-        await self._command_service.execute(intent)
+        await self._execute_write(intent)
         return _ok()
 
     # ------------------------------------------------------------------
@@ -2704,7 +2797,9 @@ class RigctldHandler:
 
         Input: space-separated hex tokens or a single backslash-escaped hex string.
         Output: space-separated uppercase hex bytes of the radio's response,
-                or an empty response on timeout.
+                or an empty response when the radio answers nothing at all.
+                A frame that times out is an error (``ETIMEOUT``), not an
+                empty success — see :meth:`_execute_write` (MOR-1882).
         """
         if not cmd.args:
             return _err(HamlibError.EINVAL)
@@ -2714,7 +2809,7 @@ class RigctldHandler:
         except (ValueError, IndexError):
             return _err(HamlibError.EINVAL)
 
-        result = await self._command_service.execute(
+        result = await self._execute_write(
             command_intent_from_request(
                 "send_raw",
                 {"frame_bytes": frame_bytes},

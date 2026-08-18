@@ -83,6 +83,16 @@ that class of defect is release-blocking by definition and is not on this list.
   split-mode dial restore issued right after unkey can be swallowed this
   way, leaving the rig on the transmit-shifted dial frequency. (MOR-1892)
 
+## rigctld raw CI-V (`w`) timeouts
+
+- **A raw `w` frame the radio never answers is now reported as
+  `RPRT -5` (timeout) instead of an empty success.** Nothing is known about
+  whether such a frame was applied, so reporting success was a lie. Clients
+  that treated the old empty success as "sent OK" will now see an error on
+  frames that time out. `w` is a raw CI-V escape hatch for diagnostics and
+  advanced tooling, not part of the frequency/mode/PTT command flow a
+  logging or digital-mode client uses for normal operation. (MOR-1882)
+
 ## Dual-receiver topology (permanent limitation)
 
 **Dual-receiver hardware certification is permanently out of scope for this
