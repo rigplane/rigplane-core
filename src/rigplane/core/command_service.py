@@ -7,11 +7,14 @@ as confirmed :class:`Observation` values through :class:`StateStore`.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
+from rigplane.core.acquisition_scheduler import AcquisitionPriority, AcquisitionStatus
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
@@ -24,6 +27,19 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+
+if TYPE_CHECKING:
+    from rigplane.core.radio_protocol import StateModelService
+
+logger = logging.getLogger(__name__)
+
+# A write does not age our knowledge of the field it wrote — it invalidates
+# it. ``ensure_fresh`` can only express that as an age no prior observation
+# can satisfy, so the request is never short-circuited by a FRESH pre-write
+# value. Same value and same reasoning as the freshness pipeline's own
+# reconciliation path and as the web poller's own per-command table
+# (``_POST_WRITE_READBACK_MAX_AGE``, MOR-1484).
+_WRITE_CONFIRMATION_MAX_AGE = 1e-9
 
 __all__ = [
     "CommandExecutionInvalidatedError",
@@ -120,6 +136,7 @@ class CommandService:
         "_executor",
         "_overlays",
         "_readback_expectations",
+        "_state_model_service",
         "_state_store",
         "_subscribers",
     )
@@ -131,11 +148,13 @@ class CommandService:
         state_store: StateStore,
         clock: Clock | None = None,
         default_pending_ttl: float = 2.0,
+        state_model_service: StateModelService | None = None,
     ) -> None:
         if default_pending_ttl < 0:
             raise ValueError("default_pending_ttl must be non-negative")
         self._executor = executor
         self._state_store = state_store
+        self._state_model_service = state_model_service
         self._clock = clock or time.monotonic
         self._default_pending_ttl = default_pending_ttl
         self._active_commands: dict[
@@ -198,11 +217,113 @@ class CommandService:
                 )
             )
 
+        self._request_write_confirmation(intent, executor_result)
+
         return CommandServiceResult(
             lifecycle_events=tuple(self._events[start:]),
             observation_changes=tuple(changes),
             executor_result=executor_result,
         )
+
+    def _request_write_confirmation(
+        self, intent: CommandIntent, executor_result: CommandExecutionResult
+    ) -> None:
+        """Ask for a fresh observation of the field this command just wrote.
+
+        A write does not make our knowledge of that field *stale*, it makes it
+        **wrong**: the field's last observation predates the command, still
+        carries the pre-write value, and is still FRESH. Freshness decay is
+        time-based, so nothing in the pipeline notices, and every consumer
+        that reads observed truth keeps answering from the old value until the
+        next cadence poll happens along. The pending overlay recorded above
+        does not help them: it is deliberately optimistic and deliberately
+        scoped to the ingress that raised the command, because consumers that
+        must not trust our own optimism — the TX interlock first among them —
+        read the raw store instead.
+
+        The concrete casualty (MOR-1892) is RF truth after an unkey. The
+        interlock reads the observed PTT field; for up to a full poll cadence
+        after a client's unkey that field still reads "transmitting", so a
+        write arriving in that window is refused or dropped. WSJT-X in "Fake
+        It" split lands its dial restore exactly there — a fixed 100 ms after
+        its unkey — so the rig is left on the transmit-shifted frequency.
+
+        Closing it by *inferring* RX from our own successful write is what
+        this programme has refused all along, so this does the other thing:
+        it asks the radio, immediately, through the machinery that already
+        exists for it. The written path is queued for re-acquisition at
+        ``AcquisitionPriority.COMMAND`` — the priority class the scheduler
+        reserves for acquisitions caused by a command, and which nothing had
+        wired until now — with an age no earlier observation can satisfy.
+        Whichever drain owns this radio picks it up on its next cycle.
+
+        Three things it deliberately does not do: it does not run when the
+        write failed (nothing was written, so nothing changed), it does not
+        run when the executor already returned an observation of the target
+        (the write came back confirmed — asking again would be pure traffic
+        on a serial budget that is already tight), and it never fails the
+        command. It is also synchronous and fire-and-queue by the
+        ``StateModelService`` contract: nothing here awaits the radio, so a
+        write's reply is never delayed by its own confirmation.
+
+        **Reach, probed rather than assumed** (PR #2758 review). A target is
+        re-observable only where the acquisition profile declares a capability
+        for that exact path; anything else answers ``UNAVAILABLE``. Against the
+        IC-7300 profile:
+
+        * ``global.tx_state.ptt`` — queued. That is the one this ticket needs.
+        * ``global.tx_state.power_on`` — unavailable. Global scope is not by
+          itself enough.
+        * every receiver-scoped target — unavailable, because
+          :func:`_command_target` names the receiver by index
+          (``receiver.0.operator_controls.rf_gain``) while profiles and the
+          StateStore name it (``receiver.main.operator_controls.rf_gain``, and
+          ``receiver.main.active.freq_mode.freq_hz`` for the ``freq_mode``
+          family — the only family where a VFO slot is legal at all).
+
+        Those misses are no-ops, logged rather than swallowed so that a silent
+        miss cannot read as coverage. The divergence is older than this method
+        and is tracked in MOR-1897; until it is closed this does NOT subsume
+        the web poller's per-command readback table, which builds the
+        canonical paths itself.
+        """
+        service = self._state_model_service
+        target = intent.target
+        if service is None or target is None:
+            return
+        if any(
+            observation.path == target for observation in executor_result.observations
+        ):
+            return
+        try:
+            ensure_fresh = service.ensure_fresh
+            if asyncio.iscoroutinefunction(ensure_fresh):
+                # A coroutine implementation violates the synchronous
+                # contract; calling it would leave an un-awaited coroutine
+                # behind instead of a queued request.
+                return
+            result = ensure_fresh(
+                (target,),
+                max_age=_WRITE_CONFIRMATION_MAX_AGE,
+                priority=AcquisitionPriority.COMMAND,
+                reason=f"post_write:{intent.name}",
+            )
+            status = getattr(result, "status", None)
+            if status is not None and str(status) == AcquisitionStatus.UNAVAILABLE:
+                # Not an error, but not a confirmation either: say so rather
+                # than let a silent no-op read as coverage.
+                logger.debug(
+                    "command service: %s cannot be re-observed after %s — "
+                    "no acquisition capability declared for that path",
+                    target,
+                    intent.name,
+                )
+        except Exception:
+            logger.warning(
+                "command service: could not queue write confirmation for %s",
+                target,
+                exc_info=True,
+            )
 
     def apply_observation(self, observation: Observation) -> ChangeSet:
         """Apply a confirmed observation and reconcile matching overlays."""
