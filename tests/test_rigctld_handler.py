@@ -3224,32 +3224,39 @@ async def test_send_raw_returns_hex_response(
 
 
 @pytest.mark.asyncio
-async def test_send_raw_icom_timeout_returns_empty(
+async def test_send_raw_icom_timeout_answers_etimeout(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
-    """IcomTimeoutError produces empty ok response (not ETIMEOUT)."""
+    """A raw frame the radio never answered is reported as a timeout.
+
+    Until MOR-1882 this answered ``RPRT 0`` with an empty value list: the
+    client was told its raw write had succeeded when the only thing known
+    about it is that no reply ever came.
+    """
     mock_radio._send_civ_raw = AsyncMock(side_effect=IcomTimeoutError("timeout"))
 
     resp = await handler.execute(
         get_cmd("send_raw", "FE", "FE", "98", "E0", "03", "FD")
     )
 
-    assert resp.ok
+    assert resp.error is HamlibError.ETIMEOUT
     assert resp.values == []
+    states = [e.state for e in handler._command_service.lifecycle_events()]  # noqa: SLF001
+    assert states[-1] == "timed_out"
 
 
 @pytest.mark.asyncio
-async def test_send_raw_asyncio_timeout_returns_empty(
+async def test_send_raw_asyncio_timeout_answers_etimeout(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
-    """asyncio.TimeoutError also produces empty ok response."""
+    """asyncio.TimeoutError is reported the same way as the backend timeout."""
     mock_radio._send_civ_raw = AsyncMock(side_effect=asyncio.TimeoutError())
 
     resp = await handler.execute(
         get_cmd("send_raw", "FE", "FE", "98", "E0", "03", "FD")
     )
 
-    assert resp.ok
+    assert resp.error is HamlibError.ETIMEOUT
     assert resp.values == []
 
 
