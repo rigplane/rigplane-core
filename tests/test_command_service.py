@@ -1908,3 +1908,163 @@ async def test_multi_target_readback_reconciles_only_matching_rit_overlay() -> N
     assert [(str(overlay.path), overlay.value) for overlay in remaining] == [
         ("global.tx_state.rit_on", True)
     ]
+
+
+# ── MOR-1892: a write makes our own knowledge of the field it wrote WRONG, ──
+# not stale. The field's last observation predates the command, still carries
+# the old value, and is still FRESH, so nothing in the time-based freshness
+# pipeline notices. Every consumer reading observed truth — the TX interlock
+# above all — keeps answering from the pre-write value until the next cadence
+# poll happens along. The service closes that in the pipeline's own
+# vocabulary: the written path is queued for re-acquisition at the COMMAND
+# priority the scheduler already reserves for exactly this.
+
+
+class FakeStateModelService:
+    """Records ensure_fresh requests; matches the synchronous service contract."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+
+    def ensure_fresh(
+        self,
+        paths: Any,
+        *,
+        max_age: float,
+        priority: Any,
+        reason: str,
+        timeout: float | None = None,
+    ) -> None:
+        self.requests.append(
+            {
+                "paths": tuple(paths),
+                "max_age": max_age,
+                "priority": str(priority),
+                "reason": reason,
+            }
+        )
+        return None
+
+
+def _service_with_freshness(
+    executor: FakeExecutor,
+) -> tuple[CommandService, FakeStateModelService]:
+    freshness = FakeStateModelService()
+    service = CommandService(
+        executor=executor,
+        state_store=StateStore(),
+        state_model_service=freshness,
+    )
+    return service, freshness
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_acknowledged_write_requests_reobservation_of_its_target() -> None:
+    service, freshness = _service_with_freshness(FakeExecutor())
+
+    await service.execute(_intent())
+
+    assert len(freshness.requests) == 1
+    request = freshness.requests[0]
+    assert request["paths"] == (_freq_path(),)
+    assert request["priority"] == "command"
+    # Effectively zero: the point is "observed AFTER this write", which a
+    # positive age cannot express — an observation taken moments before the
+    # write would satisfy it while carrying the pre-write value.
+    assert request["max_age"] > 0
+    assert request["max_age"] < 1e-6
+    assert "set_freq" in request["reason"]
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_ptt_write_requests_reobservation_of_rf_truth() -> None:
+    """The case MOR-1892 is about: RF truth after an unkey.
+
+    WSJT-X in "Fake It" split restores the dial 100 ms after its unkey
+    (a fixed sleep in its own TransceiverBase), well inside the window where
+    the last PTT observation still reads TX. Re-observing the field we just
+    wrote is what closes that window — without inferring RF state from our
+    own command, which the interlock may never do.
+    """
+    service, freshness = _service_with_freshness(FakeExecutor())
+    intent = command_intent_from_request(
+        "set_ptt",
+        {"on": False},
+        source="rigctld",
+        command_id="rigctld-set-ptt-1",
+    )
+
+    await service.execute(intent)
+
+    assert [request["paths"] for request in freshness.requests] == [
+        (FieldPath.global_("tx_state", "ptt"),)
+    ]
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_no_reobservation_when_the_write_never_landed() -> None:
+    """Nothing was written, so nothing about our knowledge changed."""
+    service, freshness = _service_with_freshness(
+        FakeExecutor(fail=RigplaneTimeoutError("no reply"))
+    )
+
+    with pytest.raises(RigplaneTimeoutError):
+        await service.execute(_intent())
+
+    assert freshness.requests == []
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_no_reobservation_for_a_command_with_no_observable_target() -> None:
+    service, freshness = _service_with_freshness(FakeExecutor())
+
+    await service.execute(replace(_intent(), target=None, pending_policy="none"))
+
+    assert freshness.requests == []
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_reobservation_failure_never_fails_the_command() -> None:
+    """Confirmation is best effort: a write that reached the radio stands."""
+
+    class Exploding(FakeStateModelService):
+        def ensure_fresh(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("scheduler unavailable")
+
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(),
+        state_model_service=Exploding(),
+    )
+
+    result = await service.execute(_intent())
+
+    assert _states(result.lifecycle_events)[-1] == "acknowledged"
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_coroutine_ensure_fresh_is_skipped_not_awaited() -> None:
+    """The service contract is synchronous fire-and-queue.
+
+    An implementation that returns a coroutine would leave it un-awaited (a
+    warning, and no request queued), so it is skipped deliberately instead.
+    """
+
+    class AsyncService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def ensure_fresh(self, *args: Any, **kwargs: Any) -> None:
+            self.calls += 1
+
+    freshness = AsyncService()
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=StateStore(),
+        state_model_service=freshness,
+    )
+
+    result = await service.execute(_intent())
+
+    assert freshness.calls == 0
+    assert _states(result.lifecycle_events)[-1] == "acknowledged"

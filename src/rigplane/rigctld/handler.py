@@ -698,6 +698,12 @@ class RigctldHandler:
         self._command_service = CommandService(
             executor=_RigctldCommandExecutor(self),
             state_store=state_store,
+            # Every write this seat makes asks the radio to re-observe the
+            # field it wrote (MOR-1892). Without it, RF truth trails our own
+            # unkey by up to a poll cadence and the next write is dropped
+            # inside that window — see
+            # ``CommandService._request_write_confirmation``.
+            state_model_service=self._state_model_service,
         )
 
     def bind_provider_generation(self, capture: Callable[[], int]) -> None:

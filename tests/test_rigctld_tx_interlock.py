@@ -618,3 +618,83 @@ async def test_success_without_a_lifecycle_record_is_only_the_tx_drop() -> None:
         for e in applied_handler._command_service.lifecycle_events()  # noqa: SLF001
     ]
     assert states[-1] == "acknowledged"
+
+
+# ── MOR-1892: the seat's own unkey must not blind its RF truth ─────────────
+# The interlock reads the OBSERVED PTT field, and after a client's unkey that
+# observation still reads "transmitting" until the next poll — up to the
+# field's 0.3 s cadence on an IC-7300. WSJT-X in "Fake It" split restores the
+# dial a fixed 100 ms after its unkey (``QThread::msleep(100)`` in its own
+# ``TransceiverBase::set``), squarely inside that window, so the restore is
+# dropped and the rig is left on the transmit-shifted frequency.
+#
+# The seat closes it by asking the radio, not by inferring RX from its own
+# successful write — see ``CommandService._request_write_confirmation``.
+
+
+class _RecordingStateModelService:
+    def __init__(self) -> None:
+        self.requests: list[tuple[tuple[FieldPath, ...], str, float]] = []
+
+    def ensure_fresh(
+        self,
+        paths: object,
+        *,
+        max_age: float,
+        priority: object,
+        reason: str,
+        timeout: float | None = None,
+    ) -> None:
+        self.requests.append((tuple(paths), str(priority), max_age))  # type: ignore[arg-type]
+        return None
+
+
+def _handler_with_freshness(store: StateStore):
+    radio = AsyncMock()
+    radio.capabilities = {CAP_RIT}
+    radio.state_store = store
+    routing = Mock()
+    routing.set_func = AsyncMock(return_value=RigctldResponse())
+    routing.set_level = AsyncMock(return_value=RigctldResponse())
+    radio.rigctld_routing = Mock(return_value=routing)
+    radio._send_civ_raw = AsyncMock(return_value=None)
+    freshness = _RecordingStateModelService()
+    handler = RigctldHandler(
+        radio,
+        RigctldConfig(),
+        state_store=store,
+        state_model_service=freshness,  # type: ignore[arg-type]
+    )
+    return handler, radio, freshness
+
+
+_PTT_PATH = FieldPath.global_("tx_state", "ptt")
+
+
+@pytest.mark.asyncio
+async def test_unkey_asks_the_radio_to_re_observe_rf_truth() -> None:
+    handler, radio, freshness = _handler_with_freshness(_store("tx")[0])
+
+    response = await handler.execute(parse_line(b"T 0"))
+
+    assert response.ok
+    radio.set_ptt.assert_awaited_once_with(False)
+    ptt_requests = [item for item in freshness.requests if item[0] == (_PTT_PATH,)]
+    assert len(ptt_requests) == 1
+    _paths, priority, max_age = ptt_requests[0]
+    assert priority == "command"
+    # Not "recent enough" — strictly newer than the write. Any positive age
+    # would be satisfied by the pre-unkey observation that reads TX.
+    assert 0 < max_age < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_dropped_write_asks_for_nothing() -> None:
+    """A write that never reached the radio changed no field to re-observe."""
+    handler, radio, freshness = _handler_with_freshness(_store("tx")[0])
+
+    response = await handler.execute(parse_line(b"F 14074000"))
+
+    assert response.ok
+    radio.set_freq.assert_not_awaited()
+    assert freshness.requests == []
