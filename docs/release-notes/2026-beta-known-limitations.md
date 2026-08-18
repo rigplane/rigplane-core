@@ -79,7 +79,9 @@ that class of defect is release-blocking by definition and is not on this list.
   even though the radio did not change; it discovers the real value on its
   next read. (MOR-1881)
 - **For up to about a second after an unkey, the seat may still read the
-  radio as transmitting and drop a write the same way.** (MOR-1892)
+  radio as transmitting and drop a write the same way.** A WSJT-X "Fake It"
+  split-mode dial restore issued right after unkey can be swallowed this
+  way, leaving the rig on the transmit-shifted dial frequency. (MOR-1892)
 
 ## Dual-receiver topology (permanent limitation)
 
