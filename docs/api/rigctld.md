@@ -330,7 +330,12 @@ Behavior details:
 
 - If backend exposes `_send_civ_raw`, command forwards bytes as-is.
 - On transport timeout (`rigplane.exceptions.TimeoutError` or `asyncio.TimeoutError`),
-  handler returns **successful empty response** (not `RPRT -5`).
+  the handler answers `ETIMEOUT` (`RPRT -5`) with no values: the radio never
+  replied, so there is no evidence the raw frame was applied. (Before
+  MOR-1882 this answered a successful empty response.)
+- A radio that legitimately sends no reply (fire-and-forget frames) still
+  produces a successful empty response — that is a completed write, not a
+  timeout.
 - If backend does not implement `_send_civ_raw`, returns `ENIMPL` (`RPRT -4`).
 
 ---

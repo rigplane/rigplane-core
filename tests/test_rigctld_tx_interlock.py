@@ -448,11 +448,17 @@ class _TerminalStateService:
     Models an executor seam that reports a non-applied terminal outcome by
     returning it rather than by raising -- the case the handler used to
     answer ``RPRT 0`` because it discarded the result entirely.
+
+    ``command_id=None`` attributes the extra event to a *different* command,
+    which is what makes the id filter in ``_terminal_lifecycle_state``
+    testable: the returned event slice is a window on a shared log, so a
+    concurrent command's terminal event can be the last one in it.
     """
 
-    def __init__(self, inner: object, state: str) -> None:
+    def __init__(self, inner: object, state: str, command_id: str | None) -> None:
         self._inner = inner
         self._state = state
+        self._command_id = command_id
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._inner, name)
@@ -464,7 +470,9 @@ class _TerminalStateService:
             lifecycle_events=result.lifecycle_events
             + (
                 CommandLifecycleEvent(
-                    command_id=intent.id,
+                    command_id=intent.id
+                    if self._command_id is None
+                    else self._command_id,
                     state=self._state,  # type: ignore[arg-type]
                     timestamp_monotonic=0.0,
                     source="rigctld",
@@ -536,11 +544,35 @@ async def test_unapplied_terminal_state_is_never_answered_with_rprt_0(
     handler._command_service = _TerminalStateService(  # type: ignore[assignment]  # noqa: SLF001
         handler._command_service,  # noqa: SLF001
         state,
+        None,
     )
 
     response = await handler.execute(parse_line(b"F 14074000"))
 
     assert response.error is expected
+
+
+@pytest.mark.asyncio
+async def test_another_commands_terminal_state_does_not_fail_this_write() -> None:
+    """Truthfulness is per command, not per event log.
+
+    ``CommandServiceResult.lifecycle_events`` is a window on a shared log, so
+    a concurrent command's terminal event can be the last entry in it. Reading
+    the log without matching the command id would fail an unrelated healthy
+    write -- and, on the other side of the same bug, let a foreign
+    ``acknowledged`` vouch for a write that never landed.
+    """
+    handler, radio, _routing = _handler(_store("rx")[0])
+    handler._command_service = _TerminalStateService(  # type: ignore[assignment]  # noqa: SLF001
+        handler._command_service,  # noqa: SLF001
+        "failed",
+        "rigctld-set-freq-someone-elses-command",
+    )
+
+    response = await handler.execute(parse_line(b"F 14074000"))
+
+    assert response.ok
+    radio.set_freq.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -562,8 +594,14 @@ async def test_success_without_a_lifecycle_record_is_only_the_tx_drop() -> None:
     """The narrow half, stated as a property rather than as a single case.
 
     A write answered ``RPRT 0`` either never entered the command service at
-    all (the known-TX policy drop) or ended in an applied terminal state.
-    There is no third shape.
+    all -- the known-TX policy drop, the one success this seat may report for
+    a write the radio never saw -- or ended in an applied terminal state.
+
+    The property is about *shape*, not about the drop being the only
+    deliberate silence: :meth:`RigctldHandler._route_ptt` also answers
+    ``RPRT 0`` for a policy-declined unkey without writing, and it satisfies
+    this property from the other side, because that decision is taken inside
+    the executor and does leave an ``acknowledged`` record.
     """
     dropped_handler, dropped_radio, _ = _handler(_store("tx")[0])
     dropped = await dropped_handler.execute(parse_line(b"F 14074000"))
