@@ -287,7 +287,7 @@ Each UDP packet has a fixed-format header (see `packettypes.h` in wfview):
   - Frame building performance
   - End-to-end CI-V pipeline SLO validation
 - [x] Documentation: `docs/PERFORMANCE.md` with SLO definitions and recommendations
-- [x] Confirmed: Current performance already strong; pytest-xdist incompatible with asyncio
+- [x] Confirmed: Current performance already strong; the suite runs in parallel under `-n auto` (what CI uses), roughly 3-4x faster than serial
 - **Result:** Established performance baselines, regression guards, and optimization roadmap
 - **Regression testing:** Parity smoke profile `integration and ic7610_parity` covers baseline_core and advanced_scope lifecycle on LAN/serial backends; profiles defined in `tests/integration/conftest.py` with explicit markers (`@pytest.mark.ic7610_parity`) in regression test files
 
