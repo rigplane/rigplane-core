@@ -44,7 +44,11 @@ from ..core.tx_interlock_contract import (
     TxInterlockCommandFamily,
     TxInterlockDisposition,
 )
-from ..core.tx_safety import TxOutcome, TxReleaseReason
+from ..core.tx_safety import (
+    BACKEND_MAX_KEY_DOWN_SECONDS,
+    TxOutcome,
+    TxReleaseReason,
+)
 from ..exceptions import ConnectionError, TimeoutError as RigplaneTimeoutError
 from ..radio_protocol import StateModelCapable, StateModelService, StateStoreCapable
 from ..radio_state import RadioState, ReceiverState
@@ -237,6 +241,18 @@ def _passband_to_filter(passband_hz: int) -> int | None:
 # owed and will be retried until the rig confirms it (unkey). Anything else and
 # nothing reached the wire.
 _TX_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})
+
+# MOR-1904: the key-down bound for a key THIS seat issued on an unmanaged rig.
+# Serial/USB Icom, Yaesu CAT and rigctld-client arm no supervisor (MOR-1219,
+# MOR-1190) and ``release_session_tx`` deliberately writes nothing on them at
+# socket close, so a client that keys and then dies leaves the transmitter up
+# with no bound anywhere in the product. A damage bound and nothing more: it
+# decides nothing about who may transmit and holds no privileged unkey surface
+# (MOR-1175). Duration is MOR-1220's, imported and never re-spelled.
+_KEY_DOWN_BACKSTOP_SECONDS: float = BACKEND_MAX_KEY_DOWN_SECONDS
+# Coarse on purpose: the tick only re-reads RF truth already in this seat and
+# sends no CI-V.
+_KEY_DOWN_BACKSTOP_TICK_SECONDS: float = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -666,6 +682,12 @@ class RigctldHandler:
         # value mirrors the Hamlib default ("VFOA"). Updated by
         # ``_cmd_set_split_vfo`` on every ``S`` request. (Issue #1345.)
         self._split_tx_vfo_by_session: dict[str | None, Literal["VFOA", "VFOB"]] = {}
+        # MOR-1904: one outstanding key-down bound, never a per-session dict —
+        # the rig has one PTT, so a second session's key supersedes the first's
+        # deadline rather than adding a slot that nothing prunes.
+        self._key_down_backstop_task: asyncio.Task[None] | None = None
+        self._key_down_backstop_token: int = 0
+        self._key_down_backstop_session: str | None = None
         # Legacy routing cache is retained only for vendor-specific routing
         # strategies that still depend on it (Yaesu today). Core rigctld GET
         # paths project from StateStore plus scoped CommandService overlays.
@@ -1731,6 +1753,107 @@ class RigctldHandler:
             return RigctldResponse(values=[str(int(state.ptt))])
         return RigctldResponse(values=["0"])
 
+    def _arm_key_down_backstop(self, session_id: str | None) -> None:
+        """Start the bound for a key this seat just wrote to an unmanaged rig.
+
+        Called only from below the successful ``set_ptt(True)``: a key that
+        raised never reached the rig and started no over. Reaching that write
+        with ``on`` true also proves the rig is unmanaged — ``bind_managed_tx``
+        answered ``None`` and ``refuse_key_without_owner`` did not raise, which
+        together leave no supervisor — so no backend probe is repeated here.
+        The ticker exists only while a bound does, so idle costs nothing.
+        """
+        token = self._void_key_down_backstop()
+        self._key_down_backstop_session = session_id
+        self._key_down_backstop_task = asyncio.get_running_loop().create_task(
+            self._run_key_down_backstop(
+                token, time.monotonic() + _KEY_DOWN_BACKSTOP_SECONDS
+            )
+        )
+
+    def _void_key_down_backstop(self) -> int:
+        """Invalidate any outstanding bound and return the fresh token.
+
+        The token is what a task still in flight checks; cancellation is the
+        fast path. A task must never cancel itself — the fire calls this on
+        its own way to the write.
+        """
+        self._key_down_backstop_token += 1
+        task, self._key_down_backstop_task = self._key_down_backstop_task, None
+        self._key_down_backstop_session = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        return self._key_down_backstop_token
+
+    def stop_key_down_backstop(self) -> None:
+        """Drop an outstanding bound at server stop, loudly.
+
+        Cancel rather than fire, so shutdown gains no write path it did not
+        have. The warning is the honest record that what shutdown leaves
+        behind is the very condition this bound exists for.
+        """
+        if self._key_down_backstop_task is None:
+            return
+        logger.warning(
+            "rigctld: shutdown cancelled an outstanding key-down bound for session %s",
+            self._key_down_backstop_session,
+        )
+        self._void_key_down_backstop()
+
+    async def _run_key_down_backstop(self, token: int, deadline: float) -> None:
+        """Tick until the deadline, then force the unkey nobody else will.
+
+        Two vetoes, checked every tick rather than once at expiry. The token
+        answers "is this still the live bound?" — any PTT write of either
+        polarity from any session bumps it. Observed RX answers "is this still
+        our over?", the only positive evidence available without a lease: the
+        rig came off the air by some route, so what we would end is no longer
+        what we started. RF truth decays, so that veto must latch when it is
+        seen rather than be re-read at expiry.
+
+        ``UNKNOWN`` fires. Profiles with no ``[state_acquisition]`` block have
+        no RF truth at all, and voiding on absent evidence would leave exactly
+        those rigs with the no-bound status quo this exists to end. Still
+        strictly safer than the accepted precedent — MOR-1220 fires with no RF
+        check whatever, so this adds a veto and removes none.
+
+        The write re-enters :meth:`_route_ptt`, byte-identical to a client
+        ``T 0``, so a rig that somehow became managed in between stays the
+        supervisor's to decide (MOR-1175). One attempt, no retry, no re-arm.
+        """
+        while True:
+            if self._key_down_backstop_token != token:
+                return
+            rf_state = self._resolve_rigctld_rf_state()
+            if rf_state is tx_interlock.RfState.RX:
+                logger.debug(
+                    "rigctld: observed RX voided the key-down bound (session %s)",
+                    self._key_down_backstop_session,
+                )
+                self._void_key_down_backstop()
+                return
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(_KEY_DOWN_BACKSTOP_TICK_SECONDS)
+
+        session_id = self._key_down_backstop_session
+        if self._key_down_backstop_token != token:
+            return
+        logger.error(
+            "rigctld: max key-down (%gs) exceeded on an unmanaged radio keyed "
+            "by session %s; forcing unkey (rf=%s)",
+            _KEY_DOWN_BACKSTOP_SECONDS,
+            session_id,
+            rf_state.value,
+        )
+        self._void_key_down_backstop()
+        try:
+            await self._route_ptt(False, session_id=session_id)
+        except Exception:
+            logger.error(
+                "rigctld: forced unkey failed for session %s", session_id, exc_info=True
+            )
+
     async def _route_ptt(self, on: bool, *, session_id: str | None) -> None:
         """Key or unkey the rig, through the supervisor when the rig has one.
 
@@ -1782,6 +1905,12 @@ class RigctldHandler:
                 )
                 raise _RigctldCommandFailure(HamlibError.EACCESS)
             await self._radio.set_ptt(on)
+            # MOR-1904, below the write and never in a ``finally``: an unkey
+            # that RAISED left the rig keyed and must not drop the bound.
+            if on:
+                self._arm_key_down_backstop(session_id)
+            else:
+                self._void_key_down_backstop()
             return
         transition = await managed.set_ptt(on)
         if transition.outcome in _TX_ACCEPTED:
