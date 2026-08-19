@@ -1722,12 +1722,26 @@ class RigctldHandler:
 
         state = self._radio_state()
         if state is not None:
-            self._record_state_sample(
-                ptt_path,
-                bool(state.ptt),
-                source="state_poller",
-                max_age=self._config.cache_ttl,
-            )
+            # MOR-1900: answer the client from the legacy mirror, but never
+            # publish that answer as canonical truth. ``RadioState.ptt``
+            # defaults to ``False`` and the mirror carries no observation
+            # time for it at all, so recording it here stamped a possibly
+            # never-observed "not transmitting" with ``time.monotonic()`` —
+            # i.e. as an observation made now. ``_resolve_rigctld_rf_state``
+            # does not filter by source, so that sample was indistinguishable
+            # from real RF truth and could hand the TX interlock a fabricated
+            # RX, letting a DEFER-classified write through while the PA may
+            # be keyed. A missing or stale canonical field must stay that
+            # way, so the interlock refuses instead of acting on a
+            # manufactured sample. The diagnostic keeps the fallback visible:
+            # a silent miss must not read as coverage.
+            if isinstance(self._state_diagnostics, StateDiagnosticsRecorder):
+                self._state_diagnostics.record(
+                    "rigctld_ptt_mirror_fallback",
+                    "rigctld.handler",
+                    path=str(ptt_path),
+                    value=bool(state.ptt),
+                )
             return RigctldResponse(values=[str(int(state.ptt))])
         return RigctldResponse(values=["0"])
 
