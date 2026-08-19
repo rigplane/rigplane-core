@@ -245,8 +245,8 @@ _TX_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})
 # MOR-1904: the key-down bound for a key THIS seat issued on an unmanaged rig.
 # Serial/USB Icom, Yaesu CAT and rigctld-client arm no supervisor (MOR-1219,
 # MOR-1190) and ``release_session_tx`` deliberately writes nothing on them at
-# socket close, so a client that keys and then dies leaves the transmitter up
-# with no bound anywhere in the product. A damage bound and nothing more: it
+# socket close, so before this a client that keyed and then died left the
+# transmitter up with no bound anywhere. A damage bound and nothing more: it
 # decides nothing about who may transmit and holds no privileged unkey surface
 # (MOR-1175). Duration is MOR-1220's, imported and never re-spelled.
 _KEY_DOWN_BACKSTOP_SECONDS: float = BACKEND_MAX_KEY_DOWN_SECONDS
@@ -1363,13 +1363,14 @@ class RigctldHandler:
         Fail-soft by construction: this runs on the teardown path of a socket
         that is already gone, so there is nobody left to report an error to,
         and raising would only skip the rest of that teardown. On an
-        unmanaged radio nothing here or elsewhere de-keys it: MOR-1220's
-        backstop bounds only keys the web poller itself issued, not a
-        rigctld-issued key, so a client that keys a serial/USB Icom and
-        drops leaves it transmitting with no bound anywhere in the product.
-        The ticketed path to coverage is MOR-1219 (serial Icom managed arm)
-        and MOR-1190 (Yaesu CAT, rigctld-client — amended to include the
-        key-down bound).
+        unmanaged radio nothing *here* de-keys it, and MOR-1220's backstop
+        bounds only keys the web poller itself issued. What does cover a
+        rigctld-issued key is this handler's own key-down bound (MOR-1904,
+        :meth:`_arm_key_down_backstop`), which deliberately outlives this
+        teardown: the socket going away is not evidence the rig came off the
+        air, so the bound, not the disconnect, is what ends the over. Full
+        managed arming remains ticketed — MOR-1219 (serial Icom) and MOR-1190
+        (Yaesu CAT, rigctld-client).
         """
         try:
             managed = bind_managed_tx(self._radio, "rigctld", session_id)
@@ -1765,11 +1766,43 @@ class RigctldHandler:
         """
         token = self._void_key_down_backstop()
         self._key_down_backstop_session = session_id
+        # The arm instant is the causal reference the RX veto is measured
+        # against, not just the base of the deadline. See
+        # :meth:`_ptt_observed_after`.
         self._key_down_backstop_task = asyncio.get_running_loop().create_task(
-            self._run_key_down_backstop(
-                token, time.monotonic() + _KEY_DOWN_BACKSTOP_SECONDS
-            )
+            self._run_key_down_backstop(token, time.monotonic())
         )
+
+    def _ptt_observed_after(self, armed_at: float) -> bool:
+        """Was the PTT truth behind an ``RX`` read observed *after* ``armed_at``?
+
+        The veto has to be causal, not merely fresh. Our own key does not make
+        the last PTT observation stale — it makes it **wrong**: the observation
+        predates the command, still carries the pre-key ``ptt=False``, and stays
+        FRESH for its whole TTL (MOR-1892, ``core/command_service.py``, and the
+        confirmation it added is fire-and-queue, so it cannot land inside the
+        first tick). A veto that asked only "is RF RX?" would therefore void
+        every bound within a tick of arming on exactly the rigs whose PTT *is*
+        observable — the serial IC-7300 this exists for among them — and leave
+        the bound alive only where there is no RF truth at all. That is the
+        inverse of the intent, so ``RX`` may veto only once it rests on an
+        observation this seat's key could have caused.
+
+        :meth:`_resolve_rigctld_rf_state` discards the observation time, so the
+        causal half is read here from the same field it has already validated —
+        a sibling read of one snapshot, not a new consumer of RF state.
+        Production stamps observations from ``time.monotonic()``
+        (``core/observation_adapter.py``), the clock the arm reads. A store on
+        any other clock reads as "not after the arm" and simply never vetoes:
+        the bound survives, which is the safe direction for a watchdog.
+        """
+        try:
+            field = self._state_store.snapshot().field(
+                FieldPath.global_("tx_state", "ptt")
+            )
+        except KeyError:
+            return False
+        return field.last_observed_monotonic > armed_at
 
     def _void_key_down_backstop(self) -> int:
         """Invalidate any outstanding bound and return the fresh token.
@@ -1800,7 +1833,7 @@ class RigctldHandler:
         )
         self._void_key_down_backstop()
 
-    async def _run_key_down_backstop(self, token: int, deadline: float) -> None:
+    async def _run_key_down_backstop(self, token: int, armed_at: float) -> None:
         """Tick until the deadline, then force the unkey nobody else will.
 
         Two vetoes, checked every tick rather than once at expiry. The token
@@ -1820,12 +1853,20 @@ class RigctldHandler:
         The write re-enters :meth:`_route_ptt`, byte-identical to a client
         ``T 0``, so a rig that somehow became managed in between stays the
         supervisor's to decide (MOR-1175). One attempt, no retry, no re-arm.
+        It goes straight to the backend rather than through
+        :class:`CommandService`, so unlike every other write this seat makes it
+        emits no lifecycle event and asks for no MOR-1892 re-observation of the
+        field it wrote; on a rig with no RF truth nothing else observes PTT
+        either, so a forced unkey leaves no trace in state at all.
         """
+        deadline = armed_at + _KEY_DOWN_BACKSTOP_SECONDS
         while True:
             if self._key_down_backstop_token != token:
                 return
             rf_state = self._resolve_rigctld_rf_state()
-            if rf_state is tx_interlock.RfState.RX:
+            if rf_state is tx_interlock.RfState.RX and self._ptt_observed_after(
+                armed_at
+            ):
                 logger.debug(
                     "rigctld: observed RX voided the key-down bound (session %s)",
                     self._key_down_backstop_session,
@@ -1837,6 +1878,10 @@ class RigctldHandler:
             await asyncio.sleep(_KEY_DOWN_BACKSTOP_TICK_SECONDS)
 
         session_id = self._key_down_backstop_session
+        # Unreachable today: no ``await`` separates this from the loop check
+        # above and the disarm bumps the token synchronously, so nothing can
+        # invalidate the bound in between. Load-bearing the moment an ``await``
+        # appears between the two checks; not covered by any test until then.
         if self._key_down_backstop_token != token:
             return
         logger.error(
@@ -1865,9 +1910,10 @@ class RigctldHandler:
         Three outcomes, deliberately asymmetric between key and unkey.
 
         **No facade to bind.** Either the rig is unmanaged — serial/USB Icom
-        (legacy, MOR-1220's 180s web-poller backstop does not cover a
-        rigctld-issued key, full arm pending MOR-1219), Yaesu CAT, or
-        rigctld-client (legacy, no key-down bound, pending MOR-1190) — and
+        (legacy, full arm pending MOR-1219), Yaesu CAT, or rigctld-client
+        (legacy, full arm pending MOR-1190) — in which case the key below arms
+        this seat's own key-down bound (MOR-1904), the only thing bounding a
+        rigctld-issued key on any of them — and
         the legacy write below is byte-identical to what rigctld has always
         sent — or the request carries no owner. On a managed
         rig an ownerless KEY is refused, because falling through would key with

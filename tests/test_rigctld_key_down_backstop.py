@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +33,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
 from rigplane.profiles import resolve_radio_profile
 from rigplane.rigctld import handler as handler_mod
@@ -48,7 +49,9 @@ from test_web_recovery_durable_off import _Provider
 # loaded loop cannot straddle the two deadlines the re-key test discriminates.
 _BOUND, _TICK = 0.3, 0.03
 _S1, _S2 = "rigctld-client-1", "rigctld-client-2"
-_CLOCK = 10.0
+# Wall time must never age an observation out from under a test; only
+# ``mark_stale_due`` may (see the module docstring).
+_MAX_AGE = 30.0
 _PTT = FieldPath.global_("tx_state", "ptt")
 
 
@@ -90,15 +93,22 @@ class _Seat:
 _Make = Callable[..., _Seat]
 
 
-def _observe(store: StateStore, ptt: bool) -> None:
-    """Seed a FRESH ``global.tx_state.ptt``; the manual clock cannot age it."""
+def _observe(store: StateStore, ptt: bool, *, at: float | None = None) -> None:
+    """Seed a FRESH ``global.tx_state.ptt`` observed at ``at`` (default: now).
+
+    Real ``time.monotonic()`` throughout, because the RX veto compares the
+    observation time against the arm instant and production stamps both from
+    that same clock (``core/observation_adapter.py``). A manual
+    ``FreshnessClock`` would put the two on unrelated scales and quietly
+    disable the veto.
+    """
     store.apply(
         Observation(
             path=_PTT,
             value=ptt,
             source=SourceMetadata(source="test", provider="tests"),
-            timestamp_monotonic=_CLOCK,
-            max_age=1.0,
+            timestamp_monotonic=time.monotonic() if at is None else at,
+            max_age=_MAX_AGE,
         )
     )
 
@@ -128,8 +138,10 @@ def seat(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> _
 
     def _make(*, ptt: bool | None = None, fail_on: bool | None = None) -> _Seat:
         radio = _Radio(fail_on=fail_on)
-        store = StateStore(freshness_clock=FreshnessClock(start=_CLOCK))
+        store = StateStore()
         if ptt is not None:
+            # Seeded BEFORE the handler exists, so it always predates the arm —
+            # which is the ordering a real key produces.
             _observe(store, ptt)
         built.append(
             _Seat(
@@ -171,8 +183,10 @@ async def managed_seat(
 async def test_an_unmanaged_key_that_is_never_unkeyed_is_forced_off(
     seat: _Make, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The whole ticket: RF still says TX and no unkey ever came."""
-    rig = seat(ptt=True)
+    """The whole ticket, in the ordering a real key produces: the store holds
+    the pre-key ``ptt=False``, our key starts the over, nothing observes it
+    afterwards, and no unkey ever comes."""
+    rig = seat(ptt=False)
 
     await rig.route(True)
     await _past_the_bound()
@@ -196,7 +210,7 @@ async def test_an_unknown_rf_state_still_fires(seat: _Make) -> None:
 async def test_the_bound_survives_the_socket_that_keyed_it(seat: _Make) -> None:
     """The central case. ``release_session_tx`` still writes nothing on an
     unmanaged radio — a standing decision — so the bound is what fires."""
-    rig = seat(ptt=True)
+    rig = seat(ptt=False)
 
     await rig.route(True)
     await rig.handler.release_session_tx(_S1)
@@ -212,7 +226,7 @@ async def test_a_failed_backstop_unkey_is_logged_and_not_retried(
 ) -> None:
     """One attempt: retrying at a rig that is refusing writes is a second
     failure mode, not a recovery."""
-    rig = seat(fail_on=False)
+    rig = seat(ptt=False, fail_on=False)
 
     await rig.route(True)
     await asyncio.sleep(_BOUND * 3)
@@ -221,9 +235,49 @@ async def test_a_failed_backstop_unkey_is_logged_and_not_retried(
     assert _logged(caplog, logging.ERROR, "forced unkey failed", tb=True)
 
 
-async def test_an_observed_rx_voids_the_bound(seat: _Make) -> None:
+async def test_a_pre_key_rx_observation_does_not_void_the_bound(
+    seat: _Make,
+) -> None:
+    """The regression this suite was blind to. At the instant of a client
+    ``T 1`` the store still holds the pre-key ``ptt=False``, FRESH for its whole
+    TTL — our key made that observation wrong, not stale (MOR-1892). A veto that
+    only asked "is RF RX?" voided the bound one tick after arming on every rig
+    whose PTT is observable, i.e. exactly the rigs this ticket is about."""
+    rig = seat(ptt=False)
+
+    await rig.route(True)
+    await asyncio.sleep(_TICK * 4)
+    assert rig.armed  # the pre-key sample must not have vetoed
+
+    await _past_the_bound()
+
+    # Not vacuous: the field is still FRESH and still reads RX at fire time, so
+    # causality is the only thing that stopped the veto.
+    assert rig.rf is tx_interlock.RfState.RX
+    assert rig.radio.writes == [True, False]
+
+
+async def test_an_rx_observation_older_than_the_arm_never_voids(
+    seat: _Make,
+) -> None:
+    """The gate is the observation's own timestamp, not when it was applied: a
+    sample taken before our key describes the rig before our key, however late
+    it lands."""
+    rig = seat()  # empty at the arm, so the store's own ordering guard is idle
+    before = time.monotonic()
+
+    await rig.route(True)
+    _observe(rig.store, False, at=before - 0.01)  # sampled before the arm
+    await _past_the_bound()
+
+    assert rig.rf is tx_interlock.RfState.RX
+    assert rig.radio.writes == [True, False]
+
+
+async def test_an_rx_observed_after_the_arm_voids_the_bound(seat: _Make) -> None:
     """Observed RX is the discriminator the disconnect path lacks: the rig came
-    off the air by some other route, so this is no longer our over."""
+    off the air by some other route, so this is no longer our over. Only an
+    observation taken after the arm can say that."""
     rig = seat()
 
     await rig.route(True)
@@ -246,7 +300,7 @@ async def test_an_rx_seen_once_stays_voided_after_the_field_goes_unknown(
     await asyncio.sleep(_TICK * 4)
     assert not rig.armed
 
-    rig.store.mark_stale_due(now=_CLOCK + 10.0)  # the SOLE decay entry point
+    rig.store.mark_stale_due(now=time.monotonic() + _MAX_AGE * 2)  # SOLE decay entry
     assert rig.rf is tx_interlock.RfState.UNKNOWN
     await _past_the_bound()
 
@@ -254,7 +308,7 @@ async def test_an_rx_seen_once_stays_voided_after_the_field_goes_unknown(
 
 
 async def test_a_client_unkey_disarms_the_bound(seat: _Make) -> None:
-    rig = seat(ptt=True)
+    rig = seat(ptt=False)
 
     await rig.route(True)
     await rig.route(False)
@@ -284,7 +338,7 @@ async def test_a_second_sessions_unkey_disarms_the_first_sessions_bound(
     seat: _Make,
 ) -> None:
     """Either polarity, any session: the rig has one PTT, not one per socket."""
-    rig = seat(ptt=True)
+    rig = seat(ptt=False)
 
     await rig.route(True)
     await rig.route(False, _S2)
@@ -298,7 +352,7 @@ async def test_a_second_sessions_key_replaces_the_first_sessions_deadline(
 ) -> None:
     """One slot, restart-on-key: a later key supersedes the earlier deadline,
     and the fire must name the session that is actually transmitting."""
-    rig = seat(ptt=True)
+    rig = seat(ptt=False)
 
     await rig.route(True)
     await asyncio.sleep(_BOUND * 0.5)
@@ -353,7 +407,7 @@ async def test_server_stop_cancels_an_outstanding_bound(
     seat: _Make, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Shutdown adds no write path (owner question 1): it cancels and says so."""
-    rig = seat(ptt=True)
+    rig = seat(ptt=False)
     server = RigctldServer(rig.radio, RigctldConfig(), _handler=rig.handler)  # type: ignore[arg-type]
 
     await rig.route(True)

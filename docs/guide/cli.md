@@ -511,7 +511,7 @@ Its exit code answers one question: did an unkey reach the radio?
 | `0` | An unkey reached the wire, or one was already in flight. |
 | `1` | rigplane did not get an unkey out — **the rig may still be transmitting.** |
 
-The refusal worth calling out is a busy radio. If another TX session holds a *live* lease on this rig, `ptt off` exits `1` and refuses rather than cutting that transmission off: recovering a stranded key is not the same thing as preempting somebody who is talking. Stop that session and retry. On a managed rig (the LAN Icom path) you can also wait for its max-key-down watchdog; legacy serial/USB Icom, Yaesu CAT, and rigctld-client rigs have no such watchdog to wait for (pending MOR-1219/MOR-1190), so stopping the offending session is the only recovery there.
+The refusal worth calling out is a busy radio. If another TX session holds a *live* lease on this rig, `ptt off` exits `1` and refuses rather than cutting that transmission off: recovering a stranded key is not the same thing as preempting somebody who is talking. Stop that session and retry. On a managed rig (the LAN Icom path) you can also wait for its max-key-down watchdog. Legacy serial/USB Icom, Yaesu CAT, and rigctld-client rigs still arm no supervisor (pending MOR-1219/MOR-1190), but a key issued through `rigctld` on one of them is bounded by the same 180 seconds (MOR-1904) and is unkeyed when it expires — unless the rig is observed back in receive first, which cancels the bound. A key from any other source on those rigs has no watchdog to wait for, so stopping the offending session is the only recovery.
 
 !!! danger "Caution"
     Activating PTT will key your transmitter. Ensure your antenna is connected and you are authorized to transmit on the current frequency.

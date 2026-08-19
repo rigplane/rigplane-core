@@ -449,7 +449,10 @@ lease, owner identity, and a 180-second max-key-down watchdog
 armed on the LAN `IcomRadio` path only. Serial/USB Icom backends are legacy
 and unmanaged, covered only by a 180-second poller-side backstop (pending
 full managed arming, MOR-1219); Yaesu CAT and rigctld-client backends are
-legacy with no key-down bound (pending MOR-1190). See
+legacy with no supervisor (pending MOR-1190). On all three, a key issued
+through `rigctld` — and only through `rigctld` — carries its own 180-second
+bound at the same duration (MOR-1904); it is a damage bound, not ownership,
+and grants no session any claim on the transmitter. See
 [`docs/CHANGELOG.md`](../CHANGELOG.md) for the dated record of this
 boundary.
 
