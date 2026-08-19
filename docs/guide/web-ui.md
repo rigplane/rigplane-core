@@ -446,13 +446,14 @@ route through the same managed-TX ingress (`bind_managed_tx()` in
 Current boundary: managed TX — a per-session
 lease, owner identity, and a 180-second max-key-down watchdog
 (`BACKEND_MAX_KEY_DOWN_SECONDS` in `src/rigplane/core/tx_safety.py`) — is
-armed on the LAN `IcomRadio` path only. Serial/USB Icom backends are legacy
-and unmanaged, covered only by a 180-second poller-side backstop (pending
-full managed arming, MOR-1219); Yaesu CAT and rigctld-client backends are
-legacy with no supervisor (pending MOR-1190). On all three, a key issued
-through `rigctld` — and only through `rigctld` — carries its own 180-second
-bound at the same duration (MOR-1904); it is a damage bound, not ownership,
-and grants no session any claim on the transmitter. See
+armed on the LAN `IcomRadio` path only. Serial/USB Icom (pending full
+managed arming, MOR-1219), Yaesu CAT and rigctld-client (pending MOR-1190)
+are legacy and unmanaged: no lease, no owner identity. On those, each seat
+bounds only the keys it issued itself, all at the same 180 seconds — the
+poller-side backstop for a Web UI key (MOR-1220), and rigctld's own bound
+for a `rigctld` key (MOR-1904). Both are damage bounds, not ownership:
+neither grants a session any claim on the transmitter, and a key rigplane
+did not issue is bounded by neither. See
 [`docs/CHANGELOG.md`](../CHANGELOG.md) for the dated record of this
 boundary.
 

@@ -1791,10 +1791,16 @@ class RigctldHandler:
         :meth:`_resolve_rigctld_rf_state` discards the observation time, so the
         causal half is read here from the same field it has already validated —
         a sibling read of one snapshot, not a new consumer of RF state.
-        Production stamps observations from ``time.monotonic()``
-        (``core/observation_adapter.py``), the clock the arm reads. A store on
-        any other clock reads as "not after the arm" and simply never vetoes:
-        the bound survives, which is the safe direction for a watchdog.
+        Both sides must share a clock domain. Every path that stamps this
+        field in production reads ``time.monotonic()`` — ``observation_adapter``
+        is the common one, not the only one — which is the clock the arm reads.
+        A source stamping *behind* that clock reads as "not after the arm" and
+        never vetoes, leaving the bound alive: the safe direction. A source
+        stamping *ahead* of it would restore the defect this method exists to
+        prevent, so a new observation source for this field must stamp on
+        ``time.monotonic()``. ``clock_domain`` cannot police that here — it is
+        ``None`` on the CI-V and Yaesu paths, so a check against it would be
+        vacuous.
         """
         try:
             field = self._state_store.snapshot().field(
@@ -1844,11 +1850,17 @@ class RigctldHandler:
         what we started. RF truth decays, so that veto must latch when it is
         seen rather than be re-read at expiry.
 
-        ``UNKNOWN`` fires. Profiles with no ``[state_acquisition]`` block have
-        no RF truth at all, and voiding on absent evidence would leave exactly
-        those rigs with the no-bound status quo this exists to end. Still
-        strictly safer than the accepted precedent — MOR-1220 fires with no RF
-        check whatever, so this adds a veto and removes none.
+        ``UNKNOWN`` fires, and what earns that is decay **after a successful
+        arm** — not a rig that never had RF truth. ``PttOn`` is BLOCK-classified
+        (``_RigctldCommandExecutor.execute``), so against a canonical store the
+        key is already refused unless RF reads ``RX``: a rig with no PTT field
+        never reaches an arm at all. What does happen is that the field we did
+        observe goes STALE mid-over — polling stops, the link degrades, the
+        provider generation turns over — and the resolver drops to ``UNKNOWN``
+        with the rig still keyed. Voiding there would discard the bound at
+        precisely the moment nothing else is watching. Still strictly safer
+        than the accepted precedent: MOR-1220 fires with no RF check whatever,
+        so this adds a veto and removes none.
 
         The write re-enters :meth:`_route_ptt`, byte-identical to a client
         ``T 0``, so a rig that somehow became managed in between stays the

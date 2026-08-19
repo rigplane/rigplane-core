@@ -196,8 +196,12 @@ async def test_an_unmanaged_key_that_is_never_unkeyed_is_forced_off(
 
 
 async def test_an_unknown_rf_state_still_fires(seat: _Make) -> None:
-    """Profiles with no ``[state_acquisition]`` block have no RF truth at all.
-    Voiding on absent evidence would leave exactly those rigs unbounded."""
+    """No RF truth at the deadline must not mean "assume the rig is idle".
+
+    This is the branch, not the production route to it: ``PttOn`` is
+    BLOCK-classified, so against a canonical store a rig with no PTT field is
+    refused the key before it can arm. The route that reaches this in
+    production is decay after a successful arm — pinned below."""
     rig = seat()
 
     assert rig.rf is tx_interlock.RfState.UNKNOWN
@@ -271,6 +275,29 @@ async def test_an_rx_observation_older_than_the_arm_never_voids(
     await _past_the_bound()
 
     assert rig.rf is tx_interlock.RfState.RX
+    assert rig.radio.writes == [True, False]
+
+
+async def test_rf_truth_that_decays_after_the_arm_still_fires(
+    seat: _Make,
+) -> None:
+    """The production route to ``UNKNOWN``: we observed TX after our own key,
+    then the field went STALE with the rig still keyed — polling stopped, the
+    link degraded, the generation turned over. The causal gate is satisfied
+    (that observation *is* newer than the arm), so a veto written as "not TX"
+    rather than "RX" would void here and abandon the bound at exactly the
+    moment nothing else is watching."""
+    rig = seat(ptt=False)
+
+    await rig.route(True)
+    _observe(rig.store, True)  # the rig confirms it is transmitting
+    await asyncio.sleep(_TICK * 4)
+    rig.store.mark_stale_due(now=time.monotonic() + _MAX_AGE * 2)  # SOLE decay entry
+    assert rig.rf is tx_interlock.RfState.UNKNOWN
+    assert rig.armed
+
+    await _past_the_bound()
+
     assert rig.radio.writes == [True, False]
 
 
@@ -435,6 +462,7 @@ def test_the_bound_is_the_shared_backend_maximum() -> None:
         inspect.getsource(member)
         for member in (
             RigctldHandler._arm_key_down_backstop,  # noqa: SLF001
+            RigctldHandler._ptt_observed_after,  # noqa: SLF001
             RigctldHandler._void_key_down_backstop,  # noqa: SLF001
             RigctldHandler._run_key_down_backstop,  # noqa: SLF001
             RigctldHandler.stop_key_down_backstop,
