@@ -1854,11 +1854,15 @@ class RigctldHandler:
         arm** — not a rig that never had RF truth. ``PttOn`` is BLOCK-classified
         (``_RigctldCommandExecutor.execute``), so against a canonical store the
         key is already refused unless RF reads ``RX``: a rig with no PTT field
-        never reaches an arm at all. What does happen is that the field we did
-        observe goes STALE mid-over — polling stops, the link degrades, the
-        provider generation turns over — and the resolver drops to ``UNKNOWN``
-        with the rig still keyed. Voiding there would discard the bound at
-        precisely the moment nothing else is watching. Still strictly safer
+        never reaches an arm at all. Two routes do reach it. The common one is
+        decay: the field we did observe goes STALE mid-over — polling stops,
+        the link degrades, the provider generation turns over — and the
+        resolver drops to ``UNKNOWN`` with the rig still keyed. The other is a
+        seat with no canonical store, where ``_has_canonical_state_store`` is
+        false, the BLOCK gate is skipped entirely, and a key is accepted at
+        ``rf=unknown`` and arms; not how the server wires this today, but the
+        branch is live. Voiding on either would discard the bound at precisely
+        the moment nothing else is watching. Still strictly safer
         than the accepted precedent: MOR-1220 fires with no RF check whatever,
         so this adds a veto and removes none.
 
