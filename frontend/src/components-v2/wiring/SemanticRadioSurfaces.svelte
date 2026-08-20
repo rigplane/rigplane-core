@@ -577,12 +577,35 @@
   function requestKey(): void {
     tx.start(sourceId, `${sourceId}-${++leaseSeq}`, 'latched');
   }
-  /** NEVER gated. Reads the LIVE authority guard and releases: no phase,
-   *  permit, fault or view-model condition may stand between the operator and
-   *  stopping transmission. */
+  /**
+   * NEVER gated. Reads the LIVE authority guard and releases: no phase,
+   * permit, fault or view-model condition may stand between the operator and
+   * stopping transmission.
+   *
+   * MOR-1906 — and never SWALLOWED either. `if (guard) release()` alone left
+   * the button live-looking and completely inert after a refused key press:
+   * the refusal branch of the reducer's `start` clears the lease, so there was
+   * no guard to release, and the press produced no command, no reset and no
+   * feedback while the key sat disabled behind the latched fault. To be exact
+   * about what was and was not missing: the MOR-1784 dismiss affordance was
+   * present and working the whole time (it renders unconditionally on a failed
+   * phase, and the wiring tests prove it). What was dead was THIS control —
+   * the one an operator reaches for when the transmitter will not let go — and
+   * an operator who does not connect the two reloads the page.
+   *
+   * With no lease held there is nothing to de-key — the transmitter is not
+   * this surface's to stop — so the intent falls through to the only thing
+   * left between the operator and the transmitter: the latched fault. That
+   * discharges nothing and commands nothing. `reset-fault` issues no effects
+   * and the reducer re-checks `txFaultObligation` at the moment of the event,
+   * so it can neither key a radio nor stand in for an outstanding de-key; it
+   * simply hands the key control back. The release path is untouched and stays
+   * first: while a lease is live, stopping transmission is the whole job.
+   */
   function requestUnkey(): void {
-    const guard = tx.snapshot().guard;
-    if (guard) tx.release(sourceId, guard);
+    const live = tx.snapshot();
+    if (live.guard) { tx.release(sourceId, live.guard); return; }
+    if (live.phase === 'failed') tx.resetFault();
   }
   /** App-owned fault recovery (MOR-1065 wiring decision, recorded on the
    *  ticket). The pure RX/TX surface deliberately has no `resetFault` intent,
