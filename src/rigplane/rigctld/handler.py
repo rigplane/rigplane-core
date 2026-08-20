@@ -44,7 +44,11 @@ from ..core.tx_interlock_contract import (
     TxInterlockCommandFamily,
     TxInterlockDisposition,
 )
-from ..core.tx_safety import TxOutcome, TxReleaseReason
+from ..core.tx_safety import (
+    BACKEND_MAX_KEY_DOWN_SECONDS,
+    TxOutcome,
+    TxReleaseReason,
+)
 from ..exceptions import ConnectionError, TimeoutError as RigplaneTimeoutError
 from ..radio_protocol import StateModelCapable, StateModelService, StateStoreCapable
 from ..radio_state import RadioState, ReceiverState
@@ -237,6 +241,18 @@ def _passband_to_filter(passband_hz: int) -> int | None:
 # owed and will be retried until the rig confirms it (unkey). Anything else and
 # nothing reached the wire.
 _TX_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})
+
+# MOR-1904: the key-down bound for a key THIS seat issued on an unmanaged rig.
+# Serial/USB Icom, Yaesu CAT and rigctld-client arm no supervisor (MOR-1219,
+# MOR-1190) and ``release_session_tx`` deliberately writes nothing on them at
+# socket close, so before this a client that keyed and then died left the
+# transmitter up with no bound anywhere. A damage bound and nothing more: it
+# decides nothing about who may transmit and holds no privileged unkey surface
+# (MOR-1175). Duration is MOR-1220's, imported and never re-spelled.
+_KEY_DOWN_BACKSTOP_SECONDS: float = BACKEND_MAX_KEY_DOWN_SECONDS
+# Coarse on purpose: the tick only re-reads RF truth already in this seat and
+# sends no CI-V.
+_KEY_DOWN_BACKSTOP_TICK_SECONDS: float = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -666,6 +682,12 @@ class RigctldHandler:
         # value mirrors the Hamlib default ("VFOA"). Updated by
         # ``_cmd_set_split_vfo`` on every ``S`` request. (Issue #1345.)
         self._split_tx_vfo_by_session: dict[str | None, Literal["VFOA", "VFOB"]] = {}
+        # MOR-1904: one outstanding key-down bound, never a per-session dict —
+        # the rig has one PTT, so a second session's key supersedes the first's
+        # deadline rather than adding a slot that nothing prunes.
+        self._key_down_backstop_task: asyncio.Task[None] | None = None
+        self._key_down_backstop_token: int = 0
+        self._key_down_backstop_session: str | None = None
         # Legacy routing cache is retained only for vendor-specific routing
         # strategies that still depend on it (Yaesu today). Core rigctld GET
         # paths project from StateStore plus scoped CommandService overlays.
@@ -1341,13 +1363,14 @@ class RigctldHandler:
         Fail-soft by construction: this runs on the teardown path of a socket
         that is already gone, so there is nobody left to report an error to,
         and raising would only skip the rest of that teardown. On an
-        unmanaged radio nothing here or elsewhere de-keys it: MOR-1220's
-        backstop bounds only keys the web poller itself issued, not a
-        rigctld-issued key, so a client that keys a serial/USB Icom and
-        drops leaves it transmitting with no bound anywhere in the product.
-        The ticketed path to coverage is MOR-1219 (serial Icom managed arm)
-        and MOR-1190 (Yaesu CAT, rigctld-client — amended to include the
-        key-down bound).
+        unmanaged radio nothing *here* de-keys it, and MOR-1220's backstop
+        bounds only keys the web poller itself issued. What does cover a
+        rigctld-issued key is this handler's own key-down bound (MOR-1904,
+        :meth:`_arm_key_down_backstop`), which deliberately outlives this
+        teardown: the socket going away is not evidence the rig came off the
+        air, so the bound, not the disconnect, is what ends the over. Full
+        managed arming remains ticketed — MOR-1219 (serial Icom) and MOR-1190
+        (Yaesu CAT, rigctld-client).
         """
         try:
             managed = bind_managed_tx(self._radio, "rigctld", session_id)
@@ -1745,6 +1768,167 @@ class RigctldHandler:
             return RigctldResponse(values=[str(int(state.ptt))])
         return RigctldResponse(values=["0"])
 
+    def _arm_key_down_backstop(self, session_id: str | None) -> None:
+        """Start the bound for a key this seat just wrote to an unmanaged rig.
+
+        Called only from below the successful ``set_ptt(True)``: a key that
+        raised never reached the rig and started no over. Reaching that write
+        with ``on`` true also proves the rig is unmanaged — ``bind_managed_tx``
+        answered ``None`` and ``refuse_key_without_owner`` did not raise, which
+        together leave no supervisor — so no backend probe is repeated here.
+        The ticker exists only while a bound does, so idle costs nothing.
+        """
+        token = self._void_key_down_backstop()
+        self._key_down_backstop_session = session_id
+        # The arm instant is the causal reference the RX veto is measured
+        # against, not just the base of the deadline. See
+        # :meth:`_ptt_observed_after`.
+        self._key_down_backstop_task = asyncio.get_running_loop().create_task(
+            self._run_key_down_backstop(token, time.monotonic())
+        )
+
+    def _ptt_observed_after(self, armed_at: float) -> bool:
+        """Was the PTT truth behind an ``RX`` read observed *after* ``armed_at``?
+
+        The veto has to be causal, not merely fresh. Our own key does not make
+        the last PTT observation stale — it makes it **wrong**: the observation
+        predates the command, still carries the pre-key ``ptt=False``, and stays
+        FRESH for its whole TTL (MOR-1892, ``core/command_service.py``, and the
+        confirmation it added is fire-and-queue, so it cannot land inside the
+        first tick). A veto that asked only "is RF RX?" would therefore void
+        every bound within a tick of arming on exactly the rigs whose PTT *is*
+        observable — the serial IC-7300 this exists for among them — and leave
+        the bound alive only where there is no RF truth at all. That is the
+        inverse of the intent, so ``RX`` may veto only once it rests on an
+        observation this seat's key could have caused.
+
+        :meth:`_resolve_rigctld_rf_state` discards the observation time, so the
+        causal half is read here from the same field it has already validated —
+        a sibling read of one snapshot, not a new consumer of RF state.
+        Both sides must share a clock domain. Every path that stamps this
+        field in production reads ``time.monotonic()`` — ``observation_adapter``
+        is the common one, not the only one — which is the clock the arm reads.
+        A source stamping *behind* that clock reads as "not after the arm" and
+        never vetoes, leaving the bound alive: the safe direction. A source
+        stamping *ahead* of it would restore the defect this method exists to
+        prevent, so a new observation source for this field must stamp on
+        ``time.monotonic()``. ``clock_domain`` cannot police that here — it is
+        ``None`` on the CI-V and Yaesu paths, so a check against it would be
+        vacuous.
+        """
+        try:
+            field = self._state_store.snapshot().field(
+                FieldPath.global_("tx_state", "ptt")
+            )
+        except KeyError:
+            return False
+        return field.last_observed_monotonic > armed_at
+
+    def _void_key_down_backstop(self) -> int:
+        """Invalidate any outstanding bound and return the fresh token.
+
+        The token is what a task still in flight checks; cancellation is the
+        fast path. A task must never cancel itself — the fire calls this on
+        its own way to the write.
+        """
+        self._key_down_backstop_token += 1
+        task, self._key_down_backstop_task = self._key_down_backstop_task, None
+        self._key_down_backstop_session = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        return self._key_down_backstop_token
+
+    def stop_key_down_backstop(self) -> None:
+        """Drop an outstanding bound at server stop, loudly.
+
+        Cancel rather than fire, so shutdown gains no write path it did not
+        have. The warning is the honest record that what shutdown leaves
+        behind is the very condition this bound exists for.
+        """
+        if self._key_down_backstop_task is None:
+            return
+        logger.warning(
+            "rigctld: shutdown cancelled an outstanding key-down bound for session %s",
+            self._key_down_backstop_session,
+        )
+        self._void_key_down_backstop()
+
+    async def _run_key_down_backstop(self, token: int, armed_at: float) -> None:
+        """Tick until the deadline, then force the unkey nobody else will.
+
+        Two vetoes, checked every tick rather than once at expiry. The token
+        answers "is this still the live bound?" — any PTT write of either
+        polarity from any session bumps it. Observed RX answers "is this still
+        our over?", the only positive evidence available without a lease: the
+        rig came off the air by some route, so what we would end is no longer
+        what we started. RF truth decays, so that veto must latch when it is
+        seen rather than be re-read at expiry.
+
+        ``UNKNOWN`` fires, and what earns that is decay **after a successful
+        arm** — not a rig that never had RF truth. ``PttOn`` is BLOCK-classified
+        (``_RigctldCommandExecutor.execute``), so against a canonical store the
+        key is already refused unless RF reads ``RX``: a rig with no PTT field
+        never reaches an arm at all. Two routes do reach it. The common one is
+        decay: the field we did observe goes STALE mid-over — polling stops,
+        the link degrades, the provider generation turns over — and the
+        resolver drops to ``UNKNOWN`` with the rig still keyed. The other is a
+        seat with no canonical store, where ``_has_canonical_state_store`` is
+        false, the BLOCK gate is skipped entirely, and a key is accepted at
+        ``rf=unknown`` and arms; not how the server wires this today, but the
+        branch is live. Voiding on either would discard the bound at precisely
+        the moment nothing else is watching. Still strictly safer
+        than the accepted precedent: MOR-1220 fires with no RF check whatever,
+        so this adds a veto and removes none.
+
+        The write re-enters :meth:`_route_ptt`, byte-identical to a client
+        ``T 0``, so a rig that somehow became managed in between stays the
+        supervisor's to decide (MOR-1175). One attempt, no retry, no re-arm.
+        It goes straight to the backend rather than through
+        :class:`CommandService`, so unlike every other write this seat makes it
+        emits no lifecycle event and asks for no MOR-1892 re-observation of the
+        field it wrote; on a rig with no RF truth nothing else observes PTT
+        either, so a forced unkey leaves no trace in state at all.
+        """
+        deadline = armed_at + _KEY_DOWN_BACKSTOP_SECONDS
+        while True:
+            if self._key_down_backstop_token != token:
+                return
+            rf_state = self._resolve_rigctld_rf_state()
+            if rf_state is tx_interlock.RfState.RX and self._ptt_observed_after(
+                armed_at
+            ):
+                logger.debug(
+                    "rigctld: observed RX voided the key-down bound (session %s)",
+                    self._key_down_backstop_session,
+                )
+                self._void_key_down_backstop()
+                return
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(_KEY_DOWN_BACKSTOP_TICK_SECONDS)
+
+        session_id = self._key_down_backstop_session
+        # Unreachable today: no ``await`` separates this from the loop check
+        # above and the disarm bumps the token synchronously, so nothing can
+        # invalidate the bound in between. Load-bearing the moment an ``await``
+        # appears between the two checks; not covered by any test until then.
+        if self._key_down_backstop_token != token:
+            return
+        logger.error(
+            "rigctld: max key-down (%gs) exceeded on an unmanaged radio keyed "
+            "by session %s; forcing unkey (rf=%s)",
+            _KEY_DOWN_BACKSTOP_SECONDS,
+            session_id,
+            rf_state.value,
+        )
+        self._void_key_down_backstop()
+        try:
+            await self._route_ptt(False, session_id=session_id)
+        except Exception:
+            logger.error(
+                "rigctld: forced unkey failed for session %s", session_id, exc_info=True
+            )
+
     async def _route_ptt(self, on: bool, *, session_id: str | None) -> None:
         """Key or unkey the rig, through the supervisor when the rig has one.
 
@@ -1756,9 +1940,10 @@ class RigctldHandler:
         Three outcomes, deliberately asymmetric between key and unkey.
 
         **No facade to bind.** Either the rig is unmanaged — serial/USB Icom
-        (legacy, MOR-1220's 180s web-poller backstop does not cover a
-        rigctld-issued key, full arm pending MOR-1219), Yaesu CAT, or
-        rigctld-client (legacy, no key-down bound, pending MOR-1190) — and
+        (legacy, full arm pending MOR-1219), Yaesu CAT, or rigctld-client
+        (legacy, full arm pending MOR-1190) — in which case the key below arms
+        this seat's own key-down bound (MOR-1904), the only thing bounding a
+        rigctld-issued key on any of them — and
         the legacy write below is byte-identical to what rigctld has always
         sent — or the request carries no owner. On a managed
         rig an ownerless KEY is refused, because falling through would key with
@@ -1796,6 +1981,12 @@ class RigctldHandler:
                 )
                 raise _RigctldCommandFailure(HamlibError.EACCESS)
             await self._radio.set_ptt(on)
+            # MOR-1904, below the write and never in a ``finally``: an unkey
+            # that RAISED left the rig keyed and must not drop the bound.
+            if on:
+                self._arm_key_down_backstop(session_id)
+            else:
+                self._void_key_down_backstop()
             return
         transition = await managed.set_ptt(on)
         if transition.outcome in _TX_ACCEPTED:

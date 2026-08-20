@@ -58,12 +58,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PTT write on the web UI's Icom poller, so a serial/USB Icom rig keyed from
   the Web UI is bounded again. Current boundary: managed TX is armed on the
   LAN `IcomRadio` path only (the supervisor watchdog covers it everywhere,
-  not just Web); serial/USB Icom is legacy, covered only by this 180s
-  web-poller backstop, with full managed arm pending MOR-1219; Yaesu CAT,
-  the rigctld-client backend, and the CLI hold path (`ptt on --for`) are
-  legacy and unbounded on unmanaged rigs, pending MOR-1190 (acceptance
-  amended to include the key-down bound; MOR-1190 gates the MOR-1033 FTX-1
-  hardware cert in the same release).
+  not just Web); serial/USB Icom is legacy, with full managed arm pending
+  MOR-1219; Yaesu CAT and the rigctld-client backend are legacy with no
+  supervisor, pending MOR-1190 (acceptance amended to include the key-down
+  bound; MOR-1190 gates the MOR-1033 FTX-1 hardware cert in the same
+  release). On an unmanaged rig this backstop bounds a key **the web poller
+  itself issued** and no other; see the rigctld entry below for the seat that
+  bounds a `rigctld` key. The CLI hold path (`ptt on --for`) arms no watchdog
+  at all — it unkeys when the hold ends or on Ctrl-C, so a hard-killed
+  process still leaves the rig keyed.
+
+- **Key-down bound for a `rigctld`-issued key on an unmanaged rig
+  (MOR-1904).** A `rigctld` client that keyed a serial/USB Icom, Yaesu CAT or
+  rigctld-client rig and then died left the transmitter up with nothing to
+  time it out: those backends arm no supervisor, MOR-1220's backstop bounds
+  only keys the web poller issued, and rigctld deliberately writes nothing on
+  socket close. `rigctld` now bounds a key it issued itself at the same 180s
+  (`BACKEND_MAX_KEY_DOWN_SECONDS`) and unkeys when it expires. Two
+  differences from the web-poller backstop above: it is cancelled by any PTT
+  write of either polarity from any `rigctld` session, and — unlike MOR-1220,
+  which fires on the deadline whatever the rig is doing — it is also
+  cancelled once the rig is *observed* back in receive by an observation
+  taken after that key. It deliberately outlives the socket that keyed it:
+  a client going away is not evidence the rig came off the air. It is a
+  damage bound only and grants no session any claim on the transmitter;
+  ownership stays with MOR-1219/MOR-1190.
 
 ### Removed
 

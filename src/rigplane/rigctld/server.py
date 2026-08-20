@@ -777,6 +777,14 @@ class RigctldServer:
 
     async def stop(self) -> None:
         """Close the listener and cancel all active client tasks."""
+        # MOR-1904: retire the handler's key-down bound first, so no
+        # outstanding ticker outlives the loop it was created on. Duck-typed
+        # like the ``release_session_tx`` / ``bind_provider_generation``
+        # probes: ``_rig_handler`` is an injected ``Any``.
+        stop_backstop = getattr(self._rig_handler, "stop_key_down_backstop", None)
+        if callable(stop_backstop):
+            stop_backstop()
+
         if (
             self._uses_fallback_state_store
             and self._fallback_state_store_attached
