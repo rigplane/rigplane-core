@@ -27,7 +27,7 @@ import AntennaSurface, {
   ANTENNA_BLOCKED_LABEL, ANTENNA_PORTS, UNKNOWN_TEXT, antennaSwitchBlocks, tunerIdle,
 } from '../AntennaSurface.svelte';
 import { topologyFixtures, withAntenna, withTxAux } from '../fixtures/topologies';
-import type { TxAuthoritySnapshot } from '../rx-tx-surface';
+import { keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
 import type {
   AntennaField, AntennaViewModel, Availability, AtuStatus, RadioViewModel, TxAuxField,
 } from '../radio-view-model';
@@ -44,8 +44,17 @@ const ON: Availability = { structural: true, operational: true };
 const OFF: Availability = { structural: false, operational: false };
 const DEGRADED: Availability = { structural: true, operational: false };
 
-/** The ONLY snapshot in which switching is permitted: the transmitter is
- *  positively observed OFF, no lease, no risk. */
+/** The canonical permitted snapshot: transmitter positively observed OFF, no
+ *  lease, no risk, authority idle.
+ *
+ *  MOR-1906 — it is NOT the only one, and saying so hid a real behaviour
+ *  change. This gate reads the RF FACTS (`radioTx` / `txRisk` / `mayOwnKey`),
+ *  never the authority's session bookkeeping, so a LATCHED FAULT sitting over
+ *  those same observed-OFF facts is permitted too. That is the file's own
+ *  doctrine, stated at `RF_MUST_BE_IDLE`: `tx-fault` is deliberately not a
+ *  member, because a fault makes KEYING illegal — it does not make a relay
+ *  hot. The two `phase: 'failed'` pins below hold that in BOTH directions.
+ *  MOR-1361 tracks the allow-list itself. */
 const RECEIVING: TxAuthoritySnapshot = {
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
 };
@@ -322,6 +331,46 @@ describe('antenna switching is gated while the transmitter is not provably idle'
     expect(antennaSwitchBlocks(base(), TRANSMITTING)).toContain('radio-transmitting');
     expect(antennaSwitchBlocks(base(), { ...RECEIVING, phase: 'key-confirm-pending' }))
       .toContain('tx-busy');
+  });
+
+  /*
+   * MOR-1906 / MOR-1361 — the `failed` phase, pinned in BOTH directions.
+   *
+   * MOR-1906 moved a `failed` phase out of `tx-busy` and into `tx-fault`, and
+   * `tx-fault` is deliberately not a member of `RF_MUST_BE_IDLE`. That
+   * DELIBERATELY relaxes this gate for exactly two of the 216 (phase ×
+   * radioTx × txRisk × mayOwnKey × fault) combinations — both of them
+   * `radioTx: 'off'`, `txRisk: 'none'`, `!mayOwnKey`, i.e. provably idle RF by
+   * the very standard the `idle` phase already passes on. Nothing tightened,
+   * nothing else loosened, and only a 2-port radio renders this surface at
+   * all. The relaxation matches the doctrine at `RF_MUST_BE_IDLE`; what it did
+   * not have was a test, so the previous review had nothing to read but prose.
+   *
+   * Neither pin may be deleted without the other. The first alone would let a
+   * future edit re-block every fault and call it safety; the second alone
+   * would let one widen `failed` into a blanket pass over unobserved RF.
+   * MOR-1361 (this allow-list is an allow-list of 3 of 7 `KeyBlockedReason`
+   * values, with no exhaustiveness guard) is the ticket that owns the set.
+   */
+  it('permits switching under a latched fault over provably idle RF', () => {
+    const refused: TxAuthoritySnapshot = {
+      ...RECEIVING, phase: 'failed', fault: 'not-eligible',
+    };
+    expect(antennaSwitchBlocks(base(), refused)).toEqual([]);
+    // The reason the shared predicate gives is a FAULT, not a busy
+    // transmitter — which is why the filter above drops it.
+    expect(keyBlockedReasons(base(), refused)).toContain('tx-fault');
+    expect(keyBlockedReasons(base(), refused)).not.toContain('tx-busy');
+  });
+
+  // The companion. Kills: reading `phase: 'failed'` as "switching is fine"
+  // rather than reading the RF facts underneath it. A fault latched while the
+  // RF state was never confirmed gates exactly as hard as it did before.
+  it('still blocks under a latched fault when the RF state is unconfirmed', () => {
+    expect(antennaSwitchBlocks(base(), { ...RF_UNKNOWN, phase: 'failed' }))
+      .toContain('rf-state-unknown');
+    expect(antennaSwitchBlocks(base(), { ...TRANSMITTING, phase: 'failed' }))
+      .toContain('radio-transmitting');
   });
 });
 

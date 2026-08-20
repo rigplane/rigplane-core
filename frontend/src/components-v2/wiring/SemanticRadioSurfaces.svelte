@@ -586,8 +586,12 @@
    * the button live-looking and completely inert after a refused key press:
    * the refusal branch of the reducer's `start` clears the lease, so there was
    * no guard to release, and the press produced no command, no reset and no
-   * feedback while the key sat disabled behind the latched fault. The operator
-   * on the bench found no way out of that but a page reload.
+   * feedback while the key sat disabled behind the latched fault. To be exact
+   * about what was and was not missing: the MOR-1784 dismiss affordance was
+   * present and working the whole time (it renders unconditionally on a failed
+   * phase, and the wiring tests prove it). What was dead was THIS control —
+   * the one an operator reaches for when the transmitter will not let go — and
+   * an operator who does not connect the two reloads the page.
    *
    * With no lease held there is nothing to de-key — the transmitter is not
    * this surface's to stop — so the intent falls through to the only thing
