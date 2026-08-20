@@ -165,6 +165,10 @@ async def _force_rigctld_gc_ready(server: RigctldServer) -> None:
     for attr in (
         "_state_store_freshness_task",
         "_state_acquisition_drain_task",
+        # MOR-1903: the CI-V PTT re-read task holds a reference to the server
+        # for as long as it runs, so it delays collection exactly like the
+        # two above.
+        "_ptt_reread_task",
     ):
         task = getattr(server, attr, None)
         if task is not None and not task.done():

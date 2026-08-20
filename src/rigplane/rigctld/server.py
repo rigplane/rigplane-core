@@ -42,6 +42,7 @@ from ..radio_protocol import (
     StateModelService,
     StateStoreCapable,
 )
+from ..runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
 from ..startup_checks import assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
@@ -53,7 +54,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["RigctldServer", "run_rigctld_server"]
+__all__ = ["PTT_REREAD_INTERVAL_SECONDS", "RigctldServer", "run_rigctld_server"]
+
+# MOR-1903: standalone rigctld has no cadence poller — ``due_requests()`` is
+# called only by the web radio poller, so in ``rigplane serve`` nothing ever
+# sends a ``0x1C/0x00`` read after connect. Without an observation the strict
+# resolver behind the MOR-1881 DEFER gate (and the BLOCK pre-gate guarding
+# key-down) stays UNKNOWN forever and every frequency / mode / VFO / split /
+# RIT write and every ``T 1`` is refused with ``RPRT -9``.
+#
+# The TTL is read from ``_civ_rx``'s own table, never copied. A quarter of it
+# puts two reads inside every freshness window, so one lost reply cannot open a
+# gap; a cadence at or above the TTL would instead reproduce the web
+# deployment's known-then-unknown sawtooth, which refuses most writes.
+PTT_OBSERVATION_TTL_SECONDS: float = _OBSERVATION_MAX_AGE_SECONDS[
+    ("global", "tx_state", "ptt")
+]
+PTT_REREAD_INTERVAL_SECONDS: float = PTT_OBSERVATION_TTL_SECONDS / 4.0
 
 
 class _AcquisitionExecutorUnavailable(RuntimeError):
@@ -163,6 +180,7 @@ class RigctldServer:
         self._state_store_freshness_task: asyncio.Task[None] | None = None
         self._acquisition_executor: AcquisitionExecutor | None = None
         self._state_acquisition_drain_task: asyncio.Task[None] | None = None
+        self._ptt_reread_task: asyncio.Task[None] | None = None
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
@@ -438,6 +456,61 @@ class RigctldServer:
             self._state_freshness_service.run(),
             name="rigctld-state-freshness",
         )
+
+    def _start_ptt_reread_task(self) -> None:
+        """Start the client-gated CI-V PTT re-read, if this radio supports it.
+
+        CI-V only: the reply is published canonically by the existing ingress,
+        profile-independently. The Yaesu leg is MOR-1903-B.
+        """
+        if self._ptt_reread_task is not None:
+            return
+        if not isinstance(self._radio, CivCommandCapable):
+            return
+        self._ptt_reread_task = asyncio.get_running_loop().create_task(
+            self._run_ptt_reread(),
+            name="rigctld-ptt-reread",
+        )
+
+    async def _stop_ptt_reread_task(self) -> None:
+        task, self._ptt_reread_task = self._ptt_reread_task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("rigctld PTT re-read task failed before stop", exc_info=True)
+
+    async def _run_ptt_reread(self) -> None:
+        """Ask the radio for its PTT state while a CAT client is connected.
+
+        The *request* only: nothing here writes to the StateStore. If the radio
+        never answers, RF truth stays UNKNOWN and the gate keeps refusing —
+        absence is never filled in (MOR-1900).
+        """
+        while True:
+            try:
+                await asyncio.sleep(PTT_REREAD_INTERVAL_SECONDS)
+                await self._send_ptt_reread_once()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                # A dead link or a mid-teardown transport must not kill the
+                # driver; the next tick retries and the gate stays honest in
+                # the meantime.
+                logger.debug("rigctld PTT re-read failed: %s", exc, exc_info=True)
+
+    async def _send_ptt_reread_once(self) -> None:
+        """Emit one ``0x1C/0x00`` read, but only with a client attached.
+
+        Parity with the lazy poller start: an idle server stays off the wire.
+        """
+        if self._client_count <= 0:
+            return
+        await self._send_one_state_query(0x1C, 0x00, None)
 
     def _start_state_acquisition_drain_task(self) -> None:
         if (
@@ -771,6 +844,7 @@ class RigctldServer:
         logger.info("rigctld listening on %s:%d", addr[0], addr[1])
         self._start_state_freshness_task()
         self._start_state_acquisition_drain_task()
+        self._start_ptt_reread_task()
 
         # Poller starts lazily on first client connection to avoid idle
         # CI-V traffic/noise when no CAT clients are connected.
@@ -792,6 +866,8 @@ class RigctldServer:
         ):
             self._state_store.begin_provider_generation()
             self._fallback_state_store_attached = False
+
+        await self._stop_ptt_reread_task()
 
         if self._state_acquisition_drain_task is not None:
             self._state_acquisition_drain_task.cancel()
