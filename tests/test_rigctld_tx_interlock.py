@@ -1,6 +1,7 @@
 """Rigctld write-intent coverage for the shared TX interlock policy."""
 
 import logging
+import time
 from dataclasses import replace
 from unittest.mock import AsyncMock, Mock
 
@@ -15,9 +16,11 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.core.tx_interlock_contract import TxInterlockDisposition
 from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
+from rigplane.radio_state import RadioState
 from rigplane.rigctld.contract import (
     COMMAND_TABLE,
     ClientSession,
@@ -698,3 +701,121 @@ async def test_dropped_write_asks_for_nothing() -> None:
     assert response.ok
     radio.set_freq.assert_not_awaited()
     assert freshness.requests == []
+
+
+# ---------------------------------------------------------------------------
+# MOR-1900: a ``t`` poll must not manufacture canonical RF truth
+# ---------------------------------------------------------------------------
+
+
+def _mirror_handler(store: StateStore, *, ptt: bool = False):
+    """Handler whose legacy mirror answers ``t`` when the projection misses.
+
+    ``RadioState.ptt`` defaults to ``False`` with no age bound, so this is
+    exactly the never-observed mirror that used to be laundered into the
+    canonical store as a fresh radio observation.
+    """
+    radio = AsyncMock()
+    radio.capabilities = {CAP_RIT}
+    radio.state_store = store
+    radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)
+    state = RadioState()
+    state.ptt = ptt
+    radio.radio_state = state
+    routing = Mock()
+    routing.set_func = AsyncMock(return_value=RigctldResponse())
+    routing.set_level = AsyncMock(return_value=RigctldResponse())
+    radio.rigctld_routing = Mock(return_value=routing)
+    radio._send_civ_raw = AsyncMock(return_value=None)
+    return RigctldHandler(radio, RigctldConfig(), state_store=store), radio
+
+
+@pytest.mark.asyncio
+async def test_ptt_poll_leaves_an_absent_canonical_field_absent() -> None:
+    store = StateStore()
+    handler, _radio = _mirror_handler(store)
+
+    response = await handler.execute(parse_line(b"t"))
+
+    # The client is still answered from the mirror — unchanged wire behaviour.
+    assert response.ok
+    assert response.values == ["0"]
+    # ... but nothing was published as canonical truth.
+    with pytest.raises(KeyError):
+        store.snapshot().field(_PTT_PATH)
+
+
+def _stale_ptt_store() -> StateStore:
+    """Store whose canonical PTT field has actually decayed to STALE.
+
+    ``mark_stale_due`` is the store's sole freshness-decay entry point, so a
+    field only stops projecting once it has been driven through it.
+    """
+    store = StateStore()
+    store.apply(
+        Observation(
+            path=_PTT_PATH,
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=time.monotonic() - 5.0,
+            max_age=1.0,
+        )
+    )
+    store.mark_stale_due()
+    return store
+
+
+@pytest.mark.asyncio
+async def test_ptt_poll_leaves_a_stale_canonical_field_untouched() -> None:
+    store = _stale_ptt_store()
+    handler, _radio = _mirror_handler(store)
+    before = store.snapshot().field(_PTT_PATH)
+    assert before.freshness is not FreshnessState.FRESH
+
+    response = await handler.execute(parse_line(b"t"))
+
+    assert response.ok
+    assert response.values == ["0"]
+    after = store.snapshot().field(_PTT_PATH)
+    assert after.source.source == "test"
+    assert after.freshness is before.freshness
+    assert after.last_observed_monotonic == before.last_observed_monotonic
+    # A stale field is not evidence of RX, and the poll did not make it one.
+    assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_ptt_poll_does_not_unlock_a_deferred_write() -> None:
+    """Refusal replaces fabrication: a poll cannot create RX truth."""
+    store = StateStore()
+    handler, radio = _mirror_handler(store)
+
+    poll = await handler.execute(parse_line(b"t"))
+    assert poll.values == ["0"]
+
+    assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.UNKNOWN
+
+    command = parse_line(b"F 14074000")
+    response = await handler.execute(command)
+
+    assert response.error is HamlibError.ERJCTED
+    assert format_response(command, response, ClientSession()) == b"RPRT -9\n"
+    radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ptt_poll_records_the_mirror_fallback_as_a_diagnostic() -> None:
+    """A silent miss must not read as coverage."""
+    store = StateStore()
+    handler, radio = _mirror_handler(store, ptt=True)
+
+    await handler.execute(parse_line(b"t"))
+
+    events = [
+        event
+        for event in radio._state_diagnostics.events()
+        if event.kind == "rigctld_ptt_mirror_fallback"
+    ]
+    assert len(events) == 1
+    assert events[0].source == "rigctld.handler"
+    assert events[0].details["value"] is True
