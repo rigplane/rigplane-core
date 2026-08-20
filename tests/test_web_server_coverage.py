@@ -3257,6 +3257,106 @@ async def test_deferred_lifecycle_is_delivered_only_to_its_issuer() -> None:
     assert bystander_q.empty()
 
 
+class _EqualsReasonCode:
+    """Equal to a known reason code without being one.
+
+    The whitelist's membership test is ``__eq__``-based, so the published
+    payload must be rebuilt from literals rather than passed through — this is
+    the object that rides onto the wire if it ever is not.
+    """
+
+    def __init__(self, code: str) -> None:
+        self._code = code
+
+    def __eq__(self, other: object) -> bool:
+        return other == self._code
+
+    def __hash__(self) -> int:
+        return hash(self._code)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ("rf_state_unknown", "radio_transmitting"))
+async def test_interlock_refusal_reaches_only_its_issuer_machine_readably(
+    reason: str,
+) -> None:
+    """MOR-1879: a failed lifecycle may carry the interlock refusal code."""
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    await _ack_held(srv)
+
+    srv._on_command_lifecycle_event(  # noqa: SLF001
+        _life(
+            state="failed",
+            message="refused by the TX interlock",
+            details={
+                "session_id": "session-issuer",
+                "blockedBy": "tx_interlock",
+                "reason": reason,
+            },
+        )
+    )
+
+    # The pre-existing failure notification still goes out first, unchanged.
+    assert issuer_q.get_nowait()["type"] == "notification"
+    payload = issuer_q.get_nowait()
+    assert payload["type"] == "command_lifecycle"
+    assert payload["state"] == "failed"
+    assert payload["details"] == {"blockedBy": "tx_interlock", "reason": reason}
+    assert issuer_q.empty()
+    assert bystander_q.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "details",
+    (
+        {"session_id": "session-issuer", "blockedBy": "tx_interlock"},
+        {"session_id": "session-issuer", "reason": "rf_state_unknown"},
+        {
+            "session_id": "session-issuer",
+            "blockedBy": "elsewhere",
+            "reason": "rf_state_unknown",
+        },
+        {
+            "session_id": "session-issuer",
+            "blockedBy": "tx_interlock",
+            "reason": "made_up_code",
+        },
+        {
+            "session_id": "session-issuer",
+            "blockedBy": "tx_interlock",
+            "reason": "rf_state_unknown",
+            "extra": 1,
+        },
+        {
+            "session_id": "session-issuer",
+            "blockedBy": "tx_interlock",
+            "reason": _EqualsReasonCode("rf_state_unknown"),
+        },
+    ),
+    ids=(
+        "missing-reason",
+        "missing-blocked-by",
+        "wrong-seat",
+        "unknown-code",
+        "extra-key",
+        "merely-equal-code",
+    ),
+)
+async def test_forged_interlock_refusal_details_are_rejected(
+    details: dict[str, object],
+) -> None:
+    srv = WebServer()
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    await _ack_held(srv)
+
+    srv._on_command_lifecycle_event(_life(state="failed", details=details))  # noqa: SLF001
+
+    assert issuer_q.empty()
+    assert bystander_q.empty()
+
+
 @pytest.mark.asyncio
 async def test_provider_generation_invalidates_only_active_web_commands() -> None:
     srv = WebServer()

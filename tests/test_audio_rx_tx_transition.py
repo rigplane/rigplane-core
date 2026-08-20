@@ -40,6 +40,11 @@ from rigplane.web.radio_poller import (
     _should_restart_rx,
 )
 
+# MOR-1879: this suite drives PTT dispatch directly; the interlock seat at
+# ``_execute`` now gates ptt_on too, so the RF premise (radio observed in
+# RX before keying) is stated once here — see the conftest fixture.
+pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+
 
 def _make_audio_capable_radio() -> SimpleNamespace:
     """Create stub radio with audio capabilities.

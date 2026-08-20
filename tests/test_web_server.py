@@ -918,6 +918,9 @@ class TestControlChannel:
             await _close_ws(writer)
 
     async def test_command_ptt(self, server: WebServer, mock_radio: MagicMock) -> None:
+        # MOR-1879: keying now passes the server RF gate, so the scenario's
+        # premise — a rig observed in RX — is stated explicitly.
+        _seed_fresh_rx(server.command_state_store)
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:

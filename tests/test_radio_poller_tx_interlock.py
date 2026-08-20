@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from rigplane.capabilities import CAP_ANTENNA, CAP_POWER_CONTROL, CAP_TUNER
+from rigplane.capabilities import CAP_ANTENNA, CAP_AUDIO, CAP_POWER_CONTROL, CAP_TUNER
 from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -18,6 +18,7 @@ from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime._poller_types import (
     PttOff,
+    PttOn,
     ScanStart,
     ScanStop,
     SelectVfo,
@@ -27,7 +28,20 @@ from rigplane.runtime._poller_types import (
     SetPowerstat,
     SetTunerStatus,
 )
-from rigplane.web.radio_poller import CommandQueue, CommandQueueEntry, RadioPoller
+from rigplane.runtime.tx_interlock import (
+    RfState,
+    TxInterlockCommandFamily,
+    TxInterlockDisposition,
+    evaluate_tx_interlock,
+    get_tx_interlock_command_family_metadata,
+)
+from rigplane.web.radio_poller import (
+    _WEB_IMMEDIATE_BLOCK_FAMILIES,
+    CommandQueue,
+    CommandQueueEntry,
+    RadioPoller,
+    TxInterlockRefusal,
+)
 
 
 _PTT = FieldPath.global_("tx_state", "ptt")
@@ -441,3 +455,128 @@ async def test_teardown_drain_unkey_stays_outside_the_execute_seat() -> None:
     await poller.drain_tx_safety_commands(timeout=1.0)
 
     radio.set_ptt.assert_awaited_once_with(False)
+
+
+# ── MOR-1879 (MOR-1500 slice 1): Web ptt_on is server-gated ──────────────────
+
+
+def test_ptt_on_is_a_web_immediate_block_family() -> None:
+    assert TxInterlockCommandFamily.PTT_ON in _WEB_IMMEDIATE_BLOCK_FAMILIES
+
+
+def test_web_and_yaesu_seats_share_the_ptt_on_block_policy() -> None:
+    metadata = get_tx_interlock_command_family_metadata(PttOn())
+    assert metadata is not None
+    assert metadata.family is TxInterlockCommandFamily.PTT_ON
+    assert metadata.base_disposition is TxInterlockDisposition.BLOCK
+    for rf in (RfState.UNKNOWN, RfState.TX):
+        assert evaluate_tx_interlock(PttOn(), rf_state=rf).allowed is False
+    assert evaluate_tx_interlock(PttOn(), rf_state=RfState.RX).allowed is True
+
+
+@pytest.mark.parametrize(
+    ("ptt", "reason", "code"),
+    (
+        (
+            None,
+            "RF state is unknown; this command must not be attempted yet.",
+            "rf_state_unknown",
+        ),
+        (True, "RF state is TX; command is blocked.", "radio_transmitting"),
+    ),
+    ids=("unknown", "tx"),
+)
+async def test_ptt_on_refused_fail_closed_leaves_no_armed_audio_leg(
+    ptt: bool | None, reason: str, code: str
+) -> None:
+    radio, store = _radio(), StateStore()
+    radio.capabilities.add(CAP_AUDIO)
+    radio.start_tx = AsyncMock()
+    radio.stop_tx = AsyncMock()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    if ptt is not None:
+        _observe_ptt(store, ptt)
+
+    with pytest.raises(TxInterlockRefusal) as excinfo:
+        await _dispatch(poller, PttOn())
+
+    assert str(excinfo.value) == reason
+    assert excinfo.value.reason_code == code
+    radio.set_ptt.assert_not_awaited()
+    # Design-doc R7: the refusal precedes the audio-leg arm entirely — nothing
+    # was armed, so nothing needed disarming.
+    radio.start_tx.assert_not_awaited()
+    radio.stop_tx.assert_not_awaited()
+
+
+async def test_ptt_on_dispatches_in_fresh_rx() -> None:
+    poller, radio, store = _poller()
+    _observe_ptt(store, False)
+
+    await _dispatch(poller, PttOn())
+
+    radio.set_ptt.assert_awaited_once_with(True)
+
+
+@pytest.mark.parametrize("ptt", (None, True), ids=("unknown", "tx"))
+async def test_ptt_off_always_attempts_even_with_corrupted_family_table(
+    monkeypatch: pytest.MonkeyPatch, ptt: bool | None
+) -> None:
+    poller, radio, store = _poller()
+    if ptt is not None:
+        _observe_ptt(store, ptt)
+    corrupt = get_tx_interlock_command_family_metadata(PttOn())
+    assert corrupt is not None
+    monkeypatch.setattr(
+        "rigplane.web.radio_poller.get_tx_interlock_command_family_metadata",
+        lambda _cmd: corrupt,
+    )
+
+    await _dispatch(poller, PttOff())
+
+    radio.set_ptt.assert_awaited_once_with(False)
+
+
+async def test_refused_ptt_on_emits_machine_readable_failed_lifecycle() -> None:
+    clock = FreshnessClock(start=10.0)
+    radio, store = _radio(), StateStore(freshness_clock=clock)
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    service = _service(clock, store)
+    await service.execute(
+        CommandIntent(
+            id="ptt-refused",
+            name="ptt_on",
+            params={"session_id": "ws-a"},
+            source="websocket",
+            target=None,
+            timeout=3.0,
+            pending_policy="none",
+            expected_observations=(),
+        )
+    )
+    entry = CommandQueueEntry(
+        PttOn(),
+        future=asyncio.get_running_loop().create_future(),
+        command_id="ptt-refused",
+        source="websocket",
+        session_id="ws-a",
+        command_service=service,
+    )
+
+    with pytest.raises(TxInterlockRefusal) as excinfo:
+        await poller._execute_queued_entry(entry)  # noqa: SLF001
+    poller._mark_queued_command_failed(entry, excinfo.value)  # noqa: SLF001
+
+    event = service.lifecycle_events()[-1]
+    assert event.state == "failed"
+    assert event.details == {
+        "session_id": "ws-a",
+        "blockedBy": "tx_interlock",
+        "reason": "rf_state_unknown",
+    }
+    assert event.message == (
+        "RF state is unknown; this command must not be attempted yet."
+    )
+    radio.set_ptt.assert_not_awaited()

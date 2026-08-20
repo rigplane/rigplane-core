@@ -36,6 +36,11 @@ from rigplane.core.exceptions import CommandError
 from rigplane.core.tx_safety import TxOutcome
 from rigplane.web.radio_poller import CommandQueue, PttOn, RadioPoller
 
+# MOR-1879: this suite drives PTT dispatch directly; the interlock seat at
+# ``_execute`` now gates ptt_on too, so the RF premise (radio observed in
+# RX before keying) is stated once here — see the conftest fixture.
+pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+
 _ARM_FAILED = "TX audio failed to arm"
 
 

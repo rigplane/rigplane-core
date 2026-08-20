@@ -5145,6 +5145,9 @@ def _keyed(supervisor: _Supervisor | None) -> tuple[RadioPoller, _Radio, Command
     """A poller on a test-scale bound, its real loop running, PTT ON queued."""
     poller, radio, queue = _tx_poller(supervisor)
     poller._max_key_down_seconds = _BACKSTOP  # noqa: SLF001
+    # MOR-1879: the key itself now passes the server RF gate, so the scenario's
+    # premise — a rig observed in RX that then gets keyed — is stated explicitly.
+    _seed_fresh_rx(poller)
     poller.start()
     queue.put(PttOn(), source="websocket", session_id="ws-1")
     return poller, radio, queue
