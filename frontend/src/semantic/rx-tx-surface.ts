@@ -203,13 +203,31 @@ export function keyBlockedReasons(
   view: RadioViewModel, tx: TxAuthoritySnapshot,
 ): readonly KeyBlockedReason[] {
   const reasons: KeyBlockedReason[] = [];
-  if (view.txTarget.status !== 'known') reasons.push('tx-target-unknown');
-  if (view.txPermit.status === 'denied') reasons.push('tx-permit-denied');
-  if (view.txPermit.status === 'unknown') reasons.push('tx-permit-unknown');
-  if (tx.fault !== null) reasons.push('tx-fault');
-  if (tx.phase !== 'idle' || tx.mayOwnKey || tx.txRisk !== 'none') reasons.push('tx-busy');
-  if (tx.radioTx === 'on') reasons.push('radio-transmitting');
-  if (tx.radioTx === 'unknown') reasons.push('rf-state-unknown');
+  /** Two conditions can reach the same verdict (a confirmed-on risk and an
+   *  observed `radioTx: 'on'` are one fact seen twice). The list is rendered
+   *  as a KEYED each, so a repeat is not merely noise — it is a duplicate key. */
+  const add = (reason: KeyBlockedReason): void => {
+    if (!reasons.includes(reason)) reasons.push(reason);
+  };
+  if (view.txTarget.status !== 'known') add('tx-target-unknown');
+  if (view.txPermit.status === 'denied') add('tx-permit-denied');
+  if (view.txPermit.status === 'unknown') add('tx-permit-unknown');
+  // MOR-1906. A 'failed' phase is a FAULT, not a session — and it blocks on the
+  // phase itself, not on `fault` being non-null, so the verdict cannot go
+  // missing should a future state ever reach 'failed' without a code.
+  if (tx.fault !== null || tx.phase === 'failed') add('tx-fault');
+  if (tx.mayOwnKey || (tx.phase !== 'idle' && tx.phase !== 'failed')) add('tx-busy');
+  /**
+   * MOR-1906. `txRisk` used to collapse into `tx-busy`, which renders as "a TX
+   * session is already in progress" — told to an operator on a demonstrably
+   * idle radio whose first PTT reading had simply not arrived yet. RF doubt is
+   * not a lease. These two lines are `rfState()` above, term for term, so the
+   * reason the key gives and the RF label the same surface prints can never
+   * disagree; the antenna gate's "not provably idle" set is unchanged, because
+   * both members were already in it.
+   */
+  if (tx.radioTx === 'on' || tx.txRisk === 'confirmed-on') add('radio-transmitting');
+  if (tx.radioTx === 'unknown' || tx.txRisk === 'uncertain') add('rf-state-unknown');
   return reasons;
 }
 

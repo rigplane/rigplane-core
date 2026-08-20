@@ -57,8 +57,12 @@ const blockedCases: readonly Readonly<{
   { name: 'fault', expected: 'tx-fault', view: allowed.view, tx: { ...allowed.tx, fault: 'fault' } as typeof allowed.tx },
   { name: 'non-idle phase', expected: 'tx-busy', view: allowed.view, tx: { ...allowed.tx, phase: 'key-confirm-pending' } as typeof allowed.tx },
   { name: 'key ownership', expected: 'tx-busy', view: allowed.view, tx: { ...allowed.tx, mayOwnKey: true } as typeof allowed.tx },
-  { name: 'TX risk', expected: 'tx-busy', view: allowed.view, tx: { ...allowed.tx, txRisk: 'uncertain' } as typeof allowed.tx },
-  { name: 'confirmed TX risk', expected: 'tx-busy', view: allowed.view, tx: { ...allowed.tx, txRisk: 'confirmed-on' } as typeof allowed.tx },
+  // MOR-1906: RF doubt is not a lease. Both rows still block the TUNE carrier
+  // exactly as before — only the reason the operator is given changed, from
+  // "a TX session is already in progress" to what the authority actually knows
+  // about the RF state.
+  { name: 'TX risk', expected: 'rf-state-unknown', view: allowed.view, tx: { ...allowed.tx, txRisk: 'uncertain' } as typeof allowed.tx },
+  { name: 'confirmed TX risk', expected: 'radio-transmitting', view: allowed.view, tx: { ...allowed.tx, txRisk: 'confirmed-on' } as typeof allowed.tx },
   { name: 'radio TX on', expected: 'radio-transmitting', view: allowed.view, tx: { ...allowed.tx, radioTx: 'on' } as typeof allowed.tx },
   { name: 'radio TX unknown', expected: 'rf-state-unknown', view: allowed.view, tx: { ...allowed.tx, radioTx: 'unknown' } as typeof allowed.tx },
 ];

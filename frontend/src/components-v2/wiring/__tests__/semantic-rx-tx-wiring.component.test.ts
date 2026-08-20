@@ -751,3 +751,126 @@ describe('MOR-1258 — the three TX-adjacent alerts join the rx-tx zone in the d
     expect(zone.contains(q('[data-testid="mod-input-tx-warning"]'))).toBe(true);
   });
 });
+
+/**
+ * MOR-1906 — the first key press after page load, and what the operator is
+ * told and left with when it is refused.
+ *
+ * Bench episode (IC-7300, `rigplane web`, 2026-08-20): the key control went
+ * live, the first press was refused `not-eligible` (MOR-1792, a separate
+ * defect), and the screen then contradicted itself — the fault line read "TX
+ * not ready: waiting for the first confirmed PTT reading" while the blocking
+ * reason read "a TX session is already in progress". Nothing held the
+ * transmitter. Afterwards the key was dead and `Unkey transmitter` did
+ * nothing at all, in either direction, until the page was reloaded.
+ */
+describe('MOR-1906 — an unconfirmed RF state is not a busy TX session', () => {
+  const blockedReasons = (): (string | undefined)[] =>
+    Array.from(target.querySelectorAll('[data-testid="rx-tx-blocked"] li'))
+      .map((item) => (item as HTMLElement).dataset.reason);
+
+  // MUTATION KILLED: restoring the collapsed
+  // `phase !== 'idle' || mayOwnKey || txRisk !== 'none'` condition. It reports
+  // a lease nobody holds for the one case the ticket was raised on — an idle
+  // authority whose RF state has simply not been confirmed yet.
+  it('reports rf-state-unknown for uncertain RF on an idle, unowned authority', () => {
+    render();
+    push({ phase: 'idle', mayOwnKey: false, txRisk: 'uncertain', radioTx: 'off', fault: null });
+    expect(blockedReasons()).toContain('rf-state-unknown');
+    expect(blockedReasons()).not.toContain('tx-busy');
+  });
+
+  // The same doubt the RF label already prints. `rfState()` reads a
+  // 'confirmed-on' risk as transmitting and an 'uncertain' one as uncertain;
+  // the blocking reason now says the same thing rather than a third thing.
+  it('reports radio-transmitting for a confirmed-on risk, not a busy session', () => {
+    render();
+    push({ phase: 'idle', mayOwnKey: false, txRisk: 'confirmed-on', radioTx: 'off', fault: null });
+    expect(blockedReasons()).toContain('radio-transmitting');
+    expect(blockedReasons()).not.toContain('tx-busy');
+  });
+
+  // The reasons that really do mean "a session is in progress" keep saying so.
+  it.each([
+    ['a lease is starting', { phase: 'audio-start-pending' }],
+    ['this browser may hold the key', { mayOwnKey: true }],
+  ] as const)('still reports tx-busy while %s', (_label, over) => {
+    render();
+    push({ ...over, fault: null } as Partial<Snapshot>);
+    expect(blockedReasons()).toContain('tx-busy');
+  });
+
+  // A latched fault is a fault, not a session. `tx-fault` already names it and
+  // is emitted for the phase itself, so the verdict cannot go missing if a
+  // future state ever reaches 'failed' without a code.
+  it('names a failed phase as a fault rather than a session in progress', () => {
+    render();
+    push({ phase: 'failed', fault: 'not-eligible' });
+    expect(blockedReasons()).toContain('tx-fault');
+    expect(blockedReasons()).not.toContain('tx-busy');
+  });
+});
+
+/**
+ * MOR-1906 item 2 — the wedge. A refused press latches `failed`, which
+ * disables the key, and clears the lease guard, which used to make
+ * `requestUnkey` a silent no-op: `if (guard) tx.release(...)` swallowed the
+ * intent with no command, no reset and no feedback. Both controls dead, and
+ * only a page reload out.
+ */
+describe('MOR-1906 — a refused key press leaves both controls operable', () => {
+  /** Exactly the state `transition`'s `start` refusal branch produces. */
+  const REFUSED: Partial<Snapshot> = {
+    phase: 'failed', fault: 'not-eligible', guard: null, mayOwnKey: false,
+    txRisk: 'none', radioTx: 'off', pendingOff: null, modRestorePending: false,
+    cleanupGuard: null,
+  };
+
+  // MUTATION KILLED: gating the unkey path on holding a lease guard. Without a
+  // lease there is nothing to release, and the operator was left pressing a
+  // live-looking button that did nothing whatsoever.
+  it('never swallows the unkey intent after a refusal cleared the lease', () => {
+    render();
+    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
+    flushSync();
+    expect(h.start).toHaveBeenCalledTimes(1);
+
+    push(REFUSED);
+    expect(q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.disabled).toBe(true);
+    const unkey = q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!;
+    expect(unkey.disabled).toBe(false);
+
+    unkey.click();
+    flushSync();
+    expect(h.resetFault).toHaveBeenCalledTimes(1);
+    expect(h.release).not.toHaveBeenCalled();
+
+    // …and the authority acting on it puts the key back in the operator's hands.
+    push({ phase: 'idle', fault: null });
+    expect(q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.disabled).toBe(false);
+  });
+
+  // MUTATION KILLED: turning unkey into a fault reset unconditionally. With a
+  // lease live the only correct action is still the release.
+  it('releases rather than resets while a lease is live', () => {
+    render();
+    const guard = { leaseId: 'lease-live' };
+    push({ phase: 'active', guard, mayOwnKey: true, radioTx: 'on', txRisk: 'confirmed-on' });
+    q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!.click();
+    flushSync();
+    expect(h.release).toHaveBeenCalledWith(expect.any(String), guard);
+    expect(h.resetFault).not.toHaveBeenCalled();
+  });
+
+  // The other half of "recover in-page": the dismiss affordance MOR-1784 added
+  // is offered for THIS fault too, so there are two ways back, not zero.
+  it('offers the dismiss affordance for a refused press', () => {
+    render();
+    push(REFUSED);
+    const reset = q<HTMLButtonElement>('[data-testid="tx-fault-reset"]')!;
+    expect(reset).not.toBeNull();
+    reset.click();
+    flushSync();
+    expect(h.resetFault).toHaveBeenCalledTimes(1);
+  });
+});
