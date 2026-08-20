@@ -335,6 +335,7 @@ async def test_set_ptt_off(connected_radio):
 
 @pytest.mark.asyncio
 async def test_get_ptt_transmitting(connected_radio):
+    """TX1; = RADIO TX off, CAT TX on -> transmitting."""
     connected_radio._transport.query = AsyncMock(return_value="TX1")
     ptt = await connected_radio.get_ptt()
     assert ptt is True
@@ -343,9 +344,55 @@ async def test_get_ptt_transmitting(connected_radio):
 
 @pytest.mark.asyncio
 async def test_get_ptt_receiving(connected_radio):
+    """TX0; = RADIO TX off, CAT TX off -> receiving."""
     connected_radio._transport.query = AsyncMock(return_value="TX0")
     ptt = await connected_radio.get_ptt()
     assert ptt is False
+
+
+@pytest.mark.asyncio
+async def test_get_ptt_transmitting_radio_keyed(connected_radio):
+    """MOR-1905: TX2; = RADIO TX on, CAT TX off -> transmitting.
+
+    P1=2 means the radio itself keyed the transmitter (front-panel PTT,
+    mic, footswitch, VOX) rather than a CAT command. Reading this as
+    "receiving" is a fail-open inversion of transmit truth.
+    """
+    connected_radio._transport.query = AsyncMock(return_value="TX2")
+    ptt = await connected_radio.get_ptt()
+    assert ptt is True
+    assert connected_radio.radio_state.ptt is True
+
+
+@pytest.mark.asyncio
+async def test_read_ptt_transmitting_radio_keyed(connected_radio):
+    """MOR-1905: read_ptt (not just get_ptt) must fail closed on TX2;."""
+    connected_radio._transport.query = AsyncMock(return_value="TX2")
+    assert await connected_radio.read_ptt() is True
+
+
+@pytest.mark.asyncio
+async def test_get_ptt_unexpected_value_reads_as_transmitting(connected_radio, caplog):
+    """MOR-1905: an unrecognised TX state must fail closed, with a diagnostic."""
+    connected_radio._transport.query = AsyncMock(return_value="TX9")
+    with caplog.at_level("WARNING"):
+        ptt = await connected_radio.get_ptt()
+    assert ptt is True
+    assert any(
+        "TX9" in record.message or "9" in record.message for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_powerstat_unexpected_value_stays_two_valued(connected_radio):
+    """MOR-1905 scope pin: PS (power switch) is genuinely two-valued.
+
+    Only the TX answer carries a third "radio keyed it" state; the PTT
+    fail-closed fix must not sweep into other `== "1"` readers like
+    powerstat, which stay a plain equality check.
+    """
+    connected_radio._transport.query = AsyncMock(return_value="PS9")
+    assert await connected_radio.get_powerstat() is False
 
 
 # ---------------------------------------------------------------------------

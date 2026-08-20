@@ -996,11 +996,26 @@ class YaesuCatRadio:
     async def read_ptt(self) -> bool:
         """Read the current PTT state without mutating legacy state.
 
+        The Yaesu ``TX;`` answer is three-valued, not a plain boolean flag:
+        ``0`` = receiving, ``1`` = transmitting (CAT-keyed), ``2`` =
+        transmitting (the radio itself keyed it -- front panel, mic,
+        footswitch, or VOX). Treating ``2`` as receiving is a fail-open
+        inversion of transmit truth (MOR-1905), so any state other than
+        ``0`` reads as transmitting, and an unrecognised value fails
+        closed (transmitting) with a diagnostic rather than reading as RX.
+
         Returns:
             ``True`` if transmitting, ``False`` if receiving.
         """
         result = await self._query("get_ptt")
-        return bool(result["state"] == "1")
+        state = result["state"]
+        if state not in ("0", "1", "2"):
+            logger.warning(
+                "read_ptt: unrecognised TX state %r from %s; failing closed (transmitting)",
+                state,
+                self.model,
+            )
+        return state != "0"
 
     async def get_ptt(self) -> bool:
         """Query the current PTT state.
