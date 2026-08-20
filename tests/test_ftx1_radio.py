@@ -17,6 +17,7 @@ from rigplane.backends.yaesu_cat.transport import CatTimeoutError
 from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.rig_loader import load_rig
+from rigplane.types import BreakInMode
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -384,6 +385,26 @@ async def test_get_ptt_unexpected_value_reads_as_transmitting(connected_radio, c
 
 
 @pytest.mark.asyncio
+async def test_get_ptt_unexpected_value_warns_once_then_demotes_to_debug(
+    connected_radio, caplog
+):
+    """MOR-1905: repeat unrecognised TX states demote to DEBUG (MOR-561 idiom).
+
+    PTT is polled at a fast, unthrottled cadence; without this, a radio
+    stuck on an unrecognised TX state would flood the log at WARNING every
+    cycle. Reuses the existing warn-once-then-DEBUG mechanism instead of
+    new rate-limiting machinery.
+    """
+    connected_radio._transport.query = AsyncMock(return_value="TX9")
+    with caplog.at_level("DEBUG"):
+        await connected_radio.get_ptt()
+        caplog.clear()
+        await connected_radio.get_ptt()
+    assert not any(record.levelname == "WARNING" for record in caplog.records)
+    assert any(record.levelname == "DEBUG" for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_get_powerstat_unexpected_value_stays_two_valued(connected_radio):
     """MOR-1905 scope pin: PS (power switch) is genuinely two-valued.
 
@@ -393,6 +414,35 @@ async def test_get_powerstat_unexpected_value_stays_two_valued(connected_radio):
     """
     connected_radio._transport.query = AsyncMock(return_value="PS9")
     assert await connected_radio.get_powerstat() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "unexpected_response", "expected"),
+    [
+        ("get_auto_notch", "BC09", False),
+        ("get_narrow", "NA09", False),
+        ("get_split", "ST9", False),
+        ("get_processor", "PR09", False),
+        ("get_cw_spot", "CS9", False),
+        ("get_auto_info", "AI9", False),
+        ("get_vox", "VX9", False),
+        ("get_lock", "LK9", False),
+        ("get_break_in", "BI9", BreakInMode.OFF),
+    ],
+)
+async def test_other_state_readers_stay_two_valued(
+    connected_radio, method_name, unexpected_response, expected
+):
+    """MOR-1905 scope pin: the remaining nine `== "1"` readers are genuinely
+    two-valued fields (unlike PTT's three-valued TX) and must stay a plain
+    equality check. An unrecognised code must fall through to the
+    "off"/False branch, not be swept into PTT's fail-closed treatment by a
+    future blanket edit.
+    """
+    connected_radio._transport.query = AsyncMock(return_value=unexpected_response)
+    result = await getattr(connected_radio, method_name)()
+    assert result == expected
 
 
 # ---------------------------------------------------------------------------
