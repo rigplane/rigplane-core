@@ -1,15 +1,13 @@
 # mypy: disable-error-code=untyped-decorator
 """MOR-1903 — standalone rigctld drives its own CI-V PTT re-read.
 
-Standalone ``rigplane serve`` has no cadence poller: ``due_requests()`` is
-called only by the web radio poller, so nothing in that deployment ever sends a
-``0x1C/0x00`` read after connect. With no observation the strict resolver behind
-the MOR-1881 DEFER gate stays UNKNOWN forever and every frequency, mode, VFO and
-key-down command is refused with ``RPRT -9``.
-
-These tests pin the missing *request*, never new data: the value that clears the
-gate may only arrive through the existing CI-V ingress, decoded from a real
-radio reply (MOR-1900 — no mirror-derived truth, no synthesised default).
+Standalone ``rigplane serve`` had no cadence poller at all: ``due_requests()``
+is called only by the web radio poller, so nothing ever sent a ``0x1C/0x00``
+read after connect, the strict resolver behind the MOR-1881 DEFER gate stayed
+UNKNOWN forever, and every frequency, mode, VFO and key-down command was
+refused with ``RPRT -9``. These tests pin the missing *request*, never new
+data: the value that clears the gate may only arrive through the existing CI-V
+ingress, from a real radio reply (MOR-1900).
 """
 
 from __future__ import annotations
@@ -25,6 +23,7 @@ import pytest
 from test_radio import MockTransport
 
 from rigplane.commands import CONTROLLER_ADDR
+from rigplane.commands.commander import Priority
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.radio import IcomRadio
 from rigplane.rigctld import handler as handler_mod
@@ -46,7 +45,6 @@ _UNDECLARED_CIV_MODELS = ("IC-705", "IC-9700", "X6100")
 def _make_radio(model: str) -> IcomRadio:
     radio = IcomRadio("198.51.100.10", model=model)
     transport = MockTransport()
-    # ``assert_radio_startup_ready`` probes this on the control transport.
     transport._udp_transport = object()  # type: ignore[attr-defined]
     radio._civ_transport = transport  # noqa: SLF001
     radio._ctrl_transport = transport  # noqa: SLF001
@@ -93,11 +91,8 @@ def _attach_handler(server: RigctldServer, radio: Any) -> Any:
 
 
 def _ptt_read_calls(send_civ: AsyncMock) -> list[Any]:
-    return [
-        call
-        for call in send_civ.await_args_list
-        if call.args[:1] == (0x1C,) and call.kwargs.get("sub") == 0x00
-    ]
+    hits = (c for c in send_civ.await_args_list if c.args[:1] == (0x1C,))
+    return [c for c in hits if c.kwargs.get("sub") == 0x00]
 
 
 @pytest.fixture  # type: ignore[untyped-decorator]
@@ -107,19 +102,10 @@ def civ_radio() -> Generator[IcomRadio, None, None]:
     radio._connected = False  # noqa: SLF001
 
 
-# --- AC-1: the cadence is sub-TTL, derived from the field's own TTL ---------
-
-
 def test_ptt_reread_interval_is_derived_from_the_observation_ttl() -> None:
-    """Two reads per freshness window, derived from ``_civ_rx``'s own table.
-
-    A cadence at or above the TTL reproduces today's sawtooth (MOR-1903 §2.6).
-    """
+    """Two reads per freshness window, derived from ``_civ_rx``'s own table."""
     assert 0 < PTT_REREAD_INTERVAL_SECONDS < _PTT_TTL_SECONDS
     assert _PTT_TTL_SECONDS / PTT_REREAD_INTERVAL_SECONDS >= 2.0
-
-
-# --- AC-2: RF truth stays resolvable for as long as the radio answers -------
 
 
 async def test_rf_truth_never_decays_while_the_radio_answers(
@@ -155,10 +141,12 @@ async def test_rf_truth_never_decays_while_the_radio_answers(
 
     calls = _ptt_read_calls(send_civ)
     assert len(calls) >= 2, calls
-    assert all(call.kwargs.get("wait_response") is False for call in calls)
-
-
-# --- AC-3: DEFER writes and key-down succeed once a real answer lands -------
+    # A background poller yields the shared CI-V lane and never parks on the
+    # Commander future (MOR-497i / MOR-497ii).
+    for call in calls:
+        assert call.kwargs.get("wait_response") is False
+        assert call.kwargs.get("priority") is Priority.BACKGROUND
+        assert call.kwargs.get("wait_dispatch") is False
 
 
 @pytest.mark.parametrize("model", _UNDECLARED_CIV_MODELS)
@@ -181,21 +169,17 @@ async def test_writes_succeed_after_the_radio_answers_the_reread(model: str) -> 
         await _deliver(radio, _ptt_reply(radio, transmitting=False))
         assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.RX  # noqa: SLF001
 
-        # ``V VFOB`` on a dual-RX rig (IC-9700) takes the ACK-confirmed
-        # receiver-switch path, which a non-answering stub cannot complete.
-        accepted_wires = [b"F 14074000", b"M USB 2400", b"T 1"]
-        if radio.receiver_count == 1:
-            accepted_wires.insert(2, b"V VFOB")
-        for wire in accepted_wires:
-            accepted = await handler.execute(parse_line(wire), session_id="s1")
-            assert accepted.error is None or int(accepted.error) == 0, (wire, accepted)
+        # ``V`` on a dual-RX rig (IC-9700) needs an ACK the stub cannot give:
+        # pin only that the interlock stopped refusing, and run it last — its
+        # ~1s stall would age the observation past its TTL for the next wire.
+        for wire in (b"F 14074000", b"M USB 2400", b"T 1", b"V VFOB"):
+            got = await handler.execute(parse_line(wire), session_id="s1")
+            code = 0 if got.error is None else int(got.error)
+            assert code == 0 or (wire == b"V VFOB" and code != -9), (wire, got)
     finally:
         handler.stop_key_down_backstop()
         await server._stop_ptt_reread_task()  # noqa: SLF001
         radio._connected = False  # noqa: SLF001
-
-
-# --- AC-4: absence is never filled in (the MOR-1900 invariant) --------------
 
 
 async def test_unanswered_reread_never_produces_rf_truth(
@@ -229,22 +213,25 @@ async def test_unanswered_reread_never_produces_rf_truth(
         await server._stop_ptt_reread_task()  # noqa: SLF001
 
 
-# --- AC-5: client gating and clean teardown ---------------------------------
-
-
-async def test_reread_task_is_cancelled_and_awaited_on_stop(
+async def test_no_read_while_an_external_cat_session_owns_the_wire(
     civ_radio: IcomRadio,
 ) -> None:
-    civ_radio.send_civ = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    """A Hamlib bridge owns the byte stream; our reads stay out of it."""
+    send_civ = AsyncMock(return_value=None)
+    civ_radio.send_civ = send_civ  # type: ignore[method-assign]
+    civ_radio.begin_external_cat_session()
     server = RigctldServer(civ_radio, RigctldConfig(port=0))
-    await server.start()
+    server._bootstrap_state_acquisition()  # noqa: SLF001
+    server._client_count = 1  # noqa: SLF001
+    server._start_ptt_reread_task()  # noqa: SLF001
     try:
-        task = server._ptt_reread_task  # noqa: SLF001
-        assert task is not None and not task.done()
+        await asyncio.sleep(PTT_REREAD_INTERVAL_SECONDS * 4.0)
+        assert _ptt_read_calls(send_civ) == []
+        civ_radio.end_external_cat_session()
+        await asyncio.sleep(PTT_REREAD_INTERVAL_SECONDS * 4.0)
+        assert len(_ptt_read_calls(send_civ)) >= 2
     finally:
-        await server.stop()
-    assert server._ptt_reread_task is None  # noqa: SLF001
-    assert task.done()
+        await server._stop_ptt_reread_task()  # noqa: SLF001
 
 
 async def test_started_server_drives_reads_only_while_a_client_is_connected(
@@ -255,6 +242,8 @@ async def test_started_server_drives_reads_only_while_a_client_is_connected(
     civ_radio.send_civ = send_civ  # type: ignore[method-assign]
     server = RigctldServer(civ_radio, RigctldConfig(host="127.0.0.1", port=0))
     await server.start()
+    task = server._ptt_reread_task  # noqa: SLF001
+    assert task is not None and not task.done()
     try:
         await asyncio.sleep(PTT_REREAD_INTERVAL_SECONDS * 4.0)
         assert _ptt_read_calls(send_civ) == []
@@ -280,9 +269,7 @@ async def test_started_server_drives_reads_only_while_a_client_is_connected(
             await writer.wait_closed()
     finally:
         await server.stop()
-
-
-# --- AC-7: non-CI-V radios are untouched by 1903-A (FTX-1 gap: MOR-1903-B) --
+    assert server._ptt_reread_task is None and task.done()  # noqa: SLF001
 
 
 def test_yaesu_radio_gets_no_civ_reread_task() -> None:

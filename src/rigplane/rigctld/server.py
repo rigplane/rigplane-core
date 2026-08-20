@@ -22,6 +22,7 @@ import time
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
+from ..commands.commander import Priority
 from ..core.acquisition_scheduler import (
     AcquisitionExecutionResult,
     AcquisitionExecutor,
@@ -56,17 +57,21 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["PTT_REREAD_INTERVAL_SECONDS", "RigctldServer", "run_rigctld_server"]
 
-# MOR-1903: standalone rigctld has no cadence poller — ``due_requests()`` is
-# called only by the web radio poller, so in ``rigplane serve`` nothing ever
-# sends a ``0x1C/0x00`` read after connect. Without an observation the strict
-# resolver behind the MOR-1881 DEFER gate (and the BLOCK pre-gate guarding
-# key-down) stays UNKNOWN forever and every frequency / mode / VFO / split /
-# RIT write and every ``T 1`` is refused with ``RPRT -9``.
+# MOR-1903: standalone rigctld had no cadence poller of any kind —
+# ``due_requests()`` is called only by the web radio poller, so nothing ever
+# sent a ``0x1C/0x00`` read after connect, the strict resolver behind the
+# MOR-1881 DEFER gate (and the BLOCK pre-gate guarding key-down) stayed UNKNOWN
+# forever, and every frequency / mode / VFO / split / RIT write and every
+# ``T 1`` was refused with ``RPRT -9``.
 #
-# The TTL is read from ``_civ_rx``'s own table, never copied. A quarter of it
-# puts two reads inside every freshness window, so one lost reply cannot open a
-# gap; a cadence at or above the TTL would instead reproduce the web
-# deployment's known-then-unknown sawtooth, which refuses most writes.
+# The TTL is read from ``_civ_rx``'s own table, never copied; a quarter of it
+# puts two reads in every freshness window, so one lost reply cannot open a gap
+# (a cadence at or above the TTL would reproduce the web deployment's
+# known-then-unknown sawtooth, which refuses most writes). It is a background
+# poller and is sent as one: ``Priority.BACKGROUND`` to yield the shared CI-V
+# lane to user commands, an unkey above all (MOR-497i), and
+# ``wait_dispatch=False`` so parking on the Commander future cannot push the
+# send past the very TTL this cadence exists to stay inside (MOR-497ii).
 PTT_OBSERVATION_TTL_SECONDS: float = _OBSERVATION_MAX_AGE_SECONDS[
     ("global", "tx_state", "ptt")
 ]
@@ -460,8 +465,7 @@ class RigctldServer:
     def _start_ptt_reread_task(self) -> None:
         """Start the client-gated CI-V PTT re-read, if this radio supports it.
 
-        CI-V only: the reply is published canonically by the existing ingress,
-        profile-independently. The Yaesu leg is MOR-1903-B.
+        CI-V only; the Yaesu leg is MOR-1903-B.
         """
         if self._ptt_reread_task is not None:
             return
@@ -485,11 +489,10 @@ class RigctldServer:
             logger.debug("rigctld PTT re-read task failed before stop", exc_info=True)
 
     async def _run_ptt_reread(self) -> None:
-        """Ask the radio for its PTT state while a CAT client is connected.
+        """Drive the *request* only; nothing here writes to the StateStore.
 
-        The *request* only: nothing here writes to the StateStore. If the radio
-        never answers, RF truth stays UNKNOWN and the gate keeps refusing —
-        absence is never filled in (MOR-1900).
+        If the radio never answers, RF truth stays UNKNOWN and the gate keeps
+        refusing — absence is never filled in (MOR-1900).
         """
         while True:
             try:
@@ -498,19 +501,32 @@ class RigctldServer:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                # A dead link or a mid-teardown transport must not kill the
-                # driver; the next tick retries and the gate stays honest in
-                # the meantime.
+                # A dead link or mid-teardown transport must not kill the
+                # driver; the next tick retries, honestly UNKNOWN meanwhile.
                 logger.debug("rigctld PTT re-read failed: %s", exc, exc_info=True)
 
     async def _send_ptt_reread_once(self) -> None:
-        """Emit one ``0x1C/0x00`` read, but only with a client attached.
+        """Emit one ``0x1C/0x00`` read on the poller lane, if we may.
 
-        Parity with the lazy poller start: an idle server stays off the wire.
+        Not via ``_send_one_state_query``: that carries bounded on-demand
+        requests on the user-command lane, the wrong lane for a cadence.
         """
-        if self._client_count <= 0:
+        radio = self._radio
+        # Parity with the lazy poller start: an idle server stays off the wire.
+        if self._client_count <= 0 or not isinstance(radio, CivCommandCapable):
             return
-        await self._send_one_state_query(0x1C, 0x00, None)
+        # A Hamlib bridge owns the byte stream; our reads must not pollute it
+        # (MOR-166 slice 2). ``is True``, matching every sibling poller, so a
+        # duck-typed radio never quiesces by accident.
+        if getattr(radio, "external_cat_session_active", False) is True:
+            return
+        await radio.send_civ(
+            0x1C,
+            sub=0x00,
+            wait_response=False,
+            priority=Priority.BACKGROUND,
+            wait_dispatch=False,
+        )
 
     def _start_state_acquisition_drain_task(self) -> None:
         if (
@@ -647,8 +663,9 @@ class RigctldServer:
         """Derive the canonical tx_active fact for the scheduler's dispatch gate.
 
         MOR-1532: standalone rigctld never calls
-        ``AcquisitionScheduler.due_requests()`` (it has no cadence-poll
-        concept of its own), so its scheduler's cached ``_tx_active`` never
+        ``AcquisitionScheduler.due_requests()`` (MOR-1903 gave this seat one
+        cadence of its own -- the PTT re-read -- but it bypasses the scheduler
+        entirely), so its scheduler's cached ``_tx_active`` never
         left the ``__init__`` default of ``True`` -- the MOR-1531
         ``tx_only`` reconciliation gate stayed permanently open in that
         mode. Derived identically to the web poller (MOR-1525 / PR #2438):
