@@ -25,6 +25,11 @@ Rules:
   here", "nothing calls this" — are wrong more often than not; test them by
   enumerating, not by one example. A false claim in prose is a blocking
   finding: it is what the next implementer will build from.
+- A finding is an instance until its class has been swept. Before you report
+  one, ask what shape it is and whether that shape occurs elsewhere; when you
+  review a fix, check whether the class was swept or only the named instance
+  patched. Verify a cross-reference twice over — that its target exists, and
+  that the target holds what the reference claims it holds.
 - Gate verdict format when reviewing a PR: first line exactly
   `Agent Review: PASS <full-40-hex-head-sha>` or
   `Agent Review: BLOCKED <full-40-hex-head-sha>`, then a blank line and the

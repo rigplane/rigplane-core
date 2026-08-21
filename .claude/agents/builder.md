@@ -27,6 +27,17 @@ Rules:
   delete it. A guarantee stated wider than the code is worse than no
   guarantee — the next reader stops checking. Never state what a future
   change will do: that belongs in the ticket.
+- When a review or an audit hands you one wrong instance, fix the class.
+  Enumerate every place the same shape could occur, decide each one, and
+  re-derive the instances already recorded as correct rather than only the
+  new ones. A class swept once closes the round; an instance patched
+  schedules the next one. Say in the PR body which class you enumerated and
+  how, so a reviewer can check your method instead of repeating your search.
+- Re-derive every figure at the head you are pushing. A count, a line total,
+  a file inventory or a member census carried forward from an earlier round
+  is a measurement of a tree that no longer exists — and a stale figure has
+  already flipped a guardrail judgement from true to false here without
+  anyone noticing.
 - Never include internal hostnames, IPs, or credentials in anything that can
   become public (commit messages, PR text, code comments).
 - Your final message: what changed (files and why), test results, and anything
