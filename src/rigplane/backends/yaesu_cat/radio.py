@@ -1111,8 +1111,12 @@ class YaesuCatRadio:
         The real :class:`~.transport.YaesuCatTransport` raises a typed
         exception per outcome rather than returning a sentinel string, so
         this never trusts a raw ``"?"`` token -- it catches the transport's
-        own vocabulary instead. Never raises: a rejected or unanswered read
-        comes back as a :class:`TxStateReading` with a ``failure`` tag.
+        own vocabulary instead. A rejected or unanswered read is never
+        raised -- it comes back as a :class:`TxStateReading` with a
+        ``failure`` tag -- but a precondition failure ahead of the wire
+        (``read_ptt_token`` -> ``_query`` -> ``_require_connected``, not
+        connected at all) still raises, the same convention every other
+        read on this class follows.
         """
         try:
             token = await self.read_ptt_token()

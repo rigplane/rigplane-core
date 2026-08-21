@@ -3695,8 +3695,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``_request_authoritative_ptt_read`` (``_civ_rx.py:679,718-732``).
 
         Icom carries no keying attribution on this wire (§3.7): ``attributed``
-        is honestly ``None``. Never raises — a failed or unverifiable read
-        comes back as a :class:`TxStateReading` with a ``failure`` tag.
+        is honestly ``None``. A read that reaches the wire and fails is
+        never raised — it comes back as a :class:`TxStateReading` with a
+        ``failure`` tag — but ``self._check_connected()`` above still
+        raises on a precondition failure (not connected at all), the same
+        convention every other read on this class follows.
         """
         self._check_connected()
         frame = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)

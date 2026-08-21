@@ -541,12 +541,21 @@ class TransmitStateReadable(Protocol):
     async def read_transmit_state(self) -> TxStateReading:
         """Return one fresh, solicited transmit-state reading.
 
-        Never raises: a failed, refused or unverifiable read comes back as
-        an ordinary :class:`~rigplane.core.tx_authority.TxStateReading`
-        with ``value`` left ``None`` (or ``verified_readback=False``) and a
-        ``failure`` tag — never as an exception. The caller is the transmit
-        authority's hazard admission, which owns the one deadline for the
-        whole read.
+        A read that reaches the wire and fails, is refused, or is
+        unverifiable comes back as an ordinary
+        :class:`~rigplane.core.tx_authority.TxStateReading` with ``value``
+        left ``None`` (or ``verified_readback=False``) and a ``failure``
+        tag — never as an exception for *that* outcome. This is **not** a
+        blanket "never raises" guarantee, though: a precondition failure
+        ahead of the wire — not connected at all — follows the same
+        convention every other read on this class uses and raises, on two
+        of the three shipped implementations (the third, the rigctld-client
+        adapter, wraps everything in ``except Exception``). The transmit
+        authority's hazard admission is the caller, and its own blanket
+        ``except Exception`` around the whole call
+        (``core/tx_authority.py``) is what actually makes this fail-closed
+        end to end — not a per-implementer promise this protocol cannot
+        enforce structurally.
         """
         ...
 
