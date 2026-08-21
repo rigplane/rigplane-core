@@ -61,7 +61,8 @@ Run the gates yourself, from CLAUDE.md § Commands: the standard pytest suite,
 
 ## Post-pipeline
 
-1. If failure: run `/analyze-failure` (mandatory)
+1. If failure: classify the outcome and record the reason in the PR or ticket,
+   per CLAUDE.md §Failure handling (mandatory)
 2. **Cleanup workspace** (mandatory — runs on success, failure, and skip):
    - `git worktree remove <path> --force`
    - `git worktree prune` to clear any orphans
