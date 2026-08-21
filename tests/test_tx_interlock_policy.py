@@ -132,8 +132,13 @@ def test_hard_block_is_allowed_only_when_rx_is_known() -> None:
 
 
 def test_disruptive_operations_defer() -> None:
+    """MOR-1940: this is also the widening guard -- FREQUENCY and RIT_XIT
+    were removed from this list (see
+    ``test_frequency_and_rit_xit_are_reclassified_tx_safe`` below); MODE,
+    BAND, VFO_SELECT, VFO_TOPOLOGY and MEMORY stay DEFER and must stay
+    pinned here so the reclassification cannot silently widen.
+    """
     for command in (
-        SetFreq(7_100_000),
         SetMode("USB"),
         SetBand(4),
         SelectVfo("MAIN"),
@@ -142,14 +147,32 @@ def test_disruptive_operations_defer() -> None:
         SetSplit(on=True),
         SetDualWatch(on=True),
         MemoryToVfo(channel=1),
-        SetRitTxStatus(on=True),
-        SetRitFrequency(freq=100),
     ):
         assert classify_tx_interlock(command) is TxInterlockDisposition.DEFER
 
 
+def test_frequency_and_rit_xit_are_reclassified_tx_safe() -> None:
+    """MOR-1940: both bench radios accept and apply a frequency write while
+    keyed, and RIT/XIT (bench item B3) closed the same way -- accepted and
+    applied during transmit, confirmed by read-back (ADR
+    docs/plans/2026-08-20-transmit-authority.md S3.3). Neither family may
+    hold a write pending a state change any more: TX_SAFE means the write
+    is sent unconditionally, in every RF state including UNKNOWN.
+    """
+    for command in (
+        SetFreq(7_100_000),
+        SetRitTxStatus(on=True),
+        SetRitFrequency(freq=100),
+    ):
+        assert classify_tx_interlock(command) is TxInterlockDisposition.TX_SAFE
+        for rf_state in (RfState.RX, RfState.TX, RfState.UNKNOWN):
+            decision = evaluate_tx_interlock(command, rf_state=rf_state)
+            assert decision.allowed is True
+            assert decision.disposition is TxInterlockDisposition.TX_SAFE
+
+
 def test_defer_does_not_loosen_when_rf_state_is_unknown() -> None:
-    decision = evaluate_tx_interlock(SetFreq(7_100_000), rf_state=RfState.UNKNOWN)
+    decision = evaluate_tx_interlock(SetBand(4), rf_state=RfState.UNKNOWN)
 
     assert decision.disposition is TxInterlockDisposition.DEFER
     assert decision.allowed is False
@@ -260,7 +283,7 @@ def test_command_family_metadata_pins_typed_policy_without_classifying_defaults(
 
 def test_deferred_lane_holds_then_releases_after_continuous_known_rx() -> None:
     lane = DeferredTxCommandLane()
-    command = SetFreq(7_100_000)
+    command = SetBand(4)
 
     held = lane.defer(command, now=10.0)
     assert held.outcome is TxInterlockDeferredOutcome.HELD
@@ -330,7 +353,7 @@ def test_deferred_lane_rejects_unbound_forged_decision(command: object) -> None:
 
 def test_deferred_lane_resets_only_quiet_progress_for_unknown_or_renewed_tx() -> None:
     lane = DeferredTxCommandLane()
-    command = SetFreq(7_100_000)
+    command = SetBand(4)
     lane.defer(command, now=10.0)
 
     lane.observe(rf_state=RfState.RX, now=10.2)
@@ -359,7 +382,7 @@ def test_deferred_lane_resets_only_quiet_progress_for_unknown_or_renewed_tx() ->
 
 def test_deferred_lane_ttl_never_restarts_on_ptt_qsk_transitions() -> None:
     lane = DeferredTxCommandLane()
-    command = SetFreq(7_100_000)
+    command = SetBand(4)
     lane.defer(command, now=0.0)
 
     lane.observe(rf_state=RfState.TX, now=2.8)
@@ -374,7 +397,7 @@ def test_deferred_lane_ttl_never_restarts_on_ptt_qsk_transitions() -> None:
 
 def test_newer_deferred_command_explicitly_supersedes_the_single_slot() -> None:
     lane = DeferredTxCommandLane()
-    first = SetFreq(7_100_000)
+    first = SetBand(4)
     second = SetMode("USB")
     lane.defer(first, now=10.0)
     assert (
@@ -405,7 +428,7 @@ def test_newer_deferred_command_explicitly_supersedes_the_single_slot() -> None:
 
 def test_superseding_deferred_command_retains_the_original_deadline() -> None:
     lane = DeferredTxCommandLane()
-    first = SetFreq(7_100_000)
+    first = SetBand(4)
     second = SetMode("USB")
     lane.defer(first, now=10.0)
 
@@ -431,7 +454,7 @@ def test_superseding_deferred_command_retains_the_original_deadline() -> None:
 
 def test_command_after_expired_entry_starts_a_new_deadline() -> None:
     lane = DeferredTxCommandLane()
-    first = SetFreq(7_100_000)
+    first = SetBand(4)
     second = SetMode("USB")
     lane.defer(first, now=10.0)
 
