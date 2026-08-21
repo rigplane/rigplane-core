@@ -255,7 +255,11 @@ class DeferredTxCommandLane:
 _ALWAYS_PASS_TYPES = (PttOff, ScanStop)
 
 _DEFER_TYPES = (
-    SetFreq,
+    # MOR-1940: FREQUENCY and RIT_XIT were removed (both bench radios accept
+    # and apply these writes while keyed; ADR
+    # docs/plans/2026-08-20-transmit-authority.md S3.3 groups them as
+    # manufacturer-permitted). They fall through to the TX_SAFE default
+    # below. MODE, BAND, VFO_SELECT, VFO_TOPOLOGY and MEMORY are untouched.
     SetMode,
     SetBand,
     SelectVfo,
@@ -270,8 +274,6 @@ _DEFER_TYPES = (
     QuickSplitTrigger,
     SetMemoryMode,
     MemoryToVfo,
-    SetRitTxStatus,
-    SetRitFrequency,
 )
 
 _HARD_BLOCK_TYPES = (

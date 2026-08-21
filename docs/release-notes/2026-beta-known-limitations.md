@@ -67,21 +67,27 @@ that class of defect is release-blocking by definition and is not on this list.
 ## rigctld write handling during transmit
 
 - **While the radio is known to be transmitting, rigctld silently drops
-  state-changing writes in the frequency, mode, VFO, split, and RIT/XIT
-  families and answers `RPRT 0` (success) instead of an error.** This
-  deliberately mirrors hamlib's own core, which returns success without
-  writing while PTT is on: a non-zero return makes WSJT-X treat the
-  situation as a hard rig-control failure — it de-keys, stops the
-  auto-sequencer, and on a repeated error shows a modal dialog. Under
-  unknown or stale RF state the seat still refuses truthfully with an
-  error; the drop applies only to known transmit. A third-party client
-  that writes while the radio is transmitting is told the write succeeded
-  even though the radio did not change; it discovers the real value on its
-  next read. (MOR-1881)
+  state-changing writes in the mode, VFO, and split families and answers
+  `RPRT 0` (success) instead of an error.** This deliberately mirrors
+  hamlib's own core, which returns success without writing while PTT is
+  on: a non-zero return makes WSJT-X treat the situation as a hard
+  rig-control failure — it de-keys, stops the auto-sequencer, and on a
+  repeated error shows a modal dialog. Under unknown or stale RF state the
+  seat still refuses truthfully with an error; the drop applies only to
+  known transmit. A third-party client that writes while the radio is
+  transmitting is told the write succeeded even though the radio did not
+  change; it discovers the real value on its next read. (MOR-1881)
 - **For up to about a second after an unkey, the seat may still read the
-  radio as transmitting and drop a write the same way.** A WSJT-X "Fake It"
-  split-mode dial restore issued right after unkey can be swallowed this
-  way, leaving the rig on the transmit-shifted dial frequency. (MOR-1892)
+  radio as transmitting and drop a mode/VFO/split write the same way.**
+  (MOR-1881)
+- **Frequency and RIT/XIT are exempt from both limitations above.** Bench
+  measurement showed both radios accept and apply these writes while
+  keyed, so the two families are classified TX-SAFE and are always
+  applied, in any RF state, including the up-to-a-second post-unkey
+  window. This also resolves the case previously recorded here of a
+  WSJT-X "Fake It" split-mode dial restore issued right after unkey being
+  swallowed: that restore is a frequency write and is no longer subject to
+  any drop or refusal. (MOR-1940)
 
 ## rigctld raw CI-V (`w`) timeouts
 

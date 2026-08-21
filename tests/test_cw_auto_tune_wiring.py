@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -198,28 +197,45 @@ class TestCwAutoTuneWiring:
         assert cmd.receiver == receiver
 
     @pytest.mark.parametrize(
-        ("ptt", "ptt_stale", "reason"),
+        ("ptt", "ptt_stale"),
         [
-            (True, False, "RF state is TX"),
-            (_UNOBSERVED, False, "RF state is unknown"),
-            (False, True, "RF state is unknown"),
-            (1, False, "RF state is unknown"),
+            (True, False),
+            (_UNOBSERVED, False),
+            (False, True),
+            (1, False),
         ],
         ids=("tx", "missing", "stale", "invalid"),
     )
-    async def test_correction_fails_closed_before_frequency_enqueue(
-        self, ptt: object, ptt_stale: bool, reason: str
+    async def test_correction_now_proceeds_regardless_of_rf_state(
+        self, ptt: object, ptt_stale: bool
     ) -> None:
+        """MOR-1940: the production behaviour change in this ticket.
+
+        This replaces test_correction_fails_closed_before_frequency_enqueue,
+        which pinned the opposite (now-superseded) behaviour: FREQUENCY was
+        reclassified DEFER -> tx-safe (both bench radios accept and apply a
+        frequency write while keyed), so ``evaluate_tx_interlock`` is now
+        unconditionally ``allowed=True`` for the SetFreq this method builds.
+        The same four not-confirmed-RX cases that used to raise
+        ``CommandError`` before enqueuing (TX, missing/unobserved PTT, stale
+        PTT, an unmapped PTT value) now enqueue the correction exactly like
+        the confirmed-RX case does.
+        """
         handler = _make_handler(ptt=ptt, ptt_stale=ptt_stale)
         with patch("rigplane.cw_auto_tuner.CwAutoTuner") as mock_tuner:
             mock_tuner.return_value.start_collection.side_effect = lambda callback: (
                 callback(650)
             )
 
-            with pytest.raises(CommandError, match=reason):
-                await handler._cw_auto_tune()
+            result = await handler._cw_auto_tune()
 
-        handler._server.command_queue.put.assert_not_called()
+        assert result["detected"] == 650
+        assert result["applied"] is True
+        q = handler._server.command_queue
+        q.put.assert_called_once()
+        cmd = q.put.call_args[0][0]
+        assert cmd.freq == 14_074_050
+        assert cmd.receiver == 0
 
     @pytest.mark.parametrize(
         ("active", "active_observation"),

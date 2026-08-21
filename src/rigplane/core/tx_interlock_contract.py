@@ -82,7 +82,7 @@ TX_INTERLOCK_COMMAND_FAMILY_METADATA = (
         TxInterlockCommandFamily.TUNER_ENGAGE, TxInterlockDisposition.BLOCK
     ),
     TxInterlockCommandFamilyMetadata(
-        TxInterlockCommandFamily.FREQUENCY, TxInterlockDisposition.DEFER
+        TxInterlockCommandFamily.FREQUENCY, TxInterlockDisposition.TX_SAFE
     ),
     TxInterlockCommandFamilyMetadata(
         TxInterlockCommandFamily.MODE, TxInterlockDisposition.DEFER
@@ -100,6 +100,6 @@ TX_INTERLOCK_COMMAND_FAMILY_METADATA = (
         TxInterlockCommandFamily.MEMORY, TxInterlockDisposition.DEFER
     ),
     TxInterlockCommandFamilyMetadata(
-        TxInterlockCommandFamily.RIT_XIT, TxInterlockDisposition.DEFER
+        TxInterlockCommandFamily.RIT_XIT, TxInterlockDisposition.TX_SAFE
     ),
 )

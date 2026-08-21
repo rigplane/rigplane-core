@@ -1402,12 +1402,18 @@ async def test_deferred_write_and_unkey_both_answer_immediately_on_one_connectio
     """MOR-1881: the exact regression the rejected deferred-lane design
     failed at (PR #2755).
 
-    One connection, ``F <freq>`` then ``T 0``, PTT seeded known TX. The lane
-    build held the ``F`` command in-band and answered the unkey at +2.003s.
+    One connection, ``M <mode>`` then ``T 0``, PTT seeded known TX. The lane
+    build held the mode command in-band and answered the unkey at +2.003s.
     This seat now never holds anything in-band for a DEFER-classified write
     -- known TX is dropped immediately (``RPRT 0``, radio untouched) -- so
-    both replies must land essentially instantly, and the frequency write
-    must never have reached the radio.
+    both replies must land essentially instantly, and the mode write must
+    never have reached the radio.
+
+    MOR-1940: uses ``M`` (mode), not ``F`` (frequency) -- frequency was
+    reclassified tx-safe and no longer drops during TX (both bench radios
+    accept and apply it while keyed). This test is about the drop's shape,
+    not about which family triggers it, so the exemplar moved; the property
+    it pins is unchanged.
     """
     radio = SerialMockRadio()
     await radio.connect()
@@ -1419,11 +1425,13 @@ async def test_deferred_write_and_unkey_both_answer_immediately_on_one_connectio
     try:
         reader, writer = await _connect(srv)
         try:
+            mode_before = await radio.get_mode()
+
             start = time.monotonic()
-            writer.write(b"F 7050000\n")
+            writer.write(b"M LSB 2400\n")
             await writer.drain()
-            data_freq = await asyncio.wait_for(reader.read(4096), timeout=1.0)
-            elapsed_freq = time.monotonic() - start
+            data_mode = await asyncio.wait_for(reader.read(4096), timeout=1.0)
+            elapsed_mode = time.monotonic() - start
 
             start_ptt = time.monotonic()
             writer.write(b"T 0\n")
@@ -1435,13 +1443,13 @@ async def test_deferred_write_and_unkey_both_answer_immediately_on_one_connectio
     finally:
         await srv.stop()
 
-    assert data_freq == b"RPRT 0\n"
-    assert elapsed_freq < 0.1
+    assert data_mode == b"RPRT 0\n"
+    assert elapsed_mode < 0.1
     assert data_ptt == b"RPRT 0\n"
     assert elapsed_ptt < 0.1
-    # The write was dropped, not applied: SerialMockRadio's default frequency
-    # (14074000) is unchanged, not the 7050000 that was requested.
-    assert await radio.get_freq() == 14_074_000
+    # The write was dropped, not applied: SerialMockRadio's mode is unchanged
+    # from before the request, not the LSB/2400 that was requested.
+    assert await radio.get_mode() == mode_before
 
 
 # ---------------------------------------------------------------------------
