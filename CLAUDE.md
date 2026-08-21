@@ -19,12 +19,12 @@ Never bare `python` or `pytest`. Worktrees: `uv sync --all-extras` first.
 `uv run mypy --strict src/rigplane/web` is the only mypy invocation in
 `.github/`. Per-PR (`quick.yml`) it runs **only** when that workflow's
 `frontend` path filter matches — `frontend/**`, `src/rigplane/web/**`, or
-`quick.yml` itself; it runs unconditionally in `full.yml` (cron/manual) and
-`publish.yml`. So a PR touching only `src/rigplane/runtime/` gets no mypy in
-CI until the next cron run. Whole-tree `uv run mypy src/` is advisory and
-ungated: at commit `f4ab1e57` it reported 12 errors in
-`runtime/_control_phase.py`, `runtime/_audio_runtime_mixin.py` and
-`web/radio_poller.py`.
+`quick.yml` itself; it runs unconditionally in `full.yml` and `publish.yml`
+(the CI workflows table below gives what triggers those). So a PR touching
+only `src/rigplane/runtime/` gets no mypy in CI until `full.yml` next runs.
+Whole-tree `uv run mypy src/` is advisory and ungated: at commit `f4ab1e57`
+it reported 12 errors in `runtime/_control_phase.py`,
+`runtime/_audio_runtime_mixin.py` and `web/radio_poller.py`.
 
 ---
 
