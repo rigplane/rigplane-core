@@ -600,10 +600,11 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
     the legacy ``radio_state`` cache (``yaesu_cat/radio.py:987-994`` and the
     rigctld-client ``set_ptt`` equivalent); neither touches
     ``self._observation_callback`` at all. So ``observations == []`` measured
-    right after the bare write, with no poll cycle ever run, would hold no
-    matter what the write did wrong — the write path and the callback are
-    architecturally disjoint until something drives a poll. That was this
-    row's defect: it measured exactly that, so it never went red.
+    right after the bare write, with no poll cycle ever run, was unreachable
+    under today's code and under every mutation this file declares — the two
+    paths only meet once something drives a poll. It was not unfalsifiable:
+    a write path patched to publish its own observation does redden even the
+    old row. It was unreached, which is enough to make a green meaningless.
 
     What the row needs only shows up once a poll cycle actually runs, so this
     drives one for real — the same method the production polling loop calls
@@ -622,6 +623,14 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
     # row goes red on the `yaesu-ftx1` column: the real PTT readback the
     # driven poll cycle takes now carries a producer-side source, and
     # `laundered` stops being empty.
+    #
+    # MUTATION: in `src/rigplane/backends/yaesu_cat/observations.py`, remove
+    # the `_PTT` branch at :328-333 so the poll cycle stops reading PTT at
+    # all -> the liveness guard below goes red on the `yaesu-ftx1` column.
+    # Without that guard the row would pass on an empty `laundered` list
+    # again, which is the same silent vacuity in a narrower disguise: a
+    # non-empty `observations` proves a cycle ran, not that it read the one
+    # field this row is about.
     """
     observations = harness.extras["observations"]
     observations.clear()
@@ -636,9 +645,9 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
     else:
         await poller._poll_medium()
 
-    assert observations, (
-        f"{harness.name}: the driven poll cycle produced no observations — "
-        "this row proves nothing without a real one to inspect"
+    assert any(str(obs.path) == "global.tx_state.ptt" for obs in observations), (
+        f"{harness.name}: the driven poll cycle read no transmit state — "
+        "this row proves nothing without the field under test to inspect"
     )
     laundered = [
         obs
