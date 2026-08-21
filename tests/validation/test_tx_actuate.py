@@ -315,8 +315,9 @@ def _tx_radio_unwritten_mirror(*, start_power: int = 200):
     """A radio matching the Yaesu backend after MOR-1941: ``set_ptt`` does
     NOT self-write ``radio_state.ptt`` -- only a real read-back
     (``get_ptt``) tells the truth, and -- faithfully to the shipped
-    ``YaesuCatRadio.get_ptt`` (``yaesu_cat/radio.py:1076``), which is kept,
-    not deleted -- a successful ``get_ptt`` DOES update the mirror from
+    ``YaesuCatRadio.get_ptt`` (``yaesu_cat/radio.py:1096`` -- moved +20 by
+    MOR-1914's imports and its new ``_interpret_ptt_token`` helper), which
+    is kept, not deleted -- a successful ``get_ptt`` DOES update the mirror from
     that read-back. Proves the hardware TX-actuate check was repointed off
     the mirror (``validation/hardware.py:702-703``) onto a real read, not
     that the mirror never changes.
