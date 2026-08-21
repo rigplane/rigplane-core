@@ -594,31 +594,70 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
 ) -> None:
     """§3.10 item 3, row 7 / INV-8: a write outcome is never evidence of RF.
 
-    The observation callback the web hands ``create_observation_poller`` must
-    stay silent for a bare ``set_ptt`` — only a readback may claim transmit
-    truth.
+    A bare ``set_ptt`` — the harness's direct call on the radio object, not
+    the queue-drained write ``test_the_queue_drain_reaches_the_backend_write_method``
+    already proves reaches the backend — only writes to the wire and updates
+    the legacy ``radio_state`` cache (``yaesu_cat/radio.py:987-994`` and the
+    rigctld-client ``set_ptt`` equivalent); neither touches
+    ``self._observation_callback`` at all. So ``observations == []`` measured
+    right after the bare write, with no poll cycle ever run, was unreachable
+    under today's code and under every mutation this file declares — the two
+    paths only meet once something drives a poll. It was not unfalsifiable:
+    a write path patched to publish its own observation does redden even the
+    old row. It was unreached, which is enough to make a green meaningless.
 
-    # MUTATION: in `src/rigplane/core/tx_authority.py`, add
-    # `"command_response"` to the `RADIO_READBACK_SOURCES` frozenset at
-    # :49-51 -> the sources half of this row goes red.
+    What the row needs only shows up once a poll cycle actually runs, so this
+    drives one for real — the same method the production polling loop calls
+    (``YaesuCatPoller._emit_medium_observations`` /
+    ``RigctldClientObservationPoller._poll_medium``), over the same scripted
+    wire the bare write just used, no sleep and no mock. A genuine
+    ``yaesu_poll_response`` / ``hamlib_response`` readback of the current PTT
+    state is expected and correct — §3.7's ``verified_readback`` is what
+    decides whether that readback may be trusted, not this row. What must
+    never appear is a ``global.tx_state.ptt`` observation under any other
+    source: that would be a write outcome wearing a readback's clothes.
+
+    # MUTATION: in `src/rigplane/backends/yaesu_cat/observations.py`, in
+    # `YaesuObservationAdapter._adapter` at :1141, change
+    # `source="yaesu_poll_response"` to `source="command_response"` -> this
+    # row goes red on the `yaesu-ftx1` column: the real PTT readback the
+    # driven poll cycle takes now carries a producer-side source, and
+    # `laundered` stops being empty.
+    #
+    # MUTATION: in `src/rigplane/backends/yaesu_cat/observations.py`, remove
+    # the `_PTT` branch at :328-333 so the poll cycle stops reading PTT at
+    # all -> the liveness guard below goes red on the `yaesu-ftx1` column.
+    # Without that guard the row would pass on an empty `laundered` list
+    # again, which is the same silent vacuity in a narrower disguise: a
+    # non-empty `observations` proves a cycle ran, not that it read the one
+    # field this row is about.
     """
     observations = harness.extras["observations"]
     observations.clear()
+    harness.script("rx")
 
     await harness.key()
     await harness.unkey()
 
+    poller = harness.extras["poller"]
+    if harness.name == "yaesu-ftx1":
+        await poller._emit_medium_observations()
+    else:
+        await poller._poll_medium()
+
+    assert any(str(obs.path) == "global.tx_state.ptt" for obs in observations), (
+        f"{harness.name}: the driven poll cycle read no transmit state — "
+        "this row proves nothing without the field under test to inspect"
+    )
     laundered = [
         obs
         for obs in observations
         if str(obs.path) == "global.tx_state.ptt"
         and str(obs.source.source) not in RADIO_READBACK_SOURCES
     ]
-    assert observations == [] or laundered == [], (
+    assert laundered == [], (
         f"{harness.name}: a self-write produced a transmit-truth observation"
     )
-    assert "command_response" not in RADIO_READBACK_SOURCES
-    assert "state_poller" not in RADIO_READBACK_SOURCES
 
 
 @pytest.mark.parametrize("harness", CIV_BACKENDS, indirect=True)
