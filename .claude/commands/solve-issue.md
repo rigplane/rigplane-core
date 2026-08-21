@@ -3,71 +3,67 @@
 You are the orchestrator for the autonomous issue resolution pipeline.
 Process the issue specified in `$ARGUMENTS` (a GitHub issue number).
 
+Roles are dispatched by name. The four that exist are `builder`, `researcher`,
+`scout` and `verifier` (`.claude/agents/`). If a phase below names a role you
+cannot dispatch, **stop and report** — do not substitute another role and do
+not do the phase yourself. Substituting at the REVIEW phase is what the rule
+"the implementation agent never reviews its own work" exists to prevent.
+
 ## Pre-flight
 
-1. Read `.claude/workflow/task.md` — must be idle (no other issue in progress)
-2. Read `.claude/knowledge/patterns.md` and `.claude/knowledge/failures.md`
-3. Fetch issue: `gh issue view $ARGUMENTS --json number,title,body,labels,state`
-4. Write issue context to `.claude/workflow/task.md`
+1. Fetch issue: `gh issue view $ARGUMENTS --json number,title,body,labels,state`
+2. Create an ephemeral worktree on a `codex/<topic>` branch off `origin/main`
+   and do all work there — never on `main`, never in the shared checkout
 
 ## Pipeline: EXPLORE → PLAN → EXECUTE → REGCHECK → REVIEW → TEST → PR
 
 ### Phase 1: EXPLORE
-Use `.claude/agents/researcher.md`.
-- Read the issue, find affected files, check knowledge base
-- Write findings to `.claude/workflow/research.md`
-- **STOP if confidence < 0.6** — mark issue as SKIPPED in queue
+Dispatch the `researcher` role (`.claude/agents/researcher.md`).
+- Read the issue, find affected files
+- Have the researcher report findings back as text
+- **STOP if confidence < 0.6** — mark the issue SKIPPED
 
 ### Phase 2: PLAN
-Use `.claude/agents/planner.md`.
+Plan yourself, as orchestrator. There is no planner role: design decisions
+belong to the coordinator, not to a subagent.
 - Enter Plan Mode first — do NOT start coding
-- Design minimal fix based on research
-- Write plan to `.claude/workflow/plan.md`
-- **STOP if plan violates guardrails** (>3 files, >400 LOC, architecture change)
+- Design the minimal fix from the research findings
+- **STOP if the plan violates guardrails** (>3 files, >400 LOC, architecture change)
 
 ### Phase 3: EXECUTE
-Use `.claude/agents/executor.md`.
-- Implement plan exactly as specified
-- Write tests as specified
-- Update `.claude/workflow/progress.md`
+Dispatch the `builder` role (`.claude/agents/builder.md`) with the plan as its spec.
+- Implement the plan exactly as specified; write tests first
 - Max 2 attempts per change
 
 ### Phase 4: REGCHECK (mandatory)
 Run `/regression-check` (see `.claude/commands/regression-check.md`).
 - Compare test results against baseline
-- Write to `.claude/workflow/regression.md`
 - If regression detected → back to EXECUTE (counts toward retry limit)
 - Do NOT proceed to REVIEW with regressions
 
 ### Phase 5: REVIEW
-Use `.claude/agents/reviewer.md`.
-- Review all changes against plan
-- Check for safety, correctness, layering
-- Write to `.claude/workflow/review.md`
-- If needs_changes → back to EXECUTE (max 2 review loops)
+Dispatch the `verifier` role (`.claude/agents/verifier.md`).
+- The verifier did not write the change and must not be the builder
+- Review all changes against the plan; check safety, correctness, layering
+- Have the verifier report its verdict back as text; you relay it
+- If it reports needed changes → back to EXECUTE (max 2 review loops)
 
 ### Phase 6: TEST
-Use `.claude/agents/qa.md`.
-- Full test suite, lint, format, type check
+Run the gates yourself, from CLAUDE.md § Commands: the standard pytest suite,
+`ruff check`, `ruff format`, and `mypy`.
 - If the working tree is unchanged since REGCHECK, reuse that full-suite result (do not re-run an identical suite on the same code) and run only lint, format, and type check; any code change after REGCHECK requires a fresh full run
-- If fails → back to EXECUTE (max 2 fix cycles)
+- If a gate fails → back to EXECUTE (max 2 fix cycles)
 
 ### Phase 7: PR
-- Create branch: `fix/$ARGUMENTS-<short-slug>` or `feat/$ARGUMENTS-<short-slug>`
-- Commit with conventional message: `fix(#$ARGUMENTS): ...` or `feat(#$ARGUMENTS): ...`
-- Push and create PR via `gh pr create`
+- Commit with a conventional message: `fix(#$ARGUMENTS): ...` or `feat(#$ARGUMENTS): ...`
+- Push and create the PR via `gh pr create`
 - PR body references the issue: `Closes #$ARGUMENTS`
 
 ## Post-pipeline
 
-1. Update `.claude/queue/history.json` with result
-2. Update `.claude/metrics.json`
-3. If success: update `.claude/knowledge/patterns.md` with what worked
-4. If failure: run `/analyze-failure` (mandatory), then update `.claude/knowledge/failures.md`
-5. Reset `.claude/workflow/` files to idle state
-6. Update `.claude/queue/active_issue.json` to idle
-7. **Cleanup workspace** (mandatory — runs on success, failure, and skip):
-   - `git worktree remove <path> --force` (if worktree was used)
+1. If failure: run `/analyze-failure` (mandatory)
+2. **Cleanup workspace** (mandatory — runs on success, failure, and skip):
+   - `git worktree remove <path> --force`
    - `git worktree prune` to clear any orphans
    - Never `rm -rf` worktree directories — always use git commands
    - Workspace may persist ONLY if explicitly marked for manual review
@@ -77,7 +73,7 @@ Use `.claude/agents/qa.md`.
 - Max 2 execution attempts per step
 - Max 2 review loops
 - Max 2 test fix cycles
-- If any limit exceeded → mark FAILED, log reason, update failures.md
+- If any limit exceeded → mark FAILED and log the reason
 
 ## Guardrails (hard limits)
 
