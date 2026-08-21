@@ -50,6 +50,13 @@ RADIO_READBACK_SOURCES: frozenset[str] = frozenset(
     {"poll_response", "civ_unsolicited", "hamlib_response", "yaesu_poll_response"}
 )
 
+#: Every ``TxEvidence.failure`` tag this engine produces itself. A backend's
+#: read primitive may supply its own through ``TxStateReading.failure`` (for
+#: example ``"no-capability"``); those pass through untouched.
+TX_ENGINE_FAILURE_TAGS: frozenset[str] = frozenset(
+    {"timeout", "transport", "read-error", "unverifiable-provenance", "unclassified"}
+)
+
 #: Raw byte writes, excluded by name. Bytes cannot be classified, so the
 #: authority does not classify them; the totality test covers map ∪ this set,
 #: so an unmapped method can never hide as "raw".
@@ -217,6 +224,7 @@ def build_transmit_truth(
     age = snapshot.generated_at_monotonic - field.last_observed_monotonic
     return TransmitTruth(
         value=field.value,
+        # Row 6 routes Yaesu's ``tx_state_map`` attribution into this field.
         attributed=None,
         age_seconds=age if age >= 0.0 else None,
         source=str(field.source.source),
@@ -283,6 +291,11 @@ class TxArgumentContext:
     bands: tuple[tuple[int, int], ...]
 
     def first(self, name: str) -> object | None:
+        """First positional argument, else ``kwargs[name]``.
+
+        A predicate for a method whose interesting argument is *not* the first
+        positional one must read :attr:`args` / :attr:`kwargs` directly.
+        """
         if self.args:
             return self.args[0]
         return self.kwargs.get(name)
@@ -378,10 +391,14 @@ class _Hold:
 
 
 @dataclass
-class _Ticket:
-    """Handed to the caller for the duration of an admitted write."""
+class TxAdmission:
+    """Handed to the caller for the duration of an admitted write.
 
-    family: TxFamily
+    ``family`` is ``None`` only for a ``RAW_EXCLUDED`` method: bytes are not
+    classified, and the admission says so rather than borrowing a family.
+    """
+
+    family: TxFamily | None
     write_class: TxWriteClass
     evidence: TxEvidence | None = None
     holds: list[_Hold] = dataclass_field(default_factory=list)
@@ -472,10 +489,10 @@ class TransmitAuthority:
         method: str,
         args: Sequence[object] = (),
         kwargs: Mapping[str, object] | None = None,
-    ) -> AsyncIterator[_Ticket]:
+    ) -> AsyncIterator[TxAdmission]:
         """Gate one write. The body performs the write; the lock spans both."""
         if method in RAW_EXCLUDED:
-            yield _Ticket(TxFamily.RX_PATH, TxWriteClass.PASS)
+            yield TxAdmission(None, TxWriteClass.PASS)
             return
 
         context = TxArgumentContext(
@@ -503,13 +520,13 @@ class TransmitAuthority:
         write_class = FAMILY_WRITE_CLASS[family]
 
         if write_class is TxWriteClass.PASS:
-            yield _Ticket(family, write_class)
+            yield TxAdmission(family, write_class)
             return
 
         if write_class is TxWriteClass.UNKEY:
             self._deadline = None
             self._holds = []
-            yield _Ticket(family, write_class)
+            yield TxAdmission(family, write_class)
             self._record(method, family, write_class, "sent", None, None)
             return
 
@@ -518,8 +535,12 @@ class TransmitAuthority:
                 ticket = self._admit_keying(family, context)
             else:
                 ticket = await self._admit_hazard(method, family, context)
-            yield ticket
-            self._commit(method, ticket)
+            try:
+                yield ticket
+            finally:
+                # A write that raised may already have reached the radio, so
+                # the hold, the deadline and the record land either way.
+                self._commit(method, ticket)
 
     # -- internals ---------------------------------------------------------
 
@@ -531,7 +552,9 @@ class TransmitAuthority:
             return entry.family
         return TX_ARGUMENT_PREDICATES[entry.predicate](context)
 
-    def _admit_keying(self, family: TxFamily, context: TxArgumentContext) -> _Ticket:
+    def _admit_keying(
+        self, family: TxFamily, context: TxArgumentContext
+    ) -> TxAdmission:
         self._transmit_epoch += 1
         if family is TxFamily.CW_TEXT:
             duration = (
@@ -542,11 +565,11 @@ class TransmitAuthority:
             )
         else:
             hold = _Hold("key")
-        return _Ticket(family, TxWriteClass.KEYING, holds=[hold])
+        return TxAdmission(family, TxWriteClass.KEYING, holds=[hold])
 
     async def _admit_hazard(
         self, method: str, family: TxFamily, context: TxArgumentContext
-    ) -> _Ticket:
+    ) -> TxAdmission:
         def refuse(code: TxRefusalCode, evidence: TxEvidence) -> NoReturn:
             self._refuse(method, family, TxWriteClass.HAZARD, code, evidence)
 
@@ -571,6 +594,10 @@ class TransmitAuthority:
             refuse(unavailable, TxEvidence(solicited=True, failure="timeout"))
         except (OSError, RuntimeError):
             refuse(unavailable, TxEvidence(solicited=True, failure="transport"))
+        except Exception:
+            # TxRefusal is the one exception a consumer of the gate handles, so
+            # a parser fault in the read primitive becomes one too (§3.4).
+            refuse(unavailable, TxEvidence(solicited=True, failure="read-error"))
 
         evidence = TxEvidence(
             value=reading.value,
@@ -595,7 +622,7 @@ class TransmitAuthority:
         holds: list[_Hold] = []
         if family is TxFamily.TUNER and is_tune_start(context):
             holds.append(_Hold("tune"))
-        return _Ticket(family, TxWriteClass.HAZARD, evidence=evidence, holds=holds)
+        return TxAdmission(family, TxWriteClass.HAZARD, evidence=evidence, holds=holds)
 
     def _own_transmit_hold(self, now: float) -> str | None:
         if self._lease_active is not None and self._lease_active():
@@ -611,14 +638,19 @@ class TransmitAuthority:
         ]
         return self._holds
 
-    def _commit(self, method: str, ticket: _Ticket) -> None:
+    def _commit(self, method: str, ticket: TxAdmission) -> None:
         """Called once the caller's write has been handed off."""
         if ticket.holds:
-            self._holds.extend(ticket.holds)
-            self._deadline = self._clock() + self._max_key_down_seconds
-        self._record(
-            method, ticket.family, ticket.write_class, "sent", None, ticket.evidence
-        )
+            # `cw` keeps its computed duration; `key` and `tune` inherit the
+            # key-down bound, so `_active_holds` clears them on the injected
+            # clock even where no driver ever calls `poll()`.
+            deadline = self._clock() + self._max_key_down_seconds
+            for hold in ticket.holds:
+                hold.expires_at = hold.expires_at or deadline
+                self._holds.append(hold)
+            self._deadline = deadline
+        family = str(ticket.family)
+        self._record(method, family, ticket.write_class, "sent", None, ticket.evidence)
 
     def _refuse(
         self,

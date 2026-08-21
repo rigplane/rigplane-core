@@ -24,6 +24,7 @@ from rigplane.core.tx_authority import (
     RADIO_READBACK_SOURCES,
     RAW_EXCLUDED,
     TX_ARGUMENT_PREDICATES,
+    TX_ENGINE_FAILURE_TAGS,
     TX_READ_DEADLINE_SECONDS,
     BandRelation,
     TransmitAuthority,
@@ -85,6 +86,8 @@ class FakeTransmitStateLink:
         self._clock = clock
         self.reads: list[float] = []
         self.answers: list[TxStateReading | str] = []
+        self.read_started: asyncio.Event | None = None
+        self.release_read: asyncio.Event | None = None
         self.read_latency = 0.01
         self.default = TxStateReading(
             value=False,
@@ -100,6 +103,10 @@ class FakeTransmitStateLink:
 
     async def read(self) -> TxStateReading:
         self.reads.append(self._clock())
+        if self.read_started is not None:
+            self.read_started.set()
+        if self.release_read is not None:
+            await self.release_read.wait()
         for hook in self.on_read:
             hook()  # type: ignore[operator]
         answer = self.answers.pop(0) if self.answers else self.default
@@ -107,6 +114,8 @@ class FakeTransmitStateLink:
             await asyncio.sleep(3600)
         if answer == "boom":
             raise OSError("transport is down")
+        if answer == "garbage":
+            raise ValueError("the row-5 parser could not decode the reply")
         self._clock.advance(self.read_latency)
         assert isinstance(answer, TxStateReading)
         return answer
@@ -434,6 +443,34 @@ async def test_hazard_transport_error_fails_closed() -> None:
     assert excinfo.value.evidence.failure == "transport"
 
 
+async def test_an_unexpected_read_error_is_still_a_typed_refusal() -> None:
+    """§3.4: ``TxRefusal`` is the one exception consumers of the gate handle."""
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    link.script("garbage")
+    authority = build_authority(clock, link)
+
+    with pytest.raises(TxRefusal) as excinfo:
+        async with authority.admit("set_antenna_1", ()):
+            pytest.fail("hazard write reached the wire on an undecodable reply")
+    assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
+    assert excinfo.value.evidence.failure == "read-error"
+    assert authority.view().records[-1].action == "refused"
+
+
+def test_engine_failure_tag_set_is_pinned() -> None:
+    """A sixth tag must not appear unnoticed: row 9b widens the web envelope."""
+    assert TX_ENGINE_FAILURE_TAGS == frozenset(
+        {
+            "timeout",
+            "transport",
+            "read-error",
+            "unverifiable-provenance",
+            "unclassified",
+        }
+    )
+
+
 async def test_hazard_without_capability_fails_closed() -> None:
     clock = Clock()
     link = FakeTransmitStateLink(clock)
@@ -580,20 +617,36 @@ async def test_an_admitted_unkey_clears_the_key_hold() -> None:
 # --------------------------------------------------------------------------
 
 
+#: A table that classifies all three T5 methods into HAZARD families. An empty
+#: map is not a poisoned one — it leaves the short-circuit as the only path and
+#: so cannot catch INV-6's mutation ("reorder the short-circuit after the
+#: table"). This map can: with the table consulted first, every de-key path
+#: becomes a hazard write and is refused at a scripted TX.
+POISONED_MAP: Mapping[str, TxMethodEntry] = {
+    "set_ptt": TxMethodEntry(TxFamily.TUNER),
+    "set_powerstat": TxMethodEntry(TxFamily.ANTENNA),
+    "stop_cw_text": TxMethodEntry(TxFamily.BAND),
+}
+
+
 async def test_unkey_is_never_refused_even_with_a_poisoned_table() -> None:
+    """INV-5/INV-6: the T5 short-circuit precedes the table and the wire."""
     clock = Clock()
     link = FakeTransmitStateLink(clock)
-    link.script(TX)
-    authority = build_authority(clock, PoisonedLink(), method_map={})
+    link.script(TX, TX, TX)
+    authority = build_authority(clock, link, method_map=POISONED_MAP)
 
-    async with authority.admit("set_ptt", (False,)):
-        pass
-    async with authority.admit("set_powerstat", (False,)):
-        pass
-    async with authority.admit("stop_cw_text", ()):
-        pass
+    for method, args in (
+        ("set_ptt", (False,)),
+        ("set_powerstat", (False,)),
+        ("stop_cw_text", ()),
+    ):
+        async with authority.admit(method, args):
+            pass
+
+    assert link.reads == []  # not one of the three consulted the radio
     assert authority.view().deadline_monotonic is None
-    assert link.reads == []
+    assert authority.view().records[-1].write_class is TxWriteClass.UNKEY
 
 
 async def test_unkey_clears_the_deadline_and_the_holds() -> None:
@@ -705,6 +758,52 @@ async def test_a_refused_tune_start_neither_holds_nor_arms() -> None:
     assert authority.view().own_transmit_holds == ()
 
 
+@pytest.mark.parametrize(
+    ("method", "args", "hold"),
+    [("set_ptt", (True,), "key"), ("set_tuner_status", (2,), "tune")],
+)
+async def test_own_transmit_holds_do_not_outlive_the_deadline_without_a_driver(
+    method: str, args: tuple[object, ...], hold: str
+) -> None:
+    """The bound the ADR already specifies, evaluated without a ``poll()`` caller.
+
+    Rows 7-11 arm no deadline driver, and a tune start has no natural unkey at
+    all, so a hold that only ``poll()`` could clear would refuse the whole
+    hazard set for the life of the connection. An expired hold does not go
+    blind: it falls through to the solicited read.
+    """
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    link.script(RX, RX)
+    authority = build_authority(clock, link)
+
+    async with authority.admit(method, args):
+        pass
+    assert authority.view().own_transmit_holds == (hold,)
+
+    clock.advance(BACKEND_MAX_KEY_DOWN_SECONDS + 1.0)
+    assert authority.view().own_transmit_holds == ()  # poll() was never called
+
+    reads_before = len(link.reads)
+    async with authority.admit("set_antenna_1", ()):
+        pass
+    assert len(link.reads) == reads_before + 1
+
+
+async def test_a_failed_key_write_still_records_its_hold() -> None:
+    """A write that raised may already have reached the radio."""
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    authority = build_authority(clock, link)
+
+    with pytest.raises(OSError):
+        async with authority.admit("set_ptt", (True,)):
+            raise OSError("the transport died after the frame went out")
+
+    assert authority.view().own_transmit_holds == ("key",)
+    assert authority.view().deadline_monotonic is not None
+
+
 async def test_last_resort_unkey_is_the_only_other_injected_effect() -> None:
     clock = Clock()
     link = FakeTransmitStateLink(clock)
@@ -731,6 +830,41 @@ async def test_a_transmit_observation_between_read_and_write_invalidates_it() ->
         async with authority.admit("set_antenna_1", ()):
             pytest.fail("hazard write used a read a transmit event invalidated")
     assert excinfo.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
+
+
+async def test_a_key_cannot_slip_between_a_hazard_read_and_its_write() -> None:
+    """INV-4: the admission lock spans the read and the write it authorised.
+
+    Counts cannot see this — both writes happen either way. Only the *order*
+    of the effects distinguishes a held lock from an open window.
+    """
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    link.script(RX)
+    link.read_started = asyncio.Event()
+    link.release_read = asyncio.Event()
+    authority = build_authority(clock, link)
+    order: list[str] = []
+
+    async def hazard() -> None:
+        async with authority.admit("set_antenna_1", ()):
+            order.append("hazard-write")
+
+    async def key() -> None:
+        async with authority.admit("set_ptt", (True,)):
+            order.append("key-write")
+
+    hazard_task = asyncio.create_task(hazard())
+    await asyncio.wait_for(link.read_started.wait(), 1.0)
+
+    key_task = asyncio.create_task(key())
+    for _ in range(20):
+        await asyncio.sleep(0)  # the key gets every chance to slip in
+    assert order == [], "the key ran while a hazard admission held the lock"
+
+    link.release_read.set()
+    await asyncio.gather(hazard_task, key_task)
+    assert order == ["hazard-write", "key-write"]
 
 
 async def test_a_receive_observation_never_clears_anything() -> None:
@@ -826,8 +960,8 @@ async def test_raw_excluded_methods_are_not_classified() -> None:
     link = FakeTransmitStateLink(clock)
     authority = build_authority(clock, PoisonedLink())
     for method in sorted(RAW_EXCLUDED):
-        async with authority.admit(method, (b"\xfe\xfe",)):
-            pass
+        async with authority.admit(method, (b"\xfe\xfe",)) as admission:
+            assert admission.family is None  # bytes are not classified
     assert authority.view().records == ()
     assert link.reads == []
 
