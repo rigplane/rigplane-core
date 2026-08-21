@@ -92,7 +92,7 @@ Append tasks to `.claude/queue/queue.json` with:
 
 If decomposition fails (issue too ambiguous, unclear scope):
 - Mark issue as BLOCKED in queue
-- Record the reason in the PR or ticket, per CLAUDE.md §Failure handling
+- Log reason to `.claude/knowledge/failures.md`
 - Classification: `decomposition_failed`
 
 ## Rules
