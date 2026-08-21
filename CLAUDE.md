@@ -104,10 +104,13 @@ One change per commit. Full test suite before push.
 Documentation under `docs/` cites code as file plus **symbol name**
 (`radio.py: IcomRadio.set_frequency`), never a line number — line numbers
 rot silently and a stale one is worse than no citation at all. Existing
-`file:line` citations are grandfathered in
+`file:line` citations are grandfathered, by exact (file, citation) pair, in
 `.github/scripts/doc-citation-baseline.txt`; the doc-citation-gate CI job
-fails on any new one and the baseline may only shrink (regenerate it with
-`.github/scripts/check-doc-citations.sh --regenerate`).
+fails on any citation not in that baseline, and separately fails if the
+baseline itself grew relative to the base branch — that second check reads
+git history directly, so it holds even if the baseline file was hand-edited
+to match a new citation. To shrink the baseline after converting a citation,
+run `.github/scripts/check-doc-citations.sh --regenerate`.
 
 ### Multi-machine Git hygiene
 

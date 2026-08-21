@@ -1,15 +1,24 @@
 name: Doc citation gate
 
-# Fails any push or PR that adds a `path:line` code citation to docs/** that
-# is not already grandfathered in .github/scripts/doc-citation-baseline.txt.
-# Documentation cites file plus symbol name, never a line number — line
-# numbers rot. See .github/scripts/check-doc-citations.sh for the rationale
-# and .github/scripts/check-doc-citations.sh --regenerate to shrink the
-# baseline.
+# Fails any push or PR that adds a `path:line` (or `path#Lline`) code
+# citation to docs/** that is not already grandfathered in
+# .github/scripts/doc-citation-baseline.txt. Documentation cites file plus
+# symbol name, never a line number — line numbers rot. See
+# .github/scripts/check-doc-citations.sh for the full rationale.
+#
+# Two independent checks run:
+#   1. docs/** vs the committed baseline (new citation / stale baseline entry).
+#   2. the committed baseline vs the baseline as it existed at the base ref
+#      (baseline growth). This second check is the one that actually makes
+#      "the baseline may only shrink" true: it is derived from git history
+#      that this workflow controls, not from anything a contributor's local
+#      `--regenerate` did, so it cannot be defeated by hand-editing the
+#      baseline file to match a hand-added citation.
 #
 # Path-filtered to docs/** (plus the gate's own files) so unrelated code-only
-# PRs don't pay for it. Single grep + bash pass, no toolchain, sub-second —
-# mirrors the rebrand-gate pattern.
+# PRs don't pay for it. Grep + bash, no toolchain — mirrors the rebrand-gate
+# pattern. fetch-depth: 0 is needed so `git show <base-ref>:...` can read the
+# baseline as it existed before this push/PR.
 
 on:
   push:
@@ -33,14 +42,21 @@ concurrency:
 
 jobs:
   citation-gate:
-    # Sub-second grep + bash filter, no toolchain needed. Keep this on a
-    # GitHub-hosted runner so protected-branch merges are not blocked when
-    # self-hosted runners are offline or occupied.
+    # Grep + bash, no toolchain needed. Keep this on a GitHub-hosted runner
+    # so protected-branch merges are not blocked when self-hosted runners
+    # are offline or occupied.
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      - name: Doc citation gate
+      - name: Doc citation gate (docs vs baseline)
         run: .github/scripts/check-doc-citations.sh
+
+      - name: Doc citation gate (baseline may only shrink)
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: .github/scripts/check-doc-citations.sh --check-growth "${BASE_REF}"
