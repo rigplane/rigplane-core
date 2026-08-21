@@ -415,9 +415,27 @@ async def _build_yaesu() -> TxConformanceHarness:
     radio = YaesuCatRadio("/dev/null", profile="ftx1")
     cat = ScriptedCatTransport(radio)
 
+    # ``read()`` below must exercise the *shipped* ``read_ptt`` predicate --
+    # not reimplement it -- so a regression there (e.g. the MOR-1905
+    # inversion) is caught by this matrix (MOR-1941 review, BLOCKED-2).
+    # ``read_ptt`` calls ``read_ptt_token`` internally exactly once; this
+    # wraps that call to capture the raw token for attribution, so the
+    # attribution mapping rides the same single wire round-trip instead of
+    # re-querying the radio. Same house pattern ``ScriptedCatTransport``
+    # already uses to replace an instance's bound methods.
+    last_token: dict[str, str | None] = {"value": None}
+    _real_read_ptt_token = radio.read_ptt_token
+
+    async def _capturing_read_ptt_token() -> str:
+        token = await _real_read_ptt_token()
+        last_token["value"] = token
+        return token
+
+    radio.read_ptt_token = _capturing_read_ptt_token  # type: ignore[method-assign]
+
     async def read() -> TxStateReading:
         try:
-            token = await radio.read_ptt_token()
+            value = await radio.read_ptt()
         except asyncio.TimeoutError:
             return TxStateReading(value=None, failure="timeout")
         except Exception:
@@ -425,10 +443,11 @@ async def _build_yaesu() -> TxConformanceHarness:
             return TxStateReading(value=None, failure="read-error")
         policy = radio.profile.tx_policy
         return TxStateReading(
-            value=not policy.is_receiving(token),
+            value=value,
             # MOR-1941: the three-valued answer routes through
-            # ``tx_state_map`` into this field via ``TxPolicy.attribution``.
-            attributed=policy.attribution(token),
+            # ``tx_state_map`` into this field via ``TxPolicy.attribution``,
+            # off the token ``read_ptt`` itself just consumed above.
+            attributed=policy.attribution(last_token["value"] or ""),
             source="yaesu_poll_response",
             verified_readback=True,
         )

@@ -1016,11 +1016,14 @@ class YaesuCatRadio:
         )
 
     async def read_ptt_token(self) -> str:
-        """Read the raw ``TX;`` token verbatim -- no interpretation, no mutation.
+        """Read the raw ``TX;`` token -- no RX/TX interpretation, no mutation.
 
-        The primitive :meth:`read_ptt` is built on. Exposes the wire value
-        (``"0"``/``"1"``/``"2"`` on shipped profiles) so a caller can map
-        it through the profile's :class:`~rigplane.profiles.TxPolicy` --
+        The primitive :meth:`read_ptt` is built on. Exposes the parsed wire
+        value (``"0"``/``"1"``/``"2"`` on shipped profiles, coerced to
+        ``str`` -- a no-op today, since the ``{state}`` parse template types
+        it as ``str`` on every shipped profile, but not a guarantee for a
+        future template typed otherwise) so a caller can map it through the
+        profile's :class:`~rigplane.profiles.TxPolicy` --
         :meth:`~rigplane.profiles.TxPolicy.is_receiving` for the RX/TX
         answer, :meth:`~rigplane.profiles.TxPolicy.attribution` for the
         vendor's per-value label (MOR-1941, §3.7 of the transmit-authority
