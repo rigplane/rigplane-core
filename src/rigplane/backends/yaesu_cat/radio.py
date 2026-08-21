@@ -1022,11 +1022,14 @@ class YaesuCatRadio:
         )
 
     async def read_ptt_token(self) -> str:
-        """Read the raw ``TX;`` token verbatim -- no interpretation, no mutation.
+        """Read the raw ``TX;`` token -- no RX/TX interpretation, no mutation.
 
-        The primitive :meth:`read_ptt` is built on. Exposes the wire value
-        (``"0"``/``"1"``/``"2"`` on shipped profiles) so a caller can map
-        it through the profile's :class:`~rigplane.profiles.TxPolicy` --
+        The primitive :meth:`read_ptt` is built on. Exposes the parsed wire
+        value (``"0"``/``"1"``/``"2"`` on shipped profiles, coerced to
+        ``str`` -- a no-op today, since the ``{state}`` parse template types
+        it as ``str`` on every shipped profile, but not a guarantee for a
+        future template typed otherwise) so a caller can map it through the
+        profile's :class:`~rigplane.profiles.TxPolicy` --
         :meth:`~rigplane.profiles.TxPolicy.is_receiving` for the RX/TX
         answer, :meth:`~rigplane.profiles.TxPolicy.attribution` for the
         vendor's per-value label (MOR-1941, §3.7 of the transmit-authority
@@ -1068,9 +1071,14 @@ class YaesuCatRadio:
     def _interpret_ptt_token(self, state: str) -> bool:
         """Map a raw ``TX;`` token to a transmitting boolean (positive-RX rule).
 
-        Shared by :meth:`read_ptt` and :meth:`read_transmit_state` so the
-        two reads can never independently drift on the fail-closed mapping
-        -- MOR-1905's own defect class, one token in, one mapping out.
+        The one place this predicate is written: shared by :meth:`read_ptt`
+        and :meth:`read_transmit_state` (MOR-1914, row 5) so a regression in
+        either caller's path -- the MOR-1905 inversion class -- is a
+        regression here, and the row-5 conformance matrix, which points its
+        ``yaesu-ftx1`` column at :meth:`read_transmit_state` rather than a
+        harness-local reimplementation, still exercises the one shipped
+        predicate a plain ``read_ptt()`` call would (the MOR-1941 review
+        concern, BLOCKED-2).
         """
         policy = self.profile.tx_policy
         if not policy.tx_state_map:
@@ -1095,11 +1103,10 @@ class YaesuCatRadio:
         """One solicited transmit-state read (ADR row 5).
 
         Implements :class:`~rigplane.core.radio_protocol.TransmitStateReadable`
-        on :meth:`read_ptt_token` and the profile's
-        :class:`~rigplane.profiles.TxPolicy` (MOR-1941, row 6): the raw
-        token is fetched once and routed through the same fail-closed
-        mapping :meth:`read_ptt` uses, plus the per-vendor attribution
-        (``tx_cat`` / ``tx_other``) §3.7 requires be carried, not discarded.
+        on :meth:`read_ptt_token` and :meth:`_interpret_ptt_token` -- the
+        same fail-closed mapping :meth:`read_ptt` uses, not a second copy of
+        it -- plus the per-vendor attribution (``tx_cat`` / ``tx_other``)
+        §3.7 requires be carried, not discarded.
 
         The real :class:`~.transport.YaesuCatTransport` raises a typed
         exception per outcome rather than returning a sentinel string, so

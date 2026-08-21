@@ -433,6 +433,29 @@ async def test_read_ptt_falls_back_to_the_legacy_predicate_when_unmeasured(confi
     instead, because ``"0"`` is the Yaesu CAT protocol's own receive
     token, not a per-radio measured value -- a vendor-level default, not
     a hardcoded radio constant.
+
+    ``TX2`` is the value that matters here and the reason this test is not
+    just ``TX0``/``TX1``. This branch is the default for **every** Yaesu
+    rig except the one bench-measured profile -- any user TOML for an
+    FT-991A or FT-710 with the same three-valued ``TX;`` lands on it -- and
+    it holds the one surviving equality predicate in
+    ``_interpret_ptt_token``, so it is the one place MOR-1905 could be
+    written again. A pin over ``TX0`` and ``TX1`` alone cannot see that:
+    both answers are identical under the inversion. Only the radio-keyed
+    value discriminates.
+
+    # MUTATION: in `src/rigplane/backends/yaesu_cat/radio.py`, at :1087
+    # (the fallback branch, NOT the mapped return at :1090 -- MOR-1914
+    # factored the predicate out of `read_ptt` into `_interpret_ptt_token`,
+    # a shared helper `read_transmit_state` also calls, so its row-5
+    # conformance matrix column keeps exercising this same code; `read_ptt`
+    # itself is now a two-line delegate and no longer holds the branch this
+    # comment used to cite -- the citation moves with the code, not the
+    # other way around), change `return state != "0"` to
+    # `return state == "1"` -> the TX2 case below reads a front-panel key
+    # as receiving and goes red. Mutating :1090 instead leaves this row
+    # green: that line serves the mapped path, which an unmeasured profile
+    # never reaches.
     """
     cfg = config
     object.__setattr__(cfg, "tx_policy", TxPolicy())
@@ -443,6 +466,15 @@ async def test_read_ptt_falls_back_to_the_legacy_predicate_when_unmeasured(confi
     assert await r.read_ptt() is False
 
     r._transport.query = AsyncMock(return_value="TX1")
+    assert await r.read_ptt() is True
+
+    # The radio keyed itself -- front panel, mic, footswitch or VOX.
+    r._transport.query = AsyncMock(return_value="TX2")
+    assert await r.read_ptt() is True
+
+    # Unrecognised, and still not receiving: the fallback is a positive
+    # rule with a one-entry map, not an equality test against "1".
+    r._transport.query = AsyncMock(return_value="TX9")
     assert await r.read_ptt() is True
 
 

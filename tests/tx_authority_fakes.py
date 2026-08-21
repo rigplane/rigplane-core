@@ -391,6 +391,12 @@ async def _build_yaesu() -> TxConformanceHarness:
     radio = YaesuCatRadio("/dev/null", profile="ftx1")
     cat = ScriptedCatTransport(radio)
 
+    # No monkey-patched capture of `read_ptt_token` here: `read_transmit_state`
+    # is production's own row-5 primitive, and it calls the same
+    # `_interpret_ptt_token` helper `read_ptt` does (`yaesu_cat/radio.py`) --
+    # not a harness-local reimplementation -- so a regression in that shared
+    # predicate (the MOR-1905 inversion class) reddens this column the same
+    # way the MOR-1941 review pin wanted the matrix to catch it (BLOCKED-2).
     from rigplane.runtime._poller_types import CommandQueue, PttOff, SetTunerStatus
 
     queue = CommandQueue()

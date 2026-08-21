@@ -342,10 +342,13 @@ async def test_an_unmapped_transmit_state_value_is_never_receiving(
     and hamlib-provider columns it produces no value at all. Both are "not
     receiving"; neither may admit a hazard write.
 
-    # MUTATION: in `src/rigplane/backends/yaesu_cat/radio.py`, change
-    # `return bool(state != "0")` at :1027 to `return bool(state == "1")`
-    # -> this row goes red on the `yaesu-ftx1` column (MOR-1905's own
-    # mutation): the unmapped `TX9` reads as receiving.
+    # MUTATION (MOR-1941, restated -- the map-driven predicate replaced the
+    # inline one this mutation used to target): in
+    # `src/rigplane/backends/yaesu_cat/radio.py`, in `read_ptt`, change
+    # `return not policy.is_receiving(state)` at :1070 to
+    # `return policy.is_receiving(state)` -> this row goes red on the
+    # `yaesu-ftx1` column (MOR-1905's own inversion direction): the unmapped
+    # `TX9` reads as receiving.
     """
     harness.script("unmapped")
     reading = await harness.read_transmit_state()
