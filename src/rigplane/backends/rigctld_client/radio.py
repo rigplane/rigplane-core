@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
+from ...exceptions import TimeoutError as RadioTimeoutError
 from ...core.radio_protocol import (
     PhysicalWriteReadbackResult,
     PhysicalWriteReadbackStatus,
@@ -762,7 +763,16 @@ class RigctldClientRadio:
         """
         try:
             value = await self.get_ptt()
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, RadioTimeoutError):
+            # Both are real outcomes here: ``asyncio.TimeoutError`` is the
+            # builtin/stdlib one; ``RadioTimeoutError`` is this module's own
+            # ``core.exceptions.TimeoutError`` (MRO: TimeoutError ->
+            # RigplaneError -> Exception -- it does NOT subclass the
+            # builtin), and it is exactly what the rigctld-client transport
+            # raises on a read timeout (``transport.py:64-66,214-216,233-235``).
+            # A narrower catch here silently reported every real timeout as
+            # ``failure="read-error"`` instead -- the same pattern already
+            # caught and fixed in ``runtime/radio.py``'s Icom primitive.
             return TxStateReading(value=None, failure="timeout")
         except Exception:
             return TxStateReading(value=None, failure="read-error")
