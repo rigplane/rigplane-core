@@ -6,12 +6,14 @@ and that _schema.md documentation exists.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
 import pytest
 
 from rigplane.capabilities import KNOWN_CAPABILITIES
+from rigplane.core.tx_interlock_contract import TX_INTERLOCK_COMMAND_FAMILY_METADATA
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 TEMPLATE_PATH = RIGS_DIR / "ic7610.toml"
@@ -208,6 +210,31 @@ class TestSchemaDoc:
     def test_schema_md_nonempty(self):
         content = SCHEMA_PATH.read_text()
         assert len(content.strip()) > 0
+
+    def test_disposition_table_matches_tx_interlock_contract(self):
+        """The `disposition_overrides` table must agree with the code.
+
+        MOR-1940 found the table listing `frequency` and `rit-xit` under
+        `defer` after the code had already reclassified both TX-SAFE, and
+        nothing caught the drift because the two tests above only check
+        that this file exists and is non-empty. This pins the doc table
+        against the actual base dispositions in tx_interlock_contract.py.
+        """
+        doc_table: dict[str, str] = {}
+        row_pattern = re.compile(r"\|\s*`(always-pass|tx-safe|block|defer)`\s*\|(.+)\|\s*$")
+        for line in SCHEMA_PATH.read_text().splitlines():
+            match = row_pattern.match(line)
+            if match is None:
+                continue
+            disposition, families_cell = match.groups()
+            for family in re.findall(r"`([a-z-]+)`", families_cell):
+                doc_table[family] = disposition
+
+        code_table = {
+            metadata.family.value: metadata.base_disposition.value
+            for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
+        }
+        assert doc_table == code_table
 
 
 def _assert_wire_bytes(value: list, label: str) -> None:

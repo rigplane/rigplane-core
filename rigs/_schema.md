@@ -127,9 +127,9 @@ The current stable family identifiers and their fixed base dispositions are:
 | Base disposition | Family identifiers |
 |------------------|--------------------|
 | `always-pass` | `ptt-off`, `power-off`, `scan-stop`, `tuner-off` |
-| `tx-safe` | `power-on` |
+| `tx-safe` | `power-on`, `frequency`, `rit-xit` |
 | `block` | `ptt-on`, `raw-civ`, `scan-start`, `antenna-switch`, `tuner-engage` |
-| `defer` | `frequency`, `mode`, `band`, `vfo-select`, `vfo-topology`, `memory`, `rit-xit` |
+| `defer` | `mode`, `band`, `vfo-select`, `vfo-topology`, `memory` |
 
 Only a known family whose fixed base disposition is `tx-safe` may appear in
 `disposition_overrides`, and its value must be `"defer"`. This is a one-way
