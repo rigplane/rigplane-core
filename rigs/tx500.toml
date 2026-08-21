@@ -255,3 +255,17 @@ get_meter       = { cat = { read = "RM;", parse = "RM{meter}{value:04d};" } }
 get_voltage     = { cat = { read = "VL;", parse = "VL{volts:04d};" } }
 # Transceiver ID (ID) — 019 / 500 / 505.
 get_id          = { cat = { read = "ID;", parse = "ID{id};" } }
+
+[tx_policy]
+# Deliberately empty (MOR-1947) — a declared decision, not an oversight.
+# TX-500 has no serial backend: backends/factory.py refuses the model, so
+# the only path to this radio is the rigctld client, whose transmit-state
+# read is permanently unverified — it answers from upstream Hamlib's cache
+# or another rigplane's retained state, never from a fresh radio read.
+# The `PT;` read declared above is therefore unreachable from here, and its
+# answer has never been measured against a keyed radio besides. No backend
+# on this radio's path reads this map today, so the empty table records a
+# ruling rather than producing a behaviour: it asserts no receiving value
+# instead of inventing one.
+refused_during_tx = []
+tx_state_map = { }
