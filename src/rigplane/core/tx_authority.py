@@ -18,6 +18,7 @@ Design: ``docs/plans/2026-08-20-transmit-authority.md`` §3.3-§3.7.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections import deque
@@ -25,8 +26,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field as dataclass_field, replace
 from enum import StrEnum
+from functools import lru_cache
 from types import MappingProxyType
-from typing import Literal, NoReturn
+from typing import Final, Literal, NoReturn
 
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateSnapshot
@@ -281,6 +283,66 @@ def band_relation(
 # Argument predicates — named and pure
 
 
+class _UnresolvedArgument:
+    """The value of an argument the engine could not determine."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "UNRESOLVED_ARGUMENT"
+
+
+#: Returned by :meth:`TxArgumentContext.first` when the engine cannot say what
+#: the caller passed. Every predicate that meets it must fail *closed*: the
+#: permissive branch — the unkey short-circuit, a PASS retune — is exactly what
+#: a mis-spelled admission must never reach (MOR-1954).
+UNRESOLVED_ARGUMENT: Final = _UnresolvedArgument()
+
+#: How many gated signatures the resolver keeps. A backend gates on the order
+#: of a hundred methods, so one entry per method fits many times over.
+SIGNATURE_CACHE_SIZE: Final = 512
+
+#: Methods the T5 short-circuit resolves from their argument rather than from
+#: any table. Named once so the engine and the short-circuit agree on which
+#: admissions actually consult an argument.
+ARGUMENT_SHORT_CIRCUIT_METHODS: frozenset[str] = frozenset({"set_ptt", "set_powerstat"})
+
+
+@lru_cache(maxsize=SIGNATURE_CACHE_SIZE)
+def _first_parameter_name(function: Callable[..., object]) -> str | None:
+    try:
+        parameters = list(inspect.signature(function).parameters.values())
+    except (TypeError, ValueError):  # pragma: no cover - builtins, C callables
+        return None
+    for index, parameter in enumerate(parameters):
+        if parameter.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        if index == 0 and parameter.name in ("self", "cls"):
+            continue
+        return parameter.name
+    return None
+
+
+def first_parameter_name(target: Callable[..., object] | None) -> str | None:
+    """The gated method's first caller-supplied parameter, from its signature.
+
+    The point of reading the *real* signature is that classification cannot
+    depend on how a call site happened to spell its argument. Reflection runs
+    once per underlying function and is cached; a bound method is normalised
+    onto its function so the cache holds no radio instances.
+    """
+    if target is None:
+        return None
+    function = getattr(target, "__func__", target)
+    try:
+        return _first_parameter_name(function)
+    except TypeError:  # pragma: no cover - unhashable callable
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class TxArgumentContext:
     """Everything a predicate may look at. No I/O, no globals."""
@@ -289,42 +351,80 @@ class TxArgumentContext:
     kwargs: Mapping[str, object]
     current_frequency_hz: float | None
     bands: tuple[tuple[int, int], ...]
+    target: Callable[..., object] | None = None
 
-    def first(self, name: str) -> object | None:
-        """First positional argument, else ``kwargs[name]``.
+    def first(self) -> object:
+        """The gated method's first argument, however the call spelled it.
+
+        Positionally it is simply the first of :attr:`args`; by keyword it is
+        read under the name :attr:`target`'s own signature declares. With no
+        signature to read, or a keyword the signature does not name, it is
+        :data:`UNRESOLVED_ARGUMENT` — never a guessed name and never ``None``,
+        which a predicate cannot tell from a genuine falsy argument.
 
         A predicate for a method whose interesting argument is *not* the first
-        positional one must read :attr:`args` / :attr:`kwargs` directly.
+        one must read :attr:`args` / :attr:`kwargs` directly.
         """
         if self.args:
             return self.args[0]
-        return self.kwargs.get(name)
+        if not self.kwargs:
+            return UNRESOLVED_ARGUMENT
+        name = first_parameter_name(self.target)
+        if name is not None and name in self.kwargs:
+            return self.kwargs[name]
+        return UNRESOLVED_ARGUMENT
 
 
 ArgumentPredicate = Callable[[TxArgumentContext], TxFamily]
 
 
 def ptt_family(context: TxArgumentContext) -> TxFamily:
-    """``set_ptt(True)`` keys; ``set_ptt(False)`` is the one-sided unkey."""
-    return TxFamily.PTT_ON if bool(context.first("value")) else TxFamily.PTT_OFF
+    """``set_ptt(True)`` keys; ``set_ptt(False)`` is the one-sided unkey.
+
+    An unresolved argument is read as the key, not the unkey: PTT_ON is the
+    KEYING branch, which arms the watchdog and refuses nothing, so failing
+    that way costs at most a spurious deadline — while failing the other way
+    would walk a key-down straight through the gate.
+    """
+    value = context.first()
+    if value is UNRESOLVED_ARGUMENT:
+        return TxFamily.PTT_ON
+    return TxFamily.PTT_ON if bool(value) else TxFamily.PTT_OFF
 
 
 def powerstat_family(context: TxArgumentContext) -> TxFamily:
     """``set_powerstat(False)`` joins the short-circuit set, never gated."""
-    return TxFamily.POWER_ON if bool(context.first("value")) else TxFamily.POWER_OFF
+    value = context.first()
+    if value is UNRESOLVED_ARGUMENT:
+        return TxFamily.POWER_ON
+    return TxFamily.POWER_ON if bool(value) else TxFamily.POWER_OFF
 
 
 def frequency_family(context: TxArgumentContext) -> TxFamily:
-    """HAZARD only when both endpoints resolve to declared bands and differ."""
-    target = context.first("frequency")
+    """HAZARD only when both endpoints resolve to declared bands and differ.
+
+    An unresolved *argument* is a hazard: a retune whose target the engine
+    cannot read may be the cross-band one. An unresolved *band relation* is
+    not — a gap, a missing current frequency or a profile with no band data
+    stays PASS, or the fail-closed direction would re-enter through the back
+    door (see :func:`band_relation`).
+    """
+    target = context.first()
+    if target is UNRESOLVED_ARGUMENT:
+        return TxFamily.BAND
     target_hz = float(target) if isinstance(target, (int, float)) else None
     relation = band_relation(context.current_frequency_hz, target_hz, context.bands)
     return TxFamily.BAND if relation is BandRelation.CROSS_BAND else TxFamily.FREQUENCY
 
 
 def is_tune_start(context: TxArgumentContext) -> bool:
-    """``set_tuner_status(2)`` starts a tune cycle — a transmission we asked for."""
-    return context.first("value") == 2
+    """``set_tuner_status(2)`` starts a tune cycle — a transmission we asked for.
+
+    Unresolved counts as a tune start: holding the key-down bound over a write
+    that turned out to be a plain tuner toggle is the survivable error.
+    """
+    value = context.first()
+    return value is UNRESOLVED_ARGUMENT or value == 2
 
 
 TX_ARGUMENT_PREDICATES: Mapping[str, ArgumentPredicate] = MappingProxyType(
@@ -340,14 +440,24 @@ def short_circuit_family(method: str, context: TxArgumentContext) -> TxFamily | 
     """T5: resolve de-key / power-off / stop-CW ahead of every table.
 
     A corrupt or incomplete classification table must never make an unkey
-    harder, so this consults no map and no profile data.
+    harder, so this consults no map and no profile data. The PTT/powerstat
+    pair is therefore resolved here from the argument alone in *both*
+    directions — including the direction taken when the argument cannot be
+    read — so no table can turn one of them into a refusal.
     """
     if method == "stop_cw_text":
         return TxFamily.CW_STOP
-    if method == "set_ptt" and not bool(context.first("value")):
-        return TxFamily.PTT_OFF
-    if method == "set_powerstat" and not bool(context.first("value")):
-        return TxFamily.POWER_OFF
+    if method in ARGUMENT_SHORT_CIRCUIT_METHODS:
+        value = context.first()
+        if value is UNRESOLVED_ARGUMENT:
+            # An unreadable argument resolves to the strict twin, still ahead
+            # of the table: PTT_ON is KEYING and POWER_ON is PASS, so neither
+            # can become a refusal, and a key-down can never hide in the unkey
+            # branch because its argument was spelled a way the engine could
+            # not read (MOR-1954).
+            return TxFamily.PTT_ON if method == "set_ptt" else TxFamily.POWER_ON
+        if not bool(value):
+            return TxFamily.PTT_OFF if method == "set_ptt" else TxFamily.POWER_OFF
     return None
 
 
@@ -489,8 +599,16 @@ class TransmitAuthority:
         method: str,
         args: Sequence[object] = (),
         kwargs: Mapping[str, object] | None = None,
+        *,
+        target: Callable[..., object] | None = None,
     ) -> AsyncIterator[TxAdmission]:
-        """Gate one write. The body performs the write; the lock spans both."""
+        """Gate one write. The body performs the write; the lock spans both.
+
+        ``target`` is the gated method itself — the decorator form passes the
+        function it wraps, the in-body form ``self.<method>``. It is how a
+        keyword admission resolves its argument by the real signature instead
+        of a guessed name; a positional admission needs none.
+        """
         if method in RAW_EXCLUDED:
             yield TxAdmission(None, TxWriteClass.PASS)
             return
@@ -502,7 +620,19 @@ class TransmitAuthority:
                 self._current_frequency_hz() if self._current_frequency_hz else None
             ),
             bands=self._bands,
+            target=target,
         )
+        if self._consults_argument(method) and context.first() is UNRESOLVED_ARGUMENT:
+            # Loud, because the predicates below now fail closed on it and a
+            # silently mis-spelled admission is what MOR-1954 closed.
+            _LOGGER.warning(
+                "transmit authority could not resolve the admission argument",
+                extra={
+                    "method": method,
+                    "keywords": sorted(context.kwargs),
+                    "signature": first_parameter_name(target),
+                },
+            )
 
         family = short_circuit_family(method, context)
         if family is None:
@@ -543,6 +673,16 @@ class TransmitAuthority:
                 self._commit(method, ticket)
 
     # -- internals ---------------------------------------------------------
+
+    def _consults_argument(self, method: str) -> bool:
+        """Does classifying this method read an argument at all?"""
+        if method in ARGUMENT_SHORT_CIRCUIT_METHODS:
+            return True
+        entry = self._method_map.get(method)
+        if entry is None:
+            return False
+        # TUNER carries no predicate but `is_tune_start` reads the argument.
+        return entry.predicate is not None or entry.family is TxFamily.TUNER
 
     def _classify(self, method: str, context: TxArgumentContext) -> TxFamily | None:
         entry = self._method_map.get(method)
