@@ -607,11 +607,15 @@ async def _actuate_tx_ptt(
     """ACTUALLY key PTT briefly at minimum power, verify, then always unkey.
 
     Sequence: read original TX power → set power to MINIMUM → key PTT → brief
-    wait → read ``radio_state.ptt`` to verify it keyed → unkey → restore power.
+    wait → verify it keyed, preferring a real read-back (``get_ptt``) over the
+    legacy ``radio_state`` mirror where the backend offers one (MOR-1941; see
+    ``ptt_state_source`` in the evidence) → unkey → restore power.
     The unkey AND power-restore run in a ``finally`` that ALWAYS executes and
     never raises (contained by ``_RESTORE_ERRORS``, which includes ``OSError``),
     so a mid-check exception/timeout/LAN drop can never leave the radio keyed or
-    at the wrong power.
+    at the wrong power. (A pre-existing gap in that same ``finally`` — a
+    Yaesu transport error from the unkey call itself escaping uncontained —
+    is filed separately as MOR-1951; not this row's fix.)
 
     MOR-1222: on a managed rig both the key and the unkey go through the
     supervisor under :data:`_VALIDATION_TX_OWNER`. A refused key is a FAIL, not
@@ -711,16 +715,30 @@ async def _actuate_tx_ptt(
             # Verify the keyed state from a real read-back where the backend
             # offers one, rather than the legacy ``radio_state`` mirror
             # (MOR-1941): some backends no longer self-write that mirror
-            # from ``set_ptt``, so it is not radio truth. Best-effort — a
-            # missing accessor or ANY read failure (backend-specific
-            # transport errors included, e.g. a dropped/late CAT reply
-            # inside the key window — MOR-1941 review) must not turn a good
-            # key into a FAIL, so it falls back to the mirror rather than
-            # failing the check outright. Deliberately ``except Exception``,
-            # not ``_RESTORE_ERRORS``: this function is generic across
-            # backends and must not import a specific backend's transport
-            # exception types to enumerate them.
+            # from ``set_ptt``, so it is not radio truth on its own.
+            #
+            # Best-effort means genuinely best-effort here, on the one
+            # backend (Yaesu) this repoint exists for: a read failure must
+            # not report a confident "did not key" when the write itself
+            # was accepted (``key_refusal is None`` already means
+            # ``set_ptt(True)`` did not raise) -- reporting `keyed: false`
+            # from a measurement that never happened would be exactly the
+            # fabricated-observation class §3.7 exists to eliminate, only
+            # worse: a false negative, not just an unconfirmed positive. So
+            # a read failure falls back to trusting the accepted write
+            # (``ptt_state = True``), not to the mirror -- on Yaesu the
+            # mirror is now permanently stale (the self-write is deleted),
+            # so it is exactly as fabricated a signal as a bare ``False``
+            # would be. ``ptt_state_source`` records which of "readback" /
+            # "mirror" / "unverified-write" produced the reported value, so
+            # a PASS backed by a real read stays distinguishable from one
+            # that is not, and the failure itself is never silent — see
+            # ``ptt_read_error``. Deliberately ``except Exception``, not
+            # ``_RESTORE_ERRORS``: this function is generic across backends
+            # and must not import a specific backend's transport exception
+            # types to enumerate them (MOR-1941 review).
             ptt_state = bool(radio.radio_state.ptt)
+            ptt_state_source = "mirror"
             _get_ptt_attr = getattr(radio, "get_ptt", None)
             if callable(_get_ptt_attr):
                 try:
@@ -729,9 +747,19 @@ async def _actuate_tx_ptt(
                             _get_ptt_attr(), timeout=per_check_timeout
                         )
                     )
-                except Exception:
-                    pass
+                    ptt_state_source = "readback"
+                except Exception as exc:
+                    evidence["ptt_read_error"] = str(exc)
+                    _LOGGER.warning(
+                        "tx.ptt readback failed after a successful key; "
+                        "trusting the accepted write rather than reporting "
+                        "an unverified key as a failure: %s",
+                        exc,
+                    )
+                    ptt_state = True
+                    ptt_state_source = "unverified-write"
             evidence["ptt_state"] = ptt_state
+            evidence["ptt_state_source"] = ptt_state_source
             keyed = ptt_state
             evidence["keyed"] = keyed
     except _RESTORE_ERRORS as exc:

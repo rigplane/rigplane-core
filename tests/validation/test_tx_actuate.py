@@ -379,25 +379,48 @@ async def test_tx_ptt_readback_uses_get_ptt_not_the_unwritten_mirror():
     assert ptt.status is CheckStatus.PASS
     assert ptt.evidence["keyed"] is True
     assert ptt.evidence["ptt_state"] is True
+    assert ptt.evidence["ptt_state_source"] == "readback"
 
 
 @pytest.mark.parametrize("exc_cls", [CatTimeoutError, CatCommandRejected])
-async def test_tx_ptt_readback_failure_falls_back_to_the_mirror_not_a_fail(exc_cls):
-    """MOR-1941 review (BLOCKED-1): a ``get_ptt`` read-back that raises --
-    e.g. a dropped/late CAT reply inside the key window, or the radio
-    answering ``?;`` -- must degrade to the mirror-based evidence, not
-    propagate and turn a good key into a FAIL with the evidence dict lost.
+@pytest.mark.parametrize(
+    "radio_factory",
+    [
+        pytest.param(lambda: _tx_radio(start_power=200), id="mirror-writing"),
+        pytest.param(_tx_radio_unwritten_mirror, id="unwritten-mirror-yaesu"),
+    ],
+)
+async def test_tx_ptt_readback_failure_falls_back_to_a_trusted_write_not_a_fail(
+    radio_factory, exc_cls
+):
+    """MOR-1941 review (BLOCKED-1, then BLOCKED-3): a ``get_ptt`` read-back
+    that raises -- e.g. a dropped/late CAT reply inside the key window, or
+    the radio answering ``?;`` -- must not turn a good key into a FAIL, on
+    EITHER backend shape.
+
+    The first version of this pin (BLOCKED-1) covered only the
+    mirror-writing shape, where the fallback could not actually fail: the
+    mirror was already ``True`` from ``set_ptt``'s own write, so falling
+    back to it landed on the right answer whether the fallback logic was
+    correct or not. Review caught that the *unwritten-mirror* shape --
+    the real FTX-1, and the entire reason this repoint exists -- still
+    FAILed a good key: falling back to a permanently-stale mirror reports
+    a fabricated ``keyed: false``, exactly the MOR-1900-class defect §3.7
+    exists to eliminate, and worse than the pre-fix crash because nothing
+    records that the read even failed.
+
+    Both fixtures are parametrized here so this exact case is covered,
+    not just the shape where the bug cannot occur. Since the fix (below)
+    now falls back to *trusting the accepted write* rather than to the
+    mirror, both shapes converge on the same evidence: what changed is
+    the mechanism, not the outcome -- which is exactly why the
+    mirror-writing shape alone could not have caught the regression.
+
     Both exception classes are real Yaesu CAT transport errors
     (``backends/yaesu_cat/transport.py``), neither of which subclasses
     anything in ``validation.hardware._RESTORE_ERRORS``.
-
-    Uses ``_tx_radio`` (not the unwritten-mirror fixture): here the mirror
-    IS trustworthy going into the read -- ``set_ptt`` wrote it, as it still
-    does on every backend except Yaesu post-MOR-1941 -- so a raised
-    ``get_ptt`` exercises exactly the fallback path the fix adds, landing
-    on a mirror value that is actually correct rather than stale.
     """
-    radio, _ = _tx_radio(start_power=200)
+    radio, _ = radio_factory()
 
     async def _raise_get_ptt() -> bool:
         raise exc_cls("no usable TX; reply")
@@ -405,12 +428,23 @@ async def test_tx_ptt_readback_failure_falls_back_to_the_mirror_not_a_fail(exc_c
     radio.get_ptt = AsyncMock(side_effect=_raise_get_ptt)
     prompter, _ = _confirm_prompter(True)
 
-    levels = await _run(radio, safety=_FULL_SAFETY, tx_actuate=True, prompter=prompter)
+    levels = await execute_hardware_checks(
+        radio,
+        _ptt_only_template(),
+        _FULL_SAFETY,
+        allow_writes=True,
+        tx_actuate=True,
+        prompter=prompter,
+    )
     ptt = _flatten(levels)["tx.ptt"]
 
     assert ptt.status is CheckStatus.PASS
     assert ptt.evidence["keyed"] is True
     assert ptt.evidence["ptt_state"] is True
+    assert ptt.evidence["ptt_state_source"] == "unverified-write"
+    # The read failure is never silent -- it must be legible in the
+    # artifact, matching the file's other best-effort handlers.
+    assert ptt.evidence["ptt_read_error"] == "no usable TX; reply"
     assert "actuate_error" not in ptt.evidence
 
 
@@ -430,3 +464,4 @@ async def test_tx_ptt_readback_falls_back_to_the_mirror_when_get_ptt_is_absent()
     assert ptt.status is CheckStatus.PASS
     assert ptt.evidence["keyed"] is True
     assert ptt.evidence["ptt_state"] is True
+    assert ptt.evidence["ptt_state_source"] == "mirror"
