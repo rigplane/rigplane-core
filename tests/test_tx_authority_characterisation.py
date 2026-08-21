@@ -359,10 +359,9 @@ class TestPin2RawDuringTxIsRefused:
     ) -> None:
         # CHARACTERISATION PIN 2b (ADR §3.10 item 6, §5): the rigctld executor
         # pre-gate refuses a raw CI-V frame with ERJCTED unless truth reads RX.
-        # MUTATION: drop the
-        # `classification.disposition is TxInterlockDisposition.BLOCK` conjunct
-        # at src/rigplane/rigctld/handler.py:465 (e.g. replace the whole
-        # condition with `False`) -> this test goes red.
+        # MUTATION: at src/rigplane/rigctld/handler.py:465 replace the
+        # `classification.disposition is TxInterlockDisposition.BLOCK`
+        # conjunct with `False` -> this test goes red.
         handler, radio, _routing = _rigctld_handler(_ptt_store(ptt))
         command = parse_line(b"w FE FE 98 E0 03 FD")
 
@@ -437,9 +436,9 @@ class TestPin3TeardownIsBiasedTowardOff:
     async def test_a_raising_unkey_write_still_clears_the_keyer_record(self) -> None:
         # CHARACTERISATION PIN 3b (ADR §3.10 item 6, §5): the record is voided
         # on the attempt, so a failed OFF cannot withhold the next teardown.
-        # MUTATION: move `self._last_keyer = None`
-        # (src/rigplane/web/radio_poller.py:2542) out of the `finally:` at
-        # :2538 and into the success path below the write -> red.
+        # MUTATION: remove `self._last_keyer = None`
+        # (src/rigplane/web/radio_poller.py:2542) from the `finally:` at
+        # :2538 -> this test goes red.
         poller, radio, store = _web_poller()
         _observe_web_ptt(store, False)
         await poller._execute(PttOn(), source="websocket", session_id="ws-a")
@@ -501,9 +500,12 @@ class TestPin4TheUnkeyIsOneSided:
     ) -> None:
         # CHARACTERISATION PIN 4b (ADR §3.10 item 6, §5): the web seat returns
         # before the resolver runs, so no RF truth can withhold a de-key.
-        # MUTATION: same mutation as 4a (tx_interlock.py:255) -> red; or add
-        # TxInterlockCommandFamily.PTT_OFF to _WEB_IMMEDIATE_BLOCK_FAMILIES at
+        # MUTATION: add `TxInterlockCommandFamily.PTT_OFF,` to
+        # _WEB_IMMEDIATE_BLOCK_FAMILIES at
         # src/rigplane/web/radio_poller.py:219 -> this test goes red.
+        # A `_ALWAYS_PASS_TYPES` mutation is NOT an alternative here and does
+        # not kill this row: this seat reads `metadata.base_disposition`, a
+        # separate literal at core/tx_interlock_contract.py:55.
         poller, radio, store = _web_poller()
         if ptt is not None:
             _observe_web_ptt(store, ptt)
@@ -529,9 +531,17 @@ class TestPin4TheUnkeyIsOneSided:
     ) -> None:
         # CHARACTERISATION PIN 4c (ADR §3.10 item 6, §5): `T 0` is written on
         # the rigctld wire whatever RF truth says.
-        # MUTATION: same mutation as 4a (tx_interlock.py:255) makes PttOff
-        # BLOCK-classified, so the executor pre-gate at handler.py:462-469
-        # refuses it -> this test goes red.
+        # MUTATION (two parts, BOTH needed): at
+        # src/rigplane/runtime/tx_interlock.py:255 change
+        # `_ALWAYS_PASS_TYPES = (PttOff, ScanStop)` to `(ScanStop,)`, AND at
+        # :279 add `PttOff,` to `_HARD_BLOCK_TYPES` -> the confirmed-tx and
+        # unknown-truth rows go red. Part one ALONE does not kill this row:
+        # `classify_tx_interlock` (:356-377) then falls through to TX_SAFE,
+        # not BLOCK, because PttOff is in neither `_HARD_BLOCK_TYPES` (:279)
+        # nor `_DEFER_TYPES` (:257) -- and the executor pre-gate at
+        # handler.py:464-469 tests for BLOCK, which never arrives. The `rx`
+        # row survives even the full mutation, correctly: the pre-gate
+        # refuses only when truth is not RX.
         handler, radio, _routing = _rigctld_handler(_ptt_store(ptt))
         command = parse_line(b"T 0")
 
@@ -564,8 +574,8 @@ class TestPin5ReadOnlyAnswersEaccess:
     ) -> None:
         # CHARACTERISATION PIN 5 (ADR §3.10 item 6, §5): read-only EACCESS.
         # MUTATION: at src/rigplane/rigctld/handler.py:1308 change
-        # `if self._config.read_only and cmd.is_set:` to `if False:`
-        # -> this test goes red.
+        # `if self._config.read_only and cmd.is_set:` to
+        # `if False and cmd.is_set:` -> this test goes red.
         handler, radio, _routing = _rigctld_handler(
             _ptt_store(False), config=RigctldConfig(read_only=True)
         )
