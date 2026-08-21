@@ -10,15 +10,19 @@ Live bench: **IC-7300, FTX-1**. *(IC-7610 retired 2026-08-04; X6200 destroyed by
 ```bash
 uv run pytest tests/ --ignore=tests/integration -n auto -q --tb=short --timeout=300 --timeout-method=thread  # standard suite (CI parity, ~2 min)
 uv run pytest tests/ -q --tb=short                    # serial, incl. integration hooks (profiling/hardware only)
-uv run mypy --strict src/rigplane/web                  # type check — the gate CI runs
+uv run mypy --strict src/rigplane/web                  # type check (CI gate; see note below)
 uv run ruff check src/ tests/ && uv run ruff format src/ tests/  # lint+format
 ```
 
 Never bare `python` or `pytest`. Worktrees: `uv sync --all-extras` first.
 
-`uv run mypy --strict src/rigplane/web` is the only mypy invocation any workflow
-runs (`quick.yml`, `full.yml`, `publish.yml`). Whole-tree `uv run mypy src/` is
-advisory and ungated: at commit `f4ab1e57` it reported 12 errors in
+`uv run mypy --strict src/rigplane/web` is the only mypy invocation in
+`.github/`. Per-PR (`quick.yml`) it runs **only** when that workflow's
+`frontend` path filter matches — `frontend/**`, `src/rigplane/web/**`, or
+`quick.yml` itself; it runs unconditionally in `full.yml` (cron/manual) and
+`publish.yml`. So a PR touching only `src/rigplane/runtime/` gets no mypy in
+CI until the next cron run. Whole-tree `uv run mypy src/` is advisory and
+ungated: at commit `f4ab1e57` it reported 12 errors in
 `runtime/_control_phase.py`, `runtime/_audio_runtime_mixin.py` and
 `web/radio_poller.py`.
 
@@ -184,13 +188,9 @@ from GitHub issues with acceptance criteria, add missing issues to the Project,
 and keep fields current while working. See
 `docs/internals/github-project-workflow.md`.
 
-**How a change lands.** The session that takes the work is a coordinator: it
-plans and dispatches, and does not implement. Implementation goes to a
-`builder` working in an ephemeral worktree on a `codex/` branch (§Workspace
-lifecycle), where the gates run. The implementation agent never reviews its
-own work: review goes to a `verifier` that did not write it, and ends in the
-Agent Review Gate comment bound to the head SHA (§Language & Git). Use
-subagents for large exploration too — keep the main session lean.
+Use subagents — keep the main session lean. The session that takes the work is
+a coordinator: it plans and dispatches, and does not implement. The
+implementation agent never reviews its own work (Language & Git above).
 
 Subagent roles with pinned models live in `.claude/agents/`: `scout` (haiku,
 read-only status/fact collection), `builder` (sonnet, implementation from a
@@ -199,8 +199,8 @@ spec), `verifier` (opus, independent review and gate verdicts), `researcher`
 by default; a dispatch outside them must pass an explicit model — never let a
 subagent silently inherit the root session's model.
 
-Slash commands for scoped workflows live in `.claude/commands/`
-(`decompose-issue`, `generate-tests`, `refactor`, `regression-check`,
+Slash commands for scoped workflows live in `.claude/commands/` (`audit-ui`,
+`decompose-issue`, `generate-tests`, `next`, `refactor`, `regression-check`,
 `scan-issues`, `solve-issue`) plus the `release` skill in `.claude/skills/`;
 each file is self-documenting.
 
