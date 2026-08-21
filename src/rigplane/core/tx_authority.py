@@ -12,6 +12,12 @@ already owns, and receives due effects as data. Nothing in the product consumes
 this module yet — it lands ahead of the backend admission rows so the contracts
 exist before any call site cites them.
 
+One requirement those rows inherit: an admission that passes its argument by
+keyword must also pass ``target``, so classification reads the method's real
+signature rather than a guessed parameter name.
+:meth:`TransmitAuthority.admit` states it and :data:`UNRESOLVED_ARGUMENT`
+records what failing it costs.
+
 Design: ``docs/plans/2026-08-20-transmit-authority.md`` §3.3-§3.7.
 """
 
@@ -296,6 +302,26 @@ class _UnresolvedArgument:
 #: the caller passed. Every predicate that meets it must fail *closed*: the
 #: permissive branch — the unkey short-circuit, a PASS retune — is exactly what
 #: a mis-spelled admission must never reach (MOR-1954).
+#:
+#: **This path is the expensive one, deliberately.** Measured in this tree
+#: against a de-key that would otherwise have taken the UNKEY branch:
+#:
+#: * it classifies KEYING, so it enters the admission lock that the UNKEY
+#:   branch never takes — 0.199 s behind a single in-flight hazard read where
+#:   the resolvable spelling waited 0.000 s, bounded by that admission's
+#:   solicited read (:data:`TX_READ_DEADLINE_SECONDS`) *plus its write body*,
+#:   which the lock also spans;
+#: * it neither clears the live deadline nor the live hold, and stacks a
+#:   second one: holds ``("key", "key")`` and a whole
+#:   :data:`BACKEND_MAX_KEY_DOWN_SECONDS` of deadline, for whose duration
+#:   hazard writes are then refused with ``own_transmit_hold="key"`` — after a
+#:   de-key that really did happen.
+#:
+#: That is the correct direction to be expensive in. The other reading of an
+#: argument nobody can read is that a key-down passes as an unkey, and RF into
+#: a load nobody chose has no such bound. Latency and a stuck hold expire; that
+#: does not. The way to not pay it is to admit positionally, or to pass
+#: ``target`` — see :meth:`TransmitAuthority.admit`.
 UNRESOLVED_ARGUMENT: Final = _UnresolvedArgument()
 
 #: How many gated signatures the resolver keeps. A backend gates on the order
@@ -440,21 +466,36 @@ def short_circuit_family(method: str, context: TxArgumentContext) -> TxFamily | 
     """T5: resolve de-key / power-off / stop-CW ahead of every table.
 
     A corrupt or incomplete classification table must never make an unkey
-    harder, so this consults no map and no profile data. The PTT/powerstat
-    pair is therefore resolved here from the argument alone in *both*
-    directions — including the direction taken when the argument cannot be
-    read — so no table can turn one of them into a refusal.
+    harder, so this consults no map and no profile data.
+
+    Exactly which admissions bypass the table, stated narrowly because the
+    code is narrow: ``stop_cw_text`` always; ``set_ptt`` / ``set_powerstat``
+    when their argument reads falsy, and when it cannot be read at all. A
+    *readable truthy* argument returns ``None`` and goes on to the table like
+    any other write — so a poisoned or absent map still refuses a key-down
+    (``unclassified``, INV-1's fail direction), which is deliberate and worth
+    keeping. The claim this function supports is therefore only this: **no
+    table can turn a de-key, or an argument the engine could not read, into a
+    refusal.**
     """
     if method == "stop_cw_text":
         return TxFamily.CW_STOP
     if method in ARGUMENT_SHORT_CIRCUIT_METHODS:
         value = context.first()
         if value is UNRESOLVED_ARGUMENT:
-            # An unreadable argument resolves to the strict twin, still ahead
-            # of the table: PTT_ON is KEYING and POWER_ON is PASS, so neither
-            # can become a refusal, and a key-down can never hide in the unkey
-            # branch because its argument was spelled a way the engine could
-            # not read (MOR-1954).
+            # An unreadable argument takes the strict twin, still ahead of the
+            # table, so a key-down can never hide in the unkey branch merely
+            # because of how its argument was spelled (MOR-1954). Each is safe
+            # for its own reason, and the two reasons are not interchangeable:
+            #   set_ptt       — PTT_ON is KEYING, a branch with no refusal path
+            #                   at all; the strict answer arms the watchdog and
+            #                   cannot become a refusal.
+            #   set_powerstat — POWER_ON and POWER_OFF are *both* PASS in
+            #                   FAMILY_WRITE_CLASS, so the branch is inert here
+            #                   whichever way it answers. The KEYING argument
+            #                   above says nothing about powerstat: anyone who
+            #                   reclassifies POWER_ON must re-derive this, not
+            #                   inherit it.
             return TxFamily.PTT_ON if method == "set_ptt" else TxFamily.POWER_ON
         if not bool(value):
             return TxFamily.PTT_OFF if method == "set_ptt" else TxFamily.POWER_OFF
@@ -604,10 +645,19 @@ class TransmitAuthority:
     ) -> AsyncIterator[TxAdmission]:
         """Gate one write. The body performs the write; the lock spans both.
 
-        ``target`` is the gated method itself — the decorator form passes the
-        function it wraps, the in-body form ``self.<method>``. It is how a
-        keyword admission resolves its argument by the real signature instead
-        of a guessed name; a positional admission needs none.
+        ``target`` is the gated method itself. It is how a keyword admission
+        resolves its argument by the method's real signature instead of a name
+        guessed in the predicate table (MOR-1954).
+
+        **Requirement on every call site that admits an argument by keyword**,
+        row 7 onward: pass ``target``. INV-2 form A — the bare ``@tx_admit``
+        decorator — passes the function it wraps; INV-2 form B — the in-body
+        ``async with ... admit(...)`` block — passes ``self.<method>``, or
+        forwards the argument positionally and needs no ``target`` at all.
+        Failing to is not silent: the argument resolves to
+        :data:`UNRESOLVED_ARGUMENT`, a warning names the method and the
+        keywords it saw, and every predicate fails closed on it — that
+        constant records what the fail-closed path costs, and it is not free.
         """
         if method in RAW_EXCLUDED:
             yield TxAdmission(None, TxWriteClass.PASS)

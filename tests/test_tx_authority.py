@@ -1297,3 +1297,40 @@ def test_predicates_resolve_the_argument_by_signature_not_by_guess() -> None:
     assert short_circuit_family("set_ptt", blind) is TxFamily.PTT_ON
     assert short_circuit_family("set_powerstat", blind) is TxFamily.POWER_ON
     assert short_circuit_family("stop_cw_text", blind) is TxFamily.CW_STOP
+
+
+async def test_an_unresolvable_unkey_keeps_the_hold_it_could_not_read() -> None:
+    """The price of the fail-closed path, pinned so the comment cannot drift.
+
+    An unreadable de-key is admitted (never refused) but is not *believed*: it
+    takes the KEYING branch, so the live hold and deadline survive and a second
+    hold stacks, and hazard writes stay refused for the key-down bound. That is
+    the documented cost of :data:`UNRESOLVED_ARGUMENT`, and it is the direction
+    worth being expensive in.
+    """
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    link.script(RX)
+    authority = build_authority(clock, link)
+
+    async with authority.admit("set_ptt", (True,)):
+        pass
+    async with authority.admit("set_ptt", (), {"on": False}) as admission:
+        assert admission.write_class is TxWriteClass.KEYING  # admitted, not refused
+
+    view = authority.view()
+    assert view.own_transmit_holds == ("key", "key")
+    assert view.deadline_monotonic == pytest.approx(
+        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
+    )
+
+    with pytest.raises(TxRefusal) as refusal:
+        async with authority.admit("set_antenna_1", ()):
+            pass  # pragma: no cover - the admission refuses first
+    assert refusal.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
+    assert refusal.value.evidence.own_transmit_hold == "key"
+    assert link.reads == []  # refused on our own hold, with no wire read at all
+
+    clock.advance(BACKEND_MAX_KEY_DOWN_SECONDS + 0.1)
+    async with authority.admit("set_antenna_1", ()):
+        pass  # the hold expires on the key-down bound; it is not permanent
