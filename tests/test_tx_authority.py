@@ -836,7 +836,18 @@ async def test_a_key_cannot_slip_between_a_hazard_read_and_its_write() -> None:
     """INV-4: the admission lock spans the read and the write it authorised.
 
     Counts cannot see this — both writes happen either way. Only the *order*
-    of the effects distinguishes a held lock from an open window.
+    of the effects distinguishes a held lock from an open window, and only if
+    the hazard body *awaits*: every real transport write does, and a purely
+    synchronous body reaches its append before the loop can schedule anybody
+    else, so it cannot tell a lock held through the write handoff from one
+    released at the verdict.
+
+    # MUTATION: in `src/rigplane/core/tx_authority.py`, dedent the
+    # `try:/yield ticket/finally:/self._commit(...)` block at :538-543 by one
+    # level so it sits after the `async with self._lock:` body rather than
+    # inside it -> this row goes red with
+    # `["key-write", "hazard-relay-throw"]`: a key completed inside the
+    # relay-throw window.
     """
     clock = Clock()
     link = FakeTransmitStateLink(clock)
@@ -848,7 +859,8 @@ async def test_a_key_cannot_slip_between_a_hazard_read_and_its_write() -> None:
 
     async def hazard() -> None:
         async with authority.admit("set_antenna_1", ()):
-            order.append("hazard-write")
+            await asyncio.sleep(0)  # the write handoff every transport makes
+            order.append("hazard-relay-throw")
 
     async def key() -> None:
         async with authority.admit("set_ptt", (True,)):
@@ -864,7 +876,7 @@ async def test_a_key_cannot_slip_between_a_hazard_read_and_its_write() -> None:
 
     link.release_read.set()
     await asyncio.gather(hazard_task, key_task)
-    assert order == ["hazard-write", "key-write"]
+    assert order == ["hazard-relay-throw", "key-write"]
 
 
 async def test_a_receive_observation_never_clears_anything() -> None:
