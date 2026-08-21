@@ -249,3 +249,16 @@ get_squelch  = [0x14, 0x03]
 set_squelch  = [0x14, 0x03]
 
 [commands.overrides]
+
+[tx_policy]
+# Deliberately empty (MOR-1947) — a declared decision, not an oversight.
+# X6100 has no serial backend: backends/factory.py refuses the model, so
+# the only path to this radio is the rigctld client, whose transmit-state
+# read is permanently unverified — it answers from upstream Hamlib's cache
+# or another rigplane's retained state, never from a fresh radio read.
+# The CI-V PTT command declared above is therefore unreachable from here,
+# and mapping a receiving byte would claim a freshness this path cannot
+# deliver. The map stays empty, so every hazard family is refused while
+# transmit state is unknown.
+refused_during_tx = []
+tx_state_map = { }

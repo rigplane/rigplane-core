@@ -872,3 +872,20 @@ label = "3.0"
 raw = 240
 actual = 6.0
 label = "6.0+"
+
+[tx_policy]
+# Not bench-measured — inherited (MOR-1947). The backend factory routes IC-705 onto Ic705SerialRadio.
+# That is the same transmit-state read the measured IC-7300 uses: the
+# solicited CI-V 0x1C/0x00 request in runtime/radio.py, decoded through the
+# 0x00/0x01 allowlist in runtime/_civ_rx.py. The decode is shared, so the
+# map is the same map, and it is declared here rather than left absent: an
+# absent section parses to "this radio is never receiving", which would
+# refuse band change, the tuner family, antenna switching and VFO select on
+# this radio permanently.
+# No write-during-transmit battery was run on this radio, so no radio-side
+# refusal is claimed. Empty means "nothing measured", not "nothing refuses".
+refused_during_tx = []
+# Positive-RX rule (§3.7): the receiving byte only. This wire carries no
+# keying attribution, so nothing else is mapped and the transmitting byte
+# is not-receiving without an invented source.
+tx_state_map = { "0" = "rx" }
