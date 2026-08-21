@@ -13,7 +13,7 @@ Analyze the LCD UI subsystem (frontend + backend integration) and create GitHub 
 Identify relevant files only — do NOT scan the entire codebase.
 
 Frontend:
-- `frontend/src/lib/components/lcd/` — LCD components
+- `frontend/src/components-v2/panels/lcd/` — LCD components
 - `frontend/src/lib/stores/` — state stores
 - `frontend/src/lib/types/` — type definitions
 - `frontend/src/lib/utils/` — helpers used by LCD
