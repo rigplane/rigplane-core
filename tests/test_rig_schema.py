@@ -221,7 +221,9 @@ class TestSchemaDoc:
         against the actual base dispositions in tx_interlock_contract.py.
         """
         doc_table: dict[str, str] = {}
-        row_pattern = re.compile(r"\|\s*`(always-pass|tx-safe|block|defer)`\s*\|(.+)\|\s*$")
+        row_pattern = re.compile(
+            r"\|\s*`(always-pass|tx-safe|block|defer)`\s*\|(.+)\|\s*$"
+        )
         for line in SCHEMA_PATH.read_text().splitlines():
             match = row_pattern.match(line)
             if match is None:
