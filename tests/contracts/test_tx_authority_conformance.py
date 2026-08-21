@@ -48,6 +48,7 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping
 
 import pytest
+from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
 from tx_authority_fakes import (
     CIV_NON_ANSWERS,
     CONFORMANCE_BACKENDS,
@@ -60,6 +61,7 @@ from tx_authority_fakes import (
     civ_transmit_state_reply,
 )
 
+from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.core.tx_authority import (
     RADIO_READBACK_SOURCES,
     TransmitAuthority,
@@ -284,6 +286,18 @@ async def test_a_civ_read_is_not_satisfied_by_an_ack_echo_or_misaddressed_frame(
     provenance narrowing), not the fake's — the fake queues the bytes and asks
     what the shipped code does with them.
 
+    What these three rows actually measure, so nobody cites them as proof of
+    the primitive's own shape check: empirically all three come back
+    ``failure='timeout'`` on every CI-V column, because the RX pump's
+    routing guards (``_civ_rx.py:1489-1492``) drop ``setter_echo`` and
+    ``misaddressed`` before either ever reaches the primitive's own
+    narrowing, and the decode ladder has no PTT branch for ``ack``'s
+    ``0xFB`` at all — none of the three ever reach the primitive's shape
+    check (``:2636-2650``) to exercise it. That check *is* load-bearing —
+    see ``test_the_civ_unmapped_shape_would_read_receiving_if_the_check_lapsed``
+    below, which reaches it with a correctly-addressed but wrong-shaped
+    reply and is the row that actually proves it.
+
     # MUTATION (two edits, because two shipped checks stand in series): in
     # `src/rigplane/runtime/_civ_rx.py`, (a) delete both routing guards at
     # :1489-1492 (`from_addr != radio_addr` and `to_addr not in
@@ -342,13 +356,16 @@ async def test_an_unmapped_transmit_state_value_is_never_receiving(
     and hamlib-provider columns it produces no value at all. Both are "not
     receiving"; neither may admit a hazard write.
 
-    # MUTATION (MOR-1941, restated -- the map-driven predicate replaced the
-    # inline one this mutation used to target): in
-    # `src/rigplane/backends/yaesu_cat/radio.py`, in `read_ptt`, change
-    # `return not policy.is_receiving(state)` at :1070 to
-    # `return policy.is_receiving(state)` -> this row goes red on the
-    # `yaesu-ftx1` column (MOR-1905's own inversion direction): the unmapped
-    # `TX9` reads as receiving.
+    # MUTATION (MOR-1914, restated -- the predicate moved out of `read_ptt`
+    # into a shared helper both `read_ptt` and `read_transmit_state` call):
+    # in `src/rigplane/backends/yaesu_cat/radio.py`, in
+    # `_interpret_ptt_token`, change `return not policy.is_receiving(state)`
+    # at :1090 to `return policy.is_receiving(state)` -> this row goes red on
+    # the `yaesu-ftx1` column (MOR-1905's own inversion direction): the
+    # unmapped `TX9` reads as receiving. The decoy for this row is :1087
+    # (the empty-`tx_state_map` fallback branch, `_interpret_ptt_token`'s
+    # other `return`) -- `yaesu-ftx1` ships a populated `tx_state_map`, so
+    # that branch never executes here; mutating it leaves this row green.
     """
     harness.script("unmapped")
     reading = await harness.read_transmit_state()
@@ -600,8 +617,9 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
     A bare ``set_ptt`` — the harness's direct call on the radio object, not
     the queue-drained write ``test_the_queue_drain_reaches_the_backend_write_method``
     already proves reaches the backend — only writes to the wire and updates
-    the legacy ``radio_state`` cache (``yaesu_cat/radio.py:987-994`` and the
-    rigctld-client ``set_ptt`` equivalent); neither touches
+    the legacy ``radio_state`` cache (``yaesu_cat/radio.py:993-1000`` -- moved
+    +6 by MOR-1914's imports -- and the rigctld-client ``set_ptt``
+    equivalent); neither touches
     ``self._observation_callback`` at all. So ``observations == []`` measured
     right after the bare write, with no poll cycle ever run, was unreachable
     under today's code and under every mutation this file declares — the two
@@ -789,34 +807,75 @@ async def test_a_queued_hazard_write_reads_before_it_writes_at_scripted_rx(
 
 
 @every_backend()
-@pytest.mark.xfail(
-    strict=True,
-    reason="row 5: `read_transmit_state()` lands on the new capability "
-    "protocol `TransmitStateReadable` (5a Icom, 5b Yaesu + rigctld-client). "
-    "The harness assembles the equivalent from shipped parts meanwhile.",
-)
 async def test_a_backend_exposes_the_row_five_read_primitive(
     harness: TxConformanceHarness,
 ) -> None:
-    """INV-13's home: one primitive, per backend, returning typed evidence."""
+    """INV-13's home: one primitive, per backend, returning typed evidence.
+
+    Row 5: ``read_transmit_state()`` lands on the new capability protocol
+    ``TransmitStateReadable`` (5a Icom, 5b Yaesu + rigctld-client) -- the
+    harness now points ``read_transmit_state`` at this same method directly
+    rather than assembling the equivalent from shipped parts.
+    """
     reading = await harness.radio.read_transmit_state()
     assert isinstance(reading, TxStateReading)
 
 
 @pytest.mark.parametrize("harness", ["rigctld-client"], indirect=True)
-@pytest.mark.xfail(
-    strict=True,
-    reason="row 5b: the backend's own primitive must carry "
-    "`verified_readback=False` permanently (§3.7). The harness already marks "
-    "it, and the composed refusal row above proves the gate honours the "
-    "marking; this reserves the marking on the shipped primitive.",
-)
 async def test_the_rigctld_client_primitive_marks_its_readback_unverified(
     harness: TxConformanceHarness,
 ) -> None:
     harness.script("rx")
     reading = await harness.radio.read_transmit_state()
     assert reading.verified_readback is False
+
+
+async def test_the_rigctld_client_primitive_reports_a_real_timeout_as_timeout() -> None:
+    """A genuine wire-level read timeout must report ``failure="timeout"``,
+    not ``"read-error"``.
+
+    Deliberately not driven through the shared ``rigctld-client`` harness:
+    that harness's ``"silence"`` answer is realised as the upstream
+    dropping the connection (``server.behavior.disconnect_commands``, by
+    design -- see its own comment in ``tx_authority_fakes.py`` -- to avoid a
+    late line answering the *next* read on the shared socket), which the
+    transport reports as ``RadioConnectionError``, not a timeout. That
+    exercises a different exception path than the one this pin is about.
+
+    This test scripts an actual delay past the client's read deadline
+    (``FakeRigctldBehavior.command_delays``) instead, which is what drives
+    ``asyncio.wait_for(reader.readline(), timeout=self.timeout)`` in
+    ``transport.py:232`` to genuinely expire and raise
+    ``rigplane.core.exceptions.TimeoutError`` (aliased ``RadioTimeoutError``)
+    -- which does **not** subclass the builtin/``asyncio.TimeoutError`` (its
+    MRO is ``TimeoutError -> RigplaneError -> Exception``). A catch narrowed
+    to ``except asyncio.TimeoutError`` alone silently reroutes this into the
+    generic ``except Exception`` branch, which
+    ``test_no_failing_answer_ever_resolves_to_receiving`` could not see: it
+    only asserts ``value is not False``, true either way.
+
+    # MUTATION: in `src/rigplane/backends/rigctld_client/radio.py`, in
+    # `read_transmit_state`, narrow `except (asyncio.TimeoutError,
+    # RadioTimeoutError):` back to `except asyncio.TimeoutError:` -> this
+    # row goes red: the real `RadioTimeoutError` falls through to the
+    # generic `except Exception:` branch and reports `failure="read-error"`
+    # instead of `failure="timeout"`.
+    """
+    server = FakeRigctldServer(behavior=FakeRigctldBehavior(command_delays={"t": 0.2}))
+    await server.start()
+    radio = RigctldClientRadio(host=server.host, port=server.port, timeout=0.05)
+    await radio.connect()
+    try:
+        reading = await radio.read_transmit_state()
+    finally:
+        await radio.disconnect()
+        await server.stop()
+
+    assert reading.failure == "timeout", (
+        f"a real read timeout reported failure={reading.failure!r}, not "
+        "'timeout' -- the RadioTimeoutError catch narrowed back to only "
+        "asyncio.TimeoutError"
+    )
 
 
 @pytest.mark.parametrize("harness", ["yaesu-ftx1"], indirect=True)
@@ -842,8 +901,9 @@ async def test_a_yaesu_self_write_leaves_no_transmit_truth_claim_anywhere(
     """The self-write launder, at its last surviving Yaesu address.
 
     MOR-1941 (row 6): ``set_ptt`` no longer self-mutates the legacy
-    mirror (``backends/yaesu_cat/radio.py:994``) -- our own command is no
-    longer a claim about RF anywhere in the tree.
+    mirror (``backends/yaesu_cat/radio.py:1000`` -- moved +6 by MOR-1914's
+    imports) -- our own command is no longer a claim about RF anywhere in
+    the tree.
     """
     before = harness.radio._state.ptt
     await harness.key()

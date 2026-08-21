@@ -302,6 +302,11 @@ from rigplane.commands import set_vfo as _select_vfo_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_authority import (
+    RADIO_READBACK_SOURCES,
+    TX_READ_DEADLINE_SECONDS,
+    TxStateReading,
+)
 from rigplane.core.tx_safety import TxOutcome
 from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.profiles import RadioProfile, resolve_radio_profile
@@ -3665,6 +3670,65 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
+
+    async def read_transmit_state(self) -> TxStateReading:
+        """One solicited CI-V transmit-state read (ADR row 5).
+
+        Implements :class:`~rigplane.core.radio_protocol.TransmitStateReadable`
+        over the directed-exact-reply discipline, applying the shape check
+        *itself* rather than inheriting it: ``CivRequestTracker`` matches a
+        pending request only on ``(command, sub, receiver)`` with no address
+        check (``core/civ.py:76-82,380-393``), so a well-addressed but
+        wrong-shaped reply — e.g. an unmapped two-byte ``1C 00`` payload —
+        would otherwise resolve this read as if it were a real answer. The
+        reply is instead re-validated through the shared ``_observation``
+        shape check (``_civ_rx.py:2636-2650``) via ``_observations_from_frame``
+        — the same discrimination the live RX pump applies to unsolicited
+        traffic — so an ACK, our own setter echo, or a mis-addressed frame
+        can never satisfy the read (INV-13).
+
+        Deliberately not built on ``execute_civ_transaction`` (single slot,
+        raises on concurrent use, ``_civ_rx.py:1027-1028``), nor on the
+        poller's ``Commander.send(dedupe=True)`` key
+        (``commander.py:151-156`` — would hand back a pre-decision in-flight
+        read and gut INV-4), nor on the observer-bound
+        ``_request_authoritative_ptt_read`` (``_civ_rx.py:679,718-732``).
+
+        Icom carries no keying attribution on this wire (§3.7): ``attributed``
+        is honestly ``None``. A read that reaches the wire and fails is
+        never raised — it comes back as a :class:`TxStateReading` with a
+        ``failure`` tag — but ``self._check_connected()`` above still
+        raises on a precondition failure (not connected at all), the same
+        convention every other read on this class follows.
+        """
+        self._check_connected()
+        frame = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
+        try:
+            reply = await self._send_civ_expect(
+                frame, label="tx-state", timeout=TX_READ_DEADLINE_SECONDS
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            # Both are real outcomes here: ``asyncio.TimeoutError`` from the
+            # outer wait, or this module's own ``core.exceptions.TimeoutError``
+            # ("CI-V response timed out") when the backend's own GET deadline
+            # (``_civ_get_timeout``) fires first -- it can be shorter than
+            # ``TX_READ_DEADLINE_SECONDS`` on a radio constructed with a tight
+            # ``timeout=`` (as the conformance fake does).
+            return TxStateReading(value=None, failure="timeout")
+        except CommandError:
+            return TxStateReading(value=None, failure="read-error")
+        for observation in self._civ_runtime._observations_from_frame(reply):
+            if str(observation.path) != "global.tx_state.ptt":
+                continue
+            source = str(observation.source.source)
+            if source in RADIO_READBACK_SOURCES:
+                return TxStateReading(
+                    value=bool(observation.value),
+                    attributed=None,  # Icom reports no attribution (§3.7)
+                    source=source,
+                    verified_readback=True,
+                )
+        return TxStateReading(value=None, failure="unverifiable-provenance")
 
     def _bind_authoritative_ptt_observer(
         self,

@@ -54,9 +54,9 @@ from rigplane.backends.ic9700 import Ic9700SerialRadio
 from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat import YaesuCatRadio
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTimeoutError
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
-from rigplane.core.exceptions import CommandError
-from rigplane.core.tx_authority import RADIO_READBACK_SOURCES, TxStateReading
+from rigplane.core.tx_authority import TxStateReading
 from rigplane.radio import IcomRadio
 
 # ---------------------------------------------------------------------------
@@ -86,8 +86,6 @@ TRANSMITTING_ANSWERS: tuple[TxAnswer, ...] = ("tx_cat", "tx_other")
 #: Answers that must never resolve to *receiving* on any backend: the read
 #: failed, the radio refused, or the value is outside the positive map (§3.7).
 NON_RECEIVING_ANSWERS: tuple[TxAnswer, ...] = ("silence", "refusal", "unmapped")
-
-_PTT_FIELD = "global.tx_state.ptt"
 
 #: A CI-V address that is not any bench radio's, for the mis-addressed shape.
 FOREIGN_CIV_ADDR = 0x88
@@ -215,6 +213,16 @@ class ScriptedCatTransport:
     Installed over a real ``YaesuCatRadio``'s real transport object by
     replacing its two async entry points — the established house pattern
     (``tests/test_ftx1_radio.py:34-46``) minus the mock.
+
+    ``silence`` and ``refusal`` raise the real
+    :class:`~rigplane.backends.yaesu_cat.transport.YaesuCatTransport`'s own
+    typed exceptions (``CatTimeoutError`` / ``CatCommandRejected``) rather
+    than a bare ``asyncio.TimeoutError`` or the raw ``"?"`` token: the real
+    transport's ``query()`` never returns ``"?;"`` as a string, it raises
+    ``CatCommandRejected`` (``transport.py:391-395``). A row-4 review found
+    the earlier version of this fake returning ``"?"`` instead of raising,
+    which let a scripted refusal decode through the fail-closed predicate by
+    coincidence rather than exercising the real backend's rejection path.
     """
 
     _READ_ANSWERS = {
@@ -222,7 +230,6 @@ class ScriptedCatTransport:
         "tx_cat": "TX1",
         "tx_other": "TX2",
         "unmapped": "TX9",
-        "refusal": "?",
     }
 
     def __init__(self, radio: YaesuCatRadio) -> None:
@@ -235,7 +242,9 @@ class ScriptedCatTransport:
     async def query(self, cmd: str, *args: Any, **kwargs: Any) -> str:
         self.wire.append(f"?{cmd}")
         if self.answer == "silence":
-            raise asyncio.TimeoutError("no CAT answer")
+            raise CatTimeoutError("no CAT answer")
+        if self.answer == "refusal":
+            raise CatCommandRejected("Radio rejected command (returned '?;')")
         try:
             return self._READ_ANSWERS[self.answer]
         except KeyError:  # pragma: no cover - guards a typo in a new row
@@ -314,39 +323,6 @@ CONFORMANCE_BACKENDS: tuple[str, ...] = (
 QUEUE_PATH_BACKENDS: tuple[str, ...] = ("yaesu-ftx1", "rigctld-client")
 
 
-async def _civ_reading(radio: Any, timeout: float) -> TxStateReading:
-    """One solicited CI-V transmit-state read, validated as the product does.
-
-    Row 5 will put this behind ``TransmitStateReadable``; until then the
-    harness assembles it from shipped parts so the conformance rows exercise
-    the real validation rather than a stand-in for it. Note which parts:
-    ``CivRequestTracker`` matches ``(command, sub, receiver)`` with **no**
-    address check (``core/civ.py:410-417``), so the discrimination comes from
-    the RX pump's routing guards plus the provenance narrowing at
-    ``_civ_rx.py:2636-2650`` — exactly the trap §3.4 row 5 names.
-    """
-    frame = build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
-    try:
-        reply = await radio._send_civ_expect(frame, label="tx-state", timeout=timeout)
-    except asyncio.TimeoutError:
-        return TxStateReading(value=None, failure="timeout")
-    except CommandError:
-        # No usable answer: nothing came back, or what came back was a NAK.
-        return TxStateReading(value=None, failure="read-error")
-    for observation in radio._civ_runtime._observations_from_frame(reply):
-        if str(observation.path) != _PTT_FIELD:
-            continue
-        source = str(observation.source.source)
-        if source in RADIO_READBACK_SOURCES:
-            return TxStateReading(
-                value=bool(observation.value),
-                attributed=None,  # Icom reports no attribution (§3.7)
-                source=source,
-                verified_readback=True,
-            )
-    return TxStateReading(value=None, failure="unverifiable-provenance")
-
-
 async def _build_lan_icom() -> TxConformanceHarness:
     transport = ScriptedLanTransport()
     radio = IcomRadio("192.168.99.1", timeout=0.2)
@@ -373,7 +349,7 @@ async def _build_lan_icom() -> TxConformanceHarness:
         name="lan-icom",
         radio=radio,
         script=lambda answer: setattr(transport, "answer", answer),
-        read_transmit_state=lambda: _civ_reading(radio, 0.15),
+        read_transmit_state=radio.read_transmit_state,
         wire=lambda: [payload.hex() for payload in transport.civ_wire()],
         is_read=_is_hex_civ_read,
         hazard_method="set_tuner_status",
@@ -399,7 +375,7 @@ async def _build_icom_serial(name: str) -> TxConformanceHarness:
         name=name,
         radio=radio,
         script=lambda answer: setattr(link, "answer", answer),
-        read_transmit_state=lambda: _civ_reading(radio, 0.15),
+        read_transmit_state=radio.read_transmit_state,
         wire=lambda: [payload.hex() for payload in link.sent_frames],
         is_read=_is_hex_civ_read,
         hazard_method="set_tuner_status",
@@ -415,43 +391,12 @@ async def _build_yaesu() -> TxConformanceHarness:
     radio = YaesuCatRadio("/dev/null", profile="ftx1")
     cat = ScriptedCatTransport(radio)
 
-    # ``read()`` below must exercise the *shipped* ``read_ptt`` predicate --
-    # not reimplement it -- so a regression there (e.g. the MOR-1905
-    # inversion) is caught by this matrix (MOR-1941 review, BLOCKED-2).
-    # ``read_ptt`` calls ``read_ptt_token`` internally exactly once; this
-    # wraps that call to capture the raw token for attribution, so the
-    # attribution mapping rides the same single wire round-trip instead of
-    # re-querying the radio. Same house pattern ``ScriptedCatTransport``
-    # already uses to replace an instance's bound methods.
-    last_token: dict[str, str | None] = {"value": None}
-    _real_read_ptt_token = radio.read_ptt_token
-
-    async def _capturing_read_ptt_token() -> str:
-        token = await _real_read_ptt_token()
-        last_token["value"] = token
-        return token
-
-    radio.read_ptt_token = _capturing_read_ptt_token  # type: ignore[method-assign]
-
-    async def read() -> TxStateReading:
-        try:
-            value = await radio.read_ptt()
-        except asyncio.TimeoutError:
-            return TxStateReading(value=None, failure="timeout")
-        except Exception:
-            # ``?;`` fails the typed parse — the radio refused the read.
-            return TxStateReading(value=None, failure="read-error")
-        policy = radio.profile.tx_policy
-        return TxStateReading(
-            value=value,
-            # MOR-1941: the three-valued answer routes through
-            # ``tx_state_map`` into this field via ``TxPolicy.attribution``,
-            # off the token ``read_ptt`` itself just consumed above.
-            attributed=policy.attribution(last_token["value"] or ""),
-            source="yaesu_poll_response",
-            verified_readback=True,
-        )
-
+    # No monkey-patched capture of `read_ptt_token` here: `read_transmit_state`
+    # is production's own row-5 primitive, and it calls the same
+    # `_interpret_ptt_token` helper `read_ptt` does (`yaesu_cat/radio.py`) --
+    # not a harness-local reimplementation -- so a regression in that shared
+    # predicate (the MOR-1905 inversion class) reddens this column the same
+    # way the MOR-1941 review pin wanted the matrix to catch it (BLOCKED-2).
     from rigplane.runtime._poller_types import CommandQueue, PttOff, SetTunerStatus
 
     queue = CommandQueue()
@@ -465,7 +410,7 @@ async def _build_yaesu() -> TxConformanceHarness:
         name="yaesu-ftx1",
         radio=radio,
         script=lambda answer: setattr(cat, "answer", answer),
-        read_transmit_state=read,
+        read_transmit_state=radio.read_transmit_state,
         wire=lambda: list(cat.wire),
         is_read=lambda entry: entry.startswith("?"),
         # The alias chain's innermost body: ``set_tuner_status`` is a pure
@@ -512,22 +457,6 @@ async def _build_rigctld_client() -> TxConformanceHarness:
         else:  # pragma: no cover - guards a typo in a new row
             raise AssertionError(f"unscripted transmit-state answer {answer!r}")
 
-    async def read() -> TxStateReading:
-        try:
-            value = await radio.get_ptt()
-        except asyncio.TimeoutError:
-            return TxStateReading(value=None, failure="timeout")
-        except Exception:
-            return TxStateReading(value=None, failure="read-error")
-        # Never radio truth: upstream answers from its own cache (§3.7), so
-        # the gate must refuse every hazard on this backend.
-        return TxStateReading(
-            value=value,
-            attributed=None,
-            source="hamlib_response",
-            verified_readback=False,
-        )
-
     from rigplane.runtime._poller_types import CommandQueue, PttOff, SelectVfo
 
     queue = CommandQueue()
@@ -542,7 +471,7 @@ async def _build_rigctld_client() -> TxConformanceHarness:
         name="rigctld-client",
         radio=radio,
         script=script,
-        read_transmit_state=read,
+        read_transmit_state=radio.read_transmit_state,
         wire=lambda: list(server.commands_seen),
         is_read=lambda entry: entry.split(" ")[0] in ("t", r"\get_ptt"),
         # External rigctld ships no tuner; VFO select is its hazard family.

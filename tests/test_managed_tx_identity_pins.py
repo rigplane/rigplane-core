@@ -3,15 +3,18 @@ invariants Auditor A's mutation battery found unpinned at base ``65271180``
 (see ``mor1165-audit-plan/raw/auditor-A-report.md`` §A3/§A4).
 
 * **A3-1 epoch (priority).** ``_managed_tx_binding_is_live``
-  (``runtime/radio.py:1207-1211``) drops "live" the instant any of three
-  captured facts moves. Deleting the epoch comparison alone (M5d) survived
+  (``runtime/radio.py:1212-1216`` -- moved +5 lines by MOR-1914's imports)
+  drops "live" the instant any of three captured facts moves. Deleting the
+  epoch comparison alone (M5d) survived
   the suite: nothing drove the ``soft_disconnect`` gap where the CI-V epoch
-  advances (``radio.py:1720``) while the transport object stays put.
+  advances (``radio.py:1725`` -- moved +5 lines by MOR-1914's imports) while
+  the transport object stays put.
 * **A3-1 generation (defence-in-depth).** Deleting the provider-generation
   comparison (M5) also survived; every reachable ``CoreRadio`` path moves
   epoch/transport/generation together via ``retire_managed_tx_port``, so
   the auditor judged it a likely equivalent mutant there. Pinned anyway via
-  the override seam ``radio.py:1348-1351`` names ("a backend that overrides
+  the override seam ``radio.py:1353-1356`` (moved +5 lines by MOR-1914's
+  imports) names ("a backend that overrides
   that lifecycle hook cannot silently lose it"): ``_NoOpRetireBackend``
   is that backend, synthetic by design -- no shipped backend behaves this
   way.
@@ -54,7 +57,8 @@ per Auditor A's Round-2 report §A4/§A8 (and §A3 for the binding triple):
   downstream -- is what stops it from being reached once the binding moved
   underneath an in-flight read.
 * **A3-1 / A4-1, the two ``is``-vs-``==`` weakenings.** Confirmed still
-  unpinned at both the binding triple (``radio.py:1208``, Low) and the
+  unpinned at both the binding triple (``radio.py:1213`` -- moved +5 lines by
+  MOR-1914's imports, Low) and the
   managed-port guard's own transport check (``_civ_rx.py:702``,
   Medium-High) because no shipped transport type
   (``IcomTransport``/serial's ``SerialCivTransport``/``MockTransport``)
@@ -138,7 +142,8 @@ async def test_epoch_only_advance_kills_the_binding_and_forces_one_rearm() -> No
     transport_before = radio._civ_transport
 
     # ``soft_disconnect``'s own move: advance the CI-V epoch, touch nothing
-    # else. See radio.py:1720 / CivRuntime.advance_generation.
+    # else. See radio.py:1725 (moved +5 lines by MOR-1914's imports) /
+    # CivRuntime.advance_generation.
     radio._advance_civ_generation("test: soft_disconnect epoch-only advance")
 
     assert radio._civ_epoch != epoch_before
@@ -153,7 +158,8 @@ async def test_epoch_only_advance_kills_the_binding_and_forces_one_rearm() -> No
 
 # ===========================================================================
 # A3-1 -- generation element, pinned only via the override seam
-# radio.py:1348-1351 anticipates ("a backend that overrides that lifecycle
+# radio.py:1353-1356 (moved +5 lines by MOR-1914's imports) anticipates
+# ("a backend that overrides that lifecycle
 # hook cannot silently lose it"). Every reachable path inside CoreRadio moves
 # epoch/transport/generation together (retire_managed_tx_port), so this
 # element cannot be isolated without a backend that breaks that coupling on
@@ -479,8 +485,9 @@ async def test_transport_equality_is_not_enough_the_managed_port_check_is_identi
 
 async def test_transport_equality_is_not_enough_for_binding_liveness() -> None:
     """``_managed_tx_binding_is_live``'s transport comparison
-    (``runtime/radio.py:1208``) weakened from ``is`` to ``==`` also
-    survives the full 828-test identity-pin superset (Auditor A, A3-M3,
+    (``runtime/radio.py:1213`` -- moved +5 lines by MOR-1914's imports)
+    weakened from ``is`` to ``==`` also survives the full 828-test
+    identity-pin superset (Auditor A, A3-M3,
     recorded at Low as "protected by review only"). Same double, same
     reasoning as the ``_civ_rx.py:702`` pin above: a same-generation,
     same-epoch rebind that nonetheless lands on a *different* transport
