@@ -426,11 +426,40 @@ backend class, **minus** a pinned non-write allow-list (reads, lifecycle,
 audio-RX subscriptions) and a pinned raw exclusion list (§3.3) — never a
 name-prefix match. And every **alias chain carries exactly one admission, at
 the innermost named body** (`set_tuner_status → set_tuner` admits once, in
-`set_tuner`; on Icom the vfo admissions sit in `_set_vfo_wire`,
-`runtime/radio.py:3881` — the one body every Icom VFO write lands in,
-including the cross-module caller on the profile-restore path,
-`runtime/radio_state_snapshot.py:105`) — otherwise a HAZARD write pays two
-solicited reads and logs two decisions.
+`set_tuner`; on Icom the vfo admissions sit in the outer methods themselves —
+`equalize_main_sub` (`runtime/_dual_rx_runtime.py:328`), `swap_vfo_ab`
+(`:347`), `equalize_vfo_ab` (`:378`), and `_set_vfo_slot_impl` (`:545`, the
+innermost named body of the `set_vfo_slot`/`_set_vfo_slot_confirmed` alias
+pair, `:525`/`:540`)) — otherwise a HAZARD write pays two solicited reads and
+logs two decisions.
+
+**`_set_vfo_wire` is not that chokepoint** (correction, 2026-08-21: an earlier
+revision of this section named it as one). It is neither necessary nor
+sufficient. *Under-covering:* `_set_vfo_slot_impl` reaches it only under
+`if self.receiver_count > 1` and emits directly on the `else` branch
+(`_dual_rx_runtime.py:575-582`); `swap_vfo_ab` and `equalize_vfo_ab` guard it
+with `if self._profile.receiver_count > 1` (`:370-372`, `:395-397`);
+`equalize_main_sub` never calls it on **any** profile (`:328-345`); and
+`rigs/ic7300.toml:16` declares `receiver_count = 1`, so on the bench radio all
+of those bypass it entirely. Even on a dual-receiver rig
+`_run_with_receiver_vfo_fallback` calls it only when `current != target`
+(`:114`), so an already-active receiver produces no call at all.
+*Over-covering:* it is the shared per-receiver dispatch —
+`_run_with_receiver_vfo_fallback` has 13 call sites in `runtime/radio.py`, of
+which **five are reads** (`get_filter_width:2332`, `get_repeater_tone:4410`,
+`get_repeater_tsql:4488`, `get_tone_freq:4561`, `get_tsql_freq:4629`) and the
+remaining eight are PASS-class writes (`set_freq:2138`, `set_filter_width:2268`,
+`set_mode:2412`, `set_data_mode:2461`, and the four repeater/tone setters). An
+admission there would gate reads that INV-1 pins to the non-write allow-list
+and would make PASS writes consult transmit truth, which INV-3 forbids
+outright. The method's own docstring (`runtime/radio.py:3948-3954`) enumerates
+only `select_receiver`, `_run_with_receiver_vfo_fallback`, `swap_vfo_ab` and
+`equalize_vfo_ab`, and the merged conformance map pins `"set_vfo_slot"`, never
+`_set_vfo_wire` (`tests/contracts/test_tx_authority_conformance.py:109-114`).
+One residual follows from placing the admissions outside and is named rather
+than hidden: the cross-module profile-restore path calls `_set_vfo_wire`
+directly (`runtime/radio_state_snapshot.py:105`) and no outer-method admission
+covers it.
 
 **Layering.** `core/tx_authority.py` — vocabulary, typed contracts, the
 classification table, and the engine — has no rigplane imports (the
@@ -502,7 +531,7 @@ The default table, with its evidence:
 | levels / TX chain | power, mic gain, compressor, monitor, TX bandwidth | **PASS** | the best-documented category in the study: both vendors publish key-up-then-adjust procedures |
 | RX path / DSP / meters / memory-write / scan-stop / scan-start / power-on / `stop_cw_text` | everything else, each an explicit table entry (INV-1) | **PASS** | receive-side or no-op on the transmitted signal; scan-start declassified from BLOCK — no documented hazard (owner sign-off Q5); `stop_cw_text` joins the T5 short-circuit set |
 | band change | `set_freq` **only when both current and target resolve to declared bands and differ** (gap/unknown → PASS — see the band-relation rules below); `set_band` (protocol `:1777`, implemented only on Yaesu `radio.py:2297` — the Icom `SetBand` is *composed in the web poller* from a band-stack-register read plus `set_freq`/`set_mode`, `radio_poller.py:2839`, so its gating lands on the composed `set_freq` admission, best-effort); `memory_to_vfo` and `set_memory_mode` (recall = band+mode+freq, target unknowable → hazard by design) | **HAZARD** | **B1, closed: measured** — accepted, applied, band-filter relays audibly thrown under RF; the radio does not protect itself. Hamlib's unkey-then-write convenience is deliberately not adopted (Q2: refuse, never auto-unkey) |
-| vfo-select | `set_vfo_slot`, `swap_vfo_ab`, `equalize_vfo_ab`, `equalize_main_sub` (the real protocol/mixin names — the first three on `VfoSlotCapable`, the fourth dual-RX); plus Yaesu's backend-only `set_vfo_select` (`yaesu_cat/radio.py:1697`, the name its own poller dispatch calls) | **HAZARD** | joined the set by ruling (Q11, closing it without B8): a same-band swap is harmless, but telling it from a cross-band one would cost an extra read and an extra branch for the *other* VFO, and nobody swaps VFOs mid-transmission; neither reference implementation issues a VFO exchange during TX from its own code (`newcat.c:1948`, `icom.c:922` — avoidance comments in their backends, not an interlock for clients, so this contradicts nothing in the stricter-than-both position) |
+| vfo-select | `set_vfo_slot`, `swap_vfo_ab`, `equalize_vfo_ab`, `equalize_main_sub` (the real protocol/mixin names — the first three on `VfoSlotCapable`, the fourth dual-RX); plus Yaesu's backend-only `set_vfo_select` (`yaesu_cat/radio.py:1697`, the name its own poller dispatch calls). **Open (Q13, undecided — raised 2026-08-21):** two further members of the same family are classified nowhere in this table — `swap_main_sub` (`runtime/_dual_rx_runtime.py:309-326`) and `select_receiver` (`:447-471`). Their class is an owner decision and is deliberately not taken here; INV-1's totality test will fail on them until it is | **HAZARD** | joined the set by ruling (Q11, closing it without B8): a same-band swap is harmless, but telling it from a cross-band one would cost an extra read and an extra branch for the *other* VFO, and nobody swaps VFOs mid-transmission; neither reference implementation issues a VFO exchange during TX from its own code (`newcat.c:1948`, `icom.c:922` — avoidance comments in their backends, not an interlock for clients, so this contradicts nothing in the stricter-than-both position) |
 | antenna | `set_antenna_1/2`, `set_rx_antenna_ant1/2` | **HAZARD** | relay welding is ~9-10 % of failures (W8JI); every switch vendor forbids hot switching |
 | tuner (entire family) | `set_tuner_status(0|1|2)`; on Yaesu the admission lives in the backend-only body `set_tuner` (`radio.py:2252` — the alias-chain rule, §3.2). An **admitted** tune start (`2`, at confirmed RX) additionally records an own-transmit hold and arms the deadline (§3.6/§3.7 — the tune is a transmission we asked for) | **HAZARD** | `0`/`1` are bypass-relay throws under power (today's `ALWAYS_PASS`/BLOCK split inverted the hazard); `2` while keyed is refused permanently by the rule (Q4 — B2 is now informational: the radio accepted a stacked tune start, and both radios drop to minimum power before a tune cycle, operator knowledge found in no manufacturer source) |
 | ptt-on | `set_ptt(True)` | **KEYING** | attribution + the deadline (§3.6) |
@@ -884,6 +913,24 @@ Unchanged in structure, unified in mechanism:
   unwritable, because the only way to produce RX is an explicit table entry.
   The Icom decode keeps its `0x00/0x01` allowlist (`_civ_rx.py:1566`) with the
   same rule stated: unlisted byte → not RX.
+- **Open (Q14, undecided — raised 2026-08-21): does the Icom path parse
+  through `tx_state_map` at all?** This bullet and §3.9 item 1 read
+  differently and neither is amended here, because the answer is a design
+  decision belonging to this document's owner. *Reading A (this section):*
+  each backend parses its own answer and the Icom path keeps its existing CI-V
+  `0x00/0x01` decode allowlist; `tx_state_map` is the mechanism for backends
+  whose wire token is vendor-encoded. *Reading B (§3.9 item 1, "the parse goes
+  through the profile `tx_state_map` … and — on CI-V — the directed-exact-reply
+  discipline"):* every backend, CI-V included, parses through the profile map,
+  with the shape check added on top. **What the merged code implements is
+  reading A:** row 5's shipped `IcomRadio.read_transmit_state`
+  (`runtime/radio.py:3674-3731`) never consults `profile.tx_policy` — it
+  re-validates the reply through `_observations_from_frame` and the
+  `0x00/0x01` allowlist (`_civ_rx.py:1563-1566`) — while the Yaesu predicate
+  does consult it (`backends/yaesu_cat/radio.py:1083-1090`). The visible
+  consequence is that `rigs/ic7300.toml:1613` ships
+  `tx_state_map = { "0" = "rx" }` that nothing on the Icom path reads. Left
+  open.
 - **Our own commands are a source of "transmitting" — never of "receiving"
   (owner ruling, 2026-08-20).** When rigplane itself issues a command that
   makes the radio transmit — a CW message, a tune start, a key — the
@@ -1014,12 +1061,18 @@ silently before execution.
    resolves to crossing (`tx-truth-unavailable`,
    `failure="no-capability"`) — fail-closed, per the §3.3 table. The parse
    goes through the profile `tx_state_map` (positive-RX rule) and — on
-   CI-V — the directed-exact-reply discipline.
+   CI-V — the directed-exact-reply discipline. **Open (Q14):** this sentence
+   and §3.7's positive-mapping bullet disagree about whether the CI-V path
+   goes through `tx_state_map`; the merged row-5 Icom implementation does
+   not (`runtime/radio.py:3674-3731`). Neither passage is amended — the
+   choice is the owner's.
 2. Constructs its `TransmitAuthority` at connect, injecting the read and
    last-resort-unkey callables and its `[tx_policy]` data; drives `poll()`
    from its liveness loop.
-3. Begins every write method in its GATED map with the admission call —
-   once per alias chain, at the innermost body (INV-2).
+3. Carries the admission on every write method in its GATED map — as the
+   per-method decorator or as the first awaited statement of the body, the
+   two forms INV-2 accepts — once per alias chain, at the innermost named
+   body (INV-2).
 4. Publishes PTT observations with a readback-class `ObservationSource`,
    stamped with the current provider generation, never from its own writes
    (the `yaesu_cat/radio.py:994` self-mutation is deleted).
@@ -1055,16 +1108,24 @@ Designed before any component ships (rows 1–6 precede every cutover):
    never refused; a `set_ptt` write alone produces no observation.
 4. **Totality and call-site pins** (INV-1/INV-2): each backend's map covers
    the union of `Radio`, every capability protocol, and the backend's own
-   write surface; every GATED-map method body contains exactly one admission
-   per alias chain (AST-level, the MOR-1884 pin pattern).
+   write surface; every GATED-map method carries exactly one statically
+   discoverable admission per alias chain, in either accepted form — the
+   per-method decorator or the in-body call — and a method carrying neither
+   fails the pin (AST-level, the MOR-1884 pin pattern).
 5. **Wire-map totality** per client column: every `TxRefusalCode` × every
    client has a pinned rendering; sets are explicit literals, never computed
    from the enum (`test_audio_transport_conformance.py:65-81` rule).
 6. **Characterisation pins landed before any cutover** (row 2), one list,
-   the same list §5 cites: the `RPRT 0` radio-refused rendering, the
-   raw-during-TX refusal (Q12 — the one behaviour ruled retained),
-   teardown-toward-OFF, the one-sided unkey, read-only EACCESS,
-   `t`-from-mirror rendering, ungated `force_unkey`, the watchdog-honesty
+   the same list §5 cites: the `RPRT 0` answered for a **policy-dropped**
+   write during known TX (`_defer_write_gate`, `handler.py:770-833` — the
+   drop is taken before `CommandService` is entered, so the radio never sees
+   the write and refuses nothing; row 10 keeps the wire rendering and
+   replaces the trigger with a genuine radio refusal), the raw-during-TX
+   refusal (Q12 — the one behaviour ruled retained), teardown-toward-OFF,
+   the one-sided unkey **of the interlock** (the ownership layer above it can
+   still decline one — `_route_ptt`, `handler.py:1991-2003`), read-only
+   EACCESS, `t` answered from `RadioState.ptt` (`handler.py:924-926`,
+   consumed `:1746-1768`), ungated `force_unkey`, the watchdog-honesty
    view rules — each with its named mutation.
 7. **Mutation duty:** every §6 invariant names the mutation that must go red;
    batteries run with `PYTHONDONTWRITEBYTECODE=1`.
@@ -1094,7 +1155,7 @@ only when its seat row deletes the old refusal.
 | 4 | **Conformance matrix skeleton + fake extensions** (§3.10 items 1, 3 — including the queue-path rows). Lands **before** the primitive and the Yaesu honesty rows so their pins exist when they cite them — the house pattern (`2026-06-09-target-audio-architecture.md:959-960`: fakes and conformance before every component) | `tests/contracts/` + fakes | [BP] | capability rows xfail until cutovers |
 | 5 | **The read primitive** (issue-first): `read_transmit_state()` on a **new capability protocol `TransmitStateReadable`** — not on the runtime-checkable `Radio` (§3.9: a required member there would silently break `isinstance` for lacking implementers; `open-core-policy.md:178-180` classes it breaking); fail direction for a backend without it: every HAZARD admission refuses `tx-truth-unavailable` with `failure="no-capability"` (the four families unconditionally; `set_freq` on a resolved crossing). Icom implementation applies the directed-exact-reply shape check (`_civ_rx.py:2636-2650`) **itself** — three named implementation traps: `CivRequestTracker` matches `(command, sub, receiver)` with no address check (`core/civ.py:76-82,380-393`), so the shape check cannot be inherited; do not build on `execute_civ_transaction` (single-slot, raises on concurrent use, `_civ_rx.py:1027-1028`); do not reuse the poller's `Commander.send(dedupe=True)` key (`commander.py:151-156` would hand back a pre-decision in-flight read, gutting INV-4); `request_authoritative_ptt_read` is not reusable (observer-bound: def `_civ_rx.py:679`, binding check `:718-732`). Yaesu/rigctld-client adapt their existing `read_ptt` through `tx_state_map` (rigctld-client marked `verified_readback=False`, §3.7). Split 5a (protocol + Icom) / 5b (Yaesu + rigctld-client + conformance rows) | `core/radio_protocol.py`, `runtime/radio.py` or `runtime/_civ_rx.py` / two backends, tests | [BP] additive | conformance: an ACK/setter echo/mis-addressed frame cannot satisfy the read (INV-13 mutation); `TX2` golden; rigctld-client `verified_readback=False` pin |
 | 6 | **Yaesu truth honesty**: `tx_state_map`-driven parse (subsumes 0c's predicate into the table), typed refusal surfaced, delete the `set_ptt` self-mutation (`radio.py:994`) | `backends/yaesu_cat/radio.py`, `observations.py`, tests | [BC]: FTX-1 PTT indicator follows readback only (one poll-cycle lag). Bench: front-panel key on FTX-1 → UI shows TX with `attributed="tx_other"` | unmapped value ≠ RX; self-write emits no observation → restore either → red |
-| 7 | **Icom admission**: construct the authority in **both** Icom connect paths — `CoreRadio.connect()` (the LAN path the SDK facade builds directly, `sync.py:37,136-145`) and the serial base — so INV-15 holds from day one; admission calls at the GATED-map methods, with the vfo-family admission at `_set_vfo_wire` (`runtime/radio.py:3881` — the innermost body, covering the cross-module profile-restore caller at `radio_state_snapshot.py:105`). **KEYING entries admit-and-record but arm no deadline until rows 12a/12b bring the drivers** — otherwise a deadline exists for four rows with nothing to fire it. Declared deviation, 3 src files: `runtime/radio.py` (freq/mode/ptt/antenna/tuner/cw/powerstat/memory surface + LAN construction; the serial subclasses define **zero** write methods of their own — verified), `runtime/_dual_rx_runtime.py` (`equalize_main_sub:328`, `swap_vfo_ab:347`, `equalize_vfo_ab:378`, `set_vfo_slot:525`), `backends/_icom_serial_base.py` (serial construction) + tests. Note: Icom has no `set_band` — the composed `SetBand` path gates through its `set_freq` (§3.3) | 3 src + tests | [BC]: previously-ungated Icom paths (CLI, SDK, HTTP, CW, raw-adjacent typed writes) now gated. Bench: full normal session on IC-7300 at RX — indistinguishable; CLI `set-tuner 0` during a front-panel key → refused with evidence | INV-2 call-site pin live for Icom; remove one admission call → red |
+| 7 | **Icom admission**: construct the authority in **both** Icom connect paths — `CoreRadio.connect()` (the LAN path the SDK facade builds directly, `sync.py:37,136-145`) and the serial base — so INV-15 holds from day one; admission calls at the GATED-map methods, with the vfo-family admissions at the outer methods themselves — `equalize_main_sub`, `swap_vfo_ab`, `equalize_vfo_ab` and `_set_vfo_slot_impl` (§3.2: `_set_vfo_wire`, `runtime/radio.py:3945`, is neither necessary nor sufficient and is **not** the seat), leaving the cross-module profile-restore caller `radio_state_snapshot.py:105` as a named residual. **KEYING entries admit-and-record but arm no deadline until rows 12a/12b bring the drivers** — otherwise a deadline exists for four rows with nothing to fire it. Declared deviation, 3 src files: `runtime/radio.py` (freq/mode/ptt/antenna/tuner/cw/powerstat/memory surface + LAN construction; the serial subclasses define **zero** write methods of their own — verified), `runtime/_dual_rx_runtime.py` (`equalize_main_sub:328`, `swap_vfo_ab:347`, `equalize_vfo_ab:378`, `set_vfo_slot:525`), `backends/_icom_serial_base.py` (serial construction) + tests. Note: Icom has no `set_band` — the composed `SetBand` path gates through its `set_freq` (§3.3) | 3 src + tests | [BC]: previously-ungated Icom paths (CLI, SDK, HTTP, CW, raw-adjacent typed writes) now gated. Bench: full normal session on IC-7300 at RX — indistinguishable; CLI `set-tuner 0` during a front-panel key → refused with evidence | INV-2 call-site pin live for Icom; remove one admission call → red |
 | 8 | **Yaesu + rigctld-client admission**: same, at each backend's **real** write surface — on Yaesu that means the backend-only bodies the queue drain actually calls (`set_tuner`, `set_vfo_select`, …), with alias chains (`set_tuner_status → set_tuner`) admitting exactly once at the innermost body (§3.2). Declared deviation, split **8a (Yaesu)** / **8b (rigctld-client)**: the pinned per-backend method maps cover ~97 and ~12 write methods respectively, and the Yaesu map literal alone exceeds 200 LOC | 8a: `backends/yaesu_cat/radio.py` + tests; 8b: `backends/rigctld_client/radio.py` + tests | [BC]: FTX-1 and hamlib-provider writes gated on every path incl. the web queue. Bench: FTX-1 tuner write from web during front-panel key → refused | conformance queue-path rows go green; drive a write through the poller queue with the admission removed → red; double-admit on the alias chain → the one-decision-per-write pin red |
 | 9 | **Web seat deletion**: `_enforce_tx_interlock`, `_WEB_IMMEDIATE_BLOCK_FAMILIES`, `_current_rf_state`, the staging lane + instance (taking the `heldBy:"tx_interlock"` emitter at `radio_poller.py:818` with it); `control.py`: `_observed_rf_state`, the tuner seat, the CW-auto-tune seat. **Retained, rewired, not deleted**: the shipped raw-during-TX refusal (the `RAW_CIV` arm of the immediate-block set, covering web `send_civ` at `:2271-2281`) survives as a named ingress-side strictness check reading `TransmitTruth` — refusing when truth reads TX **or is unknown/stale** (fail-closed, today's web semantics; Q12); and the bootstrap `connection_epoch_bootstrap` exemption stays exactly as shipped (§3.5). Declared deviation: + `tests/test_radio_poller_tx_interlock.py`, `tests/conftest.py`, `tests/test_web_teardown_unkey_gate.py` (measured blast radius) — 2 src + 3 test files | `web/radio_poller.py`, `web/handlers/control.py`, tests ×3 | [BC]: frequency/mode/split during TX now pass on web (mode on FTX-1: radio refuses, reason shown). Bench: split work while keyed on IC-7300 — dial moves; tuner button during front-panel key — refused with reason | matrix web column; re-add a local FRESH-only read → conformance red; drop the raw-during-TX check → its characterisation pin red |
 | 9b | **Web refusal wire + held-surface retirement**: widen the sanitized `failed` envelope additively with `{code, evidence}` — extending the two-code `{session_id, blockedBy, reason}` shape #2745 shipped (`web/server.py:2161-2187`) to the full vocabulary (other failures still reach the browser as prose, `:2089-2098`); new i18n namespace `core.commandRefusal.*` mapped per `TxRefusalCode`; delete the dead held surface — the `queued`/`heldBy` whitelist branch (`web/server.py:2126-2141`), the frontend parser (`ws-client.ts:599-602`) and `kind: 'held'` (`commands.svelte.ts:34,272-277`) — dead once rows 9/11 delete both lanes. Declared deviation: 1 src + 2 frontend files + tests; **frontend CI block (R7)** | `web/server.py`, `frontend/src/lib/transport/ws-client.ts`, `frontend/src/lib/stores/commands.svelte.ts`, tests | [BC] additive envelope; frontend | wire-map web column goes real; emit a refusal without a typed code → red |
@@ -1142,9 +1203,9 @@ Silence would be a ninth mechanism; there is none.
 | `TxSafetySupervisor` + `_Boundary` + `managed_tx_ingress` + `ManagedTxApi`/`PrivilegedTxApi` | **Retained unchanged** — the keying reducer for managed radios; the authority consults the lease read-only for attribution, never duplicates it |
 | MOR-1878 keyer identity + teardown bias rules | **Retained** seat-side (ingress may add strictness) |
 | `RadioState.ptt` | **Retained with reason**: broad display surface, gate-invisible (no gate reads it once rows 9–11 land) |
-| `_FallbackRigState` (`handler.py:397-436`) | **Retained with reason**: wire-compat rendering for `t` (MOR-1902 stays a wire-owner decision, outside) |
+| `_FallbackRigState` (`handler.py:397-450`) | **Retained with reason**: wire-compat fallback for the mode/data-mode rendering, its only live use (`handler.py:1279,1668-1670`). Correction (2026-08-21): it is **not** the `t` mirror — `t` reads `RadioState.ptt` via `_radio_state()` (`handler.py:924-926`, consumed `:1746-1768`). Nothing in `src/` calls `_FallbackRigState.update_ptt` (`:436-438`) or `is_fresh` (`:417-421`), so `ptt`/`ptt_ts` (`:408-409`) are permanently `False`/`0.0` and `is_fresh("ptt", ttl)` is always false — apparent dead code, recorded here for the cutover epic and deliberately not deleted by this documentation change (MOR-1902 stays a wire-owner decision, outside) |
 | Raw CI-V paths (`web/server.py:411`, `handler.py:547-561`, `hamlib_bridge.py:304`) — and **the shipped raw-during-TX BLOCK** at the web immediate-block seat and the rigctld executor pre-gate | Paths: **excluded by name** (`RAW_EXCLUDED`, §3.3) — bytes cannot be classified, and the rigctld `w` and hamlib-bridge paths sit below the typed layer where the authority cannot even observe them; the read-only/authorization gap stays its own ticket, and T6 names raw as a bound residual. The BLOCK: **retained, rewired to `TransmitTruth`** at both seats (rows 9/10, Q12) — a shipped transmit-time protection is not silently loosened |
-| `RPRT 0` for the radio-refused write during TX; the raw-during-TX refusal (Q12); the one-sided unkey; `t` answered from the mirror; teardown biased toward OFF; ungated `force_unkey`; read-only EACCESS; watchdog-honesty view rules | **Retained deliberately**, each pinned at row 2 (§3.10 item 6 — the same list) |
+| `RPRT 0` for the **policy-dropped** write during known TX (`_defer_write_gate`, `handler.py:770-833` — a pre-`CommandService` drop, not a refusal by the radio, which never sees the write; row 10 keeps the rendering and changes the trigger); the raw-during-TX refusal (Q12); the one-sided unkey **of the interlock** — scope, not a system-wide guarantee: on a managed radio `_route_ptt` answers `RPRT 0` and writes nothing when `managed.set_ptt(False)` returns `TxOutcome.STALE`, the lease being another owner's (`handler.py:1991-2003`, deliberate per MOR-1175, pinned by `tests/test_rigctld_managed_tx.py:223-244`; the web twin discards the same outcome at `web/radio_poller.py:2528-2532`); `t` answered from `RadioState.ptt` (`handler.py:924-926,1746-1768`); teardown biased toward OFF; ungated `force_unkey`; read-only EACCESS; watchdog-honesty view rules | **Retained deliberately**, each pinned at row 2 (§3.10 item 6 — the same list) |
 
 ## §6 Invariants
 
@@ -1156,10 +1217,10 @@ a positive phrasing, so the claim is dropped rather than the phrasing forced.)
 | # | Invariant | Test | Mutation → red |
 |---|---|---|---|
 | INV-1 | The classification is total over the real write surface, **deny-by-default**: every public `async def` member of `Radio`, of every capability protocol, and of each backend class (Yaesu ships 25 backend-only writes — §3.2) is either in that backend's GATED map, in the pinned non-write allow-list (reads, lifecycle, audio-RX subscriptions), or in `RAW_EXCLUDED` — a name-prefix rule is forbidden (it misses `reset_clarifier`, `enable_scope`/`disable_scope`, `start_tx`/`push_tx`, the whole vfo-select family), and a new member anywhere cannot default to PASS by omission | source-level totality test per backend: enumerate all public `async def` members, assert map ∪ allow-list ∪ `RAW_EXCLUDED` covers them exactly | add a write method under **any** name without a map entry — including one no `set_*` prefix would catch |
-| INV-2 | Every GATED-map method admits, exactly once per write: the innermost body of each gated method/alias chain contains the admission call as its first awaited statement, and an alias never adds a second | AST call-site pin per backend (the MOR-1884 pin pattern) + a one-decision-per-write log assertion | remove the admission from any one method; or add a second admission to an alias |
+| INV-2 | Every GATED-map method admits exactly once per write, and the admission is **statically discoverable at the method itself**, in either of exactly two accepted forms: the per-method admission **decorator** on the method, or the admission call as the **first awaited statement** of its body. The innermost named body of each gated method/alias chain carries one of the two; an alias onto another gated body never adds a second; a gated method carrying neither form is a violation. The decorator names the method for the pinned per-backend map and is never a second, competing source of classification. **Reformulated by owner ruling, 2026-08-21** (the first revision required the in-body form only): row 7 gates ~100 Icom write methods, where the literal reading cost 800–1000 changed lines of almost pure re-indentation. The cost of the decorator form is accepted knowingly and stated rather than papered over — the two forms are **not** equivalent to a reader: with a decorator the admission is no longer visible to someone reading only the method body | AST call-site pin per backend, accepting either form and rejecting neither-form (the MOR-1884 pin pattern) + a one-decision-per-write log assertion | remove **both** forms from any one method; or add a second admission to an alias |
 | INV-3 | PASS-class writes never consult transmit truth: with a poisoned truth provider and a poisoned read callable, every PASS-family call still succeeds. (A regression pin: PASS methods carry no admission today by construction — this keeps it that way when someone "helpfully" adds one) | poisoned-provider test over the full PASS table | add a truth read to the PASS path |
 | INV-4 | A HAZARD write is sent only after a solicited RX answer obtained inside the same admission, under the per-radio admission lock, with **no KEYING admission and no TX observation between the read and the write** — never from cache, never on a read another admission obtained | fake-wire ordering test (read precedes write; no read → no write) + an interleaving test (a KEYING admission injected between read and write invalidates the read) | satisfy the gate from `TransmitTruth`; or let a concurrent admission share the read; or admit `set_ptt(True)` between read and write without invalidation |
-| INV-5 | An unkey is never refused: the UNKEY dispatch branch has no refusal path and clears the deadline unconditionally | branch-enumeration test + poisoned-table variant | add a refusal branch to UNKEY |
+| INV-5 | **The authority never refuses an unkey**: the UNKEY dispatch branch has no refusal path and clears the deadline unconditionally. Scope, stated rather than widened (correction, 2026-08-21 — the earlier bare phrasing "an unkey is never refused" claimed more than the tree does): a separate ownership mechanism above the authority can still decline one. On a managed radio `_route_ptt` answers `RPRT 0` and writes nothing when `managed.set_ptt(False)` returns `TxOutcome.STALE` — the lease is another owner's and rigctld holds no privileged force (`handler.py:1991-2003`, deliberate per MOR-1175, pinned by `tests/test_rigctld_managed_tx.py:223-244`; the web twin discards the same outcome at `web/radio_poller.py:2528-2532`). This invariant constrains the authority's dispatch and does not claim that behaviour away | branch-enumeration test + poisoned-table variant | add a refusal branch to UNKEY |
 | INV-6 | A corrupt or incomplete classification table never makes a de-key, power-off or `stop_cw_text` harder: the T5 short-circuit precedes all table and profile data | poisoned-table test | reorder the short-circuit after the table |
 | INV-7 | Every admitted unmanaged key — and every admitted tune start and CW send (the other own-transmit initiators) — from every ingress, arms the one deadline; every shipped driver executes the OFF effect by **enqueuing** `PttOff` on its web branch (Icom branch additionally preserving the audio-teardown/identity arm — that pin is Icom-branch-scoped, §3.6) or through the rigctld unkey path / backend last resort. The named residuals — bare Yaesu/rigctld-client with no delivery, a dead SDK process, raw CI-V — are listed in §3.6/T6, not hidden by this row | per-delivery matrix on a fake clock (web×2 branches, rigctld, Icom backend-loop last resort) + the Icom-branch enqueue pin | skip the arm on any path; or fire the Icom-branch web OFF directly instead of enqueuing |
 | INV-8 | `TransmitTruth` accepts only radio-readback provenance: no observation outside `RADIO_READBACK_SOURCES`, and no lease/ACK/write outcome, changes it | sources-pin test + conformance self-write row | add `"command_response"` or `"state_poller"` to the frozenset |
@@ -1242,7 +1303,9 @@ a positive phrasing, so the claim is dropped rather than the phrasing forced.)
 
 ## §9 Owner decisions — settled (2026-08-20)
 
-Every question this document raised is decided; the record is
+Every question this document raised **as of 2026-08-20** is decided; two
+further questions raised on 2026-08-21 are open and marked as such in the
+table below. The record is
 `rigplane-archives/tx-authority-owner-decisions.md`, and the rulings that
 change the body of the document (the four-family rule; the own-commands rule;
 CW atomicity) are incorporated in §3.3, §3.5, §3.6 and §3.7 above. The table
@@ -1262,6 +1325,8 @@ below is the disposition of each question as asked.
 | Q10 | Raw CI-V outside the authority | **Yes** — classifying arbitrary bytes is a fiction, and the rigctld raw path sits below the typed layer where the authority cannot observe it honestly. Distinct from Q12, which is about the *refusal*, not the classification | Coordinator |
 | Q11 | vfo-select during TX | **Refuse — joins the four-family rule.** A same-band swap is harmless, but distinguishing it would cost an extra read and branch for the other VFO, and nobody swaps VFOs mid-transmission. Closed by ruling, not measurement — **B8 dropped from the bench list** | **Owner** |
 | Q12 | The shipped raw-during-TX BLOCK | **Retain**, rewired to the new truth type at both seats (rows 9/10), fail-closed at unknown | **Owner** |
+| Q13 | Class of the two unclassified vfo-family members — `swap_main_sub` (`runtime/_dual_rx_runtime.py:309-326`) and `select_receiver` (`:447-471`) | **OPEN — raised 2026-08-21, not decided.** Neither appears in the §3.3 table. They are not classified here: HAZARD-by-analogy with the rest of the family and PASS are both defensible, and Q11's reasoning (nobody swaps VFOs mid-transmission) does not obviously carry to a receiver select. INV-1's totality test fails on them until the class is set | **Owner** — pending |
+| Q14 | Does the Icom path parse its transmit-state answer through the profile's `tx_state_map`? | **OPEN — raised 2026-08-21, not decided.** §3.7's positive-mapping bullet and §3.9 item 1 read differently and neither has been amended to match the other. The merged row-5 code implements §3.7's reading: `IcomRadio.read_transmit_state` (`runtime/radio.py:3674-3731`) never consults `profile.tx_policy`, validating through `_observations_from_frame` and the `0x00/0x01` allowlist (`_civ_rx.py:1563-1566`), while Yaesu does consult the map (`backends/yaesu_cat/radio.py:1083-1090`) — leaving `rigs/ic7300.toml:1613`'s `tx_state_map` unread on the Icom path. Row 5 has shipped either way; the question is which passage the design means | **Owner** — pending |
 
 ## §10 Bench status
 
