@@ -934,3 +934,15 @@ set_apf_freq   = { cat = { write = "CO03{val:04d};" } }
 
 # ── Clarifier Reset ──
 reset_clarifier = { cat = { write = "RC;" } }
+
+[tx_policy]
+# Measured on the bench (MOR-1912): a controlled write-during-transmit
+# battery sent to the FTX-1 while an operator held a front-panel key. Mode
+# and split were both refused with an explicit `?;` and not applied;
+# frequency and RIT were accepted and applied (silent, confirmed by
+# read-back) — same as the RX baseline — so they are not listed here.
+refused_during_tx = ["mode", "vfo-topology"]
+# The Yaesu `TX;` read-back is three-valued and self-attributing: "0"
+# receiving, "1" transmitting because CAT keyed it, "2" transmitting
+# because the radio keyed itself (front panel/mic/footswitch/VOX).
+tx_state_map = { "0" = "rx", "1" = "tx_cat", "2" = "tx_other" }

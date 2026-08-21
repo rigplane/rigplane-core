@@ -1597,3 +1597,17 @@ label = "15"
 raw = 241
 actual = 25.0
 label = "25"
+
+[tx_policy]
+# Measured on the bench (MOR-1912): a controlled write-during-transmit
+# battery — frequency, mode, split, RIT — sent to the IC-7300 while an
+# operator held a front-panel key. Every write was accepted and applied
+# (byte-identical to the receiving baseline, confirmed by read-back), so
+# there is no measured refusal to record here.
+refused_during_tx = []
+# The CI-V PTT read-back (cmd 0x1C sub 0x00) is a plain on/off byte with no
+# source attribution — it cannot say whether CAT or the front panel keyed
+# the radio. Positive-RX rule: only the receiving byte is listed, so the
+# transmitting byte (and anything unrecognised) is correctly not-receiving
+# without inventing an attribution the radio never reported.
+tx_state_map = { "0" = "rx" }
