@@ -280,6 +280,31 @@ _MAX_KEY_DOWN_SECONDS: float = BACKEND_MAX_KEY_DOWN_SECONDS
 # first; it does not add poll pressure for late-but-arriving answers.
 _ACQUISITION_HEALTHY_GRACE_SECONDS: float = 6.0
 
+# MOR-1959: retry backoff for the connection-epoch VFO-identity bootstrap
+# write (``establish_vfo_identity``). Owner ruling, 2026-08-21: that write
+# takes the same admission as any other write, so at connection start —
+# where RF state is structurally UNKNOWN, the routine case rather than a
+# rare one (pinned by
+# ``test_establish_vfo_identity_arms_retry_after_tx_interlock_refusal``) —
+# the admission refuses it and the poller retries with backoff instead of
+# abandoning the write.
+#
+# The initial wait exceeds IC-7300's own PTT field policy cadence
+# (``rigs/ic7300.toml``, ``global.tx_state.ptt``: ``cadence_seconds = 0.3``),
+# so the first retry fires only after that field's own poll has had a
+# chance to land a FRESH observation, instead of retrying before the very
+# poll that would resolve it has even gone out
+# (``test_vfo_identity_retry_initial_wait_exceeds_ic7300_ptt_cadence``).
+# The cap keeps the retry's own CI-V traffic a small fraction of this
+# profile's ~20 q/s serial ceiling (``_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS``,
+# ``backends/_icom_serial_base.py``) even under continuous refusal
+# (``test_vfo_identity_retry_max_backoff_keeps_retries_well_under_the_serial_ceiling``).
+# Growth step mirrors the shape (not the literal values) of ``_run``'s own
+# connection-loss backoff idiom rather than inventing a second primitive.
+_VFO_IDENTITY_RETRY_INITIAL_S: float = 0.5
+_VFO_IDENTITY_RETRY_STEP_S: float = 0.5
+_VFO_IDENTITY_RETRY_MAX_S: float = 5.0
+
 # MOR-615: per-DATA-group MOD-input source fields (IC-7610 0x1A 05 00
 # 0x91-0x94). Field name == ``get_<name>`` / ``set_<name>`` radio method
 # suffix == legacy RadioState attribute == StateStore slow_state leaf.
@@ -722,6 +747,17 @@ class RadioPoller:
         self._last_keyer: tuple[CommandSource, str | None] | None = None
         self._deferred_tx_lane = DeferredTxCommandLane()
         self._deferred_tx_entry: CommandQueueEntry | None = None
+        # MOR-1959: pending-retry state for the connection-epoch VFO-identity
+        # bootstrap write. ``_vfo_identity_retry_due_at``/``_attempts``/
+        # ``_first_armed_at`` are only meaningful while
+        # ``_vfo_identity_retry_pending`` is True; set by
+        # ``_arm_vfo_identity_retry`` and cleared by ``establish_vfo_identity``
+        # once identity is observed or the write succeeds.
+        self._vfo_identity_retry_pending: bool = False
+        self._vfo_identity_retry_due_at: float = 0.0
+        self._vfo_identity_retry_backoff_s: float = 0.0
+        self._vfo_identity_retry_attempts: int = 0
+        self._vfo_identity_retry_first_armed_at: float = 0.0
 
     def _provider_generation(self) -> int:
         return cast(int, self._state_store.provider_generation)
@@ -2014,6 +2050,23 @@ class RadioPoller:
                         "radio-poller: tx_target derivation error", exc_info=True
                     )
 
+                # 3c. MOR-1959: retry the VFO-identity bootstrap write once
+                # its backoff has elapsed. Cheap on every other tick — one
+                # monotonic comparison — so this does not contend with
+                # normal polling; the wire write only happens when due.
+                if (
+                    self._vfo_identity_retry_pending
+                    and time.monotonic() >= self._vfo_identity_retry_due_at
+                ):
+                    try:
+                        await self.establish_vfo_identity()
+                    except Exception:
+                        self._arm_vfo_identity_retry()
+                        logger.warning(
+                            "radio-poller: VFO identity bootstrap retry failed",
+                            exc_info=True,
+                        )
+
                 # 4. Wait for next cycle
                 await self._queue.wait(timeout=self._fast_interval)
         except asyncio.CancelledError:
@@ -2243,18 +2296,17 @@ class RadioPoller:
         source: CommandSource = "websocket",
         session_id: str | None = None,
         command_service: CommandService | None = None,
-        connection_epoch_bootstrap: bool = False,
     ) -> None:
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
-        # emits alike. The single exemption is the connection-epoch bootstrap
-        # ``SelectVfo`` in :meth:`establish_vfo_identity`: at connection start
-        # RF is structurally UNKNOWN, and that one ruled write (MOR-1443) is
-        # what makes RF/VFO truth observable at all. Emergency commands need
-        # no exemption — ``_enforce_tx_interlock`` is structurally incapable
-        # of blocking them before any table is consulted.
-        if not connection_epoch_bootstrap:
-            self._enforce_tx_interlock(cmd)
+        # emits alike, with no exemption channel. MOR-1959 (owner ruling,
+        # 2026-08-21): the connection-epoch bootstrap ``SelectVfo`` in
+        # :meth:`establish_vfo_identity` used to bypass this seat; it no
+        # longer does — a refusal there is caught and retried with backoff
+        # by the caller instead. Emergency commands need no exemption either
+        # — ``_enforce_tx_interlock`` is structurally incapable of blocking
+        # them before any table is consulted.
+        self._enforce_tx_interlock(cmd)
         radio = self._radio
         provider_generation = self._provider_generation()
         _r: Any = radio  # cast for capability methods not on base Radio protocol
@@ -3973,6 +4025,17 @@ class RadioPoller:
         backend that never touches this poller at all) and never reach this
         branch — they keep reading, never writing.
 
+        The write itself takes the ordinary interlock seat like any other
+        command — no exemption channel (owner ruling, MOR-1959,
+        2026-08-21). RF state is structurally UNKNOWN at connection start,
+        so a refusal here is the routine case, not a rare one: it is caught
+        and turned into an armed retry (:meth:`_arm_vfo_identity_retry`)
+        instead of being raised or dropped. :meth:`_run`'s main loop
+        re-attempts this same call once the retry is due, so a caller
+        invoking this method directly (the two call sites below) sees no
+        exception for that refusal — only a genuinely unexpected error
+        propagates.
+
         Called once per connect from the one-time startup section of
         :meth:`_run`, and again from the web server's reconnect path
         (``WebServer._on_radio_reconnect`` → its ``_refetch_and_reenable``
@@ -4012,16 +4075,69 @@ class RadioPoller:
         except KeyError:
             pass
         else:
+            self._vfo_identity_retry_pending = False
             return  # identity already observed — nothing to establish
         logger.info(
             "radio-poller: active-VFO identity unqueryable and unobserved; "
             "auto-commanding VFO A once (MOR-1443, receiver=%d)",
             receiver,
         )
-        # MOR-1884: the ONE exempted write. RF is structurally UNKNOWN at
-        # connection start, and this ruled bootstrap (MOR-1443) is what makes
-        # identity observable — the seat would otherwise fail it closed forever.
-        await self._execute(SelectVfo(vfo="A"), connection_epoch_bootstrap=True)
+        try:
+            await self._execute(SelectVfo(vfo="A"))
+        except TxInterlockRefusal:
+            self._arm_vfo_identity_retry()
+            return
+        self._vfo_identity_retry_pending = False
+
+    def _arm_vfo_identity_retry(self) -> None:
+        """Arm (or extend) the VFO-identity bootstrap retry after a refusal.
+
+        MOR-1959 (owner ruling, 2026-08-21): the bootstrap write takes the
+        same admission as any other write, so a refusal under it is
+        re-attempted with backoff rather than abandoned — see the retry
+        constants' own comment for where the backoff numbers come from.
+
+        A radio whose transmit state never becomes known would retry here
+        forever — not hypothetical: Hamlib's own IC-756/PRO/PROII/PROIII
+        backend (`rigs/icom/ic756.c`) declares `set_ptt` but no `get_ptt` at
+        all, so `rig_get_ptt` answers from its last-commanded software flag
+        rather than the radio, permanently. Whether anything should
+        eventually give up is an open owner decision this PR does not take
+        (tracked separately). What this method guarantees regardless: once
+        backoff reaches its cap — meaning the write has now been refused
+        repeatedly, not just once — every further arm logs at WARNING,
+        naming the attempt count and elapsed time, so a radio stuck this way
+        stays visible as a slow, bounded retry loop rather than a silent
+        spin.
+        """
+        now = time.monotonic()
+        if self._vfo_identity_retry_pending:
+            self._vfo_identity_retry_attempts += 1
+            self._vfo_identity_retry_backoff_s = min(
+                self._vfo_identity_retry_backoff_s + _VFO_IDENTITY_RETRY_STEP_S,
+                _VFO_IDENTITY_RETRY_MAX_S,
+            )
+        else:
+            self._vfo_identity_retry_attempts = 1
+            self._vfo_identity_retry_first_armed_at = now
+            self._vfo_identity_retry_backoff_s = _VFO_IDENTITY_RETRY_INITIAL_S
+        self._vfo_identity_retry_pending = True
+        self._vfo_identity_retry_due_at = now + self._vfo_identity_retry_backoff_s
+        if self._vfo_identity_retry_backoff_s >= _VFO_IDENTITY_RETRY_MAX_S:
+            logger.warning(
+                "radio-poller: transmit state has not become known after "
+                "%d attempts over %.1fs; active VFO remains unknown "
+                "(retrying every %.1fs)",
+                self._vfo_identity_retry_attempts,
+                now - self._vfo_identity_retry_first_armed_at,
+                self._vfo_identity_retry_backoff_s,
+            )
+        else:
+            logger.info(
+                "radio-poller: VFO-identity bootstrap write refused (RF "
+                "state not yet known); retrying in %.1fs",
+                self._vfo_identity_retry_backoff_s,
+            )
 
     def _vfo_identity_paths(self, receiver: int) -> tuple[FieldPath, ...]:
         receiver_id = str(receiver)

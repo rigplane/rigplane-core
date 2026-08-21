@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -441,35 +442,101 @@ async def test_direct_defer_family_emit_is_refused_at_the_execute_seat(
     radio.set_vfo_slot.assert_not_awaited()
 
 
-async def test_bootstrap_exemption_passes_the_seat_under_unknown_rf() -> None:
-    """At connection start RF is structurally UNKNOWN; the one exempted write
-    must reach the dispatch body instead of being refused (MOR-1443).
-
-    Discriminated by WHICH failure it hits: the same command without the
-    exemption never leaves the seat ("RF state is unknown"), while the
-    exempted one gets all the way into the SelectVfo dispatch and fails on
-    that command's own readback contract — proof it passed the interlock.
+async def test_establish_vfo_identity_arms_retry_after_tx_interlock_refusal() -> None:
+    """MOR-1959 (owner ruling, 2026-08-21): the bootstrap ``SelectVfo`` now
+    takes the same admission as any other write — no exemption channel. At
+    connection start RF is structurally UNKNOWN, so the write is refused by
+    the ordinary interlock seat; that is the ROUTINE case, not a rare one.
+    ``establish_vfo_identity`` must swallow that one refusal type and arm a
+    pending retry with a future due time, instead of raising it or silently
+    dropping the attempt.
     """
     poller, _radio, _store = _poller()
+    before = time.monotonic()
 
-    with pytest.raises(CommandError, match="RF state is unknown"):
-        await poller._execute(SelectVfo(vfo="A"))  # noqa: SLF001
+    await poller.establish_vfo_identity()  # noqa: SLF001 — must not raise
 
-    with pytest.raises(CommandError) as exempted:
-        await poller._execute(  # noqa: SLF001
-            SelectVfo(vfo="A"), connection_epoch_bootstrap=True
-        )
-    assert "RF state" not in str(exempted.value)
-    assert "VFO selection" in str(exempted.value)
+    assert poller._vfo_identity_retry_pending is True  # noqa: SLF001
+    assert poller._vfo_identity_retry_due_at > before  # noqa: SLF001
 
 
-def test_bootstrap_exemption_has_exactly_one_production_call_site() -> None:
+def test_connection_epoch_bootstrap_parameter_is_fully_removed() -> None:
+    """MOR-1959: the bootstrap write takes the ordinary interlock seat now,
+    so the old exemption flag/skip-branch must not survive anywhere in the
+    module — a stray reference would mean a second, silently-different
+    admission path exists again.
+    """
     from pathlib import Path
 
     import rigplane.web.radio_poller as radio_poller_module
 
     source = Path(radio_poller_module.__file__).read_text()
-    assert source.count("connection_epoch_bootstrap=True") == 1
+    assert "connection_epoch_bootstrap" not in source
+
+
+def test_vfo_identity_retry_initial_wait_exceeds_ic7300_ptt_cadence() -> None:
+    """The comment on ``_VFO_IDENTITY_RETRY_INITIAL_S`` claims the first
+    retry fires only after IC-7300's own PTT field policy has had a chance
+    to answer. Pin that comparison directly against the profile's own
+    declared cadence (``rigs/ic7300.toml``, ``global.tx_state.ptt``) so a
+    future edit to either value cannot silently break the claim."""
+    import rigplane.web.radio_poller as radio_poller_module
+
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    policy = profile.state_acquisition.policy_for(_PTT)
+    assert policy.cadence_seconds is not None
+    assert radio_poller_module._VFO_IDENTITY_RETRY_INITIAL_S > policy.cadence_seconds
+
+
+def test_vfo_identity_retry_max_backoff_keeps_retries_well_under_the_serial_ceiling() -> (
+    None
+):
+    """The comment on ``_VFO_IDENTITY_RETRY_MAX_S`` claims one retry at the
+    capped interval is a small fraction of the serial CI-V ceiling
+    (``_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS`` = 50ms/frame = 20 q/s) even
+    under continuous refusal. Pin the arithmetic directly."""
+    import rigplane.web.radio_poller as radio_poller_module
+    from rigplane.backends._icom_serial_base import (
+        _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS,
+    )
+
+    ceiling_qps = 1000.0 / _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS
+    worst_case_retry_qps = 1.0 / radio_poller_module._VFO_IDENTITY_RETRY_MAX_S
+    assert worst_case_retry_qps < ceiling_qps * 0.05
+
+
+def test_vfo_identity_retry_logs_observably_once_backoff_reaches_ceiling(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A radio whose transmit state never becomes known (a real, shipped
+    case — Hamlib's IC-756/PRO/PROII/PROIII backend declares ``set_ptt`` but
+    no ``get_ptt`` at all) would retry here forever. This PR does not decide
+    whether anything should eventually give up (tracked separately) — but
+    the condition must stay observable, not spin silently. Once backoff
+    reaches its cap, every further refusal must log at WARNING naming the
+    stuck condition.
+    """
+    import rigplane.web.radio_poller as radio_poller_module
+
+    poller, _radio, _store = _poller()
+    caplog.set_level(logging.WARNING, logger="rigplane.web.radio_poller")
+
+    steps = (
+        int(
+            radio_poller_module._VFO_IDENTITY_RETRY_MAX_S
+            // radio_poller_module._VFO_IDENTITY_RETRY_STEP_S
+        )
+        + 2
+    )
+    for _ in range(steps):
+        poller._arm_vfo_identity_retry()  # noqa: SLF001
+
+    assert (
+        poller._vfo_identity_retry_backoff_s  # noqa: SLF001
+        == radio_poller_module._VFO_IDENTITY_RETRY_MAX_S
+    )
+    assert any("has not become known" in record.message for record in caplog.records)
 
 
 async def test_teardown_drain_unkey_stays_outside_the_execute_seat() -> None:

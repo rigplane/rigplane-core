@@ -5288,6 +5288,29 @@ async def _run_once(poller: RadioPoller) -> None:
         await poller._run()  # noqa: SLF001
 
 
+def _seed_known_rx(store: StateStore) -> None:
+    """Seed a fresh RX PTT observation (MOR-1959).
+
+    At connection start RF state is structurally UNKNOWN, so the
+    ``establish_vfo_identity`` bootstrap write is refused and retried
+    (pinned separately in
+    ``tests/test_radio_poller_tx_interlock.py::test_establish_vfo_identity_arms_retry_after_tx_interlock_refusal``).
+    The tests below are about VFO-identity establishment itself, not the
+    retry mechanics, so they seed a known-RX PTT fact first — the same way
+    an operator's actual radio would answer its very first PTT poll.
+    """
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=time.monotonic(),
+            max_age=1.0,
+            provider_generation=store.provider_generation,
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_run_auto_commands_vfo_a_when_identity_unqueryable() -> None:
     """IC-7300 (``vfo_readback == "selected_unselected"``) cannot passively
@@ -5299,6 +5322,7 @@ async def test_run_auto_commands_vfo_a_when_identity_unqueryable() -> None:
     radio = _make_radio(model="IC-7300")
     store = StateStore()
     store.begin_provider_generation()
+    _seed_known_rx(store)
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
 
     assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
@@ -5382,6 +5406,7 @@ async def test_establish_vfo_identity_refires_after_reconnect_reset() -> None:
     radio = _make_radio(model="IC-7300")
     store = StateStore()
     store.begin_provider_generation()
+    _seed_known_rx(store)
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
 
     await _run_once(poller)
