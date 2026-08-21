@@ -27,6 +27,21 @@ Rules:
   delete it. A guarantee stated wider than the code is worse than no
   guarantee — the next reader stops checking. Never state what a future
   change will do: that belongs in the ticket.
+- When a review or an audit hands you one wrong instance, sweep the class.
+  Enumerating every place the same shape could occur is investigation, not
+  modification: "no scope expansion" governs what you change, not what you
+  look at, so the sweep runs every time, guardrails or not. Re-derive the
+  instances already recorded as correct, not only the new one. Fix an
+  instance only when it falls inside what the spec and the file/LOC
+  guardrails already cover; for every other instance you find, leave it
+  unfixed and report it — the class, how you enumerated it, and why each
+  unfixed instance was left that way — so a reviewer can check your method
+  instead of repeating your search.
+- Re-derive every figure at the head you are pushing. A count, a line total,
+  a file inventory or a member census carried forward from an earlier round
+  is a measurement of a tree that no longer exists — and a stale figure has
+  already flipped a guardrail judgement from true to false here without
+  anyone noticing.
 - Never include internal hostnames, IPs, or credentials in anything that can
   become public (commit messages, PR text, code comments).
 - Your final message: what changed (files and why), test results, and anything

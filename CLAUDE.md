@@ -147,6 +147,9 @@ head, and the PR is not draft. `Agent Review: BLOCKED` must include concrete
 problems, file/line references where applicable, risk, required fixes, and
 checks to run. The implementation agent must fix
 BLOCKED feedback, push updates, and rerun or wait for checks before merge.
+A BLOCKED comment naming one instance is a review of its class: enumerate
+every place the same shape occurs, fix what the change's guardrails cover,
+and report the rest instead of expanding scope to fix it.
 
 A failed `Agent Review Gate` without BLOCKED feedback usually means no fresh
 PASS comment exists for the current head; perform or refresh the review instead
