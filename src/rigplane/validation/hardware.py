@@ -722,10 +722,15 @@ async def _actuate_tx_ptt(
             # not report a confident "did not key" when the write itself
             # was accepted (``key_refusal is None`` already means
             # ``set_ptt(True)`` did not raise) -- reporting `keyed: false`
-            # from a measurement that never happened would be exactly the
-            # fabricated-observation class §3.7 exists to eliminate, only
-            # worse: a false negative, not just an unconfirmed positive. So
-            # a read failure falls back to trusting the accepted write
+            # from a measurement that never happened would be a fabricated
+            # observation, and a false negative at that, not merely an
+            # unconfirmed positive. Note what this reasoning does and does
+            # not lean on: the transmit-authority ADR's rule that our own
+            # commands may source "transmitting" but never "receiving"
+            # licenses declining to say ``False`` here. It does not license
+            # claiming the value was verified, which is why the provenance
+            # tag below is not optional. So a read failure falls back to
+            # trusting the accepted write
             # (``ptt_state = True``), not to the mirror -- on Yaesu the
             # mirror is now permanently stale (the self-write is deleted),
             # so it is exactly as fabricated a signal as a bare ``False``
