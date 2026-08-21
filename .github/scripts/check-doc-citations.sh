@@ -11,13 +11,24 @@
 # plus SYMBOL NAME (e.g. `radio.py: IcomRadio.set_frequency`), never a line
 # number.
 #
-# At the time this gate was introduced, docs/** already carried ~825 distinct
-# existing (docfile, citation) pairs across 27 files. Resolving each to
-# "whatever symbol sits at that line today" would fabricate a symbol name
-# wherever the citation is already stale — exactly the defect this gate
-# exists to catch. So this is NOT a bulk rewrite: existing citations are
-# grandfathered in doc-citation-baseline.txt, and that baseline may only
-# shrink over time as citations are individually converted to symbol names.
+# At the time this gate was introduced (the commit that first regenerated
+# doc-citation-baseline.txt in the current (docfile, citation) format),
+# docs/** carried 861 existing pairs across 27 files. That number is a
+# historical snapshot of one commit, not a live count, and this comment is
+# not kept in sync as the baseline shrinks -- the number a clean
+# `check-doc-citations.sh` run prints is always the authoritative current
+# count; trust that output over this sentence if they ever disagree. (This
+# note exists because an earlier draft of this paragraph carried the
+# previous design round's *citation-string* count forward as if it were the
+# new *pair* count, unremeasured -- inside the one script whose job is
+# catching exactly that kind of stale, unremeasured figure.)
+#
+# Resolving each stale citation to "whatever symbol sits at that line today"
+# would fabricate a symbol name wherever the citation is already wrong --
+# exactly the defect this gate exists to catch. So this is NOT a bulk
+# rewrite: existing citations are grandfathered in doc-citation-baseline.txt,
+# and that baseline may only shrink over time as citations are individually
+# converted to symbol names.
 #
 # WHAT ENFORCES "MAY ONLY SHRINK", AND WHERE: this script alone cannot make
 # that true. `--regenerate` (below) refuses to add a pair unless you pass
@@ -32,6 +43,23 @@
 # That comparison cannot be dodged by any local operation, because CI always
 # re-derives it from a git ref, independent of what got committed.
 #
+# RENAMING A CITED DOCUMENT: moving or renaming a docs/** file re-keys every
+# one of its pairs (the docfile half of the key changes), which would
+# otherwise look identical to bulk growth to --check-growth. Before
+# comparing, --check-growth runs `git diff --name-status -M <base-ref> --
+# docs/` and, for every path git itself calls a rename, rewrites that path's
+# entries in the base-ref baseline to the new path before diffing. A pure
+# rename (citations unchanged) then compares as zero added/zero removed; a
+# rename that also edits citations still shows exactly those edits as
+# growth or shrinkage, because only the unchanged pairs get re-keyed. If a
+# rename's content diff falls below git's similarity threshold and it is
+# not detected as a rename, it will read as the old document's pairs going
+# dead and the new document's pairs being new growth -- in that case use
+# `git mv` (which git's detector favours) or, failing that,
+# `--regenerate --allow-growth` plus an explanation in the PR, since
+# --check-growth in CI is what actually decides the outcome regardless of
+# what --regenerate did locally.
+#
 # BASELINE KEY: each grandfathered entry is a (docfile, citation) PAIR, not
 # just a bare citation string. A flat set of citation strings (no docfile)
 # has two holes: (a) a brand-new document citing a citation string that
@@ -39,9 +67,25 @@
 # (b) retargeting a citation to a different stale line in the same document
 # could survive undetected if that same string also happens to occur,
 # unchanged, in some other document. Keying on the pair closes both: a new
-# document citing an old string is a new pair, and retargeting one doc's
-# citation changes exactly that doc's pairs regardless of what any other
-# document does with the same string.
+# document citing an old string is a new pair, and retargeting a citation in
+# one document changes that document's pair SET regardless of what any
+# other document does with the same string.
+#
+# LIMIT OF THAT DESIGN, STATED PLAINLY: a (docfile, citation) pair is
+# deduplicated within a document, so it records WHICH citations a document
+# makes, not how many times or in what order. If a document cites the same
+# target more than once and one specific occurrence is swapped for a
+# citation that is ALREADY grandfathered elsewhere in that same document,
+# the pair set for that document does not change, and the swap is invisible
+# to this gate -- occurrence count, not just identity, would be needed to
+# catch it. This is not a hypothetical: 149 of the 1010 raw citation
+# occurrences in the current corpus are within-document duplicates. This is
+# a deliberate boundary of pair-level granularity, not an oversight left to
+# fix later: tracking occurrence counts instead would flag ordinary,
+# harmless deduplication (a document dropping a redundant repeat citation)
+# as baseline shrinkage in one run and growth in the next just as often as
+# it would catch a genuine swap, which is a worse trade than the hole it
+# would close.
 #
 # EXTENSIONS: py, ts, svelte, toml, md, c, h, cpp, mjs, yml, ui. Verified
 # present in real docs/** citations today (2026-08-21) by scanning docs/**
@@ -121,22 +165,57 @@ write_baseline() {
 
 if [ "${1:-}" = "--check-growth" ]; then
     BASE_REF="${2:?--check-growth requires a git ref argument}"
-    if ! BASE_BLOB="$(git show "${BASE_REF}:.github/scripts/doc-citation-baseline.txt" 2>/dev/null)"; then
-        echo "Doc-citation gate: no baseline exists at ${BASE_REF} (gate not introduced there yet) -- skipping growth check."
+
+    # F6: resolve the ref FIRST, as its own check. "I could not resolve
+    # this ref at all" (typo, deleted branch, bad workflow input) and "this
+    # ref resolves fine but the gate did not exist yet at that commit" are
+    # different situations and must not share an exit code or a message --
+    # collapsing them made an unresolvable ref look like a clean bootstrap.
+    if ! RESOLVED_BASE_REF="$(git rev-parse --verify "${BASE_REF}^{commit}" 2>/dev/null)"; then
+        echo "::error::--check-growth could not resolve '${BASE_REF}' as a commit -- this is a ref/workflow problem, not evidence that the baseline is clean. Fix the ref (or the workflow input computing it) rather than treating this as a pass." >&2
+        exit 2
+    fi
+
+    if ! BASE_BLOB="$(git show "${RESOLVED_BASE_REF}:.github/scripts/doc-citation-baseline.txt" 2>/dev/null)"; then
+        echo "Doc-citation gate: ${RESOLVED_BASE_REF} resolves, but no baseline exists there (gate not introduced yet at that commit) -- skipping growth check."
         exit 0
     fi
-    BASE_PAIRS="$(printf '%s\n' "$BASE_BLOB" | load_baseline_pairs)"
+    BASE_PAIRS_RAW="$(printf '%s\n' "$BASE_BLOB" | load_baseline_pairs)"
+
+    # F3: rename-aware. Translate the base baseline's docfile through any
+    # docs/** rename git itself detects between RESOLVED_BASE_REF and the
+    # current tree, so moving a cited document does not read as bulk
+    # growth (old path's pairs "disappearing") plus bulk shrinkage (new
+    # path's pairs "appearing"). See the header for the full rationale and
+    # the fallback when a rename is edited too heavily for git to detect.
+    declare -A RENAME_TO=()
+    while IFS=$'\t' read -r status oldpath newpath; do
+        [ -z "$oldpath" ] && continue
+        case "$status" in
+            R*) RENAME_TO["$oldpath"]="$newpath" ;;
+        esac
+    done < <(git diff --name-status -M "${RESOLVED_BASE_REF}" -- docs/ 2>/dev/null || true)
+
+    BASE_PAIRS="$(
+        printf '%s\n' "$BASE_PAIRS_RAW" | while IFS=$'\t' read -r docfile citation; do
+            [ -z "$docfile" ] && continue
+            target="${RENAME_TO[$docfile]:-$docfile}"
+            printf '%s\t%s\n' "$target" "$citation"
+        done | sort -u
+    )"
+
     CURRENT_PAIRS="$(load_baseline_pairs "$BASELINE_FILE")"
     ADDED="$(comm -13 <(printf '%s\n' "$BASE_PAIRS") <(printf '%s\n' "$CURRENT_PAIRS") || true)"
     if [ -n "$(printf '%s' "$ADDED" | tr -d '[:space:]')" ]; then
-        echo "::error::the committed baseline grew relative to ${BASE_REF} -- the baseline may only shrink, and this check is not bypassable by any local command:" >&2
+        echo "::error::the committed baseline grew relative to ${RESOLVED_BASE_REF} (docs/** renames already accounted for) -- the baseline may only shrink, and this check is not bypassable by any local command:" >&2
         printf '%s\n' "$ADDED" | while IFS=$'\t' read -r docfile citation; do
             [ -z "$docfile" ] && continue
             echo "  ${docfile}: ${citation}" >&2
         done
+        echo "If this includes a legitimate document rename that git's detector missed (heavily edited in the same change), see the RENAMING section in this script's header." >&2
         exit 1
     fi
-    echo "Doc-citation gate: baseline did not grow relative to ${BASE_REF}."
+    echo "Doc-citation gate: baseline did not grow relative to ${RESOLVED_BASE_REF}."
     exit 0
 fi
 

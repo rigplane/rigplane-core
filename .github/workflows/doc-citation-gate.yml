@@ -8,17 +8,26 @@ name: Doc citation gate
 #
 # Two independent checks run:
 #   1. docs/** vs the committed baseline (new citation / stale baseline entry).
-#   2. the committed baseline vs the baseline as it existed at the base ref
+#   2. the committed baseline vs the baseline as it existed at the MERGE BASE
 #      (baseline growth). This second check is the one that actually makes
 #      "the baseline may only shrink" true: it is derived from git history
 #      that this workflow controls, not from anything a contributor's local
 #      `--regenerate` did, so it cannot be defeated by hand-editing the
 #      baseline file to match a hand-added citation.
 #
+# Growth is compared against the MERGE BASE, not the base branch's current
+# tip: comparing against the tip would make the first PR that legitimately
+# shrinks the baseline report "grew" on every other open, unrebased branch,
+# for pairs those branches never touched. The "Determine merge base" step
+# below computes it explicitly (and skips the growth check outright, with
+# its own message, for the one case that has no prior commit to compare
+# against at all: the very first push on a brand-new ref) rather than
+# handing the growth-check script an ambiguous or sentinel ref.
+#
 # Path-filtered to docs/** (plus the gate's own files) so unrelated code-only
 # PRs don't pay for it. Grep + bash, no toolchain — mirrors the rebrand-gate
-# pattern. fetch-depth: 0 is needed so `git show <base-ref>:...` can read the
-# baseline as it existed before this push/PR.
+# pattern. fetch-depth: 0 is needed so `git show <ref>:...` and `git merge-base`
+# can see history predating this push/PR.
 
 on:
   push:
@@ -56,7 +65,22 @@ jobs:
       - name: Doc citation gate (docs vs baseline)
         run: .github/scripts/check-doc-citations.sh
 
-      - name: Doc citation gate (baseline may only shrink)
+      - name: Determine merge base for growth check
+        id: mergebase
         env:
-          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "${BASE_SHA}" ] || [ "${BASE_SHA}" = "0000000000000000000000000000000000000000" ]; then
+            echo "base_ref=" >> "$GITHUB_OUTPUT"
+            echo "No prior commit on this ref (first push on a new branch) -- nothing to compare growth against."
+            exit 0
+          fi
+          MERGE_BASE="$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")"
+          echo "base_ref=${MERGE_BASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Doc citation gate (baseline may only shrink)
+        if: steps.mergebase.outputs.base_ref != ''
+        env:
+          BASE_REF: ${{ steps.mergebase.outputs.base_ref }}
         run: .github/scripts/check-doc-citations.sh --check-growth "${BASE_REF}"
