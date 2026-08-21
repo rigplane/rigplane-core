@@ -607,11 +607,15 @@ async def _actuate_tx_ptt(
     """ACTUALLY key PTT briefly at minimum power, verify, then always unkey.
 
     Sequence: read original TX power → set power to MINIMUM → key PTT → brief
-    wait → read ``radio_state.ptt`` to verify it keyed → unkey → restore power.
+    wait → verify it keyed, preferring a real read-back (``get_ptt``) over the
+    legacy ``radio_state`` mirror where the backend offers one (MOR-1941; see
+    ``ptt_state_source`` in the evidence) → unkey → restore power.
     The unkey AND power-restore run in a ``finally`` that ALWAYS executes and
     never raises (contained by ``_RESTORE_ERRORS``, which includes ``OSError``),
     so a mid-check exception/timeout/LAN drop can never leave the radio keyed or
-    at the wrong power.
+    at the wrong power. (A pre-existing gap in that same ``finally`` — a
+    Yaesu transport error from the unkey call itself escaping uncontained —
+    is filed separately as MOR-1951; not this row's fix.)
 
     MOR-1222: on a managed rig both the key and the unkey go through the
     supervisor under :data:`_VALIDATION_TX_OWNER`. A refused key is a FAIL, not
@@ -696,11 +700,72 @@ async def _actuate_tx_ptt(
                 evidence["key_refused"] = key_refusal
         if key_refusal is None:
             keyed = True
-            # Brief, bounded key window.
+            # Brief, bounded key window. Note: when the read-back below runs,
+            # the window is no longer bounded by ``_TX_PTT_KEY_SECONDS``
+            # alone — the read carries its own ``per_check_timeout`` budget,
+            # so worst case this stretches from ~1.0 s to ~1.0 s +
+            # ``per_check_timeout`` (default 5.0 s -> ~6.0 s total) at
+            # minimum power. Deliberately left unbounded beyond that shared
+            # budget rather than adding a second timeout constant: every
+            # other read/write in this function already spends up to
+            # ``per_check_timeout``, and the ``finally`` below unkeys and
+            # restores power unconditionally regardless of how long this
+            # takes (MOR-1941 review).
             await asyncio.sleep(_TX_PTT_KEY_SECONDS)
-            # Verify the keyed state from published radio state (best-effort).
-            evidence["ptt_state"] = bool(radio.radio_state.ptt)
-            keyed = bool(radio.radio_state.ptt)
+            # Verify the keyed state from a real read-back where the backend
+            # offers one, rather than the legacy ``radio_state`` mirror
+            # (MOR-1941): some backends no longer self-write that mirror
+            # from ``set_ptt``, so it is not radio truth on its own.
+            #
+            # Best-effort means genuinely best-effort here, on the one
+            # backend (Yaesu) this repoint exists for: a read failure must
+            # not report a confident "did not key" when the write itself
+            # was accepted (``key_refusal is None`` already means
+            # ``set_ptt(True)`` did not raise) -- reporting `keyed: false`
+            # from a measurement that never happened would be a fabricated
+            # observation, and a false negative at that, not merely an
+            # unconfirmed positive. Note what this reasoning does and does
+            # not lean on: the transmit-authority ADR's rule that our own
+            # commands may source "transmitting" but never "receiving"
+            # licenses declining to say ``False`` here. It does not license
+            # claiming the value was verified, which is why the provenance
+            # tag below is not optional. So a read failure falls back to
+            # trusting the accepted write
+            # (``ptt_state = True``), not to the mirror -- on Yaesu the
+            # mirror is now permanently stale (the self-write is deleted),
+            # so it is exactly as fabricated a signal as a bare ``False``
+            # would be. ``ptt_state_source`` records which of "readback" /
+            # "mirror" / "unverified-write" produced the reported value, so
+            # a PASS backed by a real read stays distinguishable from one
+            # that is not, and the failure itself is never silent — see
+            # ``ptt_read_error``. Deliberately ``except Exception``, not
+            # ``_RESTORE_ERRORS``: this function is generic across backends
+            # and must not import a specific backend's transport exception
+            # types to enumerate them (MOR-1941 review).
+            ptt_state = bool(radio.radio_state.ptt)
+            ptt_state_source = "mirror"
+            _get_ptt_attr = getattr(radio, "get_ptt", None)
+            if callable(_get_ptt_attr):
+                try:
+                    ptt_state = bool(
+                        await asyncio.wait_for(
+                            _get_ptt_attr(), timeout=per_check_timeout
+                        )
+                    )
+                    ptt_state_source = "readback"
+                except Exception as exc:
+                    evidence["ptt_read_error"] = str(exc)
+                    _LOGGER.warning(
+                        "tx.ptt readback failed after a successful key; "
+                        "trusting the accepted write rather than reporting "
+                        "an unverified key as a failure: %s",
+                        exc,
+                    )
+                    ptt_state = True
+                    ptt_state_source = "unverified-write"
+            evidence["ptt_state"] = ptt_state
+            evidence["ptt_state_source"] = ptt_state_source
+            keyed = ptt_state
             evidence["keyed"] = keyed
     except _RESTORE_ERRORS as exc:
         verify_error = str(exc)

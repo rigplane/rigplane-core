@@ -264,6 +264,19 @@ class TxPolicy:
         """
         return self.tx_state_map.get(raw_value) == "rx"
 
+    def attribution(self, raw_value: str) -> str | None:
+        """The vendor label mapped to ``raw_value``, or ``None`` if unmapped.
+
+        Display-grade only (MOR-1941, §3.7 of the transmit-authority ADR):
+        unlike :meth:`is_receiving`, this carries no fail-closed safety
+        rule — an unmapped value is simply ``None``, not a hazard answer.
+        Yaesu's three-valued ``TX;`` answer surfaces here as ``"rx"`` /
+        ``"tx_cat"`` / ``"tx_other"``; a vendor with no attribution (e.g.
+        Icom) never populates ``tx_state_map`` with more than ``"rx"``, so
+        this is honestly ``None`` for every other raw value.
+        """
+        return self.tx_state_map.get(raw_value)
+
 
 @dataclass(frozen=True, slots=True)
 class RadioProfile:

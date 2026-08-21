@@ -342,10 +342,13 @@ async def test_an_unmapped_transmit_state_value_is_never_receiving(
     and hamlib-provider columns it produces no value at all. Both are "not
     receiving"; neither may admit a hazard write.
 
-    # MUTATION: in `src/rigplane/backends/yaesu_cat/radio.py`, change
-    # `return bool(state != "0")` at :1027 to `return bool(state == "1")`
-    # -> this row goes red on the `yaesu-ftx1` column (MOR-1905's own
-    # mutation): the unmapped `TX9` reads as receiving.
+    # MUTATION (MOR-1941, restated -- the map-driven predicate replaced the
+    # inline one this mutation used to target): in
+    # `src/rigplane/backends/yaesu_cat/radio.py`, in `read_ptt`, change
+    # `return not policy.is_receiving(state)` at :1070 to
+    # `return policy.is_receiving(state)` -> this row goes red on the
+    # `yaesu-ftx1` column (MOR-1905's own inversion direction): the unmapped
+    # `TX9` reads as receiving.
     """
     harness.script("unmapped")
     reading = await harness.read_transmit_state()
@@ -817,17 +820,15 @@ async def test_the_rigctld_client_primitive_marks_its_readback_unverified(
 
 
 @pytest.mark.parametrize("harness", ["yaesu-ftx1"], indirect=True)
-@pytest.mark.xfail(
-    strict=True,
-    reason="row 6 (Yaesu truth honesty): `tx_state_map` turns the "
-    "three-valued `TX;` answer into an attribution. Today `read_ptt` "
-    "collapses it to a bool, so `tx_other` (the front-panel key) is "
-    "indistinguishable from `tx_cat` in the evidence.",
-)
 async def test_yaesu_attribution_reaches_the_evidence(
     harness: TxConformanceHarness,
 ) -> None:
-    """§3.7: attribution is a per-vendor capability, carried not discarded."""
+    """§3.7: attribution is a per-vendor capability, carried not discarded.
+
+    MOR-1941 (row 6): ``tx_state_map`` turns the three-valued ``TX;``
+    answer into an attribution, so ``tx_other`` (the front-panel key) is
+    now distinguishable from ``tx_cat`` in the evidence.
+    """
     harness.script("tx_other")
     assert (await harness.read_transmit_state()).attributed == "tx_other"
     harness.script("tx_cat")
@@ -835,16 +836,15 @@ async def test_yaesu_attribution_reaches_the_evidence(
 
 
 @pytest.mark.parametrize("harness", ["yaesu-ftx1"], indirect=True)
-@pytest.mark.xfail(
-    strict=True,
-    reason="row 6: `set_ptt` self-mutates the legacy mirror "
-    "(`backends/yaesu_cat/radio.py:994`). The row deletes that write; until "
-    "then our own command is still a claim about RF somewhere in the tree.",
-)
 async def test_a_yaesu_self_write_leaves_no_transmit_truth_claim_anywhere(
     harness: TxConformanceHarness,
 ) -> None:
-    """The self-write launder, at its last surviving Yaesu address."""
+    """The self-write launder, at its last surviving Yaesu address.
+
+    MOR-1941 (row 6): ``set_ptt`` no longer self-mutates the legacy
+    mirror (``backends/yaesu_cat/radio.py:994``) -- our own command is no
+    longer a claim about RF anywhere in the tree.
+    """
     before = harness.radio._state.ptt
     await harness.key()
     assert harness.radio._state.ptt == before

@@ -987,11 +987,50 @@ class YaesuCatRadio:
     async def set_ptt(self, on: bool) -> None:
         """Key or un-key the transmitter.
 
+        Does not touch the legacy ``self._state`` mirror (MOR-1941): our
+        own command is a claim about the wire, never receive/transmit
+        truth (§3.7 of the transmit-authority ADR). Only a real read-back
+        (:meth:`get_ptt`) may update the mirror.
+
         Args:
             on: ``True`` to transmit, ``False`` to receive.
         """
         await self._write("set_ptt", state="1" if on else "0")
-        self._state.ptt = on
+
+    def _warn_ptt_unrecognised(self, state: str) -> None:
+        """Warn-once-then-DEBUG diagnostic for an unrecognised TX token.
+
+        PTT is polled at a fast, unthrottled cadence, so a persistently
+        unrecognised state would otherwise flood the log. Reuses the
+        existing ``_poll_warned_fields`` warn-once-then-DEBUG idiom already
+        used for permanently-unsupported poll fields (MOR-561) rather than
+        adding new rate-limiting machinery.
+        """
+        label = "ptt_unrecognised_state"
+        log = logger.debug if label in self._poll_warned_fields else logger.warning
+        self._poll_warned_fields.add(label)
+        log(
+            "read_ptt: unrecognised TX state %r from %s; failing closed (transmitting)",
+            state,
+            self.model,
+        )
+
+    async def read_ptt_token(self) -> str:
+        """Read the raw ``TX;`` token -- no RX/TX interpretation, no mutation.
+
+        The primitive :meth:`read_ptt` is built on. Exposes the parsed wire
+        value (``"0"``/``"1"``/``"2"`` on shipped profiles, coerced to
+        ``str`` -- a no-op today, since the ``{state}`` parse template types
+        it as ``str`` on every shipped profile, but not a guarantee for a
+        future template typed otherwise) so a caller can map it through the
+        profile's :class:`~rigplane.profiles.TxPolicy` --
+        :meth:`~rigplane.profiles.TxPolicy.is_receiving` for the RX/TX
+        answer, :meth:`~rigplane.profiles.TxPolicy.attribution` for the
+        vendor's per-value label (MOR-1941, §3.7 of the transmit-authority
+        ADR).
+        """
+        result = await self._query("get_ptt")
+        return str(result["state"])
 
     async def read_ptt(self) -> bool:
         """Read the current PTT state without mutating legacy state.
@@ -999,32 +1038,36 @@ class YaesuCatRadio:
         The Yaesu ``TX;`` answer is three-valued, not a plain boolean flag:
         ``0`` = receiving, ``1`` = transmitting (CAT-keyed), ``2`` =
         transmitting (the radio itself keyed it -- front panel, mic,
-        footswitch, or VOX). Treating ``2`` as receiving is a fail-open
-        inversion of transmit truth (MOR-1905), so any state other than
-        ``0`` reads as transmitting, and an unrecognised value fails
-        closed (transmitting) with a diagnostic rather than reading as RX.
+        footswitch, or VOX). The raw token is routed through the profile's
+        ``[tx_policy].tx_state_map`` (positive-RX rule, MOR-1941, §3.7 of
+        the transmit-authority ADR): only a value explicitly mapped to
+        ``"rx"`` reads as receiving, so this predicate is structurally
+        unable to invert a state to RX the way the old inline
+        ``state == "1"`` comparison did (MOR-1905) -- an unrecognised
+        value fails closed (transmitting) with a diagnostic by
+        construction, not by a comparison that could quietly be flipped.
 
-        PTT is polled at a fast, unthrottled cadence, so a persistently
-        unrecognised state would otherwise flood the log. This reuses the
-        ``_poll_warned_fields`` warn-once-then-DEBUG idiom already used for
-        permanently-unsupported poll fields (MOR-561) rather than adding new
-        rate-limiting machinery.
+        A profile that ships no ``[tx_policy].tx_state_map`` at all --
+        every rig this backend has not bench-measured -- falls back to
+        the legacy ``!= "0"`` predicate instead of consulting the (empty)
+        map: ``"0"`` is the Yaesu CAT protocol's own receive token, not a
+        per-radio measured value, so this is a vendor-level default
+        rather than a hardcoded radio constant. An undeclared profile
+        must degrade to today's behaviour, not to a radio that can never
+        be read as receiving.
 
         Returns:
             ``True`` if transmitting, ``False`` if receiving.
         """
-        result = await self._query("get_ptt")
-        state = result["state"]
-        if state not in ("0", "1", "2"):
-            label = "ptt_unrecognised_state"
-            log = logger.debug if label in self._poll_warned_fields else logger.warning
-            self._poll_warned_fields.add(label)
-            log(
-                "read_ptt: unrecognised TX state %r from %s; failing closed (transmitting)",
-                state,
-                self.model,
-            )
-        return bool(state != "0")
+        state = await self.read_ptt_token()
+        policy = self.profile.tx_policy
+        if not policy.tx_state_map:
+            if state not in ("0", "1", "2"):
+                self._warn_ptt_unrecognised(state)
+            return state != "0"
+        if state not in policy.tx_state_map:
+            self._warn_ptt_unrecognised(state)
+        return not policy.is_receiving(state)
 
     async def get_ptt(self) -> bool:
         """Query the current PTT state.
