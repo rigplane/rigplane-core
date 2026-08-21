@@ -345,7 +345,7 @@ async def test_an_unmapped_transmit_state_value_is_never_receiving(
     # MUTATION (MOR-1941, restated -- the map-driven predicate replaced the
     # inline one this mutation used to target): in
     # `src/rigplane/backends/yaesu_cat/radio.py`, in `read_ptt`, change
-    # `return not policy.is_receiving(state)` at :1067 to
+    # `return not policy.is_receiving(state)` at :1070 to
     # `return policy.is_receiving(state)` -> this row goes red on the
     # `yaesu-ftx1` column (MOR-1905's own inversion direction): the unmapped
     # `TX9` reads as receiving.
