@@ -8,7 +8,7 @@ Break a large issue or epic into atomic, guardrail-compliant tasks.
 
 ## When to use
 
-- Issue exceeds guardrails (>3 files, >400 LOC)
+- Issue crosses the hard ceiling in CLAUDE.md §Guardrails
 - Issue is labeled "epic" or contains a task checklist
 - `/scan-issues` identified it as too large for direct execution
 
@@ -30,13 +30,13 @@ Break a large issue or epic into atomic, guardrail-compliant tasks.
 Break into 3–10 tasks. Each task MUST:
 
 - Be independently executable and testable
-- Fit guardrails: ≤3 files, ≤400 LOC, no architecture changes
+- Fit inside the soft threshold in CLAUDE.md §Guardrails; no architecture changes
 - Have a clear expected outcome (not vague)
 - Include estimated files and LOC
 
 Quality checks:
 - No vague tasks ("improve system", "refactor everything")
-- No oversized tasks (>400 LOC)
+- No oversized tasks (none that would cross the soft threshold alone)
 - No tightly coupled pairs (task B unusable without task A's uncommitted code)
 - Each task is meaningful on its own (not "rename variable")
 

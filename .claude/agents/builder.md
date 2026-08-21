@@ -22,9 +22,8 @@ Rules:
   report exact pass/fail counts. Failures are data — report them honestly;
   never claim green without the output in hand.
 - Apply the prose-claim rule in CLAUDE.md §Testing from the writer's side:
-  before declaring done, take every comment, docstring and document sentence
-  your change adds or touches and narrow it until it is unmistakably true, tie
-  it to something that fails when it stops being true, or delete it.
+  audit every sentence your change adds or touches before you declare done,
+  rather than leaving it for a reviewer to catch.
 - When a review or an audit hands you one wrong instance, sweep the class.
   Enumerating every place the same shape could occur is investigation, not
   modification: "no scope expansion" governs what you change, not what you

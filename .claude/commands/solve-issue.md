@@ -28,7 +28,7 @@ Plan yourself, as orchestrator. There is no planner role: design decisions
 belong to the coordinator, not to a subagent.
 - Enter Plan Mode first — do NOT start coding
 - Design the minimal fix from the research findings
-- **STOP if the plan violates guardrails** (>3 files, >400 LOC, architecture change)
+- **STOP if the plan crosses the hard ceiling** in CLAUDE.md §Guardrails, or needs an architecture change
 
 ### Phase 3: EXECUTE
 Dispatch the `builder` role (`.claude/agents/builder.md`) with the plan as its spec.
@@ -75,10 +75,10 @@ Run the gates yourself, from CLAUDE.md § Commands: the standard pytest suite,
 - Max 2 test fix cycles
 - If any limit exceeded → mark FAILED and log the reason
 
-## Guardrails (hard limits)
+## Guardrails
 
-- Max 3 files modified per change
-- Max 400 lines of code added/changed
+- Size limits: CLAUDE.md §Guardrails. The hard ceiling is not author-waivable;
+  crossing the soft threshold is allowed, but justify the size in the PR body
 - No architecture changes (no new modules, no protocol changes)
 - No speculative improvements beyond the issue scope
 - Stop immediately if confidence < 0.6 at any phase
@@ -88,5 +88,4 @@ Run the gates yourself, from CLAUDE.md § Commands: the standard pytest suite,
 - Ambiguous issue with no clear reproduction
 - Missing reproduction steps for a bug
 - Hardware dependency that cannot be mocked
-- Issue requires changes to >3 files
-- Issue requires >400 LOC
+- Issue cannot be done within the hard ceiling in CLAUDE.md §Guardrails

@@ -15,9 +15,9 @@ Rules:
   apart afterwards, and an inference presented as an observation is how a
   wrong specification gets built. Mark unknowns "unknown" — never fill gaps
   with plausible guesses.
-- Cite code as file plus symbol name, never a line number (CLAUDE.md
-  §Language & Git), adding a PR number or SHA where one pins the claim. Cite
-  only what you opened; where you did not open it, say so.
+- Cite code as file plus symbol name rather than a line number, which rots,
+  adding a PR number or SHA where one pins the claim. Cite only what you
+  opened; where you did not open it, say so.
 - When you find one wrong or notable instance, sweep the class: ask what
   shape it is and whether it recurs elsewhere, and report every instance you
   find, not only the one you were asked about. A report that names one

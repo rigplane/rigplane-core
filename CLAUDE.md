@@ -92,7 +92,7 @@ When making changes:
 - Batch all fixes, run tests once (not per fix)
 - One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
-- Prose is a claim, and claims get checked. Before declaring work done, read every comment, docstring and document sentence the change adds or touches and ask: could this be false without any test failing? Where the answer is yes, narrow it until it is unmistakably true, tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure), or delete it. A guarantee stated wider than the code is worse than no guarantee — the next reader stops checking. Never state what a future change will do: that belongs in the ticket (MOR-1958). This is the canonical statement; the role files in `.claude/agents/` apply it, they do not restate it
+- Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, narrow it until it is true, tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure), or delete it — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). The role files in `.claude/agents/` point here.
 
 ---
 
@@ -144,22 +144,18 @@ matches the **first non-blank line** of each against exactly this pattern:
 const DIRECTIVE_PATTERN = /^Agent Review: (PASS|BLOCKED) ([0-9a-f]{40})$/u;
 ```
 
-The captured SHA must equal the PR's current head. A short SHA, a missing
-SHA, a stale SHA, or any preamble line above the directive parses as no
-directive at all, so the status stays red. A BLOCKED directive additionally
-needs justification text on the lines below it; without it the gate reports
-the directive as malformed and also stays red.
+The captured SHA must equal the PR's current head. Anything else — a short,
+missing or stale SHA, or any non-blank line above the directive — parses as no
+directive and leaves the status red; so does a BLOCKED directive with no
+justification text below it, which the gate reports as malformed.
 
 A BLOCKED comment naming one instance is a review of its class: enumerate
 every place the same shape occurs, fix what the change's guardrails cover,
 and report the rest instead of expanding scope to fix it.
 
 Review policy — PASS/BLOCKED semantics, freshness, draft PRs, rerunning
-cancelled checks — is in `AGENTS.md` §"Protected main and review gate"; the
-end-to-end merge procedure is in `docs/internals/github-project-workflow.md`.
-
-Release branches are exceptional and named `release/<major.minor>`; the rest
-of the rule is in `AGENTS.md` §"Release branches".
+cancelled checks — and release branches (named `release/<major.minor>`) are in
+`AGENTS.md`; the merge procedure is in `docs/internals/github-project-workflow.md`.
 
 ---
 
@@ -200,29 +196,15 @@ Slash commands for scoped workflows live in `.claude/commands/`
 
 ### Guardrails
 
-Two different limits, and the difference matters: one is a ceiling you may not
-cross, the other only asks you to explain yourself. Size is measured per PR, at
-the head you push; "changed lines" is additions + deletions.
+Size is measured per PR, at the head you push; "changed lines" is additions +
+deletions.
 
-| Guardrail | Value | What it does |
-|-------|-------|-------|
-| **Hard ceiling** | 10 files · 1000 changed lines | Do not cross. Decompose first (`/decompose-issue`). |
-| **Soft threshold** | 6 files · 600 changed lines | Forbids nothing; obliges the PR body to justify the size. |
+| Guardrail | Value | Effect |
+|---|---|---|
+| **Hard ceiling** | 10 files · 1000 changed lines | Do not cross; decompose first (`/decompose-issue`). Not author-waivable — only the owner grants an exception, in the PR, before merge. |
+| **Soft threshold** | 6 files · 600 changed lines | Forbids nothing; the PR body must say why this is one unit of work. |
 | New abstractions/layers | forbidden unless issue requires | |
 | Speculative improvements | forbidden | |
-
-**The hard ceiling is not author-waivable.** A "declared deviation" section in
-the PR body does not waive it — that practice is exactly what made the previous
-number decorative. Only the owner grants an exception, in the PR, before merge.
-
-Crossing the **soft threshold** is allowed and needs no permission. It obliges
-one thing: the PR body must say why the change is a single unit of work that
-does not split. Answering that question is the point of the threshold.
-
-Both numbers are calibrated against merged history, not chosen a priori: the
-soft threshold sits near the 75th percentile of recent merged PRs and the hard
-ceiling near the 90th, so crossing either is a real signal rather than the
-normal case.
 
 ### Failure handling
 
