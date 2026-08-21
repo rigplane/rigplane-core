@@ -5288,41 +5288,25 @@ async def _run_once(poller: RadioPoller) -> None:
         await poller._run()  # noqa: SLF001
 
 
-def _seed_known_rx(store: StateStore) -> None:
-    """Seed a fresh RX PTT observation (MOR-1959).
-
-    At connection start RF state is structurally UNKNOWN, so the
-    ``establish_vfo_identity`` bootstrap write is refused and retried
-    (pinned separately in
-    ``tests/test_radio_poller_tx_interlock.py::test_establish_vfo_identity_arms_retry_after_tx_interlock_refusal``).
-    The tests below are about VFO-identity establishment itself, not the
-    retry mechanics, so they seed a known-RX PTT fact first — the same way
-    an operator's actual radio would answer its very first PTT poll.
-    """
-    store.apply(
-        Observation(
-            path=FieldPath.global_("tx_state", "ptt"),
-            value=False,
-            source=SourceMetadata(source="poll_response", provider="test"),
-            timestamp_monotonic=time.monotonic(),
-            max_age=1.0,
-            provider_generation=store.provider_generation,
-        )
-    )
-
-
 @pytest.mark.asyncio
 async def test_run_auto_commands_vfo_a_when_identity_unqueryable() -> None:
     """IC-7300 (``vfo_readback == "selected_unselected"``) cannot passively
     report which slot (A/B) is active (issue #2303 forbids probing via
     swap). MOR-1443: on connect, with activeSlot still unobserved, the
     poller must command VFO A exactly once through the normal confirmed
-    select path so identity becomes known."""
+    select path so identity becomes known.
+
+    This module opts into ``observed_rx_dispatch_premise`` (module-level
+    ``pytestmark`` above) so the interlock seat reads RX unconditionally —
+    this test is about dispatch (does the write actually confirm
+    identity), not the seat's own refusal/retry behaviour under unknown
+    RF, which is pinned separately in
+    ``tests/test_radio_poller_tx_interlock.py``.
+    """
 
     radio = _make_radio(model="IC-7300")
     store = StateStore()
     store.begin_provider_generation()
-    _seed_known_rx(store)
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
 
     assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
@@ -5406,7 +5390,6 @@ async def test_establish_vfo_identity_refires_after_reconnect_reset() -> None:
     radio = _make_radio(model="IC-7300")
     store = StateStore()
     store.begin_provider_generation()
-    _seed_known_rx(store)
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
 
     await _run_once(poller)
@@ -5460,6 +5443,101 @@ async def test_establish_vfo_identity_skips_during_external_cat_session() -> Non
 
     radio._set_vfo_slot_confirmed.assert_not_awaited()
     assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
+
+
+# ---------------------------------------------------------------------------
+# MOR-1959: the bootstrap retry actually fires from `_run`'s own loop, not
+# just from calling `_arm_vfo_identity_retry` in isolation (pinned in
+# test_radio_poller_tx_interlock.py). Reconnaissance warned `_run_once`
+# above only drives one loop pass; that turns out to be enough, because the
+# refusal that arms the retry happens in the one-time startup section,
+# BEFORE the while loop's own single pass even begins.
+#
+# Captured at import time, before any fixture has run, so these two tests
+# can restore the real, StateStore-driven RF read for their own duration --
+# this module's file-wide ``observed_rx_dispatch_premise`` fixture forces
+# every other test's RF state to RX, but these two are specifically about
+# what happens under a genuine refusal-then-recovery.
+# ---------------------------------------------------------------------------
+
+_REAL_CURRENT_RF_STATE = RadioPoller._current_rf_state
+
+
+@pytest.mark.asyncio
+async def test_run_retries_vfo_identity_bootstrap_on_a_later_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The startup section's own call to ``establish_vfo_identity`` (before
+    the while loop starts) is refused under the genuinely-unknown RF at
+    connection start and arms a pending retry. This proves ``_run``'s main
+    loop -- not just the arming helper -- re-attempts it: once RF becomes
+    known (seeded here exactly as an ordinary incoming PTT poll answer
+    would, right when the refusal arms the retry), the loop's own retry
+    step must fire on its very next check and confirm identity.
+    """
+    import rigplane.web.radio_poller as radio_poller_module
+
+    monkeypatch.setattr(RadioPoller, "_current_rf_state", _REAL_CURRENT_RF_STATE)
+    # Zero the initial backoff so the retry is due on the very next check
+    # without depending on real elapsed wall-clock time between the
+    # startup section's refusal and the while loop's single pass.
+    monkeypatch.setattr(radio_poller_module, "_VFO_IDENTITY_RETRY_INITIAL_S", 0.0)
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    real_arm = poller._arm_vfo_identity_retry  # noqa: SLF001
+
+    def _arm_and_learn_rx() -> None:
+        real_arm()
+        store.apply(
+            Observation(
+                path=FieldPath.global_("tx_state", "ptt"),
+                value=False,
+                source=SourceMetadata(source="poll_response", provider="test"),
+                timestamp_monotonic=time.monotonic(),
+                max_age=1.0,
+                provider_generation=store.provider_generation,
+            )
+        )
+
+    poller._arm_vfo_identity_retry = _arm_and_learn_rx  # type: ignore[method-assign]  # noqa: SLF001
+
+    await _run_once(poller)
+
+    radio._set_vfo_slot_confirmed.assert_awaited_once_with("A", receiver=0)
+    assert store.snapshot().field("receiver.0.vfo.active_slot").value == "A"
+    assert poller._vfo_identity_retry_pending is False  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_retry_vfo_identity_bootstrap_before_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry backoff must be honoured, not just present as an unread
+    number. The startup section's own attempt is refused under unknown RF
+    and arms a ~0.5s backoff; virtually no real time elapses before the
+    while loop's single pass runs its own retry check, so that check must
+    find the retry not yet due and leave it alone. A hot-spinning bug
+    (e.g. computing the due time as ``now + 0.0`` regardless of the actual
+    backoff) would instead re-attempt immediately. Discriminated by
+    ``_vfo_identity_retry_attempts``: only the startup section's own
+    attempt should have run.
+    """
+    monkeypatch.setattr(RadioPoller, "_current_rf_state", _REAL_CURRENT_RF_STATE)
+
+    radio = _make_radio(model="IC-7300")
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    await _run_once(poller)
+
+    assert poller._vfo_identity_retry_pending is True  # noqa: SLF001
+    assert poller._vfo_identity_retry_attempts == 1  # noqa: SLF001
+    radio._set_vfo_slot_confirmed.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

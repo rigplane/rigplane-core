@@ -132,7 +132,7 @@ profiles/rig_loader.py:1682-1734       [tx_interlock] override hook: TX_SAFE→D
 
 | Seat | Site | Coverage note |
 |---|---|---|
-| Web `_execute` head | `web/radio_poller.py:748-765`, called at `:2257`; immediate-block set `:218-227` (**`PTT_ON` present since #2745**, merged `b3ab76b1` — with `TxInterlockRefusal` at `runtime/tx_interlock.py:80` and a typed `blockedBy`/`reason` failure envelope at `web/server.py:2161-2187`); one `connection_epoch_bootstrap` exemption (`:2256-2257`, `:4024`) | web queue only |
+| Web `_execute` head | `web/radio_poller.py:748-765`, called at `:2257`; immediate-block set `:218-227` (**`PTT_ON` present since #2745**, merged `b3ab76b1` — with `TxInterlockRefusal` at `runtime/tx_interlock.py:80` and a typed `blockedBy`/`reason` failure envelope at `web/server.py:2161-2187`); **no exemption** (MOR-1959, ruled 2026-08-21, §3.5): the connection-epoch bootstrap `SelectVfo` in `establish_vfo_identity` takes this same seat, retrying with backoff on refusal instead of bypassing it | web queue only |
 | Web staging lane | `radio_poller.py:824-876` + lane instance `:723` | shadowed by the `_execute` seat (MOR-1884) |
 | rigctld DEFER gate | `handler.py:770-832`; 8 call sites (`:1463,1632,1664,2185,2644,2732,2879,2910`); **fail-open with no canonical store** (`:816-820`, flag `:701`); known-TX drop answers `RPRT 0` (`:826-833`) | drop only — no lane (MOR-1881 ruling) |
 | rigctld BLOCK pre-gate | `handler.py:462-469`, inside the executor | same fail-open flag |

@@ -228,10 +228,12 @@ def observed_rx_dispatch_premise(monkeypatch: pytest.MonkeyPatch) -> None:
     the seat correctly fails closed on it.
 
     These suites test dispatch, never the seat: the seat's own matrix (RX pass /
-    TX refuse / UNKNOWN refuse, emergency structural pass, the DEFER lane, the
-    single bootstrap exemption) lives in ``test_radio_poller_tx_interlock.py``.
-    Opt in with ``pytestmark = pytest.mark.usefixtures(...)``; a suite that wants
-    to assert refusal must not use this fixture.
+    TX refuse / UNKNOWN refuse, emergency structural pass, the DEFER lane) and
+    the connection-epoch VFO-identity bootstrap's retry-on-refusal (MOR-1959 —
+    the seat carries no exemption for that write either) live in
+    ``test_radio_poller_tx_interlock.py``. Opt in with
+    ``pytestmark = pytest.mark.usefixtures(...)``; a suite that wants to assert
+    refusal must not use this fixture.
     """
     from rigplane.runtime.tx_interlock import RfState
     from rigplane.web.radio_poller import RadioPoller

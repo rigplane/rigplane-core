@@ -299,8 +299,13 @@ _ACQUISITION_HEALTHY_GRACE_SECONDS: float = 6.0
 # profile's ~20 q/s serial ceiling (``_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS``,
 # ``backends/_icom_serial_base.py``) even under continuous refusal
 # (``test_vfo_identity_retry_max_backoff_keeps_retries_well_under_the_serial_ceiling``).
-# Growth step mirrors the shape (not the literal values) of ``_run``'s own
-# connection-loss backoff idiom rather than inventing a second primitive.
+# Growth step and cap mirror the shape of ``_run``'s own connection-loss
+# backoff idiom (``_backoff = min(_backoff + 0.5, _MAX_BACKOFF)``,
+# ``_MAX_BACKOFF = 5.0``) rather than inventing a second primitive — the
+# step and cap literals below are the same 0.5s / 5.0s, chosen independently
+# from the PTT-cadence/serial-ceiling reasoning above and not derived from
+# ``_run``'s constants, but landing on the same numbers rather than
+# something arbitrarily different.
 _VFO_IDENTITY_RETRY_INITIAL_S: float = 0.5
 _VFO_IDENTITY_RETRY_STEP_S: float = 0.5
 _VFO_IDENTITY_RETRY_MAX_S: float = 5.0
@@ -4031,10 +4036,11 @@ class RadioPoller:
         so a refusal here is the routine case, not a rare one: it is caught
         and turned into an armed retry (:meth:`_arm_vfo_identity_retry`)
         instead of being raised or dropped. :meth:`_run`'s main loop
-        re-attempts this same call once the retry is due, so a caller
-        invoking this method directly (the two call sites below) sees no
-        exception for that refusal — only a genuinely unexpected error
-        propagates.
+        re-attempts this same call once the retry is due, so none of this
+        method's three callers — the one-time startup section below, the
+        server's reconnect closure, or that same retry step in :meth:`_run`
+        — ever sees an exception for that refusal; only a genuinely
+        unexpected error propagates.
 
         Called once per connect from the one-time startup section of
         :meth:`_run`, and again from the web server's reconnect path
