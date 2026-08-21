@@ -24,6 +24,7 @@ from rigplane.profiles import (
     ControlSpec,
     FreqRangeInfo,
     RadioProfile,
+    TxPolicy,
     get_radio_profile,
 )
 from rigplane.rig_loader import RigConfig, RigLoadError, discover_rigs, load_rig
@@ -669,6 +670,133 @@ mode = 42
 
         assert rig.keyboard is not None
         assert rig.keyboard.bindings[0].params == {"mode": 42}
+
+
+class TestTxPolicy:
+    """[tx_policy] parsing and validation (MOR-1912, ADR row 3a).
+
+    Parsed and carried on the profile; nothing consumes it in this row.
+    """
+
+    def test_absent_section_defaults_to_empty_policy(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
+
+        assert rig.tx_policy == TxPolicy()
+        assert rig.to_profile().tx_policy == TxPolicy()
+
+    def test_parses_families_and_state_map(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[tx_policy]
+refused_during_tx = ["mode", "vfo-topology"]
+tx_state_map = { "0" = "rx", "1" = "tx_cat", "2" = "tx_other" }
+""",
+        )
+
+        rig = load_rig(p)
+        expected = TxPolicy(
+            refused_during_tx=frozenset({"mode", "vfo-topology"}),
+            tx_state_map={"0": "rx", "1": "tx_cat", "2": "tx_other"},
+        )
+
+        assert rig.tx_policy == expected
+        assert rig.to_profile().tx_policy == expected
+
+    def test_refused_during_tx_entries_are_opaque(self, tmp_path):
+        """No membership check against any family vocabulary (deliberate,
+        see the loader's `_parse_tx_policy` docstring): the vocabulary's
+        single source of truth lands separately in `core/tx_authority.py`.
+        """
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[tx_policy]
+refused_during_tx = ["not-a-real-family", "another-nonsense-name"]
+""",
+        )
+
+        rig = load_rig(p)
+
+        assert rig.tx_policy.refused_during_tx == {
+            "not-a-real-family",
+            "another-nonsense-name",
+        }
+
+    def test_non_table_section_is_rejected(self, tmp_path):
+        # Prepended (not appended): _MINIMAL_TOML ends inside
+        # [commands.overrides], so a bare `tx_policy = true` appended after
+        # it would be parsed as a key of that table, not the root section.
+        p = _write_toml(tmp_path, "tx_policy = true\n" + _MINIMAL_TOML)
+
+        with pytest.raises(RigLoadError, match=r"\[tx_policy\] must be a table"):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("declaration", "message"),
+        [
+            (
+                "[tx_policy]\nunexpected = true",
+                r"\[tx_policy\] unknown key",
+            ),
+            (
+                '[tx_policy]\nrefused_during_tx = "mode"',
+                r"\[tx_policy\]\.refused_during_tx must be a list",
+            ),
+            (
+                "[tx_policy]\nrefused_during_tx = [1, 2]",
+                r"\[tx_policy\]\.refused_during_tx entries must be non-empty strings",
+            ),
+            (
+                '[tx_policy]\nrefused_during_tx = [""]',
+                r"\[tx_policy\]\.refused_during_tx entries must be non-empty strings",
+            ),
+            (
+                '[tx_policy]\nrefused_during_tx = ["mode", "mode"]',
+                r"\[tx_policy\]\.refused_during_tx must not contain duplicates",
+            ),
+            (
+                '[tx_policy]\ntx_state_map = ["0", "rx"]',
+                r"\[tx_policy\]\.tx_state_map must be a table",
+            ),
+            (
+                '[tx_policy]\ntx_state_map = { "0" = 1 }',
+                r"\[tx_policy\]\.tx_state_map must map strings to strings",
+            ),
+        ],
+    )
+    def test_rejects_invalid_schema(self, tmp_path, declaration, message):
+        p = _write_toml(tmp_path, _MINIMAL_TOML + f"\n{declaration}\n")
+
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(p)
+
+    def test_positive_rx_rule_unmapped_value_is_not_receiving(self, tmp_path):
+        """§3.7 fail-direction pin: only an explicit "rx" entry counts as
+        receiving. An unmapped value — even one that looks plausible, and
+        even the empty map itself — must never be read as receiving.
+        """
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[tx_policy]
+tx_state_map = { "0" = "rx", "1" = "tx_cat" }
+""",
+        )
+
+        policy = load_rig(p).tx_policy
+
+        assert policy.is_receiving("0") is True
+        assert policy.is_receiving("1") is False
+        assert policy.is_receiving("2") is False
+        assert policy.is_receiving("unrecognised") is False
+        assert TxPolicy().is_receiving("0") is False
 
 
 class TestControlDomainSchema:

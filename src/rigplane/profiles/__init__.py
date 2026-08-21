@@ -28,6 +28,7 @@ __all__ = [
     "MeterCalibrationPoint",
     "RadioProfile",
     "RuleSpec",
+    "TxPolicy",
     "get_radio_profile",
     "resolve_radio_profile",
     "KeyboardBinding",
@@ -232,6 +233,39 @@ class KeyboardConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TxPolicy:
+    """Measured per-radio transmit policy (MOR-1912, ADR row 3a).
+
+    Both fields carry only bench-measured facts — no speculative hooks.
+
+    ``refused_during_tx`` names the command families this radio refuses on
+    its own while transmitting. Entries are opaque, validated strings: the
+    single source of truth for the family vocabulary is
+    ``core/tx_authority.py`` (landing separately), so this type does not
+    check membership, only shape.
+
+    ``tx_state_map`` is the positive transmit-state map for the radio's PTT
+    read-back: it lists the raw values that mean the radio is receiving.
+    Everything else — including a raw value with no entry at all — must be
+    treated as *not receiving* (§3.7 of the transmit-authority ADR). Use
+    :meth:`is_receiving` rather than testing the map directly so that rule
+    cannot be quietly inverted by a later reader.
+    """
+
+    refused_during_tx: frozenset[str] = frozenset()
+    tx_state_map: dict[str, str] = field(default_factory=dict)
+
+    def is_receiving(self, raw_value: str) -> bool:
+        """True only if ``raw_value`` is explicitly mapped to receiving.
+
+        An unmapped value — including one that simply isn't in the map —
+        is never receiving. This is the fail-closed direction the positive
+        transmit-state map exists to guarantee.
+        """
+        return self.tx_state_map.get(raw_value) == "rx"
+
+
+@dataclass(frozen=True, slots=True)
 class RadioProfile:
     """Runtime radio profile used by command routing and capability checks."""
 
@@ -334,6 +368,10 @@ class RadioProfile:
     tx_interlock_disposition_overrides: dict[
         TxInterlockCommandFamily, TxInterlockDisposition
     ] = field(default_factory=dict)
+    # Measured per-radio transmit policy (MOR-1912). Parsed and carried
+    # here; nothing reads it yet — the transmit-authority engine that will
+    # consume it lands in a later row of the same epic.
+    tx_policy: TxPolicy = field(default_factory=TxPolicy)
 
     @property
     def vfo_swap_code(self) -> int | None:

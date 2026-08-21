@@ -54,6 +54,7 @@ from rigplane.profiles import (
     MeterCalibrationPoint,
     RadioProfile,
     RuleSpec,
+    TxPolicy,
 )
 
 logger = logging.getLogger(__name__)
@@ -575,6 +576,7 @@ class RigConfig:
     tx_interlock_disposition_overrides: dict[
         TxInterlockCommandFamily, TxInterlockDisposition
     ] = field(default_factory=dict)
+    tx_policy: TxPolicy = field(default_factory=TxPolicy)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -744,6 +746,7 @@ class RigConfig:
             write_only_controls=frozenset(self.write_only_controls),
             state_acquisition=self.state_acquisition,
             tx_interlock_disposition_overrides=self.tx_interlock_disposition_overrides,
+            tx_policy=self.tx_policy,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -1734,6 +1737,55 @@ def _parse_tx_interlock_disposition_overrides(
     return overrides
 
 
+_TX_POLICY_KEYS = frozenset({"refused_during_tx", "tx_state_map"})
+
+
+def _parse_tx_policy(filename: str, raw: Any) -> TxPolicy:
+    """Parse the measured per-radio ``[tx_policy]`` section (MOR-1912).
+
+    ``refused_during_tx`` entries are validated for shape only — a list of
+    unique, non-empty strings — never against a fixed vocabulary. The
+    command-family vocabulary's single source of truth is
+    ``core/tx_authority.py``, which is not yet on ``main``; duplicating its
+    membership list here would create a second copy with no mechanism
+    keeping it in step with the first.
+    """
+    if raw is None:
+        return TxPolicy()
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [tx_policy] must be a table")
+    _reject_unknown_keys(filename, "[tx_policy]", raw, _TX_POLICY_KEYS)
+
+    refused_raw = raw.get("refused_during_tx", [])
+    if not isinstance(refused_raw, list):
+        raise RigLoadError(f"{filename}: [tx_policy].refused_during_tx must be a list")
+    refused: list[str] = []
+    for entry in refused_raw:
+        if not isinstance(entry, str) or not entry:
+            raise RigLoadError(
+                f"{filename}: [tx_policy].refused_during_tx entries must be "
+                "non-empty strings"
+            )
+        refused.append(entry)
+    if len(refused) != len(set(refused)):
+        raise RigLoadError(
+            f"{filename}: [tx_policy].refused_during_tx must not contain duplicates"
+        )
+
+    state_map_raw = raw.get("tx_state_map", {})
+    if not isinstance(state_map_raw, dict):
+        raise RigLoadError(f"{filename}: [tx_policy].tx_state_map must be a table")
+    tx_state_map: dict[str, str] = {}
+    for key, value in state_map_raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise RigLoadError(
+                f"{filename}: [tx_policy].tx_state_map must map strings to strings"
+            )
+        tx_state_map[key] = value
+
+    return TxPolicy(refused_during_tx=frozenset(refused), tx_state_map=tx_state_map)
+
+
 def load_rig(path: Path) -> RigConfig:
     """Load and validate a rig TOML file.
 
@@ -2220,6 +2272,7 @@ def load_rig(path: Path) -> RigConfig:
         filename,
         data.get("tx_interlock"),
     )
+    tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
 
     return RigConfig(
         id=radio["id"],
@@ -2293,6 +2346,7 @@ def load_rig(path: Path) -> RigConfig:
         write_only_controls=write_only_controls,
         state_acquisition=state_acquisition,
         tx_interlock_disposition_overrides=tx_interlock_disposition_overrides,
+        tx_policy=tx_policy,
     )
 
 
