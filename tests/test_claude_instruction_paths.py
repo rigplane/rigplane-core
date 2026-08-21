@@ -10,14 +10,28 @@ implementation agent never reviews its own work stops holding silently.
 
 Scope of this check, and its limits:
 
-* Only `.claude/commands/` and `.claude/agents/` are scanned. `.claude/skills/`
-  is excluded because it contains deliberate negative references — prose that
-  names a path in order to record that the path is gone (see the operator notes
-  in `.claude/skills/release/SKILL.md`), which an existence check cannot tell
+* Role-file, command-file, and slash-command references are checked by shape
+  (`test_referenced_agent_roles_exist`, `test_referenced_command_files_exist`,
+  `test_referenced_slash_commands_exist`), scanning only `.claude/commands/`
+  and `.claude/agents/`. `.claude/skills/` is excluded from these three
+  because it contains deliberate negative references — prose that names a
+  path in order to record that the path is gone (see the operator notes in
+  `.claude/skills/release/SKILL.md`), which an existence check cannot tell
   apart from drift.
-* Only references that must resolve *before* a command runs are checked: role
-  files, command files, and slash-command names. Paths a command writes to are
-  not checked, because they are outputs and are legitimately absent up front.
+* Every other `.claude/**` file reference is checked by
+  `test_referenced_dot_claude_files_exist`, which also scans
+  `.claude/skills/` — none of its file references share the negative-reference
+  problem above, since that check skips anything already shaped like a
+  role/command reference.
+* `.claude/workflow/`, `.claude/queue/`, and `.claude/metrics.json` name a
+  bookkeeping mechanism referenced across six files (`decompose-issue.md`,
+  `generate-tests.md`, `refactor.md`, `regression-check.md`, `scan-issues.md`,
+  `release/SKILL.md`) that this repo has never had: no command anywhere in
+  the tree creates those paths, and none of them exist. That is a wider defect
+  than the isolated `.claude/knowledge/` reads this module was extended to
+  catch, so `_EXEMPT_STATE_PREFIXES` names these three and
+  `test_referenced_dot_claude_files_exist` exempts them rather than flagging
+  them.
 """
 
 from __future__ import annotations
@@ -33,7 +47,9 @@ AGENTS_DIR = CLAUDE_DIR / "agents"
 COMMANDS_DIR = CLAUDE_DIR / "commands"
 SKILLS_DIR = CLAUDE_DIR / "skills"
 
-#: Files this check scans. Skills are deliberately out of scope (see module docstring).
+#: Files the role/command/slash checks scan. Skills are deliberately out of
+#: scope for those three (see module docstring); `test_referenced_dot_claude_files_exist`
+#: scans skills separately, below.
 SCANNED_DIRS = (COMMANDS_DIR, AGENTS_DIR)
 
 _BACKTICKED = re.compile(r"`([^`\n]+)`")
@@ -42,11 +58,28 @@ _COMMAND_REF = re.compile(r"^\.claude/commands/([A-Za-z0-9_-]+)\.md$")
 _SLASH_REF = re.compile(r"^/([a-z][a-z0-9-]*)$")
 _FRONTMATTER_NAME = re.compile(r"^name:\s*(\S+)\s*$", re.MULTILINE)
 
+#: Any backticked token shaped like a `.claude/` file reference (a path plus
+#: a file extension — bare directory references like `.claude/agents/` don't
+#: match and aren't checked).
+_DOT_CLAUDE_FILE_REF = re.compile(r"^\.claude/\S+\.\w+$")
+
+#: See the module docstring's third bullet: a referenced-but-never-created
+#: bookkeeping mechanism, out of scope for this module, exempted by prefix.
+_EXEMPT_STATE_PREFIXES = (
+    ".claude/workflow/",
+    ".claude/queue/",
+    ".claude/metrics.json",
+)
+
 
 def _scanned_files() -> list[Path]:
     files = [p for d in SCANNED_DIRS for p in sorted(d.glob("*.md"))]
     assert files, "no instruction files found to check"
     return files
+
+
+def _skill_files() -> list[Path]:
+    return sorted(SKILLS_DIR.glob("**/*.md"))
 
 
 def _references(path: Path) -> list[tuple[int, str]]:
@@ -126,3 +159,26 @@ def test_referenced_slash_commands_exist() -> None:
                 continue
             dangling.append(f"{path.relative_to(REPO_ROOT)}:{lineno} -> {token}")
     assert not dangling, "dangling slash-command references:\n" + "\n".join(dangling)
+
+
+def test_referenced_dot_claude_files_exist() -> None:
+    """Every other `.claude/**` file reference resolves.
+
+    Generalizes the three checks above to any `.claude/` file reference, not
+    just the role/command/slash shapes those match, and scans
+    `.claude/skills/` in addition to commands and agents (see module
+    docstring). References already covered above are skipped here so each
+    dangling reference is reported by exactly one test.
+    """
+    dangling: list[str] = []
+    for path in (*_scanned_files(), *_skill_files()):
+        for lineno, token in _references(path):
+            if not _DOT_CLAUDE_FILE_REF.match(token):
+                continue
+            if _AGENT_REF.match(token) or _COMMAND_REF.match(token):
+                continue
+            if any(token.startswith(prefix) for prefix in _EXEMPT_STATE_PREFIXES):
+                continue
+            if not (REPO_ROOT / token).is_file():
+                dangling.append(f"{path.relative_to(REPO_ROOT)}:{lineno} -> {token}")
+    assert not dangling, "dangling .claude file references:\n" + "\n".join(dangling)
