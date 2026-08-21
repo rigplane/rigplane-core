@@ -84,6 +84,7 @@ Verify:
 
 ## Post-pipeline
 
+- On success: save pattern to `.claude/knowledge/patterns.md`
 - On failure: classify the outcome and record the reason in the PR or ticket,
   per CLAUDE.md §Failure handling
 - Cleanup workspace
