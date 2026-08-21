@@ -486,7 +486,6 @@ docs/plans/2026-08-06-settings-modal-boundary.md	presentation/layouts/declaratio
 docs/plans/2026-08-06-settings-modal-boundary.md	semantic-desktop-migration.component.test.ts:456
 docs/plans/2026-08-06-settings-modal-boundary.md	semantic/radio-view-model.ts:489-496
 docs/plans/2026-08-06-settings-modal-boundary.md	semantic/radio-view-model.ts:494-496
-docs/plans/2026-08-20-transmit-authority.md	.github/workflows/quick.yml:43-51
 docs/plans/2026-08-20-transmit-authority.md	2026-06-09-target-audio-architecture.md:959-960
 docs/plans/2026-08-20-transmit-authority.md	__init__.py:112
 docs/plans/2026-08-20-transmit-authority.md	_civ_rx.py:101
@@ -503,18 +502,14 @@ docs/plans/2026-08-20-transmit-authority.md	_icom_serial_base.py:113
 docs/plans/2026-08-20-transmit-authority.md	backends/_icom_serial_base.py:335-372
 docs/plans/2026-08-20-transmit-authority.md	backends/_icom_serial_base.py:717
 docs/plans/2026-08-20-transmit-authority.md	backends/rigctld_client/radio.py:655-666
-docs/plans/2026-08-20-transmit-authority.md	backends/rigctld_client/radio.py:737
 docs/plans/2026-08-20-transmit-authority.md	backends/rigctld_client/radio.py:737-743
 docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/observations.py:328-333
 docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/poller.py:168-198
 docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/poller.py:678-682
 docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/poller.py:856
 docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/radio.py:1001
-docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/radio.py:1003
 docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/radio.py:1083-1090
 docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/radio.py:2691-2704
-docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/radio.py:994
-docs/plans/2026-08-20-transmit-authority.md	backends/yaesu_cat/radio.py:996
 docs/plans/2026-08-20-transmit-authority.md	cli/__init__.py:1925
 docs/plans/2026-08-20-transmit-authority.md	cli/__init__.py:3090-3093
 docs/plans/2026-08-20-transmit-authority.md	cli/__init__.py:517-528
@@ -537,7 +532,6 @@ docs/plans/2026-08-20-transmit-authority.md	core/civ.py:76-82
 docs/plans/2026-08-20-transmit-authority.md	core/radio_protocol.py:133
 docs/plans/2026-08-20-transmit-authority.md	core/radio_protocol.py:1673
 docs/plans/2026-08-20-transmit-authority.md	core/radio_protocol.py:1716
-docs/plans/2026-08-20-transmit-authority.md	core/radio_protocol.py:227
 docs/plans/2026-08-20-transmit-authority.md	core/state_store.py:38-44
 docs/plans/2026-08-20-transmit-authority.md	core/transport.py:391-399
 docs/plans/2026-08-20-transmit-authority.md	core/tx_authority.py:394-404
@@ -547,7 +541,6 @@ docs/plans/2026-08-20-transmit-authority.md	core/tx_safety.py:222
 docs/plans/2026-08-20-transmit-authority.md	core/tx_safety.py:25
 docs/plans/2026-08-20-transmit-authority.md	core/tx_safety.py:32
 docs/plans/2026-08-20-transmit-authority.md	docs/plans/2026-08-14-state-backed-command-lifecycle.md:40
-docs/plans/2026-08-20-transmit-authority.md	docs/release-notes/2026-beta-known-limitations.md:67-84
 docs/plans/2026-08-20-transmit-authority.md	hamlib_bridge.py:304
 docs/plans/2026-08-20-transmit-authority.md	handler.py:1279
 docs/plans/2026-08-20-transmit-authority.md	handler.py:1328-1345
@@ -569,7 +562,6 @@ docs/plans/2026-08-20-transmit-authority.md	handler.py:816-820
 docs/plans/2026-08-20-transmit-authority.md	ic7300.toml:1018
 docs/plans/2026-08-20-transmit-authority.md	ic7300.toml:655
 docs/plans/2026-08-20-transmit-authority.md	icom.c:922
-docs/plans/2026-08-20-transmit-authority.md	known-limitations.md:67-84
 docs/plans/2026-08-20-transmit-authority.md	managed_radio_runtime.py:103-136
 docs/plans/2026-08-20-transmit-authority.md	managed_tx_ingress.py:1-21
 docs/plans/2026-08-20-transmit-authority.md	managed_tx_ingress.py:54
@@ -586,7 +578,6 @@ docs/plans/2026-08-20-transmit-authority.md	profiles/__init__.py:164-172
 docs/plans/2026-08-20-transmit-authority.md	profiles/__init__.py:334-336
 docs/plans/2026-08-20-transmit-authority.md	profiles/rig_loader.py:1682-1734
 docs/plans/2026-08-20-transmit-authority.md	radio.py:2252
-docs/plans/2026-08-20-transmit-authority.md	radio.py:2297
 docs/plans/2026-08-20-transmit-authority.md	radio.py:2431
 docs/plans/2026-08-20-transmit-authority.md	radio.py:994
 docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:1016-1052
@@ -632,7 +623,6 @@ docs/plans/2026-08-20-transmit-authority.md	runtime/_dual_rx_runtime.py:328
 docs/plans/2026-08-20-transmit-authority.md	runtime/_scope_runtime.py:124
 docs/plans/2026-08-20-transmit-authority.md	runtime/radio.py:1959
 docs/plans/2026-08-20-transmit-authority.md	runtime/radio.py:3674-3731
-docs/plans/2026-08-20-transmit-authority.md	runtime/radio.py:3699
 docs/plans/2026-08-20-transmit-authority.md	runtime/radio.py:3945
 docs/plans/2026-08-20-transmit-authority.md	runtime/radio.py:3948-3954
 docs/plans/2026-08-20-transmit-authority.md	runtime/radio.py:4629-4653
@@ -679,16 +669,12 @@ docs/plans/2026-08-20-transmit-authority.md	web_startup.py:105-193
 docs/plans/2026-08-20-transmit-authority.md	web_startup.py:126-128
 docs/plans/2026-08-20-transmit-authority.md	ws-client.ts:599-602
 docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/poller.py:1018
-docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/poller.py:138
 docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/poller.py:658-659
 docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/poller.py:856
 docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/poller.py:965-1132
-docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/radio.py:1003
 docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/radio.py:148
-docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/radio.py:1697
 docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/radio.py:2252
 docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/radio.py:272-280
-docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/radio.py:994
 docs/plans/2026-08-20-transmit-authority.md	yaesu_cat/transport.py:71
 docs/plans/archive/2026-04-19-lcd-twin-skins.md	registry.ts:37
 docs/plans/discovery-artifacts/external-usage.md	tests/test_audio_bridge.py:12
