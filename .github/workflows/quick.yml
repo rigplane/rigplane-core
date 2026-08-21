@@ -44,6 +44,8 @@ jobs:
               - 'src/**'
               - 'tests/**'
               - 'frontend/**'
+              - 'rigs/**'
+              - 'contracts/**'
               - 'pyproject.toml'
               - 'uv.lock'
               - '.importlinter'
