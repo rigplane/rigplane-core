@@ -49,16 +49,36 @@
 # comparing, --check-growth runs `git diff --name-status -M <base-ref> --
 # docs/` and, for every path git itself calls a rename, rewrites that path's
 # entries in the base-ref baseline to the new path before diffing. A pure
-# rename (citations unchanged) then compares as zero added/zero removed; a
-# rename that also edits citations still shows exactly those edits as
-# growth or shrinkage, because only the unchanged pairs get re-keyed. If a
-# rename's content diff falls below git's similarity threshold and it is
-# not detected as a rename, it will read as the old document's pairs going
-# dead and the new document's pairs being new growth -- in that case use
-# `git mv` (which git's detector favours) or, failing that,
-# `--regenerate --allow-growth` plus an explanation in the PR, since
-# --check-growth in CI is what actually decides the outcome regardless of
-# what --regenerate did locally.
+# rename -- nothing else in the document touched in the same PR -- then
+# compares as zero added/zero removed.
+#
+# `--regenerate` is NOT rename-aware: it only compares the current scan to
+# whatever baseline is already on disk, so even a pure rename always looks
+# like "removed N old-path pairs, added N new-path pairs" and refuses
+# without `--allow-growth`, same as real growth would. Use
+# `--regenerate --allow-growth` for any rename, detected or not; whether the
+# growth it produces is legitimate is decided by --check-growth in CI, not
+# by this flag.
+#
+# `git mv` does NOT make detection more likely. Git records no rename
+# metadata -- `git diff -M` recomputes similarity from tree content alone at
+# diff time, so `git mv old new` and `rm old && write new` produce identical
+# trees and are indistinguishable to it. Detection is purely a function of
+# how much of the document changed in the same diff as the move: rename a
+# document AND heavily rewrite it in one PR, and similarity drops below
+# git's threshold either way. When that happens it reads as the old
+# document's pairs going dead and the new document's pairs being new
+# growth, and there is no local command that turns that PR green --
+# --check-growth in CI, not --regenerate, decides the outcome, and it still
+# sees an undetected move plus unrelated-looking new citations. Splitting
+# the rename and the rewrite into two commits in the SAME pull request does
+# not help either, because --check-growth compares net content between the
+# merge base and the current head, not commit by commit. The route that
+# actually works: land the rename alone in its own pull request first
+# (untouched content, so similarity is ~100% and git detects it every
+# time), then make the content edit in a second pull request against the
+# now-renamed path -- an ordinary, non-rename content change with no
+# detection question at all.
 #
 # BASELINE KEY: each grandfathered entry is a (docfile, citation) PAIR, not
 # just a bare citation string. A flat set of citation strings (no docfile)

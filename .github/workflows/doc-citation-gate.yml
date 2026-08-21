@@ -24,6 +24,15 @@ name: Doc citation gate
 # against at all: the very first push on a brand-new ref) rather than
 # handing the growth-check script an ambiguous or sentinel ref.
 #
+# On a pull_request event, the merge base is computed from
+# pull_request.head.sha, NOT github.sha. github.sha on pull_request is the
+# SHA of the ephemeral refs/pull/N/merge commit GitHub synthesizes to test
+# the merge, whose first parent IS pull_request.base.sha -- so
+# `git merge-base base.sha github.sha` always collapses back to base.sha,
+# silently computing the exact tip comparison this step exists to replace.
+# head.sha is the PR branch's real tip; merge-base against that is the
+# actual fork point.
+#
 # Path-filtered to docs/** (plus the gate's own files) so unrelated code-only
 # PRs don't pay for it. Grep + bash, no toolchain — mirrors the rebrand-gate
 # pattern. fetch-depth: 0 is needed so `git show <ref>:...` and `git merge-base`
@@ -69,7 +78,7 @@ jobs:
         id: mergebase
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           if [ -z "${BASE_SHA}" ] || [ "${BASE_SHA}" = "0000000000000000000000000000000000000000" ]; then
             echo "base_ref=" >> "$GITHUB_OUTPUT"
