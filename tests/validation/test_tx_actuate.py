@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTimeoutError
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.radio_state import RadioState
 from rigplane.validation.hardware import execute_hardware_checks
@@ -311,8 +314,12 @@ def _ptt_only_template() -> MatrixTemplate:
 def _tx_radio_unwritten_mirror(*, start_power: int = 200):
     """A radio matching the Yaesu backend after MOR-1941: ``set_ptt`` does
     NOT self-write ``radio_state.ptt`` -- only a real read-back
-    (``get_ptt``) tells the truth. Proves the hardware TX-actuate check
-    was repointed off the mirror (``validation/hardware.py:702-703``).
+    (``get_ptt``) tells the truth, and -- faithfully to the shipped
+    ``YaesuCatRadio.get_ptt`` (``yaesu_cat/radio.py:1076``), which is kept,
+    not deleted -- a successful ``get_ptt`` DOES update the mirror from
+    that read-back. Proves the hardware TX-actuate check was repointed off
+    the mirror (``validation/hardware.py:702-703``) onto a real read, not
+    that the mirror never changes.
     """
     radio = MagicMock(spec=Radio)
     radio.connected = True
@@ -330,7 +337,10 @@ def _tx_radio_unwritten_mirror(*, start_power: int = 200):
         # Yaesu backend once its self-write is deleted (MOR-1941).
 
     async def _get_ptt() -> bool:
-        return wire_ptt["value"]
+        # Faithful to the shipped ``get_ptt``, which writes the mirror
+        # from a real read-back (kept, not deleted -- MOR-1941 scope).
+        state.ptt = wire_ptt["value"]
+        return state.ptt
 
     async def _get_rf_power() -> int:
         return power["value"]
@@ -349,8 +359,9 @@ async def test_tx_ptt_readback_uses_get_ptt_not_the_unwritten_mirror():
     """MOR-1941: after a backend's ``set_ptt`` self-write is deleted (the
     Yaesu case), ``radio_state.ptt`` is no longer radio truth. The
     TX-actuate check must verify the key from a real read-back
-    (``get_ptt``) when the backend offers one -- nothing writes the
-    mirror on this fake, matching the shipped Yaesu backend post-deletion.
+    (``get_ptt``) when the backend offers one -- ``set_ptt`` never writes
+    the mirror on this fake, matching the shipped Yaesu backend post-
+    deletion, so a PASS here can only come from the ``get_ptt`` read.
     """
     radio, _ = _tx_radio_unwritten_mirror()
     prompter, _ = _confirm_prompter(True)
@@ -368,9 +379,39 @@ async def test_tx_ptt_readback_uses_get_ptt_not_the_unwritten_mirror():
     assert ptt.status is CheckStatus.PASS
     assert ptt.evidence["keyed"] is True
     assert ptt.evidence["ptt_state"] is True
-    # The mirror stays exactly where it started -- proof the check did not
-    # fall back to it.
-    assert radio.radio_state.ptt is False
+
+
+@pytest.mark.parametrize("exc_cls", [CatTimeoutError, CatCommandRejected])
+async def test_tx_ptt_readback_failure_falls_back_to_the_mirror_not_a_fail(exc_cls):
+    """MOR-1941 review (BLOCKED-1): a ``get_ptt`` read-back that raises --
+    e.g. a dropped/late CAT reply inside the key window, or the radio
+    answering ``?;`` -- must degrade to the mirror-based evidence, not
+    propagate and turn a good key into a FAIL with the evidence dict lost.
+    Both exception classes are real Yaesu CAT transport errors
+    (``backends/yaesu_cat/transport.py``), neither of which subclasses
+    anything in ``validation.hardware._RESTORE_ERRORS``.
+
+    Uses ``_tx_radio`` (not the unwritten-mirror fixture): here the mirror
+    IS trustworthy going into the read -- ``set_ptt`` wrote it, as it still
+    does on every backend except Yaesu post-MOR-1941 -- so a raised
+    ``get_ptt`` exercises exactly the fallback path the fix adds, landing
+    on a mirror value that is actually correct rather than stale.
+    """
+    radio, _ = _tx_radio(start_power=200)
+
+    async def _raise_get_ptt() -> bool:
+        raise exc_cls("no usable TX; reply")
+
+    radio.get_ptt = AsyncMock(side_effect=_raise_get_ptt)
+    prompter, _ = _confirm_prompter(True)
+
+    levels = await _run(radio, safety=_FULL_SAFETY, tx_actuate=True, prompter=prompter)
+    ptt = _flatten(levels)["tx.ptt"]
+
+    assert ptt.status is CheckStatus.PASS
+    assert ptt.evidence["keyed"] is True
+    assert ptt.evidence["ptt_state"] is True
+    assert "actuate_error" not in ptt.evidence
 
 
 async def test_tx_ptt_readback_falls_back_to_the_mirror_when_get_ptt_is_absent():

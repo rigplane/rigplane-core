@@ -696,15 +696,30 @@ async def _actuate_tx_ptt(
                 evidence["key_refused"] = key_refusal
         if key_refusal is None:
             keyed = True
-            # Brief, bounded key window.
+            # Brief, bounded key window. Note: when the read-back below runs,
+            # the window is no longer bounded by ``_TX_PTT_KEY_SECONDS``
+            # alone — the read carries its own ``per_check_timeout`` budget,
+            # so worst case this stretches from ~1.0 s to ~1.0 s +
+            # ``per_check_timeout`` (default 5.0 s -> ~6.0 s total) at
+            # minimum power. Deliberately left unbounded beyond that shared
+            # budget rather than adding a second timeout constant: every
+            # other read/write in this function already spends up to
+            # ``per_check_timeout``, and the ``finally`` below unkeys and
+            # restores power unconditionally regardless of how long this
+            # takes (MOR-1941 review).
             await asyncio.sleep(_TX_PTT_KEY_SECONDS)
             # Verify the keyed state from a real read-back where the backend
             # offers one, rather than the legacy ``radio_state`` mirror
             # (MOR-1941): some backends no longer self-write that mirror
             # from ``set_ptt``, so it is not radio truth. Best-effort — a
-            # missing accessor or a read failure must not turn a good key
-            # into a FAIL, so it falls back to the mirror rather than
-            # failing the check outright.
+            # missing accessor or ANY read failure (backend-specific
+            # transport errors included, e.g. a dropped/late CAT reply
+            # inside the key window — MOR-1941 review) must not turn a good
+            # key into a FAIL, so it falls back to the mirror rather than
+            # failing the check outright. Deliberately ``except Exception``,
+            # not ``_RESTORE_ERRORS``: this function is generic across
+            # backends and must not import a specific backend's transport
+            # exception types to enumerate them.
             ptt_state = bool(radio.radio_state.ptt)
             _get_ptt_attr = getattr(radio, "get_ptt", None)
             if callable(_get_ptt_attr):
@@ -714,7 +729,7 @@ async def _actuate_tx_ptt(
                             _get_ptt_attr(), timeout=per_check_timeout
                         )
                     )
-                except _RESTORE_ERRORS:
+                except Exception:
                     pass
             evidence["ptt_state"] = ptt_state
             keyed = ptt_state
