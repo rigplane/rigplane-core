@@ -29,7 +29,7 @@ Scan open GitHub issues and populate the issue queue with scored candidates.
    - **requires_hardware**: true | false
 
 4. Filter and route:
-   - If issue exceeds guardrails (>3 files, >400 LOC, or labeled "epic") → add to queue with `"status": "needs_decomposition"` and `"reason": "exceeds guardrails — use /decompose-issue N"`
+   - If issue exceeds guardrails (crosses the hard ceiling in CLAUDE.md §Guardrails, or labeled "epic") → add to queue with `"status": "needs_decomposition"` and `"reason": "exceeds guardrails — use /decompose-issue N"`
    - Otherwise keep if: type is bug OR (type is refactor AND difficulty is low), difficulty is low or medium, requires_hardware is false, score > 0
 
 5. Sort by score descending

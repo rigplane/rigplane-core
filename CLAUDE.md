@@ -92,8 +92,7 @@ When making changes:
 - Batch all fixes, run tests once (not per fix)
 - One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
-- Prose is checked like code: a comment, docstring, or doc sentence that could be false without any test failing must be tied to something that fails when it stops being true (a named constant, a named test, a parsed structure), narrowed until true, or deleted
-- A claim about what a future change will do belongs in the ticket, not in a comment or data file (MOR-1958)
+- Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, narrow it until it is true, tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure), or delete it — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). `builder.md` and `verifier.md` point here.
 
 ---
 
@@ -122,7 +121,6 @@ agents. Before editing:
 ```bash
 git fetch --all --tags --prune
 git status --short --branch
-python3 ~/.codex/skills/repo-hygiene/scripts/repo_inventory.py --roots /Users/moroz/Projects --summary
 ```
 
 Rules:
@@ -134,34 +132,30 @@ Rules:
   approval;
 - report or snapshot dirty trees before sync.
 
-`main` is protected. RigPlane uses `.github/workflows/agent-review-gate.yml`
-as the standard PR automation gate. The workflow passes only after a normal PR
-comment contains `Agent Review: PASS` for the current PR head; use the required
-commit status `Agent Review Gate` instead of GitHub required approving reviews,
-because same-user approval restrictions break automated agent flow.
+`main` is protected. Non-trivial PRs require an independent agent review
+before merge; the implementation agent never reviews its own work.
 
-Non-trivial PRs require independent agent review before merge. The
-implementation agent cannot self-review. `Agent Review: PASS` means the PR may
-merge once required checks are green, the PASS comment is fresh for the current
-head, and the PR is not draft. `Agent Review: BLOCKED` must include concrete
-problems, file/line references where applicable, risk, required fixes, and
-checks to run. The implementation agent must fix
-BLOCKED feedback, push updates, and rerun or wait for checks before merge.
+The gate is `.github/workflows/agent-review-gate.yml`, parsed by
+`.github/scripts/agent-review-gate.js`. It considers only non-minimized
+comments whose author association is OWNER, MEMBER or COLLABORATOR, and
+matches the **first non-blank line** of each against exactly this pattern:
+
+```js
+const DIRECTIVE_PATTERN = /^Agent Review: (PASS|BLOCKED) ([0-9a-f]{40})$/u;
+```
+
+The captured SHA must equal the PR's current head. Anything else — a short,
+missing or stale SHA, or any non-blank line above the directive — parses as no
+directive and leaves the status red; so does a BLOCKED directive with no
+justification text below it, which the gate reports as malformed.
+
 A BLOCKED comment naming one instance is a review of its class: enumerate
 every place the same shape occurs, fix what the change's guardrails cover,
 and report the rest instead of expanding scope to fix it.
 
-A failed `Agent Review Gate` without BLOCKED feedback usually means no fresh
-PASS comment exists for the current head; perform or refresh the review instead
-of skipping the PR. Cancelled checks must be rerun with `gh run rerun <run-id>`
-or a new push, then watched to completion. Draft PRs must not merge: determine
-why the PR is draft, finish the missing work, run `gh pr ready`, then complete
-checks and review.
-
-Release branches are exceptional: use `release/<major.minor>` only when a
-public release needs stabilization while `main` moves ahead. Tags remain the
-published artifact source of truth, and release-branch hotfixes must return to
-`main`.
+Review policy — PASS/BLOCKED semantics, freshness, draft PRs, rerunning
+cancelled checks — and release branches (named `release/<major.minor>`) are in
+`AGENTS.md`; the merge procedure is in `docs/internals/github-project-workflow.md`.
 
 ---
 
@@ -195,21 +189,23 @@ spec), `verifier` (opus, independent review and gate verdicts), `researcher`
 by default; a dispatch outside them must pass an explicit model — never let a
 subagent silently inherit the root session's model.
 
-Slash commands for scoped workflows live in `.claude/commands/` (`scan-issues`,
-`solve-issue`, `next`, `regression-check`, `generate-tests`, `analyze-failure`,
-`refactor`, `decompose-issue`) plus the `release` skill; each file is
-self-documenting.
+Slash commands for scoped workflows live in `.claude/commands/`
+(`analyze-failure`, `audit-ui`, `decompose-issue`, `generate-tests`, `next`,
+`refactor`, `regression-check`, `scan-issues`, `solve-issue`) plus the
+`release` skill in `.claude/skills/`; each file is self-documenting.
 
 ### Guardrails
 
-| Limit | Value |
-|-------|-------|
-| Files per change | 3 |
-| LOC delta | 400 |
-| New abstractions/layers | forbidden unless issue requires |
-| Speculative improvements | forbidden |
+Size is measured per PR, at the head you push; "changed lines" is additions +
+deletions. Each pair below is two independent limits: crossing **either**
+number crosses that guardrail.
 
-Scope exceeding the guardrails → decompose first (`/decompose-issue`).
+| Guardrail | Value | Effect |
+|---|---|---|
+| **Hard ceiling** | 10 files · 1000 changed lines | Do not cross; decompose first (`/decompose-issue`). Not author-waivable — only the owner grants an exception, in the PR, before merge. |
+| **Soft threshold** | 6 files · 600 changed lines | Forbids nothing; the PR body must say why this is one unit of work. |
+| New abstractions/layers | forbidden unless issue requires | |
+| Speculative improvements | forbidden | |
 
 ### Failure handling
 

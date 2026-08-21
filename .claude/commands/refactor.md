@@ -37,12 +37,13 @@ No fast path. PLAN is always mandatory.
 Write `.claude/workflow/refactor-plan.md`:
 - **Goal:** what improves (readability, duplication, boundaries)
 - **Non-goals:** what must NOT change (behavior, API, public interface)
-- **Scope:** exact files and functions (max 3 files)
+- **Scope:** exact files and functions (inside the soft threshold in CLAUDE.md §Guardrails)
 - **Steps:** ordered list of small, independently testable changes
 - **Risks:** what could break, how to verify it didn't
 - **Rollback:** `git checkout -- <files>` for each step
 
-Guardrails apply: ≤3 files, ≤400 LOC delta, no new abstractions unless explicitly targeted.
+Guardrails apply (CLAUDE.md §Guardrails): the hard ceiling is not author-waivable;
+no new abstractions unless explicitly targeted.
 
 ### Phase 4: EXECUTE (strict)
 
