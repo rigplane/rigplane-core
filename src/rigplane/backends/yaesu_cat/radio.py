@@ -20,7 +20,7 @@ from ...types import AudioCodec, BreakInMode
 from ...exceptions import AudioFormatError, CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
-from .parser import CatCommandParser, format_command
+from .parser import CatCommandParser, CatParseError, format_command
 from .transport import (
     CatCommandRejected,
     CatTimeoutError,
@@ -1111,16 +1111,21 @@ class YaesuCatRadio:
         The real :class:`~.transport.YaesuCatTransport` raises a typed
         exception per outcome rather than returning a sentinel string, so
         this never trusts a raw ``"?"`` token -- it catches the transport's
-        own vocabulary instead. A rejected or unanswered read is never
-        raised -- it comes back as a :class:`TxStateReading` with a
-        ``failure`` tag -- but a precondition failure ahead of the wire
-        (``read_ptt_token`` -> ``_query`` -> ``_require_connected``, not
-        connected at all) still raises, the same convention every other
-        read on this class follows.
+        own vocabulary instead. A rejected, unanswered, or malformed-but-
+        delivered read is never raised -- it comes back as a
+        :class:`TxStateReading` with a ``failure`` tag -- but a
+        precondition failure ahead of the wire (``read_ptt_token`` ->
+        ``_query`` -> ``_require_connected``, not connected at all) still
+        raises, the same convention every other read on this class
+        follows. A malformed reply that gets past ``query()``'s ``?``-
+        prefix rejection but fails the response template (a noisy serial
+        line) raises :class:`~.parser.CatParseError`, a ``ValueError``
+        subclass outside the ``transport.py`` ``Cat*Error`` family -- also
+        caught here, not a precondition failure.
         """
         try:
             token = await self.read_ptt_token()
-        except CatCommandRejected:
+        except (CatCommandRejected, CatParseError):
             return TxStateReading(value=None, failure="read-error")
         except CatTimeoutError:
             return TxStateReading(value=None, failure="timeout")

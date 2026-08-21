@@ -15,11 +15,19 @@ answer                  CI-V (Icom)                 Yaesu CAT       rigctld clie
 ``tx_cat``              directed ``1C 00`` + ``01`` ``TX1``         ``1``
 ``tx_other``            (Icom carries no            ``TX2``         (upstream
                         attribution — §3.7)                         carries none)
-``silence``             no reply at all             read times out  delayed past
-                                                                    the deadline
+``silence``             no reply at all             read times out  upstream drops
+                                                                    the connection
 ``refusal``             NAK ``FA``                  ``?;``          malformed line
 ``unmapped``            ``1C 00`` + ``00 00``       ``TX9``         ``9``
 ======================  ==========================  ==============  ==============
+
+The rigctld-client ``silence`` answer is a dropped connection, not a delayed
+reply -- see ``_build_rigctld_client``'s ``script`` function below for why
+(the socket is shared with every later read). The genuine wire-level-timeout
+path is a different scenario, covered separately by
+``test_the_rigctld_client_primitive_reports_a_real_timeout_as_timeout`` in
+``tests/contracts/test_tx_authority_conformance.py``, which is deliberately
+not driven through this harness.
 
 The CI-V column additionally scripts three shapes that must **never** satisfy a
 read (INV-13): an ACK, a setter echo, and a mis-addressed frame. They are not

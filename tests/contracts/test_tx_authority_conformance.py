@@ -62,6 +62,7 @@ from tx_authority_fakes import (
 )
 
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
+from rigplane.backends.yaesu_cat import YaesuCatRadio
 from rigplane.core.tx_authority import (
     RADIO_READBACK_SOURCES,
     TransmitAuthority,
@@ -876,6 +877,110 @@ async def test_the_rigctld_client_primitive_reports_a_real_timeout_as_timeout() 
         "'timeout' -- the RadioTimeoutError catch narrowed back to only "
         "asyncio.TimeoutError"
     )
+
+
+@pytest.mark.parametrize("harness", ["rigctld-client"], indirect=True)
+async def test_the_vocabulary_table_does_not_claim_a_delay_it_does_not_deliver(
+    harness: TxConformanceHarness,
+) -> None:
+    """MOR-1953: the vocabulary table's own words must match what its
+    ``script`` function does, not what would be convenient to believe.
+
+    A prior version of the module docstring's table (``tx_authority_fakes.py``
+    top) described the rigctld-client ``silence`` answer as "delayed past
+    the deadline". ``_build_rigctld_client``'s ``script`` does something
+    else: it makes the upstream *drop the connection*
+    (``server.behavior.disconnect_commands``), which the transport reports
+    as ``RadioConnectionError``, not a timeout -- the implementation's own
+    comment already explains why (a genuinely delayed line would arrive in
+    time to answer the *next* read on the shared socket, not this one), and
+    that implementation is correct and unchanged by this row.
+
+    The table was the defect. During MOR-1914 an agent trusted the old
+    wording, wrote a pin scripting ``silence`` and asserting
+    ``failure == "timeout"``, and it failed *with the fix applied* -- red
+    for a reason unrelated to any defect, and it would have gone green for
+    a reason unrelated to any fix. This test pins the table's text against
+    the real behaviour it describes, so the two cannot drift apart again
+    silently.
+
+    The genuine wire-level timeout path is a different scenario entirely,
+    covered separately by
+    ``test_the_rigctld_client_primitive_reports_a_real_timeout_as_timeout``
+    above -- deliberately not driven through this harness; see that test's
+    own docstring for why.
+
+    # MUTATION: in `tests/tx_authority_fakes.py`, revert the rigctld-client
+    # `silence` cell in the module docstring's table back to "delayed past
+    # the deadline" -> this row goes red on the docstring assertion below.
+    """
+    import tx_authority_fakes
+
+    doc = tx_authority_fakes.__doc__ or ""
+    assert "delayed past" not in doc and "the deadline" not in doc, (
+        "the vocabulary table still claims the rigctld-client 'silence' "
+        "answer is a delay past the deadline -- it is not; "
+        "_build_rigctld_client's script() drops the connection instead "
+        "(see that function's own comment)"
+    )
+
+    harness.script("silence")
+    reading = await harness.radio.read_transmit_state()
+
+    assert reading.failure == "read-error", (
+        f"scripted 'silence' on rigctld-client reported failure="
+        f"{reading.failure!r}, not 'read-error' -- if this is now "
+        "'timeout' the harness's disconnect-based realisation of "
+        "'silence' has changed and the table needs to change with it"
+    )
+
+
+async def test_the_yaesu_primitive_reports_a_malformed_reply_as_read_error() -> None:
+    """A malformed-but-delivered CAT reply must come back as a
+    :class:`TxStateReading` with ``failure="read-error"``, never escape
+    ``read_transmit_state`` as a raised ``CatParseError``.
+
+    Deliberately not driven through the shared ``yaesu-ftx1`` harness:
+    ``ScriptedCatTransport`` only ever returns the vocabulary's six
+    answers, each of which either parses cleanly against the ``ftx1``
+    profile's ``TX{state};`` template or raises one of the transport's own
+    typed exceptions. A noisy serial line can also deliver a line that gets
+    past ``query()``'s ``?``-prefix rejection but fails the response
+    *template* once ``_query`` (``radio.py:764-781``) hands it to
+    ``CatCommandParser.parse``. That raises ``CatParseError``
+    (``parser.py:157``) -- a ``ValueError`` subclass, not one of the
+    ``transport.py`` ``Cat*Error`` family -- which was not in
+    ``read_transmit_state``'s catch list.
+
+    Three shapes reproduce it against the real ``TX{state};`` template: a
+    ``TX`` answer with no state digit, an answer that isn't a ``TX``
+    answer at all, and an empty line.
+
+    # MUTATION: in `src/rigplane/backends/yaesu_cat/radio.py`, in
+    # `read_transmit_state`, narrow `except (CatCommandRejected,
+    # CatParseError):` back to `except CatCommandRejected:` -> this row
+    # goes red: `CatParseError` escapes the primitive instead of coming
+    # back as `TxStateReading(value=None, failure="read-error")`.
+    """
+    radio = YaesuCatRadio("/dev/null", profile="ftx1")
+    radio._transport._connected = True
+
+    for malformed_reply in ("TX", "FA014074000", ""):
+
+        async def query(
+            cmd: str, *args: object, _reply: str = malformed_reply, **kwargs: object
+        ) -> str:
+            return _reply
+
+        radio._transport.query = query  # type: ignore[method-assign]
+
+        reading = await radio.read_transmit_state()
+
+        assert reading == TxStateReading(value=None, failure="read-error"), (
+            f"a malformed-but-delivered reply {malformed_reply!r} produced "
+            f"{reading!r}, not a clean "
+            "TxStateReading(value=None, failure='read-error')"
+        )
 
 
 @pytest.mark.parametrize("harness", ["yaesu-ftx1"], indirect=True)
