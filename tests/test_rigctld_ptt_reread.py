@@ -159,7 +159,10 @@ async def test_writes_succeed_after_the_radio_answers_the_reread(model: str) -> 
     server._client_count = 1  # noqa: SLF001
     server._start_ptt_reread_task()  # noqa: SLF001
     try:
-        for wire in (b"F 14074000", b"M USB 2400", b"V VFOB", b"T 1"):
+        # ``F`` is excluded here: MOR-1940 reclassified FREQUENCY as
+        # TX-SAFE, so it is never gated by the re-read and would already
+        # succeed before the radio has answered at all.
+        for wire in (b"M USB 2400", b"V VFOB", b"T 1"):
             refused = await handler.execute(parse_line(wire), session_id="s1")
             assert refused.error is not None and int(refused.error) == -9, wire
 
@@ -205,7 +208,10 @@ async def test_unanswered_reread_never_produces_rf_truth(
             store.snapshot().field(_PTT_PATH)
         assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.UNKNOWN  # noqa: SLF001
 
-        for wire in (b"F 14074000", b"M USB 2400", b"V VFOB", b"T 1"):
+        # ``F`` is excluded here: MOR-1940 reclassified FREQUENCY as
+        # TX-SAFE, so an unresolved re-read never gates it in the first
+        # place.
+        for wire in (b"M USB 2400", b"V VFOB", b"T 1"):
             refused = await handler.execute(parse_line(wire), session_id="s1")
             assert refused.error is not None and int(refused.error) == -9, wire
     finally:
@@ -256,12 +262,15 @@ async def test_started_server_drives_reads_only_while_a_client_is_connected(
             assert len(_ptt_read_calls(send_civ)) >= 2
 
             # Unanswered so far: the seat is still fail-closed on the wire.
-            writer.write(b"F 14074000\n")
+            # ``M`` (mode), not ``F``: MOR-1940 reclassified FREQUENCY as
+            # TX-SAFE, so it would already succeed before any answer and
+            # could no longer demonstrate the fail-closed-then-clears shape.
+            writer.write(b"M USB 2400\n")
             await writer.drain()
             assert await reader.readline() == b"RPRT -9\n"
 
             await _deliver(civ_radio, _ptt_reply(civ_radio, transmitting=False))
-            writer.write(b"F 14074000\n")
+            writer.write(b"M USB 2400\n")
             await writer.drain()
             assert await reader.readline() == b"RPRT 0\n"
         finally:
