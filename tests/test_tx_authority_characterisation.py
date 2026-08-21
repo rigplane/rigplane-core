@@ -745,13 +745,20 @@ class TestPin7ForceUnkeyIsUngated:
         # CHARACTERISATION PIN 7b (ADR §3.10 item 6, §5): PrivilegedTxApi is
         # the only surface reaching force_unkey, and it never lets a caller
         # choose the attribution.
-        # MUTATION (MOR-1914 moved this +37 lines when TransmitStateReadable
-        # landed above it): at src/rigplane/core/radio_protocol.py:748 change
-        # the hardcoded `reason=TxReleaseReason.OPERATOR_FORCED_UNKEY` to
+        # MUTATION: at src/rigplane/core/radio_protocol.py:757 change the
+        # hardcoded `reason=TxReleaseReason.OPERATOR_FORCED_UNKEY` to
         # `reason=TxReleaseReason.OPERATOR_RELEASE` -> this test goes red
-        # (force_unkey rejects the untrusted reason with ValueError). :711 at
-        # HEAD is prose inside `PrivilegedTxApi.force_unkey`'s docstring, not
-        # the call it describes -- mutating it does nothing.
+        # (force_unkey rejects the untrusted reason with ValueError). The
+        # decoy is `:748`, the opening line of `force_unkey`'s docstring:
+        # it is prose, so mutating it does nothing and the test stays green.
+        #
+        # This coordinate has now been invalidated twice by edits above it in
+        # the same file -- once by MOR-1914 landing TransmitStateReadable,
+        # then again by a later commit on that same branch widening its
+        # docstring, after the first repoint had already been verified. Any
+        # change that inserts lines into `radio_protocol.py` must re-check
+        # this number at the branch's FINAL head, not at the commit that
+        # touched it.
         supervisor, now = self._supervisor()
         owner = TxOwner(TxSource.WEBSOCKET, "web-1")
         supervisor.replace_provider(1, ready=True)
