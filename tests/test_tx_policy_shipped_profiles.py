@@ -1,8 +1,15 @@
 """Golden values for the [tx_policy] data shipped in rigs/*.toml.
 
 MOR-1912 (ADR row 3a) landed the section for the two bench-measured rigs.
-MOR-1947 settles what the remaining six declare, before the row that wires
-the authority into the backends makes an absent section operative policy.
+MOR-1947 settles what the remaining six declare, so each shipped rig carries
+a written ruling instead of an absence.
+
+What consumes the data is deliberately not asserted here. Only the Yaesu
+backend reads ``tx_state_map`` today (``yaesu_cat/radio.py:1083-1090``, where
+an undeclared profile falls back to the vendor ``!= "0"`` default); the Icom
+read decodes its ``1C 00`` reply natively (``runtime/radio.py``), and
+``core/tx_authority.py`` is handed the read primitive, never the map. Which
+of those paths a later row changes is that row's business, not this one's.
 
 The owner ruling, per radio:
 
@@ -15,14 +22,15 @@ The owner ruling, per radio:
   client, whose read is permanently ``verified_readback=False``, so they
   are fail-closed by provenance regardless of what the map says.
 
-Nothing here may be left implicit: an absent ``[tx_policy]`` section parses
-to the same empty policy as a deliberately empty one, so
-:func:`test_every_shipped_profile_declares_a_tx_policy_section` reads the
-raw TOML text and requires the declaration to be present in the file.
+Nothing here may be left implicit: an absent ``[tx_policy]`` section loads to
+the same empty policy as a deliberately empty one, so
+:func:`test_every_shipped_profile_declares_a_tx_policy_section` parses the raw
+TOML and requires a ``tx_policy`` table to be present in the document.
 """
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 from rigplane.backends.config import SerialBackendConfig
@@ -84,10 +92,12 @@ def test_ic7300_tx_policy_matches_the_bench_measurement():
 def test_every_shipped_profile_declares_a_tx_policy_section():
     """No shipped rig may leave the transmit policy to an absent section.
 
-    An absent section and an empty one parse identically, so this is the
-    only pin that can tell a deliberate declaration from an oversight —
-    and the only thing stopping the next rig TOML from silently shipping
-    "refuse every hazard family forever".
+    An absent section and an empty one load to the same :class:`TxPolicy`,
+    so no assertion on the loaded profile can separate them. This pin parses
+    the raw TOML document instead and requires a ``tx_policy`` *table* to be
+    in it. That, and only that, is what it guarantees: a mention of the
+    section in a comment or a TODO does not satisfy it. Whether the declared
+    contents are right is the business of the per-rig pins below.
     """
     rigs = discover_rigs(RIGS_DIR)
     assert len(rigs) == 8, "shipped rig count changed; re-run the MOR-1947 ruling"
@@ -96,12 +106,15 @@ def test_every_shipped_profile_declares_a_tx_policy_section():
         path.name
         for path in sorted(RIGS_DIR.glob("*.toml"))
         if not path.name.startswith("_")
-        and "[tx_policy]" not in path.read_text(encoding="utf-8")
+        and not isinstance(
+            tomllib.loads(path.read_text(encoding="utf-8")).get("tx_policy"), dict
+        )
     ]
 
     assert undeclared == [], (
-        f"{undeclared}: every shipped rig must declare [tx_policy] explicitly "
-        "(MOR-1947) — an absent section silently means 'never receiving'"
+        f"{undeclared}: every shipped rig must declare a [tx_policy] table "
+        "(MOR-1947) — once loaded, an absent section is indistinguishable "
+        "from a deliberately empty one"
     )
 
 

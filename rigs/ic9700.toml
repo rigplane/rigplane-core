@@ -912,10 +912,13 @@ label = "6.0+"
 # That is the same transmit-state read the measured IC-7300 uses: the
 # solicited CI-V 0x1C/0x00 request in runtime/radio.py, decoded through the
 # 0x00/0x01 allowlist in runtime/_civ_rx.py. The decode is shared, so the
-# map is the same map, and it is declared here rather than left absent: an
-# absent section parses to "this radio is never receiving", which would
-# refuse band change, the tuner family, antenna switching and VFO select on
-# this radio permanently.
+# ruling is the same ruling, and it is written here rather than left absent
+# because an absent section and an empty one load identically — only a
+# written section records that this was decided.
+# Nothing on this radio's path reads this map today: the CI-V reply is
+# decoded natively in runtime/radio.py, and core/tx_authority.py is handed
+# the read primitive, not the map. The section is declared so that a later
+# row consumes a stated ruling instead of an absence.
 # No write-during-transmit battery was run on this radio, so no radio-side
 # refusal is claimed. Empty means "nothing measured", not "nothing refuses".
 refused_during_tx = []
