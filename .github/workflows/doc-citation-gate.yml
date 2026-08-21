@@ -1,0 +1,46 @@
+name: Doc citation gate
+
+# Fails any push or PR that adds a `path:line` code citation to docs/** that
+# is not already grandfathered in .github/scripts/doc-citation-baseline.txt.
+# Documentation cites file plus symbol name, never a line number — line
+# numbers rot. See .github/scripts/check-doc-citations.sh for the rationale
+# and .github/scripts/check-doc-citations.sh --regenerate to shrink the
+# baseline.
+#
+# Path-filtered to docs/** (plus the gate's own files) so unrelated code-only
+# PRs don't pay for it. Single grep + bash pass, no toolchain, sub-second —
+# mirrors the rebrand-gate pattern.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/scripts/check-doc-citations.sh"
+      - ".github/scripts/doc-citation-baseline.txt"
+      - ".github/workflows/doc-citation-gate.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/scripts/check-doc-citations.sh"
+      - ".github/scripts/doc-citation-baseline.txt"
+      - ".github/workflows/doc-citation-gate.yml"
+
+concurrency:
+  group: doc-citation-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  citation-gate:
+    # Sub-second grep + bash filter, no toolchain needed. Keep this on a
+    # GitHub-hosted runner so protected-branch merges are not blocked when
+    # self-hosted runners are offline or occupied.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Doc citation gate
+        run: .github/scripts/check-doc-citations.sh

@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Doc-citation gate: fail CI if docs/** grows a new file:line citation that
+# is not already grandfathered in the baseline below.
+#
+# Why this exists: documentation under docs/ used to cite code as
+# `path/to/file.py:1234`. Line numbers cannot be kept correct by hand — in one
+# day, four citations in a single design document were found pointing at the
+# wrong lines, and one document had been printing a call shape that raises at
+# runtime since it was written. A reader who trusts a citation and does not
+# open it inherits the error. The owner has ruled: documentation cites file
+# plus SYMBOL NAME (e.g. `radio.py: IcomRadio.set_frequency`), never a line
+# number.
+#
+# At the time this gate was introduced, docs/** already carried ~1000
+# existing `path:line` citations across 27 files. Resolving each to "whatever
+# symbol sits at that line today" would fabricate a symbol name wherever the
+# citation is already stale -- which is exactly the defect this gate exists to
+# catch. So this is NOT a bulk rewrite: existing citations are grandfathered
+# in doc-citation-baseline.txt (sibling to this script), a plain sorted list
+# of every `path:line` string that already appears somewhere under docs/.
+# That baseline may only ever shrink -- new lines may not be added to it by
+# hand, and any entry that stops appearing in docs/ must be dropped by
+# regenerating it, not left behind.
+#
+# Extensions scanned: .py .ts .svelte .toml .md -- these are the file types
+# actually cited today (verified by inspecting the corpus; see PR description
+# for the measurement). Anything else (.json, .yml, .txt, ...) is out of
+# scope for this gate; add an extension here deliberately if citations to it
+# start appearing.
+#
+# What counts as a citation: any `<path>.<ext>:<line>` or
+# `<path>.<ext>:<line>-<line>` substring anywhere in a docs/** file --
+# including inside fenced code blocks, indented blocks, and table cells. This
+# gate does NOT special-case those contexts: a stale line number misleads a
+# reader exactly the same whether it sits in prose, a code fence, or a table
+# cell, so excluding any of them would just be a way to smuggle a citation
+# past the gate.
+#
+# What is deliberately NOT treated as a citation, and why the regex already
+# excludes it without a special case: the pattern requires a literal
+# `.py` / `.ts` / `.svelte` / `.toml` / `.md` immediately before the colon.
+# A URL-with-port (`127.0.0.1:4532`), a timestamp, or a `sed -n '10,20p'`
+# example never has a recognised source extension directly before the colon,
+# so it never matches -- verified empirically against the current docs/
+# corpus (zero such collisions) rather than assumed.
+#
+# Usage (run from the repository root):
+#   .github/scripts/check-doc-citations.sh               # check mode (CI)
+#   .github/scripts/check-doc-citations.sh --regenerate  # rewrite the baseline
+#
+# Regenerate whenever you intentionally remove or replace a grandfathered
+# citation (e.g. converting it to a symbol-name citation) -- that is the
+# one-command way to shrink the baseline.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASELINE_FILE="${SCRIPT_DIR}/doc-citation-baseline.txt"
+
+# path.<ext>:line or path.<ext>:line-line, ext restricted to the set above.
+PATTERN='[A-Za-z0-9_/.-]+\.(py|ts|svelte|toml|md):[0-9]+(-[0-9]+)?'
+
+if [ ! -d docs ]; then
+    echo "::error::run this script from the repository root (docs/ not found)" >&2
+    exit 2
+fi
+
+# One pass over docs/**: every matched occurrence as "docfile:docline:citation".
+# The citation itself may contain a colon (it always does), so downstream
+# parsing splits on the first two colons only, not on all of them.
+ALL_OCCURRENCES="$(grep -rnoE "$PATTERN" docs/ || true)"
+
+# CURRENT: every distinct citation string found anywhere under docs/,
+# deduplicated, plus (for reporting only) the first doc file:line it occurs
+# at. A flat set of exact citation strings -- not a per-file count -- is what
+# makes a *replacement* (an existing citation swapped for a different, still
+# stale, line number in the same doc) detectable: the old string vanishes
+# from CURRENT (flagged as a dead baseline entry, see below) and the new
+# string is not in the baseline (flagged as a new, unbaselined citation). A
+# count-per-file baseline would not notice either half of that swap.
+declare -A FIRST_LOCATION=()
+CURRENT_LIST=()
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    docfile="${line%%:*}"
+    rest="${line#*:}"
+    docline="${rest%%:*}"
+    citation="${rest#*:}"
+    if [ -z "${FIRST_LOCATION[$citation]+x}" ]; then
+        FIRST_LOCATION[$citation]="${docfile}:${docline}"
+        CURRENT_LIST+=("$citation")
+    fi
+done <<EOF
+$ALL_OCCURRENCES
+EOF
+
+CURRENT="$(printf '%s\n' "${CURRENT_LIST[@]:-}" | grep -v '^$' | sort -u || true)"
+
+if [ "${1:-}" = "--regenerate" ]; then
+    {
+        echo "# Baseline of grandfathered docs/** file:line citations."
+        echo "# Generated by: .github/scripts/check-doc-citations.sh --regenerate"
+        echo "# This list may only shrink. See check-doc-citations.sh for the full"
+        echo "# rationale. Do not hand-edit additions -- regenerate instead."
+        printf '%s\n' "$CURRENT"
+    } > "$BASELINE_FILE"
+    COUNT=$(printf '%s\n' "$CURRENT" | grep -c . || true)
+    echo "Regenerated ${BASELINE_FILE} with ${COUNT} grandfathered citations."
+    exit 0
+fi
+
+if [ ! -f "$BASELINE_FILE" ]; then
+    echo "::error::baseline file not found at ${BASELINE_FILE}" >&2
+    exit 2
+fi
+
+BASELINE="$(grep -vE '^\s*#' "$BASELINE_FILE" | grep -vE '^\s*$' | sort -u || true)"
+
+NEW="$(comm -23 <(printf '%s\n' "$CURRENT") <(printf '%s\n' "$BASELINE") || true)"
+DEAD="$(comm -13 <(printf '%s\n' "$CURRENT") <(printf '%s\n' "$BASELINE") || true)"
+
+FAIL=0
+
+if [ -n "$(printf '%s' "$NEW" | tr -d '[:space:]')" ]; then
+    FAIL=1
+    echo "::error::new docs/** citations found that are not in the baseline:" >&2
+    while IFS= read -r citation; do
+        [ -z "$citation" ] && continue
+        loc="${FIRST_LOCATION[$citation]:-<unknown>}"
+        echo "  ${loc}: new citation '${citation}' -- cite file plus symbol name instead (e.g. \`radio.py: IcomRadio.set_frequency\`), never a line number; line numbers rot." >&2
+    done <<EOF
+$NEW
+EOF
+fi
+
+if [ -n "$(printf '%s' "$DEAD" | tr -d '[:space:]')" ]; then
+    FAIL=1
+    echo "::error::baseline entries no longer found anywhere under docs/ -- the baseline is stale and must shrink:" >&2
+    while IFS= read -r citation; do
+        [ -z "$citation" ] && continue
+        echo "  ${citation}" >&2
+    done <<EOF
+$DEAD
+EOF
+    echo "Regenerate it: .github/scripts/check-doc-citations.sh --regenerate (then commit the updated baseline file)." >&2
+fi
+
+if [ "$FAIL" -ne 0 ]; then
+    exit 1
+fi
+
+echo "Doc-citation gate: clean ($(printf '%s\n' "$BASELINE" | grep -c . || true) grandfathered citations)."

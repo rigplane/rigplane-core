@@ -101,6 +101,14 @@ User-facing → **Russian**. Code/commits/docs/PR → **English**.
 Commits: `feat(#N):` / `fix(#N):` / `refactor:` / `test:` / `docs:` / `chore:`
 One change per commit. Full test suite before push.
 
+Documentation under `docs/` cites code as file plus **symbol name**
+(`radio.py: IcomRadio.set_frequency`), never a line number — line numbers
+rot silently and a stale one is worse than no citation at all. Existing
+`file:line` citations are grandfathered in
+`.github/scripts/doc-citation-baseline.txt`; the doc-citation-gate CI job
+fails on any new one and the baseline may only shrink (regenerate it with
+`.github/scripts/check-doc-citations.sh --regenerate`).
+
 ### Multi-machine Git hygiene
 
 Development runs across a local laptop and a dev Mac mini, often with several
