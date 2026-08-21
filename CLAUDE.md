@@ -92,7 +92,7 @@ When making changes:
 - Batch all fixes, run tests once (not per fix)
 - One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
-- Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, narrow it until it is true, tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure), or delete it — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). The role files in `.claude/agents/` point here.
+- Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, narrow it until it is true, tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure), or delete it — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). `builder.md` and `verifier.md` point here.
 
 ---
 
@@ -197,7 +197,8 @@ Slash commands for scoped workflows live in `.claude/commands/`
 ### Guardrails
 
 Size is measured per PR, at the head you push; "changed lines" is additions +
-deletions.
+deletions. Each pair below is two independent limits: crossing **either**
+number crosses that guardrail.
 
 | Guardrail | Value | Effect |
 |---|---|---|
