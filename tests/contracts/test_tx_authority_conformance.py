@@ -778,17 +778,15 @@ async def test_the_rigctld_client_primitive_marks_its_readback_unverified(
 
 
 @pytest.mark.parametrize("harness", ["yaesu-ftx1"], indirect=True)
-@pytest.mark.xfail(
-    strict=True,
-    reason="row 6 (Yaesu truth honesty): `tx_state_map` turns the "
-    "three-valued `TX;` answer into an attribution. Today `read_ptt` "
-    "collapses it to a bool, so `tx_other` (the front-panel key) is "
-    "indistinguishable from `tx_cat` in the evidence.",
-)
 async def test_yaesu_attribution_reaches_the_evidence(
     harness: TxConformanceHarness,
 ) -> None:
-    """§3.7: attribution is a per-vendor capability, carried not discarded."""
+    """§3.7: attribution is a per-vendor capability, carried not discarded.
+
+    MOR-1941 (row 6): ``tx_state_map`` turns the three-valued ``TX;``
+    answer into an attribution, so ``tx_other`` (the front-panel key) is
+    now distinguishable from ``tx_cat`` in the evidence.
+    """
     harness.script("tx_other")
     assert (await harness.read_transmit_state()).attributed == "tx_other"
     harness.script("tx_cat")
@@ -796,16 +794,15 @@ async def test_yaesu_attribution_reaches_the_evidence(
 
 
 @pytest.mark.parametrize("harness", ["yaesu-ftx1"], indirect=True)
-@pytest.mark.xfail(
-    strict=True,
-    reason="row 6: `set_ptt` self-mutates the legacy mirror "
-    "(`backends/yaesu_cat/radio.py:994`). The row deletes that write; until "
-    "then our own command is still a claim about RF somewhere in the tree.",
-)
 async def test_a_yaesu_self_write_leaves_no_transmit_truth_claim_anywhere(
     harness: TxConformanceHarness,
 ) -> None:
-    """The self-write launder, at its last surviving Yaesu address."""
+    """The self-write launder, at its last surviving Yaesu address.
+
+    MOR-1941 (row 6): ``set_ptt`` no longer self-mutates the legacy
+    mirror (``backends/yaesu_cat/radio.py:994``) -- our own command is no
+    longer a claim about RF anywhere in the tree.
+    """
     before = harness.radio._state.ptt
     await harness.key()
     assert harness.radio._state.ptt == before

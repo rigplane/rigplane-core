@@ -16,6 +16,7 @@ from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
 from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
+from rigplane.profiles import TxPolicy
 from rigplane.rig_loader import load_rig
 from rigplane.types import BreakInMode
 
@@ -320,18 +321,28 @@ async def test_set_powerstat_off(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_ptt_on(connected_radio):
+    """MOR-1941: ``set_ptt`` no longer self-writes the legacy mirror. Our
+    own command is a claim about the wire, never receive/transmit truth
+    (§3.7 of the transmit-authority ADR) -- the mirror is left exactly as
+    it was, and only a real read-back (``get_ptt``) may change it.
+    """
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_ptt(True)
     connected_radio._transport.write.assert_called_once_with("TX1;")
-    assert connected_radio.radio_state.ptt is True
+    assert connected_radio.radio_state.ptt is False
 
 
 @pytest.mark.asyncio
 async def test_set_ptt_off(connected_radio):
+    """MOR-1941: same pin as ``test_set_ptt_on``, other direction. The
+    mirror is seeded away from what the write would have produced, so a
+    reintroduced self-write would flip it and fail this either way.
+    """
     connected_radio._transport.write = AsyncMock()
+    connected_radio.radio_state.ptt = True
     await connected_radio.set_ptt(False)
     connected_radio._transport.write.assert_called_once_with("TX0;")
-    assert connected_radio.radio_state.ptt is False
+    assert connected_radio.radio_state.ptt is True
 
 
 @pytest.mark.asyncio
@@ -353,11 +364,15 @@ async def test_get_ptt_receiving(connected_radio):
 
 @pytest.mark.asyncio
 async def test_get_ptt_transmitting_radio_keyed(connected_radio):
-    """MOR-1905: TX2; = RADIO TX on, CAT TX off -> transmitting.
+    """MOR-1905/MOR-1941: TX2; = RADIO TX on, CAT TX off -> transmitting.
 
     P1=2 means the radio itself keyed the transmitter (front-panel PTT,
     mic, footswitch, VOX) rather than a CAT command. Reading this as
-    "receiving" is a fail-open inversion of transmit truth.
+    "receiving" is a fail-open inversion of transmit truth. The predicate
+    that decides it is now the profile's ``[tx_policy].tx_state_map``
+    (MOR-1941) rather than an inline ``!= "0"`` comparison; the shipped
+    ftx1 map is ``{"0": "rx", "1": "tx_cat", "2": "tx_other"}``, so the
+    answer here is unchanged, only how it is reached.
     """
     connected_radio._transport.query = AsyncMock(return_value="TX2")
     ptt = await connected_radio.get_ptt()
@@ -367,7 +382,10 @@ async def test_get_ptt_transmitting_radio_keyed(connected_radio):
 
 @pytest.mark.asyncio
 async def test_read_ptt_transmitting_radio_keyed(connected_radio):
-    """MOR-1905: read_ptt (not just get_ptt) must fail closed on TX2;."""
+    """MOR-1905/MOR-1941: read_ptt (not just get_ptt) must fail closed on
+    TX2;, now via the ``tx_state_map`` route rather than the inline
+    predicate it replaced.
+    """
     connected_radio._transport.query = AsyncMock(return_value="TX2")
     assert await connected_radio.read_ptt() is True
 
@@ -402,6 +420,30 @@ async def test_get_ptt_unexpected_value_warns_once_then_demotes_to_debug(
         await connected_radio.get_ptt()
     assert not any(record.levelname == "WARNING" for record in caplog.records)
     assert any(record.levelname == "DEBUG" for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_read_ptt_falls_back_to_the_legacy_predicate_when_unmeasured(config):
+    """MOR-1941: a profile that ships no ``[tx_policy].tx_state_map`` at
+    all -- every rig this backend has not bench-measured -- must not read
+    as permanently transmitting. ``TxPolicy.is_receiving`` treats an
+    *empty* map exactly like an unmapped value: always not-receiving, so
+    calling it directly here would make an unmeasured radio unwritable to
+    RX. The fallback restores the pre-MOR-1941 ``!= "0"`` predicate
+    instead, because ``"0"`` is the Yaesu CAT protocol's own receive
+    token, not a per-radio measured value -- a vendor-level default, not
+    a hardcoded radio constant.
+    """
+    cfg = config
+    object.__setattr__(cfg, "tx_policy", TxPolicy())
+    r = YaesuCatRadio("/dev/null", profile=cfg)
+    r._transport._connected = True
+
+    r._transport.query = AsyncMock(return_value="TX0")
+    assert await r.read_ptt() is False
+
+    r._transport.query = AsyncMock(return_value="TX1")
+    assert await r.read_ptt() is True
 
 
 @pytest.mark.asyncio

@@ -284,3 +284,108 @@ async def test_tx_allowed_missing_keeps_manual_required():
 
     assert checks["tx.ptt"].status is CheckStatus.BLOCKED
     radio.set_ptt.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# MOR-1941: the tx.ptt read-back must not depend on a self-written mirror
+# ---------------------------------------------------------------------------
+
+
+def _ptt_only_template() -> MatrixTemplate:
+    """Minimal template exercising only ``tx.ptt`` (no tuner methods needed)."""
+    return MatrixTemplate(
+        radio=RadioTarget(model="FTX-1", profile_id="ftx1"),
+        entries=[
+            CapabilityDeclarationEntry(
+                check_id="tx.ptt",
+                capability="tx",
+                level=ValidationLevel.STRESS_RECOVERY,
+                declaration=CapabilityDeclaration.MANUAL_REQUIRED,
+                summary="ptt",
+                tx_adjacent=True,
+            ),
+        ],
+    )
+
+
+def _tx_radio_unwritten_mirror(*, start_power: int = 200):
+    """A radio matching the Yaesu backend after MOR-1941: ``set_ptt`` does
+    NOT self-write ``radio_state.ptt`` -- only a real read-back
+    (``get_ptt``) tells the truth. Proves the hardware TX-actuate check
+    was repointed off the mirror (``validation/hardware.py:702-703``).
+    """
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"tx"}
+    state = RadioState()
+    radio.radio_state = state
+
+    wire_ptt = {"value": False}
+    power = {"value": start_power}
+
+    async def _set_ptt(on: bool) -> None:
+        wire_ptt["value"] = bool(on)
+        # Deliberately NOT touching state.ptt -- matches the shipped
+        # Yaesu backend once its self-write is deleted (MOR-1941).
+
+    async def _get_ptt() -> bool:
+        return wire_ptt["value"]
+
+    async def _get_rf_power() -> int:
+        return power["value"]
+
+    async def _set_rf_power(level: int) -> None:
+        power["value"] = int(level)
+
+    radio.set_ptt = AsyncMock(side_effect=_set_ptt)
+    radio.get_ptt = AsyncMock(side_effect=_get_ptt)
+    radio.get_rf_power = AsyncMock(side_effect=_get_rf_power)
+    radio.set_rf_power = AsyncMock(side_effect=_set_rf_power)
+    return radio, power
+
+
+async def test_tx_ptt_readback_uses_get_ptt_not_the_unwritten_mirror():
+    """MOR-1941: after a backend's ``set_ptt`` self-write is deleted (the
+    Yaesu case), ``radio_state.ptt`` is no longer radio truth. The
+    TX-actuate check must verify the key from a real read-back
+    (``get_ptt``) when the backend offers one -- nothing writes the
+    mirror on this fake, matching the shipped Yaesu backend post-deletion.
+    """
+    radio, _ = _tx_radio_unwritten_mirror()
+    prompter, _ = _confirm_prompter(True)
+
+    levels = await execute_hardware_checks(
+        radio,
+        _ptt_only_template(),
+        _FULL_SAFETY,
+        allow_writes=True,
+        tx_actuate=True,
+        prompter=prompter,
+    )
+    ptt = _flatten(levels)["tx.ptt"]
+
+    assert ptt.status is CheckStatus.PASS
+    assert ptt.evidence["keyed"] is True
+    assert ptt.evidence["ptt_state"] is True
+    # The mirror stays exactly where it started -- proof the check did not
+    # fall back to it.
+    assert radio.radio_state.ptt is False
+
+
+async def test_tx_ptt_readback_falls_back_to_the_mirror_when_get_ptt_is_absent():
+    """Best-effort, other direction (MOR-1941): a backend with no
+    ``get_ptt`` -- e.g. Icom, which exposes no plain PTT read-back method
+    -- must keep reading the mirror exactly as before. ``_tx_radio``
+    never defines ``get_ptt``, matching the Icom path this repoint must
+    not break.
+    """
+    radio, _ = _tx_radio(start_power=200)
+    prompter, _ = _confirm_prompter(True)
+
+    levels = await _run(radio, safety=_FULL_SAFETY, tx_actuate=True, prompter=prompter)
+    ptt = _flatten(levels)["tx.ptt"]
+
+    assert ptt.status is CheckStatus.PASS
+    assert ptt.evidence["keyed"] is True
+    assert ptt.evidence["ptt_state"] is True

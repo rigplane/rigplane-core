@@ -798,6 +798,31 @@ tx_state_map = { "0" = "rx", "1" = "tx_cat" }
         assert policy.is_receiving("unrecognised") is False
         assert TxPolicy().is_receiving("0") is False
 
+    def test_attribution_returns_the_mapped_label_or_none(self, tmp_path):
+        """MOR-1941, §3.7: attribution is a per-vendor capability, carried
+        not discarded. ``attribution`` surfaces the raw ``tx_state_map``
+        label (e.g. Yaesu's "tx_cat" vs "tx_other") for display; unlike
+        ``is_receiving`` it carries no fail-closed safety rule of its own
+        -- an unmapped value is simply ``None``, not a hazard answer.
+        """
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[tx_policy]
+tx_state_map = { "0" = "rx", "1" = "tx_cat", "2" = "tx_other" }
+""",
+        )
+
+        policy = load_rig(p).tx_policy
+
+        assert policy.attribution("0") == "rx"
+        assert policy.attribution("1") == "tx_cat"
+        assert policy.attribution("2") == "tx_other"
+        assert policy.attribution("unrecognised") is None
+        assert TxPolicy().attribution("0") is None
+
 
 class TestControlDomainSchema:
     _LINEAR = """\

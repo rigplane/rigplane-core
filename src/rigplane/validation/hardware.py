@@ -698,9 +698,26 @@ async def _actuate_tx_ptt(
             keyed = True
             # Brief, bounded key window.
             await asyncio.sleep(_TX_PTT_KEY_SECONDS)
-            # Verify the keyed state from published radio state (best-effort).
-            evidence["ptt_state"] = bool(radio.radio_state.ptt)
-            keyed = bool(radio.radio_state.ptt)
+            # Verify the keyed state from a real read-back where the backend
+            # offers one, rather than the legacy ``radio_state`` mirror
+            # (MOR-1941): some backends no longer self-write that mirror
+            # from ``set_ptt``, so it is not radio truth. Best-effort — a
+            # missing accessor or a read failure must not turn a good key
+            # into a FAIL, so it falls back to the mirror rather than
+            # failing the check outright.
+            ptt_state = bool(radio.radio_state.ptt)
+            _get_ptt_attr = getattr(radio, "get_ptt", None)
+            if callable(_get_ptt_attr):
+                try:
+                    ptt_state = bool(
+                        await asyncio.wait_for(
+                            _get_ptt_attr(), timeout=per_check_timeout
+                        )
+                    )
+                except _RESTORE_ERRORS:
+                    pass
+            evidence["ptt_state"] = ptt_state
+            keyed = ptt_state
             evidence["keyed"] = keyed
     except _RESTORE_ERRORS as exc:
         verify_error = str(exc)

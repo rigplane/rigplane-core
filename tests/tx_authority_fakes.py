@@ -417,17 +417,18 @@ async def _build_yaesu() -> TxConformanceHarness:
 
     async def read() -> TxStateReading:
         try:
-            value = await radio.read_ptt()
+            token = await radio.read_ptt_token()
         except asyncio.TimeoutError:
             return TxStateReading(value=None, failure="timeout")
         except Exception:
             # ``?;`` fails the typed parse — the radio refused the read.
             return TxStateReading(value=None, failure="read-error")
+        policy = radio.profile.tx_policy
         return TxStateReading(
-            value=value,
-            # Row 6 routes the three-valued answer through ``tx_state_map``
-            # into this field; today ``read_ptt`` collapses it to a bool.
-            attributed=None,
+            value=not policy.is_receiving(token),
+            # MOR-1941: the three-valued answer routes through
+            # ``tx_state_map`` into this field via ``TxPolicy.attribution``.
+            attributed=policy.attribution(token),
             source="yaesu_poll_response",
             verified_readback=True,
         )
