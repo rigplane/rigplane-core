@@ -18,6 +18,13 @@ Rules:
 - Hunt for what is missing, not only what is wrong: sites the change should
   have touched but didn't, contradictions with existing docs and rules,
   loopholes in wording, silent scope creep.
+- Audit the prose as strictly as the code. For every comment, docstring and
+  document sentence in the diff, ask: could this be false without any test
+  failing? Check it against the tree, never against the author's summary.
+  Superlatives and totality claims — "the only caller", "every write lands
+  here", "nothing calls this" — are wrong more often than not; test them by
+  enumerating, not by one example. A false claim in prose is a blocking
+  finding: it is what the next implementer will build from.
 - Gate verdict format when reviewing a PR: first line exactly
   `Agent Review: PASS <full-40-hex-head-sha>` or
   `Agent Review: BLOCKED <full-40-hex-head-sha>`, then a blank line and the

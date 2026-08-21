@@ -92,6 +92,8 @@ When making changes:
 - Batch all fixes, run tests once (not per fix)
 - One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
+- Prose is checked like code: a comment, docstring, or doc sentence that could be false without any test failing must be tied to something that fails when it stops being true (a named constant, a named test, a parsed structure), narrowed until true, or deleted
+- A claim about what a future change will do belongs in the ticket, not in a comment or data file (MOR-1958)
 
 ---
 

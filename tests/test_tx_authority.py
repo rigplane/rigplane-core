@@ -8,6 +8,7 @@ MagicMock anywhere near the authority (repo hard rule).
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping, Sequence
 
 import pytest
@@ -26,6 +27,7 @@ from rigplane.core.tx_authority import (
     TX_ARGUMENT_PREDICATES,
     TX_ENGINE_FAILURE_TAGS,
     TX_READ_DEADLINE_SECONDS,
+    UNRESOLVED_ARGUMENT,
     BandRelation,
     TransmitAuthority,
     TransmitTruth,
@@ -38,7 +40,9 @@ from rigplane.core.tx_authority import (
     TxWriteClass,
     band_relation,
     build_transmit_truth,
+    first_parameter_name,
     resolve_band,
+    short_circuit_family,
 )
 
 PTT_PATH = FieldPath.global_("tx_state", "ptt")
@@ -1061,3 +1065,272 @@ def test_transmit_truth_marks_a_stale_generation_without_discarding_it() -> None
     assert truth.value is False
     assert truth.generation_current is False
     assert truth.age_seconds == pytest.approx(1.0)
+
+
+# --------------------------------------------------------------------------
+# MOR-1954 — classification never depends on how the call spelled the argument
+# --------------------------------------------------------------------------
+
+
+class SignatureMirror:
+    """The parameter names the shipping Icom bodies actually declare.
+
+    Not a radio stand-in: these pins need the *names* `runtime/radio.py`
+    declares (`on`, `freq_hz`, `value`), because the defect being closed was
+    the engine guessing them (`"value"`, `"frequency"`) in the predicate table.
+    ``test_first_parameter_names_mirror_the_shipping_bodies`` keeps this class
+    honest against the real methods.
+    """
+
+    async def set_ptt(self, on: bool) -> None: ...
+
+    async def set_powerstat(self, on: bool) -> None: ...
+
+    async def set_freq(self, freq_hz: int, receiver: int = 0) -> None: ...
+
+    async def set_tuner_status(self, value: int) -> None: ...
+
+
+def test_first_parameter_names_mirror_the_shipping_bodies() -> None:
+    """The resolver reads real signatures, and the mirror matches them."""
+    from rigplane.runtime.radio import IcomRadio
+
+    assert first_parameter_name(IcomRadio.set_ptt) == "on"
+    assert first_parameter_name(IcomRadio.set_powerstat) == "on"
+    assert first_parameter_name(IcomRadio.set_freq) == "freq_hz"
+    assert first_parameter_name(IcomRadio.set_tuner_status) == "value"
+
+    for method in ("set_ptt", "set_powerstat", "set_freq", "set_tuner_status"):
+        assert first_parameter_name(getattr(SignatureMirror, method)) == (
+            first_parameter_name(getattr(IcomRadio, method))
+        )
+    assert first_parameter_name(None) is None
+
+
+async def test_keyword_key_down_is_never_read_as_an_unkey() -> None:
+    """The load-bearing pin: ``set_ptt(on=True)`` keys, however it is spelled.
+
+    Before this fix the predicate read ``kwargs["value"]``; the Icom body
+    declares ``on``, so a keyword key-down resolved to ``None``, classified
+    PTT_OFF and was short-circuited past the gate built to arm the watchdog.
+    No signature is supplied here on purpose — even with nothing to resolve
+    from, the engine must fail towards the key, never towards the unkey.
+    """
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    authority = build_authority(clock, link)
+
+    async with authority.admit("set_ptt", (), {"on": True}) as admission:
+        assert admission.family is TxFamily.PTT_ON
+        assert admission.write_class is TxWriteClass.KEYING
+
+    view = authority.view()
+    assert view.own_transmit_holds == ("key",)
+    assert view.deadline_monotonic == pytest.approx(
+        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "value", "expected"),
+    [
+        ("set_ptt", True, TxFamily.PTT_ON),
+        ("set_ptt", False, TxFamily.PTT_OFF),
+        ("set_powerstat", False, TxFamily.POWER_OFF),
+        ("set_freq", 14_250_000, TxFamily.FREQUENCY),
+        ("set_freq", 21_100_000, TxFamily.BAND),
+    ],
+)
+async def test_classification_is_independent_of_argument_spelling(
+    method: str, value: object, expected: TxFamily
+) -> None:
+    """Positional and keyword admissions of the same write agree, always."""
+    target = getattr(SignatureMirror, method)
+    name = first_parameter_name(target)
+    assert name is not None
+
+    families: list[TxFamily | None] = []
+    classes: list[TxWriteClass] = []
+    for args, kwargs in (((value,), {}), ((), {name: value})):
+        clock = Clock()
+        link = FakeTransmitStateLink(clock)
+        link.script(RX, RX)
+        authority = build_authority(clock, link)
+        async with authority.admit(method, args, kwargs, target=target) as admission:
+            families.append(admission.family)
+            classes.append(admission.write_class)
+
+    assert families == [expected, expected]
+    assert classes[0] is classes[1]
+
+
+async def test_keyword_retune_reads_the_real_frequency_argument() -> None:
+    """A same-band keyword retune stays PASS only if ``freq_hz`` resolved."""
+    clock = Clock()
+    link = PoisonedLink()
+    authority = build_authority(clock, link)
+
+    async with authority.admit(
+        "set_freq",
+        (),
+        {"freq_hz": 14_250_000, "receiver": 1},
+        target=SignatureMirror.set_freq,
+    ) as admission:
+        assert admission.write_class is TxWriteClass.PASS
+        assert admission.family is TxFamily.FREQUENCY
+
+
+async def test_an_unresolvable_keyword_argument_fails_closed_and_is_loud(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No signature to resolve from must never mean a silent permissive PASS."""
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    link.script(TX)
+    authority = build_authority(clock, link)
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.core.tx_authority"):
+        with pytest.raises(TxRefusal) as refusal:
+            async with authority.admit("set_freq", (), {"freq_hz": 14_250_000}):
+                pass  # pragma: no cover - the admission refuses first
+
+    assert refusal.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
+    assert authority.view().records[-1].family == str(TxFamily.BAND)
+    assert any("could not resolve" in record.getMessage() for record in caplog.records)
+
+
+async def test_an_unresolvable_tuner_argument_still_holds_the_tune() -> None:
+    """``set_tuner_status`` with nothing to resolve holds as if a tune started."""
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    link.script(RX)
+    authority = build_authority(clock, link)
+
+    async with authority.admit("set_tuner_status", (), {"value": 2}):
+        pass
+    assert authority.view().own_transmit_holds == ("tune",)
+
+
+@pytest.mark.parametrize("spelling", ["positional", "keyword", "unresolvable"])
+async def test_the_unkey_is_still_never_refused_in_any_spelling(
+    spelling: str,
+) -> None:
+    """INV-5 survives the fix: no spelling makes an unkey harder.
+
+    The poisoned table would refuse every de-key as a hazard at the scripted
+    TX if the T5 short-circuit stopped reaching it. The keyword unkey resolves
+    through the real signature and short-circuits; the unresolvable one may
+    not be *called* an unkey, but it must still not be refused — it lands on
+    the keying branch, which has no refusal path and consults no truth.
+    """
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    link.script(TX, TX)
+    authority = build_authority(clock, link, method_map=POISONED_MAP)
+
+    if spelling == "positional":
+        call = authority.admit("set_ptt", (False,))
+    elif spelling == "keyword":
+        call = authority.admit(
+            "set_ptt", (), {"on": False}, target=SignatureMirror.set_ptt
+        )
+    else:
+        call = authority.admit("set_ptt", (), {"on": False})
+
+    async with call as admission:
+        pass
+
+    assert link.reads == []  # no spelling made the unkey consult the radio
+    if spelling == "unresolvable":
+        assert admission.write_class is TxWriteClass.KEYING
+    else:
+        assert admission.family is TxFamily.PTT_OFF
+        assert admission.write_class is TxWriteClass.UNKEY
+
+
+async def test_a_keyword_unkey_clears_the_deadline_and_the_holds() -> None:
+    """The UNKEY branch's whole effect, reached by the keyword spelling."""
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    authority = build_authority(clock, link)
+
+    async with authority.admit("set_ptt", (True,)):
+        pass
+    assert authority.view().own_transmit_holds == ("key",)
+
+    async with authority.admit(
+        "set_ptt", (), {"on": False}, target=SignatureMirror.set_ptt
+    ):
+        pass
+    assert authority.view().deadline_monotonic is None
+    assert authority.view().own_transmit_holds == ()
+
+
+def test_predicates_resolve_the_argument_by_signature_not_by_guess() -> None:
+    """Predicate-level twin of the admission pins, including the sentinel."""
+    keyed = TxArgumentContext(
+        args=(),
+        kwargs={"on": True},
+        current_frequency_hz=None,
+        bands=(),
+        target=SignatureMirror.set_ptt,
+    )
+    assert TX_ARGUMENT_PREDICATES["ptt"](keyed) is TxFamily.PTT_ON
+
+    unkeyed = TxArgumentContext(
+        args=(),
+        kwargs={"on": False},
+        current_frequency_hz=None,
+        bands=(),
+        target=SignatureMirror.set_ptt,
+    )
+    assert TX_ARGUMENT_PREDICATES["ptt"](unkeyed) is TxFamily.PTT_OFF
+    assert unkeyed.first() is False
+
+    blind = TxArgumentContext(
+        args=(), kwargs={"on": False}, current_frequency_hz=None, bands=()
+    )
+    assert blind.first() is UNRESOLVED_ARGUMENT
+    assert TX_ARGUMENT_PREDICATES["ptt"](blind) is TxFamily.PTT_ON
+    assert TX_ARGUMENT_PREDICATES["powerstat"](blind) is TxFamily.POWER_ON
+    assert TX_ARGUMENT_PREDICATES["frequency"](blind) is TxFamily.BAND
+    assert short_circuit_family("set_ptt", blind) is TxFamily.PTT_ON
+    assert short_circuit_family("set_powerstat", blind) is TxFamily.POWER_ON
+    assert short_circuit_family("stop_cw_text", blind) is TxFamily.CW_STOP
+
+
+async def test_an_unresolvable_unkey_keeps_the_hold_it_could_not_read() -> None:
+    """The price of the fail-closed path, pinned so the comment cannot drift.
+
+    An unreadable de-key is admitted (never refused) but is not *believed*: it
+    takes the KEYING branch, so the live hold and deadline survive and a second
+    hold stacks, and hazard writes stay refused for the key-down bound. That is
+    the documented cost of :data:`UNRESOLVED_ARGUMENT`, and it is the direction
+    worth being expensive in.
+    """
+    clock = Clock()
+    link = FakeTransmitStateLink(clock)
+    link.script(RX)
+    authority = build_authority(clock, link)
+
+    async with authority.admit("set_ptt", (True,)):
+        pass
+    async with authority.admit("set_ptt", (), {"on": False}) as admission:
+        assert admission.write_class is TxWriteClass.KEYING  # admitted, not refused
+
+    view = authority.view()
+    assert view.own_transmit_holds == ("key", "key")
+    assert view.deadline_monotonic == pytest.approx(
+        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
+    )
+
+    with pytest.raises(TxRefusal) as refusal:
+        async with authority.admit("set_antenna_1", ()):
+            pass  # pragma: no cover - the admission refuses first
+    assert refusal.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
+    assert refusal.value.evidence.own_transmit_hold == "key"
+    assert link.reads == []  # refused on our own hold, with no wire read at all
+
+    clock.advance(BACKEND_MAX_KEY_DOWN_SECONDS + 0.1)
+    async with authority.admit("set_antenna_1", ()):
+        pass  # the hold expires on the key-down bound; it is not permanent
