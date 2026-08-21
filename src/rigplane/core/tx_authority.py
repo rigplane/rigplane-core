@@ -303,8 +303,10 @@ class _UnresolvedArgument:
 #: permissive branch — the unkey short-circuit, a PASS retune — is exactly what
 #: a mis-spelled admission must never reach (MOR-1954).
 #:
-#: **This path is the expensive one, deliberately.** Measured in this tree
-#: against a de-key that would otherwise have taken the UNKEY branch:
+#: **This path is the expensive one, deliberately.** Measured against a de-key
+#: that would otherwise have taken the UNKEY branch — the two latencies below
+#: are constants of the harness that produced them, never properties of this
+#: module; only the *bound* stated with them is:
 #:
 #: * it classifies KEYING, so it enters the admission lock that the UNKEY
 #:   branch never takes — 0.199 s behind a single in-flight hazard read where
@@ -357,8 +359,11 @@ def first_parameter_name(target: Callable[..., object] | None) -> str | None:
 
     The point of reading the *real* signature is that classification cannot
     depend on how a call site happened to spell its argument. Reflection runs
-    once per underlying function and is cached; a bound method is normalised
-    onto its function so the cache holds no radio instances.
+    once per underlying function and is cached, bounded at
+    :data:`SIGNATURE_CACHE_SIZE` — enough for a whole backend's write surface,
+    though a caller that resolves more distinct callables than that will evict
+    and pay for the reflection again. A bound method is normalised onto its
+    function, so the cache holds no radio instances.
     """
     if target is None:
         return None
@@ -385,8 +390,10 @@ class TxArgumentContext:
         Positionally it is simply the first of :attr:`args`; by keyword it is
         read under the name :attr:`target`'s own signature declares. With no
         signature to read, or a keyword the signature does not name, it is
-        :data:`UNRESOLVED_ARGUMENT` — never a guessed name and never ``None``,
-        which a predicate cannot tell from a genuine falsy argument.
+        :data:`UNRESOLVED_ARGUMENT` — never a name guessed on the method's
+        behalf, and a sentinel rather than ``None`` so that it stays
+        distinguishable from an argument the caller really did pass as
+        ``None``, or as ``0``, or as ``False``.
 
         A predicate for a method whose interesting argument is *not* the first
         one must read :attr:`args` / :attr:`kwargs` directly.
@@ -408,9 +415,11 @@ def ptt_family(context: TxArgumentContext) -> TxFamily:
     """``set_ptt(True)`` keys; ``set_ptt(False)`` is the one-sided unkey.
 
     An unresolved argument is read as the key, not the unkey: PTT_ON is the
-    KEYING branch, which arms the watchdog and refuses nothing, so failing
-    that way costs at most a spurious deadline — while failing the other way
-    would walk a key-down straight through the gate.
+    KEYING branch, which has no refusal path, so answering it can never turn
+    an admission into a refusal — while answering PTT_OFF would walk a
+    key-down straight through the gate. That is not the same as free: the
+    KEYING branch takes the admission lock and leaves a hold and a deadline
+    behind it, which :data:`UNRESOLVED_ARGUMENT` prices.
     """
     value = context.first()
     if value is UNRESOLVED_ARGUMENT:
@@ -472,11 +481,26 @@ def short_circuit_family(method: str, context: TxArgumentContext) -> TxFamily | 
     code is narrow: ``stop_cw_text`` always; ``set_ptt`` / ``set_powerstat``
     when their argument reads falsy, and when it cannot be read at all. A
     *readable truthy* argument returns ``None`` and goes on to the table like
-    any other write — so a poisoned or absent map still refuses a key-down
-    (``unclassified``, INV-1's fail direction), which is deliberate and worth
-    keeping. The claim this function supports is therefore only this: **no
-    table can turn a de-key, or an argument the engine could not read, into a
-    refusal.**
+    any other write — deliberately, and what the table then does with it is
+    the table's business, measured rather than assumed: with **no entry** the
+    key-down is refused ``unclassified`` (INV-1's fail direction, at RX and at
+    TX alike); with an entry that **misclassifies** it into a hazard family it
+    is refused at a scripted TX but **admitted as that hazard at RX** — not
+    refused at all. Neither case is rescued here, and neither is safe to
+    describe as one.
+
+    The guarantee this function carries is one sentence, and it is about
+    **these three methods only**: no table can turn ``stop_cw_text``, a
+    readable de-key, or an unreadable ``set_ptt`` / ``set_powerstat`` argument
+    into a refusal.
+
+    It says nothing about any other method, and the general rule runs the
+    other way: everywhere else an unreadable argument fails **closed** and may
+    well refuse. ``set_freq`` becomes BAND and is refused at TX where the
+    readable in-band value would have passed — pinned by
+    ``test_an_unresolvable_keyword_argument_fails_closed_and_is_loud`` — and
+    an unreadable ``set_tuner_status`` is refused at TX like any other hazard.
+    Omitting ``target`` is never free; :data:`UNRESOLVED_ARGUMENT` prices it.
     """
     if method == "stop_cw_text":
         return TxFamily.CW_STOP
@@ -655,9 +679,11 @@ class TransmitAuthority:
         ``async with ... admit(...)`` block — passes ``self.<method>``, or
         forwards the argument positionally and needs no ``target`` at all.
         Failing to is not silent: the argument resolves to
-        :data:`UNRESOLVED_ARGUMENT`, a warning names the method and the
-        keywords it saw, and every predicate fails closed on it — that
-        constant records what the fail-closed path costs, and it is not free.
+        :data:`UNRESOLVED_ARGUMENT`, and wherever classifying the method
+        actually reads an argument, a warning names it and the keywords it
+        saw and every predicate then fails closed — which for every family
+        except the two the T5 short-circuit owns can mean a refusal. That
+        constant records what the fail-closed path costs; it is not free.
         """
         if method in RAW_EXCLUDED:
             yield TxAdmission(None, TxWriteClass.PASS)
