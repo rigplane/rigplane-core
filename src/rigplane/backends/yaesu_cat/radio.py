@@ -15,12 +15,18 @@ from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
+from ...core.tx_authority import TxStateReading
 from ...types import AudioCodec, BreakInMode
 from ...exceptions import AudioFormatError, CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
 from .parser import CatCommandParser, format_command
-from .transport import YaesuCatTransport
+from .transport import (
+    CatCommandRejected,
+    CatTimeoutError,
+    CatTransportError,
+    YaesuCatTransport,
+)
 
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
@@ -1057,6 +1063,15 @@ class YaesuCatRadio:
             ``True`` if transmitting, ``False`` if receiving.
         """
         state = await self.read_ptt_token()
+        return self._interpret_ptt_token(state)
+
+    def _interpret_ptt_token(self, state: str) -> bool:
+        """Map a raw ``TX;`` token to a transmitting boolean (positive-RX rule).
+
+        Shared by :meth:`read_ptt` and :meth:`read_transmit_state` so the
+        two reads can never independently drift on the fail-closed mapping
+        -- MOR-1905's own defect class, one token in, one mapping out.
+        """
         policy = self.profile.tx_policy
         if not policy.tx_state_map:
             if state not in ("0", "1", "2"):
@@ -1075,6 +1090,37 @@ class YaesuCatRadio:
         ptt = await self.read_ptt()
         self._state.ptt = ptt
         return ptt
+
+    async def read_transmit_state(self) -> TxStateReading:
+        """One solicited transmit-state read (ADR row 5).
+
+        Implements :class:`~rigplane.core.radio_protocol.TransmitStateReadable`
+        on :meth:`read_ptt_token` and the profile's
+        :class:`~rigplane.profiles.TxPolicy` (MOR-1941, row 6): the raw
+        token is fetched once and routed through the same fail-closed
+        mapping :meth:`read_ptt` uses, plus the per-vendor attribution
+        (``tx_cat`` / ``tx_other``) §3.7 requires be carried, not discarded.
+
+        The real :class:`~.transport.YaesuCatTransport` raises a typed
+        exception per outcome rather than returning a sentinel string, so
+        this never trusts a raw ``"?"`` token -- it catches the transport's
+        own vocabulary instead. Never raises: a rejected or unanswered read
+        comes back as a :class:`TxStateReading` with a ``failure`` tag.
+        """
+        try:
+            token = await self.read_ptt_token()
+        except CatCommandRejected:
+            return TxStateReading(value=None, failure="read-error")
+        except CatTimeoutError:
+            return TxStateReading(value=None, failure="timeout")
+        except CatTransportError:
+            return TxStateReading(value=None, failure="transport")
+        return TxStateReading(
+            value=self._interpret_ptt_token(token),
+            attributed=self.profile.tx_policy.attribution(token),
+            source="yaesu_poll_response",
+            verified_readback=True,
+        )
 
     # -- S-meter ------------------------------------------------------------
 

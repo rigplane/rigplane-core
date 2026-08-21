@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from rigplane.audio_bus import AudioBus
     from rigplane.runtime._poller_types import CommandQueue
     from rigplane.scope import ScopeFrame
+    from .tx_authority import TxStateReading
     from .types import BandStackRegister, MemoryChannel, ScopeFixedEdge
 
 __all__ = [
@@ -120,6 +121,7 @@ __all__ = [
     "StateStoreCapable",
     "RitXitCapable",
     "TransceiverStatusCapable",
+    "TransmitStateReadable",
     "UsbAudioCapable",
     "MemoryCapable",
 ]
@@ -511,6 +513,41 @@ class SplitCapable(Protocol):
 
     async def set_split(self, on: bool) -> None:
         """Enable (``True``) or disable (``False``) split mode."""
+        ...
+
+
+# --- Transmit-state read primitive (ADR row 5) ------------------------------
+
+
+@runtime_checkable
+class TransmitStateReadable(Protocol):
+    """A backend that can perform one solicited, radio-truth transmit read.
+
+    Deliberately **not** a member of :class:`Radio`: ``Radio`` is
+    ``@runtime_checkable``, so a new required member would silently break
+    ``isinstance`` for every implementer that lacks it — the identical
+    capability-loss mechanism the transmit-authority design's facade
+    refutation relies on (``docs/architecture/open-core-policy.md:178-180``
+    classes a new required method as a breaking change). A backend that does
+    not publish this capability is not degraded gracefully: the transmit
+    authority refuses every HAZARD admission — the four owner-ruled hazard
+    families unconditionally, and ``set_freq`` when its band relation
+    resolves to a crossing — with ``tx-truth-unavailable`` /
+    ``failure="no-capability"`` rather than guessing.
+
+    ``docs/plans/2026-08-20-transmit-authority.md`` §3.9 item 1, §4 row 5.
+    """
+
+    async def read_transmit_state(self) -> TxStateReading:
+        """Return one fresh, solicited transmit-state reading.
+
+        Never raises: a failed, refused or unverifiable read comes back as
+        an ordinary :class:`~rigplane.core.tx_authority.TxStateReading`
+        with ``value`` left ``None`` (or ``verified_readback=False``) and a
+        ``failure`` tag — never as an exception. The caller is the transmit
+        authority's hazard admission, which owns the one deadline for the
+        whole read.
+        """
         ...
 
 

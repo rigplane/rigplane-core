@@ -20,6 +20,7 @@ from ...core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from ...core.tx_authority import TxStateReading
 from ...radio_state import RadioState
 from .transport import RigctldTransport
 
@@ -744,6 +745,33 @@ class RigctldClientRadio:
 
     async def set_ptt(self, on: bool) -> None:
         await self._transport.command(f"T {1 if on else 0}")
+
+    async def read_transmit_state(self) -> TxStateReading:
+        """One solicited transmit-state read (ADR row 5).
+
+        Implements :class:`~rigplane.core.radio_protocol.TransmitStateReadable`
+        by adapting the existing :meth:`get_ptt`, but ``verified_readback``
+        is permanently ``False`` (§3.7): the ``t`` command answers from
+        upstream Hamlib's own cache, or from an external rigplane's retained
+        fallback state -- never from a fresh radio read. Claiming otherwise
+        would be exactly the fabricated-freshness class this design exists
+        to forbid, so this backend's hazard families are fail-closed by
+        provenance as a stated consequence, not a defect to fix later.
+        Never raises: a failed or malformed read comes back as a
+        :class:`TxStateReading` with a ``failure`` tag.
+        """
+        try:
+            value = await self.get_ptt()
+        except asyncio.TimeoutError:
+            return TxStateReading(value=None, failure="timeout")
+        except Exception:
+            return TxStateReading(value=None, failure="read-error")
+        return TxStateReading(
+            value=value,
+            attributed=None,
+            source="hamlib_response",
+            verified_readback=False,
+        )
 
     async def get_vfo_slot(self, receiver: int = 0) -> str:
         self._require_main_receiver(receiver, "get_vfo_slot")

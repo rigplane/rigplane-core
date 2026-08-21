@@ -747,28 +747,21 @@ async def test_a_queued_hazard_write_reads_before_it_writes_at_scripted_rx(
 
 
 @every_backend()
-@pytest.mark.xfail(
-    strict=True,
-    reason="row 5: `read_transmit_state()` lands on the new capability "
-    "protocol `TransmitStateReadable` (5a Icom, 5b Yaesu + rigctld-client). "
-    "The harness assembles the equivalent from shipped parts meanwhile.",
-)
 async def test_a_backend_exposes_the_row_five_read_primitive(
     harness: TxConformanceHarness,
 ) -> None:
-    """INV-13's home: one primitive, per backend, returning typed evidence."""
+    """INV-13's home: one primitive, per backend, returning typed evidence.
+
+    Row 5: ``read_transmit_state()`` lands on the new capability protocol
+    ``TransmitStateReadable`` (5a Icom, 5b Yaesu + rigctld-client) -- the
+    harness now points ``read_transmit_state`` at this same method directly
+    rather than assembling the equivalent from shipped parts.
+    """
     reading = await harness.radio.read_transmit_state()
     assert isinstance(reading, TxStateReading)
 
 
 @pytest.mark.parametrize("harness", ["rigctld-client"], indirect=True)
-@pytest.mark.xfail(
-    strict=True,
-    reason="row 5b: the backend's own primitive must carry "
-    "`verified_readback=False` permanently (§3.7). The harness already marks "
-    "it, and the composed refusal row above proves the gate honours the "
-    "marking; this reserves the marking on the shipped primitive.",
-)
 async def test_the_rigctld_client_primitive_marks_its_readback_unverified(
     harness: TxConformanceHarness,
 ) -> None:
