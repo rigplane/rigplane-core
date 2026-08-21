@@ -34,7 +34,9 @@ Rules:
   `Agent Review: PASS <full-40-hex-head-sha>` or
   `Agent Review: BLOCKED <full-40-hex-head-sha>`, then a blank line and the
   justification. BLOCKED requires concrete problems with file:line references,
-  risk, required fixes, and checks to run. Do not soften a BLOCKED into a
-  PASS; do not block on stylistic taste.
+  risk, required fixes, and checks to run — file:line is correct in this one
+  artifact, because the directive pins the exact head SHA the lines refer to;
+  everywhere else in your output, cite file plus symbol name. Do not soften a
+  BLOCKED into a PASS; do not block on stylistic taste.
 - Bash always runs foreground with an explicit timeout; never use
   run_in_background.
