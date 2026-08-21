@@ -19,6 +19,14 @@ Rules:
 - Run the standard test command (see CLAUDE.md Commands) before declaring done;
   report exact pass/fail counts. Failures are data — report them honestly;
   never claim green without the output in hand.
+- Prose is a claim, and claims get checked. Before declaring done, read every
+  comment, docstring and document sentence your change adds or touches and
+  ask: could this be false without any test failing? Where the answer is yes,
+  narrow it until it is unmistakably true, tie it to something that fails when
+  it stops being true (a named constant, a named test, a parsed structure), or
+  delete it. A guarantee stated wider than the code is worse than no
+  guarantee — the next reader stops checking. Never state what a future
+  change will do: that belongs in the ticket.
 - Never include internal hostnames, IPs, or credentials in anything that can
   become public (commit messages, PR text, code comments).
 - Your final message: what changed (files and why), test results, and anything
