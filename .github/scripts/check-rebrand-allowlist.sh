@@ -86,6 +86,14 @@ ALLOWLIST=(
     # Release skill documents src/icom_lan/__init__.py shim as DO-NOT-TOUCH
     # (deprecation shim — must not be modified during version bumps).
     '.claude/skills/release/SKILL.md'
+    # Doc-citation-gate baseline (MOR: doc-citation-gate) mechanically
+    # mirrors every code citation already present under docs/**, including
+    # citations inside docs/plans/2026-04-* (already allowlisted above,
+    # pre-rebrand). It introduces no new brand reference of its own — the
+    # prose still lives only in the already-permitted source documents — so
+    # exempting the derived index here, rather than the individually-allowed
+    # docs, is the correct fix.
+    '.github/scripts/doc-citation-baseline.txt'
     # MOR-1078: legacy workspace migration layer must name historical
     # localStorage keys verbatim (e.g. `rigplane:storage-migrated-from-icom-lan`)
     # to classify and read them correctly. Read-only — the module never writes
