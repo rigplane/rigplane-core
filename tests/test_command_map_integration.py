@@ -1,7 +1,23 @@
-"""CommandMap integration tests — verify cmd_map parity with hardcoded commands.
+"""CommandMap integration tests — IC-7610 parity plus custom-map cases.
 
-For IC-7610, calling any command function with cmd_map from the TOML must
-produce identical output to calling without (hardcoded bytes).
+The parity classes below build one command with the IC-7610 TOML's cmd_map
+and again without it, and require the two frames to match; the override
+class instead feeds a hand-made CommandMap and checks that the frame
+follows its wire bytes.
+
+Parity here is a property of these builders at these arguments, not of the
+package. For IC-7610 alone, tests/command_map_parity_divergences.txt
+records builders whose two frames differ — get_attenuator, get_preamp,
+get_af_mute and get_digisel are asserted equal below and listed there,
+because this file calls them at the default command29=True while the
+divergence needs command29=False.
+
+tests/test_command_map_parity.py generalises the parity cases below: every
+builder it can reach, every profile in rigs/, and one probe per optional
+argument. It does not replace this file — the custom-map cases have no
+counterpart there. What it could not compare is listed in
+tests/command_map_parity_uncovered.txt; check there before assuming a
+builder named below is covered only here.
 """
 
 from __future__ import annotations
@@ -30,7 +46,7 @@ def cmd_map():
 
 
 class TestGetterParity:
-    """Calling getters with IC-7610 cmd_map must match hardcoded output."""
+    """These getters must build the same frame with IC-7610 cmd_map as without."""
 
     def test_get_frequency(self, cmd_map):
         assert commands.get_freq(cmd_map=cmd_map) == commands.get_freq()
@@ -94,7 +110,7 @@ class TestGetterParity:
 
 
 class TestSetterParity:
-    """Calling setters with IC-7610 cmd_map must match hardcoded output."""
+    """These setters must build the same frame with IC-7610 cmd_map as without."""
 
     def test_set_frequency(self, cmd_map):
         assert commands.set_freq(14_200_000, cmd_map=cmd_map) == commands.set_freq(
@@ -144,7 +160,7 @@ class TestSetterParity:
 
 
 class TestHelperCallerParity:
-    """Functions delegating to _build_* helpers must match with cmd_map."""
+    """These _build_*-delegating functions must match with cmd_map."""
 
     def test_get_apf_type_level(self, cmd_map):
         assert (
@@ -199,7 +215,11 @@ class TestHelperCallerParity:
 
 
 class TestCmd29Parity:
-    """Functions using cmd29 framing must match with cmd_map."""
+    """These cmd29-framing functions must match with cmd_map at command29's default.
+
+    Four of them -- ``get_attenuator``, ``get_preamp``, ``get_digisel`` and
+    ``get_af_mute`` -- match only at that default; see the module docstring.
+    """
 
     def test_get_attenuator(self, cmd_map):
         assert commands.get_attenuator(cmd_map=cmd_map) == commands.get_attenuator()
@@ -242,7 +262,7 @@ class TestCmd29Parity:
 
 
 class TestCommandMapOverride:
-    """Custom CommandMap with different wire bytes produces different output."""
+    """A hand-made CommandMap's wire bytes must show up in the frame it builds."""
 
     def test_different_wire_bytes_produce_different_frame(self):
         custom = CommandMap({"get_af_level": (0x16, 0x43)})
