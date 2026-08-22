@@ -37,7 +37,15 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra bridge
+        # --all-extras (not --extra dev --extra bridge, MOR-1978): `bridge` is
+        # a no-op alias (pyproject.toml), so the old flags installed no
+        # optional-dependency packages at all. That left every Pillow/scipy/
+        # aiortc/cryptography-gated test in tests/ skipped in this release
+        # validation job while still showing green. `uv sync --all-extras`
+        # installs every extra declared in pyproject.toml's
+        # [project.optional-dependencies], so `validate` exercises the same
+        # test surface as the merged commit it is releasing.
+        run: uv sync --all-extras
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
