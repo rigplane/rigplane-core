@@ -52,13 +52,15 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        # --all-extras (not --extra dev --extra bridge, MOR-1978): `bridge` is
-        # a no-op alias (pyproject.toml), so the old flags installed no
-        # optional-dependency packages at all. That left every Pillow/scipy/
-        # aiortc/cryptography-gated test in tests/ skipped in CI while still
-        # showing green. `uv sync --all-extras` installs every extra
-        # declared in pyproject.toml's [project.optional-dependencies], so
-        # those tests run instead of skipping.
+        # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
+        # already installed its 9 packages (pytest, ruff, mypy, pydantic,
+        # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
+        # alias) — but neither flag named `scope` (Pillow), `dsp` (scipy), or
+        # `webrtc` (aiortc), the extras that gate 61 tests in tests/. Those
+        # tests ran skipped in CI while still showing green. `uv sync
+        # --all-extras` installs every extra declared in pyproject.toml's
+        # [project.optional-dependencies], so those tests run instead of
+        # skipping.
         run: uv sync --all-extras
 
       - name: Set up Node.js

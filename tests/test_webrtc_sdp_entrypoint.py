@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -82,13 +83,20 @@ async def test_ice_unavailable_when_gate_off() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(webrtc_available(), reason="exercises the no-extra branch")
 async def test_offer_unavailable_when_extra_missing() -> None:
-    """Gate on but aiortc absent → still cleanly unavailable."""
-    server = WebServer(None, WebConfig(webrtc_enabled=True))
-    writer = _FakeWriter()
-    await server._handle_webrtc_offer(writer, {"content-length": "10"}, None)
-    code, body = _parse_response(writer)
+    """Gate on but aiortc absent → still cleanly unavailable.
+
+    Patches ``webrtc_available`` to ``False`` (the pattern
+    ``tests/test_webrtc_signaling.py`` already uses for ``_serve_info`` /
+    ``_serve_capabilities``) rather than skipping when the real extra is
+    installed, so this branch of ``_handle_webrtc_offer`` stays covered in
+    an ``--all-extras`` environment (MOR-1978).
+    """
+    with patch("rigplane.web.server.webrtc_available", return_value=False):
+        server = WebServer(None, WebConfig(webrtc_enabled=True))
+        writer = _FakeWriter()
+        await server._handle_webrtc_offer(writer, {"content-length": "10"}, None)
+        code, body = _parse_response(writer)
     assert code == 503
     assert body["code"] == "webrtc_unavailable"
 
