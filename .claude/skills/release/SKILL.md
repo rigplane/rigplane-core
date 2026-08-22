@@ -46,8 +46,9 @@ git branch --show-current
 Not `main` → warn, ask confirmation.
 
 ```bash
-# 2c. Sync deps
-uv sync --extra dev --extra bridge
+# 2c. Sync deps (all extras, MOR-1978: installs the same extras as
+# publish.yml's validate job, so 2h below is not narrower than release CI)
+uv sync --all-extras
 ```
 
 ```bash
