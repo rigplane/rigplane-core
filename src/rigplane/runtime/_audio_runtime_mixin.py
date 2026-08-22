@@ -788,14 +788,9 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             raise ConnectionError("Audio port not available")
 
         self._audio_transport = IcomTransport()
-        # Narrowed alias: self._audio_transport is `IcomTransport | None`, and
-        # mypy cannot carry the "just assigned, not None" fact across the
-        # intervening getattr()/await calls below. `transport` is the same
-        # object, always non-None.
-        transport = self._audio_transport
         audio_sock = getattr(self, "_audio_sock_pending", None)
         try:
-            await transport.connect(
+            await self._audio_transport.connect(
                 self._host,
                 self._audio_port,
                 local_host=getattr(self, "_local_bind_host", None),
@@ -816,14 +811,14 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             if audio_sock is not None:
                 self._audio_sock_pending = None
 
-        transport.start_ping_loop()
-        transport.start_retransmit_loop()
-        transport.start_idle_loop()
+        self._audio_transport.start_ping_loop()
+        self._audio_transport.start_retransmit_loop()
+        self._audio_transport.start_idle_loop()
 
         # Per wfview, audio stream also uses OpenClose on its own UDP channel.
         await self._send_audio_open_close(open_stream=True)
 
-        self._audio_stream = AudioStream(transport)
+        self._audio_stream = AudioStream(self._audio_transport)
         logger.info("Audio transport connected on port %d", self._audio_port)
 
         # Start EPIPE-storm watchdog for this transport session.
