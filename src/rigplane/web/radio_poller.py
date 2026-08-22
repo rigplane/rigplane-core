@@ -724,7 +724,17 @@ class RadioPoller:
         self._deferred_tx_entry: CommandQueueEntry | None = None
 
     def _provider_generation(self) -> int:
-        return cast(int, self._state_store.provider_generation)
+        # Annotated local, not cast(): whole-tree `mypy src/` sees
+        # `StateStore.provider_generation` as `int` directly (a cast would be
+        # redundant there), but the isolated `mypy --strict src/rigplane/web`
+        # run resolves it to `Any` — the *global* `follow_imports = "skip"`
+        # in `pyproject.toml` applies to `rigplane.core.state_store` as an
+        # import target of this module, independent of the `rigplane.web.*`
+        # override's own `follow_imports` setting. An annotated local (not a
+        # runtime-coercing `int(...)`) keeps both invocations honest with no
+        # behavioural difference from a plain return.
+        generation: int = self._state_store.provider_generation
+        return generation
 
     def _current_rf_state(self, snapshot: StateSnapshot | None = None) -> RfState:
         """Return RF truth only from a fresh current-provider PTT observation."""

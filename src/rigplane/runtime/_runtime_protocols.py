@@ -149,6 +149,7 @@ class ControlPhaseHost(Protocol):
     # Status / error tracking
     _last_status_error: int
     _last_status_disconnected: bool
+    _last_auth_error: int
 
     # Background tasks
     _token_task: "asyncio.Task[None] | None"
@@ -220,6 +221,8 @@ class ControlPhaseHost(Protocol):
     ) -> None: ...
 
     async def _receive_civ_port(self) -> int: ...
+
+    async def _force_cleanup_civ(self) -> None: ...
 
     def _status_retry_pause(self) -> float: ...
 

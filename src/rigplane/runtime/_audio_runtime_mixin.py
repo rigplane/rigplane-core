@@ -38,6 +38,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     """Audio streaming methods for CoreRadio (mixin)."""
 
     # -- type stubs for attributes defined in CoreRadio.__init__ ---------
+    _audio_transport: IcomTransport | None
     _audio_stream: AudioStream | None
     _pcm_transcoder: PcmOpusTranscoder | None
     _pcm_transcoder_fmt: tuple[int, int, int] | None
@@ -751,7 +752,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 logger.debug(
                     "audio teardown: transport disconnect failed", exc_info=True
                 )
-            self._audio_transport = None  # type: ignore[assignment]
+            self._audio_transport = None
 
     async def _ensure_audio_transport(self) -> None:
         """Connect the audio transport if not already connected.
@@ -800,7 +801,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             if audio_sock is not None:
                 audio_sock.close()
                 self._audio_sock_pending = None
-            self._audio_transport = None  # type: ignore[assignment]
+            self._audio_transport = None
             if isinstance(exc, OSError):
                 raise ConnectionError(
                     f"Failed to connect audio port {self._audio_port}: {exc}"
