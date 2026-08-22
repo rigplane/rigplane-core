@@ -188,6 +188,12 @@ from GitHub issues with acceptance criteria, add missing issues to the Project,
 and keep fields current while working. See
 `docs/internals/github-project-workflow.md`.
 
+**Session handoff:** the previous session's state lives in the Linear document
+*Session handoff — rigplane-core*
+(https://linear.app/morozsm/document/session-handoff-rigplane-core-9775d5570683).
+Read it first; rewrite it last. Never keep session-handoff state in this
+repository — it is public.
+
 Use subagents — keep the main session lean. The session that takes the work is
 a coordinator: it plans and dispatches, and does not implement. The
 implementation agent never reviews its own work (Language & Git above).

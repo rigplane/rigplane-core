@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from test_radio import MockTransport
@@ -16,6 +17,7 @@ from rigplane.core.civ import (
     CivRequestTracker,
     request_key_from_frame,
 )
+from rigplane.core import tx_safety as tx
 from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
 from rigplane.radio import IcomRadio
 from rigplane.runtime._civ_rx import _CivDataTransaction
@@ -63,8 +65,10 @@ def _capture_data_transaction(
     runtime = radio._civ_runtime
     register = runtime._register_civ_data_transaction
 
-    def capture(key: CivRequestKey) -> _CivDataTransaction:
-        transaction = register(key)
+    def capture(
+        key: CivRequestKey, *, nak_terminal: bool = True
+    ) -> _CivDataTransaction:
+        transaction = register(key, nak_terminal=nak_terminal)
         captured.append(transaction)
         return transaction
 
@@ -424,6 +428,58 @@ async def test_data_transaction_cancel_settles_token_before_late_response(
         parse_civ_frame(_ptt()), generation=radio._civ_epoch
     )
     assert len(observations) == 1
+
+
+async def test_refused_managed_ptt_write_leaves_the_next_read_authoritative(
+    radio: IcomRadio, transport: MockTransport
+) -> None:
+    """A refused managed TX write must not be charged to the read behind it.
+
+    ``_civ_rx.py: CivRuntime.write_managed_ptt`` sends with ``expect="none"``
+    and so registers no waiter for its own terminal frame, while
+    ``_civ_rx.py: CivRuntime.request_authoritative_ptt_read`` registers its
+    waiters before dispatching. Send #1 is the write and send #2 the read, and
+    both replies are released on send #2 — the write's refusal reaching the
+    tracker after the read was already registered. The read's own ``1C 00``
+    answer, not that refusal, must decide the read.
+    """
+    radio._civ_min_interval = 0.0
+    radio._civ_get_timeout = 1.0
+    observations: list[tx.ProviderPttObservation] = []
+    observer = observations.append
+    assert radio._capture_managed_tx_port(11, observer)
+    transport.queue_response_on_send(2, _wrap(_nak()))
+    transport.queue_response_on_send(2, _wrap(_ptt(0)))
+
+    await radio._write_managed_ptt(11, True)
+    await radio._request_authoritative_ptt_read(11, observer)
+
+    assert [o.value for o in observations] == [tx.RadioTx.OFF]
+
+
+async def test_authoritative_ptt_read_waits_out_its_own_refusal(
+    radio: IcomRadio, transport: MockTransport
+) -> None:
+    """The price of owning no NAK waiter, stated so it cannot drift silently.
+
+    ``_civ_rx.py: CivRuntime.request_authoritative_ptt_read`` registers no
+    ACK/NAK waiter, so a refusal aimed at the read itself is an orphan too:
+    the read spends its whole ``_civ_get_timeout`` and then fails as a
+    timeout rather than failing fast on the refusal.
+    """
+    radio._civ_min_interval = 0.0
+    radio._civ_get_timeout = 0.05
+    observations: list[tx.ProviderPttObservation] = []
+    observer = observations.append
+    assert radio._capture_managed_tx_port(11, observer)
+    transport.queue_response_on_send(1, _wrap(_nak()))
+
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        await radio._request_authoritative_ptt_read(11, observer)
+
+    assert time.monotonic() - started >= radio._civ_get_timeout
+    assert observations == []
 
 
 def _wrap(civ_frame: bytes) -> bytes:
