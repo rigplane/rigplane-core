@@ -30,7 +30,6 @@ __all__ = [
     "is_cache_fresh",
     "poll_frequency",
     "poll_mode",
-    "poll_powerstat",
     "poll_standard_fields",
 ]
 
@@ -137,44 +136,6 @@ async def poll_mode(
         return (mode_str, filt)
     except Exception:
         logger.debug("poll_mode: radio call failed", exc_info=True)
-        return None
-
-
-async def poll_powerstat(
-    radio: "Radio",
-    cache: StateCache,
-    ttl: float,
-) -> bool | None:
-    """Return the current power status, using cache when fresh.
-
-    If the ``"powerstat"`` field in *cache* is younger than *ttl* seconds,
-    the cached value is returned immediately without hitting the radio.
-    Otherwise :meth:`Radio.get_powerstat` is called (if supported),
-    the result stored in *cache*, and the fresh value returned.
-
-    On any exception from the radio the cache is left unchanged and
-    ``None`` is returned.
-
-    Args:
-        radio: Connected :class:`Radio` instance (must implement PowerControlCapable).
-        cache: Shared :class:`StateCache` to read from / write to.
-        ttl: Cache TTL in seconds.  Use ``0.0`` to always poll.
-
-    Returns:
-        True if powered on, False if powered off, or ``None`` if the radio call failed.
-    """
-    from rigplane.capabilities import CAP_POWER_CONTROL
-
-    if is_cache_fresh(cache, "powerstat", ttl):
-        return cache.powerstat
-    if CAP_POWER_CONTROL not in radio.capabilities:
-        return None
-    try:
-        power_on = await radio.get_powerstat()  # type: ignore[attr-defined]
-        cache.update_powerstat(power_on)
-        return power_on  # type: ignore[no-any-return]
-    except Exception:
-        logger.debug("poll_powerstat: radio call failed", exc_info=True)
         return None
 
 
