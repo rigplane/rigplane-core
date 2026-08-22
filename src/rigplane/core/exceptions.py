@@ -5,6 +5,7 @@ __all__ = [
     "ConnectionError",
     "AuthenticationError",
     "CommandError",
+    "CivNakError",
     "TimeoutError",
     "AudioError",
     "AudioCodecBackendError",
@@ -27,6 +28,15 @@ class AuthenticationError(RigplaneError):
 
 class CommandError(RigplaneError):
     """Raised when a CI-V command fails or returns an error."""
+
+
+class CivNakError(CommandError):
+    """Raised when the radio explicitly declines a CI-V read with NAK.
+
+    Distinct from :class:`TimeoutError`, which means no reply arrived at
+    all: a :class:`CivNakError` means a reply did arrive, and it was a
+    refusal (CI-V command ``0xFA``).
+    """
 
 
 class TimeoutError(RigplaneError):

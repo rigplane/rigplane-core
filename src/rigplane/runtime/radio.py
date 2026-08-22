@@ -300,7 +300,7 @@ from rigplane.commands import set_tone_freq as _set_tone_freq_cmd
 from rigplane.commands import set_tsql_freq as _set_tsql_freq_cmd
 from rigplane.commands import set_vfo as _select_vfo_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
-from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core.exceptions import CivNakError, CommandError, TimeoutError
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_authority import (
     RADIO_READBACK_SOURCES,
@@ -2530,7 +2530,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_rf_power(self) -> int:
         """Get the RF power level (0-255).
 
-        On timeout falls back to the state cache if populated.
+        Falls back to the state cache if populated when the read times out
+        or the radio declines it with NAK.
         """
         self._check_connected()
         civ = get_rf_power(to_addr=self._radio_addr)
@@ -2542,13 +2543,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._last_power = level
             self._state_cache.update_rf_power(level / 255.0)
             return level
-        except TimeoutError:
+        except (TimeoutError, CivNakError):
             if (
                 self._state_cache.is_fresh("rf_power", self._cache_ttl_rf_power)
                 and self._state_cache.rf_power is not None
             ):
                 cached_level = round(self._state_cache.rf_power * 255)
-                logger.debug("get_rf_power: timeout, returning cached %d", cached_level)
+                logger.debug(
+                    "get_rf_power: no fresh read, returning cached %d", cached_level
+                )
                 return cached_level
             raise
 
@@ -4104,7 +4107,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 val = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
                 self._attenuator_state = val != 0
                 return val
-        except TimeoutError:
+        except (TimeoutError, CivNakError):
             pass
 
         if self._attenuator_state is not None:
@@ -4192,7 +4195,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 raw = resp.data[0]
                 self._preamp_level = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
                 return self._preamp_level
-        except TimeoutError:
+        except (TimeoutError, CivNakError):
             pass
 
         if self._preamp_level is not None:

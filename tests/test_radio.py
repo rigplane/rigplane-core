@@ -1,6 +1,7 @@
 """Tests for IcomRadio high-level API."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -24,7 +25,7 @@ from rigplane.commands import (
     build_cmd29_frame,
 )
 from rigplane.commander import Priority
-from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
+from rigplane.exceptions import CivNakError, CommandError, ConnectionError, TimeoutError
 from rigplane.core import tx_safety as tx
 from rigplane.radio import IcomRadio
 from rigplane.types import (
@@ -1249,6 +1250,42 @@ class TestAckSinkRobustness:
             assert radio._civ_request_tracker.timeout_count == 0
         finally:
             await radio._civ_runtime.stop_pump()
+
+
+class TestNakOnPendingRead:
+    """A NAK against a pending GET must resolve the waiter promptly.
+
+    Bench measurement on a live IC-7300 found the radio NAKs 9 of 65
+    initial-state GET queries. Before this fix, ``CivRequestTracker``
+    routed NAK events only through ACK waiters, never through the
+    ``_response_waiters`` a GET registers, so a declined GET had nothing on
+    its path to resolve it and could only fail by exhausting the full
+    ``_civ_get_timeout`` deadline.
+    """
+
+    @pytest.mark.asyncio
+    async def test_nak_resolves_pending_read_promptly(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """NAK for a pending read raises ``CivNakError`` well before the deadline.
+
+        The ``radio`` fixture uses ``timeout=0.05`` (``_civ_get_timeout``).
+        Asserting the elapsed time stays far below that deadline is what
+        makes this pin discriminate a genuinely prompt resolution from a
+        "fix" that still waits out the full timeout and only relabels the
+        resulting exception -- a test that checked the exception type alone
+        would pass either way.
+        """
+        mock_transport.queue_response(_nak_response())
+        cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, _CMD_FREQ_GET)
+
+        start = time.monotonic()
+        with pytest.raises(CivNakError):
+            await radio._execute_civ_raw(cmd)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < radio._civ_get_timeout / 2
+        assert radio._civ_request_tracker.pending_count == 0
 
 
 class TestScopeCallbackSafety:

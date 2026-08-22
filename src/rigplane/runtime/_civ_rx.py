@@ -47,7 +47,7 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
-from rigplane.core.exceptions import ConnectionError, TimeoutError
+from rigplane.core.exceptions import CivNakError, ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
@@ -3432,9 +3432,26 @@ class CivRuntime:
             raise TimeoutError("CI-V response timed out")
 
         pending: "asyncio.Future[CivFrame] | None" = None
+        # Only set for a GET (``expects_response``): a NAK frame carries no
+        # reference back to the command it declines, so attributing it to
+        # this specific request is not content-based -- it relies on
+        # ``IcomCommander`` (``commands/commander.py``) serializing dispatch:
+        # the worker awaits one ``_execute_civ_raw`` call to completion
+        # before starting the next, so at most one GET is ever waiting on
+        # this tracker at a time. A NAK to a WRITE is unaffected: it keeps
+        # resolving the plain ACK waiter below, as before.
+        nak_pending: "asyncio.Future[CivFrame] | None" = None
         try:
             if expects_response:
                 pending = self._host._civ_request_tracker.register_response(request_key)
+                nak_or_token = self._host._civ_request_tracker.register_ack(
+                    wait=True,
+                    consume_backlog=False,
+                    nak_only=True,
+                )
+                if isinstance(nak_or_token, int):
+                    raise RuntimeError("ACK waiter registration returned sink token")
+                nak_pending = nak_or_token
             else:
                 pending_or_token = self._host._civ_request_tracker.register_ack(
                     wait=True
@@ -3458,6 +3475,23 @@ class CivRuntime:
             if remaining <= 0:
                 raise TimeoutError("CI-V response timed out")
             try:
+                if nak_pending is not None:
+                    done, _ = await asyncio.wait(
+                        (pending, nak_pending),
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        raise asyncio.TimeoutError("CI-V response timed out")
+                    if nak_pending in done:
+                        # Raises instead if the tracker failed this waiter
+                        # for an unrelated reason (e.g. reconnect); only a
+                        # real NAK frame result becomes ``CivNakError``.
+                        nak_pending.result()
+                        raise CivNakError(
+                            f"CI-V command 0x{request_key.command:02X} declined (NAK)"
+                        )
+                    return pending.result()
                 return await asyncio.wait_for(pending, timeout=remaining)
             except asyncio.TimeoutError:
                 self._host._civ_request_tracker.note_timeout()
@@ -3469,3 +3503,5 @@ class CivRuntime:
         finally:
             if pending is not None:
                 self._host._civ_request_tracker.unregister(pending)
+            if nak_pending is not None:
+                self._host._civ_request_tracker.unregister(nak_pending)
