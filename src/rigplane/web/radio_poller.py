@@ -724,7 +724,13 @@ class RadioPoller:
         self._deferred_tx_entry: CommandQueueEntry | None = None
 
     def _provider_generation(self) -> int:
-        return cast(int, self._state_store.provider_generation)
+        # int(...), not cast(): under whole-tree `mypy src/` the property is
+        # already `int` (cast would be redundant), but under the isolated
+        # `mypy --strict src/rigplane/web` run `rigplane.web.*`'s
+        # `follow_imports = "skip"` makes the cross-boundary type `Any`, so a
+        # real coercion is needed to keep this function's `-> int` honest
+        # there too.
+        return int(self._state_store.provider_generation)
 
     def _current_rf_state(self, snapshot: StateSnapshot | None = None) -> RfState:
         """Return RF truth only from a fresh current-provider PTT observation."""

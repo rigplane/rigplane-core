@@ -38,6 +38,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     """Audio streaming methods for CoreRadio (mixin)."""
 
     # -- type stubs for attributes defined in CoreRadio.__init__ ---------
+    _audio_transport: IcomTransport | None
     _audio_stream: AudioStream | None
     _pcm_transcoder: PcmOpusTranscoder | None
     _pcm_transcoder_fmt: tuple[int, int, int] | None
@@ -751,7 +752,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 logger.debug(
                     "audio teardown: transport disconnect failed", exc_info=True
                 )
-            self._audio_transport = None  # type: ignore[assignment]
+            self._audio_transport = None
 
     async def _ensure_audio_transport(self) -> None:
         """Connect the audio transport if not already connected.
@@ -787,9 +788,14 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             raise ConnectionError("Audio port not available")
 
         self._audio_transport = IcomTransport()
+        # Narrowed alias: self._audio_transport is `IcomTransport | None`, and
+        # mypy cannot carry the "just assigned, not None" fact across the
+        # intervening getattr()/await calls below. `transport` is the same
+        # object, always non-None.
+        transport = self._audio_transport
         audio_sock = getattr(self, "_audio_sock_pending", None)
         try:
-            await self._audio_transport.connect(
+            await transport.connect(
                 self._host,
                 self._audio_port,
                 local_host=getattr(self, "_local_bind_host", None),
@@ -800,7 +806,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             if audio_sock is not None:
                 audio_sock.close()
                 self._audio_sock_pending = None
-            self._audio_transport = None  # type: ignore[assignment]
+            self._audio_transport = None
             if isinstance(exc, OSError):
                 raise ConnectionError(
                     f"Failed to connect audio port {self._audio_port}: {exc}"
@@ -810,14 +816,14 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             if audio_sock is not None:
                 self._audio_sock_pending = None
 
-        self._audio_transport.start_ping_loop()
-        self._audio_transport.start_retransmit_loop()
-        self._audio_transport.start_idle_loop()
+        transport.start_ping_loop()
+        transport.start_retransmit_loop()
+        transport.start_idle_loop()
 
         # Per wfview, audio stream also uses OpenClose on its own UDP channel.
         await self._send_audio_open_close(open_stream=True)
 
-        self._audio_stream = AudioStream(self._audio_transport)
+        self._audio_stream = AudioStream(transport)
         logger.info("Audio transport connected on port %d", self._audio_port)
 
         # Start EPIPE-storm watchdog for this transport session.
