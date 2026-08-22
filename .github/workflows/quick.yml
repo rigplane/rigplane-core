@@ -72,10 +72,10 @@ jobs:
       - name: Install dependencies
         if: steps.filter.outputs.core == 'true' || steps.filter.outputs.frontend == 'true'
         # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
-        # already installed its 9 packages (pytest, ruff, mypy, pydantic,
+        # already installed its packages (pytest, ruff, mypy, pydantic,
         # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
         # alias) — but neither flag named `scope` (Pillow), `dsp` (scipy), or
-        # `webrtc` (aiortc), the extras that gate 61 tests in tests/. Those
+        # `webrtc` (aiortc), the extras that gate 62 tests in tests/. Those
         # tests ran skipped in CI while still showing green. `uv sync
         # --all-extras` installs every extra declared in pyproject.toml's
         # [project.optional-dependencies], so those tests run instead of
