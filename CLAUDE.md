@@ -22,9 +22,9 @@ Never bare `python` or `pytest`. Worktrees: `uv sync --all-extras` first.
 `quick.yml` itself; it runs unconditionally in `full.yml` and `publish.yml`
 (the CI workflows table below gives what triggers those). So a PR touching
 only `src/rigplane/runtime/` gets no mypy in CI until `full.yml` next runs.
-Whole-tree `uv run mypy src/` is clean (0 errors) as of MOR-1967. It remains
-advisory and ungated — nothing runs it in `.github/` — and whether to add it
-as a CI gate is a separate, still-open decision.
+Whole-tree `uv run mypy src/` was clean (0 errors) at commit `e2dcbe0f`
+(MOR-1967). It remains advisory and ungated — nothing runs it in `.github/` —
+and whether to add it as a CI gate is a separate, still-open decision.
 
 ---
 
