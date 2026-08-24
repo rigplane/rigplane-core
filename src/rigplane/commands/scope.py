@@ -64,13 +64,33 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 # Scope sub-commands whose READ query carries a one-byte Main/Sub scope
 # selector between the sub-command byte and the frame terminator
 # (0x00 = MAIN, 0x01 = SUB).  Without it the IC-7610 silently ignores the
-# query and the IC-7300 refuses it with a NAK.  Every 0x27 read outside this
-# set must be sent bare.
+# query and the IC-7300 refuses it with a NAK.  Every other 0x27 read carries
+# no selector byte -- except 0x1E, which carries a ``<range><edge>`` selector
+# of its own; see ``get_scope_fixed_edge`` below.
 #
-# Consumed by ``runtime/_state_queries.py: build_state_queries`` and
-# ``web/radio_poller.py: RadioPoller._send_one_state_query`` -- the two
-# senders of 0x27 reads that work from a sub-command list rather than from
-# the per-getter arguments in ``runtime/_scope_runtime.py``.
+# Imported by ``runtime/_state_queries.py: build_state_queries``, whose list
+# ``runtime/radio_initial_state.py: fetch_initial_state`` then sends, and by
+# ``web/radio_poller.py: RadioPoller._send_one_state_query``.  Those are the
+# senders that consult this set.
+#
+# Two further places hold this membership and do NOT import it, so an edit
+# here does not reach them -- change all three together:
+#   ``runtime/_scope_runtime.py`` passes ``receiver=`` per getter, reaching
+#     exactly these eight sub-commands and no others.
+#   ``runtime/_civ_rx.py: CivRuntime._civ_expects_response`` repeats them as
+#     a local tuple to decide whether a 0x27 reply is expected.  That copy is
+#     executable and unpinned: a sub-command added here but not there is sent
+#     with its selector byte and then classified as expecting no response, so
+#     nothing awaits the reply.
+# Nothing asserts that the three agree.  Making the RX path import this
+# constant is the real fix and is deliberately not done here (MOR-1981).
+#
+# ``rigctld/server.py: RigctldServer._send_one_state_query`` has the same
+# shape and does NOT consult this set.  It cannot reach 0x27 today because
+# ``core/acquisition_scheduler.py: IcomCivAcquisitionExecutor.query_for_path``
+# has no ``scope_controls`` branch, so every scope field resolves to None.
+# Nothing pins that.  If that branch is ever added, this set is the third
+# place to wire up, or rigctld will send ``27 14`` bare while web does not.
 #
 # Membership (MOR-1981).  Measured on a live IC-7300, six runs with no
 # variance: each sub-command below is refused with a NAK when sent bare,
@@ -82,7 +102,11 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 # selector for it and the bare form NAKs, so it is the same class.  The
 # IC-7300's own sub-command table could not be reached from the environment
 # this was measured in, so its membership rests on the bench plus the
-# analogy with the IC-705.
+# analogy with the IC-705.  No bench evidence exists for the IC-9700.  The
+# de-risking fact is that ``web/radio_poller.py`` has been putting this exact
+# split on the wire to all four scope-capable profiles since long before this
+# constant existed: the connect sweep is catching up to shipped behaviour,
+# not trying something new.
 #
 # The exclusions are not omissions -- on a sub-command that takes no
 # selector the extra byte is a WRITE, not a no-op:

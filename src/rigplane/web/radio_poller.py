@@ -1394,12 +1394,18 @@ class RadioPoller:
         Called after scope is enabled — IC-7610 ignores scope control
         queries when scope data output is off.
 
-        Note: commands 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1D, 0x1F
-        require a receiver prefix byte (00=MAIN, 01=SUB) in the READ
-        query — without it the IC-7610 silently ignores the query.
-        The public ``get_scope_*`` methods on ``ScopeRuntimeMixin`` add
-        the prefix from ``radio_state.scope_controls.receiver`` for
-        each affected sub-command.
+        Note: some sub-commands require a receiver prefix byte
+        (00=MAIN, 01=SUB) in the READ query — without it the IC-7610
+        silently ignores the query.  Which ones is
+        ``commands/scope.py: SCOPE_RECEIVER_SELECTOR_SUBS``; do not
+        restate the membership here, it moved there under MOR-1981 and
+        that constant is the one a sender should import.  This method is
+        not one of the senders that consult it: its prefix comes from the per-getter
+        ``receiver=`` arguments in ``runtime/_scope_runtime.py``, which
+        must be changed alongside the set.  The public ``get_scope_*``
+        methods on ``ScopeRuntimeMixin`` add the prefix from
+        ``radio_state.scope_controls.receiver`` for each affected
+        sub-command.
 
         Each getter is bounded by ``_SCOPE_GETTER_TIMEOUT``: a dropped
         scope-control response (common on busy scope streams) only costs
