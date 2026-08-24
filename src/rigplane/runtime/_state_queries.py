@@ -1,25 +1,36 @@
 """Shared state query list for populating RadioState.
 
-Used by RadioPoller (periodic polling) and will be used by CoreRadio
-(initial state fetch on connection).  Each query is a 3-tuple::
+Used by RadioPoller (periodic polling) and by the one-shot sweep run at
+connect (``runtime/radio_initial_state.py: fetch_initial_state``).  Each
+query is a 3-tuple::
 
     (cmd_byte, sub_byte | None, receiver | None)
 
 ``receiver=None`` means the query is global (not per-receiver).
 ``receiver=0`` or ``receiver=1`` targets a specific receiver and will
 be wrapped in cmd29 when the profile supports it.
+
+``sub_byte`` is ``bytes`` when the read needs payload of its own: the
+first byte is the CI-V sub-command and the rest follow it in the frame.
+Both senders decode that shape with
+``core/acquisition_scheduler.py: split_ctl_mem_sub``.  The scope reads
+below are the only queries built here that use it.
 """
 
 from __future__ import annotations
 
 import logging
 
+from rigplane.commands.scope import (
+    SCOPE_RECEIVER_SELECTOR_SUBS,
+    SCOPE_SELECTOR_MAIN,
+)
 from rigplane.profiles import RadioProfile
 
 logger = logging.getLogger(__name__)
 
 # Type alias for a single state query: (cmd, sub, receiver).
-StateQuery = tuple[int, int | None, int | None]
+StateQuery = tuple[int, int | bytes | None, int | None]
 
 
 def build_state_queries(
@@ -181,21 +192,35 @@ def build_state_queries(
     if "ssb_tx_bw" in capabilities:
         queries.append((0x16, 0x58, None))  # SSB TX bandwidth
     if "scope" in capabilities:
-        queries.extend(
-            [
-                (0x27, 0x12, None),  # Scope receiver selection
-                (0x27, 0x13, None),  # Scope single/dual mode
-                (0x27, 0x14, None),  # Scope mode (center/fixed)
-                (0x27, 0x15, None),  # Scope span
-                (0x27, 0x16, None),  # Scope edge number
-                (0x27, 0x17, None),  # Scope hold
-                (0x27, 0x19, None),  # Scope REF level
-                (0x27, 0x1A, None),  # Scope sweep speed
-                (0x27, 0x1B, None),  # Scope during TX
-                (0x27, 0x1C, None),  # Scope center type
-                (0x27, 0x1D, None),  # Scope VBW
-                (0x27, 0x1F, None),  # Scope RBW
-            ]
-        )
+        # 0x27 reads come in two shapes.  The sub-commands in
+        # SCOPE_RECEIVER_SELECTOR_SUBS carry a one-byte Main/Sub scope
+        # selector; the rest must go out bare, where the same byte would be
+        # read as the first data byte of a WRITE (see commands/scope.py).
+        #
+        # SCOPE_SELECTOR_MAIN is what this list can legitimately name: it is
+        # built at connect, before any 0x27 0x12 response has said which
+        # scope the radio has selected, and MAIN is the value every profile
+        # accepts -- on a single-scope radio it is the only legal one, and
+        # per-model selector ranges are MOR-1988.  A sender that does know
+        # the live selection substitutes it
+        # (web/radio_poller.py: RadioPoller._send_one_state_query).
+        for scope_sub in (
+            0x12,  # Scope receiver selection
+            0x13,  # Scope single/dual mode
+            0x14,  # Scope mode (center/fixed)
+            0x15,  # Scope span
+            0x16,  # Scope edge number
+            0x17,  # Scope hold
+            0x19,  # Scope REF level
+            0x1A,  # Scope sweep speed
+            0x1B,  # Scope during TX
+            0x1C,  # Scope center type
+            0x1D,  # Scope VBW
+            0x1F,  # Scope RBW
+        ):
+            if scope_sub in SCOPE_RECEIVER_SELECTOR_SUBS:
+                queries.append((0x27, bytes([scope_sub, SCOPE_SELECTOR_MAIN]), None))
+            else:
+                queries.append((0x27, scope_sub, None))
 
     return queries

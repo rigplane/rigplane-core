@@ -30,7 +30,7 @@ edit to this file, never silently.
 
 Nothing here fixes a divergence. Which commands take a receiver prefix byte
 is MOR-1981, and adding one where the radio does not expect it is a write,
-not a no-op — see ``web/radio_poller.py: _SCOPE_RECEIVER_PREFIX_SUBS``.
+not a no-op — see ``commands/scope.py: SCOPE_RECEIVER_SELECTOR_SUBS``.
 
 What could not be compared is not skipped silently:
 ``command_map_parity_uncovered.txt`` records the commands a profile's map

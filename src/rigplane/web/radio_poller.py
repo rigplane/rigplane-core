@@ -74,6 +74,7 @@ from ..capabilities import (
 )
 from .._queue_pressure import PRESSURE_THRESHOLD
 from ..commands.commander import Priority
+from ..commands.scope import SCOPE_RECEIVER_SELECTOR_SUBS
 from ..core.command_service import (
     CommandService,
 )
@@ -1292,32 +1293,13 @@ class RadioPoller:
             f"{self._profile.model} (receivers={self._profile.receiver_count})"
         )
 
-    def _build_state_queries(self) -> list[tuple[int, int | None, int | None]]:
-        result: list[tuple[int, int | None, int | None]] = build_state_queries(
+    def _build_state_queries(self) -> list[tuple[int, int | bytes | None, int | None]]:
+        result: list[tuple[int, int | bytes | None, int | None]] = build_state_queries(
             self._profile,
             self._caps,
             is_serial=self._is_serial,
         )
         return result
-
-    # Scope sub-commands that require a receiver prefix byte in READ queries.
-    # Without the prefix, IC-7610 silently ignores the query.
-    # 0x12 (receiver select), 0x13 (single/dual), 0x1B (during TX) do NOT need it.
-    _SCOPE_RECEIVER_PREFIX_SUBS = frozenset(
-        {
-            0x14,  # mode (center/fixed/scroll)
-            0x15,  # span
-            0x16,  # edge number
-            0x17,  # hold
-            0x19,  # ref level
-            0x1A,  # sweep speed
-            # 0x1C (center type) does NOT take receiver prefix — sending 0x00
-            # as prefix is misinterpreted as SET center_type=0 (Filter center).
-            0x1D,  # VBW
-            0x1E,  # fixed edge frequencies
-            0x1F,  # RBW
-        }
-    )
 
     async def _send_one_state_query(
         self,
@@ -1336,15 +1318,17 @@ class RadioPoller:
         does not park the poll loop on the commander future (MOR-497ii); the
         response still arrives via the CI-V RX path.
 
-        ``sub_byte`` is ``bytes`` only for multi-byte ctl-mem sub-addressing
-        (0x1A/0x05 "quick set" reads, e.g. voxDelay, MOR-1483) — always a
-        global (``receiver is None``) read today, so only the final
-        non-receiver, non-scope branch below needs to split it.
+        ``sub_byte`` is ``bytes`` where the read carries payload of its own:
+        multi-byte ctl-mem sub-addressing (0x1A/0x05 "quick set" reads, e.g.
+        voxDelay, MOR-1483) and the 0x27 scope reads that take a Main/Sub
+        selector (MOR-1981). Both are global (``receiver is None``) reads
+        today, which is what the cmd29 branch below asserts.
         """
+        civ_sub, extra_data = split_ctl_mem_sub(sub_byte)
         if (
             receiver is None
             and cmd_byte in (0x25, 0x26)
-            and sub_byte == 0x01
+            and civ_sub == 0x01
             and self._profile.vfo_readback == "selected_unselected"
         ):
             await self._civ(
@@ -1355,7 +1339,7 @@ class RadioPoller:
             )
         elif receiver is not None:
             assert not isinstance(sub_byte, (bytes, bytearray)), (
-                "multi-byte ctl-mem sub-addressing is global-only (receiver=None)"
+                "a sub element carrying payload is global-only (receiver=None)"
             )
             if cmd_byte in (0x25, 0x26):
                 await self._civ(
@@ -1371,21 +1355,23 @@ class RadioPoller:
                 await self._civ(
                     0x29, data=inner, priority=priority, wait_dispatch=False
                 )
-        elif cmd_byte == 0x27 and sub_byte in self._SCOPE_RECEIVER_PREFIX_SUBS:
-            # Scope control queries need receiver prefix (00=MAIN, 01=SUB)
+        elif cmd_byte == 0x27 and civ_sub in SCOPE_RECEIVER_SELECTOR_SUBS:
+            # Scope control queries need receiver prefix (00=MAIN, 01=SUB).
+            # ``build_state_queries`` emits MAIN because it runs at connect,
+            # before the radio has said which scope is selected; where the
+            # poller has state to read the live selection from, that
+            # replaces the default.
             scope_rx = 0
             if self._radio_state:
                 scope_rx = self._radio_state.scope_controls.receiver
-            assert isinstance(sub_byte, int)
             await self._civ(
                 cmd_byte,
-                sub=sub_byte,
+                sub=civ_sub,
                 data=bytes([scope_rx]),
                 priority=priority,
                 wait_dispatch=False,
             )
         else:
-            civ_sub, extra_data = split_ctl_mem_sub(sub_byte)
             await self._civ(
                 cmd_byte,
                 sub=civ_sub,
@@ -1408,12 +1394,18 @@ class RadioPoller:
         Called after scope is enabled — IC-7610 ignores scope control
         queries when scope data output is off.
 
-        Note: commands 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1D, 0x1F
-        require a receiver prefix byte (00=MAIN, 01=SUB) in the READ
-        query — without it the IC-7610 silently ignores the query.
-        The public ``get_scope_*`` methods on ``ScopeRuntimeMixin`` add
-        the prefix from ``radio_state.scope_controls.receiver`` for
-        each affected sub-command.
+        Note: some sub-commands require a receiver prefix byte
+        (00=MAIN, 01=SUB) in the READ query — without it the IC-7610
+        silently ignores the query.  Which ones is
+        ``commands/scope.py: SCOPE_RECEIVER_SELECTOR_SUBS``; do not
+        restate the membership here, it moved there under MOR-1981 and
+        that constant is the one a sender should import.  This method is
+        not one of the senders that consult it: its prefix comes from the per-getter
+        ``receiver=`` arguments in ``runtime/_scope_runtime.py``, which
+        must be changed alongside the set.  The public ``get_scope_*``
+        methods on ``ScopeRuntimeMixin`` add the prefix from
+        ``radio_state.scope_controls.receiver`` for each affected
+        sub-command.
 
         Each getter is bounded by ``_SCOPE_GETTER_TIMEOUT``: a dropped
         scope-control response (common on busy scope streams) only costs
@@ -3639,7 +3631,7 @@ class RadioPoller:
     # State queries interleaved on odd cycles.
     # Tuple: (cmd, sub, receiver) where receiver=None means global query.
     # Populated per instance from runtime profile/capabilities.
-    _STATE_QUERIES: list[tuple[int, int | None, int | None]] = []
+    _STATE_QUERIES: list[tuple[int, int | bytes | None, int | None]] = []
 
     def _pick_high_meter(self, high_idx: int) -> tuple[int, int | None]:
         """Choose HIGH-tier meter based on PTT state."""
@@ -3930,16 +3922,21 @@ class RadioPoller:
                 self._poll_index += 1
                 return
             state_idx = (self._poll_index // 2) % len(self._STATE_QUERIES)
-            cmd_byte, sub_byte, receiver = self._STATE_QUERIES[state_idx]
+            cmd_byte, state_sub, receiver = self._STATE_QUERIES[state_idx]
+            # ``sub`` reports the CI-V sub-command byte; a query that also
+            # carries payload in its sub element (see
+            # ``_send_one_state_query``) has that payload split off here
+            # rather than formatted as part of the byte.
+            diag_sub, _ = split_ctl_mem_sub(state_sub)
             self._record_state_diagnostic(
                 "backend_read",
                 "web.radio_poller",
                 family="state",
                 command=f"0x{cmd_byte:02x}",
-                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
+                sub=None if diag_sub is None else f"0x{diag_sub:02x}",
                 receiver=receiver,
             )
-            await self._send_one_state_query(cmd_byte, sub_byte, receiver)
+            await self._send_one_state_query(cmd_byte, state_sub, receiver)
         self._poll_index += 1
 
     # Issue #2303: passive observation must never select or exchange a VFO.

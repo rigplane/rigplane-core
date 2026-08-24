@@ -3822,12 +3822,56 @@ def test_state_queries_include_scope_vbw_rbw_edge_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
 
     queries = set(poller._STATE_QUERIES)  # noqa: SLF001
-    assert (0x27, 0x16, None) in queries  # edge number
-    assert (0x27, 0x19, None) in queries  # REF level
+    # The eight selector-carrying reads arrive as a two-byte ``sub``
+    # (sub-command + Main/Sub selector); the rest stay bare (MOR-1981).
+    assert (0x27, b"\x16\x00", None) in queries  # edge number
+    assert (0x27, b"\x19\x00", None) in queries  # REF level
     assert (0x27, 0x1B, None) in queries  # during TX
     assert (0x27, 0x1C, None) in queries  # center type
-    assert (0x27, 0x1D, None) in queries  # VBW
-    assert (0x27, 0x1F, None) in queries  # RBW
+    assert (0x27, b"\x1d\x00", None) in queries  # VBW
+    assert (0x27, b"\x1f\x00", None) in queries  # RBW
+
+
+@pytest.mark.asyncio
+async def test_scope_state_query_uses_the_live_scope_receiver() -> None:
+    """The poll rotation overrides the sweep's MAIN default (MOR-1981).
+
+    ``build_state_queries`` runs at connect, before any 0x27 0x12 response
+    has said which scope is selected, so it emits ``SCOPE_SELECTOR_MAIN``.
+    The poller knows the live selection and must substitute it, or a
+    dual-scope radio showing SUB would be polled for MAIN's settings.
+    """
+    radio = _make_radio()
+    state = RadioState()
+    state.scope_controls.receiver = 1
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._send_one_state_query(0x27, b"\x14\x00", None)  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once()
+    assert radio.send_civ.await_args.args[0] == 0x27
+    assert radio.send_civ.await_args.kwargs["sub"] == 0x14
+    assert radio.send_civ.await_args.kwargs["data"] == b"\x01"
+
+
+@pytest.mark.asyncio
+async def test_scope_fixed_edge_query_carries_no_selector_byte() -> None:
+    """MOR-1981: 0x27 0x1E must never go out as ``27 1E 00``.
+
+    0x1E takes ``<frequency range><edge number>``, and ``00`` is not a legal
+    frequency range -- they start at ``01``.  While 0x1E was a member of
+    ``commands/scope.py: SCOPE_RECEIVER_SELECTOR_SUBS`` this call put that
+    frame on the wire.  The valid read is built by
+    ``commands/scope.py: get_scope_fixed_edge`` and reaches the radio
+    through ``RadioPoller._fetch_scope_controls``, not through here.
+    """
+    radio = _make_radio()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._send_one_state_query(0x27, 0x1E, None)  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once()
+    assert radio.send_civ.await_args.kwargs["data"] == b""
 
 
 # ---------------------------------------------------------------------------

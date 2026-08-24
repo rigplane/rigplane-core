@@ -19,6 +19,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from rigplane.core.acquisition_scheduler import split_ctl_mem_sub
+
 if TYPE_CHECKING:
     # Internal implementation module for IcomRadio — the TID251 ban targets
     # external consumers (web/, rigctld/), not radio.py's own helpers.
@@ -61,11 +63,15 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
         )
         ok = 0
         for cmd_byte, sub_byte, receiver in queries:
+            # A query's sub element carries payload of its own where the read
+            # needs one -- the scope reads that take a Main/Sub selector are
+            # built that way (``_state_queries.py: build_state_queries``).
+            civ_sub, extra_data = split_ctl_mem_sub(sub_byte)
             try:
                 if (
                     receiver is None
                     and cmd_byte in (0x25, 0x26)
-                    and sub_byte == 0x01
+                    and civ_sub == 0x01
                     and radio._profile.vfo_readback == "selected_unselected"
                 ):
                     await radio.send_civ(
@@ -82,16 +88,19 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
                             wait_response=False,
                         )
                     else:
-                        # cmd29-wrapped: 0x29 with [receiver, cmd, sub?]
+                        # cmd29-wrapped: 0x29 with [receiver, cmd, sub?].
+                        # ``civ_sub`` and no ``extra_data``: a sub element
+                        # that carries payload is never paired with a
+                        # receiver, so there is nothing to append here.
                         inner = bytes([receiver, cmd_byte])
-                        if sub_byte is not None:
-                            inner += bytes([sub_byte])
+                        if civ_sub is not None:
+                            inner += bytes([civ_sub])
                         await radio.send_civ(0x29, data=inner, wait_response=False)
                 else:
                     await radio.send_civ(
                         cmd_byte,
-                        sub=sub_byte,
-                        data=b"",
+                        sub=civ_sub,
+                        data=extra_data,
                         wait_response=False,
                     )
                 ok += 1

@@ -61,6 +61,79 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 )
 
 
+# Scope sub-commands whose READ query carries a one-byte Main/Sub scope
+# selector between the sub-command byte and the frame terminator
+# (0x00 = MAIN, 0x01 = SUB).  Without it the IC-7610 silently ignores the
+# query and the IC-7300 refuses it with a NAK.  Every other 0x27 read carries
+# no selector byte -- except 0x1E, which carries a ``<range><edge>`` selector
+# of its own; see ``get_scope_fixed_edge`` below.
+#
+# Imported by ``runtime/_state_queries.py: build_state_queries``, whose list
+# ``runtime/radio_initial_state.py: fetch_initial_state`` then sends, and by
+# ``web/radio_poller.py: RadioPoller._send_one_state_query``.  Those are the
+# senders that consult this set.
+#
+# Two further places hold this membership and do NOT import it, so an edit
+# here does not reach them -- change all three together:
+#   ``runtime/_scope_runtime.py`` passes ``receiver=`` per getter, reaching
+#     exactly these eight sub-commands and no others.
+#   ``runtime/_civ_rx.py: CivRuntime._civ_expects_response`` repeats them as
+#     a local tuple to decide whether a 0x27 reply is expected.  That copy is
+#     executable and unpinned: a sub-command added here but not there is sent
+#     with its selector byte and then classified as expecting no response, so
+#     nothing awaits the reply.
+# Nothing asserts that the three agree.  Making the RX path import this
+# constant is the real fix and is deliberately not done here (MOR-1981).
+#
+# ``rigctld/server.py: RigctldServer._send_one_state_query`` has the same
+# shape and does NOT consult this set.  It cannot reach 0x27 today because
+# ``core/acquisition_scheduler.py: IcomCivAcquisitionExecutor.query_for_path``
+# has no ``scope_controls`` branch, so every scope field resolves to None.
+# Nothing pins that.  If that branch is ever added, this set is the third
+# place to wire up, or rigctld will send ``27 14`` bare while web does not.
+#
+# Membership (MOR-1981).  Measured on a live IC-7300, six runs with no
+# variance: each sub-command below is refused with a NAK when sent bare,
+# while 0x12, 0x13, 0x1B and 0x1C answer.  Icom's CI-V Reference Guide for
+# the IC-705 -- the same single-scope architecture -- prints a two-byte data
+# field for 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A and 0x1D and a one-byte field
+# for 0x12, 0x13, 0x1B and 0x1C, matching that bench result with no
+# exception.  0x1F (RBW) has no row in that guide, but Hamlib supplies the
+# selector for it and the bare form NAKs, so it is the same class.  The
+# IC-7300's own sub-command table could not be reached from the environment
+# this was measured in, so its membership rests on the bench plus the
+# analogy with the IC-705.  No bench evidence exists for the IC-9700.  The
+# de-risking fact is that ``web/radio_poller.py`` has been putting this exact
+# split on the wire to all four scope-capable profiles since long before this
+# constant existed: the connect sweep is catching up to shipped behaviour,
+# not trying something new.
+#
+# The exclusions are not omissions -- on a sub-command that takes no
+# selector the extra byte is a WRITE, not a no-op:
+#   0x1C (center type): ``27 1C 00`` is read as SET center_type=0 (Filter
+#     center).
+#   0x1E (fixed edge): takes ``<frequency range><edge number>`` instead, and
+#     00 is not a legal range -- ranges start at 01.  ``get_scope_fixed_edge``
+#     below builds that pair.
+SCOPE_RECEIVER_SELECTOR_SUBS: frozenset[int] = frozenset(
+    {
+        _SUB_SCOPE_MODE,  # 0x14 mode (center/fixed/scroll)
+        _SUB_SCOPE_SPAN,  # 0x15 span
+        _SUB_SCOPE_EDGE,  # 0x16 edge number
+        _SUB_SCOPE_HOLD,  # 0x17 hold
+        _SUB_SCOPE_REF,  # 0x19 ref level
+        _SUB_SCOPE_SPEED,  # 0x1A sweep speed
+        _SUB_SCOPE_VBW,  # 0x1D VBW
+        _SUB_SCOPE_RBW,  # 0x1F RBW
+    }
+)
+
+# The selector value naming the MAIN scope.  It is the only legal value on a
+# single-scope radio, and the value a sender must use when it does not (yet)
+# know which scope the radio has selected.
+SCOPE_SELECTOR_MAIN: int = 0x00
+
+
 def _validate_scope_range(name: str, value: int, minimum: int, maximum: int) -> int:
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must be {minimum}-{maximum}, got {value}")
