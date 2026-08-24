@@ -21,6 +21,12 @@ _SELECTOR_SUBS = frozenset({0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1D, 0x1F})
 _BARE_SUBS = frozenset({0x12, 0x13, 0x1B, 0x1C})
 
 
+def _scope_queries(
+    queries: list[tuple[int, int | bytes | None, int | None]],
+) -> list[tuple[int, int | bytes | None, int | None]]:
+    return [q for q in queries if q[0] == 0x27]
+
+
 def _ic7610_caps() -> set[str]:
     """Return the full capability set for IC-7610."""
     profile = resolve_radio_profile(model="IC-7610")
@@ -161,6 +167,60 @@ class TestScopeReceiverSelector:
         """
         assert 0x1E not in SCOPE_RECEIVER_SELECTOR_SUBS
 
+    def test_sweep_splits_scope_reads_eight_selector_four_bare(self) -> None:
+        profile = resolve_radio_profile(model="IC-7300")
+        scope = _scope_queries(build_state_queries(profile, _ic7300_caps()))
+
+        with_selector = {
+            sub[0] for _, sub, _ in scope if isinstance(sub, (bytes, bytearray))
+        }
+        bare = {sub for _, sub, _ in scope if isinstance(sub, int)}
+
+        assert with_selector == _SELECTOR_SUBS
+        assert bare == _BARE_SUBS
+        assert len(scope) == len(_SELECTOR_SUBS) + len(_BARE_SUBS) == 12
+        # The scope reads are the only queries this builder gives a
+        # payload-carrying sub element to.
+        queries = build_state_queries(profile, _ic7300_caps())
+        assert [
+            cmd for cmd, sub, _ in queries if isinstance(sub, (bytes, bytearray))
+        ] == [0x27] * len(_SELECTOR_SUBS)
+
+    def test_sweep_selector_is_one_byte_and_main(self) -> None:
+        profile = resolve_radio_profile(model="IC-7300")
+        scope = _scope_queries(build_state_queries(profile, _ic7300_caps()))
+
+        carried = [sub for _, sub, _ in scope if isinstance(sub, (bytes, bytearray))]
+        assert carried, "no scope read carried a selector"
+        for sub in carried:
+            assert len(sub) == 2
+            assert sub[1] == SCOPE_SELECTOR_MAIN
+
+    @pytest.mark.parametrize("model", ["IC-7300", "IC-7610"])
+    def test_a_payload_carrying_sub_is_never_paired_with_a_receiver(
+        self, model: str
+    ) -> None:
+        """The selector is payload, not the cmd29 receiver slot.
+
+        A non-``None`` third element routes the query through cmd29 in both
+        senders, which is a different frame entirely, and neither carries
+        the payload half of the sub element down that path:
+        ``runtime/radio_initial_state.py: fetch_initial_state`` wraps the
+        sub-command byte alone, and
+        ``web/radio_poller.py: RadioPoller._send_one_state_query`` asserts
+        the combination cannot arise.
+        """
+        profile = resolve_radio_profile(model=model)
+        caps = set(profile.capabilities)
+        queries = build_state_queries(profile, caps)
+
+        assert _scope_queries(queries), "no scope reads to check"
+        assert all(
+            receiver is None
+            for _, sub, receiver in queries
+            if isinstance(sub, (bytes, bytearray))
+        )
+
 
 # ------------------------------------------------------------------
 # CoreRadio._fetch_initial_state tests
@@ -212,6 +272,37 @@ class TestFetchInitialState:
             call(0x26, data=b"\x01", wait_response=False)
             in radio.send_civ.await_args_list
         )
+
+    @pytest.mark.asyncio
+    async def test_scope_reads_carry_the_selector_only_where_it_is_legal(
+        self, radio
+    ) -> None:
+        """MOR-1981: the eight get ``<sub> 00``, the four go out bare.
+
+        Measured on a live IC-7300: the bare form of each of the eight is
+        refused with a NAK, and the four answer.  A mutation that adds the
+        byte to one of the four -- 0x1C above all, where ``27 1C 00`` is a
+        SET -- fails here.
+        """
+        radio._profile = resolve_radio_profile(model="IC-7300")
+
+        await radio._fetch_initial_state()
+
+        sent = radio.send_civ.await_args_list
+        for sub in sorted(_SELECTOR_SUBS):
+            assert (
+                call(
+                    0x27,
+                    sub=sub,
+                    data=bytes([SCOPE_SELECTOR_MAIN]),
+                    wait_response=False,
+                )
+                in sent
+            ), f"0x27/0x{sub:02X} was not sent with a selector byte"
+        for sub in sorted(_BARE_SUBS):
+            assert call(0x27, sub=sub, data=b"", wait_response=False) in sent, (
+                f"0x27/0x{sub:02X} was not sent bare"
+            )
 
     @pytest.mark.asyncio
     async def test_sets_flag_on_success(self, radio) -> None:
