@@ -725,12 +725,12 @@ class CivRuntime:
         built with a timeout below 2.0 s; a read that answers in time settles
         normally, which is every ordinary one.
 
-        The orphaned refusal is also not inert. It lands in the tracker's ACK
-        backlog and stays claimable for ``ack_backlog_ttl``, where the next
-        ``register_ack(consume_backlog=True)`` — the form ``_execute_civ_raw``
-        uses — claims it and reports it as that command's failure. So this
-        read stops being charged another command's refusal; the refusal is
-        charged to a different command instead.
+        The orphaned refusal lands in the tracker's ACK backlog. Under
+        MOR-1980 that displaced the mis-charge rather than ending it, because
+        ``_execute_civ_raw`` still claimed from the backlog; MOR-1977 unit A
+        closed that, so no blocking waiter in ``src/`` consumes the backlog
+        now and the refusal ages out under ``ack_backlog_ttl`` unclaimed,
+        counted by ``ack_backlog_drops``.
         """
         async with self._ptt_read_lock:
             token = self._managed_tx_ports.get(provider_generation)
@@ -981,11 +981,11 @@ class CivRuntime:
         request that registers a NAK waiter can be settled by somebody else's
         refusal. Pass ``nak_terminal=False`` to register no NAK waiter: this
         request then waits for its exact response, and any refusal routed
-        meanwhile falls through to the tracker's orphan ACK backlog — where it
-        stays claimable for ``ack_backlog_ttl`` by the next
-        ``register_ack(consume_backlog=True)``, rather than being discarded.
-        The cost is that a refusal genuinely aimed at *this* request no longer
-        ends it — it runs out ``timeout`` and fails as a timeout instead.
+        meanwhile falls through to the tracker's orphan ACK backlog, where it
+        ages out under ``ack_backlog_ttl`` without settling anything — no
+        blocking waiter in ``src/`` consumes that backlog. The cost is that a
+        refusal genuinely aimed at *this* request no longer ends it — it runs
+        out ``timeout`` and fails as a timeout instead.
         """
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()
@@ -3507,8 +3507,13 @@ class CivRuntime:
             if expects_response:
                 pending = self._host._civ_request_tracker.register_response(request_key)
             else:
+                # ``consume_backlog=False``: this waiter is registered before
+                # the frame is sent, so anything already in the orphan ACK/NAK
+                # backlog is necessarily some other command's -- claiming it
+                # would report that command's refusal as this one's.
                 pending_or_token = self._host._civ_request_tracker.register_ack(
-                    wait=True
+                    wait=True,
+                    consume_backlog=False,
                 )
                 if isinstance(pending_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")
