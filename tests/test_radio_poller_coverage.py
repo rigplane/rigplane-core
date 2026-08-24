@@ -3830,6 +3830,26 @@ def test_state_queries_include_scope_vbw_rbw_edge_for_ic7610() -> None:
     assert (0x27, 0x1F, None) in queries  # RBW
 
 
+@pytest.mark.asyncio
+async def test_scope_fixed_edge_query_carries_no_selector_byte() -> None:
+    """MOR-1981: 0x27 0x1E must never go out as ``27 1E 00``.
+
+    0x1E takes ``<frequency range><edge number>``, and ``00`` is not a legal
+    frequency range -- they start at ``01``.  While 0x1E was a member of
+    ``commands/scope.py: SCOPE_RECEIVER_SELECTOR_SUBS`` this call put that
+    frame on the wire.  The valid read is built by
+    ``commands/scope.py: get_scope_fixed_edge`` and reaches the radio
+    through ``RadioPoller._fetch_scope_controls``, not through here.
+    """
+    radio = _make_radio()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._send_one_state_query(0x27, 0x1E, None)  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once()
+    assert radio.send_civ.await_args.kwargs["data"] == b""
+
+
 # ---------------------------------------------------------------------------
 # _adaptive_gap tests
 # ---------------------------------------------------------------------------

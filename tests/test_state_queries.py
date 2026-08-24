@@ -6,8 +6,19 @@ from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
+from rigplane.commands.scope import (
+    SCOPE_RECEIVER_SELECTOR_SUBS,
+    SCOPE_SELECTOR_MAIN,
+)
 from rigplane.runtime._state_queries import build_state_queries
 from rigplane.profiles import resolve_radio_profile
+
+# The 0x27 read sub-commands the sweep sends, split by whether the frame
+# carries the one-byte Main/Sub scope selector.  Spelled out here rather
+# than imported from the production constant, so a change to that set has
+# to be made twice, deliberately (MOR-1981).
+_SELECTOR_SUBS = frozenset({0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1D, 0x1F})
+_BARE_SUBS = frozenset({0x12, 0x13, 0x1B, 0x1C})
 
 
 def _ic7610_caps() -> set[str]:
@@ -121,6 +132,34 @@ class TestBuildStateQueries:
         q1 = build_state_queries(profile, caps)
         q2 = build_state_queries(profile, caps)
         assert q1 == q2
+
+
+class TestScopeReceiverSelector:
+    """MOR-1981: which 0x27 reads carry the Main/Sub scope selector byte.
+
+    The separation is the point.  On a sub-command that takes no selector
+    the extra ``0x00`` is not an ignored byte but the first data byte of a
+    WRITE, so a mutation that widens the set has to fail here.
+    """
+
+    def test_constant_holds_exactly_the_eight(self) -> None:
+        assert SCOPE_RECEIVER_SELECTOR_SUBS == _SELECTOR_SUBS
+        assert len(SCOPE_RECEIVER_SELECTOR_SUBS) == 8
+        assert SCOPE_SELECTOR_MAIN == 0x00
+
+    def test_the_bare_four_are_not_in_the_set(self) -> None:
+        """``27 1C 00`` reads as SET center_type=0 (Filter center), not a query."""
+        assert _BARE_SUBS.isdisjoint(SCOPE_RECEIVER_SELECTOR_SUBS)
+        assert len(_BARE_SUBS) == 4
+
+    def test_fixed_edge_is_not_in_the_set(self) -> None:
+        """0x1E takes ``<frequency range><edge number>``, not the selector.
+
+        ``00`` is not a legal frequency range -- they start at ``01`` -- so
+        ``27 1E 00`` is neither a bare read nor a valid one.  The pair is
+        built by ``commands/scope.py: get_scope_fixed_edge``.
+        """
+        assert 0x1E not in SCOPE_RECEIVER_SELECTOR_SUBS
 
 
 # ------------------------------------------------------------------

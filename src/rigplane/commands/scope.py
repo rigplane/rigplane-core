@@ -61,14 +61,36 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 )
 
 
-# Scope sub-commands that require a receiver prefix byte in READ queries.
-# Without the prefix, IC-7610 silently ignores the query.
-# 0x12 (receiver select), 0x13 (single/dual), 0x1B (during TX) do NOT need it.
+# Scope sub-commands whose READ query carries a one-byte Main/Sub scope
+# selector between the sub-command byte and the frame terminator
+# (0x00 = MAIN, 0x01 = SUB).  Without it the IC-7610 silently ignores the
+# query and the IC-7300 refuses it with a NAK.  Every 0x27 read outside this
+# set must be sent bare.
 #
 # Consumed by ``runtime/_state_queries.py: build_state_queries`` and
 # ``web/radio_poller.py: RadioPoller._send_one_state_query`` -- the two
 # senders of 0x27 reads that work from a sub-command list rather than from
 # the per-getter arguments in ``runtime/_scope_runtime.py``.
+#
+# Membership (MOR-1981).  Measured on a live IC-7300, six runs with no
+# variance: each sub-command below is refused with a NAK when sent bare,
+# while 0x12, 0x13, 0x1B and 0x1C answer.  Icom's CI-V Reference Guide for
+# the IC-705 -- the same single-scope architecture -- prints a two-byte data
+# field for 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A and 0x1D and a one-byte field
+# for 0x12, 0x13, 0x1B and 0x1C, matching that bench result with no
+# exception.  0x1F (RBW) has no row in that guide, but Hamlib supplies the
+# selector for it and the bare form NAKs, so it is the same class.  The
+# IC-7300's own sub-command table could not be reached from the environment
+# this was measured in, so its membership rests on the bench plus the
+# analogy with the IC-705.
+#
+# The exclusions are not omissions -- on a sub-command that takes no
+# selector the extra byte is a WRITE, not a no-op:
+#   0x1C (center type): ``27 1C 00`` is read as SET center_type=0 (Filter
+#     center).
+#   0x1E (fixed edge): takes ``<frequency range><edge number>`` instead, and
+#     00 is not a legal range -- ranges start at 01.  ``get_scope_fixed_edge``
+#     below builds that pair.
 SCOPE_RECEIVER_SELECTOR_SUBS: frozenset[int] = frozenset(
     {
         _SUB_SCOPE_MODE,  # 0x14 mode (center/fixed/scroll)
@@ -77,10 +99,7 @@ SCOPE_RECEIVER_SELECTOR_SUBS: frozenset[int] = frozenset(
         _SUB_SCOPE_HOLD,  # 0x17 hold
         _SUB_SCOPE_REF,  # 0x19 ref level
         _SUB_SCOPE_SPEED,  # 0x1A sweep speed
-        # 0x1C (center type) does NOT take receiver prefix -- sending 0x00
-        # as prefix is misinterpreted as SET center_type=0 (Filter center).
         _SUB_SCOPE_VBW,  # 0x1D VBW
-        _SUB_SCOPE_FIXED_EDGE,  # 0x1E fixed edge frequencies
         _SUB_SCOPE_RBW,  # 0x1F RBW
     }
 )
