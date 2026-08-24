@@ -161,15 +161,23 @@ class RawCivTransactionResult:
 
 @dataclass(slots=True)
 class _CivDataTransaction:
-    """Exact tracker state owned by one data-returning CI-V request."""
+    """Exact tracker state owned by one data-returning CI-V request.
+
+    ``nak`` is ``None`` when the request was registered with
+    ``nak_terminal=False``: it then owns no ACK/NAK waiter at all, and any
+    refusal routed while it is open falls through to the tracker's orphan
+    backlog instead of settling it.
+    """
 
     response: asyncio.Future[CivFrame]
-    nak: asyncio.Future[CivFrame]
+    nak: asyncio.Future[CivFrame] | None
     owner: object | None = None
     frame: CivFrame | None = None
 
     @property
     def futures(self) -> tuple[asyncio.Future[CivFrame], ...]:
+        if self.nak is None:
+            return (self.response,)
         return (self.response, self.nak)
 
 
@@ -683,7 +691,47 @@ class CivRuntime:
         provider_generation: int,
         observer: Callable[[ProviderPttObservation], None],
     ) -> bool:
-        """Publish one exact PTT response only while its binding stays current."""
+        """Publish one exact PTT response only while its binding stays current.
+
+        Registered with ``nak_terminal=False``, so this read owns no NAK
+        waiter. ``write_managed_ptt`` sends with ``expect="none"`` and owns no
+        waiter either, and ``core/tx_safety.py: TxSafetySupervisor`` issues
+        this read as soon as that write returns — so a refusal of the write
+        reaches the tracker with this read as the only ACK/NAK waiter in
+        registration order, and would settle it. Declining the waiter leaves
+        that refusal an orphan and lets the read wait for its own ``1C 00``
+        answer (``tests/test_raw_civ_transaction.py:
+        test_refused_managed_ptt_write_leaves_the_next_read_authoritative``).
+
+        Two costs, both larger than "a slower failure of the same shape".
+
+        A refusal genuinely aimed at *this* read no longer ends it: the read
+        runs out ``_civ_get_timeout`` and raises ``asyncio.TimeoutError``
+        instead of returning a NAK result. That much is pinned by
+        ``tests/test_raw_civ_transaction.py:
+        test_authoritative_ptt_read_waits_out_its_own_refusal``, which uses a
+        shortened timeout and drives this method directly — no supervisor,
+        no effect service. What follows is read from those modules, not
+        exercised by any test here.
+
+        ``core/tx_safety.py: TxSafetySupervisor`` emits this read with its
+        ``_read_timeout``, and ``runtime/radio.py: CoreRadio.__init__``
+        derives ``_civ_get_timeout`` as ``min(timeout, 2.0)``. Both are 2.0 s
+        under shipped defaults, and the supervisor stamps its deadline first —
+        so on a timeout the effect service's deadline has already expired and
+        ``managed_tx_effect_service.py: _Service._wait`` poisons the attempt
+        instead of settling it, retiring the managed-TX provider generation.
+        On a timeout, ``settle_attempt`` is reached only when the radio was
+        built with a timeout below 2.0 s; a read that answers in time settles
+        normally, which is every ordinary one.
+
+        The orphaned refusal is also not inert. It lands in the tracker's ACK
+        backlog and stays claimable for ``ack_backlog_ttl``, where the next
+        ``register_ack(consume_backlog=True)`` — the form ``_execute_civ_raw``
+        uses — claims it and reports it as that command's failure. So this
+        read stops being charged another command's refusal; the refusal is
+        charged to a different command instead.
+        """
         async with self._ptt_read_lock:
             token = self._managed_tx_ports.get(provider_generation)
             managed = token is not None
@@ -702,7 +750,7 @@ class CivRuntime:
             self._active_ptt_read = read
             try:
                 result = await self.execute_civ_transaction(
-                    civ_frame, expect="data", owner=read
+                    civ_frame, expect="data", owner=read, nak_terminal=False
                 )
                 return (
                     result.status == "response"
@@ -919,12 +967,25 @@ class CivRuntime:
         expect: RawCivExpectation,
         timeout: float | None = None,
         owner: object | None = None,
+        nak_terminal: bool = True,
     ) -> RawCivTransactionResult:
         """Execute one explicitly-scoped raw CI-V transaction.
 
         Unlike the poller/commander path, this does not infer whether a command
         should ACK or return data. The caller must choose ``none``, ``ack``, or
         ``data`` so vendor-specific commands remain deterministic.
+
+        ``nak_terminal`` applies to ``expect="data"`` only. A CI-V refusal
+        names no command, and ``core/civ.py: CivRequestTracker.resolve`` gives
+        an ACK/NAK to the first eligible waiter in registration order, so a
+        request that registers a NAK waiter can be settled by somebody else's
+        refusal. Pass ``nak_terminal=False`` to register no NAK waiter: this
+        request then waits for its exact response, and any refusal routed
+        meanwhile falls through to the tracker's orphan ACK backlog — where it
+        stays claimable for ``ack_backlog_ttl`` by the next
+        ``register_ack(consume_backlog=True)``, rather than being discarded.
+        The cost is that a refusal genuinely aimed at *this* request no longer
+        ends it — it runs out ``timeout`` and fails as a timeout instead.
         """
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()
@@ -970,7 +1031,9 @@ class CivRuntime:
                     raise RuntimeError("ACK waiter registration returned sink token")
                 pending_waiters.append(pending_or_token)
             else:
-                data_transaction = self._register_civ_data_transaction(request_key)
+                data_transaction = self._register_civ_data_transaction(
+                    request_key, nak_terminal=nak_terminal
+                )
                 data_transaction.owner = owner
                 pending_waiters.extend(data_transaction.futures)
 
@@ -989,7 +1052,12 @@ class CivRuntime:
             if data_transaction is not None:
                 frame = data_transaction.frame
                 if frame is None:
+                    # A future that completed with a *result* has already set
+                    # ``frame`` (``_claim_civ_data_transaction`` runs in the
+                    # same synchronous step as ``resolve``), so every future
+                    # left here carries an exception to re-raise.
                     data_transaction.response.result()
+                    assert data_transaction.nak is not None
                     frame = data_transaction.nak.result()
             else:
                 frame = pending_waiters[0].result()
@@ -1021,23 +1089,26 @@ class CivRuntime:
         )
 
     def _register_civ_data_transaction(
-        self, request_key: CivRequestKey
+        self, request_key: CivRequestKey, *, nak_terminal: bool = True
     ) -> _CivDataTransaction:
         """Register exact response and NAK identities for one data request."""
         if self._civ_data_transaction is not None:
             raise RuntimeError("CI-V data transaction already active")
         tracker = self._host._civ_request_tracker
         response = tracker.register_response(request_key)
-        nak_or_token = tracker.register_ack(
-            wait=True,
-            consume_backlog=False,
-            nak_only=True,
-        )
-        if isinstance(nak_or_token, int):
-            tracker.unregister(response)
-            response.cancel()
-            raise RuntimeError("ACK waiter registration returned sink token")
-        transaction = _CivDataTransaction(response=response, nak=nak_or_token)
+        nak: asyncio.Future[CivFrame] | None = None
+        if nak_terminal:
+            nak_or_token = tracker.register_ack(
+                wait=True,
+                consume_backlog=False,
+                nak_only=True,
+            )
+            if isinstance(nak_or_token, int):
+                tracker.unregister(response)
+                response.cancel()
+                raise RuntimeError("ACK waiter registration returned sink token")
+            nak = nak_or_token
+        transaction = _CivDataTransaction(response=response, nak=nak)
         self._civ_data_transaction = transaction
         return transaction
 
@@ -1062,7 +1133,7 @@ class CivRuntime:
         winner = (
             transaction.nak if event.type == CivEventType.NAK else transaction.response
         )
-        if winner.cancelled() or not winner.done():
+        if winner is None or winner.cancelled() or not winner.done():
             return None
         try:
             frame = winner.result()
