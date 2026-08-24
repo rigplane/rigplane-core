@@ -74,6 +74,7 @@ from ..capabilities import (
 )
 from .._queue_pressure import PRESSURE_THRESHOLD
 from ..commands.commander import Priority
+from ..commands.scope import SCOPE_RECEIVER_SELECTOR_SUBS
 from ..core.command_service import (
     CommandService,
 )
@@ -1300,25 +1301,6 @@ class RadioPoller:
         )
         return result
 
-    # Scope sub-commands that require a receiver prefix byte in READ queries.
-    # Without the prefix, IC-7610 silently ignores the query.
-    # 0x12 (receiver select), 0x13 (single/dual), 0x1B (during TX) do NOT need it.
-    _SCOPE_RECEIVER_PREFIX_SUBS = frozenset(
-        {
-            0x14,  # mode (center/fixed/scroll)
-            0x15,  # span
-            0x16,  # edge number
-            0x17,  # hold
-            0x19,  # ref level
-            0x1A,  # sweep speed
-            # 0x1C (center type) does NOT take receiver prefix — sending 0x00
-            # as prefix is misinterpreted as SET center_type=0 (Filter center).
-            0x1D,  # VBW
-            0x1E,  # fixed edge frequencies
-            0x1F,  # RBW
-        }
-    )
-
     async def _send_one_state_query(
         self,
         cmd_byte: int,
@@ -1371,7 +1353,7 @@ class RadioPoller:
                 await self._civ(
                     0x29, data=inner, priority=priority, wait_dispatch=False
                 )
-        elif cmd_byte == 0x27 and sub_byte in self._SCOPE_RECEIVER_PREFIX_SUBS:
+        elif cmd_byte == 0x27 and sub_byte in SCOPE_RECEIVER_SELECTOR_SUBS:
             # Scope control queries need receiver prefix (00=MAIN, 01=SUB)
             scope_rx = 0
             if self._radio_state:

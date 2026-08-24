@@ -61,6 +61,36 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 )
 
 
+# Scope sub-commands that require a receiver prefix byte in READ queries.
+# Without the prefix, IC-7610 silently ignores the query.
+# 0x12 (receiver select), 0x13 (single/dual), 0x1B (during TX) do NOT need it.
+#
+# Consumed by ``runtime/_state_queries.py: build_state_queries`` and
+# ``web/radio_poller.py: RadioPoller._send_one_state_query`` -- the two
+# senders of 0x27 reads that work from a sub-command list rather than from
+# the per-getter arguments in ``runtime/_scope_runtime.py``.
+SCOPE_RECEIVER_SELECTOR_SUBS: frozenset[int] = frozenset(
+    {
+        _SUB_SCOPE_MODE,  # 0x14 mode (center/fixed/scroll)
+        _SUB_SCOPE_SPAN,  # 0x15 span
+        _SUB_SCOPE_EDGE,  # 0x16 edge number
+        _SUB_SCOPE_HOLD,  # 0x17 hold
+        _SUB_SCOPE_REF,  # 0x19 ref level
+        _SUB_SCOPE_SPEED,  # 0x1A sweep speed
+        # 0x1C (center type) does NOT take receiver prefix -- sending 0x00
+        # as prefix is misinterpreted as SET center_type=0 (Filter center).
+        _SUB_SCOPE_VBW,  # 0x1D VBW
+        _SUB_SCOPE_FIXED_EDGE,  # 0x1E fixed edge frequencies
+        _SUB_SCOPE_RBW,  # 0x1F RBW
+    }
+)
+
+# The selector value naming the MAIN scope.  It is the only legal value on a
+# single-scope radio, and the value a sender must use when it does not (yet)
+# know which scope the radio has selected.
+SCOPE_SELECTOR_MAIN: int = 0x00
+
+
 def _validate_scope_range(name: str, value: int, minimum: int, maximum: int) -> int:
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must be {minimum}-{maximum}, got {value}")
