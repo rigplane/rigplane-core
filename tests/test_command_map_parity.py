@@ -3,8 +3,10 @@
 Builders in ``src/rigplane/commands/`` that carry both a ``cmd_map`` branch
 and a hardcoded fallback hold the same CI-V knowledge twice, and only a
 hand-written subset compared the two: ``test_command_map_integration.py``
-calls a fixed list of builders against the IC-7610 map, each at one
-argument set with every optional argument left at its default, and
+calls a fixed list of builders against the IC-7610 map, almost all at a
+single argument set with their optional arguments left at the default --
+its ``TestCmd29Parity`` also probes four of them at ``command29=False`` --
+and
 ``test_commands.py: test_speech_cmd_map_prefers_set_speech_key`` and
 ``test_rig_ic7300.py: test_get_speech_cmd_map_uses_set_speech`` each pin
 ``get_speech`` alone. Outside that subset the two copies could disagree

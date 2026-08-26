@@ -7,10 +7,11 @@ follows its wire bytes.
 
 Parity here is a property of these builders at these arguments, not of the
 package. For IC-7610 alone, tests/command_map_parity_divergences.txt
-records builders whose two frames differ — get_attenuator, get_preamp,
-get_af_mute and get_digisel are asserted equal below and listed there,
-because this file calls them at the default command29=True while the
-divergence needs command29=False.
+records builders whose two frames differ; a builder asserted equal below
+can still be listed there at arguments this file does not use. No dsp.py
+builder is listed as of MOR-1986 — get_attenuator, get_preamp, get_af_mute
+and get_digisel were, at command29=False only, until the cmd_map branch was
+made to forward that argument.
 
 tests/test_command_map_parity.py generalises the parity cases below: every
 builder it can reach, every profile in rigs/, and one probe per optional
@@ -217,8 +218,16 @@ class TestHelperCallerParity:
 class TestCmd29Parity:
     """These cmd29-framing functions must match with cmd_map at command29's default.
 
-    Four of them -- ``get_attenuator``, ``get_preamp``, ``get_digisel`` and
-    ``get_af_mute`` -- match only at that default; see the module docstring.
+    ``get_attenuator``, ``get_preamp``, ``get_digisel`` and ``get_af_mute``
+    used to match only at that default, because the cmd_map branch passed a
+    hardcoded ``command29=True`` while the fallback honoured the argument.
+    MOR-1986 made the branch forward it, so they now match at
+    ``command29=False`` too. The ``_without_cmd29`` tests below name that
+    property at the point of use; they are not its only guard.
+    ``test_command_map_parity.py`` probes every optional argument at a
+    non-default value, so it reaches ``command29=False`` on every profile --
+    regressing this fails those four tests and both of that file's baseline
+    tests, six in all.
     """
 
     def test_get_attenuator(self, cmd_map):
@@ -232,6 +241,26 @@ class TestCmd29Parity:
 
     def test_get_af_mute(self, cmd_map):
         assert commands.get_af_mute(cmd_map=cmd_map) == commands.get_af_mute()
+
+    def test_get_attenuator_without_cmd29(self, cmd_map):
+        assert commands.get_attenuator(
+            cmd_map=cmd_map, command29=False
+        ) == commands.get_attenuator(command29=False)
+
+    def test_get_preamp_without_cmd29(self, cmd_map):
+        assert commands.get_preamp(
+            cmd_map=cmd_map, command29=False
+        ) == commands.get_preamp(command29=False)
+
+    def test_get_digisel_without_cmd29(self, cmd_map):
+        assert commands.get_digisel(
+            cmd_map=cmd_map, command29=False
+        ) == commands.get_digisel(command29=False)
+
+    def test_get_af_mute_without_cmd29(self, cmd_map):
+        assert commands.get_af_mute(
+            cmd_map=cmd_map, command29=False
+        ) == commands.get_af_mute(command29=False)
 
     def test_get_audio_peak_filter(self, cmd_map):
         assert (
