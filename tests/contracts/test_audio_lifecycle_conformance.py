@@ -30,7 +30,7 @@ from the MOR-531 live de-risk), not a real backend row.
 
 Shipping bug surfaced by this suite and fixed in MOR-574 (was a strict
 xfail): ``AudioBridge.stop()`` dropped the RX demand BEFORE stopping
-radio TX, and ``LanAudioStream.stop_rx`` early-returns while
+radio TX, and ``AudioStream.stop_rx`` early-returns while
 TRANSMITTING — so on the LAN backend a bridge stop with TX armed leaked
 the running RX stream (state ended RECEIVING with a live ``_rx_task``
 and zero bus subscribers). Stop-side instance of the MOR-556 ordering
@@ -69,7 +69,7 @@ _TX_DEV = AudioDeviceInfo(id=AudioDeviceId(12), name="Rig CODEC Out", output_cha
 
 
 class _FakeLanAudioTransport:
-    """Minimal IcomTransport stand-in feeding the REAL LanAudioStream."""
+    """Minimal IcomTransport stand-in feeding the REAL AudioStream."""
 
     my_id = 0x0101
     remote_id = 0x0202

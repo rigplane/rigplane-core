@@ -1213,19 +1213,29 @@ class TestAckSinkRobustness:
             assert frame.command == _CMD_ACK
         finally:
             # Retire the pump through the loop's own exit condition rather
-            # than by cancelling it.  ``core/transport.py:
-            # IcomTransport.receive_packet`` is a bare ``asyncio.wait_for``
-            # over the packet queue, and ``wait_for`` returns the result
-            # instead of propagating when the cancellation arrives after its
-            # inner future has completed -- so the cancel is dropped there,
-            # ``CivRuntime._civ_rx_loop`` never observes it, and the task runs
-            # on with ``cancelling() == 1``.  ``CivRuntime.stop_pump`` cancels
-            # and awaits with no exit condition set first, so it hangs when
-            # that happens; ``audio/lan_stream.py: LanAudioStream.stop_rx``
-            # has the same await shape and is safe only because it clears the
-            # state its loop tests before cancelling.  Clearing the transport
-            # does the same here: the loop ends at its ``while`` on the next
-            # pass, within one receive timeout.
+            # than by cancelling it, because cancelling it does not behave the
+            # same on every interpreter this project supports.
+            #
+            # ``core/transport.py: IcomTransport.receive_packet`` is a bare
+            # ``asyncio.wait_for`` over the packet queue, and the mock here
+            # mirrors that shape.  On CPython 3.11 -- and only there -- when a
+            # packet is already available at the moment the cancellation
+            # lands, ``wait_for`` returns it and drops the ``CancelledError``,
+            # so ``CivRuntime._civ_rx_loop`` never observes the cancel and
+            # runs on with ``cancelling() == 1``; ``CivRuntime.stop_pump``,
+            # which cancels and then awaits with no exit condition set first,
+            # then never returns.  On 3.12+ ``wait_for`` is built on
+            # ``asyncio.timeouts`` and the cancel propagates, so the loop's
+            # own ``except asyncio.CancelledError`` ends it -- as it also does
+            # on 3.11 when no packet is waiting.  ``runtime/_control_phase.py:
+            # ControlPhaseSessionMechanism._shutdown_supervised_tx`` records
+            # the same 3.11-versus-3.12+ split for the same stdlib reason.
+            #
+            # Clearing the transport is deterministic on all three: the loop
+            # ends at its ``while`` on the next pass, within one receive
+            # timeout, with no cancellation involved.  ``audio/lan_stream.py:
+            # AudioStream.stop_rx`` reaches the same result by clearing the
+            # state its loop tests before cancelling.
             radio._civ_transport = None
             pump = radio._civ_rx_task
             if pump is not None:

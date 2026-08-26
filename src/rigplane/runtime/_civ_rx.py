@@ -730,10 +730,13 @@ class CivRuntime:
         ``_execute_civ_raw`` still claimed from the backlog; MOR-1977 unit A
         closed that, so no waiter in ``src/`` claims it. It is retired
         unclaimed by whichever comes first: the TTL prune inside
-        ``register_ack``/``resolve``, the ``drop_ack_backlog`` that opens the
-        next raw transaction, or ``fail_all`` on a generation advance or pump
-        stop. Only the first two increment ``ack_backlog_drops``; arrival is
-        always counted by ``ack_orphans``.
+        ``register_ack``/``resolve``, eviction once the bounded backlog is
+        full, the ``drop_ack_backlog`` that opens the next *response-capable*
+        raw transaction (``expect="ack"``/``"data"`` — an ``expect="none"``
+        send returns before that call), or ``fail_all`` on a generation
+        advance or pump stop. Every one of those except ``fail_all``
+        increments ``ack_backlog_drops``; arrival is always counted by
+        ``ack_orphans``.
         """
         async with self._ptt_read_lock:
             token = self._managed_tx_ports.get(provider_generation)
@@ -986,10 +989,13 @@ class CivRuntime:
         request then waits for its exact response, and any refusal routed
         meanwhile falls through to the tracker's orphan ACK backlog without
         settling anything — no waiter in ``src/`` claims that backlog. It does
-        not linger: this method drops the whole backlog before registering, so
-        on this path the refusal survives only until the next raw transaction.
-        The cost is that a refusal genuinely aimed at *this* request no longer
-        ends it — it runs out ``timeout`` and fails as a timeout instead.
+        not linger indefinitely: this method drops the whole backlog before
+        registering, so the refusal survives only until the next
+        response-capable transaction. An ``expect="none"`` send is not one —
+        it returns before that drop — so a refusal can outlive several managed
+        TX writes. The cost is that a refusal genuinely aimed at *this*
+        request no longer ends it — it runs out ``timeout`` and fails as a
+        timeout instead.
         """
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()

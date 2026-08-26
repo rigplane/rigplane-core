@@ -14,7 +14,7 @@ the ``calls`` list.
 Declared transition graphs
 --------------------------
 
-``LanLikeRadio`` — single state field mirroring ``LanAudioStream``::
+``LanLikeRadio`` — single state field mirroring ``AudioStream``::
 
     idle --start_rx--> receiving
     receiving --start_tx--> transmitting
@@ -45,7 +45,7 @@ from rigplane.core.types import AudioCodec
 
 
 class LanLikeRadio:
-    """Radio stub mirroring ``LanAudioStream``'s RX/TX state machine.
+    """Radio stub mirroring ``AudioStream``'s RX/TX state machine.
 
     The real LAN stream supports RX-then-TX only: ``start_rx`` requires
     IDLE state, while ``start_tx`` flips the single state field to
