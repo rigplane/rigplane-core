@@ -1213,14 +1213,19 @@ class TestAckSinkRobustness:
             assert frame.command == _CMD_ACK
         finally:
             # Retire the pump through the loop's own exit condition rather
-            # than by cancelling it.  ``CivRuntime._civ_rx_loop`` awaits
-            # ``receive_packet`` under a timeout, and a cancellation delivered
-            # while that await is outstanding surfaces as ``TimeoutError``
-            # instead of ``CancelledError``; the loop catches that and
-            # continues, so the cancellation is consumed and the task keeps
-            # running with ``cancelling() == 1``.  Clearing the transport ends
-            # the loop at its ``while`` on the next pass, within one receive
-            # timeout, with no cancellation involved.
+            # than by cancelling it.  ``core/transport.py:
+            # IcomTransport.receive_packet`` is a bare ``asyncio.wait_for``
+            # over the packet queue, and ``wait_for`` returns the result
+            # instead of propagating when the cancellation arrives after its
+            # inner future has completed -- so the cancel is dropped there,
+            # ``CivRuntime._civ_rx_loop`` never observes it, and the task runs
+            # on with ``cancelling() == 1``.  ``CivRuntime.stop_pump`` cancels
+            # and awaits with no exit condition set first, so it hangs when
+            # that happens; ``audio/lan_stream.py: LanAudioStream.stop_rx``
+            # has the same await shape and is safe only because it clears the
+            # state its loop tests before cancelling.  Clearing the transport
+            # does the same here: the loop ends at its ``while`` on the next
+            # pass, within one receive timeout.
             radio._civ_transport = None
             pump = radio._civ_rx_task
             if pump is not None:
