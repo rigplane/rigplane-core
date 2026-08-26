@@ -360,7 +360,14 @@ class CivRequestTracker:
                     # Successfully sunk an ACK for a fire-and-forget request
                     return True
 
-            # Keep short-lived orphan ACKs so strict waiters can consume them.
+            # Park short-lived orphan ACK/NAK frames, bounded and TTL-pruned.
+            # No waiter in ``src/`` claims them: every ``register_ack`` call
+            # site there passes ``consume_backlog=False`` or takes a sink
+            # token (MOR-1977 unit A).  The deque survives because
+            # ``consume_backlog=True`` remains ``register_ack``'s default for
+            # callers that do want it, and for the ``ack_backlog_drops``
+            # accounting below.  ``ack_orphans`` is counted either way -- it
+            # is incremented before the deque is touched at all.
             self._ack_orphans += 1
             if self._ack_backlog_size <= 0:
                 self._ack_backlog_drops += 1

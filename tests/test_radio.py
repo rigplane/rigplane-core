@@ -22,10 +22,12 @@ from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
     build_cmd29_frame,
+    parse_civ_frame,
 )
 from rigplane.commander import Priority
 from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
 from rigplane.core import tx_safety as tx
+from rigplane.core.civ import CivEvent, CivEventType
 from rigplane.radio import IcomRadio
 from rigplane.types import (
     AgcMode,
@@ -1181,6 +1183,63 @@ class TestConnectedProperty:
 
 class TestAckSinkRobustness:
     """Regression tests for fire-and-forget ACK sink behavior."""
+
+    @pytest.mark.asyncio
+    async def test_blocking_write_ignores_an_orphaned_nak(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """An orphan refusal in the backlog must not settle the next write.
+
+        ``core/civ.py: CivRequestTracker.register_ack`` consumes the orphan
+        ACK/NAK backlog by default, and ``_civ_rx.py:
+        CivRuntime._execute_civ_raw`` registers its ACK waiter *before* it
+        sends — so nothing already in that backlog can be its own. A refusal
+        left there by an earlier command would otherwise complete this write
+        instantly, reporting another command's failure as this one's.
+        """
+        radio._civ_get_timeout = 1.0
+        tracker = radio._civ_request_tracker
+        nak = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0xFA))
+        assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=nak))
+
+        mock_transport.queue_response_on_send(1, _ack_response())
+        write = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x01"
+        )
+        try:
+            frame = await radio._execute_civ_raw(write)
+
+            assert frame is not None
+            assert frame.command == _CMD_ACK
+        finally:
+            # Retire the pump through the loop's own exit condition rather
+            # than by cancelling it, because cancelling it does not behave the
+            # same on every interpreter this project supports.
+            #
+            # ``core/transport.py: IcomTransport.receive_packet`` is a bare
+            # ``asyncio.wait_for`` over the packet queue, and the mock here
+            # mirrors that shape.  On CPython 3.11 -- and only there -- when a
+            # packet is already available at the moment the cancellation
+            # lands, ``wait_for`` returns it and drops the ``CancelledError``,
+            # so ``CivRuntime._civ_rx_loop`` never observes the cancel and
+            # runs on with ``cancelling() == 1``; ``CivRuntime.stop_pump``,
+            # which cancels and then awaits with no exit condition set first,
+            # then never returns.  On 3.12+ ``wait_for`` is built on
+            # ``asyncio.timeouts`` and the cancel propagates, so the loop's
+            # own ``except asyncio.CancelledError`` ends it -- as it also does
+            # on 3.11 when no packet is waiting.  ``runtime/_control_phase.py:
+            # ControlPhaseSessionMechanism._shutdown_supervised_tx`` records
+            # the same 3.11-versus-3.12+ split for the same stdlib reason.
+            #
+            # Clearing the transport is deterministic on all three: the loop
+            # ends at its ``while`` on the next pass, within one receive
+            # timeout, with no cancellation involved.  ``audio/lan_stream.py:
+            # AudioStream.stop_rx`` reaches the same result by clearing the
+            # state its loop tests before cancelling.
+            radio._civ_transport = None
+            pump = radio._civ_rx_task
+            if pump is not None:
+                await pump
 
     @pytest.mark.asyncio
     async def test_fire_and_forget_missing_ack_does_not_poison_next_ack(

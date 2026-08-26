@@ -725,12 +725,18 @@ class CivRuntime:
         built with a timeout below 2.0 s; a read that answers in time settles
         normally, which is every ordinary one.
 
-        The orphaned refusal is also not inert. It lands in the tracker's ACK
-        backlog and stays claimable for ``ack_backlog_ttl``, where the next
-        ``register_ack(consume_backlog=True)`` — the form ``_execute_civ_raw``
-        uses — claims it and reports it as that command's failure. So this
-        read stops being charged another command's refusal; the refusal is
-        charged to a different command instead.
+        The orphaned refusal lands in the tracker's ACK backlog. Under
+        MOR-1980 that displaced the mis-charge rather than ending it, because
+        ``_execute_civ_raw`` still claimed from the backlog; MOR-1977 unit A
+        closed that, so no waiter in ``src/`` claims it. It is retired
+        unclaimed by whichever comes first: the TTL prune inside
+        ``register_ack``/``resolve``, eviction once the bounded backlog is
+        full, the ``drop_ack_backlog`` that opens the next *response-capable*
+        raw transaction (``expect="ack"``/``"data"`` — an ``expect="none"``
+        send returns before that call), or ``fail_all`` on a generation
+        advance or pump stop. Every one of those except ``fail_all``
+        increments ``ack_backlog_drops``; arrival is always counted by
+        ``ack_orphans``.
         """
         async with self._ptt_read_lock:
             token = self._managed_tx_ports.get(provider_generation)
@@ -981,11 +987,15 @@ class CivRuntime:
         request that registers a NAK waiter can be settled by somebody else's
         refusal. Pass ``nak_terminal=False`` to register no NAK waiter: this
         request then waits for its exact response, and any refusal routed
-        meanwhile falls through to the tracker's orphan ACK backlog — where it
-        stays claimable for ``ack_backlog_ttl`` by the next
-        ``register_ack(consume_backlog=True)``, rather than being discarded.
-        The cost is that a refusal genuinely aimed at *this* request no longer
-        ends it — it runs out ``timeout`` and fails as a timeout instead.
+        meanwhile falls through to the tracker's orphan ACK backlog without
+        settling anything — no waiter in ``src/`` claims that backlog. It does
+        not linger indefinitely: this method drops the whole backlog before
+        registering, so the refusal survives only until the next
+        response-capable transaction. An ``expect="none"`` send is not one —
+        it returns before that drop — so a refusal can outlive several managed
+        TX writes. The cost is that a refusal genuinely aimed at *this*
+        request no longer ends it — it runs out ``timeout`` and fails as a
+        timeout instead.
         """
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()
@@ -3507,8 +3517,15 @@ class CivRuntime:
             if expects_response:
                 pending = self._host._civ_request_tracker.register_response(request_key)
             else:
+                # ``consume_backlog=False``: this waiter is registered before
+                # the frame is sent, so anything already in the orphan ACK/NAK
+                # backlog is necessarily some other command's.  The claim pops
+                # the oldest entry whatever it is, so it charges a stranger's
+                # NAK to this command -- or, worse, settles it from a stranger's
+                # ACK, reporting success for a write the radio never answered.
                 pending_or_token = self._host._civ_request_tracker.register_ack(
-                    wait=True
+                    wait=True,
+                    consume_backlog=False,
                 )
                 if isinstance(pending_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")
