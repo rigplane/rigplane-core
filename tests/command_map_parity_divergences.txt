@@ -14,11 +14,6 @@ IC-705	config.py:set_data1_mod_input	source=0	map=fefea4e01a050119009200fd fallb
 IC-705	config.py:set_data_off_mod_input	source=0	map=fefea4e01a050118009100fd fallback=fefea4e01a05009100fd
 IC-705	config.py:set_lan_mod_level	level=0	map=fefea4e01a0501170000fd fallback=fefea4e014110000fd
 IC-705	config.py:set_usb_mod_level	level=0	map=fefea4e01a0501160000fd fallback=fefea4e014100000fd
-IC-705	dsp.py:get_attenuator	command29=False	map=fefea4e0290011fd fallback=fefea4e011fd
-IC-705	dsp.py:get_preamp	command29=False	map=fefea4e029001602fd fallback=fefea4e01602fd
-IC-705	dsp.py:set_attenuator	command29=False, on=False	map=fefea4e029001100fd fallback=fefea4e01100fd
-IC-705	dsp.py:set_attenuator_level	command29=False, db=0	map=fefea4e029001100fd fallback=fefea4e01100fd
-IC-705	dsp.py:set_preamp	command29=False	map=fefea4e02900160201fd fallback=fefea4e0160201fd
 IC-705	levels.py:get_dash_ratio	(no arguments)	map=fefea4e01a050252fd fallback=fefea4e01a050228fd
 IC-705	levels.py:get_ref_adjust	(no arguments)	map=fefea4e01a050089fd fallback=fefea4e01a050070fd
 IC-705	levels.py:set_dash_ratio	value=30	map=fefea4e01a050252022830fd fallback=fefea4e01a05022830fd
@@ -46,11 +41,6 @@ IC-7300	config.py:set_civ_transceive	enabled=False	map=fefe94e01a050071012900fd 
 IC-7300	config.py:set_data1_mod_input	source=0	map=fefe94e01a050067009200fd fallback=fefe94e01a05009200fd
 IC-7300	config.py:set_data_off_mod_input	source=0	map=fefe94e01a050066009100fd fallback=fefe94e01a05009100fd
 IC-7300	config.py:set_usb_mod_level	level=0	map=fefe94e01a0500650000fd fallback=fefe94e014100000fd
-IC-7300	dsp.py:get_attenuator	command29=False	map=fefe94e0290011fd fallback=fefe94e011fd
-IC-7300	dsp.py:get_preamp	command29=False	map=fefe94e029001602fd fallback=fefe94e01602fd
-IC-7300	dsp.py:set_attenuator	command29=False, on=False	map=fefe94e029001100fd fallback=fefe94e01100fd
-IC-7300	dsp.py:set_attenuator_level	command29=False, db=0	map=fefe94e029001100fd fallback=fefe94e01100fd
-IC-7300	dsp.py:set_preamp	command29=False	map=fefe94e02900160201fd fallback=fefe94e0160201fd
 IC-7300	levels.py:get_nb_depth	(no arguments)	map=fefe94e01a050189fd fallback=fefe94e01a050290fd
 IC-7300	levels.py:get_nb_width	(no arguments)	map=fefe94e01a050190fd fallback=fefe94e01a050291fd
 IC-7300	levels.py:get_vox_delay	(no arguments)	map=fefe94e01a050191fd fallback=fefe94e01a050292fd
@@ -83,15 +73,6 @@ IC-7610	config.py:set_data3_mod_input	source=0	map=fefe98e01a050094009400fd fall
 IC-7610	config.py:set_data_off_mod_input	source=0	map=fefe98e01a050091009100fd fallback=fefe98e01a05009100fd
 IC-7610	config.py:set_lan_mod_level	level=0	map=fefe98e01a0500900000fd fallback=fefe98e014110000fd
 IC-7610	config.py:set_usb_mod_level	level=0	map=fefe98e01a0500890000fd fallback=fefe98e014100000fd
-IC-7610	dsp.py:get_af_mute	command29=False	map=fefe98e029001a09fd fallback=fefe98e01a09fd
-IC-7610	dsp.py:get_attenuator	command29=False	map=fefe98e0290011fd fallback=fefe98e011fd
-IC-7610	dsp.py:get_digisel	command29=False	map=fefe98e02900164efd fallback=fefe98e0164efd
-IC-7610	dsp.py:get_preamp	command29=False	map=fefe98e029001602fd fallback=fefe98e01602fd
-IC-7610	dsp.py:set_af_mute	command29=False, on=False	map=fefe98e029001a0900fd fallback=fefe98e01a0900fd
-IC-7610	dsp.py:set_attenuator	command29=False, on=False	map=fefe98e029001100fd fallback=fefe98e01100fd
-IC-7610	dsp.py:set_attenuator_level	command29=False, db=0	map=fefe98e029001100fd fallback=fefe98e01100fd
-IC-7610	dsp.py:set_digisel	command29=False, on=False	map=fefe98e02900164e00fd fallback=fefe98e0164e00fd
-IC-7610	dsp.py:set_preamp	command29=False	map=fefe98e02900160201fd fallback=fefe98e0160201fd
 IC-7610	levels.py:set_dash_ratio	value=30	map=fefe98e01a050228022830fd fallback=fefe98e01a05022830fd
 IC-7610	levels.py:set_nb_depth	value=0	map=fefe98e01a050290029000fd fallback=fefe98e01a05029000fd
 IC-7610	levels.py:set_nb_width	value=0	map=fefe98e01a05029102910000fd fallback=fefe98e01a0502910000fd
@@ -124,11 +105,6 @@ IC-9700	config.py:set_civ_transceive	enabled=False	map=fefea2e01a050071012900fd 
 IC-9700	config.py:set_data1_mod_input	source=0	map=fefea2e01a050067009200fd fallback=fefea2e01a05009200fd
 IC-9700	config.py:set_data_off_mod_input	source=0	map=fefea2e01a050066009100fd fallback=fefea2e01a05009100fd
 IC-9700	config.py:set_usb_mod_level	level=0	map=fefea2e01a0500650000fd fallback=fefea2e014100000fd
-IC-9700	dsp.py:get_attenuator	command29=False	map=fefea2e0290011fd fallback=fefea2e011fd
-IC-9700	dsp.py:get_preamp	command29=False	map=fefea2e029001602fd fallback=fefea2e01602fd
-IC-9700	dsp.py:set_attenuator	command29=False, on=False	map=fefea2e029001100fd fallback=fefea2e01100fd
-IC-9700	dsp.py:set_attenuator_level	command29=False, db=0	map=fefea2e029001100fd fallback=fefea2e01100fd
-IC-9700	dsp.py:set_preamp	command29=False	map=fefea2e02900160201fd fallback=fefea2e0160201fd
 IC-9700	levels.py:get_nb_depth	(no arguments)	map=fefea2e01a050189fd fallback=fefea2e01a050290fd
 IC-9700	levels.py:get_nb_width	(no arguments)	map=fefea2e01a050190fd fallback=fefea2e01a050291fd
 IC-9700	levels.py:get_vox_delay	(no arguments)	map=fefea2e01a050191fd fallback=fefea2e01a050292fd
@@ -151,8 +127,3 @@ IC-9700	vfo.py:get_quick_split	(no arguments)	map=fefea2e01a0500300033fd fallbac
 IC-9700	vfo.py:set_quick_split	(no arguments)	map=fefea2e01a0500300033fd fallback=fefea2e01a050033fd
 X6100	ptt.py:ptt_off	(no arguments)	map=fefe70e01c000000fd fallback=fefe70e01c0000fd
 X6100	ptt.py:ptt_on	(no arguments)	map=fefe70e01c000101fd fallback=fefe70e01c0001fd
-X6200	dsp.py:get_attenuator	command29=False	map=fefea4e0290011fd fallback=fefea4e011fd
-X6200	dsp.py:get_preamp	command29=False	map=fefea4e029001602fd fallback=fefea4e01602fd
-X6200	dsp.py:set_attenuator	command29=False, on=False	map=fefea4e029001100fd fallback=fefea4e01100fd
-X6200	dsp.py:set_attenuator_level	command29=False, db=0	map=fefea4e029001100fd fallback=fefea4e01100fd
-X6200	dsp.py:set_preamp	command29=False	map=fefea4e02900160201fd fallback=fefea4e0160201fd

@@ -59,7 +59,7 @@ def get_attenuator(
             to_addr=to_addr,
             from_addr=from_addr,
             receiver=receiver,
-            command29=True,
+            command29=command29,
         )
     if command29:
         return build_cmd29_frame(to_addr, from_addr, _CMD_ATT, receiver=receiver)
@@ -84,7 +84,7 @@ def set_attenuator_level(
             from_addr=from_addr,
             data=bytes([_bcd_byte(db)]),
             receiver=receiver,
-            command29=True,
+            command29=command29,
         )
     if command29:
         return build_cmd29_frame(
@@ -129,7 +129,7 @@ def get_preamp(
             to_addr=to_addr,
             from_addr=from_addr,
             receiver=receiver,
-            command29=True,
+            command29=command29,
         )
     if command29:
         return build_cmd29_frame(
@@ -156,7 +156,7 @@ def set_preamp(
             from_addr=from_addr,
             data=bytes([_bcd_byte(level)]),
             receiver=receiver,
-            command29=True,
+            command29=command29,
         )
     if command29:
         return build_cmd29_frame(
@@ -192,7 +192,7 @@ def get_digisel(
             to_addr=to_addr,
             from_addr=from_addr,
             receiver=receiver,
-            command29=True,
+            command29=command29,
         )
     if command29:
         return build_cmd29_frame(
@@ -223,7 +223,7 @@ def set_digisel(
             from_addr=from_addr,
             data=bytes([_bcd_byte(1 if on else 0)]),
             receiver=receiver,
-            command29=True,
+            command29=command29,
         )
     if command29:
         return build_cmd29_frame(
@@ -411,7 +411,7 @@ def get_af_mute(
             to_addr=to_addr,
             from_addr=from_addr,
             receiver=receiver,
-            command29=True,
+            command29=command29,
         )
     if command29:
         return build_cmd29_frame(
@@ -438,7 +438,7 @@ def set_af_mute(
             from_addr=from_addr,
             data=b"\x01" if on else b"\x00",
             receiver=receiver,
-            command29=True,
+            command29=command29,
         )
     if command29:
         return build_cmd29_frame(
