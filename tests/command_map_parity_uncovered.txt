@@ -22,8 +22,8 @@
 census	builders_compared	230
 census	cat_only_profiles	2
 census	dual_implementation_sites	139
-census	frames_diverged	123
-census	frames_identical	1302
+census	frames_diverged	108
+census	frames_identical	1317
 census	profile_builder_map_gaps	1006
 census	profiles	8
 census	public_builders	232
