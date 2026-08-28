@@ -102,20 +102,20 @@ Input for the `mechanism-audit` skill and for any review that flags repeated
 functionality. Everything listed here is deliberate: report it as sanctioned,
 do not open findings against it. Anything NOT listed is fair game.
 
-- **Backwards-compat shims.** `rigplane.radio`, `rigplane.commander`,
-  `rigplane.rig_loader` and the other old top-level paths are `sys.modules`
-  aliases re-exporting canonical `runtime.*` locations. Re-export lists
-  (`__all__` blocks) are not definition sites.
+- **Backwards-compat shims.** The old top-level paths (`rigplane.radio`,
+  `rigplane.commander`, `rigplane.rig_loader`, …) are `sys.modules` aliases
+  re-exporting their canonical layer location; each shim names its own target,
+  and the targets are spread across several layers, not one. Read the shim.
+  Re-export lists (`__all__` blocks) are not definition sites.
 - **Backend implementations.** Each backend independently satisfies the
   Capability Protocols in `core.radio_protocol`. That is the extension point —
   two backends implementing `set_freq` is the design working, not duplication.
 - **Open-core boundary.** Pro consumes rigplane as a separate process over
-  HTTP/WebSocket plus a narrow library import surface — `audio.backend`,
-  `audio.dsp`, `dsp.*` (`docs/architecture/open-core-policy.md`, "Today").
-  Those names are **Tier 2 — best-effort** in `docs/api/public-api-surface.md`:
-  a breaking change needs a CHANGELOG note and a minor bump, not stability in
-  perpetuity. This repo cannot see Pro's consumers, so nothing on that surface
-  is dead merely because nothing here calls it.
+  HTTP/WebSocket plus a narrow library import surface, named in
+  `docs/architecture/open-core-policy.md` ("Today"). What support each of those
+  names carries is stated in `docs/api/public-api-surface.md` — read the tier
+  there rather than a copy here. This repo cannot see Pro's consumers, so
+  nothing on that surface is dead merely because nothing here calls it.
   `frontend/src/lib/local-extensions/` is the separate UI extension host and is
   not part of that Python surface.
 - **Skins.** `frontend/src/skins/` — multiple presentations of one state, by
@@ -137,9 +137,11 @@ do not open findings against it. Anything NOT listed is fair game.
 - **Audit method cache.** `.claude/skills/mechanism-audit/SKILL.md` may be present
   in a working tree but is **git-ignored** — it is a local cache of
   `~/.claude/skills/mechanism-audit/SKILL.md`, which stays the single versioned
-  copy. It exists because a dispatched subagent's filesystem access is scoped to
-  the working directory and cannot reach the global skill directory. Regenerate
-  per machine:
+  copy. It exists because on 2026-08-28 a dispatched run could not read the
+  global path — the sandbox refused the mount — and improvised a method instead
+  of saying so. Whether a given sandbox can reach `~/.claude/` is not guaranteed
+  either way, so the role tries the cache first and the global path second.
+  Regenerate per machine:
 
   ```bash
   mkdir -p .claude/skills/mechanism-audit
@@ -162,45 +164,6 @@ permanently; an entry that has stopped being true silences a real finding.
 - One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
 - Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, narrow it until it is true, tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure), or delete it — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). `builder.md` and `verifier.md` point here.
-
----
-
-## Threat model
-
-Stated so hardening proposals have a criterion instead of an imagination.
-
-`docs/SECURITY.md` is the published statement and wins on any conflict; this
-section is the working criterion for reviews and audits.
-
-**Today:** single operator, LAN-attached rigs, servers bound to a configurable
-address on a trusted local network. Bearer-token authentication exists and is
-enforced — every `/api/` route and every WebSocket route is gated
-(`web/web_routing.py`, declared in `web/api_contract.py`), and managed mode
-refuses to start without a token — but there is no identity system behind it:
-no accounts, no roles, no multi-tenancy, no payments. The Icom wire protocol
-underneath provides no encryption, packet authentication or replay protection
-and cannot be made to; `docs/SECURITY.md` covers those limits.
-
-**In scope for a hardening finding:** the token path itself, the network
-boundary below it, and anything decoding bytes from a remote peer. Diagnostic
-bundles are the one place personal data appears and they leave the machine —
-`diagnostics/redaction.py` exists for that reason, so findings there are real.
-
-**Out of scope:** anything calibrated to a multi-tenant internet service —
-per-account rate limiting, tenant isolation, audit trails for a compliance
-regime. Say so and move on.
-
-**Exception — the network boundary.** CI-V frame parsing, the web transport, and
-anything decoding bytes from a remote peer are built correctly the first time:
-bounds-checked, no unbounded allocation, no trust in a declared length. Operators
-of rig-control software port-forward it for remote operation whether or not that
-is a supported configuration, and a trust boundary is the one thing that cannot
-be retrofitted cheaply — everything behind it has to be rewritten. The interior
-gets local-project treatment; the boundary does not.
-
-Revisit when rigplane is exposed beyond a LAN. Editing these paragraphs
-reclassifies every deferred finding at once — that is the point of writing them
-down.
 
 ---
 
