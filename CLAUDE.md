@@ -96,6 +96,54 @@ When making changes:
 
 ---
 
+## Sanctioned duplication
+
+Input for the `mechanism-audit` skill and for any review that flags repeated
+functionality. Everything listed here is deliberate: report it as sanctioned,
+do not open findings against it. Anything NOT listed is fair game.
+
+- **Backwards-compat shims.** `rigplane.radio`, `rigplane.commander`,
+  `rigplane.rig_loader` and the other old top-level paths are `sys.modules`
+  aliases re-exporting canonical `runtime.*` locations. Re-export lists
+  (`__all__` blocks) are not definition sites.
+- **Backend implementations.** Each backend independently satisfies the
+  Capability Protocols in `core.radio_protocol`. That is the extension point -
+  two backends implementing `set_freq` is the design working, not duplication.
+- **Open-core boundary.** `audio.backend` and `audio.dsp` paths are part of the
+  rigplane-pro contract and must stay stable; `local-extensions/` and Pro may
+  carry their own implementations behind the Radio protocol. This repo cannot
+  see those consumers, so nothing on that boundary is dead merely because
+  nothing here calls it.
+- **Skins.** `frontend/skins/` (desktop-v2, amber-lcd, mobile) are multiple
+  presentations of one state, by design.
+- **Per-protocol routing.** `RigctldRoutingStrategy` / `RigctldRoutable` in
+  `core/radio_protocol.py` is rigctld's declared customization point for vendor
+  differences.
+- **Divergent TX gates between front-ends.** rigctld is "drop only — no lane"
+  (MOR-1881); web blocks certain families synchronously because the browser
+  reducer is the only RF gate on that path (re-ruling 2026-08-17, comment in
+  `web/radio_poller.py`). The divergence is the decision, not drift.
+- **Audit method cache.** `.claude/skills/mechanism-audit/SKILL.md` may be present
+  in a working tree but is **git-ignored** — it is a local cache of
+  `~/.claude/skills/mechanism-audit/SKILL.md`, which stays the single versioned
+  copy. It exists because a dispatched subagent's filesystem access is scoped to
+  the working directory and cannot reach the global skill directory. Regenerate
+  per machine:
+
+  ```bash
+  mkdir -p .claude/skills/mechanism-audit
+  cp ~/.claude/skills/mechanism-audit/SKILL.md .claude/skills/mechanism-audit/SKILL.md
+  ```
+
+  Never edit the cache — edits there are invisible to git and will be overwritten.
+  If it is stale or missing the `auditor` role stops rather than improvising, so a
+  forgotten refresh fails loudly rather than producing a wrong audit.
+
+Keep this list current. An entry added here retires a class of false positives
+permanently; an entry that has stopped being true silences a real finding.
+
+---
+
 ## Testing
 
 - TDD — test first, implement second
@@ -103,6 +151,30 @@ When making changes:
 - One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
 - Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, narrow it until it is true, tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure), or delete it — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). `builder.md` and `verifier.md` point here.
+
+---
+
+## Threat model
+
+Stated so hardening proposals have a criterion instead of an imagination.
+
+**Today:** single operator, LAN-attached rigs, UI served on the local network.
+No authentication, no multi-tenancy, no PII, no payments, no untrusted uploads.
+The realistic adversaries are a malformed CI-V frame and a misconfigured LAN,
+not an attacker with a budget. Findings calibrated to internet-facing
+multi-tenant services are out of scope: say so and move on.
+
+**Exception — the network boundary.** CI-V frame parsing, the web transport, and
+anything decoding bytes from a remote peer are built correctly the first time:
+bounds-checked, no unbounded allocation, no trust in a declared length. Operators
+of rig-control software port-forward it for remote operation whether or not that
+is a supported configuration, and a trust boundary is the one thing that cannot
+be retrofitted cheaply — everything behind it has to be rewritten. The interior
+gets local-project treatment; the boundary does not.
+
+Revisit when rigplane is exposed beyond a LAN. Editing these paragraphs
+reclassifies every deferred finding at once — that is the point of writing them
+down.
 
 ---
 
@@ -201,9 +273,17 @@ implementation agent never reviews its own work (Language & Git above).
 Subagent roles with pinned models live in `.claude/agents/`: `scout` (haiku,
 read-only status/fact collection), `builder` (sonnet, implementation from a
 spec), `verifier` (opus, independent review and gate verdicts), `researcher`
-(sonnet, read-only exploration with synthesis). Dispatch through these roles
-by default; a dispatch outside them must pass an explicit model — never let a
-subagent silently inherit the root session's model.
+(sonnet, read-only exploration with synthesis), `auditor` (opus, read-only
+adjudication of duplication, displacement and dead code). Dispatch through these
+roles by default; a dispatch outside them must pass an explicit model — never let
+a subagent silently inherit the root session's model.
+
+`auditor` carries no method of its own and refuses to run without one: the
+`mechanism-audit` method lives in the global skill directory, which a subagent
+cannot read, so the dispatching session must paste it into the prompt or keep the
+git-ignored cache described under "Sanctioned duplication" current. That refusal
+is deliberate — an earlier run silently improvised a method when it could not
+read the file.
 
 Slash commands for scoped workflows live in `.claude/commands/` (`audit-ui`,
 `decompose-issue`, `generate-tests`, `next`, `refactor`, `regression-check`,

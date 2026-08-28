@@ -38,6 +38,10 @@ config/
 !.claude/agents/
 !.claude/commands/
 !.claude/skills/
+# Except the audit method: a local cache of ~/.claude/skills/mechanism-audit/,
+# kept out of git so the global copy stays the only versioned one. Regenerate
+# with the `cp` in CLAUDE.md; the `auditor` role stops if it is absent.
+.claude/skills/mechanism-audit/
 .kombai/
 .firecrawl/
 .playwright-mcp/
