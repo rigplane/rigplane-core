@@ -40,7 +40,8 @@ config/
 !.claude/skills/
 # Except the audit method: a local cache of ~/.claude/skills/mechanism-audit/,
 # kept out of git so the global copy stays the only versioned one. Regenerate
-# with the `cp` in CLAUDE.md; the `auditor` role stops if it is absent.
+# with the `cp` in CLAUDE.md. Without it the `auditor` role falls back to the
+# global path, then to a method supplied inline, and stops if it has neither.
 .claude/skills/mechanism-audit/
 .kombai/
 .firecrawl/

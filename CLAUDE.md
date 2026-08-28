@@ -64,7 +64,7 @@ Don't add per-push matrix builds back without explicit reason — the goal is mi
 - `lib/runtime/adapters/` → pure functions mapping runtime state → component props
 - `components-v2/wiring/` → state-adapter + command-bus (adapter layer)
 - `components-v2/panels/` + `layout/` → presentation only, NO direct store/transport imports
-- `skins/` → skin registry + entry points (desktop-v2, amber-lcd, mobile)
+- `skins/` → skin registry + entry points; `SkinId` in `skins/registry.ts` is the list
 - eslint `no-restricted-imports` enforces: panels/layouts cannot import `$lib/transport/*` or `$lib/audio/audio-manager`
 - ADR: `docs/plans/2026-04-12-target-frontend-architecture.md`
 
@@ -107,22 +107,33 @@ do not open findings against it. Anything NOT listed is fair game.
   aliases re-exporting canonical `runtime.*` locations. Re-export lists
   (`__all__` blocks) are not definition sites.
 - **Backend implementations.** Each backend independently satisfies the
-  Capability Protocols in `core.radio_protocol`. That is the extension point -
+  Capability Protocols in `core.radio_protocol`. That is the extension point —
   two backends implementing `set_freq` is the design working, not duplication.
-- **Open-core boundary.** `audio.backend` and `audio.dsp` paths are part of the
-  rigplane-pro contract and must stay stable; `local-extensions/` and Pro may
-  carry their own implementations behind the Radio protocol. This repo cannot
-  see those consumers, so nothing on that boundary is dead merely because
-  nothing here calls it.
-- **Skins.** `frontend/skins/` (desktop-v2, amber-lcd, mobile) are multiple
-  presentations of one state, by design.
+- **Open-core boundary.** Pro consumes rigplane as a separate process over
+  HTTP/WebSocket plus a narrow library import surface — `audio.backend`,
+  `audio.dsp`, `dsp.*` (`docs/architecture/open-core-policy.md`, "Today").
+  Those names are **Tier 2 — best-effort** in `docs/api/public-api-surface.md`:
+  a breaking change needs a CHANGELOG note and a minor bump, not stability in
+  perpetuity. This repo cannot see Pro's consumers, so nothing on that surface
+  is dead merely because nothing here calls it.
+  `frontend/src/lib/local-extensions/` is the separate UI extension host and is
+  not part of that Python surface.
+- **Skins.** `frontend/src/skins/` — multiple presentations of one state, by
+  design. Take the list from `SkinId` in `frontend/src/skins/registry.ts`, not
+  from here: at the time of writing it declares six loadable ids, plus the
+  persisted legacy alias `amber-lcd` that resolves to `lcd-cockpit`. This
+  sentence is a pointer, not a copy — a copy goes stale and then licenses
+  findings against whichever skin it forgot.
 - **Per-protocol routing.** `RigctldRoutingStrategy` / `RigctldRoutable` in
   `core/radio_protocol.py` is rigctld's declared customization point for vendor
   differences.
 - **Divergent TX gates between front-ends.** rigctld is "drop only — no lane"
-  (MOR-1881); web blocks certain families synchronously because the browser
-  reducer is the only RF gate on that path (re-ruling 2026-08-17, comment in
-  `web/radio_poller.py`). The divergence is the decision, not drift.
+  (MOR-1881). Web blocks `RAW_CIV`, `SCAN_START`, `ANTENNA_SWITCH`,
+  `TUNER_ENGAGE` and `PTT_ON` synchronously (`_WEB_IMMEDIATE_BLOCK_FAMILIES` in
+  `web/radio_poller.py`); `PTT_ON` joined that set under MOR-1879 (owner
+  re-ruling 2026-08-17) so that web PTT passes the server interlock on equal
+  terms rather than relying on the browser reducer. The divergence between the
+  two front-ends is the decision, not drift.
 - **Audit method cache.** `.claude/skills/mechanism-audit/SKILL.md` may be present
   in a working tree but is **git-ignored** — it is a local cache of
   `~/.claude/skills/mechanism-audit/SKILL.md`, which stays the single versioned
@@ -158,11 +169,26 @@ permanently; an entry that has stopped being true silences a real finding.
 
 Stated so hardening proposals have a criterion instead of an imagination.
 
-**Today:** single operator, LAN-attached rigs, UI served on the local network.
-No authentication, no multi-tenancy, no PII, no payments, no untrusted uploads.
-The realistic adversaries are a malformed CI-V frame and a misconfigured LAN,
-not an attacker with a budget. Findings calibrated to internet-facing
-multi-tenant services are out of scope: say so and move on.
+`docs/SECURITY.md` is the published statement and wins on any conflict; this
+section is the working criterion for reviews and audits.
+
+**Today:** single operator, LAN-attached rigs, servers bound to a configurable
+address on a trusted local network. Bearer-token authentication exists and is
+enforced — every `/api/` route and every WebSocket route is gated
+(`web/web_routing.py`, declared in `web/api_contract.py`), and managed mode
+refuses to start without a token — but there is no identity system behind it:
+no accounts, no roles, no multi-tenancy, no payments. The Icom wire protocol
+underneath provides no encryption, packet authentication or replay protection
+and cannot be made to; `docs/SECURITY.md` covers those limits.
+
+**In scope for a hardening finding:** the token path itself, the network
+boundary below it, and anything decoding bytes from a remote peer. Diagnostic
+bundles are the one place personal data appears and they leave the machine —
+`diagnostics/redaction.py` exists for that reason, so findings there are real.
+
+**Out of scope:** anything calibrated to a multi-tenant internet service —
+per-account rate limiting, tenant isolation, audit trails for a compliance
+regime. Say so and move on.
 
 **Exception — the network boundary.** CI-V frame parsing, the web transport, and
 anything decoding bytes from a remote peer are built correctly the first time:
@@ -278,12 +304,11 @@ adjudication of duplication, displacement and dead code). Dispatch through these
 roles by default; a dispatch outside them must pass an explicit model — never let
 a subagent silently inherit the root session's model.
 
-`auditor` carries no method of its own and refuses to run without one: the
-`mechanism-audit` method lives in the global skill directory, which a subagent
-cannot read, so the dispatching session must paste it into the prompt or keep the
-git-ignored cache described under "Sanctioned duplication" current. That refusal
-is deliberate — an earlier run silently improvised a method when it could not
-read the file.
+`auditor` carries no method of its own and refuses to run without one. It reads
+the git-ignored cache described under "Sanctioned duplication"; a dispatch may
+supply a method inline instead. The refusal is deliberate: on 2026-08-28 a
+dispatched run could not read the global skill path — the sandbox refused the
+mount — and improvised a method without saying so.
 
 Slash commands for scoped workflows live in `.claude/commands/` (`audit-ui`,
 `decompose-issue`, `generate-tests`, `next`, `refactor`, `regression-check`,
