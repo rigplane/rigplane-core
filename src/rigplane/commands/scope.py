@@ -152,6 +152,25 @@ def _scope_payload(value: bytes, receiver: int | None = None) -> bytes:
     return bytes([_validate_scope_receiver(receiver)]) + value
 
 
+def _scope_selector_data(receiver: int | None) -> bytes | None:
+    """Selector byte for a 0x27 read, or ``None`` when no receiver is named.
+
+    Only the sub-commands in ``SCOPE_RECEIVER_SELECTOR_SUBS`` may carry it --
+    on any other 0x27 read the extra byte is a write.  For those eight both
+    branches of the getter agree through this function: the fallback builds
+    its frame with it via ``_scope_query``, and the ``cmd_map`` branch passes
+    it as ``data``.
+
+    ``get_scope_center_type`` is the getter that reaches here and does not
+    agree.  Its 0x1C is outside the set, so its ``cmd_map`` branch correctly
+    sends nothing while its fallback still appends what it is given; the
+    disagreement is pinned in ``tests/command_map_parity_divergences.txt``
+    and closing it means refusing the argument, which changes public builder
+    behaviour (MOR-1981).
+    """
+    return None if receiver is None else bytes([_validate_scope_receiver(receiver)])
+
+
 def _scope_query(
     sub: int,
     *,
@@ -159,8 +178,9 @@ def _scope_query(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int | None = None,
 ) -> bytes:
-    data = None if receiver is None else bytes([_validate_scope_receiver(receiver)])
-    return build_civ_frame(to_addr, from_addr, _CMD_SCOPE, sub=sub, data=data)
+    return build_civ_frame(
+        to_addr, from_addr, _CMD_SCOPE, sub=sub, data=_scope_selector_data(receiver)
+    )
 
 
 def _parse_scope_frame(frame: CivFrame, sub: int) -> bytes:
@@ -429,7 +449,11 @@ def get_scope_mode(
 ) -> bytes:
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_mode", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_mode",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=_scope_selector_data(receiver),
         )
     return _scope_query(
         _SUB_SCOPE_MODE, to_addr=to_addr, from_addr=from_addr, receiver=receiver
@@ -471,7 +495,11 @@ def get_scope_span(
 ) -> bytes:
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_span", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_span",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=_scope_selector_data(receiver),
         )
     return _scope_query(
         _SUB_SCOPE_SPAN, to_addr=to_addr, from_addr=from_addr, receiver=receiver
@@ -515,7 +543,11 @@ def get_scope_edge(
 ) -> bytes:
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_edge", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_edge",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=_scope_selector_data(receiver),
         )
     return _scope_query(
         _SUB_SCOPE_EDGE, to_addr=to_addr, from_addr=from_addr, receiver=receiver
@@ -557,7 +589,11 @@ def get_scope_hold(
 ) -> bytes:
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_hold", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_hold",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=_scope_selector_data(receiver),
         )
     return _scope_query(
         _SUB_SCOPE_HOLD, to_addr=to_addr, from_addr=from_addr, receiver=receiver
@@ -598,7 +634,11 @@ def get_scope_ref(
 ) -> bytes:
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_ref", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_ref",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=_scope_selector_data(receiver),
         )
     return _scope_query(
         _SUB_SCOPE_REF, to_addr=to_addr, from_addr=from_addr, receiver=receiver
@@ -639,7 +679,11 @@ def get_scope_speed(
 ) -> bytes:
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_speed", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_speed",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=_scope_selector_data(receiver),
         )
     return _scope_query(
         _SUB_SCOPE_SPEED, to_addr=to_addr, from_addr=from_addr, receiver=receiver
@@ -756,7 +800,11 @@ def get_scope_vbw(
 ) -> bytes:
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_vbw", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_vbw",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=_scope_selector_data(receiver),
         )
     return _scope_query(
         _SUB_SCOPE_VBW, to_addr=to_addr, from_addr=from_addr, receiver=receiver
@@ -867,7 +915,11 @@ def get_scope_rbw(
 ) -> bytes:
     if cmd_map is not None:
         return _build_from_map(
-            cmd_map, "get_scope_rbw", to_addr=to_addr, from_addr=from_addr
+            cmd_map,
+            "get_scope_rbw",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=_scope_selector_data(receiver),
         )
     return _scope_query(
         _SUB_SCOPE_RBW, to_addr=to_addr, from_addr=from_addr, receiver=receiver

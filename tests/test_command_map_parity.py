@@ -11,8 +11,9 @@ and
 ``test_rig_ic7300.py: test_get_speech_cmd_map_uses_set_speech`` each pin
 ``get_speech`` alone. Outside that subset the two copies could disagree
 silently, and at least one pair does: the ``cmd_map`` branch of
-``scope.py: get_scope_mode`` and its siblings drops the ``receiver``
-argument that the fallback hands to ``scope.py: _scope_query``.
+``scope.py: get_scope_center_type`` sends a bare ``27 1c`` where the
+fallback hands ``scope.py: _scope_query`` a receiver it then appends --
+and on 0x1C that extra byte is a write, not a read.
 
 This test is the general form of that check: it builds every builder it can
 reach both ways, for every profile the library loads out of ``rigs/``, and
@@ -295,7 +296,7 @@ def _cases() -> tuple[dict[Key, list[dict[str, typing.Any]]], frozenset[Key]]:
 
     The first case passes only required arguments; one further case per
     optional argument overrides it with a non-default value, because a
-    divergence can hide behind a default — ``scope.py: get_scope_mode``
+    divergence can hide behind a default — ``scope.py: get_scope_center_type``
     builds identical frames until ``receiver`` is given a value. Argument
     validation happens before a builder reads ``to_addr``, so this search
     runs once and its result is reused for every profile.
