@@ -1107,9 +1107,18 @@ async def test_enable_scope_strict_sends_and_acks(
     """STRICT policy waits for ACK from each command."""
     from rigplane.types import ScopeCompletionPolicy
 
-    # Queue two ACK responses (one for scope-on, one for scope-output)
-    mock_transport.queue_response(_ack_response())
-    mock_transport.queue_response(_ack_response())
+    # Release each ACK only after its own command is actually sent (real
+    # radios can't ACK a command before it goes out over the wire). Queuing
+    # both ACKs up front let the CI-V rx pump race ahead of the second
+    # command's ACK-waiter registration on Python 3.12+ -- asyncio.wait_for()
+    # no longer forces a scheduler yield when its awaitable is already
+    # resolved (gh-97481), so the pump could drain both queued responses back
+    # to back before enable_scope() even sent the second command, filing the
+    # second ACK into the orphan backlog that a freshly-registered waiter is
+    # deliberately barred from consuming (MOR-1977). One ACK per send() call
+    # keeps this test's timing causally accurate on every interpreter.
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
     await radio.enable_scope(policy=ScopeCompletionPolicy.STRICT)
 
 
