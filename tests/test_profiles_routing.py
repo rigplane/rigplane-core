@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane import IcomRadio
-from rigplane.commands.commander import Priority
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.rigctld.state_cache import StateCache
+from rigplane.web import radio_poller as radio_poller_module
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq, SetMode
 
@@ -31,6 +33,11 @@ def _dual_radio_mock() -> MagicMock:
     radio.send_civ = AsyncMock()
     radio.set_freq = AsyncMock()
     radio.set_mode = AsyncMock()
+    # The receiver=0-while-SUB-active branch restores MAIN via the public
+    # select_receiver API (not a hand-built 0x07 CI-V frame); a bare
+    # MagicMock attribute is not awaitable, so tests reaching that path
+    # raise TypeError without this.
+    radio.select_receiver = AsyncMock()
     return radio
 
 
@@ -63,13 +70,20 @@ async def test_single_profile_receiver_guard_is_explicit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dual_profile_poller_routes_sub_freq_via_vfo_switch() -> None:
+async def test_dual_profile_poller_delegates_sub_freq_to_core_radio() -> None:
+    """receiver=1 (SUB) no longer gets a hand-rolled VFO switch in the poller.
+
+    ``CoreRadio.set_freq`` already owns the cmd29-vs-VFO-switch decision for
+    a non-MAIN receiver (runtime/radio.py), so the poller must pass the
+    receiver through unconditionally and never touch ``send_civ`` itself.
+    """
     radio = _dual_radio_mock()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
     await poller._execute(SetFreq(14_074_000, receiver=1))  # noqa: SLF001
 
-    assert radio.send_civ.await_count >= 2
-    radio.set_freq.assert_awaited_once_with(14_074_000)
+    radio.set_freq.assert_awaited_once_with(14_074_000, receiver=1)
+    radio.send_civ.assert_not_awaited()
+    radio.select_receiver.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -105,34 +119,76 @@ async def test_control_handler_checks_capabilities_not_model_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dual_profile_poller_routes_main_mode_via_vfo_switch_when_active_sub() -> (
+async def test_dual_profile_poller_routes_main_mode_via_select_receiver_when_active_sub() -> (
     None
 ):
+    """receiver=0 (MAIN) while SUB is active still gets a switch-and-restore.
+
+    There is no lower-layer equivalent for a VFO-aware MAIN write, so the
+    poller keeps this dance — but it must go through the public
+    ``select_receiver`` API instead of building the raw 0x07 CI-V frame
+    itself, and in the right order: MAIN before the write, SUB after.
+    """
     radio = _dual_radio_mock()
     radio._radio_state.active = "SUB"
+    calls: list[str] = []
+    radio.select_receiver = AsyncMock(
+        side_effect=lambda which: calls.append(f"select_receiver({which})")
+    )
+    radio.set_mode = AsyncMock(side_effect=lambda *a, **k: calls.append("set_mode"))
     poller = RadioPoller(radio, StateCache(), CommandQueue())
 
     await poller._execute(SetMode("USB", receiver=0))  # noqa: SLF001
 
-    main_code = bytes([radio.profile.vfo_main_code])
-    sub_code = bytes([radio.profile.vfo_sub_code])
-    # User-command VFO switch stays at NORMAL priority (MOR-497i: only
-    # background polls are demoted to BACKGROUND) and blocking
-    # (MOR-497ii: wait_dispatch=True, never fire-and-forget).
-    radio.send_civ.assert_any_await(
-        0x07,
-        sub=None,
-        data=main_code,
-        wait_response=False,
-        priority=Priority.NORMAL,
-        wait_dispatch=True,
-    )
-    radio.send_civ.assert_any_await(
-        0x07,
-        sub=None,
-        data=sub_code,
-        wait_response=False,
-        priority=Priority.NORMAL,
-        wait_dispatch=True,
-    )
+    assert calls == ["select_receiver(0)", "set_mode", "select_receiver(1)"]
     radio.set_mode.assert_awaited_once_with("USB", None)
+    radio.send_civ.assert_not_awaited()
+
+
+def _count_self_civ_call_sites() -> int:
+    """Count ``self._civ(...)`` call sites in ``radio_poller.py`` via ``ast``.
+
+    Walking the parsed AST for ``Call`` nodes whose function is the
+    attribute ``_civ`` on a ``Name`` node ``self`` means a comment or a
+    string that happens to contain the same text cannot inflate the count
+    the way a regex scan could.
+    """
+    source = inspect.getsource(radio_poller_module)
+    tree = ast.parse(source)
+    count = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "_civ"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "self"
+        ):
+            count += 1
+    return count
+
+
+def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
+    """Ratchet: exactly 11 raw ``self._civ(...)`` sites remain.
+
+    The 8 hand-rolled ``self._civ(0x07, ...)`` VFO-switch frames that used
+    to live in ``SetFreq``/``SetMode`` (the ``receiver!=0`` fallback dance
+    and the ``receiver=0``-while-SUB-active restore dance) were removed:
+    the former now delegates to ``CoreRadio.set_freq``/``set_mode``, which
+    already owns that decision; the latter now calls the public
+    ``select_receiver`` API instead of building the raw frame itself. The
+    11 that remain:
+
+    - ``_send_cmd``: 2 — cmd29-wrapped vs. plain generic command dispatch.
+    - ``_send_one_state_query``: 5 — selected/unselected freq/mode state
+      reads plus the scope-receiver default read.
+    - ``_execute``: 3 — the BSR band-switch stored-freq read, ``SelectVfo``'s
+      scope-follow (0x27 0x12), and ``SwitchScopeReceiver`` (0x27 0x12).
+    - ``_send_query``: 1 — the meter poll read.
+
+    Changing this literal deliberately means recounting the real call
+    sites above, not just editing the number.
+    """
+    assert _count_self_civ_call_sites() == 11

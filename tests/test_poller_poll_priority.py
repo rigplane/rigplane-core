@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import call as mock_call
 
 import pytest
 
@@ -39,6 +40,11 @@ def _make_radio(*, model: str = "IC-7610", active: str = "MAIN") -> MagicMock:
     radio.send_civ = AsyncMock()
     radio.set_freq = AsyncMock()
     radio.set_mode = AsyncMock()
+    # The receiver=0-while-SUB-active branch restores MAIN via the public
+    # select_receiver API (not a hand-built 0x07 CI-V frame); a bare
+    # MagicMock attribute is not awaitable, so tests reaching that path
+    # raise TypeError without this.
+    radio.select_receiver = AsyncMock()
     return radio
 
 
@@ -110,25 +116,27 @@ async def test_state_query_sends_fire_and_forget() -> None:
 
 @pytest.mark.asyncio
 async def test_user_command_stays_normal_priority() -> None:
-    """KEY GUARD: a user command's CI-V sends (including the in-command VFO
-    switch) must NOT be de-prioritized to BACKGROUND, and must NEVER be made
-    fire-and-forget (``wait_dispatch`` must stay blocking)."""
-    # active="SUB" so SetFreq(receiver=0) triggers the in-command VFO switch
-    # (_civ(0x07, vfo_main_code)) at radio_poller.py and its restore.
+    """KEY GUARD: a user command's CI-V sends must NOT be de-prioritized to
+    BACKGROUND, and must NEVER be made fire-and-forget (``wait_dispatch``
+    must stay blocking).
+
+    The receiver=0-while-SUB-active in-command VFO switch now goes through
+    ``radio.select_receiver`` (a public API with no priority/wait_dispatch
+    parameters of its own) instead of a hand-built ``_civ(0x07, ...)``
+    frame, so this guard checks the ``select_receiver`` calls the poller
+    makes rather than a raw ``send_civ``. The CI-V frame ``select_receiver``
+    itself emits still defaults to ``Priority.NORMAL`` / blocking dispatch —
+    that guarantee now lives in ``CoreRadio._send_civ_raw`` /
+    ``_send_civ_expect`` (runtime/radio.py), outside what a bare
+    poller-level mock can observe.
+    """
+    # active="SUB" so SetFreq(receiver=0) triggers the in-command
+    # select_receiver(MAIN) switch and its select_receiver(SUB) restore.
     radio = _make_radio(active="SUB")
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
     await poller._execute(SetFreq(14_074_000, receiver=0))  # noqa: SLF001
 
-    # The VFO switch + restore fire via send_civ; none may be BACKGROUND, and
-    # NONE may be fire-and-forget — user commands stay blocking/awaited.
-    assert radio.send_civ.await_count >= 1
-    for call in radio.send_civ.await_args_list:
-        prio = _priority_of(call)
-        assert prio in (None, Priority.NORMAL), (
-            f"user command send_civ used {prio!r}, must not be BACKGROUND"
-        )
-        wd = _wait_dispatch_of(call)
-        assert wd in (None, True), (
-            f"user command send_civ used wait_dispatch={wd!r}, must not be False"
-        )
+    assert radio.select_receiver.await_args_list == [mock_call(0), mock_call(1)]
+    radio.set_freq.assert_awaited_once_with(14_074_000)
+    radio.send_civ.assert_not_awaited()

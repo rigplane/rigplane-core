@@ -1738,18 +1738,24 @@ async def test_current_active_defaults_and_setfreq_setmode_branches() -> None:
     assert poller._current_active() == "MAIN"  # noqa: SLF001
 
     radio._radio_state.active = "MAIN"
+    # receiver=1 (SUB) delegates straight to CoreRadio.set_freq, which owns
+    # the cmd29-vs-VFO-switch decision itself — the poller no longer touches
+    # send_civ for this branch.
     await poller._execute(SetFreq(14_074_000, receiver=1))  # noqa: SLF001
-    assert radio.send_civ.await_count >= 2
-    radio.set_freq.assert_awaited_once_with(14_074_000)
+    radio.set_freq.assert_awaited_once_with(14_074_000, receiver=1)
+    radio.send_civ.assert_not_awaited()
 
     radio2 = _make_radio(active="SUB")
     poller2 = RadioPoller(radio2, StateCache(), CommandQueue())
+    # receiver=0 (MAIN) while SUB is active still switches-and-restores in
+    # the poller, via select_receiver (whose fixture side effect below
+    # threads through to send_civ).
     await poller2._execute(SetFreq(7_074_000, receiver=0))  # noqa: SLF001
     assert radio2.send_civ.await_count >= 2
     radio2.set_freq.assert_awaited_once_with(7_074_000)
 
     await poller._execute(SetMode("USB", filter_width=2, receiver=1))  # noqa: SLF001
-    radio.set_mode.assert_awaited_once_with("USB", 2)
+    radio.set_mode.assert_awaited_once_with("USB", 2, receiver=1)
 
 
 @pytest.mark.asyncio
