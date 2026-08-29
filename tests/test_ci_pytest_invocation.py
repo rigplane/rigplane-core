@@ -15,12 +15,21 @@ script block scalars, not structure a workflow schema exposes as data. A
 regex anchored on the known `uv run pytest tests/` invocation is simpler and
 does not risk that dependency disappearing.
 
-Honest limit: this only proves the flag string is absent from the pytest
-invocation text in the three tracked workflow files. It says nothing about
-a future workflow file this repo might add, or about a flag with equivalent
-effect expressed a different way (e.g. `-k 'not integration'`, a marker
-deselect, or a `pyproject.toml` `addopts` change) — those would need a
-matching assertion added here, or they would drift the same way this one
+`quick.yml` and `full.yml` write this invocation as a shell line
+continuation (`... \\` then `| tee pytest-output.txt` on the next physical
+line) — exactly where a flag would naturally land if someone wrapped the
+command further. Backslash-newline continuations are folded to a single
+space before matching so a flag placed on a continuation line is not
+invisible to the pin.
+
+Honest limit: this proves the flag string is absent from the pytest
+invocation text in the three tracked workflow files, continuation lines
+included. It says nothing about a future workflow file this repo might add,
+a different invocation shape (e.g. `python -m pytest`, a different working
+directory, or an invocation built from a shell variable), or a flag with
+equivalent effect expressed a different way (e.g. `-k 'not integration'`, a
+marker deselect, or a `pyproject.toml` `addopts` change) — those would need
+a matching assertion added here, or they would drift the same way this one
 did.
 """
 
@@ -38,7 +47,11 @@ _PYTEST_INVOCATION_RE = re.compile(r"uv run pytest tests/[^\n]*")
 
 def _pytest_invocations(workflow_name: str) -> list[str]:
     text = (WORKFLOWS_DIR / workflow_name).read_text()
-    invocations = _PYTEST_INVOCATION_RE.findall(text)
+    # Fold shell line continuations first: `... \` + newline is one physical
+    # command, and a flag added on the continuation line would otherwise be
+    # past the `[^\n]*` boundary and invisible to this pin.
+    folded_text = text.replace("\\\n", " ")
+    invocations = _PYTEST_INVOCATION_RE.findall(folded_text)
     assert invocations, (
         f"no `uv run pytest tests/` invocation found in {workflow_name} — "
         "update this pin if the workflow's test step was restructured"

@@ -50,7 +50,7 @@ The repository has three Actions workflows, tiered to keep billable minutes low:
 
 | Workflow | When it runs | What it does |
 |---|---|---|
-| **Tests (quick)** | push/PR to `main` **only** when one of these paths changes: `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, `.github/workflows/**` | Single Python 3.11 job: `ruff`, `import-linter`, `pytest` (no hardware integration). The frontend block (`npm ci`, type-check, vitest, build, mypy on `src/rigplane/web`) only runs when files under `frontend/**` or `src/rigplane/web/**` actually changed. ~2–5 min. Doc-only edits and CLAUDE.md changes don't trigger CI at all — use `gh workflow run "Tests (quick)"` if you need a manual run. |
+| **Tests (quick)** | push/PR to `main` **only** when one of these paths changes: `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, `.github/workflows/**` | Single Python 3.11 job: `ruff`, `import-linter`, `pytest` (includes `tests/integration`; hardware-gated tests skip automatically without hardware env vars). The frontend block (`npm ci`, type-check, vitest, build, mypy on `src/rigplane/web`) only runs when files under `frontend/**` or `src/rigplane/web/**` actually changed. ~2–5 min. Doc-only edits and CLAUDE.md changes don't trigger CI at all — use `gh workflow run "Tests (quick)"` if you need a manual run. |
 | **Tests (full matrix)** | cron Mon/Wed/Fri 03:00 UTC, manual `workflow_dispatch`, **or** any push whose commit message contains `[full-ci]` | Full 3.11/3.12/3.13 matrix with frontend, mypy, import-linter and the whole pytest suite. |
 | **Publish to PyPI** | on a published GitHub Release | Runs the full validation matrix first; the build/publish jobs only start if validation is green. |
 
@@ -80,12 +80,12 @@ tests/
 ├── test_data_mode.py          # DATA/packet mode semantics
 ├── golden/
 │   └── protocol_golden.json   # 45 golden response fixtures (all commands + errors)
-└── integration/               # Real hardware tests (require a radio)
+└── integration/               # Mostly mocked/fake-radio tests; hardware-gated tests skip automatically
     ├── test_connect.py
     └── test_get_freq.py
 ```
 
-Unit tests use mocked transports — **no radio required**. Integration tests are in `tests/integration/` and require actual hardware.
+Unit tests use mocked transports — **no radio required**. Integration tests in `tests/integration/` mostly run against mocked or fake radios too; only tests gated behind `ICOM_*` / `RIGPLANE_HW_SMOKE` environment variables need actual hardware, and those skip automatically without it.
 
 #### Golden Protocol Tests
 
