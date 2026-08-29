@@ -2,8 +2,17 @@
 commands are never de-prioritized on the shared CI-V lane.
 
 Deterministic priority assertions (not timing): every poll send-site must
-pass ``priority=Priority.BACKGROUND`` to ``radio.send_civ``, while user
-commands routed through ``_execute`` must stay at the NORMAL default.
+pass ``priority=Priority.BACKGROUND`` to ``radio.send_civ``. The user-command
+side of the MOR-497(i)/(ii) guarantee (NORMAL priority, blocking dispatch)
+used to be checkable here too, back when the poller built the VFO-switch
+CI-V frame itself. Since that switch now goes through the public
+``radio.select_receiver`` API (no priority/wait_dispatch parameters of its
+own), a poller-level mock can no longer observe what priority the frame
+goes out at — this file only checks that ``_execute`` routes to
+``select_receiver`` instead of a raw ``send_civ`` call. The actual
+NORMAL/blocking pin now lives one layer down, in
+``tests/test_radio_coverage.py::test_select_receiver_vfo_switch_stays_normal_priority_and_blocking``,
+which drives ``CoreRadio.select_receiver`` against a mocked commander.
 """
 
 from __future__ import annotations
@@ -115,20 +124,21 @@ async def test_state_query_sends_fire_and_forget() -> None:
 
 
 @pytest.mark.asyncio
-async def test_user_command_stays_normal_priority() -> None:
-    """KEY GUARD: a user command's CI-V sends must NOT be de-prioritized to
-    BACKGROUND, and must NEVER be made fire-and-forget (``wait_dispatch``
-    must stay blocking).
-
-    The receiver=0-while-SUB-active in-command VFO switch now goes through
+async def test_user_command_vfo_switch_routes_through_select_receiver() -> None:
+    """The receiver=0-while-SUB-active in-command VFO switch goes through
     ``radio.select_receiver`` (a public API with no priority/wait_dispatch
     parameters of its own) instead of a hand-built ``_civ(0x07, ...)``
-    frame, so this guard checks the ``select_receiver`` calls the poller
-    makes rather than a raw ``send_civ``. The CI-V frame ``select_receiver``
-    itself emits still defaults to ``Priority.NORMAL`` / blocking dispatch —
-    that guarantee now lives in ``CoreRadio._send_civ_raw`` /
-    ``_send_civ_expect`` (runtime/radio.py), outside what a bare
-    poller-level mock can observe.
+    frame — this checks the ``select_receiver`` calls the poller makes and
+    that no raw ``send_civ`` is used for this path.
+
+    This does NOT check what priority or dispatch mode the CI-V frame
+    ``select_receiver`` emits under the hood — a bare poller-level mock
+    replaces ``select_receiver`` entirely, so it cannot observe that. The
+    MOR-497(i)/(ii) NORMAL-priority/blocking-dispatch guarantee for that
+    frame is pinned at
+    ``tests/test_radio_coverage.py::test_select_receiver_vfo_switch_stays_normal_priority_and_blocking``
+    instead, against a real ``CoreRadio.select_receiver`` and a mocked
+    commander.
     """
     # active="SUB" so SetFreq(receiver=0) triggers the in-command
     # select_receiver(MAIN) switch and its select_receiver(SUB) restore.
