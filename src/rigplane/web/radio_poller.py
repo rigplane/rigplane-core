@@ -2285,32 +2285,41 @@ class RadioPoller:
                 self._last_user_write_ts = time.monotonic()
                 self._ensure_receiver_supported(rx, operation="set_freq")
                 current = self._current_active()
-                if rx != 0 and self._profile.supports_cmd29(0x05):
+                if rx != 0:
+                    # CoreRadio.set_freq already owns the cmd29-vs-VFO-switch
+                    # decision for a non-MAIN receiver (runtime/radio.py,
+                    # runtime/_dual_rx_runtime.py:
+                    # _run_with_receiver_vfo_fallback) — no need to
+                    # reimplement the switch dance here.
                     await radio.set_freq(freq, receiver=rx)
-                elif rx != 0:
-                    if (
-                        self._profile.vfo_sub_code is None
-                        or self._profile.vfo_main_code is None
-                    ):
-                        raise CommandError(
-                            f"set_freq receiver={rx} is unsupported by profile {self._profile.model}: "
-                            "no cmd29 route and no VFO switch codes"
-                        )
-                    if current != "SUB":
-                        await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
-                        await asyncio.sleep(self._gap)
-                    await radio.set_freq(freq)
-                    if current != "SUB":
-                        await asyncio.sleep(self._gap)
-                        await self._civ(0x07, data=bytes([self._profile.vfo_main_code]))
                 else:
+                    # No lower-layer equivalent for a VFO-aware MAIN write:
+                    # CoreRadio.set_freq(freq, receiver=0) sends a blind,
+                    # VFO-unaware 0x05 regardless of which VFO is selected.
+                    # When SUB is active the poller must still switch to
+                    # MAIN, write, and switch back — routed through the
+                    # public select_receiver API instead of a hand-built
+                    # 0x07 CI-V frame.
+                    select_receiver = getattr(radio, "select_receiver", None)
                     if current != "MAIN" and self._profile.vfo_main_code is not None:
-                        await self._civ(0x07, data=bytes([self._profile.vfo_main_code]))
-                        await asyncio.sleep(self._gap)
+                        if select_receiver is not None:
+                            await select_receiver(0)
+                        else:
+                            logger.warning(
+                                "radio-poller: set_freq receiver=0 — backend "
+                                "lacks select_receiver; skipping "
+                                "restore-to-MAIN switch",
+                            )
                     await radio.set_freq(freq)
                     if current != "MAIN" and self._profile.vfo_sub_code is not None:
-                        await asyncio.sleep(self._gap)
-                        await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
+                        if select_receiver is not None:
+                            await select_receiver(1)
+                        else:
+                            logger.warning(
+                                "radio-poller: set_freq receiver=0 — backend "
+                                "lacks select_receiver; skipping "
+                                "restore-to-SUB switch",
+                            )
                 # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
@@ -2329,32 +2338,34 @@ class RadioPoller:
                         (FieldPath.active(str(rx), "freq_mode", "filter_width"),)
                     )
                 current = self._current_active()
-                if rx != 0 and self._profile.supports_cmd29(0x06):
+                if rx != 0:
+                    # See SetFreq above: CoreRadio.set_mode owns the same
+                    # cmd29-vs-VFO-switch decision for a non-MAIN receiver.
                     await radio.set_mode(mode, fw, receiver=rx)
-                elif rx != 0:
-                    if (
-                        self._profile.vfo_sub_code is None
-                        or self._profile.vfo_main_code is None
-                    ):
-                        raise CommandError(
-                            f"set_mode receiver={rx} is unsupported by profile {self._profile.model}: "
-                            "no cmd29 route and no VFO switch codes"
-                        )
-                    if current != "SUB":
-                        await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
-                        await asyncio.sleep(self._gap)
-                    await radio.set_mode(mode, fw)
-                    if current != "SUB":
-                        await asyncio.sleep(self._gap)
-                        await self._civ(0x07, data=bytes([self._profile.vfo_main_code]))
                 else:
+                    # See SetFreq above: no lower-layer VFO-aware MAIN write
+                    # exists, so the poller still owns the switch-and-restore
+                    # dance here, routed through select_receiver.
+                    select_receiver = getattr(radio, "select_receiver", None)
                     if current != "MAIN" and self._profile.vfo_main_code is not None:
-                        await self._civ(0x07, data=bytes([self._profile.vfo_main_code]))
-                        await asyncio.sleep(self._gap)
+                        if select_receiver is not None:
+                            await select_receiver(0)
+                        else:
+                            logger.warning(
+                                "radio-poller: set_mode receiver=0 — backend "
+                                "lacks select_receiver; skipping "
+                                "restore-to-MAIN switch",
+                            )
                     await radio.set_mode(mode, fw)
                     if current != "MAIN" and self._profile.vfo_sub_code is not None:
-                        await asyncio.sleep(self._gap)
-                        await self._civ(0x07, data=bytes([self._profile.vfo_sub_code]))
+                        if select_receiver is not None:
+                            await select_receiver(1)
+                        else:
+                            logger.warning(
+                                "radio-poller: set_mode receiver=0 — backend "
+                                "lacks select_receiver; skipping "
+                                "restore-to-SUB switch",
+                            )
                 # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (

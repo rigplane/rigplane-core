@@ -1738,18 +1738,35 @@ async def test_current_active_defaults_and_setfreq_setmode_branches() -> None:
     assert poller._current_active() == "MAIN"  # noqa: SLF001
 
     radio._radio_state.active = "MAIN"
+    # receiver=1 (SUB) delegates straight to CoreRadio.set_freq, which owns
+    # the cmd29-vs-VFO-switch decision itself — the poller no longer touches
+    # send_civ for this branch.
     await poller._execute(SetFreq(14_074_000, receiver=1))  # noqa: SLF001
-    assert radio.send_civ.await_count >= 2
-    radio.set_freq.assert_awaited_once_with(14_074_000)
+    radio.set_freq.assert_awaited_once_with(14_074_000, receiver=1)
+    radio.send_civ.assert_not_awaited()
 
     radio2 = _make_radio(active="SUB")
     poller2 = RadioPoller(radio2, StateCache(), CommandQueue())
+    # receiver=0 (MAIN) while SUB is active still switches-and-restores in
+    # the poller, via select_receiver — and in the right order: MAIN before
+    # the write, SUB after. select_receiver/set_freq are re-mocked here (own
+    # side effects, not the fixture's) so the interleaved `order` list below
+    # can pin that sequence, mirroring the SetMode ordering pin in
+    # test_profiles_routing.py::test_dual_profile_poller_routes_main_mode_via_select_receiver_when_active_sub;
+    # that test's freq counterpart was the one direction left unpinned for
+    # this ordering (PR #2803 review).
+    order: list[str] = []
+    radio2.select_receiver = AsyncMock(
+        side_effect=lambda which: order.append(f"select_receiver({which})")
+    )
+    radio2.set_freq = AsyncMock(side_effect=lambda *a, **k: order.append("set_freq"))
     await poller2._execute(SetFreq(7_074_000, receiver=0))  # noqa: SLF001
-    assert radio2.send_civ.await_count >= 2
+    assert order == ["select_receiver(0)", "set_freq", "select_receiver(1)"]
+    radio2.set_freq.assert_awaited_once_with(7_074_000)
     radio2.set_freq.assert_awaited_once_with(7_074_000)
 
     await poller._execute(SetMode("USB", filter_width=2, receiver=1))  # noqa: SLF001
-    radio.set_mode.assert_awaited_once_with("USB", 2)
+    radio.set_mode.assert_awaited_once_with("USB", 2, receiver=1)
 
 
 @pytest.mark.asyncio

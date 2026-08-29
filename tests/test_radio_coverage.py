@@ -2309,6 +2309,46 @@ async def test_run_state_transaction_uses_commander_when_available(
 
 
 # ---------------------------------------------------------------------------
+# select_receiver / _set_vfo_wire — priority + dispatch pin (PR #2803 review)
+# ---------------------------------------------------------------------------
+
+
+async def test_select_receiver_vfo_switch_stays_normal_priority_and_blocking(
+    radio: IcomRadio,
+) -> None:
+    """MOR-497(i)/(ii) KEY GUARD, pinned at the layer that now owns it.
+
+    ``RadioPoller``'s user-command paths (``SetFreq``/``SetMode`` with
+    receiver=0 while SUB is active) switch VFOs via the public
+    ``radio.select_receiver`` API rather than a hand-built CI-V frame, so
+    that frame's priority and dispatch mode are no longer observable from a
+    poller-level mock (see
+    ``tests/test_poller_poll_priority.py::test_user_command_vfo_switch_routes_through_select_receiver``).
+    ``select_receiver`` reaches the wire through ``_set_vfo_wire`` →
+    ``_send_civ_expect`` → ``_send_civ_raw`` → ``CivRuntime.send_civ_raw`` →
+    ``commander.send`` (runtime/radio.py, runtime/_civ_rx.py), and none of
+    those hops pass an explicit ``priority`` or ``wait_dispatch`` override,
+    so this asserts the ``Priority.NORMAL`` / ``wait_dispatch=True``
+    defaults actually reach the commander: a user-command VFO switch must
+    never be de-prioritized to BACKGROUND or made fire-and-forget.
+    """
+    from rigplane.commander import IcomCommander, Priority
+    from rigplane.core.types import CivFrame
+
+    ack = CivFrame(to_addr=CONTROLLER_ADDR, from_addr=IC_7610_ADDR, command=0xFB)
+    mock_commander = MagicMock(spec=IcomCommander)
+    mock_commander.send = AsyncMock(return_value=ack)
+    radio._commander = mock_commander
+
+    await radio.select_receiver(1)  # IC-7610 (fixture default) is dual-RX.
+
+    mock_commander.send.assert_awaited_once()
+    _, kwargs = mock_commander.send.await_args
+    assert kwargs["priority"] == Priority.NORMAL
+    assert kwargs["wait_dispatch"] is True
+
+
+# ---------------------------------------------------------------------------
 # scope_stream — task_done (lines 1688-1689)
 # ---------------------------------------------------------------------------
 
