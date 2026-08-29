@@ -201,14 +201,19 @@ implementation agent never reviews its own work (Language & Git above).
 Subagent roles with pinned models live in `.claude/agents/`: `scout` (haiku,
 read-only status/fact collection), `builder` (sonnet, implementation from a
 spec), `verifier` (opus, independent review and gate verdicts), `researcher`
-(sonnet, read-only exploration with synthesis). Dispatch through these roles
-by default; a dispatch outside them must pass an explicit model — never let a
-subagent silently inherit the root session's model.
+(sonnet, read-only exploration with synthesis), `auditor` (opus, read-only
+adjudication of audits — mechanism duplication, displacement across layer
+boundaries, dead code — deciding between competing explanations of one observed
+fact rather than collecting facts, which is why it is pinned above `researcher`;
+it reads its method from `.claude/skills/mechanism-audit/SKILL.md` and refuses
+to run when it can neither read that file nor be handed a method inline).
+Dispatch through these roles by default; a dispatch outside them must pass an
+explicit model — never let a subagent silently inherit the root session's model.
 
 Slash commands for scoped workflows live in `.claude/commands/` (`audit-ui`,
 `decompose-issue`, `generate-tests`, `next`, `refactor`, `regression-check`,
-`scan-issues`, `solve-issue`) plus the `release` skill in `.claude/skills/`;
-each file is self-documenting.
+`scan-issues`, `solve-issue`) plus the `release` and `mechanism-audit` skills
+in `.claude/skills/`; each file is self-documenting.
 
 ### The pipeline
 
