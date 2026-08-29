@@ -20,7 +20,7 @@ weakening the resolver or the gate it feeds:
   (``_civ_rx.py: _CivRuntime._observations_from_frame``) would: one
   ``Observation`` at ``FieldPath.global_("tx_state", "ptt")``, bounded by the
   same TTL, reflecting the mock's own current ``_ptt`` flag.
-* ``answer_ptt_reread_with_rx`` — for a real :class:`rigplane.radio.IcomRadio`
+* ``answer_ptt_reread`` — for a real :class:`rigplane.radio.IcomRadio`
   fixture (``RecordingLanRadio`` in ``test_rigctld_audio_pipeline.py``).
   Reuses the exact technique already proven in
   ``tests/test_rigctld_ptt_reread.py`` (MOR-1903's own verification of this
@@ -28,7 +28,12 @@ weakening the resolver or the gate it feeds:
   route it through the real, unmodified
   ``_CivRuntime._route_civ_frame``/``_observations_from_frame`` ingestion —
   the same production code path a live CI-V RX stream drives — skipping only
-  the outer transport byte/header decode the fixture never sets up.
+  the outer transport byte/header decode the fixture never sets up. The key
+  state it answers with is the caller's own, never a constant: a helper that
+  replied "not transmitting" unconditionally would re-create the fabricated
+  RX observation ``6bdb5846`` deleted from
+  ``RigctldHandler._cmd_get_ptt`` — the forbidden direction — and no test
+  built on it could ever observe the gate under TX.
 
 Neither helper touches ``_defer_write_gate``, the TX-interlock family
 classification, or any production module; both only make a test double
@@ -64,6 +69,8 @@ from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
 from rigplane.types import CivFrame
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from rigplane.radio import IcomRadio
     from rigplane.rigctld.server import RigctldServer
 
@@ -127,12 +134,47 @@ def civ_ptt_reply_frame(radio: "IcomRadio", *, transmitting: bool) -> CivFrame:
     )
 
 
-async def answer_ptt_reread_with_rx(radio: "IcomRadio") -> None:
-    """Deliver an RX-state ``0x1C/0x00`` reply through real CI-V ingress."""
-    frame = civ_ptt_reply_frame(radio, transmitting=False)
+async def answer_ptt_reread(radio: "IcomRadio", *, transmitting: bool) -> None:
+    """Deliver a ``0x1C/0x00`` reply through real CI-V ingress.
+
+    ``transmitting`` is the calling double's own current key state, so the
+    observation this produces tracks what the double is actually doing —
+    the same contract ``PttAnsweringSerialMockRadio.send_civ`` honours by
+    reading its own ``_ptt``. ``test_rigctld_audio_pipeline.py::
+    test_defer_write_is_dropped_while_the_radio_transmits`` is what fails if
+    a caller ever pins this to a constant instead.
+    """
+    frame = civ_ptt_reply_frame(radio, transmitting=transmitting)
     await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
         frame,
         generation=radio._civ_epoch,  # noqa: SLF001
+    )
+
+
+async def _poll_rf_state(
+    server: "RigctldServer",
+    accept: "Callable[[tx_interlock.RfState], bool]",
+    wanted: str,
+    timeout: float,
+) -> None:
+    """Poll ``_resolve_rigctld_rf_state`` until ``accept`` holds, else raise."""
+    handler = server._rig_handler  # noqa: SLF001
+    resolve = getattr(handler, "_resolve_rigctld_rf_state", None)
+    assert callable(resolve), "server._rig_handler not initialised — call after start()"
+    deadline = time.monotonic() + timeout
+    state = resolve()
+    while time.monotonic() < deadline:
+        state = resolve()
+        if accept(state):
+            return
+        await asyncio.sleep(0.02)
+    hint = (
+        " — is a client connected (server._client_count > 0)?"
+        if state is tx_interlock.RfState.UNKNOWN
+        else " — is the double's key state reaching the re-read reply?"
+    )
+    raise AssertionError(
+        f"RF state stayed {state} past the PTT re-read window, wanted {wanted}{hint}"
     )
 
 
@@ -145,15 +187,26 @@ async def wait_for_known_rf_state(
     ``_run_ptt_reread`` actually sends; otherwise this always times out —
     correctly, since an idle server never converges either.
     """
-    handler = server._rig_handler  # noqa: SLF001
-    resolve = getattr(handler, "_resolve_rigctld_rf_state", None)
-    assert callable(resolve), "server._rig_handler not initialised — call after start()"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if resolve() is not tx_interlock.RfState.UNKNOWN:
-            return
-        await asyncio.sleep(0.02)
-    raise AssertionError(
-        "RF state stayed UNKNOWN past the PTT re-read window — "
-        "is a client connected (server._client_count > 0)?"
+    await _poll_rf_state(
+        server,
+        lambda state: state is not tx_interlock.RfState.UNKNOWN,
+        "anything but UNKNOWN",
+        timeout,
+    )
+
+
+async def wait_for_rf_state(
+    server: "RigctldServer",
+    expected: tx_interlock.RfState,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    """Wait until the gate's resolver reports exactly ``expected``.
+
+    A key state the double changed reaches the resolver only through the
+    next ``_run_ptt_reread`` tick, so this waits for the re-read to carry it
+    rather than assuming the write landed in the canonical store directly.
+    """
+    await _poll_rf_state(
+        server, lambda state: state is expected, str(expected), timeout
     )
