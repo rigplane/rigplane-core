@@ -43,6 +43,12 @@ builders whose arguments no probe value satisfied, the sites no compared
 builder reaches, and a census of how much was compared. Every number in it
 is re-measured and asserted here, so none of it can go stale unnoticed.
 
+That census also counts what this sweep cannot reach at all:
+``hardcode_only_builders`` is the public builders that take no ``cmd_map``.
+They have no profile branch to disagree with, so no divergence row can ever
+name them however wrong their bytes are — the count is the only thing that
+makes a new one visible.
+
 Regenerate both files after an intentional change::
 
     RIGPLANE_REGEN_COMMAND_MAP_PARITY=1 uv run pytest \
@@ -207,6 +213,42 @@ def _builders() -> dict[Key, typing.Any]:
             if "cmd_map" in inspect.signature(value).parameters:
                 found[(path.name, value.__name__)] = value
     return found
+
+
+@functools.lru_cache(maxsize=1)
+def _hardcode_only_builders() -> frozenset[Key]:
+    """Command builders in the public domain modules that take no ``cmd_map``.
+
+    These are outside everything else this file measures. A builder with
+    both branches can disagree with its profile, and a divergence row says
+    so; a builder with no ``cmd_map`` parameter has no profile branch to
+    disagree with, so it can never appear in the divergence baseline however
+    wrong its bytes are. Counting them here is what makes a new one visible:
+    the census is asserted for equality, so adding one fails until the
+    baseline is regenerated in a reviewable commit.
+
+    Underscore-named modules are skipped, which is where this differs from
+    :func:`_builders`. They hold the framing and codec kernel --
+    ``_frame.py: build_civ_frame``, ``_codec.py: bcd_encode_value`` and
+    their siblings -- which every builder calls and which encode no command
+    of their own, so a ``cmd_map`` would be meaningless to them. Counting
+    them would make this number move whenever the kernel gains a public
+    helper. :func:`_builders` needs no such rule only because nothing in
+    those modules takes a ``cmd_map`` to begin with.
+    """
+    found: set[Key] = set()
+    for path in sorted(COMMANDS_DIR.glob("*.py")):
+        if path.stem.startswith("_"):
+            continue
+        module = importlib.import_module(f"rigplane.commands.{path.stem}")
+        for value in vars(module).values():
+            if not inspect.isfunction(value) or value.__name__.startswith("_"):
+                continue
+            if value.__module__ != module.__name__:
+                continue
+            if "cmd_map" not in inspect.signature(value).parameters:
+                found.add((path.name, value.__name__))
+    return frozenset(found)
 
 
 def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, ...]:
@@ -401,6 +443,7 @@ def _report() -> _Report:
             "dual_implementation_sites": len(_graph().sites),
             "sites_compared": len(compared),
             "public_builders": len(_builders()),
+            "hardcode_only_builders": len(_hardcode_only_builders()),
             "builders_compared": len(per_builder),
             "profiles": len(rigs),
             "cat_only_profiles": len(cat_only),
