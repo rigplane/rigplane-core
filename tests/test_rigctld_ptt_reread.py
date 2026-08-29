@@ -13,6 +13,7 @@ ingress, from a real radio reply (MOR-1900).
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 from collections.abc import Generator
 from typing import Any
@@ -339,6 +340,54 @@ async def test_client_connecting_at_server_start_gets_known_state_before_first_w
             await writer.wait_closed()
     finally:
         await server.stop()
+
+
+async def test_connect_triggered_reread_does_not_leak_loop_exception(
+    civ_radio: IcomRadio,
+) -> None:
+    """A dropped CI-V link at connect must not surface as a loop-level error.
+
+    ``RigctldServer._spawn``'s done-callback only discards the task from
+    ``_bg_tasks``; it never retrieves the task's result. Before this test,
+    a ``ConnectionError`` from ``send_civ`` on the connect-triggered
+    re-read (``_send_ptt_reread_once`` spawned directly, with no exception
+    handling of its own) escaped as an asyncio "Task exception was never
+    retrieved" error, once per connect on a dead link -- plausible whenever
+    a client connects while the CI-V link is down. This pins that the
+    connect path now carries the same swallow-and-log discipline as the
+    scheduled-tick caller, ``_run_ptt_reread``.
+    """
+    civ_radio.send_civ = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionError("Not connected to radio")
+    )
+    server = RigctldServer(civ_radio, RigctldConfig(host="127.0.0.1", port=0))
+
+    loop = asyncio.get_running_loop()
+    loop_exceptions: list[dict[str, Any]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: loop_exceptions.append(context))
+    try:
+        await server.start()
+        try:
+            assert server._server is not None  # noqa: SLF001
+            port = server._server.sockets[0].getsockname()[1]  # noqa: SLF001
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            try:
+                # Let the connect-triggered task run to completion and be
+                # garbage-collected -- that is when an unretrieved task
+                # exception is reported to the loop's exception handler.
+                await asyncio.sleep(0.05)
+                gc.collect()
+                await asyncio.sleep(0)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await server.stop()
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert loop_exceptions == [], loop_exceptions
 
 
 def test_yaesu_radio_gets_no_civ_reread_task() -> None:

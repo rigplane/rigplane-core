@@ -186,10 +186,6 @@ class RigctldServer:
         self._acquisition_executor: AcquisitionExecutor | None = None
         self._state_acquisition_drain_task: asyncio.Task[None] | None = None
         self._ptt_reread_task: asyncio.Task[None] | None = None
-        # Serializes the scheduled tick against the connect-triggered
-        # immediate re-read below so the two can never put two 0x1C/0x00
-        # requests on the wire back to back.
-        self._ptt_reread_send_lock: asyncio.Lock = asyncio.Lock()
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
@@ -517,33 +513,42 @@ class RigctldServer:
 
         Two independent triggers can reach this method: the scheduled tick
         in ``_run_ptt_reread`` and the connect-triggered immediate re-read in
-        ``_accept_client``. If one is already in flight when the other
-        fires, the lock makes the second call a no-op instead of a second
-        frame on the wire — the in-flight request already covers the
-        connecting client, since it will resolve within one round trip
-        regardless of which trigger sent it.
+        ``_accept_client``. They are not serialized against each other, so
+        both can put a ``0x1C/0x00`` request on the wire close together.
+        That is harmless: the read carries no side effect and the reply is
+        idempotent, so a duplicate in-flight request changes nothing the
+        gate or the StateStore observes.
         """
-        if self._ptt_reread_send_lock.locked():
+        radio = self._radio
+        # Parity with the lazy poller start: an idle server stays off the wire.
+        if self._client_count <= 0 or not isinstance(radio, CivCommandCapable):
             return
-        async with self._ptt_reread_send_lock:
-            radio = self._radio
-            # Parity with the lazy poller start: an idle server stays off
-            # the wire.
-            if self._client_count <= 0 or not isinstance(radio, CivCommandCapable):
-                return
-            # A Hamlib bridge owns the byte stream; our reads must not
-            # pollute it (MOR-166 slice 2). ``is True``, matching every
-            # sibling poller, so a duck-typed radio never quiesces by
-            # accident.
-            if getattr(radio, "external_cat_session_active", False) is True:
-                return
-            await radio.send_civ(
-                0x1C,
-                sub=0x00,
-                wait_response=False,
-                priority=Priority.BACKGROUND,
-                wait_dispatch=False,
-            )
+        # A Hamlib bridge owns the byte stream; our reads must not pollute it
+        # (MOR-166 slice 2). ``is True``, matching every sibling poller, so a
+        # duck-typed radio never quiesces by accident.
+        if getattr(radio, "external_cat_session_active", False) is True:
+            return
+        await radio.send_civ(
+            0x1C,
+            sub=0x00,
+            wait_response=False,
+            priority=Priority.BACKGROUND,
+            wait_dispatch=False,
+        )
+
+    async def _send_ptt_reread_once_on_connect(self) -> None:
+        """Spawn target for the connect-triggered re-read in ``_accept_client``.
+
+        Same exception discipline as the scheduled-tick caller,
+        ``_run_ptt_reread``: a dead or mid-teardown transport must not
+        surface as an unretrieved task exception on
+        ``RigctldServer._spawn``'s done-callback, which only discards the
+        task and never retrieves its result.
+        """
+        try:
+            await self._send_ptt_reread_once()
+        except Exception as exc:
+            logger.debug("rigctld PTT re-read failed: %s", exc, exc_info=True)
 
     def _start_state_acquisition_drain_task(self) -> None:
         if (
@@ -1032,10 +1037,11 @@ class RigctldServer:
         # refused (RPRT -9). Firing one read on the zero-to-one transition
         # closes that window instead of waiting out up to a full
         # PTT_REREAD_INTERVAL_SECONDS; the scheduled cadence continues
-        # unchanged afterward, and the lock in _send_ptt_reread_once keeps
-        # this from ever doubling up with a tick that is already in flight.
+        # unchanged afterward. This can race a tick already in flight and
+        # put two 0x1C/0x00 requests on the wire close together -- harmless,
+        # since the read is idempotent and carries no side effect.
         if self._client_count == 1 and self._ptt_reread_task is not None:
-            self._spawn(self._send_ptt_reread_once())
+            self._spawn(self._send_ptt_reread_once_on_connect())
 
         # Optional WSJT-X compatibility pre-warm for first client:
         # if radio is in USB/LSB/RTTY with DATA off, enable DATA mode upfront
