@@ -1169,8 +1169,10 @@ class YaesuCatRadio:
     # -- RM meters (COMP, ALC, Power, SWR, IDD, VDD) ----------------------
 
     async def _read_meter(self, meter_type: int) -> tuple[int, int]:
-        """Read the meter's profile-defined command. Returns (main, sub) raw
-        values 0–255.
+        """Read the meter's profile-defined command.
+
+        Returns (main, sub) raw 3-digit meter values as parsed by the
+        profile's ``get_meter`` template.
 
         Routes through the ``get_meter`` profile entry (parameterised read
         template, e.g. ``"RM{type};"``) rather than a hardcoded command —

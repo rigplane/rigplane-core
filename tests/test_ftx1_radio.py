@@ -2172,8 +2172,8 @@ class TestIFBulkQuery:
     template — chan(5) + freq(9) + sign(1) + offset(4) + rx(1) + tx(1) +
     mode(1) + vfo(1) + tone(1) + fixed "00" + shift(1) — the layout from the
     CAT manual (FTX-1_CAT_OM_ENG_2508-C), bench-verified 2026-08-29. The
-    baseline frame ``IF00000014228000+000000200003`` is the exact bytes the
-    bench FTX-1 answered.
+    baseline frame ``IF00000014228000+000000200003`` is the bench FTX-1's
+    answer with the transport-stripped trailing ``;`` removed.
     """
 
     MEASURED_FRAME = "IF00000014228000+000000200003"
@@ -2223,6 +2223,30 @@ class TestIFBulkQuery:
         assert connected_radio.radio_state.rit_tx is True
 
     @pytest.mark.asyncio
+    async def test_get_if_status_rit_and_xit_are_not_interchangeable(
+        self, connected_radio
+    ):
+        """P4 (RX CLAR) and P5 (TX CLAR) must map to rit_on/xit_on without
+        being swapped.
+
+        Every other frame in this class has P4 == P5 (both "0" or both
+        "1"), so a swap of the ``{rx}``/``{tx}`` parse fields or of the
+        ``rit_on``/``xit_on`` assignment would stay green against them.
+        This frame is the bench-measured baseline with only body position
+        19 changed from "0" to "1" (P4="1", P5="0": RX CLAR on, TX CLAR
+        off), so it discriminates a swap in either direction.
+        """
+        response = "IF00000014228000+000010200003"
+        connected_radio._transport.query = AsyncMock(return_value=response)
+
+        result = await connected_radio.get_if_status()
+
+        assert result["rit_on"] is True
+        assert result["xit_on"] is False
+        assert connected_radio.radio_state.rit_on is True
+        assert connected_radio.radio_state.rit_tx is False
+
+    @pytest.mark.asyncio
     async def test_get_if_status_does_not_write_ptt_or_split(self, connected_radio):
         """MOR-2011: the IF response has no PTT or split field, so
         get_if_status() must not touch radio_state.ptt / radio_state.split.
@@ -2242,7 +2266,7 @@ class TestIFBulkQuery:
         """A frame that doesn't match the IF template raises CatParseError.
 
         CatParseError is a ValueError subclass (same family the profile's
-        other parameterised reads raise for a mismatched frame).
+        other template-parsed reads raise for a mismatched frame).
         """
         connected_radio._transport.query = AsyncMock(return_value="IF00")
 
