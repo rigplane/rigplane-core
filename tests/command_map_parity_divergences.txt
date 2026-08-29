@@ -19,14 +19,6 @@ IC-705	levels.py:get_ref_adjust	(no arguments)	map=fefea4e01a050089fd fallback=f
 IC-705	levels.py:set_dash_ratio	value=30	map=fefea4e01a05025230fd fallback=fefea4e01a05022830fd
 IC-705	levels.py:set_ref_adjust	value=0	map=fefea4e01a0500890000fd fallback=fefea4e01a0500700000fd
 IC-705	scope.py:get_scope_center_type	receiver=0	map=fefea4e0271cfd fallback=fefea4e0271c00fd
-IC-705	scope.py:get_scope_edge	receiver=0	map=fefea4e02716fd fallback=fefea4e0271600fd
-IC-705	scope.py:get_scope_hold	receiver=0	map=fefea4e02717fd fallback=fefea4e0271700fd
-IC-705	scope.py:get_scope_mode	receiver=0	map=fefea4e02714fd fallback=fefea4e0271400fd
-IC-705	scope.py:get_scope_rbw	receiver=0	map=fefea4e0271ffd fallback=fefea4e0271f00fd
-IC-705	scope.py:get_scope_ref	receiver=0	map=fefea4e02719fd fallback=fefea4e0271900fd
-IC-705	scope.py:get_scope_span	receiver=0	map=fefea4e02715fd fallback=fefea4e0271500fd
-IC-705	scope.py:get_scope_speed	receiver=0	map=fefea4e0271afd fallback=fefea4e0271a00fd
-IC-705	scope.py:get_scope_vbw	receiver=0	map=fefea4e0271dfd fallback=fefea4e0271d00fd
 IC-705	vfo.py:get_quick_split	(no arguments)	map=fefea4e01a050045fd fallback=fefea4e01a050033fd
 IC-705	vfo.py:set_quick_split	(no arguments)	map=fefea4e01a050045fd fallback=fefea4e01a050033fd
 IC-7300	config.py:get_acc1_mod_level	(no arguments)	map=fefe94e01a050064fd fallback=fefe94e0140bfd
@@ -48,14 +40,6 @@ IC-7300	levels.py:set_nb_depth	value=0	map=fefe94e01a05018900fd fallback=fefe94e
 IC-7300	levels.py:set_nb_width	value=0	map=fefe94e01a0501900000fd fallback=fefe94e01a0502910000fd
 IC-7300	levels.py:set_vox_delay	value=0	map=fefe94e01a05019100fd fallback=fefe94e01a05029200fd
 IC-7300	scope.py:get_scope_center_type	receiver=0	map=fefe94e0271cfd fallback=fefe94e0271c00fd
-IC-7300	scope.py:get_scope_edge	receiver=0	map=fefe94e02716fd fallback=fefe94e0271600fd
-IC-7300	scope.py:get_scope_hold	receiver=0	map=fefe94e02717fd fallback=fefe94e0271700fd
-IC-7300	scope.py:get_scope_mode	receiver=0	map=fefe94e02714fd fallback=fefe94e0271400fd
-IC-7300	scope.py:get_scope_rbw	receiver=0	map=fefe94e0271ffd fallback=fefe94e0271f00fd
-IC-7300	scope.py:get_scope_ref	receiver=0	map=fefe94e02719fd fallback=fefe94e0271900fd
-IC-7300	scope.py:get_scope_span	receiver=0	map=fefe94e02715fd fallback=fefe94e0271500fd
-IC-7300	scope.py:get_scope_speed	receiver=0	map=fefe94e0271afd fallback=fefe94e0271a00fd
-IC-7300	scope.py:get_scope_vbw	receiver=0	map=fefe94e0271dfd fallback=fefe94e0271d00fd
 IC-7300	vfo.py:get_quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
 IC-7300	vfo.py:set_quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
 IC-7610	config.py:get_acc1_mod_level	(no arguments)	map=fefe98e01a050088fd fallback=fefe98e0140bfd
@@ -69,14 +53,6 @@ IC-7610	config.py:set_civ_transceive	enabled=False	map=fefe98e01a05011200fd fall
 IC-7610	config.py:set_lan_mod_level	level=0	map=fefe98e01a0500900000fd fallback=fefe98e014110000fd
 IC-7610	config.py:set_usb_mod_level	level=0	map=fefe98e01a0500890000fd fallback=fefe98e014100000fd
 IC-7610	scope.py:get_scope_center_type	receiver=0	map=fefe98e0271cfd fallback=fefe98e0271c00fd
-IC-7610	scope.py:get_scope_edge	receiver=0	map=fefe98e02716fd fallback=fefe98e0271600fd
-IC-7610	scope.py:get_scope_hold	receiver=0	map=fefe98e02717fd fallback=fefe98e0271700fd
-IC-7610	scope.py:get_scope_mode	receiver=0	map=fefe98e02714fd fallback=fefe98e0271400fd
-IC-7610	scope.py:get_scope_rbw	receiver=0	map=fefe98e0271ffd fallback=fefe98e0271f00fd
-IC-7610	scope.py:get_scope_ref	receiver=0	map=fefe98e02719fd fallback=fefe98e0271900fd
-IC-7610	scope.py:get_scope_span	receiver=0	map=fefe98e02715fd fallback=fefe98e0271500fd
-IC-7610	scope.py:get_scope_speed	receiver=0	map=fefe98e0271afd fallback=fefe98e0271a00fd
-IC-7610	scope.py:get_scope_vbw	receiver=0	map=fefe98e0271dfd fallback=fefe98e0271d00fd
 IC-7610	vfo.py:get_dual_watch	(no arguments)	map=fefe98e007c2c2fd fallback=fefe98e007c2fd
 IC-7610	vfo.py:get_main_sub_band	(no arguments)	map=fefe98e007d2d2fd fallback=fefe98e007d2fd
 IC-9700	config.py:get_acc1_mod_level	(no arguments)	map=fefea2e01a050064fd fallback=fefea2e0140bfd
@@ -98,14 +74,6 @@ IC-9700	levels.py:set_nb_depth	value=0	map=fefea2e01a05018900fd fallback=fefea2e
 IC-9700	levels.py:set_nb_width	value=0	map=fefea2e01a0501900000fd fallback=fefea2e01a0502910000fd
 IC-9700	levels.py:set_vox_delay	value=0	map=fefea2e01a05019100fd fallback=fefea2e01a05029200fd
 IC-9700	scope.py:get_scope_center_type	receiver=0	map=fefea2e0271cfd fallback=fefea2e0271c00fd
-IC-9700	scope.py:get_scope_edge	receiver=0	map=fefea2e02716fd fallback=fefea2e0271600fd
-IC-9700	scope.py:get_scope_hold	receiver=0	map=fefea2e02717fd fallback=fefea2e0271700fd
-IC-9700	scope.py:get_scope_mode	receiver=0	map=fefea2e02714fd fallback=fefea2e0271400fd
-IC-9700	scope.py:get_scope_rbw	receiver=0	map=fefea2e0271ffd fallback=fefea2e0271f00fd
-IC-9700	scope.py:get_scope_ref	receiver=0	map=fefea2e02719fd fallback=fefea2e0271900fd
-IC-9700	scope.py:get_scope_span	receiver=0	map=fefea2e02715fd fallback=fefea2e0271500fd
-IC-9700	scope.py:get_scope_speed	receiver=0	map=fefea2e0271afd fallback=fefea2e0271a00fd
-IC-9700	scope.py:get_scope_vbw	receiver=0	map=fefea2e0271dfd fallback=fefea2e0271d00fd
 IC-9700	vfo.py:get_dual_watch	(no arguments)	map=fefea2e007c2c2fd fallback=fefea2e007c2fd
 IC-9700	vfo.py:get_main_sub_band	(no arguments)	map=fefea2e007d2d2fd fallback=fefea2e007d2fd
 IC-9700	vfo.py:get_quick_split	(no arguments)	map=fefea2e01a050030fd fallback=fefea2e01a050033fd
