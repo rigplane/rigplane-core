@@ -44,6 +44,14 @@ WORKFLOW_FILES = ("quick.yml", "full.yml", "publish.yml")
 
 _PYTEST_INVOCATION_RE = re.compile(r"uv run pytest tests/[^\n]*")
 
+# All three workflows name the pytest step "Run tests" at the same 6-space
+# step indent. Captures everything from that step's `name:` line up to (not
+# including) the next step at the same indent, or end of file.
+_RUN_TESTS_STEP_RE = re.compile(
+    r"^      - name: Run tests\n(.*?)(?=^      - name:|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
 
 def _pytest_invocations(workflow_name: str) -> list[str]:
     text = (WORKFLOWS_DIR / workflow_name).read_text()
@@ -59,6 +67,16 @@ def _pytest_invocations(workflow_name: str) -> list[str]:
     return invocations
 
 
+def _run_tests_step_body(workflow_name: str) -> str:
+    text = (WORKFLOWS_DIR / workflow_name).read_text()
+    match = _RUN_TESTS_STEP_RE.search(text)
+    assert match, (
+        f"no `Run tests` step found in {workflow_name} — update this pin if "
+        "the step was renamed or restructured"
+    )
+    return match.group(1)
+
+
 def test_no_workflow_excludes_integration_tests() -> None:
     for workflow_name in WORKFLOW_FILES:
         for invocation in _pytest_invocations(workflow_name):
@@ -68,3 +86,15 @@ def test_no_workflow_excludes_integration_tests() -> None:
                 "left tests/integration/ uncollected and red for nine days "
                 "(commit 6bdb5846, fixed by #2808/#2810)"
             )
+        # Checked separately, over the whole `Run tests` step body rather
+        # than only the matched invocation line: a YAML folded block scalar
+        # (`run: >`) puts the flag on its own physical line and folds it
+        # into the shell command only at YAML-parse time, so it would never
+        # appear inside `[^\n]*` above yet would still reach the shell.
+        step_body = _run_tests_step_body(workflow_name)
+        assert "--ignore=tests/integration" not in step_body, (
+            f"{workflow_name}'s `Run tests` step body contains "
+            "--ignore=tests/integration outside the matched invocation "
+            "line — likely a folded (`run: >`) or otherwise reshaped "
+            "block scalar smuggling the flag back in"
+        )

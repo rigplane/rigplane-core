@@ -8,9 +8,11 @@ cache invalidation. Builds on:
 - #766 — codec/channel change detection triggered by audio_config.
 - #767 / #768 — Option-B ``frame_ms`` + dead-code cleanup.
 
-Marked ``integration`` + ``mock_integration`` — skipped in default CI
-runs; executes via the integration marker and does not require real
-hardware.
+Marked ``integration`` + ``mock_integration``. The ``mock_integration``
+marker is what keeps these off hardware — ``conftest.py``'s
+``pytest_collection_modifyitems`` skips over them without ever adding a
+skip marker — so they run in the standard suite and in all three CI
+workflows, with no real hardware required.
 """
 
 from __future__ import annotations
