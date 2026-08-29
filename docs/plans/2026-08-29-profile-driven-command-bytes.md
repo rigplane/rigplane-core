@@ -11,6 +11,11 @@ forward from an earlier round.
 hardcoded fallback and its constants are DELETED; the command map becomes
 required; it must be structurally impossible to send a byte that did not come
 from the profile.
+**Two further owner rulings, settled 2026-08-29 and folded in as §9.1:**
+what an undeclared command does (**D1**, three states, implemented by Step 4),
+and how the profiles of radios nobody can measure get filled (**D2**, from
+documentation, with the source recorded per entry). Q3–Q7 in §9.2 remain
+open.
 
 ---
 
@@ -181,6 +186,49 @@ It fails on a new divergence **and** on a row that stopped diverging. That makes
 it both the regression net and the worklist: the 76 rows are the complete list
 of frames that change on the wire when the fallback dies.
 
+### 1.8 How much profile data is actually missing
+
+`profile_builder_map_gaps 1006` is the number most likely to be misread, and it
+has been misread once already in the course of preparing this document. It does
+**not** mean "1006 commands need profile entries".
+
+*Observed*, from `tests/test_command_map_parity.py: _report` at `a2de2ab0`: that
+census counts `(profile, builder)` pairs, where a builder is a
+`(module file, function name)` key. The `gap` rows in
+`tests/command_map_parity_uncovered.txt` count something else — `(profile,
+command name)` pairs — and there are **871** of those, over **201 distinct
+command names**. The two differ because several builders can resolve the same
+command name — *observed*: `vfo.py: set_dual_watch`, `vfo.py: set_dual_watch_on`
+and `vfo.py: set_dual_watch_off` all look up the single name `set_dual_watch`,
+so one missing name counts once in the 871 and three times in the 1006. I did
+not reconcile the two figures pair by pair; what matters is that neither is a
+count of work items, and 1006 is the larger and less meaningful of them.
+
+The uncovered file's own header warns that a command lands in a `gap` row for
+either of two reasons — the TOML omits it, **or** the TOML declares it as a CAT
+command, which `profiles/rig_loader.py: RigConfig.to_command_map` drops — and
+that gap rows are a worklist only for profiles with no `cat-only` row.
+
+*Observed*, by loading every profile at `a2de2ab0` and counting
+`CatCommandSpec` against `CivCommandSpec`:
+
+| Profile | Commands declared | of which CAT | Distinct gap command names | What that means |
+|---|---|---|---|---|
+| IC-7300 | 319 | 0 | **35** | CI-V, **on the bench** — the tractable worklist |
+| IC-7610 | 208 | 0 | 18 | CI-V, retired radio |
+| IC-9700 | 323 | 0 | 31 | CI-V, radio not available |
+| IC-705 | 234 | 0 | 43 | CI-V, radio not available |
+| X6200 | 62 | 0 | 153 | CI-V, radio destroyed |
+| X6100 | 12 | 0 | 189 | CI-V, radio not available; the profile is nearly empty |
+| FTX-1 | 108 | 108 | 201 | **Artefact** — every command is CAT, so the map is empty by construction; `[protocol] type = "yaesu_cat"`, never reaches a CI-V builder |
+| TX-500 | 50 | 50 | 201 | **Artefact** — same, `[protocol] type = "kenwood_cat"` |
+
+Read the table this way: **402 of the 871 name-pairs are the two non-CI-V
+profiles and are not work at all.** Of what remains, the one radio that can be
+confirmed by measurement has **35** missing commands. X6100's 189 is not 189
+problems either — that profile declares 12 commands in total, so it is closer to
+"this profile was never written" than to "this profile has gaps".
+
 ---
 
 ## 2. End state
@@ -198,9 +246,13 @@ Concretely enough to tell whether you have arrived.
   `web/radio_poller.py: RadioPoller._send_cmd`.
 - A written, loader-validated contract for what a `[commands]` tuple may
   contain (§5, class C).
-- A rule for what happens when a profile does not declare a command, expressed
-  through the gate that already exists (`profiles: RadioProfile.supports_command`),
-  not a new one.
+- The three states of D1 (§9.1) for a command a profile does not declare,
+  expressed through the gate that already exists
+  (`profiles: RadioProfile.supports_command`), not a new one — and a test that
+  makes the third state ("not declared and unknown") impossible to ship.
+- A recorded source for every wire byte in every rig TOML, per D2 (§9.1), so a
+  reader can tell a value confirmed on hardware from one taken out of a manual
+  without asking anyone.
 
 **Deleted:**
 
@@ -250,8 +302,8 @@ Per the repo's scope rule, three searches with different vocabulary, at
    production exactly once (`runtime/radio.py`, for `set_filter_width`), and is
    declared on the `core/radio_protocol.py` Protocol with implementations in
    `runtime/radio.py`, `backends/yaesu_cat/radio.py` and
-   `backends/rigctld_client/radio.py`. **The plan reuses it for the gap policy
-   rather than inventing a second one.**
+   `backends/rigctld_client/radio.py`. **D1 (§9.1) is implemented on top of it
+   rather than on a second, parallel gate.**
 
 Nearest existing thing to a binder: `RadioPoller._send_cmd`. It does not fit —
 it bypasses the builders entirely and re-implements the wire decomposition, so
@@ -429,36 +481,67 @@ the wire decomposition.
 **Red if broken:** a new case in `tests/test_radio_poller_coverage.py` asserting
 `set_agc` still emits the profile's bytes with the disk scan gone.
 
-### Step 4 — Decide and implement what an undeclared command does
+### Step 4 — Implement the three states for an undeclared command (decision D1)
 
-*Why before the first module migrates:* `profile_builder_map_gaps` is 1006
-(profile × builder pairs) at `a2de2ab0`. Today every one of those silently emits
-the fallback bytes. The moment a module requires the map, they become
-`KeyError`. Distinct command-name gaps per profile, from the `gap` rows:
+*Why before the first module migrates:* today a command the profile does not
+declare silently emits the fallback bytes. The moment a module requires the map,
+that same call becomes a bare `KeyError` from `CommandMap.get`. Neither is
+acceptable, and D1 (§9.1) settles what replaces them. Sizes are in §1.8: for the
+one radio on the bench, 35 command names.
 
-| Profile | Gaps | Note |
-|---|---|---|
-| FTX-1 | 201 | `[protocol] type = "yaesu_cat"` — never reaches a CI-V builder |
-| TX-500 | 201 | `[protocol] type = "kenwood_cat"` — same |
-| X6100 | 189 | CI-V, not on the bench |
-| X6200 | 153 | CI-V, radio destroyed |
-| IC-705 | 43 | CI-V, not on the bench |
-| IC-7300 | 35 | CI-V, **on the bench** |
-| IC-9700 | 31 | CI-V, not on the bench |
-| IC-7610 | 18 | CI-V, retired |
+Implement exactly three states, with **the same behaviour in development and in
+production**. The command path does not branch on environment; the only
+dev/production asymmetry lives in the guard test.
 
-(These two quantities are counted differently — 1006 pairs vs 871 distinct
-names summed above — and I did not reconcile them. Both are read from
-`tests/command_map_parity_uncovered.txt` at `a2de2ab0`.)
+1. **Declared** → send the profile's bytes. Nothing else changes.
+2. **Not declared, and the profile knows the radio does not have the command**
+   → report *unsupported by this radio*, through the mechanism that already
+   exists: `profiles: RadioProfile.supports_command`, which is already declared
+   on the `core/radio_protocol.py` Protocol and implemented by
+   `runtime/radio.py`, `backends/yaesu_cat/radio.py` and
+   `backends/rigctld_client/radio.py`. Not an exception thrown at the consumer,
+   and **not** log-and-continue.
+3. **Not declared and not known either way** → this state must not exist at
+   release. A test enumerates every builder against every profile and goes red
+   on any remaining gap, so the state is eliminated before shipping rather than
+   handled at runtime. If it is nevertheless reached at runtime it behaves as
+   (2) — refuse aloud and log — and **never silently succeeds**.
 
-Recommended: route through the existing `RadioProfile.supports_command` and
-raise the library's existing unsupported-command error, so an undeclared command
-reports as *not available on this radio* rather than crashing with a lookup
-failure. Owner ruling requested — Q1.
+*The constraint behind this, which is why (3) cannot simply log:* a log line in
+production means the command did nothing while the user believes it worked. That
+is the same class of failure as the measured ACC1/MIC-gain collision in §1.2 —
+the action produced the wrong result and nobody was told. Silence is the failure
+mode this whole programme removes, so silence cannot be its fallback.
 
-**Red if broken:** `tests/test_undeclared_command_policy.py` (new) — for a
-profile that does not declare a command, the runtime raises the unsupported
-error, not `KeyError`, and the capability surface reports it absent.
+*One thing states 2 and 3 need that does not exist yet.* Today a profile has no
+way to say "this radio does not have this command" — *observed*:
+`profiles/rig_loader.py` builds `command_names` as `frozenset(self.commands)`,
+so absence from the TOML is the only representation, and it means "declared
+missing" and "nobody has looked" identically. Distinguishing them is what makes
+state 2 different from state 3, and it needs no new concept: D2 (§9.1) already
+requires every entry to record where its value came from, and "not present on
+this model, per <named authority>" is an entry with a source and no bytes.
+Adding that spelling to `rigs/_schema_v2.md` and to the loader is part of this
+step.
+
+**Red if broken:** two tests.
+
+- `tests/test_undeclared_command_policy.py` (new) — the command path. For a
+  profile that does not declare a command, the runtime reports unsupported and
+  does not raise `KeyError`; the capability surface reports the command absent;
+  and no code path returns success.
+- `tests/test_profile_command_coverage.py` (new) — the guard for state 3. It
+  enumerates every public builder against every CI-V profile in `rigs/` and
+  fails on any command name a profile neither declares nor is recorded as not
+  having. This is the test that carries the dev/production asymmetry: it is the
+  only place the difference lives. It starts red by construction and turns green
+  as D2 (§9.1) fills the profiles; until then it needs an explicit, shrinking
+  allow-list, in the style of `tests/command_map_parity_divergences.txt` — a
+  committed file the test fails on when a row stops being needed, so the list
+  cannot quietly stop shrinking.
+
+**Rollback:** revert; the command path returns to the fallback it had before the
+first module migrated.
 
 ### Steps 5..N — Migrate module by module, requests and replies together
 
@@ -534,22 +617,40 @@ at menu `1A 05 00 64` while the fallback emits `14 0B`, which is MIC gain.
 Migrating these fixes a live bug. Verifiable on the IC-7300; **not** verifiable
 for IC-705 or IC-7610 (§7).
 
-### Class B — profile wrong, a data bug (20 rows, all IC-9700)
+### Class B — profile copied from another radio, provenance unknown (20 rows, all IC-9700)
+
+**This class was originally written as "profile wrong, a data bug". That was an
+overstatement and is corrected here.**
 
 *Observed:* `rigs/ic9700.toml` contains a block introduced by the comment
 `# IC-7300-specific menu sub-addresses (also in wfview; not all rigs share
 these)` whose 23 following lines are byte-identical to the same block in
 `rigs/ic7300.toml` — I diffed them, including the comment. All 20 IC-9700 rows
-come from that block. Migrating these unchanged would move a wrong byte from the
-source into the profile and call it done. They must be corrected against an
-IC-9700 authority first, and the IC-9700 is not on the bench.
+come from that block.
+
+*Not observed, and not established:* that any one of those values is wrong for
+an IC-9700. Copied is not the same as wrong; Icom reuses menu addresses across
+models often enough that a copied block can be right by accident or right by
+design. What is established is only that the values carry no IC-9700 provenance,
+and that this repository holds none either — `docs/validation/cat-audits/` has
+audits for FTX-1, IC-7300, IC-7610, TX-500 and X6200, and **no IC-9700 file**
+(observed by listing the directory at `a2de2ab0`). No IC-9700 has ever been on
+this bench, so nothing here can be settled by measurement.
+
+*What this class therefore is:* 20 rows whose value may be right and whose
+**source is unknown**, which under D2 (§9.1) is itself the defect to fix. Each
+row is resolved by finding an IC-9700 authority — the factory manual or wfview's
+IC-9700 rig definition — and recording in the TOML which one it was, whether or
+not the byte changes. A row that survives unchanged with a recorded source is a
+completed row, not a skipped one.
 
 *Sweeping the class:* I checked whether the same copied block appears in the
 other profiles. `rigs/ic705.toml`, `rigs/ic7610.toml`, `rigs/x6100.toml` and
 `rigs/x6200.toml` do not carry it — their divergent rows have distinct values
 (IC-705 `quick_split` is `1A 05 00 45` against IC-7300's `1A 05 00 30`, for
-instance). I did not audit the *whole* of every TOML for copied blocks that
-happen not to diverge; that is a separate sweep and is named in Q2.
+instance). I did **not** audit the whole of every TOML for copied blocks that
+happen *not* to diverge, and those are invisible to the parity file by
+definition. D2 makes that sweep part of the work.
 
 ### Class C — the tuple contract is not pinned (10 rows)
 
@@ -570,10 +671,17 @@ has to be one thing before 232 builders depend on it.
 ### How to hand it out
 
 - One person per profile for classes A and B — the authority (manual, wfview,
-  radio) is per radio, and the rows never cross profiles.
+  radio) is per radio, and the rows never cross profiles. Under D2 (§9.1) that
+  person's output per row is a byte *and* a recorded source, and a row that ends
+  up unchanged still counts as done once its source is written down.
 - Class C is one person, once, because it is a contract, not data.
 - IC-7300 first: it is the only profile whose class-A rows can be confirmed by
-  pressing a button and watching a meter move.
+  pressing a button and watching a meter move. Its 35 undeclared commands
+  (§1.8) are the same person's second task, and the only such list on this
+  bench that can be finished by measurement.
+- The copied-block sweep D2 requires is a separate pass over all eight TOMLs,
+  not part of any profile's row work: by construction it looks for blocks that
+  do *not* appear in the divergence file.
 
 ---
 
@@ -622,17 +730,22 @@ like an intermittent radio rather than a bug.
 `tests/test_response_shape_from_profile.py` exists to make that state red, and
 must land with the first module, not after it.
 
-**A module migrates before Step 4.** Every profile/builder gap turns into a
-lookup failure instead of a wrong frame. The count is largest exactly where
-verification is hardest: X6100 189, X6200 153, IC-705 43.
+**A module migrates before Step 4.** Every profile gap turns into a bare
+`KeyError` from `CommandMap.get` instead of a wrong frame — neither of the three
+states D1 requires. The gaps are largest exactly where verification is hardest
+(X6100 189 distinct command names, X6200 153, IC-705 43; sizes and what they do
+and do not mean are in §1.8).
 
 **Step 2 lands without Step 2's bench check.** The `scope.py: get_scope_center_type`
 fix appends a byte on `0x1C`, and on that command an extra byte is a write. It
 is confirmable on the IC-7300 and must be.
 
-**What cannot be verified at all.** Per `CLAUDE.md`, the live bench is IC-7300
-and FTX-1. IC-7610 is retired; X6200 was destroyed. Whether IC-705, IC-9700 or
-X6100 have ever been on this bench is **unknown** — I did not verify it. So:
+**What cannot be verified by measurement.** Per `CLAUDE.md`, the live bench is
+**IC-7300 and FTX-1**, and FTX-1 is not a CI-V radio. IC-7610 is retired; X6200
+was destroyed. So exactly one of the eight profiles can be settled by pressing a
+button on a radio. (Whether IC-705, IC-9700 or X6100 were ever on a bench at
+some point in the past is **unknown** — I did not verify it, and it does not
+change the plan, because none of them is available now.)
 
 | Profile | Divergent rows | Can a radio settle them? |
 |---|---|---|
@@ -643,10 +756,12 @@ X6100 have ever been on this bench is **unknown** — I did not verify it. So:
 | X6100 | 2 | No |
 | FTX-1, TX-500 | 0 | Not applicable — non-CI-V protocols |
 
-Of the 76 rows, 21 are bench-settleable and 55 are not. For those 55 the only
-authorities are the radio manual and wfview's rig files, and the IC-9700 block
-is a warning about how far that gets you: it was copied wholesale from another
-radio under a comment that cites wfview.
+Of the 76 rows, 21 are bench-settleable and 55 are not. D2 (§9.1) rules that
+those 55 are filled from the factory manual or wfview's rig definitions, with
+the source recorded per entry in the TOML. The IC-9700 block is the argument for
+that requirement rather than an objection to it: its values may well be correct,
+but nothing in the file says where they came from, so nobody can tell a
+verified byte from an inherited one — which is the defect D2 removes.
 
 **The IC-7610 default survives the migration.** `profiles: resolve_radio_profile`
 falls back to the IC-7610 profile when nothing identifies the radio — observed
@@ -706,25 +821,58 @@ defaults are gone. Not an architectural one.
 
 ---
 
-## 9. Open questions for the owner
+## 9. Decisions taken, and questions still open
+
+### 9.1 Settled by the owner (2026-08-29)
+
+**D1 — What an undeclared command does. Three states, not two.** The command
+path behaves identically in development and in production; the difference lives
+in a test, not in the command path. (1) Declared → send the profile's bytes.
+(2) Not declared and the profile knows the radio does not have the command →
+report *unsupported by this radio* through
+`profiles: RadioProfile.supports_command` and the reporting path consumers
+already use for an unsupported capability — not an exception, not
+log-and-continue. (3) Not declared and unknown → this state must not exist at
+release; a test enumerates every builder against every profile and goes red on
+any gap, and at runtime it behaves as (2), refusing aloud and logging, but
+**never silently succeeding**.
+
+The reasoning, recorded because it is the constraint and not a preference: a log
+line in production means the command silently did nothing while the user
+believes it worked — the same class of failure as the ACC1/MIC-gain collision
+measured in §1.2. Silence is the failure mode being removed, so it cannot be the
+fallback. An earlier framing of "crash in development, log in production" was
+considered and set aside: the command path must not branch on environment, and
+the only dev/production asymmetry belongs in the guard test.
+
+Implemented by **Step 4**, which blocks every module migration.
+
+**D2 — Radios nobody can measure: fill from documentation, and record the
+source per entry.** Factory manuals and wfview rig definitions are acceptable
+authority. Every filled entry must record where its value came from, **in the
+TOML**, so that "verified on hardware" and "taken from a manual" are
+distinguishable by reading the file rather than by remembering. This applies to
+values that survive unchanged as much as to values that are corrected: a byte
+with a recorded source is done, a byte without one is not, however plausible it
+looks.
+
+D2 also carries the sweep it implies: **every rig TOML is checked for further
+copied blocks**, because `rigs/ic9700.toml` is known to carry one from
+`rigs/ic7300.toml` (§5, class B) and blocks that happen not to diverge are
+invisible to `tests/command_map_parity_divergences.txt` by construction.
+
+Which radios can never be confirmed by measurement, stated plainly: **the live
+bench is IC-7300 and FTX-1.** FTX-1 is not a CI-V radio and is unaffected. So of
+the eight profiles, exactly one — IC-7300 — can be settled by pressing a button
+and watching the radio. IC-7610 is retired, X6200 was destroyed, and IC-705,
+IC-9700 and X6100 are not available. (Whether any of those three was ever on a
+bench in the past is unknown and does not matter here — none is available now.)
+Of the 76 divergences, 21 are bench-settleable and 55 are
+documentation-settleable only.
+
+### 9.2 Still open
 
 Answerable without reading the rest of this document.
-
-**Q1 — Undeclared commands.** A profile that does not declare a command
-currently sends the hardcoded bytes anyway; after this work it cannot send
-anything. Should the radio then report "this radio does not support that"
-(reusing `RadioProfile.supports_command`, which already exists), or fail with a
-lookup error? Recommendation: report unsupported. This decides Step 4, which
-blocks every module migration. At stake: 1006 profile/builder pairs, of which
-189 command names on X6100 and 153 on X6200.
-
-**Q2 — Authority for radios we do not have.** 55 of the 76 divergences are on
-IC-705, IC-9700, IC-7610 and X6100 — none on the bench, one retired. Is a
-manual/wfview cross-check enough authority to change what goes on the wire for
-those, or should those profiles stay frozen (still using today's bytes,
-explicitly recorded) until a radio is available? Related: should someone sweep
-every TOML for further copied blocks like the IC-9700 one, including blocks that
-happen *not* to diverge and therefore appear nowhere in the parity file?
 
 **Q3 — Unsolicited frames.** `runtime/_civ_rx.py` decodes what the radio sends
 on its own by comparing against 105 hardcoded command/sub literals. Making that
@@ -778,3 +926,16 @@ All at `a2de2ab0`, in a clean worktree, so that a reader can re-derive them.
   test was run at `a2de2ab0` and passed (5 tests, 0.2s).
 - Divergence grouping: the 76 non-comment rows of
   `tests/command_map_parity_divergences.txt`, cut by profile and by builder.
+- Gap arithmetic (§1.8): `gap` rows of `tests/command_map_parity_uncovered.txt`
+  — 201 rows, and 871 when the profile lists are split on commas — against the
+  `profile_builder_map_gaps` census of 1006, whose unit is read from
+  `tests/test_command_map_parity.py: _report` (`gap_pairs` is a set of
+  `(model, Key)` where `Key` is `(module file, function name)`).
+- Declared-command counts (§1.8): `profiles/rig_loader.py: discover_rigs` over
+  `rigs/`, counting each config's commands by `isinstance(spec,
+  CatCommandSpec)`. This is what establishes that no CI-V profile declares any
+  CAT command, so for those six profiles a gap means the TOML omits the command
+  and nothing else.
+- Absence of an IC-9700 reference (§5, class B): listing
+  `docs/validation/cat-audits/`, which holds `ftx1.md`, `ic7300.md`,
+  `ic7610.md`, `tx500.md`, `x6200.md`, `x6200-unofficial.md` and `README.md`.
