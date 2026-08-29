@@ -3955,9 +3955,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         Args:
             vfo: "A", "B", "MAIN", or "SUB" (case-insensitive on input).
+
+        The selector byte comes from the profile, not from a table here:
+        ``B``/``SUB`` name the secondary VFO and take ``vfo_sub_code``,
+        anything else the primary and ``vfo_main_code``.  One pair serves
+        both spellings because a profile declares one primary and one
+        secondary selector whatever the rig's front panel calls them
+        (``[vfo] main_select`` / ``sub_select`` in ``rigs/*.toml``).  A
+        profile that declares no code for the VFO asked for raises, rather
+        than falling back to a byte this method invented.
         """
         self._check_connected()
-        civ = _select_vfo_cmd(vfo, to_addr=self._radio_addr)
+        name = vfo.upper()
+        code = (
+            self._profile.vfo_sub_code
+            if name in ("B", "SUB")
+            else self._profile.vfo_main_code
+        )
+        if code is None:
+            raise CommandError(
+                f"profile {self._profile.model} declares no VFO select code for {name}"
+            )
+        civ = _select_vfo_cmd(code, to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="set_vfo")
         ack = parse_ack_nak(resp)
         if ack is False:

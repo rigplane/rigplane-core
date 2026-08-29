@@ -30,7 +30,7 @@ This document maps **IC-7610 parity command families** and **reliability integra
 - **system_config:** `test_commands.py::test_get_antenna_1`, `test_commands.py::test_get_system_date`, `test_radio.py::test_get_transceiver_id`
 - **tone_repeater:** `test_commands.py::test_get_repeater_tone`, `test_commands.py::test_get_tone_freq`, `test_commands.py::test_get_tsql_freq`
 - **transceiver_status:** `test_commands.py::test_get_rit_frequency`, `test_civ_rx_coverage.py::test_update_radio_state_rit_frequency`, `test_radio_poller_coverage.py::test_state_queries_include_transceiver_status_reads_for_ic7610`
-- **vfo_dualwatch_scan:** `test_commands_extended.py::test_vfo_main`, `test_civ_rx_coverage.py::dual_watch`, `test_vfo_dual_watch.py::test_start_scan_builds_correct_frame`, `test_main_sub_tracking.py::TestGetMainSubTracking`
+- **vfo_dualwatch_scan:** `test_commands_extended.py::test_code_reaches_the_wire_unchanged`, `test_radio_extended.py::test_set_vfo_wire_sends_the_profile_code`, `test_civ_rx_coverage.py::dual_watch`, `test_vfo_dual_watch.py::test_start_scan_builds_correct_frame`, `test_main_sub_tracking.py::TestGetMainSubTracking`
 
 ---
 

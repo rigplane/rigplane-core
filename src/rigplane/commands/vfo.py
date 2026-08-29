@@ -56,19 +56,29 @@ def get_main_sub_band(
 
 
 def set_vfo(
-    vfo: str = "A",
+    code: int,
     *,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    """Select VFO.
+    """Select a VFO or receiver by its wire code.
 
     Args:
-        vfo: "A", "B", "MAIN", or "SUB".
+        code: The selector byte to send, taken from the caller's profile.
+
+    Which byte names which VFO is a property of the radio, declared per
+    profile as ``[vfo] main_select`` / ``sub_select``.  This builder used
+    to hold its own ``{"A": 0x00, "B": 0x01, "MAIN": 0xD0, "SUB": 0xD1}``
+    table and take a name instead -- the rig-specific hardcoding
+    ``LAYER.md`` forbids, and a second implementation of a mapping the
+    profile already carries: ``web/radio_poller.py`` reached the same
+    selection through ``vfo_main_code`` / ``vfo_sub_code`` while this
+    table ignored the profile entirely.  Any name outside the four keys
+    fell through ``dict.get`` to ``0x00``, so a typo selected VFO A.
+    ``commands`` may not import ``profiles``, so the resolution belongs
+    one layer up -- ``runtime/radio.py: CoreRadio._set_vfo_wire`` does it.
     """
-    codes = {"A": 0x00, "B": 0x01, "MAIN": 0xD0, "SUB": 0xD1}
-    code = codes.get(vfo.upper(), 0x00)
     if cmd_map is not None:
         return _build_from_map(
             cmd_map, "set_vfo", to_addr=to_addr, from_addr=from_addr, data=bytes([code])

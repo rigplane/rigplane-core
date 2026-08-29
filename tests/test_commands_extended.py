@@ -1,5 +1,7 @@
 """Extended tests for commands module — VFO, split, att, preamp, CW, power."""
 
+import pytest
+
 import rigplane.commands as raw_commands
 
 from rigplane import IC_7610_ADDR
@@ -26,31 +28,23 @@ bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
 
 
 class TestSelectVfo:
-    def test_vfo_a(self):
-        frame = select_vfo("A")
-        parsed = parse_civ_frame(frame)
+    """The builder sends the selector byte it is handed, and nothing else.
+
+    Which byte names which VFO is declared per rig as ``[vfo] main_select``
+    / ``sub_select`` and resolved by ``runtime/radio.py:
+    CoreRadio._set_vfo_wire``; the builder used to hold its own
+    name-to-byte table instead, which ignored those declarations.
+    """
+
+    @pytest.mark.parametrize("code", [0x00, 0x01, 0xD0, 0xD1])
+    def test_code_reaches_the_wire_unchanged(self, code):
+        parsed = parse_civ_frame(select_vfo(code))
         assert parsed.command == 0x07
-        assert parsed.data == bytes([0x00])
+        assert parsed.data == bytes([code])
 
-    def test_vfo_b(self):
-        frame = select_vfo("B")
-        parsed = parse_civ_frame(frame)
-        assert parsed.data == bytes([0x01])
-
-    def test_vfo_main(self):
-        frame = select_vfo("MAIN")
-        parsed = parse_civ_frame(frame)
-        assert parsed.data == bytes([0xD0])
-
-    def test_vfo_sub(self):
-        frame = select_vfo("SUB")
-        parsed = parse_civ_frame(frame)
-        assert parsed.data == bytes([0xD1])
-
-    def test_vfo_case_insensitive(self):
-        frame = select_vfo("main")
-        parsed = parse_civ_frame(frame)
-        assert parsed.data == bytes([0xD0])
+    def test_a_name_is_not_accepted(self):
+        with pytest.raises(TypeError):
+            select_vfo("MAIN")
 
 
 class TestVfoCommands:

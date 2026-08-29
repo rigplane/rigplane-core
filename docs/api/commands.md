@@ -160,7 +160,10 @@ ptt_off(to_addr=0x98) -> bytes
 ### VFO
 
 ```python
-select_vfo(vfo: str = "A", to_addr=0x98) -> bytes
+# ``code`` is the rig's selector byte, from the profile's
+# ``[vfo] main_select`` / ``sub_select`` — this builder holds no
+# name-to-byte table. ``radio.py: CoreRadio._set_vfo_wire`` resolves it.
+select_vfo(code: int, to_addr=0x98) -> bytes
 vfo_a_equals_b(to_addr=0x98) -> bytes
 vfo_swap(to_addr=0x98) -> bytes
 set_split(on: bool, to_addr=0x98) -> bytes
