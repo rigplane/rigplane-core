@@ -13,11 +13,12 @@ from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBack
 from rigplane.audio.lan_stream import AudioStream, TX_IDENT
 from rigplane.audio.route import resolve_audio_route, rigctld_wsjtx_policy
 from rigplane.audio_bridge import AudioBridge, FRAME_BYTES, SAMPLES_PER_FRAME
+from rigplane.commands.commander import Priority
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime._connection_state import RadioConnectionState
-from rigplane.types import AudioCodec
+from rigplane.types import AudioCodec, CivFrame
 
 from _audio_pipeline_helpers import (
     assert_contiguous_sequences,
@@ -25,6 +26,7 @@ from _audio_pipeline_helpers import (
     pcm_rms,
     sine_pcm16_mono,
 )
+from _ptt_reread_fixtures import answer_ptt_reread_with_rx, wait_for_known_rf_state
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -113,6 +115,39 @@ class RecordingLanRadio(IcomRadio):
         self.calls.append(("set_ptt", (bool(on),)))
         self._ptt = bool(on)
         self._state_cache.update_ptt(bool(on))
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        wait_response: bool = True,
+        priority: Priority = Priority.NORMAL,
+        wait_dispatch: bool = True,
+    ) -> CivFrame | None:
+        """Answer ``RigctldServer._run_ptt_reread``'s ``0x1C/0x00`` cadence.
+
+        ``_civ_transport`` is ``_IdleCivTransport`` (always times out), so
+        the real RX loop never sees a reply. Instead of enqueueing over that
+        dead transport, deliver the RX-state reply directly through the same
+        real ingestion (``_CivRuntime._route_civ_frame`` /
+        ``_observations_from_frame``) MOR-1903's own test
+        (``tests/test_rigctld_ptt_reread.py``) uses to verify this exact
+        mechanism — see ``_ptt_reread_fixtures.py``. Every other command
+        still goes through the real ``IcomRadio.send_civ``.
+        """
+        if command == 0x1C and sub == 0x00:
+            await answer_ptt_reread_with_rx(self)
+            return None
+        return await super().send_civ(
+            command,
+            sub,
+            data,
+            wait_response=wait_response,
+            priority=priority,
+            wait_dispatch=wait_dispatch,
+        )
 
 
 class RigctldClient:
@@ -219,6 +254,10 @@ async def test_rigctld_wsjtx_replay_drives_data2_lan_tx_audio_pipeline(
 
     client = await _make_client(server)
     try:
+        # ``M`` (SET MODE) is DEFER-classified; wait out the same startup
+        # window a real hamlib client would (see _ptt_reread_fixtures.py)
+        # before the gate can know the radio is not transmitting.
+        await wait_for_known_rf_state(server)
         assert await client.send("M PKTUSB") == "RPRT 0"
         assert await client.send("T 1") == "RPRT 0"
 
