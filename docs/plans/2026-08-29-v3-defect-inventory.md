@@ -43,10 +43,10 @@ Linear was reachable via a headless path: a BWS-stored API key was exported
 into an environment variable for the duration of read-only GraphQL queries
 against `api.linear.app/graphql`, then unset. No mutation query was sent. The
 key was never printed and was not written into this document or any other
-file. The original consolidation ran two queries; a third was added on
-**2026-08-29**, during a revision pass folding in an independent review's
-findings (see item 7 and the structural-reliability-audit section below for
-what changed as a result):
+file. The original consolidation ran two queries; a third and a fourth were
+added on **2026-08-29**, during two revision passes folding in independent
+review findings (see item 7 and the structural-reliability-audit section
+below for what changed as a result):
 
 1. All issues on team `MOR` with issue number between 1799 and 1877
    inclusive (the range named for "the structural reliability audit") — 79
@@ -59,12 +59,22 @@ what changed as a result):
    MOR-488, MOR-664, MOR-972, MOR-973, MOR-974, MOR-980, MOR-981, MOR-985,
    MOR-989, MOR-990, MOR-991, MOR-993, MOR-1671, and MOR-1986 — 14 of 14
    returned a result.
-3. Read on 2026-08-29 (revision pass): the ten tickets previously left
+3. Read on 2026-08-29 (first revision pass): the ten tickets previously left
    unqueried as the closure path for item 7's P0 gaps — MOR-982, MOR-986,
    MOR-983, MOR-984, MOR-975, MOR-987, MOR-976, MOR-977, MOR-978, MOR-979 —
    plus MOR-1981 (to fix a discovery-order error in item 1) and MOR-1839,
    MOR-1840, MOR-1874 (to correct the structural-reliability-audit
    title-overlap sweep). 14 of 14 returned a result.
+4. Read on 2026-08-29 (second revision pass, in response to an independent
+   review's finding that the "all nineteen tickets the discovery document
+   names" claim in item 7 was itself wrong — the two queries above cover only
+   19 of the tickets the discovery document actually names): the discovery
+   document, `docs/plans/2026-07-25-ui-composition-discovery-and-parity.md`,
+   was enumerated mechanically (`grep -o "MOR-[0-9]\+" <file> | sort -u`)
+   rather than by re-reading it by eye, returning 28 distinct tickets,
+   MOR-971 through MOR-998. The eight not already covered by queries 2 and
+   3 — MOR-971, MOR-988, MOR-992, MOR-994, MOR-995, MOR-996, MOR-997, and
+   MOR-998 — were queried directly. 8 of 8 returned a result.
 
 Not queried, and therefore unknown-status in this document: MOR-465 (RIT/XIT
 naming, mentioned in item 10, left as previously described from the
@@ -481,31 +491,61 @@ different presentations can show inconsistent or duplicate warnings.
     languages without behavior changes"
   - MOR-979, Done, "Workspace: define versioned constrained UI configuration
     and migration"
+- **The discovery document names eight further tickets beyond the nineteen
+  above — 28 in total, not nineteen.** An independent review caught this:
+  the nineteen tickets above were assembled by hand from the discovery
+  document's prose, and the document actually names 28 distinct tickets,
+  MOR-971 through MOR-998 (confirmed mechanically — see "How Linear was
+  read," query 4 — not by re-reading the source document's prose a second
+  time and hoping to catch every mention). The omissions were not
+  incidental: MOR-988 ("Decision: Freeze receiver, VFO, scope, TX-permit,
+  and refresh semantics") is one of three co-equal decisions named in the
+  discovery document's own header, alongside MOR-982 and MOR-986 (both
+  already listed above), and the discovery document states that MOR-991
+  (also already listed above) consumes MOR-988. Read directly on
+  2026-08-29, all eight are also Done:
+  - MOR-971, Done, "Core: make hardware scope enablement user/client-driven
+    and add Web UI scope toggle"
+  - MOR-988, Done, "Decision: Freeze receiver, VFO, scope, TX-permit, and
+    refresh semantics"
+  - MOR-992, Done, "Restore repo-scoped self-hosted CI runner for
+    rigplane-core"
+  - MOR-994, Done, "Implementation program: Normalize audio FFT to a proven
+    RX PCM path"
+  - MOR-995, Done, "Test prerequisite: Normalize concrete audio relay
+    fixtures"
+  - MOR-996, Done, "Test prerequisite: Normalize concrete FFT/scope
+    fixtures"
+  - MOR-997, Done, "Implementation: Add broadcaster RX route resolver and
+    PCM-tap predicate"
+  - MOR-998, Done, "Implementation: Construct and advertise audio FFT from
+    proven PCM service"
 - **What this does and does not establish:** every ticket the discovery
-  document names as part of closing its own P0 gaps — all nineteen
-  (MOR-972's nine named prerequisites plus these ten) — is Done in Linear as
-  of 2026-08-29. This is a materially different picture from the original
-  consolidation, which could only confirm nine of the nineteen and left the
-  other ten, including the two ownership-decision tickets and the
+  document names as part of closing its own P0 gaps — all 28, MOR-971
+  through MOR-998, enumerated mechanically rather than by hand — is Done in
+  Linear as of 2026-08-29. This is a materially different picture from the
+  original consolidation, which could only confirm nine of the 28 and left
+  the other nineteen, including the two ownership-decision tickets and the
   reference-vertical proof work, as unknown. What this still does not
   establish: whether each ticket's acceptance criteria, once implemented,
   actually closed the specific P0 gap it targeted, and whether the current
   frontend source still matches what those tickets describe — this
   inventory does not re-read `docs/plans/2026-07-25-ui-composition-discovery-and-parity.md`'s
-  P0 table against current code, nor any of these nineteen tickets' full
+  P0 table against current code, nor any of these 28 tickets' full
   acceptance-criteria text beyond the few quoted above. A "Done" Linear
   status records that the ticket's own scope was completed and closed, not
   that this inventory independently verified the resulting code.
 - **Evidence strength:** the P0 gaps themselves are documented (with the
   source document's own "Automated"/"Missing"/"Unknown" evidence labels);
-  the completion of all nineteen named tickets is a directly-read Linear
-  fact, dated 2026-08-29 for the ten read in this revision pass.
-- **Blocks v3?** Every ticket the discovery document names as its own path
-  to closing the P0 gaps is now Done in Linear. Whether that means the P0
-  gaps themselves are closed in the running code is not established by a
-  Linear read alone — re-reading the current frontend source against the
-  discovery document's P0 table (see "How to use this," below) is the
-  fastest way to settle that question, and this inventory does not do it.
+  the completion of all 28 named tickets is a directly-read Linear fact, all
+  queried on 2026-08-29.
+- **Blocks v3?** Every ticket the discovery document names — all 28 — as
+  its own path to closing the P0 gaps is now Done in Linear. Whether that
+  means the P0 gaps themselves are closed in the running code is not
+  established by a Linear read alone — re-reading the current frontend
+  source against the discovery document's P0 table (see "How to use this,"
+  below) is the fastest way to settle that question, and this inventory
+  does not do it.
 
 ---
 
@@ -566,10 +606,15 @@ js8call goldens, `3000` in the wsjtx golden), currently fail.
   match is epic MOR-1799, "rigctld & TX-safety: truth laundering and
   interlock bypass," but none of its 8 children's titles specifically
   describe an `M VFOA USB` / `RPRT -9` failure, so no direct match is
-  claimed). Re-run for this revision (2026-08-29): all three goldens
-  (wsjtx, fldigi, js8call) fail at their respective `M VFOA USB` line with
-  `expected 'RPRT 0', got 'RPRT -9'`; the other three tests in the same file
-  pass.
+  claimed). Re-run against this document's pinned revision, `a2de2ab0`: all
+  three goldens (wsjtx, fldigi, js8call) fail at their respective
+  `M VFOA USB` line with `expected 'RPRT 0', got 'RPRT -9'`; the other three
+  tests in the same file pass. **Already superseded on `origin/main`:**
+  `e8fe6e45` (#2808, "test(MOR-1900): repair rigctld integration fixtures
+  for the DEFER gate"), committed after this document's pinned revision,
+  rewrites the fixture that produced `RPRT -9`; all six goldens in this file
+  pass against `origin/main`, with `src/` byte-identical to the pinned
+  revision — confirmed by running the suite against both trees.
 - **Related but treated as distinct:** `docs/validation/cat-audits/ic7610.md`
   documents three **different** live scope round-trip failures on the
   IC-7610 in dual-receiver mode (`scope_dual.set`, `scope_vbw.set`,
@@ -659,11 +704,14 @@ whether their bodies describe the same underlying mechanism, only that the
 words used to name them overlap.
 
 **Corrected 2026-08-29** (an earlier draft of this section found only one
-title-level overlap and missed three others under the same epic and theme):
-four children, all under epic **MOR-1803** ("Capabilities & profiles: one
-derivation, honest fallbacks"), match item 1's "IC-7610-shaped hardcoded
-fallback standing in for profile-driven behaviour" theme at title level, and
-all four are **Backlog**, read 2026-08-29:
+title-level overlap and missed two others under the same epic and theme,
+plus a third under a different epic matching a different item): four
+children are title-level overlaps, read 2026-08-29, all **Backlog** — three
+under epic **MOR-1803** ("Capabilities & profiles: one derivation, honest
+fallbacks"), matching item 1's "IC-7610-shaped hardcoded fallback standing in
+for profile-driven behaviour" theme at title level, and one under epic
+**MOR-1806** ("Verification theater"), matching item 9's theme instead, as
+its own bullet below states:
 - MOR-1841, "Web poller falls back to hardcoded IC-7610/IC-7300 profiles and
   swallows all command-map load errors" (already named under item 1).
 - MOR-1839, "A radio without .profile is silently served the entire IC-7610
@@ -715,7 +763,7 @@ four of six findings were new. With Linear read:
 | Item 4 — FTX-1 can't select second receiver | **Already tracked and already the subject of an open Linear ticket (MOR-1671, In Progress) and a closed-not-planned GitHub issue (#2633)** — a re-discovery, not a new finding, but this inventory adds the specific correction that an apparently-related open PR (#2803) fixes only part of the practical problem: it makes FTX-1's SUB receiver reachable for `SetFreq`/`SetMode`, but leaves MOR-1671's own scope — the `Select SUB`/`Select MAIN` action itself — untouched. |
 | Item 5 — IC-9700 copies IC-7300 values | New. Not found in the repository beyond the copying itself, nor in either Linear query. Explained by a pre-existing, documented coverage gap (no IC-9700 CAT audit exists). |
 | Item 6 — IC-7610 readback | **Already tracked**: MOR-488 (Backlog), confirmed to describe the same program as the repository audit document, and confirmed still open, not historical. |
-| Item 7 — P0 safety/architecture gaps | **Directly tracked, and — as of a 2026-08-29 revision pass — all nineteen named tickets are Done**: the nine original prerequisite tickets plus the ten (App-owned TX controller decision, backend TX supervisor decision, their downstream implementation, the reference-vertical proof work, and the layout/design-language work) that were unqueried in the original consolidation. Whether the code matches what those tickets' acceptance criteria describe was not independently re-verified — see item 7. |
+| Item 7 — P0 safety/architecture gaps | **Directly tracked, and — as of two 2026-08-29 revision passes — all 28 tickets the discovery document names are Done**: the nine original prerequisite tickets, the ten (App-owned TX controller decision, backend TX supervisor decision, their downstream implementation, the reference-vertical proof work, and the layout/design-language work) read after the first independent review, and eight more (found by mechanically enumerating the discovery document rather than by hand) read after a second independent review caught that the first revision's "all nineteen" claim still undercounted. Whether the code matches what those tickets' acceptance criteria describe was not independently re-verified — see item 7. |
 | Item 8 — composition root doesn't compose | **Directly tracked, and its two named tickets (MOR-973, MOR-981) are marked Done** — this is the most significant single update from reading Linear: if their acceptance criteria were genuinely met, the starting-state problem this item describes may no longer be current, though this was not independently re-verified against the frontend source. |
 
 **Revised bottom line:** of the ten items, five (1, 4, 6, 7, 8) turn out to
@@ -736,15 +784,19 @@ section.
 - **Ticket not queried, listed exactly so a reader knows the boundary of
   what was checked:** MOR-465 (RIT/XIT naming — see item 10). Its title,
   description, and state are not known here and were not guessed at. (The
-  ten P0-closure tickets previously listed here — MOR-982, MOR-986, MOR-983,
-  MOR-984, MOR-975, MOR-987, MOR-976, MOR-977, MOR-978, MOR-979 — were
-  queried in a 2026-08-29 revision pass and are no longer a gap; see item 7.)
-- **Full descriptions of 65 of the 71 child issues under the structural
+  eighteen further P0-closure-path tickets previously listed here — the ten
+  MOR-982, MOR-986, MOR-983, MOR-984, MOR-975, MOR-987, MOR-976, MOR-977,
+  MOR-978, MOR-979, plus the eight MOR-971, MOR-988, MOR-992, MOR-994,
+  MOR-995, MOR-996, MOR-997, MOR-998 — were queried across two 2026-08-29
+  revision passes and are no longer a gap; see item 7. The discovery
+  document names 28 tickets in total, all now queried and all Done.)
+- **Full descriptions of all 71 child issues under the structural
   reliability audit (MOR-1807–1877) were not read** — only titles, via the
-  range query, and title-only comparison bounds what this overlap check can
-  claim: two titles matching says nothing about whether their bodies
-  describe the same underlying mechanism, only that the words used to name
-  them overlap. Six children were named above by title-level similarity to
+  range query, for all 71, and title-only comparison bounds what this
+  overlap check can claim: two titles matching says nothing about whether
+  their bodies describe the same underlying mechanism, only that the words
+  used to name them overlap. Six children were named above by title-level
+  similarity to
   items already in this inventory: MOR-1841, MOR-1839, and MOR-1840 (item
   1's IC-7610-shaped-fallback theme, all three under epic MOR-1803, all
   Backlog), MOR-1874 (item 9's "a test suite no workflow runs" theme,
@@ -792,12 +844,13 @@ finished checklist. Before resuming work:
   actually fixed, the migration may be starting from a materially better
   position than the last written discovery document describes.
 - **Re-check item 7's P0 safety gaps against current frontend source before
-  assuming they are closed just because Linear says so.** All nineteen
-  tickets the discovery document names as its own closure path — the nine
-  original prerequisites plus the ten decision/implementation/reference-
-  vertical/design-language tickets read on 2026-08-29 — are Done in Linear.
-  Whether the code actually satisfies each ticket's acceptance criteria was
-  not independently re-verified here.
+  assuming they are closed just because Linear says so.** All 28 tickets the
+  discovery document names — MOR-971 through MOR-998: the nine original
+  prerequisites, the ten decision/implementation/reference-vertical/design-
+  language tickets, and eight more found by mechanically enumerating the
+  discovery document, all read on 2026-08-29 — are Done in Linear. Whether
+  the code actually satisfies each ticket's acceptance criteria was not
+  independently re-verified here.
 - **Re-check items 1 and 2 against the separate design document** referenced
   under item 1 — the owner has already ruled on the end state (delete the
   fallback, require the command map, move the request and response sides
