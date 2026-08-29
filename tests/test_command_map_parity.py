@@ -44,10 +44,12 @@ builder reaches, and a census of how much was compared. Every number in it
 is re-measured and asserted here, so none of it can go stale unnoticed.
 
 That census also counts what this sweep cannot reach at all:
-``hardcode_only_builders`` is the public builders that take no ``cmd_map``.
-They have no profile branch to disagree with, so no divergence row can ever
-name them however wrong their bytes are — the count is the only thing that
-makes a new one visible.
+``hardcode_only_builders`` is the byte-emitting public builders that take no
+``cmd_map`` — response parsers (``parse_*``) are excluded along with the
+underscore-named kernel modules, since neither emits a command frame for a
+``cmd_map`` to affect. They have no profile branch to disagree with, so no
+divergence row can ever name them however wrong their bytes are — the count
+is the only thing that makes a new one visible.
 
 Regenerate both files after an intentional change::
 
@@ -217,7 +219,7 @@ def _builders() -> dict[Key, typing.Any]:
 
 @functools.lru_cache(maxsize=1)
 def _hardcode_only_builders() -> frozenset[Key]:
-    """Command builders in the public domain modules that take no ``cmd_map``.
+    """Byte-emitting command builders that take no ``cmd_map``.
 
     These are outside everything else this file measures. A builder with
     both branches can disagree with its profile, and a divergence row says
@@ -227,14 +229,23 @@ def _hardcode_only_builders() -> frozenset[Key]:
     the census is asserted for equality, so adding one fails until the
     baseline is regenerated in a reviewable commit.
 
-    Underscore-named modules are skipped, which is where this differs from
-    :func:`_builders`. They hold the framing and codec kernel --
-    ``_frame.py: build_civ_frame``, ``_codec.py: bcd_encode_value`` and
-    their siblings -- which every builder calls and which encode no command
-    of their own, so a ``cmd_map`` would be meaningless to them. Counting
-    them would make this number move whenever the kernel gains a public
-    helper. :func:`_builders` needs no such rule only because nothing in
-    those modules takes a ``cmd_map`` to begin with.
+    Two kinds of function are excluded, for the same reason: underscore-named
+    modules, and any ``parse_*`` function regardless of module. Neither
+    emits a command frame -- the underscore modules hold the framing and
+    codec kernel (``_frame.py: build_civ_frame``, ``_codec.py:
+    bcd_encode_value`` and their siblings) that every builder calls, and a
+    ``parse_*`` function decodes a radio response instead of building one
+    (``freq.py: parse_frequency_response`` and its siblings) -- so a
+    ``cmd_map`` would have nothing to look up for either. Counting either
+    would make this number move for a reason unrelated to what it tracks:
+    the kernel gaining a public helper, or a module gaining a response
+    parser. :func:`_builders` needs no module-level rule because its own
+    ``__name__.startswith("_")`` filter already excludes every underscore
+    module: the eleven kernel helpers that do take a ``cmd_map``
+    (``_builders.py: _build_level_get`` and its nine siblings,
+    ``_frame.py: _build_from_map``) are all underscore-named. A public
+    ``cmd_map``-taking helper added to one of those modules would move
+    ``public_builders`` -- this rule is what keeps it out of this count.
     """
     found: set[Key] = set()
     for path in sorted(COMMANDS_DIR.glob("*.py")):
@@ -245,6 +256,8 @@ def _hardcode_only_builders() -> frozenset[Key]:
             if not inspect.isfunction(value) or value.__name__.startswith("_"):
                 continue
             if value.__module__ != module.__name__:
+                continue
+            if value.__name__.startswith("parse"):
                 continue
             if "cmd_map" not in inspect.signature(value).parameters:
                 found.add((path.name, value.__name__))

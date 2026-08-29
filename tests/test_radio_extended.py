@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from rigplane import IC_7610_ADDR
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commander import Priority
 from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
 from rigplane.radio import IcomRadio
@@ -52,26 +52,82 @@ def radio(mock_transport: MockTransport) -> IcomRadio:
 
 class TestVFO:
     @pytest.mark.asyncio
-    async def test_set_vfo_wire_a(
-        self, radio: IcomRadio, mock_transport: MockTransport
+    @pytest.mark.parametrize(
+        ("model", "vfo", "expected"),
+        [
+            ("IC-7300", "A", 0x00),
+            ("IC-7300", "B", 0x01),
+            ("IC-7300", "MAIN", 0x00),
+            ("IC-7300", "SUB", 0x01),
+            ("IC-7610", "A", 0xD0),
+            ("IC-7610", "B", 0xD1),
+            ("IC-7610", "MAIN", 0xD0),
+            ("IC-7610", "SUB", 0xD1),
+            # The lowercase row must name a *secondary* VFO. "main" would
+            # resolve to vfo_main_code with or without the method's
+            # ``.upper()`` -- it falls to the same else-branch either way --
+            # so it could not fail if that call were dropped. "sub" can.
+            ("IC-7610", "sub", 0xD1),
+        ],
+    )
+    async def test_set_vfo_wire_sends_the_profile_code(
+        self,
+        mock_transport: MockTransport,
+        model: str,
+        vfo: str,
+        expected: int,
     ) -> None:
-        mock_transport.queue_response(_ack_response())
-        await radio._set_vfo_wire("A")
-        assert len(mock_transport.sent_packets) > 0
+        """The selector byte is the profile's, not a table in the method.
+
+        Both spellings of a receiver resolve to the one pair the profile
+        declares, so an ``ab`` profile never emits 0xD0/0xD1 and a
+        ``main_sub`` profile never emits 0x00/0x01.  The table this
+        replaced went the other way — it answered by name alone, so
+        ``"MAIN"`` sent 0xD0 to an IC-7300 that has no MAIN.
+        """
+        r = IcomRadio("192.168.1.100", timeout=0.05, model=model)
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        mock_transport.queue_response(
+            _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, r._radio_addr, 0xFB))
+        )
+        try:
+            await r._set_vfo_wire(vfo)
+        finally:
+            r._connected = False
+        # Parse the frame out; do not search the datagram for the two bytes.
+        # The UDP control header ends ``... 00 07 00 00 00`` on every packet
+        # this transport sends, so ``b"\x07\x00" in packet`` is true whatever
+        # the payload — it would pass all four IC-7300 rows unchanged.
+        sent = mock_transport.sent_packets[-1]
+        frame = parse_civ_frame(sent[sent.index(b"\xfe\xfe") :])
+        assert frame.command == 0x07
+        assert frame.data == bytes([expected])
 
     @pytest.mark.asyncio
-    async def test_set_vfo_wire_b(
-        self, radio: IcomRadio, mock_transport: MockTransport
+    async def test_set_vfo_wire_without_a_profile_code_raises(
+        self, mock_transport: MockTransport
     ) -> None:
-        mock_transport.queue_response(_ack_response())
-        await radio._set_vfo_wire("B")
+        """No declared code means no frame — never a byte invented here.
 
-    @pytest.mark.asyncio
-    async def test_set_vfo_wire_main(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        mock_transport.queue_response(_ack_response())
-        await radio._set_vfo_wire("MAIN")
+        X6100 is an ``ab`` profile whose ``[vfo]`` section declares neither
+        ``main_select`` nor ``sub_select``.  The deleted table answered
+        ``"MAIN"`` with 0xD0 regardless, so a single-receiver rig got a
+        dual-receiver MAIN-select opcode.  That is the failure this
+        replaces; the table's 0x00 default was for names outside its four
+        keys, which is a different hole.
+        """
+        r = IcomRadio("192.168.1.100", timeout=0.05, model="X6100")
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        try:
+            with pytest.raises(CommandError, match="no VFO select code"):
+                await r._set_vfo_wire("MAIN")
+        finally:
+            r._connected = False
+        assert mock_transport.sent_packets == []
 
     @pytest.mark.asyncio
     async def test_set_vfo_wire_nak(

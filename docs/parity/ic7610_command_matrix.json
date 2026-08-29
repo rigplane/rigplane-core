@@ -260,7 +260,7 @@
         "rigplane.radio:CoreRadio.set_vfo_slot"
       ],
       "test_patterns": [
-        "tests/test_commands_extended.py::test_vfo_main"
+        "tests/test_commands_extended.py::test_code_reaches_the_wire_unchanged"
       ]
     },
     {
@@ -368,7 +368,7 @@
         "rigplane.radio:CoreRadio.select_receiver"
       ],
       "test_patterns": [
-        "tests/test_commands_extended.py::test_vfo_main"
+        "tests/test_radio_extended.py::test_set_vfo_wire_sends_the_profile_code"
       ]
     },
     {
@@ -386,7 +386,7 @@
         "rigplane.radio:CoreRadio.select_receiver"
       ],
       "test_patterns": [
-        "tests/test_commands_extended.py::test_vfo_sub"
+        "tests/test_radio_extended.py::test_set_vfo_wire_sends_the_profile_code"
       ]
     },
     {

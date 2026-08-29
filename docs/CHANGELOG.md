@@ -26,6 +26,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by some other process; under a managed runtime it now escalates to an
   operator-forced unkey (see Changed below) and its exit code is meaningful
   (MOR-1184, MOR-1199).
+- **`rigplane.commands.set_vfo` takes a selector byte, not a VFO name**
+  (MOR-1986). The builder held its own `{"A": 0x00, "B": 0x01, "MAIN": 0xD0,
+  "SUB": 0xD1}` table — rig-specific bytes inside a builder, and a second
+  implementation of a mapping the rig TOMLs declare as `[vfo] main_select` /
+  `sub_select`. It now takes the byte and the profile supplies it:
+  `set_vfo("MAIN", to_addr=...)` becomes
+  `set_vfo(radio.profile.vfo_main_code, to_addr=...)` — but those fields are
+  `int | None`, and four shipped profiles (X6100, X6200, TX-500, FTX-1)
+  declare neither, so a caller must handle `None` rather than pass it
+  through. Callers that passed a name outside those four keys used to select
+  VFO A silently; there is no such fallback now.
+  `IcomRadio`'s signature and accepted alphabet are unchanged —
+  `_set_vfo_wire` still takes "A"/"B"/"MAIN"/"SUB" — but its bytes are not:
+  it now resolves them from the loaded profile, so "A" on a `main_sub`
+  profile sends 0xD0 where it sent 0x00, "MAIN" on an `ab` profile sends
+  0x00 where it sent 0xD0, and a profile declaring no code raises
+  `CommandError` where it used to emit. Every *guarded* caller
+  (`select_receiver`, `swap_vfo_ab`, `equalize_vfo_ab`, the per-receiver
+  VFO fallback) passes "MAIN"/"SUB" on a dual-RX profile. On the dual-RX
+  profiles that declare `main_select`/`sub_select` (IC-7610, IC-9700) the
+  bytes are identical, so a `snapshot_state` → `restore_state` round-trip is
+  unchanged. `restore_state` itself forwards whatever dict it is handed,
+  though: `radio.restore_state({"vfo": "A"})` against a `main_sub` profile
+  now selects the MAIN receiver (0xD0) where it used to select VFO A
+  (0x00), and `restore_state` swallows per-field failures at DEBUG, so
+  nothing surfaces. Hand-built restore dicts should use "MAIN"/"SUB".
 
 ### Changed
 
