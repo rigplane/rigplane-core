@@ -40,10 +40,13 @@ that is stated plainly rather than filled in with a plausible guess.
 ### How Linear was read
 
 Linear was reachable via a headless path: a BWS-stored API key was exported
-into an environment variable for the duration of two read-only GraphQL
-queries against `api.linear.app/graphql`, then unset. No mutation query was
-sent. The key was never printed and was not written into this document or
-any other file. Two queries were run:
+into an environment variable for the duration of read-only GraphQL queries
+against `api.linear.app/graphql`, then unset. No mutation query was sent. The
+key was never printed and was not written into this document or any other
+file. The original consolidation ran two queries; a third was added on
+**2026-08-29**, during a revision pass folding in an independent review's
+findings (see item 7 and the structural-reliability-audit section below for
+what changed as a result):
 
 1. All issues on team `MOR` with issue number between 1799 and 1877
    inclusive (the range named for "the structural reliability audit") — 79
@@ -56,16 +59,18 @@ any other file. Two queries were run:
    MOR-488, MOR-664, MOR-972, MOR-973, MOR-974, MOR-980, MOR-981, MOR-985,
    MOR-989, MOR-990, MOR-991, MOR-993, MOR-1671, and MOR-1986 — 14 of 14
    returned a result.
+3. Read on 2026-08-29 (revision pass): the ten tickets previously left
+   unqueried as the closure path for item 7's P0 gaps — MOR-982, MOR-986,
+   MOR-983, MOR-984, MOR-975, MOR-987, MOR-976, MOR-977, MOR-978, MOR-979 —
+   plus MOR-1981 (to fix a discovery-order error in item 1) and MOR-1839,
+   MOR-1840, MOR-1874 (to correct the structural-reliability-audit
+   title-overlap sweep). 14 of 14 returned a result.
 
-Not queried, and therefore unknown-status in this document: MOR-982, MOR-986,
-MOR-983, MOR-984, MOR-987, MOR-975, MOR-976, MOR-977, MOR-978, MOR-979 (the
-decision items and downstream implementation slices that
-`docs/plans/2026-07-25-ui-composition-discovery-and-parity.md` names as the
-*actual* closure of its P0 safety gaps and reference vertical — see item 7),
-and MOR-465 (RIT/XIT naming, mentioned in item 10, left as previously
-described from the repository document alone). A GitHub issue and a GitHub
-PR referenced from Linear ticket content were additionally read via `gh`
-(read-only) to resolve one specific discrepancy — see item 4.
+Not queried, and therefore unknown-status in this document: MOR-465 (RIT/XIT
+naming, mentioned in item 10, left as previously described from the
+repository document alone). A GitHub issue and a GitHub PR referenced from
+Linear ticket content were additionally read via `gh` (read-only) to resolve
+one specific discrepancy — see item 4.
 
 ---
 
@@ -119,11 +124,18 @@ silently sends wrong bytes for some commands.
     "far past the hard ceiling"). **"Done" here means the first step (the
     ratchet test) was completed, not that the duplication was removed** —
     consistent with the divergence file still showing 76 rows at this
-    revision. Ticket MOR-1986 also names a second, related defect found
-    while investigating this one: the `cmd_map` branch of every
-    `get_scope_*` builder silently discards the `receiver` argument that the
-    fallback branch honors (filed as its own instance, MOR-1981, not
-    separately queried for this inventory).
+    revision. **Discovery order, corrected 2026-08-29 by reading MOR-1986's
+    own description directly:** an earlier draft of this item had the
+    sequence backwards. MOR-1981 ("Eight scope reads omit the required
+    Main/Sub selector byte, and the radio is right to refuse them," **state
+    Done**) was found first, while chasing why the IC-7300 declined a batch
+    of scope queries. MOR-1986's own opening line reads: "Found 2026-08-22
+    while establishing why eight scope reads are refused (MOR-1981). That
+    defect is an instance; this is the class." So MOR-1981 is the specific
+    instance — the `cmd_map` branch of every `get_scope_*` builder silently
+    discarding the `receiver` argument that the fallback branch honors — and
+    MOR-1986 (this item's ticket) is the general mechanism, named while
+    investigating MOR-1981, not the other way around.
   - Origin/main commit history at this revision shows continued work after
     MOR-1986's own "Done" mark: commits under the same ticket (merged PRs
     #2798, #2796, #2795) fix additional bugs *inside* the still-dead cmd_map
@@ -379,11 +391,13 @@ IC-9700 to test against, and there is no manual-based check for it either.
 **Plain words:** turning a knob or pressing a button on the physical radio
 should update the value shown in the web UI ("readback"). A dedicated audit
 of every IC-7610 web control found that only 15 of roughly 73 controls
-actually do this today; the rest either need a code change to work (a missing
-polling-list entry, a missing dispatch branch, or a missing parser — roughly
-46 controls across two gap classes), track only the MAIN receiver and are
-silently wrong for SUB (5 controls), or are deliberately excluded as not
-applicable (7 controls).
+actually do this today; the rest either need a code change to work — a
+missing polling-list entry (**gap class A1**, 11 controls), a missing
+dispatch branch (**gap class A2**, 24 controls), or a missing parser (**gap
+class B**, 11 controls), 46 controls across these three code-level classes
+in the audit's own table — track only the MAIN receiver and are silently
+wrong for SUB (**gap class C**, 5 controls), or are deliberately excluded as
+not applicable (**gap class D**, 7 controls).
 
 - **Recorded in:** `docs/internals/ic7610-control-readback-audit.md`. The
   document explicitly labels its verdicts "code-derived predictions —
@@ -426,41 +440,72 @@ different presentations can show inconsistent or duplicate warnings.
   "must not be classified as code-cleanliness refactors."
 - **Linear read for this item — say plainly what is closed:** the discovery
   document (MOR-972, itself **Done**) names several bounded prerequisite
-  slices as the path to closing its own P0 gaps. Of the ones queried for
-  this inventory, **all are marked Done**: MOR-973 ("make App the
-  presentation composition root"), MOR-974 ("consolidate capability-derived
-  presentation selectors"), MOR-980 ("P0: make frontend PTT delivery
-  asymmetric and non-replayable" — its own acceptance criteria specifically
-  cover `ptt_off` bypassing degraded-health rejection and reconnect never
-  emitting stale PTT-ON, i.e. two of the five plain-language gaps listed
-  above), MOR-981 ("establish the App presentation-selection seam"), MOR-985
-  ("pin and validate the authoritative capability wire"), MOR-989 ("disable
-  raw MediaSession PTT"), MOR-990 ("split local TX audio stop from confirmed
-  MOD restore"), MOR-991 ("enforce exact receiver/VFO topology pairs in
-  profile loader"), and MOR-993 ("interim safety: disable ungated backend
-  MOD restore on session teardown").
-- **What this does not establish:** each of these tickets is explicitly
-  scoped as a narrow, bounded, "atomic implementation slice" (their own
-  wording), not the full safety picture the discovery document describes.
-  The document's migration sequence names further items as the actual
-  closure of "one App-owned TX controller" and "one backend TX supervisor"
-  (decision tickets MOR-982 and MOR-986) and their downstream implementation
-  (MOR-983, MOR-984), plus the reference-vertical proof work (MOR-975,
-  MOR-987) and later layout/design-language work (MOR-976 through MOR-979).
-  **None of MOR-982, MOR-986, MOR-983, MOR-984, MOR-975, MOR-987, MOR-976,
-  MOR-977, MOR-978, or MOR-979 were queried for this inventory** — their
-  status is unknown here. So: the specific bounded fail-closed prerequisites
-  listed above are confirmed Done, but whether the P0 gaps they were
-  prerequisites *for* are themselves fully closed is not established by this
-  read. This was also not re-verified against current frontend source code.
+  slices as the path to closing its own P0 gaps. Of the **nine** prerequisite
+  tickets named in the original consolidation, **all are marked Done**:
+  MOR-973 ("make App the presentation composition root"), MOR-974
+  ("consolidate capability-derived presentation selectors"), MOR-980 ("P0:
+  make frontend PTT delivery asymmetric and non-replayable" — its own
+  acceptance criteria specifically cover `ptt_off` bypassing degraded-health
+  rejection and reconnect never emitting stale PTT-ON, i.e. two of the five
+  plain-language gaps listed above), MOR-981 ("establish the App
+  presentation-selection seam"), MOR-985 ("pin and validate the
+  authoritative capability wire"), MOR-989 ("disable raw MediaSession PTT"),
+  MOR-990 ("split local TX audio stop from confirmed MOD restore"), MOR-991
+  ("enforce exact receiver/VFO topology pairs in profile loader"), and
+  MOR-993 ("interim safety: disable ungated backend MOD restore on session
+  teardown"). (MOR-972 itself is also Done, but it is the discovery ticket,
+  not one of the nine prerequisite slices it names.)
+- **The remaining ten tickets, unqueried in the original consolidation, were
+  read on 2026-08-29 in response to independent review, and are also all
+  Done:** the document's migration sequence had named these as the actual
+  closure of "one App-owned TX controller" and "one backend TX supervisor,"
+  their downstream implementation, the reference-vertical proof work, and
+  later layout/design-language work. Read directly from Linear, as of
+  2026-08-29:
+  - MOR-982, Done, "Decision: Freeze the App-owned TX controller contract"
+  - MOR-986, Done, "Decision: Define backend TX ownership, stale-queue, and
+    session-loss policy"
+  - MOR-983, Done, "Decision: Freeze presentation-lifetime ownership before
+    lazy mounting" (this ticket's own title is itself a decision ticket, not
+    the "downstream implementation" label the original consolidation
+    inferred for it from the discovery document's prose alone — a
+    correction to that inference, not to the ticket's status)
+  - MOR-984, Done, "Implement derived presentation capability selectors"
+  - MOR-975, Done, "Reference vertical: VFO plus RX/TX semantic presentation
+    contract"
+  - MOR-987, Done, "Prove the cross-surface TX lifecycle matrix"
+  - MOR-976, Done, "Reference layout: dual-receiver-cockpit"
+  - MOR-977, Done, "Design: explore and select the reference design
+    language"
+  - MOR-978, Done, "Program: prove independent product-owned design
+    languages without behavior changes"
+  - MOR-979, Done, "Workspace: define versioned constrained UI configuration
+    and migration"
+- **What this does and does not establish:** every ticket the discovery
+  document names as part of closing its own P0 gaps — all nineteen
+  (MOR-972's nine named prerequisites plus these ten) — is Done in Linear as
+  of 2026-08-29. This is a materially different picture from the original
+  consolidation, which could only confirm nine of the nineteen and left the
+  other ten, including the two ownership-decision tickets and the
+  reference-vertical proof work, as unknown. What this still does not
+  establish: whether each ticket's acceptance criteria, once implemented,
+  actually closed the specific P0 gap it targeted, and whether the current
+  frontend source still matches what those tickets describe — this
+  inventory does not re-read `docs/plans/2026-07-25-ui-composition-discovery-and-parity.md`'s
+  P0 table against current code, nor any of these nineteen tickets' full
+  acceptance-criteria text beyond the few quoted above. A "Done" Linear
+  status records that the ticket's own scope was completed and closed, not
+  that this inventory independently verified the resulting code.
 - **Evidence strength:** the P0 gaps themselves are documented (with the
   source document's own "Automated"/"Missing"/"Unknown" evidence labels);
-  the prerequisite-ticket completion is a directly-read Linear fact for the
-  ten tickets named above, and an explicit unknown for the remainder.
-- **Blocks v3?** Partially answered by the above: several specific,
-  named prerequisites are closed. Whether the P0 gates as a whole are closed
-  cannot be answered from what was queried — re-checking the unqueried
-  ticket list above is the fastest way to settle it.
+  the completion of all nineteen named tickets is a directly-read Linear
+  fact, dated 2026-08-29 for the ten read in this revision pass.
+- **Blocks v3?** Every ticket the discovery document names as its own path
+  to closing the P0 gaps is now Done in Linear. Whether that means the P0
+  gaps themselves are closed in the running code is not established by a
+  Linear read alone — re-reading the current frontend source against the
+  discovery document's P0 table (see "How to use this," below) is the
+  fastest way to settle that question, and this inventory does not do it.
 
 ---
 
@@ -510,7 +555,8 @@ mobile branching — which is the opposite of the intended separation.
 **Plain words:** a suite of tests that replays recorded real-radio
 conversations is not run by any of the automated CI pipelines. Three of those
 replays, for setting mode on the IC-7610 in dual-receiver mode via rigctld
-(a Hamlib-style `M VFOA USB 2400` command), currently fail.
+(a Hamlib-style `M VFOA USB <passband>` command — `2400` in the fldigi and
+js8call goldens, `3000` in the wsjtx golden), currently fail.
 
 - **Recorded in:** the requesting session's own findings only, proven by
   executing the relevant tests/CI configuration. A separate agent was
@@ -519,8 +565,11 @@ replays, for setting mode on the IC-7610 in dual-receiver mode via rigctld
   among the 79 structural-reliability-audit issues (the closest thematic
   match is epic MOR-1799, "rigctld & TX-safety: truth laundering and
   interlock bypass," but none of its 8 children's titles specifically
-  describe an `M VFOA USB 2400` / `RPRT -9` failure, so no direct match is
-  claimed).
+  describe an `M VFOA USB` / `RPRT -9` failure, so no direct match is
+  claimed). Re-run for this revision (2026-08-29): all three goldens
+  (wsjtx, fldigi, js8call) fail at their respective `M VFOA USB` line with
+  `expected 'RPRT 0', got 'RPRT -9'`; the other three tests in the same file
+  pass.
 - **Related but treated as distinct:** `docs/validation/cat-audits/ic7610.md`
   documents three **different** live scope round-trip failures on the
   IC-7610 in dual-receiver mode (`scope_dual.set`, `scope_vbw.set`,
@@ -604,24 +653,50 @@ The 8 epics, with their child-issue counts:
 
 This inventory does not paste all 71 child-issue titles or descriptions —
 only titles were read for the range query, not full descriptions, so their
-content beyond the title is not claimed here. Two children were named above
-because their titles directly overlap an item in this inventory (MOR-1841
-under item 1). A few more are worth a reader's attention without being
-folded into an item here, because their titles alone suggest overlap with
-items already listed but were not read in enough detail to merge confidently:
-MOR-1877 ("IC-7610 parity matrix asserts 134/134 implemented against a
-permanently-skipped reference" — possibly related to item 6 or to the CAT
-audits, not confirmed) and MOR-1873 ("Validation dry-run goldens mint `pass`
-from absent checks" — possibly related to the `.presence`-only checks
-mentioned in `docs/validation/cat-audits/README.md`, not confirmed). No other
-title-level overlap with items 1–10 was found among the remaining 68
-children.
+content beyond the title is not claimed here, and every overlap claim below
+is a **title-level** match only: two titles reading alike says nothing about
+whether their bodies describe the same underlying mechanism, only that the
+words used to name them overlap.
+
+**Corrected 2026-08-29** (an earlier draft of this section found only one
+title-level overlap and missed three others under the same epic and theme):
+four children, all under epic **MOR-1803** ("Capabilities & profiles: one
+derivation, honest fallbacks"), match item 1's "IC-7610-shaped hardcoded
+fallback standing in for profile-driven behaviour" theme at title level, and
+all four are **Backlog**, read 2026-08-29:
+- MOR-1841, "Web poller falls back to hardcoded IC-7610/IC-7300 profiles and
+  swallows all command-map load errors" (already named under item 1).
+- MOR-1839, "A radio without .profile is silently served the entire IC-7610
+  capability sheet."
+- MOR-1840, "runtime/radios.py is a second hardcoded radio registry, already
+  drifted from rigs/*.toml."
+- MOR-1874 (under epic MOR-1806, "Verification theater"), "1532-line v2 UI
+  interactive audit runs in no workflow but is credited as a guard in the
+  regression matrix" — matches item 9's "a test suite no workflow runs"
+  shape, not the MOR-1803 fallback theme.
+
+Two more are worth a reader's attention without being folded into an item
+here, because their titles alone suggest overlap with items already listed
+but were not read in enough detail to merge confidently: MOR-1877 ("IC-7610
+parity matrix asserts 134/134 implemented against a permanently-skipped
+reference" — possibly related to item 6 or to the CAT audits, not confirmed)
+and MOR-1873 ("Validation dry-run goldens mint `pass` from absent checks" —
+possibly related to the `.presence`-only checks mentioned in
+`docs/validation/cat-audits/README.md`, not confirmed). No other
+title-level overlap with items 1–10 was found among the remaining 65
+children — but "not found" here means their titles alone did not suggest
+one, not that their bodies were checked and cleared.
 
 **This means the structural reliability audit is, almost entirely, a
 separate body of unresolved findings from what is catalogued in items 1–10
-above** — only one clear title-level overlap (MOR-1841) was found. Reading
-each of the 79 tickets' full descriptions was out of scope for this
-consolidation.
+above** — four clear title-level overlaps (MOR-1841, MOR-1839, MOR-1840,
+MOR-1874) plus two possible-but-unconfirmed ones (MOR-1877, MOR-1873), six
+named in total, were found among 71 children — not the "only one" an
+earlier draft of this document claimed. Six out of 71 does not change the
+bottom line — the audit is still almost entirely a separate body of findings
+from items 1–10 — but it does mean the earlier "only one" claim understated
+the overlap, and the sweep was titles only: reading each of the 79 tickets'
+full descriptions was, and remains, out of scope for this consolidation.
 
 ---
 
@@ -640,37 +715,43 @@ four of six findings were new. With Linear read:
 | Item 4 — FTX-1 can't select second receiver | **Already tracked and already the subject of an open Linear ticket (MOR-1671, In Progress) and a closed-not-planned GitHub issue (#2633)** — a re-discovery, not a new finding, but this inventory adds the specific correction that an apparently-related open PR (#2803) fixes only part of the practical problem: it makes FTX-1's SUB receiver reachable for `SetFreq`/`SetMode`, but leaves MOR-1671's own scope — the `Select SUB`/`Select MAIN` action itself — untouched. |
 | Item 5 — IC-9700 copies IC-7300 values | New. Not found in the repository beyond the copying itself, nor in either Linear query. Explained by a pre-existing, documented coverage gap (no IC-9700 CAT audit exists). |
 | Item 6 — IC-7610 readback | **Already tracked**: MOR-488 (Backlog), confirmed to describe the same program as the repository audit document, and confirmed still open, not historical. |
-| Item 7 — P0 safety/architecture gaps | **Partially tracked and partially closed**: ten named prerequisite tickets confirmed Done; the tickets that would close the gaps *fully* (App-owned TX controller, backend TX supervisor, and their downstream work) were not queried and remain unknown. |
+| Item 7 — P0 safety/architecture gaps | **Directly tracked, and — as of a 2026-08-29 revision pass — all nineteen named tickets are Done**: the nine original prerequisite tickets plus the ten (App-owned TX controller decision, backend TX supervisor decision, their downstream implementation, the reference-vertical proof work, and the layout/design-language work) that were unqueried in the original consolidation. Whether the code matches what those tickets' acceptance criteria describe was not independently re-verified — see item 7. |
 | Item 8 — composition root doesn't compose | **Directly tracked, and its two named tickets (MOR-973, MOR-981) are marked Done** — this is the most significant single update from reading Linear: if their acceptance criteria were genuinely met, the starting-state problem this item describes may no longer be current, though this was not independently re-verified against the frontend source. |
 
-**Revised bottom line:** of the ten items, four (1, 4, 6, 8) turn out to
-already have direct Linear tickets, one of which (8) may already be resolved
-per Linear's own record even though the repository documentation describing
-it predates that resolution. Item 7 is partially resolved by name. Three
-items (2, 3, 5) remain apparently unfiled anywhere checked. Item 9 remains
-new, with a thematically related but distinct ticket now confirmed fixed.
-This is a different, more nuanced conclusion than "most findings are new" —
-reading Linear changed the picture substantially, exactly as flagged as a
-risk in the original Gaps section.
+**Revised bottom line:** of the ten items, five (1, 4, 6, 7, 8) turn out to
+already have direct Linear tickets, two of which (7, 8) may already be
+resolved per Linear's own record even though the repository documentation
+describing them predates that resolution and neither was independently
+re-verified against current frontend source. Three items (2, 3, 5) remain
+apparently unfiled anywhere checked. Item 9 remains new, with a thematically
+related but distinct ticket now confirmed fixed. This is a different, more
+nuanced conclusion than "most findings are new" — reading Linear changed the
+picture substantially, exactly as flagged as a risk in the original Gaps
+section.
 
 ---
 
 ## Gaps
 
-- **Ticket ranges and specific tickets not queried, listed exactly so a
-  reader knows the boundary of what was checked:** MOR-982, MOR-986,
-  MOR-983, MOR-984, MOR-975, MOR-987, MOR-976, MOR-977, MOR-978, MOR-979
-  (referenced by `docs/plans/2026-07-25-ui-composition-discovery-and-parity.md`
-  as the actual closure path for its P0 gaps and reference vertical — see
-  item 7), and MOR-465 (RIT/XIT naming — see item 10). Their titles,
-  descriptions, and states are not known here and were not guessed at.
-- **Full descriptions of 69 of the 71 child issues under the structural
+- **Ticket not queried, listed exactly so a reader knows the boundary of
+  what was checked:** MOR-465 (RIT/XIT naming — see item 10). Its title,
+  description, and state are not known here and were not guessed at. (The
+  ten P0-closure tickets previously listed here — MOR-982, MOR-986, MOR-983,
+  MOR-984, MOR-975, MOR-987, MOR-976, MOR-977, MOR-978, MOR-979 — were
+  queried in a 2026-08-29 revision pass and are no longer a gap; see item 7.)
+- **Full descriptions of 65 of the 71 child issues under the structural
   reliability audit (MOR-1807–1877) were not read** — only titles, via the
-  range query. Two (MOR-1841, and the possible-but-unconfirmed MOR-1877 /
-  MOR-1873) are named above by title-level similarity to items already in
-  this inventory; the remaining 68 were not matched against anything, and
-  reading their bodies could surface further overlap or further genuinely
-  new defects that this inventory does not capture.
+  range query, and title-only comparison bounds what this overlap check can
+  claim: two titles matching says nothing about whether their bodies
+  describe the same underlying mechanism, only that the words used to name
+  them overlap. Six children were named above by title-level similarity to
+  items already in this inventory: MOR-1841, MOR-1839, and MOR-1840 (item
+  1's IC-7610-shaped-fallback theme, all three under epic MOR-1803, all
+  Backlog), MOR-1874 (item 9's "a test suite no workflow runs" theme,
+  Backlog), and the possible-but-unconfirmed MOR-1877 / MOR-1873. The
+  remaining 65 were not matched against anything **by title**; their bodies
+  were not read at all, so reading them could surface further overlap or
+  further genuinely new defects that this inventory does not capture.
 - **Hardware access is limited.** The live bench is IC-7300 and FTX-1 only.
   All claims above about IC-9700, IC-705, X6100, X6200, and TX-500 are either
   code-derived or historical-live-only (from a radio since retired or
@@ -710,11 +791,13 @@ finished checklist. Before resuming work:
   single most consequential open question this document raises: if it is
   actually fixed, the migration may be starting from a materially better
   position than the last written discovery document describes.
-- **Query MOR-982, MOR-986, MOR-983, MOR-984, MOR-975, MOR-987, MOR-976,
-  MOR-977, MOR-978, and MOR-979 before assuming item 7's P0 safety gaps are
-  fully closed.** Ten narrower prerequisite tickets are confirmed Done, but
-  the tickets that would close the gaps completely were not read for this
-  inventory.
+- **Re-check item 7's P0 safety gaps against current frontend source before
+  assuming they are closed just because Linear says so.** All nineteen
+  tickets the discovery document names as its own closure path — the nine
+  original prerequisites plus the ten decision/implementation/reference-
+  vertical/design-language tickets read on 2026-08-29 — are Done in Linear.
+  Whether the code actually satisfies each ticket's acceptance criteria was
+  not independently re-verified here.
 - **Re-check items 1 and 2 against the separate design document** referenced
   under item 1 — the owner has already ruled on the end state (delete the
   fallback, require the command map, move the request and response sides
@@ -731,11 +814,12 @@ finished checklist. Before resuming work:
 - **Item 3 (MIC/ACC1 collision) has no test or ticket found for it anywhere
   checked** — repository, tests, or Linear. It is the item in this list most
   likely to be silently missed unless someone explicitly files it.
-- **Read the remaining 68 untitled-only child issues of the structural
-  reliability audit (MOR-1807–1877, minus MOR-1841/1873/1877 named above)**
-  before assuming this inventory and that audit are fully reconciled — only
-  titles were compared, not full descriptions.
-- **Closing the remaining Linear gap** (the ten specific unqueried tickets
-  above, plus MOR-465, plus full bodies of 68 structural-reliability-audit
-  children) needs the same headless BWS-key read path used for this
-  inventory, run again with those specific ticket numbers.
+- **Read the remaining 65 title-only child issues of the structural
+  reliability audit (MOR-1807–1877, minus MOR-1839/1840/1841/1874/1873/1877
+  named above)** before assuming this inventory and that audit are fully
+  reconciled — only titles were compared, not full descriptions, for any of
+  the 71.
+- **Closing the remaining Linear gap** (MOR-465, plus full bodies of all 71
+  structural-reliability-audit children) needs the same headless BWS-key
+  read path used for this inventory, run again with those specific ticket
+  numbers.
