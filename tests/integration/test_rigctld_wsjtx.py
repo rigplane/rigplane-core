@@ -32,9 +32,10 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from serial_stub import SerialMockRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
+
+from _ptt_reread_fixtures import PttAnsweringSerialMockRadio, wait_for_known_rf_state
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -43,7 +44,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 # ---------------------------------------------------------------------------
 
 
-class RecordingMockRadio(SerialMockRadio):
+class RecordingMockRadio(PttAnsweringSerialMockRadio):
     """SerialMockRadio subclass that records every Radio-level call.
 
     Each recorded entry is ``(method_name, args_tuple)``. The tests assert
@@ -52,6 +53,10 @@ class RecordingMockRadio(SerialMockRadio):
     Adds ``set_split`` which ``SerialMockRadio`` does not implement;
     the rigctld handler calls it via ``getattr(radio, 'set_split', None)``
     so without this override the split-VFO paths would silently no-op.
+
+    Inherits from ``PttAnsweringSerialMockRadio`` (not the bare
+    ``SerialMockRadio``) so it answers rigctld's ``0x1C/0x00`` PTT re-read —
+    see ``_ptt_reread_fixtures.py`` for why that is required since MOR-1900.
     """
 
     def __init__(self, **kwargs: object) -> None:
@@ -174,9 +179,17 @@ async def ic7610_setup() -> AsyncGenerator[
     radio = RecordingMockRadio(model="IC-7610")
     await radio.connect()
     server = await _make_server(radio)
+    # Keep one client connected for the fixture's lifetime so
+    # ``RigctldServer._run_ptt_reread`` (MOR-1903) actually sends and the
+    # DEFER write gate can leave UNKNOWN before any test body issues a
+    # MODE/BAND/VFO write — see ``_ptt_reread_fixtures.py``.
+    keepalive = await _make_client(server)
+    await wait_for_known_rf_state(server)
+    radio.reset_calls()
     try:
         yield radio, server
     finally:
+        await keepalive.close()
         await server.stop()
 
 
@@ -187,9 +200,13 @@ async def ic7300_setup() -> AsyncGenerator[
     radio = RecordingMockRadio(model="IC-7300")
     await radio.connect()
     server = await _make_server(radio)
+    keepalive = await _make_client(server)
+    await wait_for_known_rf_state(server)
+    radio.reset_calls()
     try:
         yield radio, server
     finally:
+        await keepalive.close()
         await server.stop()
 
 

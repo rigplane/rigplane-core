@@ -47,9 +47,10 @@ from pathlib import Path
 
 import pytest
 
-from serial_stub import SerialMockRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
+
+from _ptt_reread_fixtures import PttAnsweringSerialMockRadio, wait_for_known_rf_state
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -121,8 +122,16 @@ async def rigctld_dual_rx_server() -> AsyncGenerator[RigctldServer, None]:
     chk_vfo branch reads ``radio.profile.receiver_count`` to decide
     whether to advertise vfo_opt — but Variant B currently shorts that
     to ``"0"`` unconditionally, which is why every replay xfails today.
+
+    Uses ``PttAnsweringSerialMockRadio`` (not the bare ``SerialMockRadio``)
+    and keeps one extra connection open for the fixture's lifetime so
+    ``RigctldServer._run_ptt_reread`` (MOR-1903) actually sends and the
+    DEFER write gate can leave UNKNOWN before ``_replay`` opens its own
+    connection and starts sending golden-script lines — see
+    ``_ptt_reread_fixtures.py``. Golden files are untouched; only the
+    fixture's startup sequencing changes.
     """
-    radio = SerialMockRadio(model="IC-7610")
+    radio = PttAnsweringSerialMockRadio(model="IC-7610")
     await radio.connect()
     cfg = RigctldConfig(
         host="127.0.0.1",
@@ -133,9 +142,17 @@ async def rigctld_dual_rx_server() -> AsyncGenerator[RigctldServer, None]:
     )
     srv = RigctldServer(radio, cfg)
     await srv.start()
+    host, port = _addr(srv)
+    _keepalive_reader, keepalive_writer = await asyncio.open_connection(host, port)
+    await wait_for_known_rf_state(srv)
     try:
         yield srv
     finally:
+        keepalive_writer.close()
+        try:
+            await keepalive_writer.wait_closed()
+        except Exception:
+            pass
         await srv.stop()
 
 
