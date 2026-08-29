@@ -186,6 +186,10 @@ class RigctldServer:
         self._acquisition_executor: AcquisitionExecutor | None = None
         self._state_acquisition_drain_task: asyncio.Task[None] | None = None
         self._ptt_reread_task: asyncio.Task[None] | None = None
+        # Serializes the scheduled tick against the connect-triggered
+        # immediate re-read below so the two can never put two 0x1C/0x00
+        # requests on the wire back to back.
+        self._ptt_reread_send_lock: asyncio.Lock = asyncio.Lock()
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
@@ -510,23 +514,36 @@ class RigctldServer:
 
         Not via ``_send_one_state_query``: that carries bounded on-demand
         requests on the user-command lane, the wrong lane for a cadence.
+
+        Two independent triggers can reach this method: the scheduled tick
+        in ``_run_ptt_reread`` and the connect-triggered immediate re-read in
+        ``_accept_client``. If one is already in flight when the other
+        fires, the lock makes the second call a no-op instead of a second
+        frame on the wire — the in-flight request already covers the
+        connecting client, since it will resolve within one round trip
+        regardless of which trigger sent it.
         """
-        radio = self._radio
-        # Parity with the lazy poller start: an idle server stays off the wire.
-        if self._client_count <= 0 or not isinstance(radio, CivCommandCapable):
+        if self._ptt_reread_send_lock.locked():
             return
-        # A Hamlib bridge owns the byte stream; our reads must not pollute it
-        # (MOR-166 slice 2). ``is True``, matching every sibling poller, so a
-        # duck-typed radio never quiesces by accident.
-        if getattr(radio, "external_cat_session_active", False) is True:
-            return
-        await radio.send_civ(
-            0x1C,
-            sub=0x00,
-            wait_response=False,
-            priority=Priority.BACKGROUND,
-            wait_dispatch=False,
-        )
+        async with self._ptt_reread_send_lock:
+            radio = self._radio
+            # Parity with the lazy poller start: an idle server stays off
+            # the wire.
+            if self._client_count <= 0 or not isinstance(radio, CivCommandCapable):
+                return
+            # A Hamlib bridge owns the byte stream; our reads must not
+            # pollute it (MOR-166 slice 2). ``is True``, matching every
+            # sibling poller, so a duck-typed radio never quiesces by
+            # accident.
+            if getattr(radio, "external_cat_session_active", False) is True:
+                return
+            await radio.send_civ(
+                0x1C,
+                sub=0x00,
+                wait_response=False,
+                priority=Priority.BACKGROUND,
+                wait_dispatch=False,
+            )
 
     def _start_state_acquisition_drain_task(self) -> None:
         if (
@@ -1008,6 +1025,17 @@ class RigctldServer:
         # Start poller when the first client connects.
         if self._poller is not None and self._client_count == 1:
             self._spawn(self._poller.start())
+
+        # The re-read cadence otherwise ticks on its own clock from server
+        # start: a client connecting just before the next scheduled tick
+        # could find RF truth UNKNOWN and have its first DEFER-family write
+        # refused (RPRT -9). Firing one read on the zero-to-one transition
+        # closes that window instead of waiting out up to a full
+        # PTT_REREAD_INTERVAL_SECONDS; the scheduled cadence continues
+        # unchanged afterward, and the lock in _send_ptt_reread_once keeps
+        # this from ever doubling up with a tick that is already in flight.
+        if self._client_count == 1 and self._ptt_reread_task is not None:
+            self._spawn(self._send_ptt_reread_once())
 
         # Optional WSJT-X compatibility pre-warm for first client:
         # if radio is in USB/LSB/RTTY with DATA off, enable DATA mode upfront

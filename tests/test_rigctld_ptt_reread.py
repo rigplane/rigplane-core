@@ -281,6 +281,66 @@ async def test_started_server_drives_reads_only_while_a_client_is_connected(
     assert server._ptt_reread_task is None and task.done()  # noqa: SLF001
 
 
+async def test_client_connecting_at_server_start_gets_known_state_before_first_write(
+    civ_radio: IcomRadio,
+) -> None:
+    """Connect-triggered immediate re-read closes the tick-vs-connect race.
+
+    Regression test for the production defect measured on the bench IC-7300:
+    ``_run_ptt_reread`` ticks on its own clock from *server* start, not from
+    when a client connects. Connecting into the cold phase of that cadence
+    -- worst case, right after start, a full ``PTT_REREAD_INTERVAL_SECONDS``
+    from the next scheduled tick -- left RF truth UNKNOWN for that whole
+    window pre-fix, so a client that writes soon after connecting (as
+    WSJT-X's "Test CAT" does) got its first DEFER-classified write refused
+    with ``RPRT -9``. Six connect-and-immediately-write runs on real
+    hardware hit this in 2/6: first refusal ~0.06s after connect, first
+    success only at ~0.26-0.277s -- essentially one whole tick later.
+
+    This test connects immediately after ``server.start()`` (the same
+    worst-case phase) and writes 0.01s later -- 25x tighter than one
+    ``PTT_REREAD_INTERVAL_SECONDS``, comparable to a well-behaved client's
+    own small overhead. Before the fix, this reproduces the RPRT -9 every
+    time (nothing has been sent to the radio yet at that point); after it,
+    the connect-triggered immediate re-read in
+    ``RigctldServer._accept_client`` has already resolved RF truth.
+    """
+    send_civ = AsyncMock(return_value=None)
+
+    async def answering_send_civ(cmd: int, **kwargs: Any) -> None:
+        await send_civ(cmd, **kwargs)
+        if cmd == 0x1C and kwargs.get("sub") == 0x00:
+            await _deliver(civ_radio, _ptt_reply(civ_radio, transmitting=False))
+
+    civ_radio.send_civ = answering_send_civ  # type: ignore[method-assign]
+    server = RigctldServer(civ_radio, RigctldConfig(host="127.0.0.1", port=0))
+    await server.start()
+    try:
+        assert server._server is not None  # noqa: SLF001
+        port = server._server.sockets[0].getsockname()[1]  # noqa: SLF001
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            await asyncio.sleep(0.01)
+            # ``M`` (mode), not ``F``: MOR-1940 reclassified FREQUENCY as
+            # TX-SAFE, so it would already succeed before any answer and
+            # could not demonstrate this race.
+            writer.write(b"M USB 2400\n")
+            await writer.drain()
+            response = await asyncio.wait_for(
+                reader.readline(), timeout=PTT_REREAD_INTERVAL_SECONDS * 0.5
+            )
+            assert response == b"RPRT 0\n", (
+                "first write after connect was refused -- the connect-"
+                f"triggered immediate re-read did not resolve RF truth in "
+                f"time (got {response!r})"
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        await server.stop()
+
+
 def test_yaesu_radio_gets_no_civ_reread_task() -> None:
     from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
     from rigplane.radio_protocol import CivCommandCapable
