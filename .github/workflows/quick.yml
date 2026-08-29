@@ -229,7 +229,7 @@ jobs:
           # Capture pytest's exit code via PIPESTATUS, extract the summary
           # (still needed for the badge, including on failure), then exit
           # with pytest's code so failing tests fail the step.
-          uv run pytest tests/ --ignore=tests/integration -n auto --tb=short --timeout=300 --timeout-method=thread \
+          uv run pytest tests/ -n auto --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
           SUMMARY=$(tail -1 pytest-output.txt)
