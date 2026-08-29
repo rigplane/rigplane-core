@@ -17,6 +17,7 @@ from rigplane.commands.commander import Priority
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime import tx_interlock
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.types import AudioCodec, CivFrame
 
@@ -26,7 +27,11 @@ from _audio_pipeline_helpers import (
     pcm_rms,
     sine_pcm16_mono,
 )
-from _ptt_reread_fixtures import answer_ptt_reread_with_rx, wait_for_known_rf_state
+from _ptt_reread_fixtures import (
+    answer_ptt_reread,
+    wait_for_known_rf_state,
+    wait_for_rf_state,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -130,15 +135,19 @@ class RecordingLanRadio(IcomRadio):
 
         ``_civ_transport`` is ``_IdleCivTransport`` (always times out), so
         the real RX loop never sees a reply. Instead of enqueueing over that
-        dead transport, deliver the RX-state reply directly through the same
-        real ingestion (``_CivRuntime._route_civ_frame`` /
+        dead transport, deliver the reply directly through the same real
+        ingestion (``_CivRuntime._route_civ_frame`` /
         ``_observations_from_frame``) MOR-1903's own test
         (``tests/test_rigctld_ptt_reread.py``) uses to verify this exact
-        mechanism — see ``_ptt_reread_fixtures.py``. Every other command
-        still goes through the real ``IcomRadio.send_civ``.
+        mechanism — see ``_ptt_reread_fixtures.py``. What it reports is this
+        radio's own ``_ptt``, the flag ``set_ptt`` maintains, so the DEFER
+        gate sees the double transmit when it transmits; answering a fixed
+        "not transmitting" would be the fabricated RX observation
+        ``6bdb5846`` removed from production. Every other command still goes
+        through the real ``IcomRadio.send_civ``.
         """
         if command == 0x1C and sub == 0x00:
-            await answer_ptt_reread_with_rx(self)
+            await answer_ptt_reread(self, transmitting=self._ptt)
             return None
         return await super().send_civ(
             command,
@@ -236,6 +245,60 @@ async def rigctld_audio_setup() -> AsyncGenerator[
         await bridge.stop()
         await server.stop()
         radio._connected = False
+
+
+async def test_defer_write_is_dropped_while_the_radio_transmits(
+    rigctld_audio_setup: tuple[
+        RecordingLanRadio,
+        RigctldServer,
+        AudioBridge,
+        FakeAudioBackend,
+        _RecordingAudioTransport,
+    ],
+) -> None:
+    """The PTT re-read reports TX, so the DEFER gate drops a MODE write.
+
+    This is the discriminating half of the fixture in
+    ``_ptt_reread_fixtures.py``: it can only reach the ``rf_state is TX``
+    branch of ``RigctldHandler._defer_write_gate`` because
+    ``answer_ptt_reread`` answers with the double's real key state. Pin a
+    constant ``transmitting=False`` back into that helper and
+    ``wait_for_rf_state(..., TX)`` times out here — which is exactly the
+    blindness a fabricated RX observation buys.
+
+    ``RPRT 0`` for a dropped write is the MOR-1881 owner ruling, not a
+    success: hamlib clients take any non-zero RPRT mid-sequence offline, so
+    this seat mirrors the radio's own front panel and ignores the press. The
+    load-bearing assertion is therefore that the radio never saw the write.
+    """
+    radio, server, _bridge, _backend, _transport = rigctld_audio_setup
+
+    client = await _make_client(server)
+    try:
+        await wait_for_known_rf_state(server)
+        assert await client.send("T 1") == "RPRT 0"
+        # The key state reaches the gate only via the next re-read tick.
+        await wait_for_rf_state(server, tx_interlock.RfState.TX)
+
+        def mode_writes() -> list[tuple[str, tuple[Any, ...]]]:
+            return [
+                call for call in radio.calls if call[0] in ("set_mode", "set_data_mode")
+            ]
+
+        dropped_from = mode_writes()
+        assert await client.send("M PKTUSB") == "RPRT 0"
+        assert mode_writes() == dropped_from
+
+        assert await client.send("T 0") == "RPRT 0"
+        await wait_for_rf_state(server, tx_interlock.RfState.RX)
+
+        # Same command, same client, RX now — it reaches the radio, so the
+        # drop above was the TX branch and not a fixture that never writes.
+        assert await client.send("M PKTUSB") == "RPRT 0"
+        assert mode_writes() != dropped_from
+        assert ("set_mode", ("USB", None, 0)) in radio.calls
+    finally:
+        await client.close()
 
 
 async def test_rigctld_wsjtx_replay_drives_data2_lan_tx_audio_pipeline(

@@ -117,19 +117,18 @@ def _addr(server: RigctldServer) -> tuple[str, int]:
 async def rigctld_dual_rx_server() -> AsyncGenerator[RigctldServer, None]:
     """Real RigctldServer bound to localhost:0 with an IC-7610 mock radio.
 
-    Uses SerialMockRadio(model="IC-7610") which exposes the dual-RX
-    profile (receiver_count=2, vfo_scheme="main_sub"). The handler's
-    chk_vfo branch reads ``radio.profile.receiver_count`` to decide
-    whether to advertise vfo_opt — but Variant B currently shorts that
-    to ``"0"`` unconditionally, which is why every replay xfails today.
+    The model is ``"IC-7610"`` for its dual-RX profile
+    (``receiver_count=2``, ``vfo_scheme="main_sub"``): ``_cmd_chk_vfo``
+    answers ``"1"`` — the ``vfo_opt`` handshake every golden trace here was
+    recorded under — only for a profile whose ``receiver_count >= 2``.
 
-    Uses ``PttAnsweringSerialMockRadio`` (not the bare ``SerialMockRadio``)
-    and keeps one extra connection open for the fixture's lifetime so
-    ``RigctldServer._run_ptt_reread`` (MOR-1903) actually sends and the
-    DEFER write gate can leave UNKNOWN before ``_replay`` opens its own
-    connection and starts sending golden-script lines — see
-    ``_ptt_reread_fixtures.py``. Golden files are untouched; only the
-    fixture's startup sequencing changes.
+    The class is ``PttAnsweringSerialMockRadio``, not the bare
+    ``SerialMockRadio``, and one extra connection stays open for the
+    fixture's lifetime so ``RigctldServer._run_ptt_reread`` (MOR-1903)
+    actually sends and the DEFER write gate can leave UNKNOWN before
+    ``_replay`` opens its own connection and starts sending golden-script
+    lines — see ``_ptt_reread_fixtures.py``. Golden files are untouched;
+    only the fixture's startup sequencing changes.
     """
     radio = PttAnsweringSerialMockRadio(model="IC-7610")
     await radio.connect()
@@ -193,8 +192,8 @@ async def _replay(server: RigctldServer, steps: list[_Step]) -> None:
     """Drive one golden script against a live rigctld server.
 
     Raises AssertionError on the first divergence with file-line
-    context. After Variant A 5/5 lands, all assertions hold; until
-    then the wrapping @pytest.mark.xfail catches the failure.
+    context. Since Variant A 5/5 (#1346) removed the xfail markers, that
+    AssertionError is the caller's failure — nothing catches it.
     """
     host, port = _addr(server)
     reader, writer = await asyncio.open_connection(host, port)
