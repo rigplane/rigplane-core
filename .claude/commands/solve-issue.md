@@ -29,6 +29,7 @@ belong to the coordinator, not to a subagent.
 - Enter Plan Mode first — do NOT start coding
 - Design the minimal fix from the research findings
 - **STOP if the plan crosses the hard ceiling** in CLAUDE.md §Guardrails, or needs an architecture change
+- Record the pre-change baseline: run the standard suite from CLAUDE.md §Commands and keep the pass/fail counts in the run's working notes, so Phase 4 REGCHECK has something to compare against
 
 ### Phase 3: EXECUTE
 Dispatch the `builder` role (`.claude/agents/builder.md`) with the plan as its spec.

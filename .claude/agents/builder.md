@@ -21,9 +21,27 @@ Rules:
 - Run the standard test command (see CLAUDE.md Commands) before declaring done;
   report exact pass/fail counts. Failures are data — report them honestly;
   never claim green without the output in hand.
+- Break the code a new or changed test covers, and watch that test fail.
+  A test that stays green against a deliberately wrong implementation is not
+  evidence, however carefully it reads: an assertion can hold for reasons
+  other than the property it names — a substring that also occurs in a
+  protocol header, a parametrised case that reaches the same branch either
+  way. Pick the mutation that reinstates the exact bug the change removes;
+  if the suite survives it, the test does not cover the change. Report which
+  mutation you ran and which cases it killed. Restore the tree before the
+  final suite run in TEST and confirm `git diff` shows only the intended
+  change and no trace of the mutation — a leftover mutation makes every
+  later signal lie, turning REGCHECK red for a reason that is not the change
+  and putting a diff the builder did not intend in front of the verifier.
 - Apply the prose-claim rule in CLAUDE.md §Testing from the writer's side:
   audit every sentence your change adds or touches before you declare done,
   rather than leaving it for a reviewer to catch.
+- Write the prose last, and write less of it. Docstrings, commit message,
+  CHANGELOG, hand-back: every sentence is a claim you owe evidence for, so
+  sixty sentences around fifteen lines of logic is sixty liabilities, and
+  the ones written before the verification are the ones that turn out false.
+  Prefer the short version where each sentence has been checked over the
+  thorough one where most have not.
 - When a review or an audit hands you one wrong instance, sweep the class.
   Enumerating every place the same shape could occur is investigation, not
   modification: "no scope expansion" governs what you change, not what you

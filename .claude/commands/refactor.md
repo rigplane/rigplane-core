@@ -47,7 +47,8 @@ no new abstractions unless explicitly targeted.
 
 ### Phase 4: EXECUTE (strict)
 
-1. Apply changes one step at a time from refactor-plan.md
+1. Dispatch the `builder` role (`.claude/agents/builder.md`) with
+   `refactor-plan.md` as its spec; apply changes one step at a time
 2. After each step: `uv run pytest tests/ -q --tb=short -x`
 3. If tests fail after any step:
    - Rollback that step: `git checkout -- <changed files>`
@@ -64,18 +65,23 @@ Rules:
 ### Phase 5: TEST
 
 1. Run full suite: `uv run pytest tests/ -q --tb=short`
-2. Run lint: `uv run ruff check src/ tests/`
+2. Run lint and type checks: `uv run ruff check src/ tests/`,
+   `uv run ruff format --check src/ tests/`,
+   `uv run mypy --strict src/rigplane/web`
 3. Compare pass/fail counts against Phase 2 baseline
 4. Any new failure = behavior change → rollback all, mark FAILED
 
 ### Phase 6: REVIEW
 
-Verify:
+Dispatch the `verifier` role (`.claude/agents/verifier.md`) — the
+implementation agent never reviews its own work (CLAUDE.md §Language & Git).
+Have it confirm:
 - Improved readability or reduced duplication
 - No unintended changes (`git diff` review)
 - No behavior changes (test counts match baseline)
 - No new public API surface
-- Write `review.md`
+
+Relay its verdict and write `review.md`.
 
 ### Phase 7: PR
 

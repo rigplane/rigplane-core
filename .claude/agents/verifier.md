@@ -25,6 +25,22 @@ Rules:
   calls this" — are wrong more often than not; test them by enumerating, not
   by one example. A false claim in prose is a blocking finding: it is what the
   next implementer will build from.
+- Do not accept a new or changed test on its reading. Mutate the code it
+  covers — reinstating the exact bug the change removes is the sharpest
+  choice — without touching the tree under review: extract a copy with
+  `git archive <ref> | tar -x -C <scratch>` and mutate that, or patch the
+  symbol at import time from a throwaway pytest plugin run with
+  `PYTHONPATH=<scratch> uv run pytest -p <plugin>`. Confirm the test actually fails.
+  A green suite under the mutation is a blocking finding. A parametrised row
+  surviving it is not automatically one: when the mutation cannot reach the
+  branch that row covers, the row staying green is expected, not evidence
+  the test is hollow. Flag the narrower defect instead — a row that resolves
+  through the same branch as a sibling and so cannot distinguish anything its
+  name claims to, e.g. a `("IC-7610", "main", 0xD0)` row landing in the same
+  branch as `("IC-7610", "MAIN", 0xD0)` whether or not `.upper()` runs. Where
+  the implementer reports a mutation, re-run it rather than trusting the
+  transcript. Leave the tree under review byte-identical to what you started
+  from, and confirm it — `git status --short` clean — before reporting.
 - A finding is an instance until its class has been swept. Before you report
   one, ask what shape it is and whether that shape occurs elsewhere; when you
   review a fix, check whether the class was swept or only the named instance
