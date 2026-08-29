@@ -510,6 +510,14 @@ class RigctldServer:
 
         Not via ``_send_one_state_query``: that carries bounded on-demand
         requests on the user-command lane, the wrong lane for a cadence.
+
+        Two independent triggers can reach this method: the scheduled tick
+        in ``_run_ptt_reread`` and the connect-triggered immediate re-read in
+        ``_accept_client``. They are not serialized against each other, so
+        both can put a ``0x1C/0x00`` request on the wire close together.
+        That is harmless: the read carries no side effect and the reply is
+        idempotent, so a duplicate in-flight request changes nothing the
+        gate or the StateStore observes.
         """
         radio = self._radio
         # Parity with the lazy poller start: an idle server stays off the wire.
@@ -527,6 +535,20 @@ class RigctldServer:
             priority=Priority.BACKGROUND,
             wait_dispatch=False,
         )
+
+    async def _send_ptt_reread_once_on_connect(self) -> None:
+        """Spawn target for the connect-triggered re-read in ``_accept_client``.
+
+        Same exception discipline as the scheduled-tick caller,
+        ``_run_ptt_reread``: a dead or mid-teardown transport must not
+        surface as an unretrieved task exception on
+        ``RigctldServer._spawn``'s done-callback, which only discards the
+        task and never retrieves its result.
+        """
+        try:
+            await self._send_ptt_reread_once()
+        except Exception as exc:
+            logger.debug("rigctld PTT re-read failed: %s", exc, exc_info=True)
 
     def _start_state_acquisition_drain_task(self) -> None:
         if (
@@ -1008,6 +1030,18 @@ class RigctldServer:
         # Start poller when the first client connects.
         if self._poller is not None and self._client_count == 1:
             self._spawn(self._poller.start())
+
+        # The re-read cadence otherwise ticks on its own clock from server
+        # start: a client connecting just before the next scheduled tick
+        # could find RF truth UNKNOWN and have its first DEFER-family write
+        # refused (RPRT -9). Firing one read on the zero-to-one transition
+        # closes that window instead of waiting out up to a full
+        # PTT_REREAD_INTERVAL_SECONDS; the scheduled cadence continues
+        # unchanged afterward. This can race a tick already in flight and
+        # put two 0x1C/0x00 requests on the wire close together -- harmless,
+        # since the read is idempotent and carries no side effect.
+        if self._client_count == 1 and self._ptt_reread_task is not None:
+            self._spawn(self._send_ptt_reread_once_on_connect())
 
         # Optional WSJT-X compatibility pre-warm for first client:
         # if radio is in USB/LSB/RTTY with DATA off, enable DATA mode upfront

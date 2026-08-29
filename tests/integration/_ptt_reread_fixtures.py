@@ -39,13 +39,15 @@ Neither helper touches ``_defer_write_gate``, the TX-interlock family
 classification, or any production module; both only make a test double
 capable of answering a read the gate already requires.
 
-Answering the read is not instantaneous, though: ``_run_ptt_reread`` only
-sends its first ``0x1C/0x00`` after one ``PTT_REREAD_INTERVAL_SECONDS`` sleep,
-and only once a client is connected. A real hamlib client that issues a
-DEFER-classified write inside that startup window sees exactly the same
+Answering the read is not instantaneous, though: ``RigctldServer._accept_client``
+fires one ``0x1C/0x00`` immediately on the zero-to-one client transition
+(closing the tick-vs-connect race), but that first send still needs a round
+trip before the reply lands, and ``_run_ptt_reread``'s own scheduled cadence
+only runs once a client is connected at all. A real hamlib client that issues
+a DEFER-classified write inside that round trip sees exactly the same
 ``RPRT -9`` an unpatched fixture does; that is the resolver working as
 designed, not a bug to route around. ``wait_for_known_rf_state`` below waits
-that same window out — the way a well-behaved client would — instead of
+that round trip out — the way a well-behaved client would — instead of
 racing it.
 """
 

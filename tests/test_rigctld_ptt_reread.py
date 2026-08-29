@@ -13,6 +13,7 @@ ingress, from a real radio reply (MOR-1900).
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 from collections.abc import Generator
 from typing import Any
@@ -279,6 +280,114 @@ async def test_started_server_drives_reads_only_while_a_client_is_connected(
     finally:
         await server.stop()
     assert server._ptt_reread_task is None and task.done()  # noqa: SLF001
+
+
+async def test_client_connecting_at_server_start_gets_known_state_before_first_write(
+    civ_radio: IcomRadio,
+) -> None:
+    """Connect-triggered immediate re-read closes the tick-vs-connect race.
+
+    Regression test for the production defect measured on the bench IC-7300:
+    ``_run_ptt_reread`` ticks on its own clock from *server* start, not from
+    when a client connects. Connecting into the cold phase of that cadence
+    -- worst case, right after start, a full ``PTT_REREAD_INTERVAL_SECONDS``
+    from the next scheduled tick -- left RF truth UNKNOWN for that whole
+    window pre-fix, so a client that writes soon after connecting (as
+    WSJT-X's "Test CAT" does) got its first DEFER-classified write refused
+    with ``RPRT -9``. Six connect-and-immediately-write runs on real
+    hardware hit this in 2/6: first refusal ~0.06s after connect, first
+    success only at ~0.26-0.277s -- essentially one whole tick later.
+
+    This test connects immediately after ``server.start()`` (the same
+    worst-case phase) and writes 0.01s later -- 25x tighter than one
+    ``PTT_REREAD_INTERVAL_SECONDS``, comparable to a well-behaved client's
+    own small overhead. Before the fix, this reproduces the RPRT -9 every
+    time (nothing has been sent to the radio yet at that point); after it,
+    the connect-triggered immediate re-read in
+    ``RigctldServer._accept_client`` has already resolved RF truth.
+    """
+    send_civ = AsyncMock(return_value=None)
+
+    async def answering_send_civ(cmd: int, **kwargs: Any) -> None:
+        await send_civ(cmd, **kwargs)
+        if cmd == 0x1C and kwargs.get("sub") == 0x00:
+            await _deliver(civ_radio, _ptt_reply(civ_radio, transmitting=False))
+
+    civ_radio.send_civ = answering_send_civ  # type: ignore[method-assign]
+    server = RigctldServer(civ_radio, RigctldConfig(host="127.0.0.1", port=0))
+    await server.start()
+    try:
+        assert server._server is not None  # noqa: SLF001
+        port = server._server.sockets[0].getsockname()[1]  # noqa: SLF001
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            await asyncio.sleep(0.01)
+            # ``M`` (mode), not ``F``: MOR-1940 reclassified FREQUENCY as
+            # TX-SAFE, so it would already succeed before any answer and
+            # could not demonstrate this race.
+            writer.write(b"M USB 2400\n")
+            await writer.drain()
+            response = await asyncio.wait_for(
+                reader.readline(), timeout=PTT_REREAD_INTERVAL_SECONDS * 0.5
+            )
+            assert response == b"RPRT 0\n", (
+                "first write after connect was refused -- the connect-"
+                f"triggered immediate re-read did not resolve RF truth in "
+                f"time (got {response!r})"
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        await server.stop()
+
+
+async def test_connect_triggered_reread_does_not_leak_loop_exception(
+    civ_radio: IcomRadio,
+) -> None:
+    """A dropped CI-V link at connect must not surface as a loop-level error.
+
+    ``RigctldServer._spawn``'s done-callback only discards the task from
+    ``_bg_tasks``; it never retrieves the task's result. Before this test,
+    a ``ConnectionError`` from ``send_civ`` on the connect-triggered
+    re-read (``_send_ptt_reread_once`` spawned directly, with no exception
+    handling of its own) escaped as an asyncio "Task exception was never
+    retrieved" error, once per connect on a dead link -- plausible whenever
+    a client connects while the CI-V link is down. This pins that the
+    connect path now carries the same swallow-and-log discipline as the
+    scheduled-tick caller, ``_run_ptt_reread``.
+    """
+    civ_radio.send_civ = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionError("Not connected to radio")
+    )
+    server = RigctldServer(civ_radio, RigctldConfig(host="127.0.0.1", port=0))
+
+    loop = asyncio.get_running_loop()
+    loop_exceptions: list[dict[str, Any]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: loop_exceptions.append(context))
+    try:
+        await server.start()
+        try:
+            assert server._server is not None  # noqa: SLF001
+            port = server._server.sockets[0].getsockname()[1]  # noqa: SLF001
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            try:
+                # Let the connect-triggered task run to completion and be
+                # garbage-collected -- that is when an unretrieved task
+                # exception is reported to the loop's exception handler.
+                await asyncio.sleep(0.05)
+                gc.collect()
+                await asyncio.sleep(0)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await server.stop()
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert loop_exceptions == [], loop_exceptions
 
 
 def test_yaesu_radio_gets_no_civ_reread_task() -> None:
