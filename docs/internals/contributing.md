@@ -31,11 +31,11 @@ CI runs this automatically; you only need it locally if you're running web-serve
 ## Running Tests
 
 ```bash
-# All unit tests (skip integration tests requiring hardware)
-uv run pytest tests/ -q --tb=short --ignore=tests/integration
+# Full suite (hardware-gated integration tests skip automatically without hardware env vars)
+uv run pytest tests/ -q --tb=short
 
 # With verbose output
-uv run pytest tests/ -v --ignore=tests/integration
+uv run pytest tests/ -v
 
 # Specific test file
 uv run pytest tests/test_commands.py -q --tb=short
@@ -181,6 +181,6 @@ Always include the issue number in the scope (e.g., `#123`) for feature, fix, an
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feat/my-feature`
 3. Make your changes with tests
-4. Ensure all tests pass: `uv run pytest tests/ -q --tb=short --ignore=tests/integration`
+4. Ensure all tests pass: `uv run pytest tests/ -q --tb=short`
 5. Commit with conventional commit message (include issue scope: `feat(#N):`)
 6. Open a PR against `main`

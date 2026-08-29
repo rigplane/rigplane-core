@@ -5,10 +5,10 @@ X6200 (serial CI-V + USB RX audio) and asserts that at least one FFT
 :class:`ScopeFrame` reaches the audio-scope channel within a few seconds.
 
 OFF BY DEFAULT. This test is double-gated and is skipped in a normal
-``uv run pytest tests/`` run:
+``uv run pytest tests/`` run (CLAUDE.md's standard command collects
+``tests/integration/`` too, but the markers below keep this one from
+executing):
 
-* it lives in ``tests/integration/`` (CLAUDE.md runs with
-  ``--ignore=tests/integration``);
 * it carries the ``serial_integration`` marker, so the integration conftest
   skips it unless ``ICOM_SERIAL_DEVICE`` is configured;
 * it additionally requires ``RIGPLANE_HW_SMOKE=1`` (mirroring the

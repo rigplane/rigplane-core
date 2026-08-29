@@ -43,7 +43,7 @@ Run commands from the repository root unless `cwd` says `frontend/`.
 Recommended optional breadth before release:
 
 ```bash
-uv run pytest tests/ -q --tb=short --ignore=tests/integration
+uv run pytest tests/ -q --tb=short
 uv run ruff format --check src tests
 uv run mypy src
 ```

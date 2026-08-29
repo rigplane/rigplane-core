@@ -79,7 +79,7 @@ cd ..
 
 ```bash
 # 2h. Python tests
-uv run pytest tests/ --ignore=tests/integration -n auto --tb=short --timeout=300 --timeout-method=thread
+uv run pytest tests/ -n auto --tb=short --timeout=300 --timeout-method=thread
 ```
 
 ```bash

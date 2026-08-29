@@ -9,7 +9,7 @@ Detect test regressions after code changes.
 
 ## Steps
 
-1. Run full test suite: `uv run pytest tests/ -q --tb=short --ignore=tests/integration 2>&1`
+1. Run full test suite: `uv run pytest tests/ -q --tb=short 2>&1`
 2. Capture: total passed, failed, errors, warnings, runtime
 3. Read `.claude/workflow/regression.md` for previous baseline (if exists)
 4. Compare against baseline:
