@@ -8,7 +8,7 @@ Live bench: **IC-7300, FTX-1**. *(IC-7610 retired 2026-08-04; X6200 destroyed by
 ## Commands (always `uv run`)
 
 ```bash
-uv run pytest tests/ --ignore=tests/integration -n auto -q --tb=short --timeout=300 --timeout-method=thread  # standard suite (CI parity, ~2 min)
+uv run pytest tests/ -n auto -q --tb=short --timeout=300 --timeout-method=thread  # standard suite (CI parity, ~1 min)
 uv run pytest tests/ -q --tb=short                    # serial, incl. integration hooks (profiling/hardware only)
 uv run mypy --strict src/rigplane/web                  # type check (CI gate; see note below)
 uv run ruff check src/ tests/ && uv run ruff format src/ tests/  # lint+format
@@ -34,7 +34,7 @@ Three workflows, tiered by cost:
 
 | Workflow | Trigger | Scope |
 |---|---|---|
-| `quick.yml` | push/PR to `main` only when `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, or `.github/workflows/**` change | Python 3.11 only · ruff · import-linter · pytest (no integration) · frontend block runs **only** if `frontend/**` or `src/rigplane/web/**` changed · badges |
+| `quick.yml` | push/PR to `main` only when `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, or `.github/workflows/**` change | Python 3.11 only · ruff · import-linter · pytest (incl. `tests/integration`, hardware-gated tests skip automatically) · frontend block runs **only** if `frontend/**` or `src/rigplane/web/**` changed · badges |
 | `full.yml` | cron Mon/Wed/Fri 03:00 UTC + `workflow_dispatch` + push with `[full-ci]` in commit message | Full matrix 3.11/3.12/3.13, everything |
 | `publish.yml` | `release: published` | New `validate` job (full matrix) → `build` → `publish`. No publish if validate fails. |
 
@@ -172,7 +172,7 @@ cancelled checks — and release branches (named `release/<major.minor>`) are in
 ## Completion criteria
 
 Work is complete ONLY when ALL pass:
-1. `uv run pytest tests/ --ignore=tests/integration -n auto -q --tb=short --timeout=300 --timeout-method=thread` — zero failures
+1. `uv run pytest tests/ -n auto -q --tb=short --timeout=300 --timeout-method=thread` — zero failures
 2. `uv run ruff check src/ tests/` — zero violations
 3. `git diff` — no unintended changes
 

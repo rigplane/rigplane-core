@@ -43,7 +43,6 @@ Run commands from the repository root unless `cwd` says `frontend/`.
 Recommended optional breadth before release:
 
 ```bash
-uv run pytest tests/ -q --tb=short --ignore=tests/integration
 uv run ruff format --check src tests
 uv run mypy src
 ```
@@ -158,7 +157,7 @@ Expected outcome: no listener.
 | Encoder-style controls | `tests/test_civ_rx_coverage.py`, `tests/test_radio_poller_coverage.py`, live v2 Playwright | AF/RF gain, PBT, NR/NB, filter/scope controls keep receiver scoping and command correlation. |
 | HTTP/WS consistency | `tests/test_web_server_coverage.py`, `tests/test_delta_encoder.py`, frontend `npx vitest run`, live v2 Playwright | HTTP snapshots and initial WS full state use the same canonical state/freshness revisions; `transportSeq` is ordering metadata only. |
 | Web field availability metadata | `tests/test_web_server_coverage.py` | Legacy `/api/v1/state` fields remain for compatibility, but `fieldStatus` marks each Store-backed public field as observed/fresh, observed/stale, or missing so empty or partial Stores do not present `RadioState` defaults as confirmed state. |
-| rigctld consumer behavior | `tests/test_rigctld_handler.py`, `tests/test_rigctld_server.py`, `tests/integration/test_rigctld_wsjtx.py` when integration is opted in | GET projects from shared state when fresh; stale GET requests acquisition or falls through safely; SET uses scoped pending overlays and preserves Hamlib-style text behavior. |
+| rigctld consumer behavior | `tests/test_rigctld_handler.py`, `tests/test_rigctld_server.py`, `tests/integration/test_rigctld_wsjtx.py` (mock-radio; runs with the standard suite) | GET projects from shared state when fresh; stale GET requests acquisition or falls through safely; SET uses scoped pending overlays and preserves Hamlib-style text behavior. |
 | Command ingress/read-after-write | `tests/test_web_server_coverage.py`, `tests/test_radio_poller_coverage.py`, `tests/test_rigctld_handler.py`, live v2 Playwright | HTTP, WS, and rigctld command IDs are scoped; lifecycle failure/timeout expires overlays; matching observations confirm state. |
 | Reconnect/resync | `tests/test_web_server_coverage.py`, `tests/test_civ_rx_coverage.py`, live v2 Playwright | Web full-state reconnect preserves canonical revisions; CI-V watchdog/backlog recovery does not publish stale scope backlog as control truth. |
 | Cleanup guards | `tests/test_state_pipeline_contracts.py`, `tests/test_civ_rx_coverage.py`, `tests/test_lifecycle_diagnostics.py` | Web poller public revision API is not reintroduced; CIV waiters/watchdog/server lifecycle cleanup paths do not leak tasks or stale waiters. |

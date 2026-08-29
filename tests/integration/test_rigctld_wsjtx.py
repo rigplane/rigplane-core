@@ -20,9 +20,11 @@ What we assert
     * JS8Call heartbeat GETs returning the current state.
     * Backwards-compatible fallback for unknown VFO names.
 
-Tests are marked ``integration`` + ``mock_integration`` so they skip in
-default CI runs but execute via the integration marker and do not require
-real hardware.
+Tests are marked ``integration`` + ``mock_integration``. The
+``mock_integration`` marker is what keeps them off hardware —
+``conftest.py``'s ``pytest_collection_modifyitems`` skips over them
+without ever adding a skip marker — so they run in the standard suite and
+in all three CI workflows, with no real hardware required.
 """
 
 from __future__ import annotations
