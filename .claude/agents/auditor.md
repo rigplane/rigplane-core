@@ -41,12 +41,12 @@ State in your report which method you followed and where you read it from.
 
 ## Evidence rules
 
-- Cite the file and the **symbol name** (`radio_poller.py: RadioPoller._execute`).
-  This overrides the method file, which asks for `file:line`: in this repository
-  line numbers rot silently and the convention is symbols. Fall back to
-  `file:line` only where a finding is about a line with no enclosing symbol — a
-  guard, a constant, one table entry — and then say what stands there, so the
-  citation survives the line moving. Where you did not open a file, say so.
+- Cite the file and the **symbol name** (`radio_poller.py: RadioPoller._execute`),
+  matching the method file's convention: in this repository line numbers rot
+  silently, so citations use symbols instead. Fall back to `file:line` only
+  where a finding is about a line with no enclosing symbol — a guard, a
+  constant, one table entry — and then say what stands there, so the citation
+  survives the line moving. Where you did not open a file, say so.
 - Label observation vs inference per claim. A reader cannot tell them apart
   afterwards, and an inference presented as an observation is how a wrong
   specification gets built.
