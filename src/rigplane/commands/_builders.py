@@ -124,17 +124,22 @@ def _build_ctl_mem_set(
     cmd_map: CommandMap | None = None,
     cmd_name: str | None = None,
 ) -> bytes:
-    data = prefix + bcd_encode_value(value, byte_count=byte_count)
+    encoded = bcd_encode_value(value, byte_count=byte_count)
     if cmd_map is not None and cmd_name is not None:
+        # When using cmd_map, wire bytes already include the full command
+        # structure including any data prefix, so pass only the encoded value
+        # -- the same rule ``_build_ctl_mem_get`` above applies by passing
+        # ``data=None``. Passing ``prefix`` here too sends the sub-address
+        # twice.
         return _build_from_map(
-            cmd_map, cmd_name, to_addr=to_addr, from_addr=from_addr, data=data
+            cmd_map, cmd_name, to_addr=to_addr, from_addr=from_addr, data=encoded
         )
     return build_civ_frame(
         to_addr,
         from_addr,
         _CMD_CTL_MEM,
         sub=_SUB_CTL_MEM,
-        data=data,
+        data=prefix + encoded,
     )
 
 

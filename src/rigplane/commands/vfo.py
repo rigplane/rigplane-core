@@ -361,7 +361,7 @@ def quick_dual_watch(
             "quick_dual_watch",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=_CTL_MEM_QUICK_DUAL_WATCH,
+            data=None,
         )
     return build_civ_frame(
         to_addr,
@@ -384,7 +384,7 @@ def quick_split(
             "quick_split",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=_CTL_MEM_QUICK_SPLIT,
+            data=None,
         )
     return build_civ_frame(
         to_addr, from_addr, _CMD_CTL_MEM, sub=_SUB_CTL_MEM, data=_CTL_MEM_QUICK_SPLIT
@@ -404,7 +404,7 @@ def get_quick_split(
             "get_quick_split",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=_CTL_MEM_QUICK_SPLIT,
+            data=None,
         )
     return build_civ_frame(
         to_addr, from_addr, _CMD_CTL_MEM, sub=_SUB_CTL_MEM, data=_CTL_MEM_QUICK_SPLIT
@@ -421,7 +421,7 @@ def set_quick_split(
             "set_quick_split",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=_CTL_MEM_QUICK_SPLIT,
+            data=None,
         )
     return build_civ_frame(
         to_addr, from_addr, _CMD_CTL_MEM, sub=_SUB_CTL_MEM, data=_CTL_MEM_QUICK_SPLIT
@@ -438,7 +438,7 @@ def get_quick_dual_watch(
             "get_quick_dual_watch",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=_CTL_MEM_QUICK_DUAL_WATCH,
+            data=None,
         )
     return build_civ_frame(
         to_addr,
@@ -459,7 +459,7 @@ def set_quick_dual_watch(
             "set_quick_dual_watch",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=_CTL_MEM_QUICK_DUAL_WATCH,
+            data=None,
         )
     return build_civ_frame(
         to_addr,
