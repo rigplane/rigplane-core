@@ -73,7 +73,7 @@ Write to `.claude/workflow/audit-findings.md`:
 ### Finding F1: <title>
 - **Type:** UI | logic | integration | quality
 - **Severity:** low | medium | high
-- **File:** path:line
+- **File:** path plus symbol name (`AmberFrequency.svelte: formatFreq`); for markup or styling, the component plus the element or selector it concerns
 - **Description:** what's wrong
 - **Reproduction:** how to trigger
 - **Confidence:** high | medium
@@ -115,7 +115,8 @@ gh issue create --title "[LCD] <short description>" --body "$(cat <<'EOF'
 
 ## Location
 
-<file:line references>
+<file plus symbol name (`control.py: ControlHandler._send_hello`); for markup or
+styling, the component plus the element or selector it concerns>
 
 ## Suspected cause
 
@@ -149,5 +150,13 @@ Label mapping:
 - Do NOT fix any issues found
 - Do NOT create issues for things that are clearly intentional design choices
 - Do NOT create duplicate issues — check existing issues first
-- Every issue must reference specific file:line locations
+- Every issue must cite specific locations, as the file and the **symbol name**
+  (`control.py: ControlHandler._send_hello`), matching this repository's
+  convention: line numbers rot silently, so citations use symbols instead.
+  Frontend findings often concern markup or styling with no enclosing symbol —
+  there the unit is the component plus the element, class or selector
+  (`AmberFrequency.svelte: .freq-ghost`), which is what a reader searches for
+  anyway. Fall back to `file:line` only where a finding is about a line with
+  neither — a guard, a constant, one table entry — and then say what stands
+  there, so the citation survives the line moving.
 - Every issue must be actionable (clear what needs to change)
