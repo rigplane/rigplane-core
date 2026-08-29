@@ -600,11 +600,25 @@ All at `a2de2ab0`, in a clean worktree, so that a reader can re-derive them.
 - Absence of an IC-9700 reference (plan §5, class B): listing
   `docs/validation/cat-audits/`, which holds `ftx1.md`, `ic7300.md`,
   `ic7610.md`, `tx500.md`, `x6200.md`, `x6200-unofficial.md` and `README.md`.
-- Builder map keys (plan §3.1): AST walk of `src/rigplane/commands/`, collecting the
-  string literal each public `cmd_map`-taking builder passes as
+- Builder map keys (plan §3.1): AST walk of `src/rigplane/commands/`, collecting
+  the string literal each public `cmd_map`-taking builder passes as
   `_build_from_map`'s second positional argument or as a `cmd_name=` keyword,
-  and comparing it to the function's own name — 195 equal, 34 different, 0 with
-  more than one key, 2 delegating without a literal.
+  and comparing it to the function's own name — **195 equal, 34 different, 2
+  delegating to a shared template without a literal of their own, and 1
+  (`commands/speech.py: get_speech`) with no literal because it selects between
+  two keys at runtime by probing the map. 195 + 34 + 2 + 1 = 232, which is the
+  same 232 the parity fixture reports as `census public_builders`.** An earlier
+  version of this line reported only the first three buckets and summed to 231;
+  the fourth case existed in the code and was dropped by a `continue` in the
+  measuring script, not missing from the tree. Corrected after the discrepancy
+  was caught by the arithmetic not closing — which is the argument for stating
+  breakdowns precisely enough to add up. `census public_builders 232` in
+  `tests/command_map_parity_uncovered.txt` is **not** affected and needs no
+  change: it counts defining functions whose signature contains `cmd_map`
+  (`tests/test_command_map_parity.py: _builders`, keyed by `value.__name__` so
+  the `speech = get_speech` module-level alias collapses onto its function), and
+  this AST census counts `FunctionDef` nodes with a `cmd_map` argument. The two
+  methods are independent and agree at 232.
 - Reverse-index collisions (plan §8.2, Q3): loading each profile, inverting
   `RigConfig.to_command_map` into `wire tuple -> [names]` and separately into
   `(command, sub) -> {names}`, and counting keys with more than one name.
