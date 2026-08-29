@@ -267,17 +267,39 @@ both the request template and the parser. The CI-V side can match that, because
 the map key is already a literal inside each builder's `_build_from_map` call —
 it does not need to be repeated, only exposed.
 
-*Measured, because "just use the function name" would have been wrong:* of the
-231 public builders taking `cmd_map` that contain a literal key, **195 use a key
-equal to their own function name and 34 do not** (2 more delegate to a shared
-template without a literal). `commands/system.py: get_system_date` and
-`set_system_date` both resolve `system_date`; all thirteen
-`commands/scope.py: scope_set_*` setters resolve the corresponding `get_scope_*`
-key; `commands/vfo.py: set_dual_watch_on` and `set_dual_watch_off` both resolve
-`set_dual_watch`. So the key must be **exposed by each builder**, never derived
-from its name — and a test that asserts every builder exposes exactly the key it
-passes to `_build_from_map` is what keeps the two from drifting. Those 34 are
-also the direct reason the two gap censuses in evidence §C2 differ.
+*Measured, because "just use the function name" would have been wrong.* All 232
+public builders that take `cmd_map` fall into four cases, and the four sum to
+232:
+
+| Case | Count | Example |
+|---|---|---|
+| One literal key, equal to the function's own name | **195** | `commands/levels.py: get_rf_power` |
+| One literal key, different from the function's name | **34** | `commands/system.py: get_system_date` and `set_system_date` both resolve `system_date`; all thirteen `commands/scope.py: scope_set_*` setters resolve the matching `get_scope_*`; `commands/vfo.py: set_dual_watch_on` and `set_dual_watch_off` both resolve `set_dual_watch` |
+| No literal key — delegates to a shared template that supplies one | **2** | `commands/dsp.py: set_attenuator`, `commands/vfo.py: set_dual_watch` |
+| **No literal key — chooses between two keys at runtime, by asking the map** | **1** | `commands/speech.py: get_speech` |
+
+So the key must be **exposed by each builder**, never derived from its name, and
+a test that asserts every builder exposes exactly the key it passes to
+`_build_from_map` is what keeps the two from drifting. Those 34 are also the
+direct reason the two gap censuses in evidence §C2 differ.
+
+**The fourth case is one builder, and it constrains the shape of `expect`.**
+`commands/speech.py: get_speech` does not hold a key at all; it holds a choice —
+`speech_key = "set_speech" if cmd_map.has("set_speech") else "get_speech"` —
+so its key is a function of the map, not a property of the builder. Two existing
+tests pin that behaviour: `tests/test_commands.py:
+test_speech_cmd_map_prefers_set_speech_key` and `tests/test_rig_ic7300.py:
+test_get_speech_cmd_map_uses_set_speech`. The consequence for the design is
+concrete: what a builder exposes cannot be a plain string attribute, because for
+this one it must be evaluated against the map. Either the exposed key is
+`Callable[[CommandMap], str]` for every builder — uniform, and every builder but
+this one ignores its argument — or `get_speech` is split into `get_speech` and
+`set_speech`
+and the probe moves to its caller, which would make the exposed key a plain
+string everywhere and delete the fourth case. **Whichever is chosen, it is
+decided in Step 3 when `BoundCommands` is written, not discovered in Steps 5..N**
+— and the two speech tests above are what goes red if the choice breaks the
+existing behaviour.
 
 **Can a new call site silently bypass it?** No — but the guarantee comes from
 deleting the fallback, not from this object. With `cmd_map` required and no
@@ -406,10 +428,19 @@ bytes on the wire. IC-7300 can confirm the scope one. X6100 is not on the bench
   wire-tuple decoder extracted from `commands/_frame.py: _build_from_map` so
   both halves share it.
 - `runtime/radio.py: CoreRadio.__init__` — construct it.
+- **Settle how a builder exposes its map key**, including the one builder whose
+  key is a function of the map rather than a constant
+  (`commands/speech.py: get_speech`, the fourth case in §3.1). Either every
+  builder exposes `Callable[[CommandMap], str]`, or `get_speech` is split and
+  every builder exposes a plain string. Deciding it here is the point: doing it
+  in Steps 5..N means discovering it module by module.
 
 **Red if broken:** `tests/test_profile_command_binding.py` (new) — for every
 CI-V profile in `rigs/`, the radio's bound command set is non-empty and its
-names equal those of `RigConfig.to_command_map()` for that profile.
+names equal those of `RigConfig.to_command_map()` for that profile. Plus the two
+existing speech pins, which fail if the key-exposure choice changes behaviour:
+`tests/test_commands.py: test_speech_cmd_map_prefers_set_speech_key` and
+`tests/test_rig_ic7300.py: test_get_speech_cmd_map_uses_set_speech`.
 
 **Rollback:** revert; nothing reads the binder yet.
 
