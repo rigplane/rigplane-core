@@ -1,19 +1,20 @@
 # Integration Tests
 
-Most of this directory runs with **no hardware attached**, on every PR.
+Most of this directory runs with **no hardware attached**, on every PR that
+runs the test suite.
 
 The name is historical: it once held only tests that talked to a real Icom
 transceiver. It now holds two populations, distinguished by marker:
 
 | Population | Marker | Needs hardware? |
 |---|---|---|
-| Mock integration | `mock_integration` | No — runs everywhere, including CI |
+| Mock integration | `mock_integration` | No — runs whenever the suite runs (see **CI** below) |
 | Hardware integration | `integration` without `mock_integration` | Yes — skips unless configured |
 
 The hardware population is skipped, not failed, when its environment is not
 configured. The skip is applied in `conftest.py:
-pytest_collection_modifyitems`, which is the authority for what gets gated
-and why.
+pytest_collection_modifyitems`, which is the authority for the
+hardware-configuration skip.
 
 To see the current split on your checkout:
 
@@ -50,12 +51,17 @@ Path-based exclusion (`--ignore=tests/integration`) also works, but see
 
 ## Markers
 
-`integration`, `serial_integration`, `ic7610_parity` and `mock_integration`
-are registered in `conftest.py: pytest_configure`, local to this directory —
-not in the `[tool.pytest.ini_options]` `markers` list in `pyproject.toml`,
-which registers a different set (`integration`, `hardware`, `e2e`, `slow`,
-`validation_hardware`). A run that never collects this directory's
-`conftest.py` therefore does not know the three local markers.
+`serial_integration`, `ic7610_parity` and `mock_integration` are registered
+in `conftest.py: pytest_configure`, local to this directory. `integration`
+is registered there too, but it is *not* local — it is also registered in
+the `[tool.pytest.ini_options]` `markers` list in `pyproject.toml`, with the
+same description string in both places. `pyproject.toml` additionally
+registers `hardware`, `e2e`, `slow` and `validation_hardware`, which this
+directory does not use.
+
+A run that never collects this directory's `conftest.py` therefore does not
+know the three local markers (`serial_integration`, `ic7610_parity`,
+`mock_integration`) — `integration` stays registered regardless.
 
 ## Hardware configuration
 
