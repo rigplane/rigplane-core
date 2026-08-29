@@ -210,6 +210,44 @@ Slash commands for scoped workflows live in `.claude/commands/` (`audit-ui`,
 `scan-issues`, `solve-issue`) plus the `release` skill in `.claude/skills/`;
 each file is self-documenting.
 
+### The pipeline
+
+Every non-trivial change runs seven phases, in this order:
+
+**EXPLORE → PLAN → EXECUTE → REGCHECK → REVIEW → TEST → PR**
+
+`.claude/commands/solve-issue.md` and `.claude/commands/refactor.md` are this
+rule's documented expansions, not its scope: the pipeline applies to work
+that arrives as a sentence in chat exactly as it does to `/solve-issue <n>`.
+A documented workflow may vary the phase order and naming — `/refactor`
+splits REGCHECK across its Phase 2 baseline and its Phase 5 comparison, and
+runs TEST before REVIEW because the claim under review *is* the test result.
+Three things do not vary in any workflow: EXECUTE is dispatched to `builder`,
+REVIEW is an independent `verifier`, and a baseline is recorded before
+EXECUTE. Work arriving conversationally is where phases get dropped, because
+nothing prompts for them; each drop has a cost paid later:
+
+- **EXPLORE runs before PLAN, and the plan cites its findings.** A plan
+  written before the research is a guess about a codebase nobody has read
+  yet, and its acceptance criteria can name work that turns out to be
+  impossible.
+- **EXECUTE is dispatched to `builder`, not self-served.** The coordinator
+  writing the code makes it author and first reviewer at once, which is the
+  arrangement the "never reviews its own work" rule exists to prevent — the
+  independent review at phase 5 is then the *first* time anyone reads the
+  change adversarially, rather than the second.
+- **REGCHECK needs a recorded baseline**, or "no regressions" is an
+  impression rather than a comparison. The coordinator records it during
+  PLAN, before EXECUTE, in the run's own working notes — not a tracked file:
+  `.gitignore` excludes everything under `.claude/` except `agents/`,
+  `commands/`, and `skills/`.
+- **TEST is the four gates `solve-issue.md` Phase 6 enumerates**: the
+  standard pytest suite, `ruff check`, `ruff format`, and `mypy`, run by the
+  coordinator.
+
+Dropping a phase is the owner's call, not the coordinator's. Announce the drop
+and why, before the work, rather than reporting it afterwards.
+
 ### Guardrails
 
 Size is measured per PR, at the head you push; "changed lines" is additions +
