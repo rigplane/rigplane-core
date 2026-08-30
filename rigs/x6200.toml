@@ -433,10 +433,11 @@ end_hz = 136000000
 # - set_freq [0x05]: absent from the V1.0.6 document entirely, not just
 #   from the table -- the p.4 narrative example shows the GET direction
 #   only, and grepping the extract for "0x05" as a command turns up
-#   nothing else: its only two hits are the unrelated 0x1A 0x05 LOCK
-#   sub-command and a Table 3 mode-data row for NFM (correction: an
-#   earlier draft of this entry grouped set_freq with get_freq under the
-#   same narrative citation, which overstated set_freq's sourcing).
+#   nothing else: its three hits are the unrelated 0x1A 0x05 LOCK GET row
+#   and LOCK SET row (both p.8) plus a Table 3 mode-data row for NFM
+#   (correction: an earlier draft of this entry grouped set_freq with
+#   get_freq under the same narrative citation, which overstated
+#   set_freq's sourcing).
 # - get_mode / set_mode [0x04] / [0x06]: this entry's own comment used to
 #   group get_mode/set_mode with get_freq/set_freq under one "PDF page 4
 #   example" citation. docs/validation/cat-audits/x6200.md's per-opcode

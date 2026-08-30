@@ -284,13 +284,19 @@ end_hz = 136000000
 # rigs/x6200.toml "PROVENANCE OPEN (D2, MOR-2019)" is this file's direct
 # copy source and stays open on the same items for the same reasons.
 #
-# - get_freq / set_freq [0x03] / [0x05], get_mode / set_mode [0x04] /
-#   [0x06]: PROVENANCE OPEN on rigs/x6200.toml itself, inherited unchanged.
-#   X6200's Radioddity CI-V V1.0.6 p.4 documents get_freq/set_freq only
-#   inside a worked CAT-control narrative example, not in the opcode table;
-#   get_mode/set_mode (0x04/0x06) are absent from that table entirely, with
-#   no narrative mention either. Neither can ever be closed for X6100 --
-#   there is no manual to re-check and no unit to probe.
+# - get_freq [0x03]: PROVENANCE OPEN on rigs/x6200.toml itself, inherited
+#   unchanged. X6200's Radioddity CI-V V1.0.6 p.4 documents it only
+#   inside a worked CAT-control narrative example (GET direction only),
+#   not in the opcode table.
+# - set_freq [0x05]: PROVENANCE OPEN on rigs/x6200.toml itself, inherited
+#   unchanged -- but there it is absent from the V1.0.6 document
+#   entirely, unlike get_freq above: not in the opcode table, and not in
+#   the p.4 narrative either, which shows the GET direction only.
+# - get_mode / set_mode [0x04] / [0x06]: PROVENANCE OPEN on
+#   rigs/x6200.toml itself, inherited unchanged -- absent from that table
+#   entirely, with no narrative mention either.
+# None of the three can ever be closed for X6100 -- there is no manual to
+# re-check and no unit to probe.
 # - get_xiegu_model_id [0x1D, 0x19] is DELIBERATELY OMITTED, not copied.
 #   X6200 declares it as a positive Xiegu-vs-Icom disambiguator at the
 #   shared CI-V address 0xA4 (MOR-170/MOR-226) -- but
@@ -360,7 +366,7 @@ end_hz = 136000000
 
 # Frequency / mode (compatible Icom CI-V subset — see PROVENANCE OPEN above)
 get_freq   = [0x03]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- PROVENANCE OPEN even on X6200 (narrative-only PDF p.4 example, not in the opcode table)
-set_freq   = [0x05]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same PROVENANCE OPEN status as get_freq there
+set_freq   = [0x05]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- absent from V1.0.6 entirely, unlike get_freq's narrative mention there
 get_mode   = [0x04]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- PROVENANCE OPEN even on X6200 (0x04 absent from the V1.0.6 table entirely)
 set_mode   = [0x06]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same PROVENANCE OPEN status as get_mode there
 
