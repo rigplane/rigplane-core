@@ -827,16 +827,21 @@ reason is narrower than "no branch".** *Observed:* `tests/mock_server.py:
 MockIcomRadio` dispatches eight CI-V commands, including `0x14` and `0x1C`.
 But its `0x14` branch handles only sub `0x0A` (RF power) and its `0x1C`
 branch handles only sub `0x00` with an empty payload (PTT get) — anything
-else on those two commands still NAKs. Of the 60 `config.py`/`levels.py`
-divergence rows, only 40 have both the map and the fallback side at a plain
-`1A 05` menu address (24 in `config.py`, all 16 in `levels.py`, a command the
-mock has no branch for at all); the other 20, all in `config.py`, put one
-side inside the `0x14`/`0x1C` branches the mock *does* have — 18 with a
-fallback side of `0x14` (`14 11` lan_mod_level ×4, `14 10` usb_mod_level ×8,
-`14 0B` acc1_mod_level ×6) and 2 with a map side of `1C 04` (IC-7610
-`get_civ_output_ant`/`set_civ_output_ant`) — and those NAK on the sub-command
-check inside the branch, not on an absent top-level one. All four `scope.py`
-rows are `0x27`, which the mock has no branch for at all. Either way, both
+else on those two commands still NAKs. Of the 76 divergence rows, **54**
+involve only commands the mock has no branch for at all — `1A 05` menu
+addresses (24 in `config.py`, all 16 in `levels.py`, 6 of `vfo.py`'s 10),
+`0x27` (all four `scope.py` rows), and `0x07` (`vfo.py`'s other 4 rows) — so
+both sides NAK on the absent top-level branch. The other **22** involve a
+side that dispatches into an *existing* mock branch and NAKs below the top
+level, in three shapes: 18 `config.py` rows with a fallback side of `0x14`
+(`14 11` lan_mod_level ×4, `14 10` usb_mod_level ×8, `14 0B` acc1_mod_level
+×6 — the sub is never `0x0A`); 2 `config.py` rows with a map side of `1C 04`
+(IC-7610 `get_civ_output_ant`/`set_civ_output_ant` — the sub is `0x04`, not
+`0x00`); and 2 `ptt.py` rows (X6100 `ptt_on`/`ptt_off`) where **both** sides
+are `1C 00` — the sub matches — but each carries a payload byte (`01` on the
+fallback side, the doubled `01 01` on the map side, that doubling being the
+separate class-C bug §5 describes), and the mock's `0x1C` branch only ACKs a
+payload-empty GET, so a SET NAKs there too, on both sides. Either way, both
 the map frame and the fallback frame NAK, so the integration doubles cannot
 observe a single one of the 76 frames this migration changes, and will stay
 green through all of them. "The mock has no `0x1A` branch" is not the reason
