@@ -58,6 +58,22 @@ transport happens in the `runtime` layer that wires it up.
 - **Add a `Priority` level** → extend the `Priority` enum in
   `commander.py`; verify ordering invariants in the queue tests.
 
+## Charter exception: Step 1 measurement hook (temporary)
+
+Approved 2026-08-29 for MOR-2000/MOR-2001 (owner ruling Q4,
+`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1):
+`commands/_fallback_audit.py` wraps each exported `cmd_map`-taking builder
+with a `logging.warning` call fired when the builder is invoked without a
+map, and `commands/__init__.py` installs that wrapper with one call at
+import. Both the wrapping logic and the `logging` I/O it performs are
+confined to `_fallback_audit.py` — no other file in this layer gains a
+charter exception from this ruling. Installation is a no-op — the
+exported names stay the raw functions — unless
+`RIGPLANE_COMMAND_FALLBACK_AUDIT` is set (`core/env_config.py:
+get_command_fallback_audit_enabled`). Step Z of the same plan deletes
+`_fallback_audit.py`, its install call in `commands/__init__.py`, and
+this section.
+
 ## See also
 
 - `docs/plans/2026-04-29-modularization-plan.md` §1.2, §2.2, §3.
