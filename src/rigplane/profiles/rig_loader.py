@@ -39,7 +39,12 @@ __all__ = [
     "discover_rigs",
     "discover_available_rigs",
 ]
-from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
+from rigplane.commands.command_spec import (
+    AbsentCommandSpec,
+    CatCommandSpec,
+    CivCommandSpec,
+    CommandSpec,
+)
 from rigplane.profiles import (
     BandInfo,
     ControlDomainSpec,
@@ -700,7 +705,16 @@ class RigConfig:
             freq_ranges=ranges,
             modes=tuple(self.modes),
             filters=tuple(self.filters),
-            command_names=frozenset(self.commands),
+            command_names=frozenset(
+                name
+                for name, spec in self.commands.items()
+                if not isinstance(spec, AbsentCommandSpec)
+            ),
+            absent_command_names=frozenset(
+                name
+                for name, spec in self.commands.items()
+                if isinstance(spec, AbsentCommandSpec)
+            ),
             command_map=self.to_command_map(),
             filter_width_min=self.filter_width_min,
             filter_width_max=self.filter_width_max,
@@ -753,7 +767,10 @@ class RigConfig:
     def to_command_map(self) -> CommandMap:
         """Build a ``CommandMap`` from this config's CI-V commands.
 
-        Only CivCommandSpec entries are included; CatCommandSpec entries are ignored.
+        Only CivCommandSpec entries are included; CatCommandSpec and
+        AbsentCommandSpec entries are excluded (pinned by
+        `tests/test_rig_loader.py: TestAbsentCommandSemantics
+        .test_absent_name_excluded_from_command_map`).
         """
         civ_commands: dict[str, tuple[int, ...]] = {}
         for name, spec in self.commands.items():
@@ -884,7 +901,7 @@ def _parse_command_value(
 ) -> CommandSpec:
     """Parse a single command value from TOML.
 
-    Supports two formats:
+    Supports three formats:
     1. CI-V wire bytes (list): the frame's full constant prefix, per the
        tuple contract ruled in Q7
        (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1) —
@@ -894,6 +911,9 @@ def _parse_command_value(
        [0x1C, 0x00, 0x01] (command + sub + a constant payload byte, the
        X6100 ptt_on shape).
     2. CAT command spec (dict): { cat = { read = "FA;", parse = "FA{freq:09d};" } }
+    3. Declared-absent (dict, MOR-2005 step 4a): { absent = "<source>" } —
+       this radio confirmed does not have the command, per the named
+       authority. See `commands/command_spec.py: AbsentCommandSpec`.
 
     Args:
         filename: Source TOML filename (for error messages).
@@ -901,7 +921,8 @@ def _parse_command_value(
         value: Raw TOML value to parse.
 
     Returns:
-        Parsed CommandSpec (either CivCommandSpec or CatCommandSpec).
+        Parsed CommandSpec (CivCommandSpec, CatCommandSpec, or
+        AbsentCommandSpec).
 
     Raises:
         RigLoadError: If the value format is invalid.
@@ -923,6 +944,23 @@ def _parse_command_value(
                 f"got {value!r}"
             )
         return CivCommandSpec(bytes=tuple(value))
+
+    # Format 3: declared-absent (dict with 'absent' key, MOR-2005 step 4a)
+    if isinstance(value, dict) and "absent" in value:
+        extra_keys = sorted(set(value) - {"absent"})
+        if extra_keys:
+            raise RigLoadError(
+                f"{filename}: [commands].{command_name} = {{ absent = ... }} "
+                f"must not have other keys, got extra: {extra_keys}"
+            )
+        source = value["absent"]
+        if not isinstance(source, str) or not source.strip():
+            raise RigLoadError(
+                f"{filename}: [commands].{command_name}.absent must be a "
+                f"non-empty string naming the authority (a manual, a wfview "
+                f"rig definition, ...), got {source!r}"
+            )
+        return AbsentCommandSpec(source=source)
 
     # Format 2: CAT command spec (dict with 'cat' key)
     if isinstance(value, dict):

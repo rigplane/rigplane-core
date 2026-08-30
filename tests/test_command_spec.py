@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from rigplane.command_spec import CatCommandSpec, CivCommandSpec
+from rigplane.command_spec import AbsentCommandSpec, CatCommandSpec, CivCommandSpec
 from rigplane.rig_loader import RigLoadError, load_rig
 
 
@@ -284,6 +284,71 @@ class TestMixedCommands:
 
         # CAT command is NOT included
         assert not cmd_map.has("get_mode")
+
+
+class TestAbsentCommandSpec:
+    """Tests for the declared-absent command spelling (MOR-2005 step 4a).
+
+    ``{ absent = "<source>" }`` records that a named authority (a manual, a
+    wfview rig definition, ...) confirms this radio does not have the
+    command — a D2-compliant source, not just a gap. Step 4b (a later PR)
+    adds the refusal policy that consumes this; here the shape only needs
+    to parse and round-trip.
+    """
+
+    def test_absent_command_round_trips(self, tmp_path):
+        """The absent spelling loads as AbsentCommandSpec with its source."""
+        toml = (
+            _MINIMAL_CIV_TOML
+            + '\nget_dual_watch = { absent = "IC-7300 Full Manual (A7292-4EX), no dual-watch item" }\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        rig = load_rig(p)
+
+        assert "get_dual_watch" in rig.commands
+        spec = rig.commands["get_dual_watch"]
+        assert isinstance(spec, AbsentCommandSpec)
+        assert spec.source == "IC-7300 Full Manual (A7292-4EX), no dual-watch item"
+
+    def test_absent_source_empty_string_rejected(self, tmp_path):
+        """An empty source defeats D2's provenance requirement."""
+        toml = _MINIMAL_CIV_TOML + '\nget_dual_watch = { absent = "" }\n'
+        p = _write_toml(tmp_path, toml)
+
+        with pytest.raises(RigLoadError, match="non-empty"):
+            load_rig(p)
+
+    def test_absent_and_cat_together_rejected(self, tmp_path):
+        """'absent' and 'cat' are mutually exclusive markers in one entry."""
+        toml = (
+            _MINIMAL_CIV_TOML
+            + '\nget_dual_watch = { absent = "some manual", cat = { read = "DW;" } }\n'
+        )
+        p = _write_toml(tmp_path, toml)
+
+        with pytest.raises(RigLoadError, match="extra"):
+            load_rig(p)
+
+    def test_absent_with_unknown_extra_key_rejected(self, tmp_path):
+        """No other keys are allowed alongside 'absent'."""
+        toml = (
+            _MINIMAL_CIV_TOML
+            + '\nget_dual_watch = { absent = "some manual", note = "x" }\n'
+        )
+        p = _write_toml(tmp_path, toml)
+
+        with pytest.raises(RigLoadError, match="extra"):
+            load_rig(p)
+
+    def test_dict_without_cat_or_absent_key_still_rejected(self, tmp_path):
+        """A dict with neither marker key keeps its original message —
+        this pins that the new 'absent' branch does not swallow the
+        pre-existing 'cat'-key error (unchanged since before MOR-2005)."""
+        toml = _MINIMAL_CIV_TOML + '\nget_invalid = { read = "FA;" }\n'
+        p = _write_toml(tmp_path, toml)
+
+        with pytest.raises(RigLoadError, match="must have 'cat' key"):
+            load_rig(p)
 
 
 class TestBackwardCompatibility:

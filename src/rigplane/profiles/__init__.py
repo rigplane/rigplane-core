@@ -307,6 +307,16 @@ class RadioProfile:
     modes: tuple[str, ...] = ()
     filters: tuple[str, ...] = ()
     command_names: frozenset[str] = frozenset()
+    # Command names this radio is confirmed NOT to have, per a named source
+    # recorded in the TOML entry itself (MOR-2005 step 4a: the
+    # `{ absent = "<source>" }` spelling in `[commands]`, parsed into
+    # `commands/command_spec.py: AbsentCommandSpec`). Disjoint from
+    # ``command_names`` by construction (`profiles/rig_loader.py:
+    # RigConfig.to_profile` partitions ``self.commands`` between the two).
+    # A name in neither set is the third, still-unrepresented-by-a-refusal-
+    # policy state: "nobody has looked" — see ``supports_command``'s
+    # docstring for what does and does not yet distinguish it from this set.
+    absent_command_names: frozenset[str] = frozenset()
     # The radio's CI-V wire bytes by command name (MOR-2003 Step 3). ``None``
     # means this is a hand-built ``RadioProfile`` constructed outside
     # ``profiles/rig_loader.py`` -- e.g. directly in a test -- with no map
@@ -430,6 +440,20 @@ class RadioProfile:
         ) in self.cmd29_routes
 
     def supports_command(self, command_name: str) -> bool:
+        """Whether ``command_name`` is declared (with bytes or a CAT
+        template) by this profile.
+
+        Plan `docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1
+        D1 names three states for a command name: (1) declared — this
+        returns True; (2) declared absent, via ``absent_command_names``;
+        (3) neither declared nor declared absent. States (2) and (3) are
+        each other's negative space here — this method returns False for
+        both and does not distinguish them; a caller that needs to tell
+        them apart checks ``absent_command_names`` directly. The refusal
+        policy that acts on that distinction (D1's "report unsupported"
+        for (2), "must not exist at release" for (3)) is plan §4 Step 4,
+        a later change — not implemented by this method.
+        """
         return command_name in self.command_names
 
     def resolve_filter_rule(

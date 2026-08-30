@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from rigplane.command_map import CommandMap
+from rigplane.command_spec import AbsentCommandSpec
 from rigplane.core.capabilities import CAP_SPEECH, KNOWN_CAPABILITIES
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
@@ -1694,6 +1695,56 @@ class TestToCommandMap:
             assert not cm.has(key), f"dead tone command {key!r} still present"
 
 
+class TestAbsentCommandSemantics:
+    """The declared-absent spelling's effect on ``RadioProfile`` (MOR-2005
+    step 4a, plan `docs/plans/2026-08-29-profile-driven-command-bytes.md`
+    §8.1 D1/D2). This step only makes states (2) declared-absent and (3)
+    unknown *representable* and distinguishable via
+    ``RadioProfile.absent_command_names`` — the refusal policy that acts on
+    that distinction (D1 states 2 vs. 3) is Step 4b, not implemented here.
+    ``supports_command`` returns False for both today, same as before this
+    change.
+    """
+
+    _TOML_WITH_ABSENT = (
+        _MINIMAL_TOML
+        + '\nget_dual_watch = { absent = "IC-7300 Full Manual (A7292-4EX), no dual-watch item" }\n'
+    )
+
+    def test_absent_name_excluded_from_command_names(self, tmp_path):
+        p = _write_toml(tmp_path, self._TOML_WITH_ABSENT)
+        profile = load_rig(p).to_profile()
+        assert "get_dual_watch" not in profile.command_names
+
+    def test_absent_name_present_in_absent_command_names(self, tmp_path):
+        p = _write_toml(tmp_path, self._TOML_WITH_ABSENT)
+        profile = load_rig(p).to_profile()
+        assert "get_dual_watch" in profile.absent_command_names
+
+    def test_supports_command_false_for_absent_name(self, tmp_path):
+        p = _write_toml(tmp_path, self._TOML_WITH_ABSENT)
+        profile = load_rig(p).to_profile()
+        assert profile.supports_command("get_dual_watch") is False
+
+    def test_absent_name_excluded_from_command_map(self, tmp_path):
+        p = _write_toml(tmp_path, self._TOML_WITH_ABSENT)
+        cm = load_rig(p).to_command_map()
+        assert not cm.has("get_dual_watch")
+
+    def test_declared_siblings_unaffected(self, tmp_path):
+        """A declared-absent entry does not push out sibling declared
+        commands from either set."""
+        p = _write_toml(tmp_path, self._TOML_WITH_ABSENT)
+        profile = load_rig(p).to_profile()
+        assert "get_freq" in profile.command_names
+        assert "get_freq" not in profile.absent_command_names
+
+    def test_no_absent_declaration_leaves_absent_command_names_empty(self, tmp_path):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        profile = load_rig(p).to_profile()
+        assert profile.absent_command_names == frozenset()
+
+
 # ── discover_rigs ────────────────────────────────────────────────
 
 
@@ -2570,3 +2621,28 @@ class TestFilterShapeDomainDeclaredOrCapabilityAbsent:
             rig = load_rig(RIGS_DIR / f"{name}.toml")
             assert rig.filter_shape_values == (0, 1), name
             assert rig.filter_shape_labels == {"0": "SHARP", "1": "SOFT"}, name
+
+
+class TestNoShippedProfileUsesAbsentSpellingYet:
+    """MOR-2005 step 4a lands only the ``{ absent = "<source>" }`` spelling
+    itself (plan `docs/plans/2026-08-29-profile-driven-command-bytes.md`
+    §8.1 D1/D2) — it does not fill any profile with it. This is the
+    regression pin for that: today every shipped ``rigs/*.toml`` yields
+    zero ``AbsentCommandSpec`` entries. D2's filling work is separate,
+    ticket-tracked, later work; once a profile starts using the spelling,
+    delete or narrow this test (it is not a promise the spelling stays
+    unused, only a record that it is unused as of this PR).
+    """
+
+    @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+    def test_no_absent_commands_declared(self, toml_path):
+        rig = load_rig(toml_path)
+        absent = {
+            name
+            for name, spec in rig.commands.items()
+            if isinstance(spec, AbsentCommandSpec)
+        }
+        assert absent == set(), (
+            f"{toml_path.name}: declares absent commands {sorted(absent)} — "
+            f"update/delete this pin now that D2 filling has started"
+        )

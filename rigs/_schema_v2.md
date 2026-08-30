@@ -115,6 +115,34 @@ pins this: it builds `ptt_on`/`ptt_off` against every such profile's map
 and its hardcoded fallback and requires the two frames identical, ending
 in the explicit payload byte.
 
+**Declared-absent (MOR-2005 step 4a, D1/D2 —
+`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1):**
+
+```toml
+[commands]
+get_dual_watch = { absent = "IC-7300 Full Manual (A7292-4EX), no dual-watch item" }
+```
+
+This spelling records that a named authority — a manual, a wfview rig
+definition, a live-hardware capture — confirms the radio does not have the
+command, and, per D2, records that source in the TOML itself so "verified
+on hardware" and "taken from a manual" stay distinguishable by reading the
+file. It parses to `commands/command_spec.py: AbsentCommandSpec`; the
+`absent` value is the only key allowed in the dict and must be a non-empty
+string.
+
+An entry using this spelling is excluded from `RadioProfile.command_names`
+and from the `CommandMap` `to_command_map` builds, and is recorded instead
+in `RadioProfile.absent_command_names`
+(`tests/test_rig_loader.py: TestAbsentCommandSemantics`,
+`tests/test_command_spec.py: TestAbsentCommandSpec`). This makes "declared
+absent" representable and distinguishable from "neither declared nor
+declared absent" — D1's states (2) and (3). The refusal policy that acts
+on that distinction is a later step (plan §4 Step 4): as of this schema
+addition, `RadioProfile.supports_command` returns `False` for both states
+alike, and no shipped `rigs/*.toml` uses this spelling yet
+(`tests/test_rig_loader.py: TestNoShippedProfileUsesAbsentSpellingYet`).
+
 ---
 
 ## Layer 1: Capabilities
