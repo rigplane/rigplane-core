@@ -846,7 +846,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
    * legacy twin); the surface's `data-testid` count pins "exactly ONE".
    */
   it('drops the legacy MODE/FILTER twins in favour of the semantic filter surface', () => {
-    h.caps = { ...capsFor('2/main_sub'), modes: ['USB', 'CW', 'FM'], filters: [1, 2, 3] };
+    h.caps = { ...capsFor('2/main_sub'), modes: ['USB', 'CW', 'FM'], filters: ['FIL1', 'FIL2', 'FIL3'] };
     const t = renderAll('desktop-v2');
     expect(t.querySelector('.left-sidebar [data-panel-id="mode"]')).toBeNull();
     expect(t.querySelector('.left-sidebar [data-panel-id="filter"]')).toBeNull();
@@ -870,7 +870,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   it('presents filter and rfFrontEnd controls exactly ONCE each on desktop-v2', () => {
     h.caps = {
       ...capsFor('2/main_sub'),
-      modes: ['USB', 'CW', 'FM'], filters: [1, 2, 3],
+      modes: ['USB', 'CW', 'FM'], filters: ['FIL1', 'FIL2', 'FIL3'],
       capabilities: [...capsFor('2/main_sub').capabilities, 'preamp'],
     };
     const t = renderAll('desktop-v2');

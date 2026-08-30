@@ -184,7 +184,7 @@ const liveCaps = (tags: readonly string[], audioFftAvailable = false): Capabilit
   // APF/TPF mutex reads `modeFilter.currentMode` — an empty `modes` list makes
   // the mode fact absent and BOTH controls fail closed, hiding this slice's
   // behaviour behind a fixture hole (the MOR-1304 N2 lesson).
-  modes: ['CW', 'CW-R', 'RTTY', 'USB'], filters: [1, 2, 3],
+  modes: ['CW', 'CW-R', 'RTTY', 'USB'], filters: ['FIL1', 'FIL2', 'FIL3'],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
