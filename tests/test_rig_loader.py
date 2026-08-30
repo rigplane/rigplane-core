@@ -2679,8 +2679,6 @@ class TestFilterShapeDomainDeclaredOrCapabilityAbsent:
             assert rig.filter_shape_labels == {"0": "SHARP", "1": "SOFT"}, name
 
 
-
-
 class TestNoShippedProfileUsesAbsentSpellingYet:
     """MOR-2005 step 4a landed only the ``{ absent = "<source>" }`` spelling
     itself (plan `docs/plans/2026-08-29-profile-driven-command-bytes.md`

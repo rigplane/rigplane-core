@@ -487,6 +487,11 @@ set_vfo = [0x07]
 get_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 set_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 get_main_sub_band = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table has no D0/D1/D2" }
+# quick_dual_watch (bare key, no get_/set_ prefix) lives here in the base
+# [commands] section, matching the bare-key precedent (scan_start,
+# power_on, etc.) rather than [commands.overrides] with its get_/set_
+# siblings, which stay grouped with the other 1A 05 submenu addresses.
+quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 
 # ── Memory (wfview MemStart=0, Max=99; Memory Contents Max=101) ──
 get_memory_mode = [0x08]
@@ -622,8 +627,8 @@ get_dial_lock = [0x16, 0x50]
 set_dial_lock = [0x16, 0x50]
 get_rx_antenna = [0x16, 0x53]
 set_rx_antenna = [0x16, 0x53]
-get_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): cmd 0x12 (ANT1/ANT2 select) does not appear anywhere in the guide -- single antenna connector" }
-set_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): cmd 0x12 (ANT1/ANT2 select) does not appear anywhere in the guide -- single antenna connector" }
+get_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 0x12 sub-function row for a second RX antenna -- single antenna connector" }
+set_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 0x12 sub-function row for a second RX antenna -- single antenna connector" }
 get_filter_shape = [0x16, 0x56]
 set_filter_shape = [0x16, 0x56]
 get_ssb_tx_bandwidth = [0x16, 0x58]
@@ -660,8 +665,8 @@ get_filter_width = [0x1A, 0x03]
 set_filter_width = [0x1A, 0x03]
 # agc_time_constant (0x1A 0x04) exists on IC-705 -- refutes the earlier "NOT
 # in IC-705.rig" note (D2, MOR-2016).
-get_agc_time_constant = [0x1A, 0x04]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4 (table), p.19 (00-13 BCD format)
-set_agc_time_constant = [0x1A, 0x04]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4 (table), p.19 (00-13 BCD format)
+get_agc_time_constant = [0x1A, 0x04]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (table), p.19 (00-13 BCD format)
+set_agc_time_constant = [0x1A, 0x04]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (table), p.19 (00-13 BCD format)
 get_data_mode = [0x1A, 0x06]
 set_data_mode = [0x1A, 0x06]
 
@@ -763,17 +768,17 @@ scan_set_df_span = [0x0E]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, J
 
 [commands.overrides]
 # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.6, control
-# 0045 "SPLIT > Quick SPLIT setting". Guide describes this as a persistent
-# 00/01 menu toggle governing key-hold behaviour, not a one-shot trigger, and
-# get_/set_quick_split never send a data byte -- open question recorded on
-# MOR-2007, not resolved by this pass (D2, MOR-2016).
+# 0045 "SPLIT > Quick SPLIT setting". get_/set_quick_split never send a
+# data byte, so even a correct address only reads this control, never
+# writes it -- open question (does IC-705 expose a one-shot "engage split
+# now" trigger anywhere, and does this 00/01 control write at all)
+# recorded on MOR-2007, not resolved by this pass (D2, MOR-2016).
 get_quick_split = [0x1A, 0x05, 0x00, 0x45]
 set_quick_split = [0x1A, 0x05, 0x00, 0x45]
 get_ref_adjust = [0x1A, 0x05, 0x00, 0x89]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.7, control 0089 "REF Adjust setting"
 set_ref_adjust = [0x1A, 0x05, 0x00, 0x89]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.7, control 0089 "REF Adjust setting"
 get_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 set_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
-quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 # civ_transceive corrected (D2, MOR-2016): guide p.8 confirms control 0131 =
 # "CI-V Transceive". The previous 0112 declared here was actually "AF Beep/
 # Speech Output" on this radio -- both this profile's old value and the
