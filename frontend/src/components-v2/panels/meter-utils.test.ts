@@ -105,7 +105,6 @@ import {
   formatAmps,
   formatCompDb,
   formatSMeter,
-  getNeedleMarks,
   swrRatio,
   swrLevel,
   alcLevel,
@@ -606,59 +605,5 @@ describe('peak-hold on value -> number + fill coupling (MOR-498)', () => {
     const state = updatePeakHold({ latchedPeak: 50, latchedAt: 0 }, 90, 300, DECAY);
     expect(state).toEqual({ latchedPeak: 90, latchedAt: 300 });
     expect(peakHoldDisplay(state, 90, 300, DECAY)).toBe(90);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Needle marks: engineering-domain positions from the declared table;
-// no marks when the radio declares no curve (nothing honest to draw).
-// ---------------------------------------------------------------------------
-
-describe('getNeedleMarks', () => {
-  it('returns S-meter marks for source "S"', () => {
-    const marks = getNeedleMarks('S');
-    expect(marks.length).toBe(7);
-    expect(marks[0].label).toBe('S1');
-    expect(marks[4].label).toBe('S9');
-    expect(marks[5].label).toBe('+20');
-    expect(marks[6].label).toBe('+40');
-    expect(marks[4].pos).toBeCloseTo(130 / 240);
-  });
-
-  it('returns SWR marks positioned by ratio / top knot', () => {
-    const marks = getNeedleMarks('SWR');
-    expect(marks.length).toBe(5);
-    expect(marks[0].label).toBe('1.0');
-    expect(marks[3].label).toBe('3.0');
-    expect(marks[3].pos).toBeCloseTo(3.0 / 6.0);
-    expect(marks[4].pos).toBeCloseTo(1.0);
-  });
-
-  it('returns POWER marks from the declared table', () => {
-    const marks = getNeedleMarks('POWER');
-    expect(marks.length).toBe(3);
-    expect(marks[0].label).toBe('0');
-    expect(marks[1].label).toBe('50');
-    expect(marks[1].pos).toBeCloseTo(0.5);
-    expect(marks[2].label).toBe('100');
-  });
-
-  it('returns same marks for "po" as "POWER"', () => {
-    expect(getNeedleMarks('po')).toEqual(getNeedleMarks('POWER'));
-  });
-
-  it('returns no SWR/POWER marks for a radio with no declared curves', () => {
-    setCapabilities(makeCaps({ model: 'X6200' }));
-    expect(getNeedleMarks('SWR')).toEqual([]);
-    expect(getNeedleMarks('POWER')).toEqual([]);
-  });
-
-  it('all mark positions are in 0-1 range', () => {
-    for (const source of ['S', 'SWR', 'POWER', 'po'] as const) {
-      for (const mark of getNeedleMarks(source)) {
-        expect(mark.pos).toBeGreaterThanOrEqual(0);
-        expect(mark.pos).toBeLessThanOrEqual(1);
-      }
-    }
   });
 });

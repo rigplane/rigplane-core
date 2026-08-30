@@ -29,12 +29,6 @@ import type { MeterCalPoint } from '$lib/runtime/adapters/capabilities-adapter';
 
 export type MeterSource = 'S' | 'SWR' | 'POWER' | 'po';
 
-export interface Mark {
-  pos: number;
-  label: string;
-  color?: string;
-}
-
 /** Raw device-scale ceiling (CI-V meter byte range). Used only as the
  *  neutral bar-geometry edge for uncalibrated meters — never a claimed
  *  reading. */
@@ -338,44 +332,4 @@ export function peakHoldDisplay(
   const factor = 1 - elapsed / decayMs;
   const decayed = state.latchedPeak * factor;
   return Math.max(current, decayed);
-}
-
-/**
- * Needle gauge marks. Positions live in the same domain as the matching
- * level fn (`sLevel` / `swrLevel` / `normalizePower`) so the needle and
- * its scale always agree. Labels come from the profile's own calibration
- * table; a radio with no declared curve gets no marks — there is nothing
- * honest to draw.
- */
-export function getNeedleMarks(source: MeterSource): Mark[] {
-  switch (source) {
-    case 'S': {
-      const maxRaw = getSmeterMaxRaw();
-      return getSmeterKnots()
-        .filter(([, actual]) => [-48, -36, -24, -12, 0, 20, 40].includes(Math.round(actual)))
-        .map(([raw, actual]) => ({
-          pos: maxRaw > 0 ? Math.max(0, Math.min(1, raw / maxRaw)) : 0,
-          label: actual > 0 ? `+${Math.round(actual)}` : `S${Math.round((actual + 54) / 6)}`,
-        }));
-    }
-    case 'SWR': {
-      const cal = getCal('swr');
-      if (!cal) return [];
-      const max = topActual(cal);
-      return cal.map((p) => ({
-        pos: max > 0 ? clamp01(p.actual / max) : 0,
-        label: p.label,
-      }));
-    }
-    case 'POWER':
-    case 'po': {
-      const cal = getCal('power');
-      if (!cal) return [];
-      const max = topActual(cal);
-      return cal.map((p) => ({
-        pos: max > 0 ? clamp01(p.actual / max) : 0,
-        label: p.label,
-      }));
-    }
-  }
 }
