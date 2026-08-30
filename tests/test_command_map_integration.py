@@ -204,6 +204,89 @@ class TestPttWireContractAcrossProfiles:
             assert mapped.endswith(b"\x1c\x00\x00\xfd"), model
 
 
+# ── VFO / scope wire contracts: every declaring profile ─────────
+
+
+class TestVfoScopeMapFallbackParityAcrossProfiles:
+    """MOR-2002 step 2b-vfo-scope (Q7, ``docs/plans/2026-08-29-profile-driven-
+    command-bytes.md`` §4 Step 2). Two divergences closed as one contract
+    application:
+
+    ``vfo.py: get_dual_watch`` / ``get_main_sub_band`` declare a 2-byte
+    ``[command, sub]`` tuple that already carries the query byte as its
+    sub-command; the ``cmd_map`` branch also passed that byte as ``data``,
+    doubling it (``07 c2 c2`` / ``07 d2 d2`` instead of ``07 c2`` / ``07
+    d2``).
+
+    ``scope.py: get_scope_center_type`` took a ``receiver`` keyword whose
+    ``cmd_map`` branch dropped it while the fallback appended it -- on
+    0x1C the extra byte is a SET, not a read (MOR-1981). The fix refuses
+    the argument outright rather than special-casing it, so there is only
+    one call shape left and both branches agree by construction.
+
+    This sweeps every CI-V profile in ``rigs/`` that declares each command
+    and requires the map branch and the fallback branch to build the
+    identical frame.
+    """
+
+    @staticmethod
+    def _maps_declaring(name: str) -> dict[str, CommandMap]:
+        maps: dict[str, CommandMap] = {}
+        for model, config in sorted(discover_rigs(RIG_DIR).items()):
+            cmd_map = config.to_command_map()
+            if cmd_map.has(name):
+                maps[model] = cmd_map
+        return maps
+
+    def test_get_dual_watch_declared_by_ic7610_and_ic9700(self) -> None:
+        assert set(self._maps_declaring("get_dual_watch")) == {"IC-7610", "IC-9700"}
+
+    def test_get_dual_watch_identical_to_fallback_on_every_declaring_profile(
+        self,
+    ) -> None:
+        for model, cmd_map in self._maps_declaring("get_dual_watch").items():
+            mapped = commands.get_dual_watch(cmd_map=cmd_map)
+            fallback = commands.get_dual_watch()
+            assert mapped == fallback, model
+            assert mapped.endswith(b"\x07\xc2\xfd"), model
+
+    def test_get_main_sub_band_declared_by_ic7610_and_ic9700(self) -> None:
+        assert set(self._maps_declaring("get_main_sub_band")) == {
+            "IC-7610",
+            "IC-9700",
+        }
+
+    def test_get_main_sub_band_identical_to_fallback_on_every_declaring_profile(
+        self,
+    ) -> None:
+        for model, cmd_map in self._maps_declaring("get_main_sub_band").items():
+            mapped = commands.get_main_sub_band(cmd_map=cmd_map)
+            fallback = commands.get_main_sub_band()
+            assert mapped == fallback, model
+            assert mapped.endswith(b"\x07\xd2\xfd"), model
+
+    def test_get_scope_center_type_declared_by_all_four_scope_profiles(self) -> None:
+        assert set(self._maps_declaring("get_scope_center_type")) == {
+            "IC-705",
+            "IC-7300",
+            "IC-7610",
+            "IC-9700",
+        }
+
+    def test_get_scope_center_type_identical_to_fallback_on_every_declaring_profile(
+        self,
+    ) -> None:
+        for model, cmd_map in self._maps_declaring("get_scope_center_type").items():
+            mapped = commands.get_scope_center_type(cmd_map=cmd_map)
+            fallback = commands.get_scope_center_type()
+            assert mapped == fallback, model
+            assert mapped.endswith(b"\x27\x1c\xfd"), model
+
+    def test_get_scope_center_type_refuses_receiver_argument(self) -> None:
+        with pytest.raises(TypeError):
+            commands.get_scope_center_type(receiver=0)
+
+
 # ── Helper-delegating functions ─────────────────────────────────
 
 

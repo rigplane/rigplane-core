@@ -43,14 +43,19 @@ def get_main_sub_band(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    """Build a 'get main/sub band' CI-V command (0x07 0xD2)."""
+    """Build a 'get main/sub band' CI-V command (0x07 0xD2).
+
+    The ``[commands]`` tuple (``[0x07, 0xD2]``) already carries the 0xD2
+    query byte as its sub-command, so the ``cmd_map`` branch passes no
+    ``data`` of its own -- passing it again doubled the byte (``07 d2 d2``)
+    until this fix (Q7, step 2b-vfo-scope).
+    """
     if cmd_map is not None:
         return _build_from_map(
             cmd_map,
             "get_main_sub_band",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=b"\xd2",
         )
     return build_civ_frame(to_addr, from_addr, _CMD_VFO_SELECT, data=b"\xd2")
 
@@ -331,14 +336,19 @@ def get_dual_watch(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    """Build CI-V command to query dual watch status (0x07 0xC2)."""
+    """Build CI-V command to query dual watch status (0x07 0xC2).
+
+    The ``[commands]`` tuple (``[0x07, 0xC2]``) already carries the 0xC2
+    query byte as its sub-command, so the ``cmd_map`` branch passes no
+    ``data`` of its own -- passing it again doubled the byte (``07 c2 c2``)
+    until this fix (Q7, step 2b-vfo-scope).
+    """
     if cmd_map is not None:
         return _build_from_map(
             cmd_map,
             "get_dual_watch",
             to_addr=to_addr,
             from_addr=from_addr,
-            data=bytes([_VFO_DUAL_WATCH_QUERY]),
         )
     return build_civ_frame(
         to_addr, from_addr, _CMD_VFO_SELECT, data=bytes([_VFO_DUAL_WATCH_QUERY])

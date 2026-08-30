@@ -11,9 +11,14 @@ and
 ``test_rig_ic7300.py: test_get_speech_cmd_map_uses_set_speech`` each pin
 ``get_speech`` alone. Outside that subset the two copies could disagree
 silently, and at least one pair does: the ``cmd_map`` branch of
-``scope.py: get_scope_center_type`` sends a bare ``27 1c`` where the
-fallback hands ``scope.py: _scope_query`` a receiver it then appends --
-and on 0x1C that extra byte is a write, not a read.
+``config.py: get_acc1_mod_level`` sends the IC-7300/IC-7610/IC-9700
+extended-menu address ``1A 05 00 64`` where the fallback sends the
+legacy command ``14 0B`` -- two different CI-V commands for the same
+control, not a byte-count mismatch. (``scope.py: get_scope_center_type``
+used to be this module's worked example here: its ``cmd_map`` branch sent
+a bare ``27 1c`` where the fallback appended a receiver byte that turned
+0x1C's read into a SET. MOR-2002 step 2b-vfo-scope closed that by
+refusing the argument outright.)
 
 This test is the general form of that check: it builds every builder it can
 reach both ways, for every profile the library loads out of ``rigs/``, and
@@ -31,9 +36,13 @@ That does not make the file physically unable to grow — regenerating it
 would add a new row — but growth can only arrive as a committed, reviewable
 edit to this file, never silently.
 
-Nothing here fixes a divergence. Which commands take a receiver prefix byte
-is MOR-1981, and adding one where the radio does not expect it is a write,
-not a no-op — see ``commands/scope.py: SCOPE_RECEIVER_SELECTOR_SUBS``.
+Nothing here fixes a divergence: for every command whose ``cmd_map`` branch
+and fallback both still accept a receiver, which ones take that prefix byte
+remains MOR-1981, and adding one where the radio does not expect it is a
+write, not a no-op — see ``commands/scope.py: SCOPE_RECEIVER_SELECTOR_SUBS``.
+``get_scope_center_type`` is the one exception this sweep no longer needs to
+watch: MOR-2002 step 2b-vfo-scope removed its ``receiver`` parameter
+outright, so that builder has no argument left to get wrong.
 
 What could not be compared is not skipped silently:
 ``command_map_parity_uncovered.txt`` records the commands a profile's map
@@ -351,10 +360,14 @@ def _cases() -> tuple[dict[Key, list[dict[str, typing.Any]]], frozenset[Key]]:
 
     The first case passes only required arguments; one further case per
     optional argument overrides it with a non-default value, because a
-    divergence can hide behind a default — ``scope.py: get_scope_center_type``
-    builds identical frames until ``receiver`` is given a value. Argument
-    validation happens before a builder reads ``to_addr``, so this search
-    runs once and its result is reused for every profile.
+    divergence can hide behind a default — until MOR-2002 step
+    2b-vfo-scope, ``scope.py: get_scope_center_type`` built identical
+    frames unless its ``receiver`` argument was given a value, which is
+    why that probe exists rather than stopping at required arguments.
+    Removing the argument closed that one case; this search still probes
+    every remaining optional argument the same way, on the same reasoning.
+    Argument validation happens before a builder reads ``to_addr``, so
+    this search runs once and its result is reused for every profile.
     """
     per_builder: dict[Key, list[dict[str, typing.Any]]] = {}
     unsynthesisable: set[Key] = set()

@@ -100,13 +100,16 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 # for 0x12, 0x13, 0x1B and 0x1C, matching that bench result with no
 # exception.  0x1F (RBW) has no row in that guide, but Hamlib supplies the
 # selector for it and the bare form NAKs, so it is the same class.  The
-# IC-7300's own sub-command table could not be reached from the environment
-# this was measured in, so its membership rests on the bench plus the
-# analogy with the IC-705.  No bench evidence exists for the IC-9700.  The
-# de-risking fact is that ``web/radio_poller.py`` has been putting this exact
-# split on the wire to all four scope-capable profiles since long before this
-# constant existed: the connect sweep is catching up to shipped behaviour,
-# not trying something new.
+# IC-7300's own command table (advanced manual, table 19-8) and the
+# IC-7610 and IC-9700 CI-V Reference Guides have since been read directly
+# and print the same split: the IC-7300 leg now has both the bench
+# measurement and its own manual behind it, and the IC-7610 leg is
+# confirmed from its guide.  Documentary evidence exists for the IC-9700
+# (its CI-V Reference Guide); no bench evidence exists for the IC-9700.
+# The de-risking fact is that ``web/radio_poller.py`` has been putting this
+# exact split on the wire to all four scope-capable profiles since long
+# before this constant existed: the connect sweep is catching up to
+# shipped behaviour, not trying something new.
 #
 # The exclusions are not omissions -- on a sub-command that takes no
 # selector the extra byte is a WRITE, not a no-op:
@@ -161,12 +164,21 @@ def _scope_selector_data(receiver: int | None) -> bytes | None:
     its frame with it via ``_scope_query``, and the ``cmd_map`` branch passes
     it as ``data``.
 
-    ``get_scope_center_type`` is the getter that reaches here and does not
-    agree.  Its 0x1C is outside the set, so its ``cmd_map`` branch correctly
-    sends nothing while its fallback still appends what it is given; the
-    disagreement is pinned in ``tests/command_map_parity_divergences.txt``
-    and closing it means refusing the argument, which changes public builder
-    behaviour (MOR-1981).
+    ``get_scope_center_type`` used to accept a ``receiver`` argument and
+    forward it here too, even though its 0x1C sub is outside the set: on
+    0x1C the extra byte is a SET, not a selector -- ``27 1C 00`` sets
+    center_type=0 rather than reading it, confirmed by a live IC-7300
+    bench recheck and by all four official CI-V references (IC-705,
+    IC-7300, IC-7610, IC-9700 guides).  Its ``cmd_map`` branch never took
+    the argument, so the two branches disagreed whenever a caller passed
+    one -- pinned as the ``receiver=0`` rows in
+    ``tests/command_map_parity_divergences.txt`` before this fix.  Closing
+    that (MOR-1981) meant refusing the argument outright rather than
+    special-casing 0x1C: ``get_scope_center_type`` now takes no
+    ``receiver`` parameter at all and always reaches here with
+    ``receiver=None``, so its two branches agree by construction.  The
+    eight selector subs above are the only sub-commands whose getters
+    still pass a real receiver value through this function.
     """
     return None if receiver is None else bytes([_validate_scope_receiver(receiver)])
 
@@ -753,16 +765,18 @@ def get_scope_center_type(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
-    *,
-    receiver: int | None = None,
 ) -> bytes:
+    """Build a bare 'get scope center type' CI-V command (0x27 0x1C).
+
+    Takes no ``receiver`` argument (MOR-1981, MOR-2002 step 2b-vfo-scope):
+    0x1C is outside ``SCOPE_RECEIVER_SELECTOR_SUBS``, so a receiver byte on
+    this read is a SET, not a selector -- see ``_scope_selector_data``.
+    """
     if cmd_map is not None:
         return _build_from_map(
             cmd_map, "get_scope_center_type", to_addr=to_addr, from_addr=from_addr
         )
-    return _scope_query(
-        _SUB_SCOPE_CENTER_TYPE, to_addr=to_addr, from_addr=from_addr, receiver=receiver
-    )
+    return _scope_query(_SUB_SCOPE_CENTER_TYPE, to_addr=to_addr, from_addr=from_addr)
 
 
 def scope_set_center_type(

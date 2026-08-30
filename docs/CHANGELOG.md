@@ -52,6 +52,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now selects the MAIN receiver (0xD0) where it used to select VFO A
   (0x00), and `restore_state` swallows per-field failures at DEBUG, so
   nothing surfaces. Hand-built restore dicts should use "MAIN"/"SUB".
+- **`rigplane.commands.get_scope_center_type` takes no `receiver` argument**
+  (MOR-1981, MOR-2002). The parameter let a caller name the MAIN or SUB
+  scope for this reading, like the library's other seven scope-selector
+  getters, but 0x1C is not one of them: on the wire, `27 1C 00` is a SET of
+  center_type=0 (Filter center), not a selector prefix on a read — confirmed
+  by a live IC-7300 bench recheck and by all four official Icom CI-V
+  references (IC-705, IC-7300, IC-7610, IC-9700). The `cmd_map` branch never
+  accepted the argument, so passing `receiver=` produced a write the caller
+  believed was a read. No shipped caller passed it — `runtime/_scope_runtime.py`
+  and the `Radio` protocol method never took a receiver for this reading —
+  so this closes a footgun rather than changing observed behaviour; a caller
+  that did pass `receiver=` now gets a `TypeError` instead of a silent SET.
 
 ### Changed
 
