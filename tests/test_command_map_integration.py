@@ -29,6 +29,7 @@ import pytest
 
 from rigplane import commands, IC_7610_ADDR
 from rigplane.command_map import CommandMap
+from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.rig_loader import load_rig
 from _command_test_helpers import bind_default_addr_globals
 
@@ -155,6 +156,52 @@ class TestSetterParity:
 
     def test_stop_scan(self, cmd_map):
         assert commands.scan_stop(cmd_map=cmd_map) == commands.scan_stop()
+
+
+# ── PTT wire-tuple contract: every CI-V profile ─────────────────
+
+
+class TestPttWireContractAcrossProfiles:
+    """MOR-2002 step 2b-ptt (Q7, ``docs/plans/2026-08-29-profile-driven-
+    command-bytes.md`` §8.1): a ``[commands]`` tuple carries the full
+    constant prefix, payload byte included. Before this fix,
+    ``rigs/ic705.toml``, ``rigs/ic7300.toml``, ``rigs/ic7610.toml``,
+    ``rigs/ic9700.toml`` and ``rigs/x6200.toml`` held a 2-byte
+    ``ptt_on``/``ptt_off`` tuple and the ``cmd_map`` branch appended the
+    payload byte itself; ``rigs/x6100.toml`` already held the 3-byte tuple,
+    so its map branch doubled the payload
+    (``tests/command_map_parity_divergences.txt``, X6100 rows). This
+    sweeps every CI-V profile in ``rigs/`` that declares
+    ``ptt_on``/``ptt_off`` and requires the map branch and the fallback
+    branch to build the identical frame, ending in the explicit payload
+    byte.
+    """
+
+    @staticmethod
+    def _civ_ptt_maps() -> dict[str, CommandMap]:
+        maps: dict[str, CommandMap] = {}
+        for model, config in sorted(discover_rigs(RIG_DIR).items()):
+            cmd_map = config.to_command_map()
+            if cmd_map.has("ptt_on") and cmd_map.has("ptt_off"):
+                maps[model] = cmd_map
+        return maps
+
+    def test_at_least_one_civ_profile_declares_ptt(self) -> None:
+        assert self._civ_ptt_maps()
+
+    def test_ptt_on_identical_to_fallback_on_every_civ_profile(self) -> None:
+        for model, cmd_map in self._civ_ptt_maps().items():
+            mapped = commands.ptt_on(cmd_map=cmd_map)
+            fallback = commands.ptt_on()
+            assert mapped == fallback, model
+            assert mapped.endswith(b"\x1c\x00\x01\xfd"), model
+
+    def test_ptt_off_identical_to_fallback_on_every_civ_profile(self) -> None:
+        for model, cmd_map in self._civ_ptt_maps().items():
+            mapped = commands.ptt_off(cmd_map=cmd_map)
+            fallback = commands.ptt_off()
+            assert mapped == fallback, model
+            assert mapped.endswith(b"\x1c\x00\x00\xfd"), model
 
 
 # ── Helper-delegating functions ─────────────────────────────────

@@ -21,11 +21,15 @@ def ptt_on(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    """Build a PTT-on CI-V command."""
+    """Build a PTT-on CI-V command.
+
+    The payload byte (0x01) is constant, so under the tuple contract
+    (Q7, `docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1)
+    every profile's ``ptt_on`` tuple already carries it; the map branch
+    passes no ``data`` of its own.
+    """
     if cmd_map is not None:
-        return _build_from_map(
-            cmd_map, "ptt_on", to_addr=to_addr, from_addr=from_addr, data=b"\x01"
-        )
+        return _build_from_map(cmd_map, "ptt_on", to_addr=to_addr, from_addr=from_addr)
     return build_civ_frame(to_addr, from_addr, _CMD_PTT, sub=_SUB_PTT, data=b"\x01")
 
 
@@ -34,9 +38,13 @@ def ptt_off(
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap | None = None,
 ) -> bytes:
-    """Build a PTT-off CI-V command."""
+    """Build a PTT-off CI-V command.
+
+    The payload byte (0x00) is constant, so under the tuple contract
+    (Q7, `docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1)
+    every profile's ``ptt_off`` tuple already carries it; the map branch
+    passes no ``data`` of its own.
+    """
     if cmd_map is not None:
-        return _build_from_map(
-            cmd_map, "ptt_off", to_addr=to_addr, from_addr=from_addr, data=b"\x00"
-        )
+        return _build_from_map(cmd_map, "ptt_off", to_addr=to_addr, from_addr=from_addr)
     return build_civ_frame(to_addr, from_addr, _CMD_PTT, sub=_SUB_PTT, data=b"\x00")

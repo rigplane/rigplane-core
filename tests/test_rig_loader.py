@@ -1654,7 +1654,7 @@ class TestToCommandMap:
         cm = load_rig(TEMPLATE_PATH).to_command_map()
         assert cm.get("get_freq") == (0x03,)
         assert cm.get("get_af_level") == (0x14, 0x01)
-        assert cm.get("ptt_on") == (0x1C, 0x00)
+        assert cm.get("ptt_on") == (0x1C, 0x00, 0x01)
 
     def test_command_count(self):
         cm = load_rig(TEMPLATE_PATH).to_command_map()
