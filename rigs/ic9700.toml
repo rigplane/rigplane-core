@@ -175,9 +175,11 @@ speed_max_wpm = 48
 # dash_ratio: control 0224, IC-9700 CI-V Reference Guide (Icom, 2019) p.9
 # (CW-KEY SET>Dot/Dash Ratio). Refutes the earlier "no dash_ratio" note --
 # see get_dash_ratio / set_dash_ratio in [commands.overrides] (D2, MOR-2015).
-# The hardcoded fallback constant `_CTL_MEM_DASH_RATIO = 0x0228` is itself
-# wrong for this radio (0228 = CW-KEY SET>MIC Up/Down Keyer); not fixed here
-# -- fallback bytes are out of this documentary ticket's scope.
+# The hardcoded fallback that used to send 0x0228 for this command was
+# itself wrong for this radio (0228 = CW-KEY SET>MIC Up/Down Keyer, not
+# Dot/Dash Ratio) -- that fallback and its `_CTL_MEM_DASH_RATIO` constant
+# were deleted in MOR-2006 Steps 5..N module 2, so this profile's 0224 is
+# now the only address any builder can send.
 
 [nb]
 # NB depth 1-10, NB width 0-255 (wfview NB Depth Min/Max). NOTE (D2,
@@ -821,10 +823,11 @@ set_quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6
 # its isinstance(list) short-circuit (the rule only checks list-valued
 # entries); moved rather than relying on that blind spot (D2, MOR-2015)
 # dash_ratio: control 0224, CW-KEY SET>Dot/Dash Ratio; real gap-list
-# address (D2, MOR-2015). The hardcoded fallback constant
-# `_CTL_MEM_DASH_RATIO = 0x0228` is itself wrong for this radio (0228 =
-# CW-KEY SET>MIC Up/Down Keyer); not fixed here -- fallback bytes are out
-# of this documentary ticket's scope.
+# address (D2, MOR-2015). The hardcoded fallback that used to send 0228 for
+# this command was itself wrong for this radio (0228 = CW-KEY SET>MIC
+# Up/Down Keyer, not Dot/Dash Ratio) -- that fallback and its
+# `_CTL_MEM_DASH_RATIO` constant were deleted in MOR-2006 Steps 5..N module
+# 2, so this profile's 0224 is now the only address any builder can send.
 get_dash_ratio = [0x1A, 0x05, 0x02, 0x24]  # source: IC-9700 CI-V Reference Guide p.9
 set_dash_ratio = [0x1A, 0x05, 0x02, 0x24]  # source: IC-9700 CI-V Reference Guide p.9
 # nb_depth/nb_width: AMBIGUOUS -- no single global NB depth/width; per-band

@@ -29,6 +29,7 @@ be absent from IC-7610's own cmd29 routes too, so it must be unwrapped on
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -61,11 +62,27 @@ from rigplane.commands import (
     set_twin_peak_filter,
 )
 from rigplane.radio import IcomRadio
+from rigplane.rig_loader import load_rig
 from rigplane.types import AudioPeakFilter, CivFrame, FilterShape
 
 _IC7300_ADDR = 0x94
 _IC7610_ADDR = 0x98
 _IC705_ADDR = 0xA4
+
+# commands/levels.py migrated onto the bound command map in MOR-2006 Steps
+# 5..N (module 2): pbt_inner/pbt_outer/nr_level/nb_level/apf_type_level/
+# digisel_shift now require cmd_map -- these three real profile maps let the
+# "expected" comparison frames below keep calling the free builder directly
+# (the way this file's whole design works: build the same frame two ways --
+# once through CoreRadio, once through the builder -- and compare) rather
+# than switching to a fallback that no longer exists. All six builders emit
+# byte-identical [0x14, sub] frames on every declaring profile (no menu
+# address, no divergence row for any of them), so the expected bytes below
+# are unchanged.
+RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+_IC7300_CMD_MAP = load_rig(RIG_DIR / "ic7300.toml").to_command_map()
+_IC7610_CMD_MAP = load_rig(RIG_DIR / "ic7610.toml").to_command_map()
+_IC705_CMD_MAP = load_rig(RIG_DIR / "ic705.toml").to_command_map()
 
 
 def _connected_icom(*, model: str) -> IcomRadio:
@@ -107,7 +124,13 @@ class TestPbtInnerGating:
         radio = _connected_icom(model="IC-7300")
         mock = _mock_raw(radio)
         await radio.set_pbt_inner(75, receiver=0)
-        expected = set_pbt_inner(75, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = set_pbt_inner(
+            75,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
         assert b"\x29" not in expected[: len(expected)][2:5]
 
@@ -116,7 +139,13 @@ class TestPbtInnerGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         await radio.set_pbt_inner(75, receiver=0)
-        expected = set_pbt_inner(75, to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = set_pbt_inner(
+            75,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -131,7 +160,9 @@ class TestPbtInnerGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_pbt_inner(receiver=0)
-        expected = get_pbt_inner(to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = get_pbt_inner(
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == 64
 
@@ -147,7 +178,9 @@ class TestPbtInnerGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_pbt_inner(receiver=0)
-        expected = get_pbt_inner(to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = get_pbt_inner(
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == 64
 
@@ -158,7 +191,13 @@ class TestPbtOuterGating:
         radio = _connected_icom(model="IC-7300")
         mock = _mock_raw(radio)
         await radio.set_pbt_outer(80, receiver=0)
-        expected = set_pbt_outer(80, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = set_pbt_outer(
+            80,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -166,7 +205,13 @@ class TestPbtOuterGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         await radio.set_pbt_outer(80, receiver=0)
-        expected = set_pbt_outer(80, to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = set_pbt_outer(
+            80,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -181,7 +226,9 @@ class TestPbtOuterGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_pbt_outer(receiver=0)
-        expected = get_pbt_outer(to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = get_pbt_outer(
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == 50
 
@@ -197,7 +244,9 @@ class TestPbtOuterGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_pbt_outer(receiver=0)
-        expected = get_pbt_outer(to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = get_pbt_outer(
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == 50
 
@@ -260,7 +309,13 @@ class TestNrLevelGating:
         radio = _connected_icom(model="IC-7300")
         mock = _mock_raw(radio)
         await radio.set_nr_level(120, receiver=0)
-        expected = set_nr_level(120, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = set_nr_level(
+            120,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -268,7 +323,13 @@ class TestNrLevelGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         await radio.set_nr_level(120, receiver=0)
-        expected = set_nr_level(120, to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = set_nr_level(
+            120,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
 
@@ -278,7 +339,13 @@ class TestNbLevelGating:
         radio = _connected_icom(model="IC-7300")
         mock = _mock_raw(radio)
         await radio.set_nb_level(90, receiver=0)
-        expected = set_nb_level(90, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = set_nb_level(
+            90,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -286,7 +353,13 @@ class TestNbLevelGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         await radio.set_nb_level(90, receiver=0)
-        expected = set_nb_level(90, to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = set_nb_level(
+            90,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
 
@@ -300,7 +373,7 @@ class TestApfTypeLevelGating:
         mock = _mock_raw(radio)
         await radio.set_apf_type_level(3, receiver=0)
         expected = set_apf_type_level(
-            3, to_addr=_IC705_ADDR, receiver=0, command29=False
+            3, to_addr=_IC705_ADDR, receiver=0, command29=False, cmd_map=_IC705_CMD_MAP
         )
         assert _sent_civ(mock) == expected
 
@@ -310,7 +383,7 @@ class TestApfTypeLevelGating:
         mock = _mock_raw(radio)
         await radio.set_apf_type_level(3, receiver=0)
         expected = set_apf_type_level(
-            3, to_addr=_IC7610_ADDR, receiver=0, command29=True
+            3, to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
         )
         assert _sent_civ(mock) == expected
 
@@ -324,7 +397,7 @@ class TestDigiselShiftGating:
         mock = _mock_raw(radio)
         await radio.set_digisel_shift(10, receiver=0)
         expected = set_digisel_shift(
-            10, to_addr=_IC705_ADDR, receiver=0, command29=False
+            10, to_addr=_IC705_ADDR, receiver=0, command29=False, cmd_map=_IC705_CMD_MAP
         )
         assert _sent_civ(mock) == expected
 
@@ -334,7 +407,11 @@ class TestDigiselShiftGating:
         mock = _mock_raw(radio)
         await radio.set_digisel_shift(10, receiver=0)
         expected = set_digisel_shift(
-            10, to_addr=_IC7610_ADDR, receiver=0, command29=True
+            10,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
