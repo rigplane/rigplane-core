@@ -244,8 +244,8 @@ def get_command_fallback_audit_enabled() -> bool:
     (``1``/``true``/``on``/``yes``) turns it on. Unrecognised values keep
     the default (off) and warn, like the other knobs in this module.
 
-    This function and its only caller (``commands/_fallback_audit.py``) are
-    Step 1 scaffolding for
+    This function and its only production caller
+    (``commands/_fallback_audit.py``) are Step 1 scaffolding for
     ``docs/plans/2026-08-29-profile-driven-command-bytes.md``; that plan's
     Step Z deletes both, along with this env var. On, ``rigplane.commands``
     wraps every exported ``cmd_map``-taking builder at import so a call
