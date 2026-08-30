@@ -78,5 +78,3 @@ IC-9700	vfo.py:get_dual_watch	(no arguments)	map=fefea2e007c2c2fd fallback=fefea
 IC-9700	vfo.py:get_main_sub_band	(no arguments)	map=fefea2e007d2d2fd fallback=fefea2e007d2fd
 IC-9700	vfo.py:get_quick_split	(no arguments)	map=fefea2e01a050030fd fallback=fefea2e01a050033fd
 IC-9700	vfo.py:set_quick_split	(no arguments)	map=fefea2e01a050030fd fallback=fefea2e01a050033fd
-X6100	ptt.py:ptt_off	(no arguments)	map=fefe70e01c000000fd fallback=fefe70e01c0000fd
-X6100	ptt.py:ptt_on	(no arguments)	map=fefe70e01c000101fd fallback=fefe70e01c0001fd

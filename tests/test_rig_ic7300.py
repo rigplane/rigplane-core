@@ -332,7 +332,7 @@ class TestSharedCommands:
         assert cmdmap.get("get_mode") == (0x04,)
 
     def test_ptt_on(self, cmdmap):
-        assert cmdmap.get("ptt_on") == (0x1C, 0x00)
+        assert cmdmap.get("ptt_on") == (0x1C, 0x00, 0x01)
 
     def test_scope_on(self, cmdmap):
         assert cmdmap.get("scope_on") == (0x27, 0x10)
