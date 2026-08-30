@@ -7,9 +7,10 @@ work of its own and changes no code, test or profile.
 `docs/plans/2026-08-29-profile-driven-command-bytes.md`
 **Base commit:** `a2de2ab0`. Every figure here was measured against that commit
 in a dedicated worktree, not carried forward from an earlier round. `main` has
-since moved to `e8fe6e45` (one commit, `test(MOR-1900)` #2808, touching only
-`tests/integration/`); the two places that commit is relevant are marked where
-they appear.
+since moved twice: to `e8fe6e45` (one commit, `test(MOR-1900)` #2808, touching
+only `tests/integration/`), then to `f793dd99` (`fix(MOR-2011)` #2817, routing
+the Yaesu reference's two remaining hardcoded commands through the profile).
+The places either commit is relevant are marked where they appear.
 **Format model:** `docs/plans/2026-08-20-transmit-authority.md`
 
 ---
@@ -150,8 +151,10 @@ first draft of the plan, which read as if the design were being invented.
   `backends/yaesu_cat/parser.py: format_command`, and writes it.
 - `YaesuCatRadio._query` does the mirror for reads, and — this is the part the
   CI-V plan has to copy — resolves the **response parser by the same name**:
-  `self._parsers[cmd_name]`, a dict built at construction from each spec's
-  `parse` template. One name yields both the request and the reply shape.
+  `parser = self._parsers.get(cmd_name)`, followed by a `None`-check that
+  raises `CommandError` if the profile declared no parse template. The dict
+  is built at construction from each spec's `parse` template. One name yields
+  both the request and the reply shape.
 - When the profile does not declare the command, it refuses aloud. `_get_spec`
   raises `CommandError(f"Command {name!r} not found in profile ...")`; `_write`
   raises `CommandError(f"Command {cmd_name!r} has no write template")`; `_query`
@@ -159,6 +162,23 @@ first draft of the plan, which read as if the design were being invented.
 - The only thing `backends/yaesu_cat/` imports from `commands/` is
   `hz_to_table_index, table_index_to_hz` — two pure arithmetic helpers. No
   builder, no `CommandMap`, no `cmd_map`.
+
+**The honest limit, found in this same class and fixed by the time of
+writing.** At `a2de2ab0`, two methods did not yet fit the description above:
+`YaesuCatRadio.get_if_status` sent the literal `"IF;"` and parsed the reply
+at hand-picked offsets in Python, and `YaesuCatRadio._read_meter` sent
+`f"RM{meter_type};"` with the meter type hardcoded per caller — even though
+`rigs/ftx1.toml` already carried a complete `get_meter` entry, read *and*
+parse, that the method never consulted. Both are instances of the defect
+class this whole document is about, found living in the reference
+implementation it holds up as the target. `fix(MOR-2011)` (#2817, `f793dd99`)
+routed both through `_get_spec`/`_query`; a bench measurement on the live
+FTX-1 taken as part of that fix showed `get_if_status`'s old hand-picked
+offsets were wrong — freq was read at body offset 0 (142 Hz for a
+14.228 MHz dial), and the fields it called `tx`/`split` held RX CLAR and the
+tone mode instead, with the VFO/memory select sitting at the offset the old
+parser skipped entirely. As of `f793dd99`, the bullets above are true without
+exception.
 
 Read the refusal line again against plan §8.1 D1: *"refuse aloud, never silently
 succeed"* is not a ruling waiting to be implemented. It is implemented, it
@@ -205,8 +225,8 @@ it is not another loader: `backends/factory.py: create_radio` selects
 `YaesuCatRadio` for Yaesu models and one of four Icom serial classes otherwise.
 What is missing is not a second loader — it is that the object carrying commands
 is shaped for one family. Whether it should become generic over `CommandSpec` or
-stay per-family with only the *pattern* shared is Q8 (plan §8.2); the evidence I have
-favours per-family, and I say why there rather than deciding it.
+stay per-family with only the *pattern* shared is Q8 (plan §8.1), settled in
+favour of the latter — the evidence below is why.
 
 *Two consequences that are not hypothetical:*
 
@@ -384,7 +404,7 @@ the failure being removed. It comes after Step Z (plan §4).
 | Double | Depth of imitation |
 |---|---|
 | `tests/serial_stub.py: SerialMockRadio` | Method-call level. Its `send_civ` is a documented no-op — no CI-V ingest at all. |
-| `tests/mock_server.py: MockIcomRadio` | Real CI-V frames over UDP, but only eight commands dispatched (`0x03`, `0x04`, `0x05`, `0x06`, `0x11`, `0x14`, `0x15`, `0x16`, plus `0x1C` and the `0x29` wrapper); **no `0x07`, `0x1A` or `0x27`**; a single `self._frequency` with no MAIN/SUB split. |
+| `tests/mock_server.py: MockIcomRadio` | Real CI-V frames over UDP, but only eight top-level command branches (`0x03`, `0x04`, `0x05`, `0x06`, `0x14`, `0x15`, `0x1C`, `0x29`); `0x11` and `0x16` are reachable only as the `0x29` wrapper's two recognised inner commands, not standalone; **no `0x07`, `0x1A` or `0x27`** at any level; a single `self._frequency` with no MAIN/SUB split. |
 | `tests/test_icom7610_serial_radio.py: _FakeSerialCivLink` | Records sent frames and supports scripted per-send responses; no state model. |
 
 *And a fourth has already appeared.* On `e8fe6e45` (#2808, which is on `main`
@@ -405,18 +425,37 @@ of one mechanism, each grown to its caller's needs.
 ### C8.4 The blind spot it closes, and the owner's ruling on closing it early
 
 *Measured at `a2de2ab0`, by reading `tests/mock_server.py`'s `_CMD_*` constants
-and the `if cmd ==` branches that consume them:* `MockIcomRadio` dispatches
-**eight** CI-V commands — `0x03`, `0x04`, `0x05`, `0x06`, `0x11`, `0x14`,
-`0x15`, `0x16` — plus `0x1C` and the `0x29` wrapper. It has **no `0x1A` branch
-and no `0x27` branch.**
+and the `if cmd ==` branches that consume them:* `MockIcomRadio` has **eight**
+top-level branches — `0x03`, `0x04`, `0x05`, `0x06`, `0x14`, `0x15`, `0x1C`,
+`0x29` (`0x11` and `0x16` exist only as the `0x29` wrapper's two recognised
+inner commands, not standalone). Dispatch inside those branches is narrower
+than the top level, and this is the part the earlier draft of this section
+got wrong: the `0x14` branch handles only sub `0x0A` (RF power), and the
+`0x1C` branch handles only sub `0x00` with an empty payload (PTT get) —
+everything else on those two commands still NAKs. It has **no `0x1A` branch
+and no `0x27` branch** at all.
 
-Now put that against the divergence file. All 44 `config.py` rows and all 16
-`levels.py` rows are `1A 05` menu addresses; all four `scope.py` rows are
-`0x27`. So **the integration doubles cannot observe a single one of the 76
-frames this migration changes.** They will stay green through every step of it.
+Now put that against the divergence file. **This is where §C1 and an earlier
+version of this section disagreed — §C1 is the one that reproduces.** Of the
+60 `config.py`/`levels.py` rows, only 40 have both the map and the fallback
+side at a plain `1A 05` menu address (24 in `config.py`, all 16 in
+`levels.py`) — a command the mock has no branch for at all, so both sides NAK
+on the absent top-level branch. The other 20, all in `config.py`, put one
+side inside the `0x14`/`0x1C` branches above: 18 with a fallback side of
+`0x14` (`14 11` lan_mod_level ×4, `14 10` usb_mod_level ×8, `14 0B`
+acc1_mod_level ×6 — none of them sub `0x0A`) and 2 with a map side of `1C 04`
+(IC-7610 `get_civ_output_ant`/`set_civ_output_ant`, the same row §C1
+describes). Those 20 NAK on the sub-command check inside an existing branch,
+not on an absent top-level one. All four `scope.py` rows are `0x27`, which
+the mock has no branch for at all. Either way, both the map frame and the
+fallback frame NAK, so **the integration doubles cannot observe a single one
+of the 76 frames this migration changes.** They will stay green through
+every step of it.
 
 The consequence a reader must not miss: **a green integration run is not
-evidence that a migration step was safe.** The safety net for plan §4 is
+evidence that a migration step was safe** — and "the mock has no `0x1A`
+branch" is not the reason to reach for when `MockIcomRadio` is next touched,
+because it explains only 56 of the 76 rows. The safety net for plan §4 is
 `tests/test_command_map_parity.py` and the per-step tests that plan names —
 the wire-level ones — never the integration suite.
 
@@ -430,10 +469,11 @@ closure** — the closure is C8, and C8 comes after plan Step Z.
 ### C8.5 The shared missing piece
 
 The double needs **bytes → name**. So does `runtime/_civ_rx.py`. Neither exists
-today. That is Q3 (plan §8.2), which is now a question about one deliverable with
-three customers rather than about one decoder — including the measured finding
-that the reverse index is one-to-many and needs a small per-language rule set
-beside it.
+today. That is Q3 (plan §8.1), settled as one deliverable with three
+customers rather than as one decoder for one consumer — and ruled out of this
+programme's scope, tracked separately as **MOR-1993**, which now blocks
+**MOR-2010**. The measured finding behind that scoping — the reverse index is
+one-to-many and needs a small per-language rule set beside it — is §C9.
 
 ### C8.6 The state the double needs already exists — checked
 
@@ -454,11 +494,12 @@ layering problem.
 
 Three further facts make the reuse more than merely possible:
 
-- **Production already shares it four ways.** `runtime/radio.py: CoreRadio`,
+- **Production already shares it five ways.** `runtime/radio.py: CoreRadio`,
   `backends/yaesu_cat/radio.py: YaesuCatRadio`,
-  `backends/rigctld_client/radio.py: RigctldClientRadio` and `web/server.py`
-  each construct a `RadioState`. A double holding one is holding the same object
-  the production code holds, which is the property that makes it worth doing.
+  `backends/rigctld_client/radio.py: RigctldClientRadio`, `web/server.py` and
+  `web/runtime_helpers.py` each construct a `RadioState`. A double holding one
+  is holding the same object the production code holds, which is the property
+  that makes it worth doing.
 - **Tests already construct it directly** — for example in
   `tests/test_main_sub_tracking.py` and `tests/test_yaesu_cat_observation_adapter.py`.
   So this is not a new capability, only an unused one.
@@ -517,8 +558,8 @@ and none should be inferred.
 
 Plan §1.4 records that a third population of hardcoded command bytes exists —
 `runtime/_civ_rx.py` compares `frame.command` / `frame.sub` against integer
-literals **105 times** — and that the plan's scope stops short of it, as plan
-§8.2 Q3. This section is the measurement behind that boundary.
+literals **105 times** — and that the plan's scope stops short of it, ruled
+by plan §8.1 Q3. This section is the measurement behind that ruling.
 
 **Why it is structurally different.** The other two populations build a frame
 or match a reply to a request the code itself just sent, so the code already
@@ -558,9 +599,9 @@ is exactly the category C8.7 already lists as what a profile will never supply.
 So the reverse index and the per-language rules are **one deliverable with
 three customers**: `runtime/_civ_rx.py`, the single double of C8, and any
 future consumer that must interpret a frame it did not build. Whether that
-deliverable belongs to this programme or its own is plan §8.2 Q3, and is the
-owner's to answer — but it should be answered knowing it is one thing serving
-three, not one thing serving one.
+deliverable belongs to this programme or its own was plan §8.1 Q3, ruled
+separate — tracked as **MOR-1993**, which now blocks **MOR-2010** — precisely
+because it is one thing serving three, not one thing serving one.
 
 ---
 
@@ -580,8 +621,9 @@ All at `a2de2ab0`, in a clean worktree, so that a reader can re-derive them.
   `.sub` against an integer literal.
 - The ACC1/MIC frame equality: executed, both builders, same address, printed
   hex compared.
-- The IC-9700 copied block: `diff` of the 23 lines following the identical
-  comment in the two TOMLs.
+- The IC-9700 copied block: `diff` of the 24 lines following the identical
+  comment in the two TOMLs (`get_vox_delay`/`set_vox_delay` sit just outside
+  that identical run — same address, differing trailing comment).
 - Census figures: read from `tests/command_map_parity_uncovered.txt`, whose
   every number `tests/test_command_map_parity.py` re-measures and asserts; that
   test was run at `a2de2ab0` and passed (5 tests, 0.2s).
@@ -619,7 +661,7 @@ All at `a2de2ab0`, in a clean worktree, so that a reader can re-derive them.
   the `speech = get_speech` module-level alias collapses onto its function), and
   this AST census counts `FunctionDef` nodes with a `cmd_map` argument. The two
   methods are independent and agree at 232.
-- Reverse-index collisions (plan §8.2, Q3): loading each profile, inverting
+- Reverse-index collisions (plan §8.1, Q3): loading each profile, inverting
   `RigConfig.to_command_map` into `wire tuple -> [names]` and separately into
   `(command, sub) -> {names}`, and counting keys with more than one name.
 - Test-double depth (§C8): reading each double, plus a `grep` of
@@ -652,8 +694,7 @@ ordered, sized and pinned to named tests in:
 | The 76 divergences and how to hand them out | plan §5 |
 | The response half | plan §6 |
 | What could go wrong | plan §7 |
-| Owner decisions D1 and D2 | plan §8.1 |
-| Open questions Q3–Q8 | plan §8.2 |
+| All ten owner rulings — D1, D2, and Q3–Q8 | plan §8.1 |
 
 Neither document is complete on its own.
 
