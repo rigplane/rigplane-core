@@ -1,14 +1,11 @@
 # State-3 guard baseline (plan §4 Step 4 / §8.1 D1), tab separated:
 #   census  <name>              <count>
 #   gap     <command-map key>   <profiles missing it, comma sep.>
-# One 'gap' row per key (compact, like
-# command_map_parity_uncovered.txt's own 'gap' rows): the key is
-# neither declared nor declared absent for every profile named --
-# D1's state 3. This test fails on a (profile, key) pair missing
-# here, and on a row that is no longer a gap -- delete it, never
-# keep it. Fill a gap by adding a { absent = "<source>" } entry
-# (plan §8.1 D2) or a real command-byte entry to the profile's own
-# TOML. Regenerate, do not hand-edit.
+# One 'gap' row per key: neither declared nor declared absent for
+# every profile named -- D1's state 3. Fails on a pair missing here
+# or a row no longer a gap -- delete it, never keep it. Fill a gap
+# via { absent = "<source>" } (plan §8.1 D2) or a real command-byte
+# entry in the profile's own TOML. Regenerate, do not hand-edit.
 census	civ_profiles	6
 census	distinct_gap_keys	191
 census	profile_key_gaps	481

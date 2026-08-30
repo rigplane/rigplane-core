@@ -1,25 +1,21 @@
 """Tests for D1 (plan §4 Step 4,
 ``docs/plans/2026-08-29-profile-driven-command-bytes.md`` §8.1): what the
-command path does for a command name a profile does not declare.
+command path does for a command name a profile does not declare, with the
+same behaviour in development and production -- the only asymmetry lives
+in ``tests/test_profile_command_coverage.py``, never here.
 
-D1 names three states, with the same behaviour in development and
-production -- the only asymmetry lives in a test
-(``tests/test_profile_command_coverage.py``), never in this code path:
-
-1. Declared -> send the profile's bytes. Already pinned by
-   ``tests/test_profile_command_binding.py``; not repeated here.
+1. Declared -> the profile's bytes, unchanged; pinned by
+   ``tests/test_profile_command_binding.py``, not repeated here.
 2. Declared absent (``RadioProfile.absent_command_names``) -> refuse with
-   ``CommandError`` naming the recorded source. Never a bare ``KeyError``,
+   ``CommandError`` naming the recorded source. Never a bare ``KeyError``
    and no log line -- a confirmed fact needs no warning.
 3. Neither declared nor declared absent -> the same shape of refusal, plus
-   a WARNING through the caller-supplied ``on_undeclared`` hook. This
-   state must not exist at release (that guard is
-   ``tests/test_profile_command_coverage.py``); this file pins what
-   happens if it is reached anyway.
+   a WARNING through the caller-supplied ``on_undeclared`` hook. Must not
+   exist at release; this file pins what happens if reached anyway.
 
 Both surfaces ``commands/bound.py: BoundCommands`` exposes are covered:
-``__getattr__`` (a bound builder reached through attribute access, then
-actually called) and ``expect`` (the reply-matching half).
+``__getattr__`` (a bound builder reached via attribute access, then
+called) and ``expect`` (the reply-matching half).
 """
 
 from __future__ import annotations

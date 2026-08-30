@@ -1,29 +1,25 @@
 """State-3 guard for D1 (plan §4 Step 4,
 ``docs/plans/2026-08-29-profile-driven-command-bytes.md`` §8.1): a CI-V
 profile that neither declares a command-map key nor records it as absent
-leaves that name in the one state D1 says "must not exist at release" --
+leaves that name in the state D1 says "must not exist at release" --
 reached at runtime it falls back to logging and refusing (pinned by
-``tests/test_undeclared_command_policy.py``); this file is the guard meant
-to keep that fallback from ever firing in production.
+``tests/test_undeclared_command_policy.py``); this is the guard that keeps
+that fallback from firing in production.
 
 Method, mirrored from ``tests/test_command_map_parity.py`` (the parity
 harness) per the plan's own instruction to derive keys "the way the parity
-harness does": every public, ``cmd_map``-taking builder resolves to a
-literal command-map key -- statically, from a direct
-``_build_from_map(cmd_map, "literal", ...)`` call or a ``cmd_name="literal"``
-keyword forwarded to a ``commands/_builders.py`` shared template (measured
-at this commit: 230 of 232 builders, 34 of them to a literal that differs
-from the builder's own function name, e.g. ``antenna.py: get_antenna_1``
+harness does": every public, ``cmd_map``-taking builder resolves its
+command-map key by exactly one of three routes -- statically, from a
+direct ``_build_from_map(cmd_map, "literal", ...)`` call or a
+``cmd_name="literal"`` keyword forwarded to a ``commands/_builders.py``
+shared template (most builders, e.g. ``antenna.py: get_antenna_1``
 resolves ``"get_antenna"``); via one hop of delegation for the two
 compatibility wrappers with no literal of their own
-(``dsp.py: set_attenuator``, ``vfo.py: set_dual_watch`` -- both branches of
-the latter agree on one key); or via the exposed ``cmd_map_key`` callable
-(``commands/_frame.py: expose_command_key``) for the one builder whose key
-is a function of the map's own contents (``speech.py: get_speech``). This
-needs no argument synthesis and never calls a builder, so it also covers
-the two builders the parity harness cannot probe at all
-(``vfo.py: scan_set_df_span``, ``scan_set_resume`` -- no probe int lands in
-either builder's narrow valid range).
+(``dsp.py: set_attenuator``, ``vfo.py: set_dual_watch``); or via the
+exposed ``cmd_map_key`` callable for the one builder whose key is a
+function of the map's own contents (``speech.py: get_speech``).
+``test_every_builder_resolves_by_exactly_one_route`` below ties the split
+to an assertion rather than a count that would rot silently here.
 
 A resolved key is a gap for a profile when it is neither in
 ``RadioProfile.command_names`` nor in ``RadioProfile.absent_command_names``.
@@ -111,13 +107,10 @@ def _builders() -> dict[Key, typing.Any]:
 def _static_literal_key(node: ast.FunctionDef) -> str | None:
     """The literal command-map key *node*'s body passes, if it is a constant.
 
-    Two shapes cover every builder but two: a direct
-    ``_build_from_map(cmd_map, "name", ...)`` call, and a
+    A direct ``_build_from_map(cmd_map, "name", ...)`` call, or a
     ``cmd_name="name"`` keyword forwarded to a ``commands/_builders.py``
     shared template. Not a literal for ``speech.py: get_speech``, whose key
-    is a ``_speech_key(cmd_map)`` call -- not an ``ast.Constant`` -- so it
-    falls through to ``None`` here and is resolved via its exposed
-    ``cmd_map_key`` instead (see ``_key_for``).
+    is a ``_speech_key(cmd_map)`` call -- not an ``ast.Constant``.
     """
     for child in ast.walk(node):
         if (
@@ -140,12 +133,10 @@ def _static_literal_key(node: ast.FunctionDef) -> str | None:
 def _delegate_target_names(node: ast.FunctionDef) -> frozenset[str]:
     """Builder names *node* calls while forwarding ``cmd_map``.
 
-    Resolves the two compatibility wrappers with no literal of their own
-    (``dsp.py: set_attenuator``, ``vfo.py: set_dual_watch``): both dispatch
-    to another public builder by an ``on: bool`` argument, and in both
-    cases every branch resolves to the same key, so a single-hop,
-    name-based lookup is enough without knowing which branch a given call
-    would take.
+    Resolves ``dsp.py: set_attenuator`` and ``vfo.py: set_dual_watch``:
+    both dispatch to another public builder by an ``on: bool`` argument,
+    and every branch of each agrees on one key, so a single-hop,
+    name-based lookup needs no knowledge of which branch would run.
     """
     return frozenset(
         child.func.id
@@ -192,6 +183,38 @@ def _key_for(
     if key_fn is not None:
         return typing.cast(str, key_fn(command_map))
     return _resolve_static_key(key, cache)
+
+
+def test_every_builder_resolves_by_exactly_one_route() -> None:
+    """Ties the module docstring's classification claim to an assertion
+    instead of a literal count that rots silently: static (a literal in the
+    body) + delegated (one hop to another builder's key) +
+    ``cmd_map_key``-exposed (checked last -- ``ptt.py: ptt_on``/``ptt_off``
+    expose it too but also carry a static literal, so only
+    ``speech.py: get_speech`` actually falls through to this branch) must
+    sum to the full builder surface, and only the two named delegates and
+    the one named ``cmd_map_key`` builder may be non-static.
+    """
+    builders = _builders()
+    static_cache: dict[Key, str] = {}
+    static: set[Key] = set()
+    delegated: set[Key] = set()
+    cmd_map_key: set[Key] = set()
+    for key, builder in builders.items():
+        if _static_literal_key(_ast_index()[key]) is not None:
+            static.add(key)
+        elif getattr(builder, "cmd_map_key", None) is not None:
+            cmd_map_key.add(key)
+        else:
+            _resolve_static_key(key, static_cache)  # raises if unresolvable
+            delegated.add(key)
+
+    assert len(static) + len(delegated) + len(cmd_map_key) == len(builders)
+    assert {f"{f}:{n}" for f, n in delegated} == {
+        "dsp.py:set_attenuator",
+        "vfo.py:set_dual_watch",
+    }
+    assert {f"{f}:{n}" for f, n in cmd_map_key} == {"speech.py:get_speech"}
 
 
 # ── the comparison ──
@@ -258,14 +281,11 @@ def _render(report: _Report) -> str:
         "# State-3 guard baseline (plan §4 Step 4 / §8.1 D1), tab separated:",
         "#   census  <name>              <count>",
         "#   gap     <command-map key>   <profiles missing it, comma sep.>",
-        "# One 'gap' row per key (compact, like",
-        "# command_map_parity_uncovered.txt's own 'gap' rows): the key is",
-        "# neither declared nor declared absent for every profile named --",
-        "# D1's state 3. This test fails on a (profile, key) pair missing",
-        "# here, and on a row that is no longer a gap -- delete it, never",
-        '# keep it. Fill a gap by adding a { absent = "<source>" } entry',
-        "# (plan §8.1 D2) or a real command-byte entry to the profile's own",
-        "# TOML. Regenerate, do not hand-edit.",
+        "# One 'gap' row per key: neither declared nor declared absent for",
+        "# every profile named -- D1's state 3. Fails on a pair missing here",
+        "# or a row no longer a gap -- delete it, never keep it. Fill a gap",
+        '# via { absent = "<source>" } (plan §8.1 D2) or a real command-byte',
+        "# entry in the profile's own TOML. Regenerate, do not hand-edit.",
     ]
     rows = [f"census\t{name}\t{n}" for name, n in sorted(report.census.items())]
     rows += [

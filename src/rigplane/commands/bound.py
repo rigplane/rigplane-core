@@ -43,33 +43,30 @@ nothing in that file imports `bound.py`, but not a fact this module should
 depend on. Resolving lazily means it works either way.
 
 **Step 4 (MOR-2005): the undeclared-command policy, D1
-(`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1).** D1 names
-three states, same behaviour in development and production -- the only
-asymmetry lives in a test (`tests/test_profile_command_coverage.py`),
-never here: (1) Declared -- send the profile's bytes, unchanged from Step
-3. (2) Declared absent (confirmed not present, per a named source) --
-refuse with `core.exceptions.CommandError` quoting that source; not an
-exception thrown bare at the end consumer, not log-and-continue, the same
-*shape* of refusal `runtime/radio.py: CoreRadio.set_filter_width` already
-raises for its one production ``supports_command`` caller today. (3)
-Neither declared nor declared absent -- must not exist at release
-(`tests/test_profile_command_coverage.py` is the guard); if reached
-anyway, refuse the same way as (2) and also invoke the optional
-``on_undeclared`` hook, which the caller may wire to a logger.
+(`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1).** Same
+behaviour in development and production -- the only asymmetry lives in
+`tests/test_profile_command_coverage.py`, never here. Three states: (1)
+Declared -- send the profile's bytes, unchanged from Step 3 (pinned by
+`tests/test_profile_command_binding.py`). (2) Declared absent (confirmed
+not present, per a named source) -- refuse with
+`core.exceptions.CommandError` quoting that source, the same *shape* of
+refusal `runtime/radio.py: CoreRadio.set_filter_width` already raises for
+its one production ``supports_command`` caller. (3) Neither declared nor
+declared absent -- must not exist at release; if reached anyway, refuse
+the same way as (2) and also invoke the optional ``on_undeclared`` hook.
+Both are pinned by `tests/test_undeclared_command_policy.py`.
 
-Both surfaces here consult the same distinction: `__getattr__`'s returned
-wrapper classifies a ``CommandMap.get`` miss when the builder is actually
-called (not every builder's true map key is known without invoking it --
-see ``_missing_command_name``'s docstring), and `expect` classifies before
-decoding, since it already knows the key via ``cmd_map_key``.
+Both surfaces here consult the same distinction: `__getattr__`'s wrapper
+classifies a ``CommandMap.get`` miss when the builder is actually called
+(not every key is known without invoking it -- see
+``_missing_command_name``), and `expect` classifies before decoding, since
+it already knows the key via ``cmd_map_key``.
 
 This module still performs no I/O itself (`commands/LAYER.md`):
 ``on_undeclared`` is a plain callable the caller supplies or omits, never
-a ``logging`` call made from here. `runtime/radio.py: CoreRadio.__init__`
-wires it to a real logger, and is also the one that reads
-``RadioProfile.absent_command_sources`` (plain ``dict[str, str]`` data)
-off the profile and passes it down -- this module still imports nothing
-from `profiles`.
+a ``logging`` call made from here -- `runtime/radio.py: CoreRadio.__init__`
+wires it to a real logger, and reads ``RadioProfile.absent_command_sources``
+(plain ``dict[str, str]`` data) off the profile.
 """
 
 from __future__ import annotations
@@ -114,13 +111,11 @@ def _missing_command_name(exc: KeyError) -> str:
 
     ``CommandMap.get`` (`commands/command_map.py`) raises with a single
     formatted message, ``f"Unknown command {name!r}. Available: ..."`` --
-    no structured attribute carries the bare name, and changing that shape
-    would risk the parsing `tests/test_command_map_parity.py: _report`
-    already does against the identical exception. This module reuses that
-    same parsing rather than inventing a second, independent way to read
-    the same message, so the two cannot silently disagree about what it
-    means. A message that does not match the expected shape is a
-    different failure and is re-raised, never swallowed as a refusal.
+    no structured attribute carries the bare name, so this reuses the same
+    parsing `tests/test_command_map_parity.py: _report` already does
+    against the identical exception, rather than a second, independent one
+    that could silently disagree. A message not matching the expected
+    shape is a different failure, re-raised rather than swallowed.
     """
     text = str(exc)
     marker = "Unknown command "

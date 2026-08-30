@@ -88,24 +88,20 @@ class TestIcomSupportsCommand:
 
 class TestSupportsCommandReconciliation:
     """MOR-2005 (2026-08-29 comment): before this, ``supports_command``
-    checked only the hardcoded ``_KNOWN_COMMANDS`` literal, disagreeing
-    with the profile in both directions: profile-declared command-map keys
-    the literal does not know under that name (e.g. wire-level TOML keys
-    like ``get_alc`` that the literal only knows under a different,
-    runtime-method-level name such as ``get_alc_meter``), and
-    literal-known names that are composite API operations the profile can
-    never declare (e.g. ``capture_scope_frame``). Neither direction is
-    empty for IC-7300 -- pinned by ``test_reconciliation_directions_are_
-    both_nonempty`` below, recomputed rather than hardcoded, since a count
-    would go stale the next time a rig TOML changes without failing
-    anything.
+    checked only ``_KNOWN_COMMANDS``, disagreeing with the profile both
+    ways: TOML keys the literal knows only under a different, runtime-
+    method-level name (e.g. ``get_alc`` vs ``get_alc_meter``), and
+    literal-known composite ops a profile can never declare (e.g.
+    ``capture_scope_frame``). Neither direction is empty for IC-7300 --
+    pinned by ``test_reconciliation_directions_are_both_nonempty`` below,
+    recomputed rather than hardcoded, since a count would go stale
+    silently the next time a rig TOML changes.
 
     Reconciled: the profile speaks first; the literal is the fallback only
-    for a name the profile does not mention either way; a name the profile
-    records as confirmed absent overrides both other checks. No rig TOML
-    uses the ``{ absent = "<source>" }`` spelling yet (plan §8.1 D2 has not
-    filled the profiles), so the absent-wins case is exercised with a
-    profile built via ``dataclasses.replace`` rather than a real one.
+    for a name the profile does not mention either way; a confirmed-absent
+    name overrides both. No rig TOML uses the
+    ``{ absent = "<source>" }`` spelling yet (plan §8.1 D2 has not filled
+    the profiles), so that case is exercised via ``dataclasses.replace``.
     """
 
     def test_toml_declared_name_the_literal_does_not_know_is_supported(

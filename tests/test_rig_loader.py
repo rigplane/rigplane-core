@@ -1721,6 +1721,14 @@ class TestAbsentCommandSemantics:
         profile = load_rig(p).to_profile()
         assert "get_dual_watch" in profile.absent_command_names
 
+    def test_absent_command_sources_keys_match_absent_command_names(self, tmp_path):
+        """MOR-2005 step 4b: ``absent_command_sources`` (D1 state 2's
+        refusal source, plan §8.1) is coherent with ``absent_command_names``
+        by construction -- pinned here rather than left implicit."""
+        p = _write_toml(tmp_path, self._TOML_WITH_ABSENT)
+        profile = load_rig(p).to_profile()
+        assert frozenset(profile.absent_command_sources) == profile.absent_command_names
+
     def test_supports_command_false_for_absent_name(self, tmp_path):
         p = _write_toml(tmp_path, self._TOML_WITH_ABSENT)
         profile = load_rig(p).to_profile()
