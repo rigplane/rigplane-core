@@ -1075,10 +1075,10 @@ set_rx_antenna = [0x16, 0x53]
 get_rx_antenna_ant2 = [0x12]              # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3, "12 01: Select/read ANT2 selection (00=RX ANT OFF, 01=RX ANT ON)" -- genuine on this radio (separate RX ANT jack), unlike IC-705/others
 set_rx_antenna_ant2 = [0x12]              # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3, "12 01: Select/read ANT2 selection (00=RX ANT OFF, 01=RX ANT ON)" -- genuine on this radio (separate RX ANT jack), unlike IC-705/others
 # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.9, "1C 04
-# CI-V Output (for ANT)" exactly; fallback 1A 05 0130 is "Network > Default
-# Gateway" (wrong) on this radio. The guide also documents the same feature
-# a second way at 1A 05 0114 (p.6/p.9) -- both paths are real, this profile
-# uses the 1C 04 path (D2, MOR-2017).
+# CI-V Output (for ANT)" exactly; 1A 05 0130 is "Network > Default Gateway"
+# on this radio, not this command. The guide also documents the same
+# feature a second way at 1A 05 0114 (p.6/p.9) -- both paths are real,
+# this profile uses the 1C 04 path (D2, MOR-2017).
 get_civ_output_ant = [0x1C, 0x04]
 set_civ_output_ant = [0x1C, 0x04]
 
@@ -1292,9 +1292,9 @@ set_memory_contents = [0x1A, 0x00]
 # IC-7610 addresses (differ from IC-7300).
 
 [commands.overrides]
-# acc1_mod_level (1A 05 0088) is the exact 0x14 0x0B collision already
-# recorded in civ-0x140b-collision-acc1-vs-micgain.md: 14 0B is MIC gain on
-# this radio, not ACC MOD level. Guide confirms both (D2, MOR-2017).
+# acc1_mod_level (1A 05 0088) was the exact 0x14 0x0B collision MOR-1992
+# measured: 14 0B is MIC gain on this radio (see get_mic_gain = [0x14, 0x0B]
+# below), not ACC MOD level. Guide confirms both, p.3/p.5 (D2, MOR-2017).
 get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.5, control 0088 "MOD Input > ACC MOD Level"; 14 0B = "MIC gain" (p.3)
 set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.5, control 0088 "MOD Input > ACC MOD Level"; 14 0B = "MIC gain" (p.3)
 get_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x10), p.5, control 0089 "MOD Input > USB MOD Level"
@@ -1309,8 +1309,8 @@ get_data2_mod_input = [0x1A, 0x05, 0x00, 0x93]
 set_data2_mod_input = [0x1A, 0x05, 0x00, 0x93]
 get_data3_mod_input = [0x1A, 0x05, 0x00, 0x94]
 set_data3_mod_input = [0x1A, 0x05, 0x00, 0x94]
-get_civ_transceive = [0x1A, 0x05, 0x01, 0x12]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.6, control 0112 "CI-V Transceive" exactly; fallback 0129 is "Network > Subnet Mask" (wrong) on this radio
-set_civ_transceive = [0x1A, 0x05, 0x01, 0x12]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.6, control 0112 "CI-V Transceive" exactly; fallback 0129 is "Network > Subnet Mask" (wrong) on this radio
+get_civ_transceive = [0x1A, 0x05, 0x01, 0x12]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.6, control 0112 "CI-V Transceive" exactly; 0129 is "Network > Subnet Mask" on this radio, not this command
+set_civ_transceive = [0x1A, 0x05, 0x01, 0x12]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.6, control 0112 "CI-V Transceive" exactly; 0129 is "Network > Subnet Mask" on this radio, not this command
 get_system_date = [0x1A, 0x05, 0x01, 0x58]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7, control 0158 -- matches the shared fallback exactly (this appears to be the radio the shared constant was built against)
 set_system_date = [0x1A, 0x05, 0x01, 0x58]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7, control 0158 -- matches the shared fallback exactly (this appears to be the radio the shared constant was built against)
 get_system_time = [0x1A, 0x05, 0x01, 0x59]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7, control 0159 -- matches the shared fallback exactly
