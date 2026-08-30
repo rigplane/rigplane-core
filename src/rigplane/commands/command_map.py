@@ -46,3 +46,20 @@ class CommandMap:
 
     def __repr__(self) -> str:
         return f"CommandMap({len(self._commands)} commands)"
+
+    def __eq__(self, other: object) -> bool:
+        """Compare by contents, matching this class's ``Immutable mapping`` claim.
+
+        Without this, two ``CommandMap`` instances built from identical
+        dicts (e.g. two calls to ``profiles/rig_loader.py:
+        RigConfig.to_command_map`` for the same TOML) compared unequal by
+        identity -- which broke a pre-existing field-by-field equality
+        sweep once ``profiles/__init__.py: RadioProfile`` gained a
+        ``command_map`` field carrying one (MOR-2003 Step 3).
+        """
+        if not isinstance(other, CommandMap):
+            return NotImplemented
+        return self._commands == other._commands
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self._commands.items()))

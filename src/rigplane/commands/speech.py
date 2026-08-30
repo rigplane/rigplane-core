@@ -9,12 +9,29 @@ from ._frame import (
     _CMD_SPEECH,
     _build_from_map,
     build_civ_frame,
+    expose_command_key,
 )
 
 if TYPE_CHECKING:
     from ..command_map import CommandMap
 
 
+def _speech_key(cmd_map: CommandMap) -> str:
+    """The command-map key `get_speech` resolves for *cmd_map*.
+
+    A profile may expose ``set_speech`` (wfview Set-only) instead of
+    ``get_speech``; this is the one probe among the exposed builders in
+    MOR-2003 Step 3 whose key is a function of the map rather than a fixed
+    literal (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §3.1,
+    "the fourth case"). Shared between `get_speech`'s own body and its
+    `@expose_command_key` decoration so the two cannot drift apart --
+    `tests/test_profile_command_binding.py`'s drift test pins that they
+    agree regardless.
+    """
+    return "set_speech" if cmd_map.has("set_speech") else "get_speech"
+
+
+@expose_command_key(_speech_key)
 def get_speech(
     what: int = 0,
     *,
@@ -32,10 +49,9 @@ def get_speech(
               2 = mode.
     """
     if cmd_map is not None:
-        speech_key = "set_speech" if cmd_map.has("set_speech") else "get_speech"
         return _build_from_map(
             cmd_map,
-            speech_key,
+            _speech_key(cmd_map),
             to_addr=to_addr,
             from_addr=from_addr,
             data=bytes([what]),

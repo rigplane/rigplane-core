@@ -309,6 +309,8 @@ from rigplane.core.tx_authority import (
 )
 from rigplane.core.tx_safety import TxOutcome
 from rigplane.runtime.meter_cal import interpolate_swr
+from rigplane.commands.bound import BoundCommands
+from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.core.radio_state import RadioState
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
@@ -880,6 +882,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             model=model,
             radio_addr=radio_addr,
         )
+        # Bound once, at construction (MOR-2003 Step 3,
+        # docs/plans/2026-08-29-profile-driven-command-bytes.md §3.1/§4). A
+        # hand-built profile with no ``command_map`` (e.g. a test fixture
+        # constructed outside ``profiles/rig_loader.py``) and a loaded
+        # profile that declares no CI-V commands both bind an empty
+        # ``CommandMap`` here rather than raising -- construction must
+        # never fail on this. No call site reads ``self._commands`` yet;
+        # that migration is Steps 5..N of the same plan.
+        self._commands = BoundCommands(self._profile.command_map or CommandMap({}))
         # Apply per-profile codec preference override (#797) — only if caller
         # accepted the global default. An explicit non-default value always wins.
         # Limitation kept for compatibility with the historical constructor:
