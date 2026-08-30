@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Callable
@@ -12,8 +13,10 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from rigplane.commands._frame import decode_wire_tuple
+from rigplane.commands.command_map import CommandMap
 from rigplane.commands.commander import IcomCommander, Priority
-from rigplane.core.capabilities import CAP_SCOPE
+from rigplane.core.capabilities import CAP_AGC, CAP_SCOPE
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
@@ -2423,6 +2426,103 @@ async def test_execute_set_agc_sends_wire_value_without_legacy_mirror() -> None:
     assert state.main.agc == 1
     assert state.sub.agc == 1  # no legacy mirror write
     assert ("agc_changed", {"mode": 2, "receiver": 1}) in events
+
+
+def test_cmd_map_is_the_profile_bound_map_not_a_disk_scan() -> None:
+    """MOR-2004 step 3b: the poller's command map is the exact ``CommandMap``
+    object ``profiles/__init__.py: RadioProfile.command_map`` already
+    carries (bound once at profile-resolution time, MOR-2003 step 3) --
+    identity, not just equality, so a re-parse of ``rigs/`` under
+    ``RadioPoller._load_command_map`` (now deleted) could not silently
+    reappear and still pass.
+    """
+    radio = _make_radio(model="IC-7300")
+    poller = RadioPoller(radio, CommandQueue())
+    assert poller._cmd_map is radio.profile.command_map  # noqa: SLF001
+    assert isinstance(poller._cmd_map, CommandMap)  # noqa: SLF001
+
+
+def test_radio_poller_construction_survives_profile_without_command_map() -> None:
+    """A hand-built profile with no ``command_map`` at all -- ``None``, per
+    ``profiles/__init__.py: RadioProfile.command_map``'s own docstring for a
+    ``RadioProfile`` built outside ``rig_loader.py`` -- must not crash
+    construction. The lookup simply misses at send time (pinned by
+    ``test_execute_set_agc_undeclared_command_refuses_without_firing_event``
+    below for the ``command_map`` case; this test pins the ``None`` case
+    specifically).
+    """
+    radio = _make_radio(model="IC-7300")
+    radio.profile = dataclasses.replace(radio.profile, command_map=None)
+    poller = RadioPoller(radio, CommandQueue())
+    assert poller._cmd_map is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_execute_set_agc_without_cap_agc_emits_profile_wire_bytes() -> None:
+    """No-``CAP_AGC`` path (``RadioPoller._send_cmd``): the frame matches the
+    profile's declared ``set_agc`` wire tuple with the disk scan gone --
+    decoded the same way every other command-map entry is decoded, via
+    ``commands/_frame.py: decode_wire_tuple``. Pinned against IC-7300's own
+    bound map rather than a hardcoded byte pair, so this stays correct if
+    ``rigs/ic7300.toml``'s ``set_agc`` entry ever changes.
+    """
+    events: list[tuple[str, dict]] = []
+    radio = _make_radio(model="IC-7300")
+    radio.capabilities.discard(CAP_AGC)
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        on_state_event=lambda name, data: events.append((name, data)),
+    )
+    command, sub, prefix = decode_wire_tuple(radio.profile.command_map.get("set_agc"))
+    assert not poller._profile.supports_cmd29(command, sub)  # noqa: SLF001
+
+    await poller._execute(SetAgc(2, receiver=0))  # noqa: SLF001
+
+    radio.send_civ.assert_awaited_once_with(
+        command,
+        sub=sub,
+        data=prefix + bytes([2]),
+        wait_response=False,
+        priority=Priority.NORMAL,
+        wait_dispatch=True,
+    )
+    assert ("agc_changed", {"mode": 2, "receiver": 0}) in events
+
+
+@pytest.mark.asyncio
+async def test_execute_set_agc_undeclared_command_refuses_without_firing_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2004 coordinator comment (2026-08-30): before this fix, ``_execute``
+    discarded ``_send_cmd``'s boolean and unconditionally fired
+    ``agc_changed`` even when nothing was sent -- the UI was told AGC
+    changed when no bytes went out. With ``set_agc`` removed from the bound
+    map, the fixed path must send no CI-V frame, fire no event, and log the
+    miss at WARNING (silence is the failure mode this step removes).
+    """
+    events: list[tuple[str, dict]] = []
+    radio = _make_radio(model="IC-7300")
+    radio.capabilities.discard(CAP_AGC)
+    stripped = {
+        name: radio.profile.command_map.get(name)
+        for name in radio.profile.command_map
+        if name != "set_agc"
+    }
+    radio.profile = dataclasses.replace(radio.profile, command_map=CommandMap(stripped))
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        on_state_event=lambda name, data: events.append((name, data)),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.web.radio_poller"):
+        await poller._execute(SetAgc(2, receiver=0))  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    radio.set_agc.assert_not_awaited()
+    assert events == []
+    assert "command set_agc not in profile" in caplog.text
 
 
 @pytest.mark.asyncio

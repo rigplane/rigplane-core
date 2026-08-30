@@ -73,6 +73,8 @@ from ..capabilities import (
     CAP_VOX,
 )
 from .._queue_pressure import PRESSURE_THRESHOLD
+from ..commands._frame import decode_wire_tuple
+from ..commands.command_map import CommandMap
 from ..commands.commander import Priority
 from ..commands.scope import SCOPE_RECEIVER_SELECTOR_SUBS
 from ..core.command_service import (
@@ -661,7 +663,11 @@ class RadioPoller:
         self._last_polled: dict[str, float] = {}
         self._caps: set[str] = self._radio_capabilities()
         self._profile: RadioProfile = self._runtime_profile()
-        self._cmd_map: dict[str, tuple[int, ...]] = self._load_command_map()
+        # Bound once at profile-resolution time (MOR-2003 step 3), not
+        # re-discovered here: ``None`` means a hand-built profile carried no
+        # map at all, which `_send_cmd` treats as a miss on every name rather
+        # than crashing construction (MOR-2004 step 3b).
+        self._cmd_map: CommandMap | None = self._profile.command_map
         # Serial backends need slower polling to avoid flooding the CI-V link
         self._is_serial: bool = not self._profile.has_lan
         self._gap: float = _GAP_SERIAL if self._is_serial else _GAP
@@ -1232,28 +1238,6 @@ class RadioPoller:
             pass
         raise NotImplementedError(f"{command} unsupported: unknown profile-less radio")
 
-    def _load_command_map(self) -> dict[str, tuple[int, ...]]:
-        """Load command wire bytes from TOML rig profile."""
-        try:
-            from pathlib import Path
-
-            from ..rig_loader import discover_rigs
-
-            for rig_dir in [
-                Path(__file__).resolve().parent.parent.parent.parent / "rigs",
-                Path(__file__).resolve().parent.parent / "rigs",
-            ]:
-                if rig_dir.is_dir():
-                    rigs = discover_rigs(rig_dir)
-                    for _model, rig_config in rigs.items():
-                        if rig_config.model == self._profile.model:
-                            # Convert CommandSpec to CI-V wire bytes (filters CAT commands)
-                            cmd_map = rig_config.to_command_map()
-                            return {name: cmd_map.get(name) for name in cmd_map}
-        except Exception:
-            logger.debug("radio-poller: failed to load command map", exc_info=True)
-        return {}
-
     async def _send_cmd(
         self,
         cmd_name: str,
@@ -1261,25 +1245,29 @@ class RadioPoller:
         *,
         receiver: int = 0,
     ) -> bool:
-        """Send a command using wire bytes from TOML profile.
+        """Send a command using the profile-bound CI-V wire bytes.
 
-        Returns True if command was found and sent, False otherwise.
+        Returns True if *cmd_name* was found in the profile's ``command_map``
+        and sent, False if the map is absent (``self._cmd_map is None``) or
+        lacks the name. A miss is logged at WARNING, not DEBUG: pinned by
+        ``tests/test_radio_poller_coverage.py::
+        test_execute_set_agc_undeclared_command_refuses_without_firing_event``
+        -- silence here is the failure mode MOR-2004 closes (a missing
+        command must not read to the caller as a no-op success).
         """
-        wire = self._cmd_map.get(cmd_name)
-        if not wire:
-            logger.debug("radio-poller: command %s not in profile", cmd_name)
+        cmd_map = self._cmd_map
+        if cmd_map is None or not cmd_map.has(cmd_name):
+            logger.warning("radio-poller: command %s not in profile", cmd_name)
             return False
-        cmd = wire[0]
-        sub = wire[1] if len(wire) > 1 else None
-        extra = bytes(wire[2:]) if len(wire) > 2 else b""
-        payload = extra + data
-        if self._profile.supports_cmd29(cmd, sub):
-            inner = bytes([receiver, cmd])
+        command, sub, prefix = decode_wire_tuple(cmd_map.get(cmd_name))
+        payload = prefix + data
+        if self._profile.supports_cmd29(command, sub):
+            inner = bytes([receiver, command])
             if sub is not None:
                 inner += bytes([sub])
             await self._civ(0x29, data=inner + payload)
         else:
-            await self._civ(cmd, sub=sub, data=payload)
+            await self._civ(command, sub=sub, data=payload)
         return True
 
     def _supports_capability(self, capability: str) -> bool:
@@ -2819,11 +2807,18 @@ class RadioPoller:
                 if CAP_AGC in self._caps:
                     self._ensure_receiver_supported(rx, operation="set_agc")
                     await radio.set_agc(mode, receiver=rx)
+                    agc_sent = True
                 else:
-                    # Wire bytes from TOML: set_agc = [0x16, 0x12]
-                    await self._send_cmd("set_agc", bytes([mode]), receiver=rx)
+                    # Wire bytes come from the profile-bound command map
+                    # (self._cmd_map); ``_send_cmd`` returns False, sending
+                    # nothing, when the profile doesn't declare set_agc
+                    # (MOR-2004 step 3b: closes the defect where this branch
+                    # used to fire agc_changed unconditionally either way).
+                    agc_sent = await self._send_cmd(
+                        "set_agc", bytes([mode]), receiver=rx
+                    )
                 # agc read-after-write via overlays + 0x16 0x12 observation.
-                if self._on_state_event:
+                if agc_sent and self._on_state_event:
                     self._on_state_event("agc_changed", {"mode": mode, "receiver": rx})
             case SetRitStatus(on=on):
                 await _r.set_rit_status(on)
