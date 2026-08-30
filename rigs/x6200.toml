@@ -77,16 +77,24 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     (MOR-683 defers; tracked as a filter_width follow-up).
 #   - ``break_in`` KEEPS the capability tag but intentionally declares NO
 #     ``[break_in]`` domain (MOR-1534). docs/validation/cat-audits/x6200.md
-#     (lines 56/109/128/132) found the backend's ``get/set_break_in`` opcode
+#     (§ "D. MISMATCH / WRONG", break-in row; § "Documentation quality note")
+#     found the backend's ``get/set_break_in`` opcode
 #     (``0x16 0x47``, IC-7610's CW BK-IN mode register) is NOT in the X6200's
 #     documented CI-V table at all — the X6200 PDF only documents QSK hang
-#     time (``0x14 0x0F``, already covered by ``break_in_delay``), not a
-#     BK-IN-mode register. There is no trustworthy in-repo source for an
-#     OFF/SEMI/FULL value domain on this radio, so ``CoreRadio.set_break_in``
-#     refuses (fails loud) rather than validate against a guessed table.
+#     time (``0x14 0x0F``), not a BK-IN-mode register. This profile declares
+#     no ``break_in_delay`` key, control or feature either (unlike its four
+#     IC-7300/7610/9700/705 siblings, which all do), so ``0x14 0x0F`` on
+#     X6200 is reached only by ``CoreRadio.get_break_in_delay``'s own
+#     hardcode — the same undeclared-hardcode class this bullet warns
+#     about, not an exception to it (correction, D2 MOR-2019: an earlier
+#     draft of this comment claimed the opposite). There is no trustworthy
+#     in-repo source for an OFF/SEMI/FULL value domain on this radio, so
+#     ``CoreRadio.set_break_in`` refuses (fails loud) rather than validate
+#     against a guessed table.
 #   - ``notch`` likewise KEEPS the capability tag but intentionally declares
 #     NO ``[notch] width_values`` domain (MOR-1551). docs/validation/
-#     cat-audits/x6200.md (lines 55/95/107) found the ``notch`` cap
+#     cat-audits/x6200.md (§ "C. MISSING BACKEND"; § "D. MISMATCH / WRONG",
+#     manual notch row) found the ``notch`` cap
 #     currently routes to ``set_manual_notch`` (``0x16 0x48``, Icom
 #     manual-notch on/off) which is ALSO not in the X6200's documented CI-V
 #     table — the X6200's real notch mechanism is the digital notch filter
@@ -419,22 +427,27 @@ end_hz = 136000000
 #   notch path, no [commands] key: the V1.0.6 table's real notch
 #   mechanism is the digital notch filter (DNF) toggle at [0x16, 0x41], a
 #   different register (MOR-1551, docs/validation/cat-audits/x6200.md
-#   lines 55/95/107).
+#   § "C. MISSING BACKEND" / § "D. MISMATCH / WRONG", manual notch row).
 # - break_in -> hardcoded [0x16, 0x47] in CoreRadio's break-in path, no
 #   [commands] key: the V1.0.6 table documents only QSK hang time at
-#   [0x14, 0x0F] (already covered by break_in_delay), not a BK-IN-mode
-#   register (MOR-1534, docs/validation/cat-audits/x6200.md lines
-#   56/109/128/132).
-# - rit / xit -> hardcoded [0x21] in CoreRadio's RIT/XIT path, no
+#   [0x14, 0x0F], not a BK-IN-mode register (MOR-1534,
+#   docs/validation/cat-audits/x6200.md § "D. MISMATCH / WRONG",
+#   break-in row). This profile declares no break_in_delay key either
+#   (unlike its four IC-7300/7610/9700/705 siblings), so [0x14, 0x0F] is
+#   itself reached only by CoreRadio.get_break_in_delay's hardcode -- the
+#   same undeclared-hardcode class this bullet is about, not an exception
+#   to it.
+# - rit / xit -> hardcoded [0x21] in the RIT/XIT command builders
+#   (commands/_frame.py: _CMD_RIT, consumed by commands/system.py), no
 #   [commands] key: [0x21] itself is absent from the V1.0.6 table, but
 #   the write-only *behavior* (SET accepted, GET times out) is
 #   live-confirmed on this X6200 unit itself, not inferred from another
 #   Icom model -- MOR-208/179 (commit 5a493d70) and MOR-207 (commit
 #   b1df1e71). See [validation] write_only_controls above.
 #
-# Two more V1.0.6-documented registers have no capability and no
-# [commands] key at all, named here so nobody assumes an existing entry
-# already covers them:
+# Two more V1.0.6-documented registers (both p.8) have no capability and
+# no [commands] key at all, named here so nobody assumes an existing
+# entry already covers them:
 # - front-panel LOCK, [0x1A, 0x05, 0x00, 0x62] -- distinct from
 #   get_dial_lock/set_dial_lock [0x16, 0x50] below.
 # - the band-stacking WRITE side of [0x1A, 0x01] -- get_band_spectrum_display
@@ -463,31 +476,34 @@ set_split        = [0x0F]  # source: Radioddity X6200 CI-V V1.0.6 p.5 (via docs/
 # Attenuator / preamp
 get_attenuator   = [0x11]  # source: Radioddity X6200 CI-V V1.0.6 p.5 (via docs/validation/cat-audits/x6200.md)
 set_attenuator   = [0x11]  # source: same as get_attenuator
-get_preamp       = [0x16, 0x02]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md)
-set_preamp       = [0x16, 0x02]  # source: same as get_preamp
+get_preamp       = [0x16, 0x02]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (GET; SET is p.8) -- re-checked against the local manuals/x6200.txt extract, D2 MOR-2019
+set_preamp       = [0x16, 0x02]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (SET; GET is p.7) -- re-checked against the local extract
 
 # Levels (gets and sets — same opcode pair for both directions,
-# distinguished by frame data presence)
-get_af_level     = [0x14, 0x01]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_af_level     = [0x14, 0x01]  # source: same as get_af_level
-get_rf_gain      = [0x14, 0x02]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_rf_gain      = [0x14, 0x02]  # source: same as get_rf_gain
-get_squelch      = [0x14, 0x03]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_squelch      = [0x14, 0x03]  # source: same as get_squelch
-get_nr_level     = [0x14, 0x06]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_nr_level     = [0x14, 0x06]  # source: same as get_nr_level
+# distinguished by frame data presence). Radioddity X6200 CI-V V1.0.6:
+# all GETs on p.6, all SETs on p.7 -- re-checked against the local
+# manuals/x6200.txt extract, D2 MOR-2019 (the prior "pp.6-7" per-line
+# citation did not distinguish which page covers which direction).
+get_af_level     = [0x14, 0x01]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_af_level     = [0x14, 0x01]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+get_rf_gain      = [0x14, 0x02]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_rf_gain      = [0x14, 0x02]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+get_squelch      = [0x14, 0x03]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_squelch      = [0x14, 0x03]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+get_nr_level     = [0x14, 0x06]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_nr_level     = [0x14, 0x06]  # source: Radioddity X6200 CI-V V1.0.6 p.7
 get_cw_pitch     = [0x14, 0x09]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md; see also [controls.cw_pitch] above)
-set_cw_pitch     = [0x14, 0x09]  # source: same as get_cw_pitch
-get_rf_power     = [0x14, 0x0A]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_rf_power     = [0x14, 0x0A]  # source: same as get_rf_power
-get_mic_gain     = [0x14, 0x0B]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_mic_gain     = [0x14, 0x0B]  # source: same as get_mic_gain
-get_key_speed    = [0x14, 0x0C]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_key_speed    = [0x14, 0x0C]  # source: same as get_key_speed
-get_nb_level     = [0x14, 0x12]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_nb_level     = [0x14, 0x12]  # source: same as get_nb_level
-get_monitor_gain = [0x14, 0x15]  # source: Radioddity X6200 CI-V V1.0.6 pp.6-7 (via docs/validation/cat-audits/x6200.md)
-set_monitor_gain = [0x14, 0x15]  # source: same as get_monitor_gain
+set_cw_pitch     = [0x14, 0x09]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+get_rf_power     = [0x14, 0x0A]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_rf_power     = [0x14, 0x0A]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+get_mic_gain     = [0x14, 0x0B]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_mic_gain     = [0x14, 0x0B]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+get_key_speed    = [0x14, 0x0C]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_key_speed    = [0x14, 0x0C]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+get_nb_level     = [0x14, 0x12]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_nb_level     = [0x14, 0x12]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+get_monitor_gain = [0x14, 0x15]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
+set_monitor_gain = [0x14, 0x15]  # source: Radioddity X6200 CI-V V1.0.6 p.7
 
 # Meters (all returns BCD 0-255 → 0-100%)
 get_s_meter      = [0x15, 0x02]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (via docs/validation/cat-audits/x6200.md)
@@ -495,20 +511,22 @@ get_power_meter  = [0x15, 0x11]  # source: same as get_s_meter
 get_swr          = [0x15, 0x12]  # source: same as get_s_meter
 get_vd_meter     = [0x15, 0x15]  # source: same as get_s_meter
 
-# Functions (0x16 family)
-get_agc          = [0x16, 0x12]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md); domain 00-03 pinned by tests/test_rig_loader.py::test_x6200_keeps_its_declared_off
-set_agc          = [0x16, 0x12]  # source: same as get_agc
-get_nb           = [0x16, 0x22]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md)
-set_nb           = [0x16, 0x22]  # source: same as get_nb
-get_dial_lock    = [0x16, 0x50]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md); distinct from the undeclared front-panel LOCK register, see PROVENANCE OPEN above
-set_dial_lock    = [0x16, 0x50]  # source: same as get_dial_lock
+# Functions (0x16 family). Radioddity X6200 CI-V V1.0.6: GETs on p.7,
+# SETs on p.8 -- re-checked against the local manuals/x6200.txt extract,
+# D2 MOR-2019 (the prior per-line citation said p.8 for both directions).
+get_agc          = [0x16, 0x12]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (via docs/validation/cat-audits/x6200.md); AGC OFF (0) presence + label pinned by tests/test_rig_loader.py::test_x6200_keeps_its_declared_off -- the full 00-03 domain is not test-pinned
+set_agc          = [0x16, 0x12]  # source: Radioddity X6200 CI-V V1.0.6 p.8
+get_nb           = [0x16, 0x22]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (via docs/validation/cat-audits/x6200.md)
+set_nb           = [0x16, 0x22]  # source: Radioddity X6200 CI-V V1.0.6 p.8
+get_dial_lock    = [0x16, 0x50]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (via docs/validation/cat-audits/x6200.md); distinct from the undeclared front-panel LOCK register, see PROVENANCE OPEN above
+set_dial_lock    = [0x16, 0x50]  # source: Radioddity X6200 CI-V V1.0.6 p.8
 
 # Identification
 get_transceiver_id = [0x19, 0x00]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md)
 
 # 0x1A family (band/spectrum documented by the PDF; filter_width sourced
 # from LIVE evidence instead, per the doctrine live > hamlib > doc)
-get_band_spectrum_display = [0x1A, 0x01]  # source: Radioddity X6200 CI-V V1.0.6 pp.8-9 (via docs/validation/cat-audits/x6200.md); read-only GET half only -- see PROVENANCE OPEN above for the undeclared write/band-stacking side
+get_band_spectrum_display = [0x1A, 0x01]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md; re-checked against the local extract, D2 MOR-2019 -- the whole 0x1A family is on p.8, not p.8-9); read-only GET half only -- see PROVENANCE OPEN above for the undeclared write/band-stacking side
 get_filter_width          = [0x1A, 0x03]  # source: LIVE -- commit 74986b77 (MOR-706, 2026-06-12), raw USB CI-V 0xA4 captures; formula recorded in [filters] above; pinned by tests/test_dsp_filter_family.py::test_x6200_get_filter_width_decodes_raw_byte_index
 
 # PTT / tuner (0x1C family)
