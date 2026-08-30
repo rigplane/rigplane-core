@@ -1744,6 +1744,54 @@ class TestAbsentCommandSemantics:
         profile = load_rig(p).to_profile()
         assert profile.absent_command_names == frozenset()
 
+    def test_unknown_name_is_in_neither_set(self, tmp_path):
+        """D1 state (3) — a name the profile never mentions at all, not
+        even as declared-absent — lands in neither set. This is the state
+        this step makes representable but does not yet resolve: it stays
+        indistinguishable from state (2) at ``supports_command``, but is
+        distinguishable here by checking both sets directly."""
+        p = _write_toml(tmp_path, self._TOML_WITH_ABSENT)
+        profile = load_rig(p).to_profile()
+        assert "totally_unknown_command" not in profile.command_names
+        assert "totally_unknown_command" not in profile.absent_command_names
+
+
+class TestSetModeViaSelectedDiscriminatesAbsent:
+    """MOR-2005 step 4a review finding: this step changes what membership
+    in ``RigConfig.commands`` means (a key can now hold an
+    ``AbsentCommandSpec``), so every derivation that read plain membership
+    to mean "the radio has this command" must be swept, not just
+    ``command_names``. ``set_mode_via_selected`` (consumed by
+    `runtime/_dual_rx_runtime.py: DualRxRuntimeMixin._set_mode_main` to
+    gate CI-V 0x26 0x00 selected-mode routing) was the one other such
+    site in `profiles/rig_loader.py: RigConfig.to_profile` — it must be
+    True only when ``set_selected_mode`` is declared with real CI-V bytes,
+    not merely present as *some* dict key.
+    """
+
+    _TOML_WITH_SELECTED_MODE_ABSENT = _MINIMAL_TOML + (
+        '\nset_selected_mode = { absent = "IC-7300 Full Manual '
+        '(A7292-4EX), no selected-mode-set item" }\n'
+    )
+
+    def test_declared_absent_selected_mode_yields_false(self, tmp_path):
+        p = _write_toml(tmp_path, self._TOML_WITH_SELECTED_MODE_ABSENT)
+        profile = load_rig(p).to_profile()
+        assert profile.set_mode_via_selected is False
+
+    def test_declared_with_bytes_still_yields_true(self, tmp_path):
+        """Unchanged behavior for the real declared case (X6200/IC-705
+        shape) — the fix must not flip this the other way."""
+        toml = _MINIMAL_TOML + "\nset_selected_mode = [0x26, 0x00]\n"
+        p = _write_toml(tmp_path, toml)
+        profile = load_rig(p).to_profile()
+        assert profile.set_mode_via_selected is True
+
+    def test_not_declared_at_all_still_yields_false(self, tmp_path):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        profile = load_rig(p).to_profile()
+        assert profile.set_mode_via_selected is False
+
 
 # ── discover_rigs ────────────────────────────────────────────────
 

@@ -738,7 +738,17 @@ class RigConfig:
             rf_sql_control_model=self.rf_sql_control_model,
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
-            set_mode_via_selected="set_selected_mode" in self.commands,
+            # isinstance, not membership: a declared-absent entry
+            # (AbsentCommandSpec, MOR-2005 step 4a) is a dict key too, but
+            # it means the opposite of "the radio has this command" — see
+            # `tests/test_rig_loader.py:
+            # TestSetModeViaSelectedDiscriminatesAbsent`. CivCommandSpec
+            # specifically (not CatCommandSpec) because this flag gates a
+            # CI-V-only wire path (`runtime/_dual_rx_runtime.py:
+            # DualRxRuntimeMixin._set_mode_main`'s CI-V 0x26 0x00 branch).
+            set_mode_via_selected=isinstance(
+                self.commands.get("set_selected_mode"), CivCommandSpec
+            ),
             protocol_type=self.protocol_type,
             hamlib_model_id=self.hamlib_model_id,
             controls=controls,
