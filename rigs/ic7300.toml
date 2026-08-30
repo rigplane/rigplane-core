@@ -703,7 +703,10 @@ pitch_min_hz = 300
 pitch_max_hz = 900
 speed_min_wpm = 6
 speed_max_wpm = 48
-# NOTE: no dash_ratio on IC-7300 (not in wfview rig file)
+# dash_ratio: control 0161, IC-7300 Advanced Manual (11a) command table
+# p.19-6, range 28..45; confirmed on the wire by live bench 2026-08-30 (read
+# of 1A 05 01 61 answered 30). Refutes the earlier "no dash_ratio" note --
+# see get_dash_ratio / set_dash_ratio in [commands.overrides] (D2, MOR-2014).
 
 [nb]
 # CI-V 0x1A 0x05 0x01 0x89: NB depth 1-10, NB width 0-255 (wfview NB Depth Min/Max)
@@ -910,7 +913,12 @@ get_vfo = [0x07]
 set_vfo = [0x07]
 get_split = [0x0F]
 set_split = [0x0F]
-# NOTE: no dual_watch, no main/sub band select (single receiver)
+# Single receiver: no dual_watch, no main/sub band select, no main/sub tracking (D2, MOR-2014)
+get_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
+set_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
+get_main_sub_band = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table has no 0xD2" }
+get_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
+set_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
 
 # ── Tuning ──
 get_tuning_step = [0x10]
@@ -923,12 +931,16 @@ get_preamp = [0x16, 0x02]
 set_preamp = [0x16, 0x02]
 get_ip_plus = [0x16, 0x65]
 set_ip_plus = [0x16, 0x65]
-# NOTE: no digisel (0x16 0x4E), no digisel_shift (0x14 0x13) on IC-7300
+get_digisel = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x4E" }
+set_digisel = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x4E" }
+get_digisel_shift = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x13" }
+set_digisel_shift = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x13" }
 
 # ── Antenna ──
 get_antenna = [0x12]                      # Single antenna
 set_antenna = [0x12]
-# NOTE: no rx_antenna (0x16 0x53) on IC-7300
+get_rx_antenna_ant2 = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 0x16 0x53 row; single antenna jack" }
+set_rx_antenna_ant2 = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 0x16 0x53 row; single antenna jack" }
 
 # ── Audio / AF ──
 get_af_level = [0x14, 0x01]
@@ -937,7 +949,8 @@ get_rf_gain = [0x14, 0x02]
 set_rf_gain = [0x14, 0x02]
 get_squelch = [0x14, 0x03]
 set_squelch = [0x14, 0x03]
-# NOTE: no af_mute (0x1A 0x09) on IC-7300
+get_af_mute = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 1A 09 row (read row-by-row)" }
+set_af_mute = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 1A 09 row (read row-by-row)" }
 
 # ── DSP / Noise (NB, NR, Notch, APF, Twin Peak) ──
 get_nb = [0x16, 0x22]
@@ -958,10 +971,12 @@ get_manual_notch_width = [0x16, 0x57]     # 0=WIDE, 1=MID, 2=NAR
 set_manual_notch_width = [0x16, 0x57]
 get_audio_peak_filter = [0x16, 0x32]      # IC-7300: 0=OFF, 1=ON only
 set_audio_peak_filter = [0x16, 0x32]
-# NOTE: no apf_type_level on the IC-7300. The 7300 APF is a plain 0x16 0x32
-# ON/OFF toggle (above); there is no 0x14 0x05 APF position like the IC-7610's
-# WIDE/MID/NAR 3-level control. The dead 0x14 0x05 command string was removed
-# (MOR-681) so it cannot be emitted to a radio that ignores it.
+# The 7300 APF is a plain 0x16 0x32 ON/OFF toggle (above); there is no 0x14 0x05
+# APF position like the IC-7610's WIDE/MID/NAR 3-level control. The dead 0x14
+# 0x05 command string was removed (MOR-681) so it cannot be emitted to a radio
+# that ignores it.
+get_apf_type_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family skips 04/05" }
+set_apf_type_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family skips 04/05" }
 get_twin_peak_filter = [0x16, 0x4F]
 set_twin_peak_filter = [0x16, 0x4F]
 
@@ -986,7 +1001,8 @@ get_rf_power = [0x14, 0x0A]
 set_rf_power = [0x14, 0x0A]
 get_mic_gain = [0x14, 0x0B]
 set_mic_gain = [0x14, 0x0B]
-# NOTE: no drive_gain (0x14 0x14) on IC-7300
+get_drive_gain = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x14" }
+set_drive_gain = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x14" }
 get_compressor = [0x16, 0x44]
 set_compressor = [0x16, 0x44]
 get_compressor_level = [0x14, 0x0E]
@@ -1009,6 +1025,7 @@ get_tx_freq_monitor = [0x1C, 0x03]
 set_tx_freq_monitor = [0x1C, 0x03]
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
+quick_split = [0x1A, 0x05, 0x00, 0x30]    # source: IC-7300 Advanced Manual (11a) p.19-4, control 0030 "quick split set" (the hardcoded fallback's 0x33 is split lock on this radio, not declared). Base [commands], not overrides: bare (non-get_/set_) keys fail test_naming_parity.py::test_overrides_have_prefix there (D2, MOR-2014).
 
 # ── CW ──
 send_cw = [0x17]
@@ -1067,7 +1084,11 @@ set_scope_wave = [0x27, 0x00]
 scope_on = [0x27, 0x10]
 scope_off = [0x27, 0x10]
 scope_data_output = [0x27, 0x11]
-# NOTE: no scope_main_sub (0x27 0x12) — single receiver
+# scope_main_sub (0x27 0x12) exists on the wire with a fixed reply -- single
+# receiver, so the answer is always 00 (Main) -- IC-7300 Advanced Manual
+# (11a) command table p.19-7; live bench 2026-08-30 replied 27 12 00 (D2,
+# MOR-2014). Refutes the earlier "no scope_main_sub" note.
+get_scope_main_sub = [0x27, 0x12]         # source: IC-7300 Advanced Manual (11a) p.19-7 (fixed value 00 = Main only); live bench 2026-08-30 reply 27 12 00
 get_scope_single_dual = [0x27, 0x13]
 get_scope_mode = [0x27, 0x14]
 get_scope_span = [0x27, 0x15]
@@ -1084,10 +1105,12 @@ get_scope_rbw = [0x27, 0x1F]
 # ── Scan ──
 scan_start = [0x0E]
 scan_stop = [0x0E]
+scan_start_type = [0x0E]                  # source: IC-7300 Advanced Manual (11a) p.19-3 (0x0E family incl. 0x13 fine-ΔF); live bench 2026-08-30: 0E 13 ACKed, 0E 00 stop ACKed
 
 # ── System / Power ──
 power_on = [0x18]
 power_off = [0x18]
+get_powerstat = { absent = "IC-7300 Advanced Manual (11a) p.19-4: 0x18 rows carry no read marker; live bench 2026-08-30: bare 0x18 query answered NAK(FA)" }
 get_transceiver_id = [0x19, 0x00]
 set_speech = [0x13]
 get_dial_lock = [0x16, 0x50]
@@ -1249,10 +1272,18 @@ get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x64]
 set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x64]
 get_usb_mod_level = [0x1A, 0x05, 0x00, 0x65]
 set_usb_mod_level = [0x1A, 0x05, 0x00, 0x65]
+# No LAN hardware on the IC-7300 (D2, MOR-2014)
+get_lan_mod_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no LAN hardware, no LAN row anywhere in the table" }
+set_lan_mod_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no LAN hardware, no LAN row anywhere in the table" }
 get_data_off_mod_input = [0x1A, 0x05, 0x00, 0x66]
 set_data_off_mod_input = [0x1A, 0x05, 0x00, 0x66]
 get_data1_mod_input = [0x1A, 0x05, 0x00, 0x67]
 set_data1_mod_input = [0x1A, 0x05, 0x00, 0x67]
+# DATA-input family stops at DATA1 -- no DATA2/DATA3 split on IC-7300 (D2, MOR-2014)
+get_data2_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
+set_data2_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
+get_data3_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
+set_data3_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
 get_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 set_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 get_civ_output_ant = [0x1A, 0x05, 0x00, 0x61]
@@ -1265,6 +1296,13 @@ get_utc_offset = [0x1A, 0x05, 0x00, 0x96]
 set_utc_offset = [0x1A, 0x05, 0x00, 0x96]
 get_quick_split = [0x1A, 0x05, 0x00, 0x30]
 set_quick_split = [0x1A, 0x05, 0x00, 0x30]
+# Full 1A 05 submenu has no dual-watch item -- 0032 is FM split offset on this
+# radio (D2, MOR-2014)
+get_quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }
+set_quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }
+quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }
+get_dash_ratio = [0x1A, 0x05, 0x01, 0x61]  # source: IC-7300 Advanced Manual (11a) command table p.19-6, control 0161 (28..45); live bench 2026-08-30: read of 1A 05 01 61 answered 30
+set_dash_ratio = [0x1A, 0x05, 0x01, 0x61]  # source: IC-7300 Advanced Manual (11a) command table p.19-6, control 0161 (28..45); live bench 2026-08-30: read of 1A 05 01 61 answered 30
 get_nb_depth = [0x1A, 0x05, 0x01, 0x89]
 set_nb_depth = [0x1A, 0x05, 0x01, 0x89]
 get_nb_width = [0x1A, 0x05, 0x01, 0x90]
