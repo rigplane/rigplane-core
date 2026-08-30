@@ -436,26 +436,34 @@ everything else on those two commands still NAKs. It has **no `0x1A` branch
 and no `0x27` branch** at all.
 
 Now put that against the divergence file. **This is where §C1 and an earlier
-version of this section disagreed — §C1 is the one that reproduces.** Of the
-60 `config.py`/`levels.py` rows, only 40 have both the map and the fallback
-side at a plain `1A 05` menu address (24 in `config.py`, all 16 in
-`levels.py`) — a command the mock has no branch for at all, so both sides NAK
-on the absent top-level branch. The other 20, all in `config.py`, put one
-side inside the `0x14`/`0x1C` branches above: 18 with a fallback side of
-`0x14` (`14 11` lan_mod_level ×4, `14 10` usb_mod_level ×8, `14 0B`
-acc1_mod_level ×6 — none of them sub `0x0A`) and 2 with a map side of `1C 04`
-(IC-7610 `get_civ_output_ant`/`set_civ_output_ant`, the same row §C1
-describes). Those 20 NAK on the sub-command check inside an existing branch,
-not on an absent top-level one. All four `scope.py` rows are `0x27`, which
-the mock has no branch for at all. Either way, both the map frame and the
-fallback frame NAK, so **the integration doubles cannot observe a single one
-of the 76 frames this migration changes.** They will stay green through
-every step of it.
+version of this section disagreed — §C1 is the one that reproduces.** And an
+earlier version of *this* correction still undercounted: it folded in the
+`config.py` rows but missed that `ptt.py`'s rows also land inside an existing
+branch. Classifying all 76 rows by command and sub on both sides: **54** put
+both the map and the fallback side on a command the mock has no branch for at
+all — `1A 05` menu addresses (24 in `config.py`, all 16 in `levels.py`, 6 of
+`vfo.py`'s 10 rows), `0x27` (all four `scope.py` rows), and `0x07` (`vfo.py`'s
+other 4 rows) — so both sides NAK on the absent top-level branch. The other
+**22** put a side inside the `0x14`/`0x1C` branches above, in three shapes:
+18 `config.py` rows with a fallback side of `0x14` (`14 11` lan_mod_level ×4,
+`14 10` usb_mod_level ×8, `14 0B` acc1_mod_level ×6 — the sub is never
+`0x0A`); 2 `config.py` rows with a map side of `1C 04` (IC-7610
+`get_civ_output_ant`/`set_civ_output_ant`, the same row §C1 describes — the
+sub is `0x04`, not `0x00`); and 2 `ptt.py` rows (X6100 `ptt_on`/`ptt_off`)
+where **both** sides are `1C 00` — the sub matches — but each carries a
+payload byte (`01` on the fallback side, the doubled `01 01` on the map
+side, that doubling being the separate class-C bug plan §5 describes), and
+the mock's `0x1C` branch (`if sub == _SUB_PTT and not rest`) only ACKs a
+payload-empty GET, so a SET NAKs there too, on both sides. All 22 NAK on the
+sub-command or payload check inside an existing branch, not on an absent
+top-level one. Either way, both the map frame and the fallback frame NAK, so
+**the integration doubles cannot observe a single one of the 76 frames this
+migration changes.** They will stay green through every step of it.
 
 The consequence a reader must not miss: **a green integration run is not
 evidence that a migration step was safe** — and "the mock has no `0x1A`
 branch" is not the reason to reach for when `MockIcomRadio` is next touched,
-because it explains only 56 of the 76 rows. The safety net for plan §4 is
+because it explains only 54 of the 76 rows. The safety net for plan §4 is
 `tests/test_command_map_parity.py` and the per-step tests that plan names —
 the wire-level ones — never the integration suite.
 
