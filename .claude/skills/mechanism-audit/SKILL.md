@@ -247,6 +247,15 @@ Close every report with two sections:
   without this section cannot be trusted: it offers no evidence the auditor was
   capable of clearing anything.
 
+## Archiving
+
+Finished reports are archived in the audited repository under
+`.claude/audits/`, one file per tract, named
+`YYYY-MM-DD-mechanism-audit-<tract>.md`, with a header pinning the audited
+revision. That directory is tracked and published in the public repository —
+its `README.md` indexes the reports and carries the caution about what must
+never be committed there.
+
 ## Inputs the repository must supply
 
 - **Layer map** — which layer may own mechanism, and the allowed dependency
