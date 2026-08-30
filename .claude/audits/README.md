@@ -7,18 +7,20 @@ revision it audited in its own header; citations inside a report (including
 that revision and are not maintained. These files live under `.claude/` rather
 than `docs/` deliberately: the doc-citation gate treats `docs/**` citations as
 living references that must not use line numbers, while an archived audit is
-evidence about one commit and must quote it verbatim. Unlike the rest of
-`.claude/` — untracked scratch for working notes — this directory is tracked
-and **published in a public repository**: never put session notes, baselines,
-or anything with internal identifiers here.
+evidence about one commit and must quote it verbatim. Like `agents/`,
+`commands/` and `skills/`, this directory is tracked and **published in a
+public repository** — never put session notes, baselines, or anything with
+internal identifiers here; untracked working notes belong in the ignored
+remainder of `.claude/`.
 
 ## 2026-08-30 — v3 pre-release audit (three tracts, tree `8c8a70d4`)
 
 Commissioned to close the pre-release fix list before the v2.12.0 release
 cycle. The audited commit `8c8a70d4` was squash-merged as main's `3ba1a14a`
 (byte-identical tree), and the original commit survives as
-`refs/pull/2801/head` — so the pin resolves even from a fresh clone via
-either route. One report per tract:
+`refs/pull/2801/head` — fetch that ref explicitly to resolve the pin; a
+plain clone carries only the identical tree, via `3ba1a14a`. One report per
+tract:
 
 - [2026-08-30-mechanism-audit-command-path.md](2026-08-30-mechanism-audit-command-path.md)
   — UI/rigctld/CLI action → wire bytes. Headline findings: rigctld advertises
