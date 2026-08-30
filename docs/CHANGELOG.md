@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **`rigplane.commands.config` builders require `cmd_map`; there is no
+  hardcoded fallback (MOR-2006, Steps 5..N module 1 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).**
+  `get_acc1_mod_level`/`set_acc1_mod_level`, the USB/LAN mod-level pair,
+  the DATA-OFF/1/2/3 mod-input pairs, and `get_civ_transceive`/
+  `set_civ_transceive`/`get_civ_output_ant`/`set_civ_output_ant` all took
+  an optional `cmd_map` that, unused, fell back to bytes written into the
+  source years ago — on the IC-7300 those bytes collided with `set_mic_gain`
+  (both built `14 0B`), so the ACC1 slider moved MIC gain (MOR-1992). `cmd_map`
+  is now a required keyword-only argument on all eighteen; a call that omits
+  it raises `TypeError` (naming the migration and pointing at
+  `commands/bound.py: BoundCommands` in the message) rather than silently
+  emitting the old, sometimes-wrong bytes. The only production caller in
+  this repository, `runtime/radio.py: CoreRadio`, moved onto
+  `self._commands.<builder>(...)` in the same change, which supplies the
+  map — but an external caller of the free function must do the same:
+  reach these builders through a radio's bound commands rather than
+  calling `rigplane.commands.get_acc1_mod_level(...)` (or any of its
+  seventeen siblings above) directly with no map.
 - **CLI: `rigplane ptt on` no longer returns while the rig is keyed.** The
   command now holds the key for as long as the process runs and unkeys on the
   way out, so the process that keyed the rig is the one that releases it. A

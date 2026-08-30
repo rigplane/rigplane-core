@@ -48,6 +48,11 @@ from rigplane.commands.command_map import CommandMap
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.runtime.radio import CoreRadio
 
+# Reused rather than re-implemented, per the MOR-2006 drift-guard extension:
+# the same probe-ladder search test_command_map_parity.py uses to find a
+# builder's required arguments (see TestExposedKeyDriftGuard below).
+from test_command_map_parity import _candidate_kwargs, _split_params
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RIGS_DIR = REPO_ROOT / "rigs"
 
@@ -221,8 +226,20 @@ def _exposed_builders() -> list[tuple[str, Any]]:
     shares the object because it shares the underlying function; two
     distinct builders never do, even if their keys happen to return the
     same literal).
+
+    Deduplicated on ``(id(key_fn), qualname)``, not ``id(key_fn)`` alone
+    (a Step 3/4 review trap recorded against MOR-2006): bare ``id``
+    dedup goes false-green the moment two *distinct* builders ever end up
+    sharing one ``cmd_map_key`` callable object -- e.g. a shared, named key
+    function (unlike each builder's own one-off ``lambda``) passed to
+    ``@expose_command_key`` on two different functions by mistake -- because
+    the second builder found would be silently skipped as "the same
+    alias" and never exercised below. The alias case this function must
+    still collapse (``speech = get_speech``) keeps working: both names
+    resolve to the same underlying function, so they share both ``id``
+    and ``qualname``. Two genuinely different builders share neither.
     """
-    seen: set[int] = set()
+    seen: set[tuple[int, str]] = set()
     found: list[tuple[str, Any]] = []
     for name in commands.__all__:
         value = getattr(commands, name, None)
@@ -231,7 +248,7 @@ def _exposed_builders() -> list[tuple[str, Any]]:
         key_fn = getattr(value, "cmd_map_key", None)
         if key_fn is None:
             continue
-        identity = id(key_fn)
+        identity = (id(key_fn), getattr(value, "__qualname__", name))
         if identity in seen:
             continue
         seen.add(identity)
@@ -248,7 +265,41 @@ class TestExposedKeyDriftGuard:
     ``cmd_map_key(cmd_map)``. Two probe maps exercise both branches of
     ``get_speech``'s per-map probe; the other exposed builders (ptt_on,
     ptt_off) ignore the map and must produce the same literal for both.
+
+    A fixed call shape of ``builder(to_addr=..., cmd_map=...)`` was the
+    original design here, and it broke the moment MOR-2006 exposed
+    ``commands/config.py``'s nine setters, each with a required value
+    argument (``level``, ``source`` or ``enabled``): every one of them
+    raised ``missing 1 required positional argument`` before
+    ``_build_from_map`` was ever reached, so the drift guard never ran the
+    check it exists for. ``_synthesize_case`` below finds a value that
+    argument accepts, reusing ``tests/test_command_map_parity.py``'s own
+    probe-ladder search (``_split_params``/``_candidate_kwargs``) rather
+    than re-implementing it -- ``to_addr``/``from_addr``/``cmd_map`` are
+    supplied by the harness, so those never need synthesising here.
     """
+
+    @staticmethod
+    def _synthesize_case(builder: Any, cmd_map: CommandMap) -> dict[str, Any]:
+        """First argument combination *builder* accepts, beyond the harness.
+
+        Probed with ``_build_from_map`` already faked out (see the caller),
+        so a builder's own validation (e.g. ``config.py:
+        set_data_off_mod_input``'s ``0 <= source <= 5``) is what is being
+        satisfied here, never a real map lookup -- the probe *cmd_map*'s
+        contents never matter to this search, only its type.
+        """
+        required, _optional = _split_params(builder)
+        for kwargs in _candidate_kwargs(builder, required):
+            try:
+                builder(to_addr=0x94, cmd_map=cmd_map, **kwargs)
+            except Exception:
+                continue
+            return kwargs
+        raise AssertionError(
+            f"{builder.__qualname__}: no synthesized argument combination was "
+            "accepted, even with _build_from_map faked out"
+        )
 
     @pytest.mark.parametrize(
         "cmd_map", _PROBE_MAPS, ids=["empty_map", "set_speech_map"]
@@ -279,7 +330,8 @@ class TestExposedKeyDriftGuard:
         # dotted-string lookup would otherwise walk through.
         defining_module = sys.modules[builder.__module__]
         monkeypatch.setattr(defining_module, "_build_from_map", _fake_build_from_map)
-        builder(to_addr=0x94, cmd_map=cmd_map)
+        case_kwargs = self._synthesize_case(builder, cmd_map)
+        builder(to_addr=0x94, cmd_map=cmd_map, **case_kwargs)
         assert "key" in captured, (
             f"{builder.__qualname__} did not call _build_from_map with cmd_map set"
         )

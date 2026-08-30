@@ -206,7 +206,6 @@ from rigplane.commands import (
     scan_start_type,
     scan_stop,
     send_cw,
-    set_acc1_mod_level,
     set_af_level,
     set_af_mute,
     set_agc,
@@ -222,16 +221,10 @@ from rigplane.commands import (
     set_break_in,
     set_break_in_delay,
     set_bsr,
-    set_civ_output_ant,
-    set_civ_transceive,
     set_compressor,
     set_compressor_level,
     set_cw_pitch,
     set_dash_ratio,
-    set_data1_mod_input,
-    set_data2_mod_input,
-    set_data3_mod_input,
-    set_data_off_mod_input,
     set_dial_lock,
     set_digisel,
     set_digisel_shift,
@@ -241,7 +234,6 @@ from rigplane.commands import (
     set_freq,
     set_ip_plus,
     set_key_speed,
-    set_lan_mod_level,
     set_manual_notch,
     set_manual_notch_width,
     set_mic_gain,
@@ -274,7 +266,6 @@ from rigplane.commands import (
     set_tuning_step,
     set_twin_peak_filter,
     set_tx_freq_monitor,
-    set_usb_mod_level,
     set_utc_offset,
     set_vox,
     set_vox_delay,
@@ -919,8 +910,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # constructed outside ``profiles/rig_loader.py``) and a loaded
         # profile that declares no CI-V commands both bind an empty
         # ``CommandMap`` here rather than raising -- construction must
-        # never fail on this. No call site reads ``self._commands`` yet;
-        # that migration is Steps 5..N of the same plan.
+        # never fail on this. As of Steps 5..N module 1
+        # (`commands/config.py`, MOR-2006), the mod-level/mod-input/CI-V
+        # option getters and setters below are the first call sites to
+        # read ``self._commands``; the rest still migrate module by
+        # module.
         #
         # ``absent_command_sources``/``on_undeclared`` implement D1's
         # undeclared-command policy (step 4b, plan §4 Step 4 / §8.1): this
@@ -2575,6 +2569,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             civ, key=key, dedupe=True, label="get_bool_value"
         )
         return parse_bool_response(resp, command=command, sub=sub, prefix=prefix)
+
+    def _expect_shape(self, builder: Callable[..., bytes]) -> tuple[int, int, bytes]:
+        """The ``(command, sub, prefix)`` a migrated getter's reply must match.
+
+        Thin wrapper over `commands/bound.py: BoundCommands.expect` (MOR-2006
+        §6 population 1): ``expect`` types ``sub`` as ``int | None`` per the
+        wire-tuple contract, but every builder routed through here so far
+        always has one -- the assertion fails loudly instead of reaching
+        ``_get_bcd_level``/``_get_bool_value`` with the wrong type.
+        """
+        command, sub, prefix = self._commands.expect(builder)
+        assert sub is not None, (
+            f"{getattr(builder, '__qualname__', builder)}: map entry has no "
+            "sub-command byte"
+        )
+        return command, sub, prefix
 
     async def _send_fire_and_forget(self, civ: bytes) -> None:
         """Send a fire-and-forget CI-V command after connection checks."""
@@ -4826,149 +4836,167 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             set_rx_antenna_ant2(enabled, to_addr=self._radio_addr)
         )
 
+    # commands/config.py, migrated onto the bound command map (MOR-2006
+    # Steps 5..N module 1, plan §4): requests go through
+    # ``self._commands.<builder>`` and replies through
+    # ``self._expect_shape`` (§6 population 1), rather than the literal
+    # ``command=``/``sub=``/``prefix=`` values every getter below still uses.
+
     async def get_acc1_mod_level(self) -> int:
         """Read ACC1 modulation level (0-255)."""
+        command, sub, prefix = self._expect_shape(get_acc1_mod_level)
         return await self._get_bcd_level(
-            get_acc1_mod_level(to_addr=self._radio_addr),
+            self._commands.get_acc1_mod_level(to_addr=self._radio_addr),
             key="get_acc1_mod_level",
-            command=0x14,
-            sub=0x0B,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_acc1_mod_level(self, level: int) -> None:
         """Set ACC1 modulation level (0-255)."""
         await self._send_fire_and_forget(
-            set_acc1_mod_level(level, to_addr=self._radio_addr)
+            self._commands.set_acc1_mod_level(level, to_addr=self._radio_addr)
         )
 
     async def get_usb_mod_level(self) -> int:
         """Read USB modulation level (0-255)."""
+        command, sub, prefix = self._expect_shape(get_usb_mod_level)
         return await self._get_bcd_level(
-            get_usb_mod_level(to_addr=self._radio_addr),
+            self._commands.get_usb_mod_level(to_addr=self._radio_addr),
             key="get_usb_mod_level",
-            command=0x14,
-            sub=0x10,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_usb_mod_level(self, level: int) -> None:
         """Set USB modulation level (0-255)."""
         await self._send_fire_and_forget(
-            set_usb_mod_level(level, to_addr=self._radio_addr)
+            self._commands.set_usb_mod_level(level, to_addr=self._radio_addr)
         )
 
     async def get_lan_mod_level(self) -> int:
         """Read LAN modulation level (0-255)."""
+        command, sub, prefix = self._expect_shape(get_lan_mod_level)
         return await self._get_bcd_level(
-            get_lan_mod_level(to_addr=self._radio_addr),
+            self._commands.get_lan_mod_level(to_addr=self._radio_addr),
             key="get_lan_mod_level",
-            command=0x14,
-            sub=0x11,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_lan_mod_level(self, level: int) -> None:
         """Set LAN modulation level (0-255)."""
         await self._send_fire_and_forget(
-            set_lan_mod_level(level, to_addr=self._radio_addr)
+            self._commands.set_lan_mod_level(level, to_addr=self._radio_addr)
         )
 
     async def get_data_off_mod_input(self) -> int:
         """Read Data Off modulation input source (0-5)."""
+        command, sub, prefix = self._expect_shape(get_data_off_mod_input)
         return await self._get_bcd_level(
-            get_data_off_mod_input(to_addr=self._radio_addr),
+            self._commands.get_data_off_mod_input(to_addr=self._radio_addr),
             key="get_data_off_mod_input",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x00\x91",
+            command=command,
+            sub=sub,
+            prefix=prefix,
             bcd_bytes=1,
         )
 
     async def set_data_off_mod_input(self, source: int) -> None:
         """Set Data Off modulation input source (0-5)."""
         await self._send_fire_and_forget(
-            set_data_off_mod_input(source, to_addr=self._radio_addr)
+            self._commands.set_data_off_mod_input(source, to_addr=self._radio_addr)
         )
 
     async def get_data1_mod_input(self) -> int:
         """Read DATA1 modulation input source (0-4)."""
+        command, sub, prefix = self._expect_shape(get_data1_mod_input)
         return await self._get_bcd_level(
-            get_data1_mod_input(to_addr=self._radio_addr),
+            self._commands.get_data1_mod_input(to_addr=self._radio_addr),
             key="get_data1_mod_input",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x00\x92",
+            command=command,
+            sub=sub,
+            prefix=prefix,
             bcd_bytes=1,
         )
 
     async def set_data1_mod_input(self, source: int) -> None:
         """Set DATA1 modulation input source (0-4)."""
         await self._send_fire_and_forget(
-            set_data1_mod_input(source, to_addr=self._radio_addr)
+            self._commands.set_data1_mod_input(source, to_addr=self._radio_addr)
         )
 
     async def get_data2_mod_input(self) -> int:
         """Read DATA2 modulation input source (0-4)."""
+        command, sub, prefix = self._expect_shape(get_data2_mod_input)
         return await self._get_bcd_level(
-            get_data2_mod_input(to_addr=self._radio_addr),
+            self._commands.get_data2_mod_input(to_addr=self._radio_addr),
             key="get_data2_mod_input",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x00\x93",
+            command=command,
+            sub=sub,
+            prefix=prefix,
             bcd_bytes=1,
         )
 
     async def set_data2_mod_input(self, source: int) -> None:
         """Set DATA2 modulation input source (0-4)."""
         await self._send_fire_and_forget(
-            set_data2_mod_input(source, to_addr=self._radio_addr)
+            self._commands.set_data2_mod_input(source, to_addr=self._radio_addr)
         )
 
     async def get_data3_mod_input(self) -> int:
         """Read DATA3 modulation input source (0-4)."""
+        command, sub, prefix = self._expect_shape(get_data3_mod_input)
         return await self._get_bcd_level(
-            get_data3_mod_input(to_addr=self._radio_addr),
+            self._commands.get_data3_mod_input(to_addr=self._radio_addr),
             key="get_data3_mod_input",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x00\x94",
+            command=command,
+            sub=sub,
+            prefix=prefix,
             bcd_bytes=1,
         )
 
     async def set_data3_mod_input(self, source: int) -> None:
         """Set DATA3 modulation input source (0-4)."""
         await self._send_fire_and_forget(
-            set_data3_mod_input(source, to_addr=self._radio_addr)
+            self._commands.set_data3_mod_input(source, to_addr=self._radio_addr)
         )
 
     async def get_civ_transceive(self) -> bool:
         """Read CI-V transceive status."""
+        command, sub, prefix = self._expect_shape(get_civ_transceive)
         return await self._get_bool_value(
-            get_civ_transceive(to_addr=self._radio_addr),
+            self._commands.get_civ_transceive(to_addr=self._radio_addr),
             key="get_civ_transceive",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x01\x29",
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_civ_transceive(self, enabled: bool) -> None:
         """Set CI-V transceive status."""
         await self._send_fire_and_forget(
-            set_civ_transceive(enabled, to_addr=self._radio_addr)
+            self._commands.set_civ_transceive(enabled, to_addr=self._radio_addr)
         )
 
     async def get_civ_output_ant(self) -> bool:
         """Read CI-V output (ANT) status."""
+        command, sub, prefix = self._expect_shape(get_civ_output_ant)
         return await self._get_bool_value(
-            get_civ_output_ant(to_addr=self._radio_addr),
+            self._commands.get_civ_output_ant(to_addr=self._radio_addr),
             key="get_civ_output_ant",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x01\x30",
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_civ_output_ant(self, enabled: bool) -> None:
         """Set CI-V output (ANT) status."""
         await self._send_fire_and_forget(
-            set_civ_output_ant(enabled, to_addr=self._radio_addr)
+            self._commands.set_civ_output_ant(enabled, to_addr=self._radio_addr)
         )
 
     async def get_system_date(self) -> tuple[int, int, int]:

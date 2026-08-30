@@ -6,7 +6,8 @@ from here, but this module imports nothing from siblings.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypeVar
+import functools
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..types import CivFrame
 
@@ -100,12 +101,6 @@ _CTL_MEM_DASH_RATIO = b"\x02\x28"
 _CTL_MEM_NB_DEPTH = b"\x02\x90"
 _CTL_MEM_NB_WIDTH = b"\x02\x91"
 _CTL_MEM_VOX_DELAY = b"\x02\x92"
-_CTL_MEM_DATA_OFF_MOD_INPUT = b"\x00\x91"
-_CTL_MEM_DATA1_MOD_INPUT = b"\x00\x92"
-_CTL_MEM_DATA2_MOD_INPUT = b"\x00\x93"
-_CTL_MEM_DATA3_MOD_INPUT = b"\x00\x94"
-_CTL_MEM_CIV_TRANSCEIVE = b"\x01\x29"
-_CTL_MEM_CIV_OUTPUT_ANT = b"\x01\x30"
 _CTL_MEM_SYSTEM_DATE = b"\x01\x58"
 _CTL_MEM_SYSTEM_TIME = b"\x01\x59"
 _CTL_MEM_UTC_OFFSET = b"\x01\x62"
@@ -118,11 +113,6 @@ _SUB_ANT1 = 0x00
 _SUB_ANT2 = 0x01
 _SUB_RX_ANT_ANT1 = 0x12
 _SUB_RX_ANT_ANT2 = 0x13
-
-# Modulation level sub-commands for 0x14
-_SUB_ACC1_MOD_LEVEL = 0x0B
-_SUB_USB_MOD_LEVEL = 0x10
-_SUB_LAN_MOD_LEVEL = 0x11
 
 # VFO / Scan / Dual Watch
 _CMD_VFO_SELECT = 0x07
@@ -369,6 +359,43 @@ def expose_command_key(
         return fn
 
     return decorator
+
+
+def require_cmd_map(fn: _BuilderT) -> _BuilderT:
+    """Wrap *fn* so a call omitting ``cmd_map`` explains the Q6 API break.
+
+    Per Q6 (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1):
+    ``cmd_map`` is now required, no default, no deprecation cycle -- but
+    Python's own missing-argument ``TypeError`` names only the parameter,
+    not what changed or what to do about it. This appends both to that
+    same message (so a call missing some *other* required argument too
+    still shows it) rather than replacing it. A call that already supplies
+    ``cmd_map`` -- including a literal ``None``, which reaches *fn* and
+    fails there on its own terms -- is unaffected: this only ever fires on
+    Python's missing-argument wording, never an unrelated error from *fn*.
+
+    Applied module by module as Steps 5..N reach each one;
+    `commands/config.py` (module 1) is the first caller.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except TypeError as exc:
+            if "cmd_map" in kwargs or "'cmd_map'" not in str(exc):
+                raise
+            raise TypeError(
+                f"{exc} -- as of MOR-2006 "
+                "(docs/plans/2026-08-29-profile-driven-command-bytes.md), "
+                "every rigplane.commands builder requires the radio's "
+                "CommandMap and no longer has a hardcoded fallback. Call it "
+                "through the radio's bound commands instead of the free "
+                "function directly (commands/bound.py: BoundCommands, e.g. "
+                "self._commands.<builder>(...))."
+            ) from None
+
+    return wrapper  # type: ignore[return-value]
 
 
 def parse_civ_frame(data: bytes) -> CivFrame:
