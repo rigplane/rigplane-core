@@ -318,19 +318,25 @@ end_hz = 136000000
 #   confirmed for X6100.
 # - break_in -> hardcoded [0x16, 0x47] in CoreRadio's break-in path, no
 #   [commands] key here or on X6200. CORRECTION (D2, MOR-2019 review
-#   follow-up, applied here rather than inherited): [0x14, 0x0F]
-#   ("break-in delay" / QSK hang time) is NOT reached by a single hardcode.
-#   It is reached by THREE separate paths -- ``CoreRadio.get_break_in_delay``
-#   and ``CoreRadio.set_break_in_delay`` (both via
-#   ``commands/levels.py: get_break_in_delay`` / ``set_break_in_delay``),
-#   plus the unconditional poll in
-#   ``runtime/_state_queries.py: build_state_queries``'s
+#   follow-up; reworded again here, #2838, to match the verified
+#   rigs/x6200.toml wording): the "THREE separate paths" claim previously
+#   recorded here was itself stale by the time it was written. Verified
+#   directly against HEAD (calling both builders against this profile's
+#   own CommandMap): ``CoreRadio.get_break_in_delay`` and
+#   ``CoreRadio.set_break_in_delay`` (both via ``commands/levels.py:
+#   get_break_in_delay`` / ``set_break_in_delay``) were migrated onto the
+#   bound command map (``commands/bound.py: BoundCommands``, MOR-2006) in
+#   a PR that had already landed by the time the three-path wording was
+#   written, and this profile declares neither key present nor
+#   declared-absent -- so both now refuse with ``CommandError`` (the
+#   undeclared-command policy, D1, MOR-2005) instead of reaching the wire.
+#   [0x14, 0x0F] is reached today by exactly ONE path: the unconditional
+#   poll in ``runtime/_state_queries.py: build_state_queries``'s
 #   ``_COMMON_FEATURE_QUERIES`` list, which every CI-V radio using this
-#   query builder sends regardless of capability. None of the three reads
-#   this profile's civ_addr or [commands] table to decide whether to fire
-#   -- they are reached only if something ever constructs a CI-V radio
-#   object against this profile, per the Reachability note in the file
-#   header above.
+#   query builder sends regardless of capability. That poll does not read
+#   this profile's civ_addr or [commands] table either -- it is reached
+#   only if something ever constructs a CI-V radio object against this
+#   profile, per the Reachability note in the file header above.
 # - rit / xit -> hardcoded [0x21] in the RIT/XIT command builders
 #   (commands/_frame.py: _CMD_RIT, consumed by commands/system.py), no
 #   [commands] key here or on X6200. X6200's write-only *behavior* (SET
