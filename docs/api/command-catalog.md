@@ -243,10 +243,10 @@ the memory protocol reject these commands.
 | `send_civ` | `command: int`, `sub?: int`, `data?: str=""`, `wait_response?: bool=false` | CivCommandCapable | Yes | Fire-and-forget raw CI-V write through the ordered queue. `command` and `sub` are byte values; `data` is compact even-length hex. `wait_response: true` is rejected; use `POST /api/v1/civ/transaction` for ACK/data responses. Rejected in read-only mode. |
 | `set_xfc_status` | `on: bool` | — | Yes | XFC on/off. `on` is required. |
 | `set_tx_freq_monitor` | `on: bool` | — | Yes | TX frequency monitor. `on` is required. |
-| `get_quick_split` | — | — | Yes | Enqueues `QuickSplit`. The `get_` prefix is a misnomer; no data is read. Experimental — see issue #774. |
-| `set_quick_split` | — | — | Yes | Alias for `get_quick_split`. Experimental — see issue #774. |
-| `get_quick_dual_watch` | — | — | Yes | Enqueues `QuickDualWatch`. Experimental — see issue #774. |
-| `set_quick_dual_watch` | — | — | Yes | Alias for `get_quick_dual_watch`. Experimental — see issue #774. |
+| `get_quick_split` | — | — | Yes | Enqueues `QuickSplit`, which reads the IC-7300 `1A 05 0030`-style persistent Quick Split menu toggle (`CoreRadio.get_quick_split`, MOR-2007). |
+| `set_quick_split` | — | — | Yes | Enqueues the same `QuickSplit` as `get_quick_split` above and only reads — this WS command does not yet parse an `on` value from `params` to write it (`CoreRadio.set_quick_split` exists and works when called directly; the WS handler just doesn't reach it yet). Not an alias in the underlying command layer any more (MOR-2007 gave `get_`/`set_` real, distinct behavior), only in this WS intent's current wiring. |
+| `get_quick_dual_watch` | — | — | Yes | Enqueues `QuickDualWatch`, which reads the equivalent persistent Quick Dual Watch menu toggle (`CoreRadio.get_quick_dual_watch`, MOR-2007). |
+| `set_quick_dual_watch` | — | — | Yes | Same gap as `set_quick_split` above: reads via `QuickDualWatch` rather than writing through `CoreRadio.set_quick_dual_watch`. |
 | `quick_dualwatch` | — | `dual_rx` | Yes | Composite trigger: equalize MAIN→SUB then enable dual watch (emulates front-panel long-press). |
 | `quick_split` | — | `dual_rx` | Yes | Composite trigger: equalize MAIN→SUB then enable split (emulates front-panel long-press). |
 
@@ -355,7 +355,7 @@ Check `GET /api/v1/capabilities` before building model-specific batches. The
 ## Stability notes
 
 - **Stable:** all commands not listed as experimental below.
-- **Experimental:** `cw_auto_tune` (requires audio relay; FFT peak detection; fails if RX audio is inactive). `get_quick_split`, `set_quick_split`, `get_quick_dual_watch`, `set_quick_dual_watch` (the `get_/set_quick_*` names send a config-flag CI-V frame — see issue #774 — rather than the intended toggle; prefer `quick_split` / `quick_dualwatch` for the composite trigger).
+- **Experimental:** `cw_auto_tune` (requires audio relay; FFT peak detection; fails if RX audio is inactive). `get_quick_split`, `set_quick_split`, `get_quick_dual_watch`, `set_quick_dual_watch` — the underlying command/runtime layer now reads and writes the real persistent menu toggle (MOR-2007), but this WS intent's `set_` half still only reads (see the table above); prefer `quick_split` / `quick_dualwatch` for the composite front-panel-emulating trigger, which is unaffected.
 - **Deprecated aliases (kept for backwards compatibility):** `select_vfo`, `set_power`, `set_squelch`, `set_ipplus`, `set_attenuator`, `set_comp`, `set_compressor`. Use the canonical names listed above in new code.
 
 ---
