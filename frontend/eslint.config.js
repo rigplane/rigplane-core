@@ -121,7 +121,8 @@ const FORBIDDEN_SEMANTIC_IMPORTS = {
  * Panels must route store reads through `lib/runtime/adapters/*` (state + commands).
  *
  * Note: this is panel-only on purpose. Other presentation layers (layout, display,
- * meters, vfo, controls, skins) have their own Tier-N migrations tracked under #1063.
+ * meters, vfo, controls) have their own Tier-N migrations tracked under #1063;
+ * skins got its own store ban under MOR-2039 (FORBIDDEN_SKINS_IMPORTS below).
  */
 const FORBIDDEN_PANEL_IMPORTS = {
   patterns: [
@@ -154,6 +155,27 @@ const FORBIDDEN_PANEL_IMPORTS = {
         'Use callback props from the adapter/wiring layer instead. ' +
         'See ADR 2026-04-12.',
     },
+  ],
+};
+
+/**
+ * Skins lockdown (MOR-2039 — tightens skins to the panels-tier lockdown
+ * above). Extends the presentation-components ban (transport, audioManager)
+ * with the same `$lib/stores/*` ban FORBIDDEN_PANEL_IMPORTS applies to
+ * panels: skins are the outermost composition layer and, like panels, must
+ * route state through `lib/runtime/adapters/*` instead of reading stores
+ * directly.
+ */
+const FORBIDDEN_SKINS_IMPORTS = {
+  paths: FORBIDDEN_RUNTIME_IMPORTS.paths,
+  patterns: [
+    {
+      group: ['$lib/stores/*', '$lib/stores', '**/lib/stores/*', '**/lib/stores'],
+      message:
+        'Skins must not import from $lib/stores/* — route via lib/runtime/adapters/* instead. ' +
+        'See docs/plans/2026-04-29-panel-adapter-migration.md and ADR 2026-04-12.',
+    },
+    ...FORBIDDEN_RUNTIME_IMPORTS.patterns,
   ],
 };
 
@@ -387,6 +409,27 @@ export default [
     ],
     rules: {
       'no-restricted-imports': ['error', FORBIDDEN_PANEL_IMPORTS],
+    },
+  },
+
+  // ── Import boundary: skins (MOR-2039 — matches the panels-tier lockdown) ──
+  // Adds `$lib/stores/*` to the skins ban and extends coverage to `.ts`
+  // files — the base "presentation components" block above only globs
+  // `src/skins/**/*.svelte`, so a `.ts` file under skins/ (e.g. registry.ts)
+  // matched no skins-specific rule at all before this. Ordered after that
+  // base block so this fully-merged rule wins for the overlapping `.svelte`
+  // file set (flat config replaces, not merges, per rule key — same idiom
+  // as the panels block above). The two direct store imports this ban
+  // exposed (registry.ts's `normalizeLayoutMode`, SdrVfoScreen.svelte's
+  // `getAgcLabels`/`getAttValues`) were migrated to `lib/runtime/adapters/`
+  // in the same change (`layout-mode-adapter.ts`, `capabilities-adapter.ts`).
+  {
+    files: [
+      'src/skins/**/*.svelte',
+      'src/skins/**/*.ts',
+    ],
+    rules: {
+      'no-restricted-imports': ['error', FORBIDDEN_SKINS_IMPORTS],
     },
   },
 
