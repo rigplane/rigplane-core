@@ -188,9 +188,11 @@ describe('DEFAULT_ZONES', () => {
 // ~40px column) — SVG text clips silently rather than wrapping or
 // ellipsizing when it overflows. At the non-compact VALUE_FS=11 the budget
 // is ~6 characters; MOR-1527's own "NNN raw" honesty tag is 7 characters
-// and would clip on MeterPanel.svelte, BarGauge's sole non-compact consumer
-// (dead code per MOR-1535's audit, but not deleted here — no hollowing
-// without an owner call).
+// and would clip at that size. MeterPanel.svelte — BarGauge's only
+// non-compact consumer, dead code per MOR-1535's audit — was deleted under
+// MOR-2024; non-compact mode has no production consumer today, but this
+// test keeps the font-scaling behaviour correct for whichever caller
+// reaches for it next.
 
 describe('valueFontSize', () => {
   it('keeps the base font size for text within the ~6-char budget', () => {

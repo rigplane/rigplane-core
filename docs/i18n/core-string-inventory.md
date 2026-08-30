@@ -420,8 +420,6 @@ Files:
   `formatAttDb()` / `formatPreamp()` returning `OFF`/`P1`/`P2`/`{n}dB`/`MORE`.
 - `frontend/src/components-v2/panels/RitXitPanel.svelte` — label `Offset`;
   uses `RIT`/`XIT` from glossary.
-- `frontend/src/components-v2/panels/MeterPanel.svelte` — labels `Po`, `SWR`,
-  `ALC`.
 - `frontend/src/components-v2/panels/AntennaPanel.svelte:20,43` — `TX`, `RX`
   labels.
 - `frontend/src/components-v2/panels/AudioRoutingControl.svelte:46–93` —
