@@ -36,6 +36,7 @@ node_modules/
 config/
 .claude/*
 !.claude/agents/
+!.claude/audits/
 !.claude/commands/
 !.claude/skills/
 .kombai/
