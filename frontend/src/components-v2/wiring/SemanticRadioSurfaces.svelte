@@ -69,6 +69,7 @@
   import {
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
   } from './dual-receiver-strips';
+  import { guardRadioViewModel } from './radio-view-model-guard';
 
   /**
    * `'single'` (default) is the exact pre-MOR-1067 markup — sdr-test's
@@ -449,15 +450,22 @@
     hardwareConnected: runtime.scope.hardwareScopeConnected,
   });
 
-  // Belt-and-braces contract pin. The adapter now annotates its own return
-  // type (MOR-1065 ruling 2), so this is the second of two compile-time links.
+  // Belt-and-braces contract pin: two compile-time links (the adapter's own
+  // return-type annotation, MOR-1065 ruling 2, and this variable's own type)
+  // plus one dev-only runtime link, MOR-2040's `guardRadioViewModel` — it
+  // runs the real `validateRadioViewModel` whenever `import.meta.env.DEV` is
+  // true, so a value that type-checks but breaks a structural or cross-field
+  // invariant still throws here instead of reaching the surfaces below
+  // silently. Dead code in a production build; see `radio-view-model-guard.ts`.
   // MOR-1262 slice 2A: the live authority snapshot is the THIRD argument — the
   // meter facts read their TX relevance from it and never from `state.ptt`
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
   // MOR-1312 slice 12B: the scope-display snapshot is the FIFTH.
   let canonicalView: RadioViewModel | null = $derived(
-    toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
+    guardRadioViewModel(
+      toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
+    ),
   );
   let pbtPresentation: PbtPresentationState = $state(EMPTY_PBT_PRESENTATION);
   // A disconnect makes every currently-held PBT observation prior-session
