@@ -245,7 +245,8 @@ nothing prompts for them; each drop has a cost paid later:
   impression rather than a comparison. The coordinator records it during
   PLAN, before EXECUTE, in the run's own working notes — not a tracked file:
   `.gitignore` excludes everything under `.claude/` except `agents/`,
-  `commands/`, and `skills/`.
+  `audits/`, `commands/`, and `skills/` — and `audits/` is a published
+  archive (see its README), never a place for working notes.
 - **TEST is the four gates `solve-issue.md` Phase 6 enumerates**: the
   standard pytest suite, `ruff check`, `ruff format`, and `mypy`, run by the
   coordinator.

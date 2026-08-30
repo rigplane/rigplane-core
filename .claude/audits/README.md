@@ -7,12 +7,18 @@ revision it audited in its own header; citations inside a report (including
 that revision and are not maintained. These files live under `.claude/` rather
 than `docs/` deliberately: the doc-citation gate treats `docs/**` citations as
 living references that must not use line numbers, while an archived audit is
-evidence about one commit and must quote it verbatim.
+evidence about one commit and must quote it verbatim. Unlike the rest of
+`.claude/` — untracked scratch for working notes — this directory is tracked
+and **published in a public repository**: never put session notes, baselines,
+or anything with internal identifiers here.
 
 ## 2026-08-30 — v3 pre-release audit (three tracts, tree `8c8a70d4`)
 
 Commissioned to close the pre-release fix list before the v2.12.0 release
-cycle. One report per tract:
+cycle. The audited commit `8c8a70d4` was squash-merged as main's `3ba1a14a`
+(byte-identical tree), and the original commit survives as
+`refs/pull/2801/head` — so the pin resolves even from a fresh clone via
+either route. One report per tract:
 
 - [2026-08-30-mechanism-audit-command-path.md](2026-08-30-mechanism-audit-command-path.md)
   — UI/rigctld/CLI action → wire bytes. Headline findings: rigctld advertises
@@ -42,7 +48,9 @@ where they differ):
    switch-write-restore mechanism in the runtime write path and delete the
    web poller's inline copy (command-path F3).
 2. Transmit-state interpretation goes through the profile's `tx_state_map` on
-   every vendor, Icom included (closes TX-authority ADR Q14).
+   every vendor, Icom included. This answers TX-authority ADR Q14; the ADR's
+   own §9 table still records Q14 as open, and amending it belongs to the
+   epic's decode ticket, not to this archive.
 3. Consolidate the TX state-feedback decision into one shared resolver; the
    nested descriptor bodies are deletable (no consumer exists — verified same
    day, including the built-dist browser suite); `.text` stays per MOR-1482.
