@@ -884,7 +884,14 @@ def _parse_command_value(
     """Parse a single command value from TOML.
 
     Supports two formats:
-    1. CI-V wire bytes (list): [0x03] or [0x14, 0x01]
+    1. CI-V wire bytes (list): the frame's full constant prefix, per the
+       tuple contract ruled in Q7
+       (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1) —
+       command, sub-command, and any further constant bytes (extended menu
+       addressing, a selector byte, or a constant payload byte). Examples:
+       [0x03] (command only), [0x14, 0x01] (command + sub), or
+       [0x1C, 0x00, 0x01] (command + sub + a constant payload byte, the
+       X6100 ptt_on shape).
     2. CAT command spec (dict): { cat = { read = "FA;", parse = "FA{freq:09d};" } }
 
     Args:

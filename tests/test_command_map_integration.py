@@ -334,3 +334,19 @@ class TestCommandMapOverride:
         # The level data should follow the extended sub-command bytes
         idx = result.index(b"\x00\x64")
         assert idx + 2 < len(result) - 1  # there's data after 00 64 before FD
+
+    def test_three_byte_wire_trailing_byte_is_constant_not_addressing(self):
+        """Q7 (docs/plans/2026-08-29-profile-driven-command-bytes.md §8.1):
+        a tuple's trailing byte can be a constant payload or selector byte,
+        not only extended menu addressing — the shape of
+        rigs/x6100.toml's ptt_on = [0x1C, 0x00, 0x01]. It must still land
+        in the frame even though this getter passes no data of its own,
+        so a future change that truncated the tuple at the sub-command
+        would be caught here.
+        """
+        custom = CommandMap({"get_acc1_mod_level": (0x1C, 0x00, 0x01)})
+        result = commands.get_acc1_mod_level(cmd_map=custom)
+        # Frame: FE FE <to> <from> 1C 00 01 FD
+        assert b"\x1c\x00\x01" in result
+        assert result.startswith(b"\xfe\xfe")
+        assert result.endswith(b"\xfd")
