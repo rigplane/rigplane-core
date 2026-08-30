@@ -227,30 +227,42 @@ class TestModeCommands:
 
 
 class TestPowerCommands:
-    """Test RF power get/set commands."""
+    """Test RF power get/set commands.
 
-    def test_get_power(self) -> None:
-        frame = get_rf_power()
+    commands/levels.py migrated onto the bound command map in MOR-2006
+    Steps 5..N (module 2): both builders now require ``cmd_map``, and
+    ``rigs/ic7610.toml``'s ``get_rf_power``/``set_rf_power`` declare the
+    same ``[0x14, 0x0A]`` wire tuple the fallback used to build, so the
+    expected frames below are unchanged.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_get_power(self, cmd_map) -> None:
+        frame = get_rf_power(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x14\x0a\xfd"
 
-    def test_set_power(self) -> None:
+    def test_set_power(self, cmd_map) -> None:
         # Power level is 0-255 encoded as 2-byte BCD (00-02 55)
-        frame = set_rf_power(128)
+        frame = set_rf_power(128, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x14\x0a\x01\x28\xfd"
 
-    def test_set_power_zero(self) -> None:
-        frame = set_rf_power(0)
+    def test_set_power_zero(self, cmd_map) -> None:
+        frame = set_rf_power(0, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x14\x0a\x00\x00\xfd"
 
-    def test_set_power_max(self) -> None:
-        frame = set_rf_power(255)
+    def test_set_power_max(self, cmd_map) -> None:
+        frame = set_rf_power(255, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x14\x0a\x02\x55\xfd"
 
-    def test_set_power_out_of_range(self) -> None:
+    def test_set_power_out_of_range(self, cmd_map) -> None:
         with pytest.raises(ValueError):
-            set_rf_power(256)
+            set_rf_power(256, cmd_map=cmd_map)
         with pytest.raises(ValueError):
-            set_rf_power(-1)
+            set_rf_power(-1, cmd_map=cmd_map)
 
 
 class TestMeterCommands:
@@ -484,7 +496,20 @@ class TestCommand29:
 
 
 class TestCmd29ReceiverRouting:
-    """Test that per-receiver SET commands use cmd29 when receiver=SUB."""
+    """Test that per-receiver SET commands use cmd29 when receiver=SUB.
+
+    commands/levels.py migrated onto the bound command map in MOR-2006
+    Steps 5..N (module 2): its rf_gain/af_level/squelch builders now
+    require ``cmd_map``, and ``rigs/ic7610.toml`` declares the same wire
+    tuples the fallback used to build for all three -- no divergence rows
+    name IC-7610 -- so the expected frames below are unchanged; only the
+    ``cmd_map=`` wiring is new.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
 
     def test_set_frequency_main_no_cmd29(self) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_freq
@@ -516,145 +541,155 @@ class TestCmd29ReceiverRouting:
         assert frame[5] == 0x01  # SUB receiver
         assert frame[6] == 0x06  # Mode set command
 
-    def test_set_rf_gain_main_wrapped_by_default(self) -> None:
+    def test_set_rf_gain_main_wrapped_by_default(self, cmd_map) -> None:
         # MOR-1543: set_rf_gain's builder now defaults command29=True like
         # every other cmd29-eligible setter, instead of deriving the wrap
         # decision from receiver internally. IC-7610 declares a cmd29 route
         # for 0x14/0x02, so MAIN wraps too.
         from rigplane.commands import RECEIVER_MAIN, set_rf_gain
 
-        frame = set_rf_gain(128, receiver=RECEIVER_MAIN)
+        frame = set_rf_gain(128, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x00  # MAIN
         assert frame[6] == 0x14
         assert frame[7] == 0x02  # RF gain sub
 
-    def test_set_rf_gain_main_unwrapped_with_override(self) -> None:
+    def test_set_rf_gain_main_unwrapped_with_override(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_rf_gain
 
-        frame = set_rf_gain(128, receiver=RECEIVER_MAIN, command29=False)
+        frame = set_rf_gain(
+            128, receiver=RECEIVER_MAIN, command29=False, cmd_map=cmd_map
+        )
         assert frame[4] == 0x14  # Direct level cmd, no cmd29 prefix
         assert frame[5] == 0x02  # RF gain sub
 
-    def test_set_rf_gain_sub_uses_cmd29(self) -> None:
+    def test_set_rf_gain_sub_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, set_rf_gain
 
-        frame = set_rf_gain(128, receiver=RECEIVER_SUB)
+        frame = set_rf_gain(128, receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x01  # SUB receiver
         assert frame[6] == 0x14  # Level command
         assert frame[7] == 0x02  # RF gain sub
 
-    def test_set_af_level_main_wrapped_by_default(self) -> None:
+    def test_set_af_level_main_wrapped_by_default(self, cmd_map) -> None:
         # MOR-1543: same fix as set_rf_gain — IC-7610 declares a cmd29 route
         # for 0x14/0x01, so MAIN wraps too.
         from rigplane.commands import RECEIVER_MAIN, set_af_level
 
-        frame = set_af_level(200, receiver=RECEIVER_MAIN)
+        frame = set_af_level(200, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x00  # MAIN
         assert frame[6] == 0x14
         assert frame[7] == 0x01  # AF level sub
 
-    def test_set_af_level_main_unwrapped_with_override(self) -> None:
+    def test_set_af_level_main_unwrapped_with_override(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_af_level
 
-        frame = set_af_level(200, receiver=RECEIVER_MAIN, command29=False)
+        frame = set_af_level(
+            200, receiver=RECEIVER_MAIN, command29=False, cmd_map=cmd_map
+        )
         assert frame[4] == 0x14
         assert frame[5] == 0x01  # AF level sub
 
-    def test_set_af_level_sub_uses_cmd29(self) -> None:
+    def test_set_af_level_sub_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, set_af_level
 
-        frame = set_af_level(200, receiver=RECEIVER_SUB)
+        frame = set_af_level(200, receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x01
         assert frame[6] == 0x14
         assert frame[7] == 0x01  # AF level sub
 
-    def test_get_rf_gain_main_wrapped_by_default(self) -> None:
+    def test_get_rf_gain_main_wrapped_by_default(self, cmd_map) -> None:
         # MOR-1543: get_rf_gain's builder now defaults command29=True.
         from rigplane.commands import RECEIVER_MAIN, get_rf_gain
 
-        frame = get_rf_gain(receiver=RECEIVER_MAIN)
+        frame = get_rf_gain(receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x00  # MAIN
         assert frame[6] == 0x14
         assert frame[7] == 0x02  # RF gain sub
 
-    def test_get_rf_gain_main_unwrapped_with_override(self) -> None:
+    def test_get_rf_gain_main_unwrapped_with_override(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_rf_gain
 
-        frame = get_rf_gain(receiver=RECEIVER_MAIN, command29=False)
+        frame = get_rf_gain(receiver=RECEIVER_MAIN, command29=False, cmd_map=cmd_map)
         assert frame[4] == 0x14  # Direct level cmd, no cmd29 prefix
         assert frame[5] == 0x02  # RF gain sub
 
-    def test_get_rf_gain_sub_uses_cmd29(self) -> None:
+    def test_get_rf_gain_sub_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, get_rf_gain
 
-        frame = get_rf_gain(receiver=RECEIVER_SUB)
+        frame = get_rf_gain(receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x01  # SUB receiver
         assert frame[6] == 0x14  # Level command
         assert frame[7] == 0x02  # RF gain sub
 
-    def test_get_rf_gain_default_is_main(self) -> None:
+    def test_get_rf_gain_default_is_main(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_rf_gain
 
-        assert get_rf_gain() == get_rf_gain(receiver=RECEIVER_MAIN)
+        assert get_rf_gain(cmd_map=cmd_map) == get_rf_gain(
+            receiver=RECEIVER_MAIN, cmd_map=cmd_map
+        )
 
-    def test_get_af_level_main_wrapped_by_default(self) -> None:
+    def test_get_af_level_main_wrapped_by_default(self, cmd_map) -> None:
         # MOR-1543: get_af_level's builder now defaults command29=True.
         from rigplane.commands import RECEIVER_MAIN, get_af_level
 
-        frame = get_af_level(receiver=RECEIVER_MAIN)
+        frame = get_af_level(receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x00  # MAIN
         assert frame[6] == 0x14
         assert frame[7] == 0x01  # AF level sub
 
-    def test_get_af_level_main_unwrapped_with_override(self) -> None:
+    def test_get_af_level_main_unwrapped_with_override(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_af_level
 
-        frame = get_af_level(receiver=RECEIVER_MAIN, command29=False)
+        frame = get_af_level(receiver=RECEIVER_MAIN, command29=False, cmd_map=cmd_map)
         assert frame[4] == 0x14
         assert frame[5] == 0x01  # AF level sub
 
-    def test_get_af_level_sub_uses_cmd29(self) -> None:
+    def test_get_af_level_sub_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, get_af_level
 
-        frame = get_af_level(receiver=RECEIVER_SUB)
+        frame = get_af_level(receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x01  # SUB receiver
         assert frame[6] == 0x14
         assert frame[7] == 0x01  # AF level sub
 
-    def test_get_af_level_default_is_main(self) -> None:
+    def test_get_af_level_default_is_main(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_af_level
 
-        assert get_af_level() == get_af_level(receiver=RECEIVER_MAIN)
+        assert get_af_level(cmd_map=cmd_map) == get_af_level(
+            receiver=RECEIVER_MAIN, cmd_map=cmd_map
+        )
 
-    def test_set_squelch_main_wrapped_by_default(self) -> None:
+    def test_set_squelch_main_wrapped_by_default(self, cmd_map) -> None:
         # MOR-1543: set_squelch's builder now defaults command29=True.
         from rigplane.commands import RECEIVER_MAIN, set_squelch
 
-        frame = set_squelch(100, receiver=RECEIVER_MAIN)
+        frame = set_squelch(100, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x00  # MAIN
         assert frame[6] == 0x14
         assert frame[7] == 0x03  # SQL sub
 
-    def test_set_squelch_main_unwrapped_with_override(self) -> None:
+    def test_set_squelch_main_unwrapped_with_override(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_squelch
 
-        frame = set_squelch(100, receiver=RECEIVER_MAIN, command29=False)
+        frame = set_squelch(
+            100, receiver=RECEIVER_MAIN, command29=False, cmd_map=cmd_map
+        )
         assert frame[4] == 0x14
         assert frame[5] == 0x03  # SQL sub
 
-    def test_set_squelch_sub_uses_cmd29(self) -> None:
+    def test_set_squelch_sub_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, set_squelch
 
-        frame = set_squelch(100, receiver=RECEIVER_SUB)
+        frame = set_squelch(100, receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x01
         assert frame[6] == 0x14
@@ -750,7 +785,7 @@ class TestCmd29ReceiverRouting:
         assert frame[6] == 0x16
         assert frame[7] == 0x4E  # DIGI-SEL sub
 
-    def test_backward_compat_no_receiver_arg(self) -> None:
+    def test_backward_compat_no_receiver_arg(self, cmd_map) -> None:
         """All functions remain backward-compatible (no receiver arg = MAIN)."""
         from rigplane.commands import (
             set_af_level,
@@ -774,13 +809,26 @@ class TestCmd29ReceiverRouting:
         assert set_ip_plus(True)[4:6] == b"\x29\x00"
         # MOR-1543: rf_gain/af_level/squelch builders now default
         # command29=True; no receiver arg still targets MAIN (0x00).
-        assert set_rf_gain(128)[4:6] == b"\x29\x00"
-        assert set_af_level(200)[4:6] == b"\x29\x00"
-        assert set_squelch(50)[4:6] == b"\x29\x00"
+        assert set_rf_gain(128, cmd_map=cmd_map)[4:6] == b"\x29\x00"
+        assert set_af_level(200, cmd_map=cmd_map)[4:6] == b"\x29\x00"
+        assert set_squelch(50, cmd_map=cmd_map)[4:6] == b"\x29\x00"
 
 
 class TestDspLevelParityCommands:
-    """Test IC-7610 DSP/level parity command builders and parsers."""
+    """Test IC-7610 DSP/level parity command builders and parsers.
+
+    commands/levels.py migrated onto the bound command map in MOR-2006
+    Steps 5..N (module 2): every builder here now requires ``cmd_map``, and
+    ``rigs/ic7610.toml`` declares the same wire tuples the fallback used to
+    build for every command this class exercises -- no divergence rows name
+    IC-7610 (`tests/command_map_parity_divergences.txt`) -- so the expected
+    frames below are unchanged; only the ``cmd_map=`` wiring is new.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
 
     @pytest.mark.parametrize(
         ("getter_name", "setter_name", "sub", "receiver"),
@@ -796,6 +844,7 @@ class TestDspLevelParityCommands:
     )
     def test_cmd29_level_builders(
         self,
+        cmd_map,
         getter_name: str,
         setter_name: str,
         sub: int,
@@ -807,8 +856,11 @@ class TestDspLevelParityCommands:
         setter = getattr(commands, setter_name)
         expected = bytes([0xFE, 0xFE, 0x98, 0xE0, 0x29, receiver, 0x14, sub])
 
-        assert getter(receiver=receiver) == expected + b"\xfd"
-        assert setter(128, receiver=receiver) == expected + b"\x01\x28\xfd"
+        assert getter(receiver=receiver, cmd_map=cmd_map) == expected + b"\xfd"
+        assert (
+            setter(128, receiver=receiver, cmd_map=cmd_map)
+            == expected + b"\x01\x28\xfd"
+        )
 
     @pytest.mark.parametrize(
         ("getter_name", "setter_name", "sub", "value"),
@@ -826,6 +878,7 @@ class TestDspLevelParityCommands:
     )
     def test_level_builders(
         self,
+        cmd_map,
         getter_name: str,
         setter_name: str,
         sub: int,
@@ -836,9 +889,13 @@ class TestDspLevelParityCommands:
         getter = getattr(commands, getter_name)
         setter = getattr(commands, setter_name)
 
-        assert getter() == bytes([0xFE, 0xFE, 0x98, 0xE0, 0x14, sub, 0xFD])
-        assert setter(value).startswith(bytes([0xFE, 0xFE, 0x98, 0xE0, 0x14, sub]))
-        assert setter(value).endswith(b"\xfd")
+        assert getter(cmd_map=cmd_map) == bytes(
+            [0xFE, 0xFE, 0x98, 0xE0, 0x14, sub, 0xFD]
+        )
+        assert setter(value, cmd_map=cmd_map).startswith(
+            bytes([0xFE, 0xFE, 0x98, 0xE0, 0x14, sub])
+        )
+        assert setter(value, cmd_map=cmd_map).endswith(b"\xfd")
 
     @pytest.mark.parametrize(
         ("getter_name", "setter_name", "prefix", "value", "expected_payload"),
@@ -851,6 +908,7 @@ class TestDspLevelParityCommands:
     )
     def test_ctl_mem_level_builders(
         self,
+        cmd_map,
         getter_name: str,
         setter_name: str,
         prefix: bytes,
@@ -862,9 +920,9 @@ class TestDspLevelParityCommands:
         getter = getattr(commands, getter_name)
         setter = getattr(commands, setter_name)
 
-        assert getter() == b"\xfe\xfe\x98\xe0\x1a\x05" + prefix + b"\xfd"
+        assert getter(cmd_map=cmd_map) == b"\xfe\xfe\x98\xe0\x1a\x05" + prefix + b"\xfd"
         assert (
-            setter(value)
+            setter(value, cmd_map=cmd_map)
             == b"\xfe\xfe\x98\xe0\x1a\x05" + prefix + expected_payload + b"\xfd"
         )
 
@@ -934,11 +992,11 @@ class TestDspLevelParityCommands:
         with pytest.raises(ValueError, match="prefix"):
             parse_level_response(frame, command=0x1A, sub=0x05, prefix=b"\x00\x70")
 
-    def test_set_nb_width_rejects_out_of_range(self) -> None:
+    def test_set_nb_width_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_nb_width
 
         with pytest.raises(ValueError, match="0-255"):
-            set_nb_width(256)
+            set_nb_width(256, cmd_map=cmd_map)
 
     def test_set_manual_notch_width_wire_bounds_match_siblings(self) -> None:
         """MOR-1542: set_manual_notch_width hardcoded minimum=0/maximum=2 —
@@ -1918,41 +1976,48 @@ class TestSystemConfigCommands:
     """Tests for system/config command builders and parsers (#135)."""
 
     # --- REF Adjust (0x1A 0x05 0x00 0x70) ---
+    #
+    # commands/levels.py migrated onto the bound command map in MOR-2006
+    # Steps 5..N (module 2): both builders now require ``cmd_map``, and
+    # ``rigs/ic7610.toml``'s ``get_ref_adjust``/``set_ref_adjust`` declare
+    # the same ``[0x1A, 0x05, 0x00, 0x70]`` wire tuple the fallback used to
+    # build, so the expected frames below are unchanged. Reuses the
+    # ``cmd_map`` fixture defined below for config.py's own tests.
 
-    def test_get_ref_adjust_frame(self) -> None:
+    def test_get_ref_adjust_frame(self, cmd_map) -> None:
         from rigplane.commands import get_ref_adjust
 
-        frame = get_ref_adjust()
+        frame = get_ref_adjust(cmd_map=cmd_map)
         # FE FE 98 E0 1A 05 00 70 FD
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x70\xfd"
 
-    def test_set_ref_adjust_255(self) -> None:
+    def test_set_ref_adjust_255(self, cmd_map) -> None:
         from rigplane.commands import set_ref_adjust
 
-        frame = set_ref_adjust(255)
+        frame = set_ref_adjust(255, cmd_map=cmd_map)
         # 255 as 2-byte BCD: 0x02 0x55
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x70\x02\x55\xfd"
 
-    def test_set_ref_adjust_0(self) -> None:
+    def test_set_ref_adjust_0(self, cmd_map) -> None:
         from rigplane.commands import set_ref_adjust
 
-        frame = set_ref_adjust(0)
+        frame = set_ref_adjust(0, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x70\x00\x00\xfd"
 
-    def test_set_ref_adjust_511(self) -> None:
+    def test_set_ref_adjust_511(self, cmd_map) -> None:
         from rigplane.commands import set_ref_adjust
 
-        frame = set_ref_adjust(511)
+        frame = set_ref_adjust(511, cmd_map=cmd_map)
         # 511 as 2-byte BCD: 0x05 0x11
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x70\x05\x11\xfd"
 
-    def test_set_ref_adjust_rejects_out_of_range(self) -> None:
+    def test_set_ref_adjust_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_ref_adjust
 
         with pytest.raises(ValueError, match="REF Adjust must be 0-511"):
-            set_ref_adjust(-1)
+            set_ref_adjust(-1, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="REF Adjust must be 0-511"):
-            set_ref_adjust(512)
+            set_ref_adjust(512, cmd_map=cmd_map)
 
     def test_parse_ref_adjust_response(self) -> None:
         from rigplane.commands import parse_civ_frame, parse_level_response
@@ -1963,7 +2028,7 @@ class TestSystemConfigCommands:
         value = parse_level_response(frame, command=0x1A, sub=0x05, prefix=b"\x00\x70")
         assert value == 256
 
-    def test_ref_adjust_roundtrip(self) -> None:
+    def test_ref_adjust_roundtrip(self, cmd_map) -> None:
         from rigplane.commands import (
             parse_civ_frame,
             parse_level_response,
@@ -1971,7 +2036,7 @@ class TestSystemConfigCommands:
         )
 
         for v in [0, 128, 256, 511]:
-            frame = set_ref_adjust(v)
+            frame = set_ref_adjust(v, cmd_map=cmd_map)
             response = b"\xfe\xfe" + bytes([frame[3], frame[2]]) + frame[4:]
             parsed = parse_civ_frame(response)
             assert (
@@ -1980,41 +2045,45 @@ class TestSystemConfigCommands:
             )
 
     # --- Dash Ratio (0x1A 0x05 0x02 0x28) ---
+    #
+    # Same MOR-2006 migration as REF Adjust above -- ``rigs/ic7610.toml``'s
+    # dash-ratio wire tuple matches the deleted fallback, so the expected
+    # frames are unchanged.
 
-    def test_get_dash_ratio_frame(self) -> None:
+    def test_get_dash_ratio_frame(self, cmd_map) -> None:
         from rigplane.commands import get_dash_ratio
 
-        frame = get_dash_ratio()
+        frame = get_dash_ratio(cmd_map=cmd_map)
         # FE FE 98 E0 1A 05 02 28 FD
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x02\x28\xfd"
 
-    def test_set_dash_ratio_28(self) -> None:
+    def test_set_dash_ratio_28(self, cmd_map) -> None:
         from rigplane.commands import set_dash_ratio
 
-        frame = set_dash_ratio(28)
+        frame = set_dash_ratio(28, cmd_map=cmd_map)
         # 28 as 1-byte BCD: 0x28
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x02\x28\x28\xfd"
 
-    def test_set_dash_ratio_30(self) -> None:
+    def test_set_dash_ratio_30(self, cmd_map) -> None:
         from rigplane.commands import set_dash_ratio
 
-        frame = set_dash_ratio(30)
+        frame = set_dash_ratio(30, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x02\x28\x30\xfd"
 
-    def test_set_dash_ratio_45(self) -> None:
+    def test_set_dash_ratio_45(self, cmd_map) -> None:
         from rigplane.commands import set_dash_ratio
 
-        frame = set_dash_ratio(45)
+        frame = set_dash_ratio(45, cmd_map=cmd_map)
         # 45 as 1-byte BCD: 0x45
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x02\x28\x45\xfd"
 
-    def test_set_dash_ratio_rejects_out_of_range(self) -> None:
+    def test_set_dash_ratio_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_dash_ratio
 
         with pytest.raises(ValueError, match="Dash Ratio must be 28-45"):
-            set_dash_ratio(27)
+            set_dash_ratio(27, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Dash Ratio must be 28-45"):
-            set_dash_ratio(46)
+            set_dash_ratio(46, cmd_map=cmd_map)
 
     def test_parse_dash_ratio_response(self) -> None:
         from rigplane.commands import parse_civ_frame, parse_level_response
@@ -2027,7 +2096,7 @@ class TestSystemConfigCommands:
         )
         assert value == 35
 
-    def test_dash_ratio_roundtrip(self) -> None:
+    def test_dash_ratio_roundtrip(self, cmd_map) -> None:
         from rigplane.commands import (
             parse_civ_frame,
             parse_level_response,
@@ -2035,7 +2104,7 @@ class TestSystemConfigCommands:
         )
 
         for v in [28, 30, 35, 40, 45]:
-            frame = set_dash_ratio(v)
+            frame = set_dash_ratio(v, cmd_map=cmd_map)
             response = b"\xfe\xfe" + bytes([frame[3], frame[2]]) + frame[4:]
             parsed = parse_civ_frame(response)
             assert (

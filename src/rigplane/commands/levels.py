@@ -1,48 +1,43 @@
-"""All 0x14-family level get/set commands + parse_level_response."""
+"""All 0x14-family level get/set commands + parse_level_response.
+
+Migrated onto the bound command map in MOR-2006 Steps 5..N (module 2,
+`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4): every builder
+here requires ``cmd_map``, with no hardcoded fallback left. This module
+accounted for 16 of the rows `tests/command_map_parity_divergences.txt`
+recorded before this migration -- all now gone, since a divergence needs
+two disagreeing implementations and this module has only one left --
+including the other half of the measured ACC1/MIC-gain collision
+(MOR-1992): this module's ``set_mic_gain`` fallback built the exact same
+eight bytes on the IC-7300 as `config.py: set_acc1_mod_level`'s fallback
+did, for two unrelated controls.
+
+Every builder calls `_frame.py: _build_from_map` directly rather than the
+shared `_builders.py` templates used before migrating
+(``_build_level_get`` / ``_build_level_set`` / ``_build_ctl_mem_set``, all
+now deleted -- this module was their only caller, so their own
+``cmd_map is None`` fallback branches would otherwise become dead code
+nobody reads; ``_build_ctl_mem_get`` is kept, since `system.py`'s own
+date/time/UTC-offset getters still route through its fallback,
+unmigrated). Routing this module's builders through a template that
+retains a fallback would leave an explicit ``cmd_map=None`` call one layer
+away from silently reaching old, sometimes-wrong bytes instead of failing
+loudly through `_frame.py: require_cmd_map` -- the same reasoning
+`config.py`'s own module docstring records for the first half of this
+migration.
+"""
 
 from __future__ import annotations
 
 import math
 from typing import TYPE_CHECKING
 
-from ._builders import (
-    _build_level_get,
-    _build_level_set,
-    _build_ctl_mem_get,
-    _build_ctl_mem_set,
-)
-from ._codec import _level_bcd_encode
+from ._codec import _level_bcd_encode, bcd_encode_value
 from ._frame import (
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
-    _CMD_LEVEL,
-    _CTL_MEM_DASH_RATIO,
-    _CTL_MEM_NB_DEPTH,
-    _CTL_MEM_NB_WIDTH,
-    _CTL_MEM_REF_ADJUST,
-    _CTL_MEM_VOX_DELAY,
-    _SUB_AF_LEVEL,
-    _SUB_ANTI_VOX_GAIN,
-    _SUB_APF_TYPE_LEVEL,
-    _SUB_BREAK_IN_DELAY,
-    _SUB_COMPRESSOR_LEVEL,
-    _SUB_CW_PITCH,
-    _SUB_DIGISEL_SHIFT,
-    _SUB_DRIVE_GAIN,
-    _SUB_KEY_SPEED,
-    _SUB_MIC_GAIN,
-    _SUB_MONITOR_GAIN,
-    _SUB_NB_LEVEL,
-    _SUB_NOTCH_FILTER,
-    _SUB_NR_LEVEL,
-    _SUB_PBT_INNER,
-    _SUB_PBT_OUTER,
-    _SUB_RF_GAIN,
-    _SUB_RF_POWER,
-    _SUB_SQL,
-    _SUB_VOX_GAIN,
     _build_from_map,
-    build_civ_frame,
+    expose_command_key,
+    require_cmd_map,
 )
 
 if TYPE_CHECKING:
@@ -69,916 +64,910 @@ def _key_speed_to_level(wpm: int) -> int:
     return round((wpm - 6) * 6.071)
 
 
+@expose_command_key(lambda cmd_map: "get_rf_power")
+@require_cmd_map
 def get_rf_power(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a 'get RF power' CI-V command."""
-    if cmd_map is not None:
-        return _build_from_map(
-            cmd_map, "get_rf_power", to_addr=to_addr, from_addr=from_addr
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_LEVEL, sub=_SUB_RF_POWER)
+    return _build_from_map(
+        cmd_map, "get_rf_power", to_addr=to_addr, from_addr=from_addr
+    )
 
 
+@expose_command_key(lambda cmd_map: "set_rf_power")
+@require_cmd_map
 def set_rf_power(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'set RF power' CI-V command.
 
     Args:
         level: Power level 0-255 (radio maps to actual watts).
     """
-    if cmd_map is not None:
-        return _build_from_map(
-            cmd_map,
-            "set_rf_power",
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=_level_bcd_encode(level),
-        )
-    return build_civ_frame(
-        to_addr, from_addr, _CMD_LEVEL, sub=_SUB_RF_POWER, data=_level_bcd_encode(level)
+    return _build_from_map(
+        cmd_map,
+        "set_rf_power",
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=_level_bcd_encode(level),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_rf_gain")
+@require_cmd_map
 def get_rf_gain(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'read RF gain' CI-V command (0x14 0x02)."""
-    return _build_level_get(
-        _SUB_RF_GAIN,
+    return _build_from_map(
+        cmd_map,
+        "get_rf_gain",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_rf_gain",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_rf_gain")
+@require_cmd_map
 def set_rf_gain(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'set RF gain' CI-V command."""
-    return _build_level_set(
-        _SUB_RF_GAIN,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_rf_gain",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_rf_gain",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_af_level")
+@require_cmd_map
 def get_af_level(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'read AF output level' CI-V command (0x14 0x01)."""
-    return _build_level_get(
-        _SUB_AF_LEVEL,
+    return _build_from_map(
+        cmd_map,
+        "get_af_level",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_af_level",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_af_level")
+@require_cmd_map
 def set_af_level(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'set AF output level' CI-V command."""
-    return _build_level_set(
-        _SUB_AF_LEVEL,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_af_level",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_af_level",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_squelch")
+@require_cmd_map
 def get_squelch(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'get squelch level' CI-V command (0x14 0x03)."""
-    return _build_level_get(
-        _SUB_SQL,
+    return _build_from_map(
+        cmd_map,
+        "get_squelch",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_squelch",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_squelch")
+@require_cmd_map
 def set_squelch(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'set squelch level' CI-V command."""
-    return _build_level_set(
-        _SUB_SQL,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_squelch",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_squelch",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_apf_type_level")
+@require_cmd_map
 def get_apf_type_level(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a read APF Type Level command."""
-    return _build_level_get(
-        _SUB_APF_TYPE_LEVEL,
+    return _build_from_map(
+        cmd_map,
+        "get_apf_type_level",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_apf_type_level",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_apf_type_level")
+@require_cmd_map
 def set_apf_type_level(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set APF Type Level command."""
-    return _build_level_set(
-        _SUB_APF_TYPE_LEVEL,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_apf_type_level",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_apf_type_level",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_nr_level")
+@require_cmd_map
 def get_nr_level(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a read NR Level command."""
-    return _build_level_get(
-        _SUB_NR_LEVEL,
+    return _build_from_map(
+        cmd_map,
+        "get_nr_level",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_nr_level",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_nr_level")
+@require_cmd_map
 def set_nr_level(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set NR Level command."""
-    return _build_level_set(
-        _SUB_NR_LEVEL,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_nr_level",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_nr_level",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_pbt_inner")
+@require_cmd_map
 def get_pbt_inner(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a read PBT Inner command."""
-    return _build_level_get(
-        _SUB_PBT_INNER,
+    return _build_from_map(
+        cmd_map,
+        "get_pbt_inner",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_pbt_inner",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_pbt_inner")
+@require_cmd_map
 def set_pbt_inner(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set PBT Inner command."""
-    return _build_level_set(
-        _SUB_PBT_INNER,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_pbt_inner",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_pbt_inner",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_pbt_outer")
+@require_cmd_map
 def get_pbt_outer(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a read PBT Outer command."""
-    return _build_level_get(
-        _SUB_PBT_OUTER,
+    return _build_from_map(
+        cmd_map,
+        "get_pbt_outer",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_pbt_outer",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_pbt_outer")
+@require_cmd_map
 def set_pbt_outer(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set PBT Outer command."""
-    return _build_level_set(
-        _SUB_PBT_OUTER,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_pbt_outer",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_pbt_outer",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_cw_pitch")
+@require_cmd_map
 def get_cw_pitch(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read CW Pitch command."""
-    return _build_level_get(
-        _SUB_CW_PITCH,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_cw_pitch",
+    return _build_from_map(
+        cmd_map, "get_cw_pitch", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_cw_pitch")
+@require_cmd_map
 def set_cw_pitch(
     pitch_hz: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set CW Pitch command."""
-    return _build_level_set(
-        _SUB_CW_PITCH,
-        _cw_pitch_to_level(pitch_hz),
+    return _build_from_map(
+        cmd_map,
+        "set_cw_pitch",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_cw_pitch",
+        data=_level_bcd_encode(_cw_pitch_to_level(pitch_hz)),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_mic_gain")
+@require_cmd_map
 def get_mic_gain(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Mic Gain command."""
-    return _build_level_get(
-        _SUB_MIC_GAIN,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_mic_gain",
+    return _build_from_map(
+        cmd_map, "get_mic_gain", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_mic_gain")
+@require_cmd_map
 def set_mic_gain(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Mic Gain command."""
-    return _build_level_set(
-        _SUB_MIC_GAIN,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_mic_gain",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_mic_gain",
+        data=_level_bcd_encode(level),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_key_speed")
+@require_cmd_map
 def get_key_speed(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Key Speed command."""
-    return _build_level_get(
-        _SUB_KEY_SPEED,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_key_speed",
+    return _build_from_map(
+        cmd_map, "get_key_speed", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_key_speed")
+@require_cmd_map
 def set_key_speed(
     wpm: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Key Speed command."""
-    return _build_level_set(
-        _SUB_KEY_SPEED,
-        _key_speed_to_level(wpm),
+    return _build_from_map(
+        cmd_map,
+        "set_key_speed",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_key_speed",
+        data=_level_bcd_encode(_key_speed_to_level(wpm)),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_notch_filter")
+@require_cmd_map
 def get_notch_filter(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a read Notch Filter level command."""
-    return _build_level_get(
-        _SUB_NOTCH_FILTER,
+    return _build_from_map(
+        cmd_map,
+        "get_notch_filter",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_notch_filter",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_notch_filter")
+@require_cmd_map
 def set_notch_filter(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Notch Filter level command."""
-    return _build_level_set(
-        _SUB_NOTCH_FILTER,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_notch_filter",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_notch_filter",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_compressor_level")
+@require_cmd_map
 def get_compressor_level(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Compressor Level command."""
-    return _build_level_get(
-        _SUB_COMPRESSOR_LEVEL,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_compressor_level",
+    return _build_from_map(
+        cmd_map, "get_compressor_level", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_compressor_level")
+@require_cmd_map
 def set_compressor_level(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Compressor Level command."""
-    return _build_level_set(
-        _SUB_COMPRESSOR_LEVEL,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_compressor_level",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_compressor_level",
+        data=_level_bcd_encode(level),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_break_in_delay")
+@require_cmd_map
 def get_break_in_delay(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Break-In Delay command."""
-    return _build_level_get(
-        _SUB_BREAK_IN_DELAY,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_break_in_delay",
+    return _build_from_map(
+        cmd_map, "get_break_in_delay", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_break_in_delay")
+@require_cmd_map
 def set_break_in_delay(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Break-In Delay command."""
-    return _build_level_set(
-        _SUB_BREAK_IN_DELAY,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_break_in_delay",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_break_in_delay",
+        data=_level_bcd_encode(level),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_nb_level")
+@require_cmd_map
 def get_nb_level(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a read NB Level command."""
-    return _build_level_get(
-        _SUB_NB_LEVEL,
+    return _build_from_map(
+        cmd_map,
+        "get_nb_level",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_nb_level",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_nb_level")
+@require_cmd_map
 def set_nb_level(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set NB Level command."""
-    return _build_level_set(
-        _SUB_NB_LEVEL,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_nb_level",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_nb_level",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_digisel_shift")
+@require_cmd_map
 def get_digisel_shift(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a read DIGI-SEL Shift command."""
-    return _build_level_get(
-        _SUB_DIGISEL_SHIFT,
+    return _build_from_map(
+        cmd_map,
+        "get_digisel_shift",
         to_addr=to_addr,
         from_addr=from_addr,
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="get_digisel_shift",
     )
 
 
+@expose_command_key(lambda cmd_map: "set_digisel_shift")
+@require_cmd_map
 def set_digisel_shift(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
     *,
     command29: bool = True,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set DIGI-SEL Shift command."""
-    return _build_level_set(
-        _SUB_DIGISEL_SHIFT,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_digisel_shift",
         to_addr=to_addr,
         from_addr=from_addr,
+        data=_level_bcd_encode(level),
         receiver=receiver,
         command29=command29,
-        cmd_map=cmd_map,
-        cmd_name="set_digisel_shift",
     )
 
 
+@expose_command_key(lambda cmd_map: "get_drive_gain")
+@require_cmd_map
 def get_drive_gain(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Drive Gain command."""
-    return _build_level_get(
-        _SUB_DRIVE_GAIN,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_drive_gain",
+    return _build_from_map(
+        cmd_map, "get_drive_gain", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_drive_gain")
+@require_cmd_map
 def set_drive_gain(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Drive Gain command."""
-    return _build_level_set(
-        _SUB_DRIVE_GAIN,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_drive_gain",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_drive_gain",
+        data=_level_bcd_encode(level),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_monitor_gain")
+@require_cmd_map
 def get_monitor_gain(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Monitor Gain command."""
-    return _build_level_get(
-        _SUB_MONITOR_GAIN,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_monitor_gain",
+    return _build_from_map(
+        cmd_map, "get_monitor_gain", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_monitor_gain")
+@require_cmd_map
 def set_monitor_gain(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Monitor Gain command."""
-    return _build_level_set(
-        _SUB_MONITOR_GAIN,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_monitor_gain",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_monitor_gain",
+        data=_level_bcd_encode(level),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_vox_gain")
+@require_cmd_map
 def get_vox_gain(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Vox Gain command."""
-    return _build_level_get(
-        _SUB_VOX_GAIN,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_vox_gain",
+    return _build_from_map(
+        cmd_map, "get_vox_gain", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_vox_gain")
+@require_cmd_map
 def set_vox_gain(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Vox Gain command."""
-    return _build_level_set(
-        _SUB_VOX_GAIN,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_vox_gain",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_vox_gain",
+        data=_level_bcd_encode(level),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_anti_vox_gain")
+@require_cmd_map
 def get_anti_vox_gain(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Anti-Vox Gain command."""
-    return _build_level_get(
-        _SUB_ANTI_VOX_GAIN,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_anti_vox_gain",
+    return _build_from_map(
+        cmd_map, "get_anti_vox_gain", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_anti_vox_gain")
+@require_cmd_map
 def set_anti_vox_gain(
     level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Anti-Vox Gain command."""
-    return _build_level_set(
-        _SUB_ANTI_VOX_GAIN,
-        level,
+    return _build_from_map(
+        cmd_map,
+        "set_anti_vox_gain",
         to_addr=to_addr,
         from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="set_anti_vox_gain",
+        data=_level_bcd_encode(level),
     )
 
 
-# --- CTL_MEM-based levels ---
+# --- CTL_MEM-based levels (menu addresses vary by radio -- see rigs/*.toml) ---
 
 
+@expose_command_key(lambda cmd_map: "get_ref_adjust")
+@require_cmd_map
 def get_ref_adjust(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read REF Adjust command."""
-    return _build_ctl_mem_get(
-        _CTL_MEM_REF_ADJUST,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_ref_adjust",
+    return _build_from_map(
+        cmd_map, "get_ref_adjust", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_ref_adjust")
+@require_cmd_map
 def set_ref_adjust(
     value: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set REF Adjust command."""
     if not 0 <= value <= 511:
         raise ValueError(f"REF Adjust must be 0-511, got {value}")
-    return _build_ctl_mem_set(
-        _CTL_MEM_REF_ADJUST,
-        value,
+    return _build_from_map(
+        cmd_map,
+        "set_ref_adjust",
         to_addr=to_addr,
         from_addr=from_addr,
-        byte_count=2,
-        cmd_map=cmd_map,
-        cmd_name="set_ref_adjust",
+        data=bcd_encode_value(value, byte_count=2),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_dash_ratio")
+@require_cmd_map
 def get_dash_ratio(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read Dash Ratio command."""
-    return _build_ctl_mem_get(
-        _CTL_MEM_DASH_RATIO,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_dash_ratio",
+    return _build_from_map(
+        cmd_map, "get_dash_ratio", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_dash_ratio")
+@require_cmd_map
 def set_dash_ratio(
     value: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set Dash Ratio command."""
     if not 28 <= value <= 45:
         raise ValueError(f"Dash Ratio must be 28-45, got {value}")
-    return _build_ctl_mem_set(
-        _CTL_MEM_DASH_RATIO,
-        value,
+    return _build_from_map(
+        cmd_map,
+        "set_dash_ratio",
         to_addr=to_addr,
         from_addr=from_addr,
-        byte_count=1,
-        cmd_map=cmd_map,
-        cmd_name="set_dash_ratio",
+        data=bcd_encode_value(value, byte_count=1),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_nb_depth")
+@require_cmd_map
 def get_nb_depth(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read NB Depth command."""
-    return _build_ctl_mem_get(
-        _CTL_MEM_NB_DEPTH,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_nb_depth",
+    return _build_from_map(
+        cmd_map, "get_nb_depth", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_nb_depth")
+@require_cmd_map
 def set_nb_depth(
     value: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set NB Depth command."""
     if not 0 <= value <= 9:
         raise ValueError(f"NB Depth must be 0-9, got {value}")
-    return _build_ctl_mem_set(
-        _CTL_MEM_NB_DEPTH,
-        value,
+    return _build_from_map(
+        cmd_map,
+        "set_nb_depth",
         to_addr=to_addr,
         from_addr=from_addr,
-        byte_count=1,
-        cmd_map=cmd_map,
-        cmd_name="set_nb_depth",
+        data=bcd_encode_value(value, byte_count=1),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_nb_width")
+@require_cmd_map
 def get_nb_width(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read NB Width command."""
-    return _build_ctl_mem_get(
-        _CTL_MEM_NB_WIDTH,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_nb_width",
+    return _build_from_map(
+        cmd_map, "get_nb_width", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_nb_width")
+@require_cmd_map
 def set_nb_width(
     value: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set NB Width command."""
     if not 0 <= value <= 255:
         raise ValueError(f"NB Width must be 0-255, got {value}")
-    return _build_ctl_mem_set(
-        _CTL_MEM_NB_WIDTH,
-        value,
+    return _build_from_map(
+        cmd_map,
+        "set_nb_width",
         to_addr=to_addr,
         from_addr=from_addr,
-        byte_count=2,
-        cmd_map=cmd_map,
-        cmd_name="set_nb_width",
+        data=bcd_encode_value(value, byte_count=2),
     )
 
 
+@expose_command_key(lambda cmd_map: "get_vox_delay")
+@require_cmd_map
 def get_vox_delay(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, cmd_map: CommandMap | None = None
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a read VOX Delay command (0x1A 0x05 0x02 0x92)."""
-    return _build_ctl_mem_get(
-        _CTL_MEM_VOX_DELAY,
-        to_addr=to_addr,
-        from_addr=from_addr,
-        cmd_map=cmd_map,
-        cmd_name="get_vox_delay",
+    return _build_from_map(
+        cmd_map, "get_vox_delay", to_addr=to_addr, from_addr=from_addr
     )
 
 
+@expose_command_key(lambda cmd_map: "set_vox_delay")
+@require_cmd_map
 def set_vox_delay(
     value: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a set VOX Delay command (0x1A 0x05 0x02 0x92)."""
     if not 0 <= value <= 20:
         raise ValueError(f"VOX Delay must be 0-20, got {value}")
-    return _build_ctl_mem_set(
-        _CTL_MEM_VOX_DELAY,
-        value,
+    return _build_from_map(
+        cmd_map,
+        "set_vox_delay",
         to_addr=to_addr,
         from_addr=from_addr,
-        byte_count=1,
-        cmd_map=cmd_map,
-        cmd_name="set_vox_delay",
+        data=bcd_encode_value(value, byte_count=1),
     )
 
 

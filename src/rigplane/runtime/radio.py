@@ -98,7 +98,6 @@ from rigplane.commands import (
     build_memory_to_vfo,
     build_memory_write,
     get_acc1_mod_level,
-    get_af_level,
     get_af_mute,
     get_agc,
     get_agc_time_constant,
@@ -151,8 +150,6 @@ from rigplane.commands import (
     get_pbt_outer,
     get_power_meter,
     get_ref_adjust,
-    get_rf_gain,
-    get_rf_power,
     get_rit_frequency,
     get_rit_status,
     get_rit_tx_status,
@@ -162,6 +159,7 @@ from rigplane.commands import (
     get_s_meter_sql_status,
     get_speech,
     get_split,
+    get_squelch,
     get_ssb_tx_bandwidth,
     get_swr,
     get_system_date,
@@ -206,53 +204,31 @@ from rigplane.commands import (
     scan_start_type,
     scan_stop,
     send_cw,
-    set_af_level,
     set_af_mute,
     set_agc,
     set_agc_time_constant,
     set_antenna_1,
     set_antenna_2,
-    set_anti_vox_gain,
-    set_apf_type_level,
     set_attenuator,
     set_attenuator_level,
     set_audio_peak_filter,
     set_auto_notch,
     set_break_in,
-    set_break_in_delay,
     set_bsr,
     set_compressor,
-    set_compressor_level,
-    set_cw_pitch,
-    set_dash_ratio,
     set_dial_lock,
     set_digisel,
-    set_digisel_shift,
-    set_drive_gain,
     set_dual_watch,
     set_filter_shape,
     set_freq,
     set_ip_plus,
-    set_key_speed,
     set_manual_notch,
     set_manual_notch_width,
-    set_mic_gain,
     set_mode,
     set_monitor,
-    set_monitor_gain,
     set_nb,
-    set_nb_depth,
-    set_nb_level,
-    set_nb_width,
-    set_notch_filter,
     set_nr,
-    set_nr_level,
-    set_pbt_inner,
-    set_pbt_outer,
     set_preamp,
-    set_ref_adjust,
-    set_rf_gain,
-    set_rf_power,
     set_rit_frequency,
     set_rit_status,
     set_rit_tx_status,
@@ -268,8 +244,6 @@ from rigplane.commands import (
     set_tx_freq_monitor,
     set_utc_offset,
     set_vox,
-    set_vox_delay,
-    set_vox_gain,
     set_xfc_status,
     stop_cw,
 )
@@ -2591,13 +2565,21 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         await self._send_civ_raw(civ, wait_response=False)
 
+    # commands/levels.py, migrated onto the bound command map (MOR-2006
+    # Steps 5..N module 2, plan §4): requests go through
+    # ``self._commands.<builder>`` and matcher-backed replies through
+    # ``self._expect_shape`` (§6 population 1). ``get_rf_power``,
+    # ``get_rf_gain`` and ``get_af_level`` parse their reply with
+    # ``_level_bcd_decode``/``_parse_level`` directly, without checking the
+    # reply's command/sub bytes, so they have no matcher shape to migrate.
+
     async def get_rf_power(self) -> int:
         """Get the RF power level (0-255).
 
         On timeout falls back to the state cache if populated.
         """
         self._check_connected()
-        civ = get_rf_power(to_addr=self._radio_addr)
+        civ = self._commands.get_rf_power(to_addr=self._radio_addr)
         try:
             resp = await self._send_civ_expect(
                 civ, key="get_rf_power", dedupe=True, label="get_rf_power"
@@ -2623,7 +2605,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             level: Power level 0-255.
         """
         self._check_connected()
-        civ = set_rf_power(level, to_addr=self._radio_addr)
+        civ = self._commands.set_rf_power(level, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
         self._last_power = level
 
@@ -2638,7 +2620,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             operation="get_rf_gain",
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x02)
-        civ = get_rf_gain(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
+        civ = self._commands.get_rf_gain(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         try:
             resp = await self._send_civ_expect(
                 civ,
@@ -2664,7 +2648,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             operation="set_rf_gain",
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x02)
-        civ = set_rf_gain(
+        civ = self._commands.set_rf_gain(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
         await self._send_civ_raw(civ, wait_response=False)
@@ -2680,7 +2664,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             operation="get_af_level",
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x01)
-        civ = get_af_level(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
+        civ = self._commands.get_af_level(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
         try:
             resp = await self._send_civ_expect(
                 civ,
@@ -2706,7 +2692,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             operation="set_af_level",
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x01)
-        civ = set_af_level(
+        civ = self._commands.set_af_level(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
         await self._send_civ_raw(civ, wait_response=False)
@@ -2724,10 +2710,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="set_squelch",
         )
-        from rigplane.commands import set_squelch as _set_squelch
-
         cmd29 = self._profile.supports_cmd29(0x14, 0x03)
-        civ = _set_squelch(
+        civ = self._commands.set_squelch(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
         await self._send_civ_raw(civ, wait_response=False)
@@ -2743,15 +2727,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             receiver=receiver,
             operation="get_squelch",
         )
-        from rigplane.commands import get_squelch as _get_squelch
-
         cmd29 = self._profile.supports_cmd29(0x14, 0x03)
-        civ = _get_squelch(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
+        civ = self._commands.get_squelch(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
+        command, sub, prefix = self._expect_shape(get_squelch)
         return await self._get_bcd_level(
             civ,
             key=f"get_squelch:{receiver}",
-            command=0x14,
-            sub=0x03,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def get_apf_type_level(self, receiver: int = RECEIVER_MAIN) -> int:
@@ -2761,14 +2747,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x14, 0x05, receiver=receiver, operation="get_apf_type_level"
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x05)
-        civ = get_apf_type_level(
+        civ = self._commands.get_apf_type_level(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
+        command, sub, prefix = self._expect_shape(get_apf_type_level)
         return await self._get_bcd_level(
             civ,
             key=f"get_apf_type_level:{receiver}",
-            command=0x14,
-            sub=0x05,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_apf_type_level(
@@ -2781,7 +2769,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x05)
         await self._send_fire_and_forget(
-            set_apf_type_level(
+            self._commands.set_apf_type_level(
                 level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
             )
         )
@@ -2793,9 +2781,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x14, 0x06, receiver=receiver, operation="get_nr_level"
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x06)
-        civ = get_nr_level(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
+        civ = self._commands.get_nr_level(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
+        command, sub, prefix = self._expect_shape(get_nr_level)
         return await self._get_bcd_level(
-            civ, key=f"get_nr_level:{receiver}", command=0x14, sub=0x06
+            civ, key=f"get_nr_level:{receiver}", command=command, sub=sub, prefix=prefix
         )
 
     async def set_nr_level(self, level: int, receiver: int = RECEIVER_MAIN) -> None:
@@ -2806,7 +2797,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x06)
         await self._send_fire_and_forget(
-            set_nr_level(
+            self._commands.set_nr_level(
                 level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
             )
         )
@@ -2818,11 +2809,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x14, 0x07, receiver=receiver, operation="get_pbt_inner"
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x07)
-        civ = get_pbt_inner(
+        civ = self._commands.get_pbt_inner(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
+        command, sub, prefix = self._expect_shape(get_pbt_inner)
         return await self._get_bcd_level(
-            civ, key=f"get_pbt_inner:{receiver}", command=0x14, sub=0x07
+            civ,
+            key=f"get_pbt_inner:{receiver}",
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_pbt_inner(self, level: int, receiver: int = RECEIVER_MAIN) -> None:
@@ -2833,7 +2829,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x07)
         await self._send_fire_and_forget(
-            set_pbt_inner(
+            self._commands.set_pbt_inner(
                 level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
             )
         )
@@ -2845,11 +2841,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x14, 0x08, receiver=receiver, operation="get_pbt_outer"
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x08)
-        civ = get_pbt_outer(
+        civ = self._commands.get_pbt_outer(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
+        command, sub, prefix = self._expect_shape(get_pbt_outer)
         return await self._get_bcd_level(
-            civ, key=f"get_pbt_outer:{receiver}", command=0x14, sub=0x08
+            civ,
+            key=f"get_pbt_outer:{receiver}",
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_pbt_outer(self, level: int, receiver: int = RECEIVER_MAIN) -> None:
@@ -2860,53 +2861,63 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x08)
         await self._send_fire_and_forget(
-            set_pbt_outer(
+            self._commands.set_pbt_outer(
                 level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
             )
         )
 
     async def get_cw_pitch(self) -> int:
         """Read CW pitch in Hz."""
+        command, sub, prefix = self._expect_shape(get_cw_pitch)
         level = await self._get_bcd_level(
-            get_cw_pitch(to_addr=self._radio_addr),
+            self._commands.get_cw_pitch(to_addr=self._radio_addr),
             key="get_cw_pitch",
-            command=0x14,
-            sub=0x09,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
         return round((((600.0 / 255.0) * level) + 300) / 5.0) * 5
 
     async def set_cw_pitch(self, pitch_hz: int) -> None:
         """Set CW pitch in Hz."""
         await self._send_fire_and_forget(
-            set_cw_pitch(pitch_hz, to_addr=self._radio_addr)
+            self._commands.set_cw_pitch(pitch_hz, to_addr=self._radio_addr)
         )
 
     async def get_mic_gain(self) -> int:
         """Read Mic Gain (0-255)."""
+        command, sub, prefix = self._expect_shape(get_mic_gain)
         return await self._get_bcd_level(
-            get_mic_gain(to_addr=self._radio_addr),
+            self._commands.get_mic_gain(to_addr=self._radio_addr),
             key="get_mic_gain",
-            command=0x14,
-            sub=0x0B,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_mic_gain(self, level: int) -> None:
         """Set Mic Gain (0-255)."""
-        await self._send_fire_and_forget(set_mic_gain(level, to_addr=self._radio_addr))
+        await self._send_fire_and_forget(
+            self._commands.set_mic_gain(level, to_addr=self._radio_addr)
+        )
 
     async def get_key_speed(self) -> int:
         """Read key speed in WPM."""
+        command, sub, prefix = self._expect_shape(get_key_speed)
         level = await self._get_bcd_level(
-            get_key_speed(to_addr=self._radio_addr),
+            self._commands.get_key_speed(to_addr=self._radio_addr),
             key="get_key_speed",
-            command=0x14,
-            sub=0x0C,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
         return round((level / 6.071) + 6)
 
     async def set_key_speed(self, wpm: int) -> None:
         """Set key speed in WPM."""
-        await self._send_fire_and_forget(set_key_speed(wpm, to_addr=self._radio_addr))
+        await self._send_fire_and_forget(
+            self._commands.set_key_speed(wpm, to_addr=self._radio_addr)
+        )
 
     async def get_notch_filter(self, receiver: int = RECEIVER_MAIN) -> int:
         """Read notch filter level (0-255)."""
@@ -2915,14 +2926,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x14, 0x0D, receiver=receiver, operation="get_notch_filter"
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x0D)
-        civ = get_notch_filter(
+        civ = self._commands.get_notch_filter(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
+        command, sub, prefix = self._expect_shape(get_notch_filter)
         return await self._get_bcd_level(
             civ,
             key=f"get_notch_filter:{receiver}",
-            command=0x14,
-            sub=0x0D,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_notch_filter(self, level: int, receiver: int = RECEIVER_MAIN) -> None:
@@ -2933,39 +2946,43 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x0D)
         await self._send_fire_and_forget(
-            set_notch_filter(
+            self._commands.set_notch_filter(
                 level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
             )
         )
 
     async def get_compressor_level(self) -> int:
         """Read compressor level (0-255)."""
+        command, sub, prefix = self._expect_shape(get_compressor_level)
         return await self._get_bcd_level(
-            get_compressor_level(to_addr=self._radio_addr),
+            self._commands.get_compressor_level(to_addr=self._radio_addr),
             key="get_compressor_level",
-            command=0x14,
-            sub=0x0E,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_compressor_level(self, level: int) -> None:
         """Set compressor level (0-255)."""
         await self._send_fire_and_forget(
-            set_compressor_level(level, to_addr=self._radio_addr)
+            self._commands.set_compressor_level(level, to_addr=self._radio_addr)
         )
 
     async def get_break_in_delay(self) -> int:
         """Read break-in delay level (0-255)."""
+        command, sub, prefix = self._expect_shape(get_break_in_delay)
         return await self._get_bcd_level(
-            get_break_in_delay(to_addr=self._radio_addr),
+            self._commands.get_break_in_delay(to_addr=self._radio_addr),
             key="get_break_in_delay",
-            command=0x14,
-            sub=0x0F,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_break_in_delay(self, level: int) -> None:
         """Set break-in delay level (0-255)."""
         await self._send_fire_and_forget(
-            set_break_in_delay(level, to_addr=self._radio_addr)
+            self._commands.set_break_in_delay(level, to_addr=self._radio_addr)
         )
 
     async def get_nb_level(self, receiver: int = RECEIVER_MAIN) -> int:
@@ -2975,9 +2992,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x14, 0x12, receiver=receiver, operation="get_nb_level"
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x12)
-        civ = get_nb_level(to_addr=self._radio_addr, receiver=receiver, command29=cmd29)
+        civ = self._commands.get_nb_level(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
+        command, sub, prefix = self._expect_shape(get_nb_level)
         return await self._get_bcd_level(
-            civ, key=f"get_nb_level:{receiver}", command=0x14, sub=0x12
+            civ, key=f"get_nb_level:{receiver}", command=command, sub=sub, prefix=prefix
         )
 
     async def set_nb_level(self, level: int, receiver: int = RECEIVER_MAIN) -> None:
@@ -2988,7 +3008,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x12)
         await self._send_fire_and_forget(
-            set_nb_level(
+            self._commands.set_nb_level(
                 level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
             )
         )
@@ -3000,11 +3020,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x14, 0x13, receiver=receiver, operation="get_digisel_shift"
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x13)
-        civ = get_digisel_shift(
+        civ = self._commands.get_digisel_shift(
             to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
+        command, sub, prefix = self._expect_shape(get_digisel_shift)
         return await self._get_bcd_level(
-            civ, key=f"get_digisel_shift:{receiver}", command=0x14, sub=0x13
+            civ,
+            key=f"get_digisel_shift:{receiver}",
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_digisel_shift(
@@ -3017,145 +3042,166 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x14, 0x13)
         await self._send_fire_and_forget(
-            set_digisel_shift(
+            self._commands.set_digisel_shift(
                 level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
             )
         )
 
     async def get_drive_gain(self) -> int:
         """Read drive gain (0-255)."""
+        command, sub, prefix = self._expect_shape(get_drive_gain)
         return await self._get_bcd_level(
-            get_drive_gain(to_addr=self._radio_addr),
+            self._commands.get_drive_gain(to_addr=self._radio_addr),
             key="get_drive_gain",
-            command=0x14,
-            sub=0x14,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_drive_gain(self, level: int) -> None:
         """Set drive gain (0-255)."""
         await self._send_fire_and_forget(
-            set_drive_gain(level, to_addr=self._radio_addr)
+            self._commands.set_drive_gain(level, to_addr=self._radio_addr)
         )
 
     async def get_monitor_gain(self) -> int:
         """Read monitor gain (0-255)."""
+        command, sub, prefix = self._expect_shape(get_monitor_gain)
         return await self._get_bcd_level(
-            get_monitor_gain(to_addr=self._radio_addr),
+            self._commands.get_monitor_gain(to_addr=self._radio_addr),
             key="get_monitor_gain",
-            command=0x14,
-            sub=0x15,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_monitor_gain(self, level: int) -> None:
         """Set monitor gain (0-255)."""
         await self._send_fire_and_forget(
-            set_monitor_gain(level, to_addr=self._radio_addr)
+            self._commands.set_monitor_gain(level, to_addr=self._radio_addr)
         )
 
     async def get_vox_gain(self) -> int:
         """Read VOX gain (0-255)."""
+        command, sub, prefix = self._expect_shape(get_vox_gain)
         return await self._get_bcd_level(
-            get_vox_gain(to_addr=self._radio_addr),
+            self._commands.get_vox_gain(to_addr=self._radio_addr),
             key="get_vox_gain",
-            command=0x14,
-            sub=0x16,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_vox_gain(self, level: int) -> None:
         """Set VOX gain (0-255)."""
-        await self._send_fire_and_forget(set_vox_gain(level, to_addr=self._radio_addr))
+        await self._send_fire_and_forget(
+            self._commands.set_vox_gain(level, to_addr=self._radio_addr)
+        )
 
     async def get_anti_vox_gain(self) -> int:
         """Read anti-VOX gain (0-255)."""
+        command, sub, prefix = self._expect_shape(get_anti_vox_gain)
         return await self._get_bcd_level(
-            get_anti_vox_gain(to_addr=self._radio_addr),
+            self._commands.get_anti_vox_gain(to_addr=self._radio_addr),
             key="get_anti_vox_gain",
-            command=0x14,
-            sub=0x17,
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_anti_vox_gain(self, level: int) -> None:
         """Set anti-VOX gain (0-255)."""
         await self._send_fire_and_forget(
-            set_anti_vox_gain(level, to_addr=self._radio_addr)
+            self._commands.set_anti_vox_gain(level, to_addr=self._radio_addr)
         )
 
     async def get_ref_adjust(self) -> int:
         """Read REF Adjust (0-511)."""
+        command, sub, prefix = self._expect_shape(get_ref_adjust)
         return await self._get_bcd_level(
-            get_ref_adjust(to_addr=self._radio_addr),
+            self._commands.get_ref_adjust(to_addr=self._radio_addr),
             key="get_ref_adjust",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x00\x70",
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_ref_adjust(self, value: int) -> None:
         """Set REF Adjust (0-511)."""
         await self._send_fire_and_forget(
-            set_ref_adjust(value, to_addr=self._radio_addr)
+            self._commands.set_ref_adjust(value, to_addr=self._radio_addr)
         )
 
     async def get_dash_ratio(self) -> int:
         """Read dash ratio (28-45)."""
+        command, sub, prefix = self._expect_shape(get_dash_ratio)
         return await self._get_bcd_level(
-            get_dash_ratio(to_addr=self._radio_addr),
+            self._commands.get_dash_ratio(to_addr=self._radio_addr),
             key="get_dash_ratio",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x02\x28",
+            command=command,
+            sub=sub,
+            prefix=prefix,
             bcd_bytes=1,
         )
 
     async def set_dash_ratio(self, value: int) -> None:
         """Set dash ratio (28-45)."""
         await self._send_fire_and_forget(
-            set_dash_ratio(value, to_addr=self._radio_addr)
+            self._commands.set_dash_ratio(value, to_addr=self._radio_addr)
         )
 
     async def get_nb_depth(self) -> int:
         """Read NB depth (0-9)."""
+        command, sub, prefix = self._expect_shape(get_nb_depth)
         return await self._get_bcd_level(
-            get_nb_depth(to_addr=self._radio_addr),
+            self._commands.get_nb_depth(to_addr=self._radio_addr),
             key="get_nb_depth",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x02\x90",
+            command=command,
+            sub=sub,
+            prefix=prefix,
             bcd_bytes=1,
         )
 
     async def set_nb_depth(self, value: int) -> None:
         """Set NB depth (0-9)."""
-        await self._send_fire_and_forget(set_nb_depth(value, to_addr=self._radio_addr))
+        await self._send_fire_and_forget(
+            self._commands.set_nb_depth(value, to_addr=self._radio_addr)
+        )
 
     async def get_nb_width(self) -> int:
         """Read NB width (0-255)."""
+        command, sub, prefix = self._expect_shape(get_nb_width)
         return await self._get_bcd_level(
-            get_nb_width(to_addr=self._radio_addr),
+            self._commands.get_nb_width(to_addr=self._radio_addr),
             key="get_nb_width",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x02\x91",
+            command=command,
+            sub=sub,
+            prefix=prefix,
         )
 
     async def set_nb_width(self, value: int) -> None:
         """Set NB width (0-255)."""
-        await self._send_fire_and_forget(set_nb_width(value, to_addr=self._radio_addr))
+        await self._send_fire_and_forget(
+            self._commands.set_nb_width(value, to_addr=self._radio_addr)
+        )
 
     async def get_vox_delay(self) -> int:
         """Read VOX delay (0-20, units of 0.1s)."""
+        command, sub, prefix = self._expect_shape(get_vox_delay)
         return await self._get_bcd_level(
-            get_vox_delay(to_addr=self._radio_addr),
+            self._commands.get_vox_delay(to_addr=self._radio_addr),
             key="get_vox_delay",
-            command=0x1A,
-            sub=0x05,
-            prefix=b"\x02\x92",
+            command=command,
+            sub=sub,
+            prefix=prefix,
             bcd_bytes=1,
         )
 
     async def set_vox_delay(self, level: int) -> None:
         """Set VOX delay (0-20, units of 0.1s)."""
-        await self._send_fire_and_forget(set_vox_delay(level, to_addr=self._radio_addr))
+        await self._send_fire_and_forget(
+            self._commands.set_vox_delay(level, to_addr=self._radio_addr)
+        )
 
     async def get_af_mute(self, receiver: int = RECEIVER_MAIN) -> bool:
         """Read AF mute status."""

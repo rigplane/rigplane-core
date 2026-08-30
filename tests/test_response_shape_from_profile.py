@@ -74,6 +74,34 @@ MATCHER_BACKED_GETTERS: tuple[_GetterSpec, ...] = (
     _GetterSpec("get_data3_mod_input", "_get_bcd_level"),
     _GetterSpec("get_civ_transceive", "_get_bool_value"),
     _GetterSpec("get_civ_output_ant", "_get_bool_value"),
+    # commands/levels.py's matcher-backed getters (MOR-2006 Steps 5..N,
+    # module 2). get_rf_power, get_rf_gain and get_af_level are not
+    # included: they parse their reply with _level_bcd_decode/_parse_level
+    # directly, without checking the reply's command/sub bytes, so they
+    # have no matcher shape to compare here (module docstring in
+    # runtime/radio.py, "commands/levels.py, migrated...").
+    _GetterSpec("get_squelch", "_get_bcd_level"),
+    _GetterSpec("get_apf_type_level", "_get_bcd_level"),
+    _GetterSpec("get_nr_level", "_get_bcd_level"),
+    _GetterSpec("get_pbt_inner", "_get_bcd_level"),
+    _GetterSpec("get_pbt_outer", "_get_bcd_level"),
+    _GetterSpec("get_cw_pitch", "_get_bcd_level"),
+    _GetterSpec("get_mic_gain", "_get_bcd_level"),
+    _GetterSpec("get_key_speed", "_get_bcd_level"),
+    _GetterSpec("get_notch_filter", "_get_bcd_level"),
+    _GetterSpec("get_compressor_level", "_get_bcd_level"),
+    _GetterSpec("get_break_in_delay", "_get_bcd_level"),
+    _GetterSpec("get_nb_level", "_get_bcd_level"),
+    _GetterSpec("get_digisel_shift", "_get_bcd_level"),
+    _GetterSpec("get_drive_gain", "_get_bcd_level"),
+    _GetterSpec("get_monitor_gain", "_get_bcd_level"),
+    _GetterSpec("get_vox_gain", "_get_bcd_level"),
+    _GetterSpec("get_anti_vox_gain", "_get_bcd_level"),
+    _GetterSpec("get_ref_adjust", "_get_bcd_level"),
+    _GetterSpec("get_dash_ratio", "_get_bcd_level"),
+    _GetterSpec("get_nb_depth", "_get_bcd_level"),
+    _GetterSpec("get_nb_width", "_get_bcd_level"),
+    _GetterSpec("get_vox_delay", "_get_bcd_level"),
 )
 
 
@@ -121,6 +149,12 @@ async def test_reply_shape_matches_request_shape(
         return 0
 
     monkeypatch.setattr(CoreRadio, spec.parser, _fake_parser)
+    # get_squelch (commands/levels.py) checks the connection itself, ahead
+    # of the mocked parser -- unlike every other getter registered above,
+    # which reaches the connection check only inside the mocked method.
+    # No-op it here so this test stays about reply-shape matching alone,
+    # not connection state, for every entry regardless of that difference.
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
     radio = CoreRadio("198.51.100.1", profile=profile)
     await getattr(radio, spec.method)()
 
