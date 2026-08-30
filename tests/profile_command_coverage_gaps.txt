@@ -8,7 +8,7 @@
 # entry in the profile's own TOML. Regenerate, do not hand-edit.
 census	civ_profiles	6
 census	distinct_gap_keys	191
-census	profile_key_gaps	383
+census	profile_key_gaps	379
 census	public_builders	232
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	X6100,X6200
@@ -76,7 +76,7 @@ gap	get_rf_power	X6100
 gap	get_rit_frequency	X6100,X6200
 gap	get_rit_status	X6100,X6200
 gap	get_rit_tx_status	X6100,X6200
-gap	get_rx_antenna_ant2	IC-7610,X6100,X6200
+gap	get_rx_antenna_ant2	X6100,X6200
 gap	get_s_meter	X6100
 gap	get_s_meter_sql_status	X6100,X6200
 gap	get_scope_center_type	X6100,X6200
@@ -115,10 +115,10 @@ gap	power_off	X6100,X6200
 gap	power_on	X6100,X6200
 gap	quick_dual_watch	IC-7610,X6100,X6200
 gap	quick_split	IC-705,IC-7610,X6100,X6200
-gap	scan_set_df_span	IC-7300,IC-7610,X6100,X6200
+gap	scan_set_df_span	IC-7300,X6100,X6200
 gap	scan_set_resume	IC-705,IC-7300,IC-7610,IC-9700,X6100,X6200
 gap	scan_start	X6100,X6200
-gap	scan_start_type	IC-705,IC-7610,X6100,X6200
+gap	scan_start_type	IC-705,X6100,X6200
 gap	scan_stop	X6100,X6200
 gap	scope_data_output	X6100,X6200
 gap	scope_off	X6100,X6200
@@ -182,7 +182,7 @@ gap	set_rf_power	X6100
 gap	set_rit_frequency	X6100,X6200
 gap	set_rit_status	X6100,X6200
 gap	set_rit_tx_status	X6100,X6200
-gap	set_rx_antenna_ant2	IC-7610,X6100,X6200
+gap	set_rx_antenna_ant2	X6100,X6200
 gap	set_split	X6100
 gap	set_ssb_tx_bandwidth	X6100,X6200
 gap	set_tone_freq	IC-7610,X6100,X6200

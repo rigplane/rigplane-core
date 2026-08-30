@@ -1072,6 +1072,13 @@ get_antenna = [0x12]                      # Sub: 0x00=ANT1, 0x01=ANT2; Data: 0/1
 set_antenna = [0x12]
 get_rx_antenna = [0x16, 0x53]             # RX-I/O connector 0=OFF, 1=ON
 set_rx_antenna = [0x16, 0x53]
+get_rx_antenna_ant2 = [0x12]              # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3, "12 01: Select/read ANT2 selection (00=RX ANT OFF, 01=RX ANT ON)" -- genuine on this radio (separate RX ANT jack), unlike IC-705/others
+set_rx_antenna_ant2 = [0x12]              # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3, "12 01: Select/read ANT2 selection (00=RX ANT OFF, 01=RX ANT ON)" -- genuine on this radio (separate RX ANT jack), unlike IC-705/others
+# source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.9, "1C 04
+# CI-V Output (for ANT)" exactly; 1A 05 0130 is "Network > Default Gateway"
+# on this radio, not this command. The guide also documents the same
+# feature a second way at 1A 05 0114 (p.6/p.9) -- both paths are real,
+# this profile uses the 1C 04 path (D2, MOR-2017).
 get_civ_output_ant = [0x1C, 0x04]
 set_civ_output_ant = [0x1C, 0x04]
 
@@ -1198,6 +1205,17 @@ get_id_meter = [0x15, 0x16]
 # them, the get/set_repeater_tone, get/set_repeater_tsql, get/set_tone_freq,
 # and get/set_tsql_freq command entries were dead/orphaned and were removed
 # (MOR-682). Do not re-add them without first declaring the capability.
+#
+# D2 documentary re-check (MOR-2017): the IC-7610 CI-V Reference Guide
+# (A7380-7EX-2, May.2021) DOES print these exact addresses in its command
+# table (16 42, 16 43, 1B 00, 1B 01), same as they exist on FM-capable
+# Icom radios. This is left NOT re-added: MOR-661's removal was grounded in
+# a live-bench readback (tone_freq/tsql_freq returned garbage, 16.5 Hz),
+# not a documentary claim, and this pass has no bench access to re-check
+# that finding on IC-7610 (retired from the live bench 2026-08-04). A
+# guide printing a command-table address is not proof the radio's firmware
+# answers it meaningfully. Recorded as a conflict between this pass's
+# verdict and the prior bench finding; not resolved here.
 
 # ── Data Mode ──
 get_data_mode = [0x1A, 0x06]
@@ -1230,10 +1248,27 @@ set_main_sub_prefix = [0x29]
 # ── Scan ──
 scan_start = [0x0E]
 scan_stop = [0x0E]
+scan_set_df_span = [0x0E]                 # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3, 0x0E Ax (x=1-7) -- matches VALID_DF_SPANS
+scan_start_type = [0x0E]                  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3
+# scan_set_resume: guide documents only 0x0E D0/D3 (2 states); code's
+# VALID_SCAN_RESUME accepts D0-D3 (4 states) -- domain mismatch left open
+# (recorded for MOR-2007, D2, MOR-2017).
+# scan_start_type domain: the guide's own valid-type list for this radio
+# (01,02,03,12,22,23,13 -- 13 = "Start a Fine dF scan") includes 0x13,
+# which code's shared VALID_SCAN_TYPES frozenset (commands/vfo.py) does
+# NOT accept -- IC-7610 has the same 0x13 mismatch IC-705 does. Only 0x24
+# ("Mode Select scan") is IC-705-specific; it is not in the IC-7610 guide.
+# This byte declaration does not resolve that domain gap -- left open,
+# recorded for MOR-2007, same as scan_set_resume above.
 
 # ── System / Power ──
 power_on = [0x18]
 power_off = [0x18]
+# get_powerstat (bare 0x18 query) intentionally left undeclared: guide p.4
+# confirms cmd 0x18 SET rows (00=OFF/01=ON) and a worked wake-up example
+# (p.9: FE x7 preamble + 98 E0 18 01 FD), but the "query with empty data"
+# GET convention is not printed as its own row (D2, MOR-2017; open
+# question, MOR-2007).
 get_transceiver_id = [0x19, 0x00]
 get_speech = [0x13]
 get_dial_lock = [0x16, 0x50]
@@ -1257,12 +1292,15 @@ set_memory_contents = [0x1A, 0x00]
 # IC-7610 addresses (differ from IC-7300).
 
 [commands.overrides]
-get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]
-set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]
-get_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]
-set_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]
-get_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]
-set_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]
+# acc1_mod_level (1A 05 0088) was the exact 0x14 0x0B collision MOR-1992
+# measured: 14 0B is MIC gain on this radio (see get_mic_gain = [0x14, 0x0B]
+# below), not ACC MOD level. Guide confirms both, p.3/p.5 (D2, MOR-2017).
+get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.5, control 0088 "MOD Input > ACC MOD Level"; 14 0B = "MIC gain" (p.3)
+set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.5, control 0088 "MOD Input > ACC MOD Level"; 14 0B = "MIC gain" (p.3)
+get_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x10), p.5, control 0089 "MOD Input > USB MOD Level"
+set_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x10), p.5, control 0089 "MOD Input > USB MOD Level"
+get_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x11), p.5, control 0090 "MOD Input > LAN MOD Level"
+set_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x11), p.5, control 0090 "MOD Input > LAN MOD Level"
 get_data_off_mod_input = [0x1A, 0x05, 0x00, 0x91]
 set_data_off_mod_input = [0x1A, 0x05, 0x00, 0x91]
 get_data1_mod_input = [0x1A, 0x05, 0x00, 0x92]
@@ -1271,14 +1309,14 @@ get_data2_mod_input = [0x1A, 0x05, 0x00, 0x93]
 set_data2_mod_input = [0x1A, 0x05, 0x00, 0x93]
 get_data3_mod_input = [0x1A, 0x05, 0x00, 0x94]
 set_data3_mod_input = [0x1A, 0x05, 0x00, 0x94]
-get_civ_transceive = [0x1A, 0x05, 0x01, 0x12]
-set_civ_transceive = [0x1A, 0x05, 0x01, 0x12]
-get_system_date = [0x1A, 0x05, 0x01, 0x58]
-set_system_date = [0x1A, 0x05, 0x01, 0x58]
-get_system_time = [0x1A, 0x05, 0x01, 0x59]
-set_system_time = [0x1A, 0x05, 0x01, 0x59]
-get_utc_offset = [0x1A, 0x05, 0x01, 0x62]
-set_utc_offset = [0x1A, 0x05, 0x01, 0x62]
+get_civ_transceive = [0x1A, 0x05, 0x01, 0x12]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.6, control 0112 "CI-V Transceive" exactly; 0129 is "Network > Subnet Mask" on this radio, not this command
+set_civ_transceive = [0x1A, 0x05, 0x01, 0x12]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.6, control 0112 "CI-V Transceive" exactly; 0129 is "Network > Subnet Mask" on this radio, not this command
+get_system_date = [0x1A, 0x05, 0x01, 0x58]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7, control 0158 -- matches the shared fallback exactly (this appears to be the radio the shared constant was built against)
+set_system_date = [0x1A, 0x05, 0x01, 0x58]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7, control 0158 -- matches the shared fallback exactly (this appears to be the radio the shared constant was built against)
+get_system_time = [0x1A, 0x05, 0x01, 0x59]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7, control 0159 -- matches the shared fallback exactly
+set_system_time = [0x1A, 0x05, 0x01, 0x59]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7, control 0159 -- matches the shared fallback exactly
+get_utc_offset = [0x1A, 0x05, 0x01, 0x62]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7 (addr), p.13 (3-byte format, "1A 05 0162, 0164") -- matches the shared fallback exactly
+set_utc_offset = [0x1A, 0x05, 0x01, 0x62]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.7 (addr), p.13 (3-byte format, "1A 05 0162, 0164") -- matches the shared fallback exactly
 get_quick_split = [0x1A, 0x05, 0x00, 0x33]
 set_quick_split = [0x1A, 0x05, 0x00, 0x33]
 get_quick_dual_watch = [0x1A, 0x05, 0x00, 0x32]

@@ -296,6 +296,45 @@ class TestCommandMapParity:
     def test_command_count_minimum(self, cmdmap):
         assert len(cmdmap) >= 95
 
+    # ── D2 (MOR-2017): newly-declared BYTES entries ──────────────
+
+    def test_get_rx_antenna_ant2(self, cmdmap):
+        """D2, MOR-2017: IC-7610 CI-V Reference Guide (A7380-7EX-2,
+        May.2021) p.3, 12 01 -- genuine on this radio (separate RX ANT
+        jack), unlike IC-705/others which lack a second antenna
+        connector."""
+        assert cmdmap.get("get_rx_antenna_ant2") == (0x12,)
+
+    def test_set_rx_antenna_ant2(self, cmdmap):
+        assert cmdmap.get("set_rx_antenna_ant2") == (0x12,)
+
+    def test_scan_set_df_span(self, cmdmap):
+        assert cmdmap.get("scan_set_df_span") == (0x0E,)
+
+    def test_scan_start_type(self, cmdmap):
+        """D2, MOR-2017: the base command byte (0x0E) is guide-confirmed.
+        The guide's valid-type list for this radio also includes 0x13
+        ("Start a Fine dF scan"), which code's shared VALID_SCAN_TYPES
+        does not accept -- IC-7610 has the same 0x13 domain mismatch
+        IC-705 does; only 0x24 is IC-705-specific. Not resolved by this
+        byte declaration -- left open, recorded for MOR-2007."""
+        assert cmdmap.get("scan_start_type") == (0x0E,)
+
+    def test_no_repeater_tone_family(self, cmdmap):
+        """D2, MOR-2017: the guide prints these addresses (16 42, 16 43,
+        1B 00, 1B 01), but MOR-661's live-bench finding (tone_freq/
+        tsql_freq readback returned garbage, 16.5 Hz) is stronger evidence
+        than a documentary re-check with no bench access, so MOR-682's
+        removal stands -- these stay undeclared."""
+        assert not cmdmap.has("get_repeater_tone")
+        assert not cmdmap.has("set_repeater_tone")
+        assert not cmdmap.has("get_repeater_tsql")
+        assert not cmdmap.has("set_repeater_tsql")
+        assert not cmdmap.has("get_tone_freq")
+        assert not cmdmap.has("set_tone_freq")
+        assert not cmdmap.has("get_tsql_freq")
+        assert not cmdmap.has("set_tsql_freq")
+
 
 # ── cmd29 route detail checks ──────────────────────────────────
 
