@@ -1025,6 +1025,7 @@ get_tx_freq_monitor = [0x1C, 0x03]
 set_tx_freq_monitor = [0x1C, 0x03]
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
+quick_split = [0x1A, 0x05, 0x00, 0x30]    # source: IC-7300 Advanced Manual (11a) p.19-4, control 0030 "quick split set" (the hardcoded fallback's 0x33 is split lock on this radio, not declared). Base [commands], not overrides: bare (non-get_/set_) keys fail test_naming_parity.py::test_overrides_have_prefix there (D2, MOR-2014).
 
 # ── CW ──
 send_cw = [0x17]
@@ -1295,7 +1296,6 @@ get_utc_offset = [0x1A, 0x05, 0x00, 0x96]
 set_utc_offset = [0x1A, 0x05, 0x00, 0x96]
 get_quick_split = [0x1A, 0x05, 0x00, 0x30]
 set_quick_split = [0x1A, 0x05, 0x00, 0x30]
-quick_split = [0x1A, 0x05, 0x00, 0x30]    # source: IC-7300 Advanced Manual (11a) p.19-4, control 0030 "quick split set" (the hardcoded fallback's 0x33 is split lock on this radio, not declared)
 # Full 1A 05 submenu has no dual-watch item -- 0032 is FM split offset on this
 # radio (D2, MOR-2014)
 get_quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }

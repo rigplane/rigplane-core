@@ -36,13 +36,27 @@ from rigplane.runtime.radio import CoreRadio
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RIGS_DIR = REPO_ROOT / "rigs"
 
-# ``get_powerstat`` is a real, single-argument-set public builder
-# (``power.py: get_powerstat``) that no current CI-V profile declares or
-# records absent -- confirmed by ``tests/test_profile_command_coverage.py``
-# recording it as a universal gap. Using a real, un-synthesised name here
-# means this file exercises the same undeclared surface the coverage guard
-# tracks, rather than a name invented only for this test.
-_UNIVERSALLY_UNDECLARED = "get_powerstat"
+# ``scan_set_df_span`` is a real public builder (``vfo.py:
+# scan_set_df_span``) that no current rig TOML declares or records absent
+# -- confirmed by ``tests/test_profile_command_coverage.py`` recording it
+# as a universal gap across every shipped profile (a plain
+# ``grep -rn scan_set_df_span rigs/*.toml`` also turns up nothing). Using
+# a real, un-synthesised name here means this file exercises the same
+# undeclared surface the coverage guard tracks, rather than a name
+# invented only for this test.
+#
+# NOT ``get_powerstat``: MOR-2014 (D2) declared it absent on IC-7300 (no
+# read marker in the manual; live bench answered NAK), so it moved from
+# state 3 (neither declared nor declared absent) to state 2 (declared
+# absent) for this profile -- ``TestDeclaredAbsentRefusal`` and
+# ``tests/test_supports_command.py::
+# TestSupportsCommandReconciliation.test_known_but_declared_absent_command_returns_false``
+# cover that state directly.
+_UNIVERSALLY_UNDECLARED = "scan_set_df_span"
+# 0xA1 = +/-5kHz, the first legal value (``vfo.py: VALID_DF_SPANS``) --
+# passed so the builder's own range check doesn't raise before the
+# undeclared-key check this test targets ever runs.
+_UNIVERSALLY_UNDECLARED_ARG = 0xA1
 
 
 class TestDeclaredAbsentRefusal:
@@ -171,7 +185,9 @@ class TestCoreRadioWiring:
         radio = CoreRadio("127.0.0.1", profile=profile)
         with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
             with pytest.raises(CommandError, match="not supported by this radio"):
-                radio._commands.get_powerstat(to_addr=0x94)  # noqa: SLF001
+                radio._commands.scan_set_df_span(  # noqa: SLF001
+                    _UNIVERSALLY_UNDECLARED_ARG, to_addr=0x94
+                )
         assert _UNIVERSALLY_UNDECLARED in caplog.text
         assert "not recorded as absent" in caplog.text
 

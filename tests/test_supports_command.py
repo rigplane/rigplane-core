@@ -57,7 +57,10 @@ class TestIcomSupportsCommand:
             "get_key_speed",
             "enable_scope",
             "disable_scope",
-            "get_powerstat",
+            # NOT get_powerstat: MOR-2014 (D2) declares it absent on IC-7300
+            # (no read marker in the manual; live bench answered NAK) --
+            # see TestSupportsCommandReconciliation.
+            # test_known_but_declared_absent_command_returns_false below.
             "set_powerstat",
             "send_civ",
         ]
@@ -131,6 +134,22 @@ class TestSupportsCommandReconciliation:
         )
         radio = CoreRadio("127.0.0.1", profile=absent_profile)
         assert not radio.supports_command("set_agc")
+
+    def test_known_but_declared_absent_command_returns_false(
+        self, ic7300_profile, ic7300_radio
+    ):
+        """MOR-2014 (D2): ``get_powerstat`` is a real ``_KNOWN_COMMANDS``
+        entry (``CoreRadio.get_powerstat`` exists and works generically),
+        but the IC-7300 Advanced Manual (11a) has no read marker on the
+        0x18 rows and a live bench query came back NAK -- so IC-7300's
+        profile now declares it ``{ absent = ... }``. This is the reverse
+        of ``test_declared_absent_name_is_not_supported_even_if_literal_claims_it``
+        (which uses a synthetic profile): a real, shipped D2 verdict
+        narrowing the capability surface is the intended consequence of
+        the bench evidence, not a bug to work around."""
+        assert "get_powerstat" in CoreRadio._KNOWN_COMMANDS
+        assert "get_powerstat" in ic7300_profile.absent_command_names
+        assert not ic7300_radio.supports_command("get_powerstat")
 
     def test_reconciliation_directions_are_both_nonempty(self, ic7300_profile):
         """Guards the two prior-disagreement counts named in the docstring
