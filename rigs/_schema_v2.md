@@ -105,9 +105,10 @@ selector byte, or a constant payload byte. Only a value the caller
 supplies at the call site (e.g. a level to encode) is appended on top of
 the tuple.
 
-`rigs/x6100.toml`'s `ptt_on = [0x1C, 0x00, 0x01]` is valid under this
-contract as written. `rigs/ic7300.toml`'s shorter `ptt_on = [0x1C, 0x00]`
-is the shape rows are being migrated to in Step 2
+`rigs/x6100.toml`'s `ptt_on = [0x1C, 0x00, 0x01]` already carries the
+trailing byte and is valid under this contract as written.
+`rigs/ic7300.toml`'s shorter `ptt_on = [0x1C, 0x00]` is the one that
+needs to grow to match it, in Step 2
 (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Step 2).
 
 ---
