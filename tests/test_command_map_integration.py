@@ -241,14 +241,34 @@ class TestVfoScopeMapFallbackParityAcrossProfiles:
     def test_get_dual_watch_declared_by_ic7610_and_ic9700(self) -> None:
         assert set(self._maps_declaring("get_dual_watch")) == {"IC-7610", "IC-9700"}
 
-    def test_get_dual_watch_identical_to_fallback_on_every_declaring_profile(
-        self,
-    ) -> None:
-        for model, cmd_map in self._maps_declaring("get_dual_watch").items():
-            mapped = commands.get_dual_watch(cmd_map=cmd_map)
-            fallback = commands.get_dual_watch()
-            assert mapped == fallback, model
-            assert mapped.endswith(b"\x07\xc2\xfd"), model
+    def test_get_dual_watch_identical_to_fallback_on_ic7610(self) -> None:
+        """IC-9700 is excluded here (D2, MOR-2015): its ``get_dual_watch``
+        map entry was corrected from the guide-refuted 0x07 0xC2 family to
+        the guide-confirmed 0x16 0x59 ("Send/read the sub band (the
+        Dualwatch function)"), while the ``vfo.py`` fallback still emits
+        the old 0x07 family -- see
+        ``test_get_dual_watch_diverges_from_fallback_on_ic9700`` below.
+        """
+        cmd_map = self._maps_declaring("get_dual_watch")["IC-7610"]
+        mapped = commands.get_dual_watch(cmd_map=cmd_map)
+        fallback = commands.get_dual_watch()
+        assert mapped == fallback
+        assert mapped.endswith(b"\x07\xc2\xfd")
+
+    def test_get_dual_watch_diverges_from_fallback_on_ic9700(self) -> None:
+        """D2, MOR-2015: IC-9700's map now sends 0x16 0x59 (guide-confirmed
+        Dualwatch toggle, IC-9700 CI-V Reference Guide (Icom, 2019) p.5);
+        the fallback still sends 0x07 0xC2 (guide-refuted for this radio --
+        cmd 0x07's own table has no C0/C1/C2 rows at all). Recorded as a
+        known, correct divergence in
+        ``tests/command_map_parity_divergences.txt``, not a bug.
+        """
+        cmd_map = self._maps_declaring("get_dual_watch")["IC-9700"]
+        mapped = commands.get_dual_watch(cmd_map=cmd_map)
+        fallback = commands.get_dual_watch()
+        assert mapped != fallback
+        assert mapped.endswith(b"\x16\x59\xfd")
+        assert fallback.endswith(b"\x07\xc2\xfd")
 
     def test_get_main_sub_band_declared_by_ic7610_and_ic9700(self) -> None:
         assert set(self._maps_declaring("get_main_sub_band")) == {
