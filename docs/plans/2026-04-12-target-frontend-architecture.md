@@ -283,7 +283,7 @@ Semantic components use `children: Snippet` or typed props — no `<slot>`. Skin
 Each skin is a concrete Svelte component receiving `FrontendRuntime` as its single prop:
 
 ```svelte
-<!-- skins/amber-lcd/LcdSkin.svelte -->
+<!-- skins/lcd-cockpit/LcdCockpitSkin.svelte -->
 <script lang="ts">
   import type { FrontendRuntime } from '../../runtime/types';
   import { toVfoProps, toRxAudioProps, toMeterProps } from '../../adapters';
@@ -332,7 +332,7 @@ function resolveSkinId(ctx: {
 
 const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
-  'amber-lcd':  () => import('./amber-lcd/LcdSkin.svelte'),
+  'amber-lcd':  () => import('./lcd-cockpit/LcdCockpitSkin.svelte'),
   'mobile':     () => import('./mobile/MobileSkin.svelte'),
 };
 ```
@@ -454,8 +454,8 @@ frontend/src/
 │   │   ├── DesktopVfo.svelte
 │   │   ├── DesktopMeter.svelte
 │   │   └── ...
-│   ├── amber-lcd/
-│   │   ├── LcdSkin.svelte
+│   ├── lcd-cockpit/
+│   │   ├── LcdCockpitSkin.svelte
 │   │   ├── AmberFrequency.svelte
 │   │   ├── AmberMeter.svelte
 │   │   └── ...
@@ -616,7 +616,7 @@ During Phases 4-5, old and new code coexist:
 | `lib/stores/*.svelte.ts` | `runtime/` internal state | Stores become implementation detail of runtime |
 | `lib/transport/ws-client.ts` | `runtime/` internal | Transport is private to runtime |
 | `components-v2/layout/RadioLayout.svelte` | `skins/desktop-v2/DesktopSkin.svelte` | Rewrite as skin |
-| `components-v2/layout/LcdLayout.svelte` | `skins/amber-lcd/LcdSkin.svelte` | Rewrite as skin |
+| `components-v2/layout/LcdLayout.svelte` | `skins/lcd-cockpit/LcdCockpitSkin.svelte` + `skins/lcd-scope/LcdScopeSkin.svelte` | Rewrite as skin |
 | `components-v2/panels/*.svelte` | `semantic/*.svelte` + `skins/*/` visual parts | Split semantic contract from visual implementation |
 | `components-v2/theme/` | `themes/` | Move as-is |
 

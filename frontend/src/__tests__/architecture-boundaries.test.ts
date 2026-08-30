@@ -82,7 +82,7 @@ describe('v3 package boundaries (MOR-1061)', () => {
   });
   it('rejects semantic importing skins', async () => {
     const hits = await restrictedImportHits(
-      `import LcdSkin from '../skins/amber-lcd/LcdSkin.svelte';`,
+      `import LcdCockpitSkin from '../skins/lcd-cockpit/LcdCockpitSkin.svelte';`,
       'src/semantic/VfoDisplay.ts',
     );
     expect(hits).toBeGreaterThan(0);
@@ -122,7 +122,7 @@ describe('v3 package boundaries (MOR-1061)', () => {
 
   it('rejects workspace importing a skin module path', async () => {
     const hits = await restrictedImportHits(
-      `import LcdSkin from '../../skins/amber-lcd/LcdSkin.svelte';`,
+      `import LcdCockpitSkin from '../../skins/lcd-cockpit/LcdCockpitSkin.svelte';`,
       'src/presentation/workspace/preferences.ts',
     );
     expect(hits).toBeGreaterThan(0);
@@ -407,7 +407,7 @@ describe('v3 package boundaries (MOR-1061)', () => {
 
   it('rejects the plural workspaces/ path variant importing a skin module path', async () => {
     const hits = await restrictedImportHits(
-      `import LcdSkin from '../../skins/amber-lcd/LcdSkin.svelte';`,
+      `import LcdCockpitSkin from '../../skins/lcd-cockpit/LcdCockpitSkin.svelte';`,
       'src/presentation/workspaces/preferences.ts',
     );
     expect(hits).toBeGreaterThan(0);
