@@ -85,8 +85,10 @@ class TestD2DocumentaryCommandBytes:
     """
 
     def test_civ_transceive_corrected(self, cmdmap) -> None:
-        """0131, not the previous 0112 (which is AF Beep/Speech Output on
-        this radio) or the shared fallback's 0129 (both wrong, guide p.8)."""
+        """0131 (guide p.8), not the previous 0112 -- AF Beep/Speech Output
+        on this radio (guide p.7) -- or 0129, config.py's removed
+        pre-MOR-2006 fallback default, itself wrong here too (guide p.8:
+        External Keypad > KEYER setting)."""
         assert cmdmap.get("get_civ_transceive") == (0x1A, 0x05, 0x01, 0x31)
         assert cmdmap.get("set_civ_transceive") == (0x1A, 0x05, 0x01, 0x31)
 
