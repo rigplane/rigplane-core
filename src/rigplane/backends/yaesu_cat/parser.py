@@ -31,6 +31,9 @@ Supported placeholders
 {pad:03d}     Padding zeros, 3 digits
 {type:02d}    Type/code value, 2 digits zero-padded
 {mem}         CW message text (write-only)
+{chan}        IF; channel selector, 5 characters (may be alphanumeric)
+{tone}        IF; tone-mode selector, single character
+{shift}       IF; repeater-shift selector, single character
 
 Usage
 -----
@@ -88,6 +91,9 @@ _ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(
         "val",
         "main",
         "sub",
+        "chan",
+        "tone",
+        "shift",
     }
 )
 
@@ -136,6 +142,14 @@ _PLACEHOLDER_REGEX: dict[str, tuple[str, Any]] = {
     "mem": (r"(?P<mem>.)", str),
     "main:03d": (r"(?P<main>\d{3})", int),
     "sub:03d": (r"(?P<sub>\d{3})", int),
+    # MOR-2011: the FTX-1 IF; bulk-status response carries three fields no
+    # other command uses. P1 "chan" is 5 characters and may be non-numeric
+    # (PMS channels like "P-01L", or the fixed literal "EMGCH"), so it is not
+    # a digit-only field like the other fixed-width groups above. P8 "tone"
+    # and P10 "shift" are each a single character. All three are IF-only.
+    "chan": (r"(?P<chan>.{5})", str),
+    "tone": (r"(?P<tone>.)", str),
+    "shift": (r"(?P<shift>.)", str),
 }
 
 

@@ -907,9 +907,17 @@ set_sql_type   = { cat = { write = "CT0{type:02d};" } }
 get_ctcss_tone = { cat = { read = "CN00;", parse = "CN00{code:03d};" } }
 
 # ── Bulk Status ──
-# IF; returns composite status: freq(9)+sign(1)+rit_offset(4)+rit(1)+xit(1)
-# +bank(1)+chan(2)+tx(1)+mode(1)+vfo(1)+scan(1)+split(1) — parsed in Python
-get_if_status  = { cat = { read = "IF;" } }
+# IF; response layout: P1 chan(5, may be alphanumeric) + P2 freq(9 digits)
+# + P3 clarifier sign(1) + offset(4 digits) + P4 RX CLAR(1) + P5 TX CLAR(1)
+# + P6 mode(1) + P7 VFO/memory select(1) + P8 tone mode(1) + P9 fixed "00"
+# + P10 repeater shift(1). Source: CAT manual FTX-1_CAT_OM_ENG_2508-C (IF
+# command); bench-verified 2026-08-29 against the live FTX-1. The bench
+# radio answered P10="3", a value the manual's IF section does not document
+# (the OS command documents 3=ARS for the same field), so the shift
+# placeholder accepts any single character rather than a restricted set.
+# There is no PTT or split field in this response — those come from the
+# separate TX;/ST; commands.
+get_if_status  = { cat = { read = "IF;", parse = "IF{chan}{freq:09d}{sign}{offset:04d}{rx}{tx}{mode}{vfo}{tone}00{shift};" } }
 
 # ── System ──
 get_powerstat  = { cat = { read = "PS;", parse = "PS{state};" } }

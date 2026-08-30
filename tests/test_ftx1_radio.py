@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from importlib import resources
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call
@@ -1957,8 +1958,13 @@ async def test_read_meter_power(connected_radio):
 
 @pytest.mark.asyncio
 async def test_read_meter_malformed_response_raises(connected_radio):
+    """A short/malformed RM reply fails the profile's parse template.
+
+    CatParseError is a ValueError subclass, so this stays in the same
+    exception family the old hand-rolled check raised.
+    """
     connected_radio._transport.query = AsyncMock(return_value="RM00")
-    with pytest.raises(ValueError, match="Malformed RM meter response"):
+    with pytest.raises(CatParseError):
         await connected_radio.get_comp_meter()
 
 
@@ -2160,63 +2166,111 @@ async def test_set_squelch_sub_sends_sq1(connected_radio):
 
 
 class TestIFBulkQuery:
-    """Tests for get_if_status() — Yaesu IF; composite response."""
+    """Tests for get_if_status() — Yaesu IF; composite response.
+
+    Frames below are built from the profile's ``get_if_status`` parse
+    template — chan(5) + freq(9) + sign(1) + offset(4) + rx(1) + tx(1) +
+    mode(1) + vfo(1) + tone(1) + fixed "00" + shift(1) — the layout from the
+    CAT manual (FTX-1_CAT_OM_ENG_2508-C), bench-verified 2026-08-29. The
+    baseline frame ``IF00000014228000+000000200003`` is the bench FTX-1's
+    answer with the transport-stripped trailing ``;`` removed.
+    """
+
+    MEASURED_FRAME = "IF00000014228000+000000200003"
 
     @pytest.mark.asyncio
     async def test_get_if_status_parses_all_fields(self, connected_radio):
-        """IF response is parsed into freq, mode, RIT, PTT, split, VFO."""
-        # IF + freq(9) + sign(1) + offset(4) + rit(1) + xit(1)
-        # + bank(1) + chan(2) + tx(1) + mode(1) + vfo(1) + scan(1) + split(1)
-        #      014074000    +    0120    1    0    0    01    0    2    0    0    1
-        response = "IF014074000+01201000102001"
-        connected_radio._transport.query = AsyncMock(return_value=response)
+        """The measured frame parses into freq, mode, RIT/XIT, VFO."""
+        connected_radio._transport.query = AsyncMock(return_value=self.MEASURED_FRAME)
 
         result = await connected_radio.get_if_status()
 
-        assert result["freq"] == 14_074_000
+        assert result["freq"] == 14_228_000
         assert result["mode"] == "USB"  # code "2"
-        assert result["rit_offset"] == 120
-        assert result["rit_on"] is True
+        assert result["rit_offset"] == 0
+        assert result["rit_on"] is False
         assert result["xit_on"] is False
-        assert result["tx"] is False
         assert result["vfo"] == 0
-        assert result["split"] is True
+        assert "tx" not in result
+        assert "split" not in result
 
     @pytest.mark.asyncio
     async def test_get_if_status_populates_state(self, connected_radio):
         """get_if_status() must update radio_state atomically."""
-        # body: freq=007074000, sign=-, offset=0050, rit=1, xit=0,
-        #       bank=0, chan=01, tx=0, mode=1(LSB), vfo=0, scan=0, split=0
-        response = "IF007074000-00501000101000"
-        connected_radio._transport.query = AsyncMock(return_value=response)
+        connected_radio._transport.query = AsyncMock(return_value=self.MEASURED_FRAME)
 
         await connected_radio.get_if_status()
 
         st = connected_radio.radio_state
-        assert st.main.freq == 7_074_000
-        assert st.main.mode == "LSB"  # code "1"
-        assert st.rit_freq == -50
-        assert st.rit_on is True
-        assert st.ptt is False
-        assert st.split is False
+        assert st.main.freq == 14_228_000
+        assert st.main.mode == "USB"
+        assert st.rit_freq == 0
+        assert st.rit_on is False
+        assert st.rit_tx is False
 
     @pytest.mark.asyncio
-    async def test_get_if_status_tx_active(self, connected_radio):
-        """PTT=1 in IF response sets state.ptt = True."""
-        response = "IF014074000+000000001120000"
+    async def test_get_if_status_rit_and_xit_active(self, connected_radio):
+        """RX CLAR (P4) / TX CLAR (P5) digits map to rit_on/xit_on."""
+        # Same frame as MEASURED_FRAME with P4=1, P5=1 (rx/tx clarifier on).
+        response = "IF00000014228000+000011200003"
         connected_radio._transport.query = AsyncMock(return_value=response)
 
         result = await connected_radio.get_if_status()
 
-        assert result["tx"] is True
-        assert connected_radio.radio_state.ptt is True
+        assert result["rit_on"] is True
+        assert result["xit_on"] is True
+        assert connected_radio.radio_state.rit_on is True
+        assert connected_radio.radio_state.rit_tx is True
 
     @pytest.mark.asyncio
-    async def test_get_if_status_invalid_response_raises(self, connected_radio):
-        """Short or malformed IF response raises CommandError."""
+    async def test_get_if_status_rit_and_xit_are_not_interchangeable(
+        self, connected_radio
+    ):
+        """P4 (RX CLAR) and P5 (TX CLAR) must map to rit_on/xit_on without
+        being swapped.
+
+        Every other frame in this class has P4 == P5 (both "0" or both
+        "1"), so a swap of the ``{rx}``/``{tx}`` parse fields or of the
+        ``rit_on``/``xit_on`` assignment would stay green against them.
+        This frame is the bench-measured baseline with only body position
+        19 changed from "0" to "1" (P4="1", P5="0": RX CLAR on, TX CLAR
+        off), so it discriminates a swap in either direction.
+        """
+        response = "IF00000014228000+000010200003"
+        connected_radio._transport.query = AsyncMock(return_value=response)
+
+        result = await connected_radio.get_if_status()
+
+        assert result["rit_on"] is True
+        assert result["xit_on"] is False
+        assert connected_radio.radio_state.rit_on is True
+        assert connected_radio.radio_state.rit_tx is False
+
+    @pytest.mark.asyncio
+    async def test_get_if_status_does_not_write_ptt_or_split(self, connected_radio):
+        """MOR-2011: the IF response has no PTT or split field, so
+        get_if_status() must not touch radio_state.ptt / radio_state.split.
+        PTT and split truth come from the separate TX;/ST; commands.
+        """
+        connected_radio.radio_state.ptt = True  # sentinel
+        connected_radio.radio_state.split = True  # sentinel
+        connected_radio._transport.query = AsyncMock(return_value=self.MEASURED_FRAME)
+
+        await connected_radio.get_if_status()
+
+        assert connected_radio.radio_state.ptt is True  # unchanged
+        assert connected_radio.radio_state.split is True  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_get_if_status_malformed_response_raises(self, connected_radio):
+        """A frame that doesn't match the IF template raises CatParseError.
+
+        CatParseError is a ValueError subclass (same family the profile's
+        other template-parsed reads raise for a mismatched frame).
+        """
         connected_radio._transport.query = AsyncMock(return_value="IF00")
 
-        with pytest.raises(CommandError):
+        with pytest.raises(CatParseError):
             await connected_radio.get_if_status()
 
     @pytest.mark.asyncio
@@ -2224,7 +2278,7 @@ class TestIFBulkQuery:
         """connect() should attempt IF bulk query to seed state."""
         radio._transport.connect = AsyncMock()
         radio._transport._connected = True
-        radio._transport.query = AsyncMock(return_value="IF014074000+000000001020000")
+        radio._transport.query = AsyncMock(return_value="IF00000014074000+000000200003")
 
         await radio.connect()
 
@@ -2241,6 +2295,70 @@ class TestIFBulkQuery:
         await radio.connect()  # should not raise
 
         assert radio.connected
+
+
+# ---------------------------------------------------------------------------
+# MOR-2011: get_meter / get_if_status route the read command through the
+# profile, not a hardcoded literal.
+# ---------------------------------------------------------------------------
+
+
+class TestProfileSourcedCommands:
+    """Pins that go red if either read command regresses to a literal.
+
+    Each pin swaps the profile's ``read`` template for a sentinel before
+    the radio is constructed (parsers compile once in ``__init__``), then
+    asserts the transport received the sentinel-formatted command rather
+    than the real ``RM{type};`` / ``IF;`` wire text. A hardcoded
+    ``f"RM{meter_type};"`` or literal ``"IF;"`` in the implementation would
+    still send the real command and fail these assertions.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_meter_read_command_is_profile_sourced(self, config):
+        config.commands["get_meter"] = replace(
+            config.commands["get_meter"], read="XM{type};"
+        )
+        radio = YaesuCatRadio("/dev/null", profile=config)
+        radio._transport._connected = True
+        radio._transport.query = AsyncMock(return_value="RM6000000")
+
+        await radio.read_swr_meter()
+
+        radio._transport.query.assert_called_once_with("XM6;")
+
+    @pytest.mark.asyncio
+    async def test_get_if_status_read_command_is_profile_sourced(self, config):
+        config.commands["get_if_status"] = replace(
+            config.commands["get_if_status"], read="XF;"
+        )
+        radio = YaesuCatRadio("/dev/null", profile=config)
+        radio._transport._connected = True
+        radio._transport.query = AsyncMock(return_value="IF00000014228000+000000200003")
+
+        await radio.get_if_status()
+
+        radio._transport.query.assert_called_once_with("XF;")
+
+    @pytest.mark.asyncio
+    async def test_get_meter_missing_from_profile_raises_command_error(self, config):
+        del config.commands["get_meter"]
+        radio = YaesuCatRadio("/dev/null", profile=config)
+        radio._transport._connected = True
+
+        with pytest.raises(CommandError):
+            await radio.read_comp_meter()
+
+    @pytest.mark.asyncio
+    async def test_get_if_status_missing_from_profile_raises_command_error(
+        self, config
+    ):
+        del config.commands["get_if_status"]
+        radio = YaesuCatRadio("/dev/null", profile=config)
+        radio._transport._connected = True
+
+        with pytest.raises(CommandError):
+            await radio.get_if_status()
 
 
 # ---------------------------------------------------------------------------

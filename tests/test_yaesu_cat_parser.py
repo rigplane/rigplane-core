@@ -256,6 +256,48 @@ class TestRoundtrip:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# IF{} bulk-status template (MOR-2011) — chan/tone/shift placeholders
+# ---------------------------------------------------------------------------
+
+
+class TestIfStatusTemplate:
+    """The FTX-1 IF; parse template (CAT manual FTX-1_CAT_OM_ENG_2508-C,
+    bench-verified 2026-08-29): chan(5) + freq(9) + sign(1) + offset(4)
+    + rx(1) + tx(1) + mode(1) + vfo(1) + tone(1) + fixed "00" + shift(1).
+    """
+
+    TEMPLATE = "IF{chan}{freq:09d}{sign}{offset:04d}{rx}{tx}{mode}{vfo}{tone}00{shift};"
+
+    def test_parse_measured_frame(self):
+        parser = CatCommandParser(self.TEMPLATE)
+        result = parser.parse("IF00000014228000+000000200003;")
+        assert result == {
+            "chan": "00000",
+            "freq": 14228000,
+            "sign": "+",
+            "offset": 0,
+            "rx": "0",
+            "tx": "0",
+            "mode": "2",
+            "vfo": "0",
+            "tone": "0",
+            "shift": "3",
+        }
+
+    def test_parse_alphanumeric_channel_pms(self):
+        # P1 may be a PMS channel like "P-01L" (manual: non-numeric allowed).
+        parser = CatCommandParser(self.TEMPLATE)
+        result = parser.parse("IFP-01L014228000+000000200003;")
+        assert result["chan"] == "P-01L"
+
+    def test_parse_alphanumeric_channel_emergency(self):
+        # P1 may also be the fixed literal "EMGCH" (manual: emergency channel).
+        parser = CatCommandParser(self.TEMPLATE)
+        result = parser.parse("IFEMGCH014228000+000000200003;")
+        assert result["chan"] == "EMGCH"
+
+
 class TestCompileOnce:
     def test_same_parser_instance_reused(self):
         parser = CatCommandParser("FA{freq:09d};")

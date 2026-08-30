@@ -761,18 +761,24 @@ class YaesuCatRadio:
         if not self._transport.connected:
             raise RadioConnectionError("Radio not connected — call connect() first")
 
-    async def _query(self, cmd_name: str) -> dict[str, Any]:
+    async def _query(self, cmd_name: str, **params: Any) -> dict[str, Any]:
         """Send a read command and return the parsed response fields.
 
         The transport strips the trailing ``;`` from responses; we add it
         back before passing to the parser (templates include the semicolon).
+
+        *params*, when given, are formatted into the profile's read template
+        via :func:`format_command` (e.g. ``get_meter``'s ``"RM{type};"``).
+        With no params the read template is sent verbatim, as most commands
+        take no parameters in the read direction.
         """
         self._require_connected()
         spec = self._get_spec(cmd_name)
         if spec.read is None:
             raise CommandError(f"Command {cmd_name!r} has no read template")
 
-        raw = await self._transport.query(spec.read)
+        read_cmd = format_command(spec.read, **params) if params else spec.read
+        raw = await self._transport.query(read_cmd)
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -796,42 +802,35 @@ class YaesuCatRadio:
     async def get_if_status(self) -> dict[str, Any]:
         """Send ``IF;`` and parse the composite response into state fields.
 
-        The Yaesu IF response is a fixed-width string (after the ``IF`` prefix):
-        freq(9) + sign(1) + rit_offset(4) + rit(1) + xit(1)
-        + bank(1) + chan(2) + tx(1) + mode(1) + vfo(1) + scan(1) + split(1)
+        The FTX-1 IF response layout, per the profile's ``get_if_status``
+        parse template (CAT manual FTX-1_CAT_OM_ENG_2508-C, bench-verified
+        2026-08-29): P1 channel(5, may be alphanumeric) + P2 freq(9 digits)
+        + P3 clarifier sign(1) + offset(4 digits) + P4 RX CLAR(1) + P5 TX
+        CLAR(1) + P6 mode(1) + P7 VFO/memory select(1) + P8 tone mode(1) +
+        P9 fixed "00" + P10 repeater shift(1). This response carries no PTT
+        or split field, so this method neither reads nor writes them;
+        :meth:`read_ptt` and ``get_split`` read the ``TX;``/``ST;``
+        commands for that state instead.
 
         Returns a dict with parsed fields and populates :attr:`radio_state`.
         """
-        self._require_connected()
-        raw = await self._transport.query("IF;")
-        # Transport strips trailing ';'; raw starts with "IF" prefix.
-        if not raw.startswith("IF") or len(raw) < 26:
-            raise CommandError(f"Invalid IF response: {raw!r}")
+        result = await self._query("get_if_status")
 
-        body = raw[2:]  # strip "IF" prefix
-        freq = int(body[0:9])
-        sign = body[9]
-        rit_offset = int(body[10:14])
-        rit_on = body[14] == "1"
-        xit_on = body[15] == "1"
-        # body[16] = bank, body[17:19] = channel — skipped
-        tx = body[19] == "1"
-        mode_code = body[20]
-        vfo = int(body[21])
-        # body[22] = scan — skipped
-        split = body[23] == "1"
-
-        rit_hz = rit_offset if sign == "+" else -rit_offset
+        freq = int(result["freq"])
+        offset = int(result["offset"])
+        rit_hz = offset if result["sign"] == "+" else -offset
+        rit_on = result["rx"] == "1"
+        xit_on = result["tx"] == "1"
+        mode_code = result["mode"]
         mode_name = self._code_to_mode.get(mode_code, f"UNKNOWN({mode_code})")
+        vfo = int(result["vfo"])
 
         # Populate state atomically.
         self._state.main.freq = freq
         self._state.main.mode = mode_name
-        self._state.ptt = tx
         self._state.rit_on = rit_on
         self._state.rit_tx = xit_on
         self._state.rit_freq = rit_hz
-        self._state.split = split
 
         return {
             "freq": freq,
@@ -839,9 +838,7 @@ class YaesuCatRadio:
             "rit_offset": rit_hz,
             "rit_on": rit_on,
             "xit_on": xit_on,
-            "tx": tx,
             "vfo": vfo,
-            "split": split,
         }
 
     # -- Frequency ----------------------------------------------------------
@@ -1172,16 +1169,18 @@ class YaesuCatRadio:
     # -- RM meters (COMP, ALC, Power, SWR, IDD, VDD) ----------------------
 
     async def _read_meter(self, meter_type: int) -> tuple[int, int]:
-        """Read RM{type}; meter. Returns (main, sub) raw values 0–255."""
-        self._require_connected()
-        raw = await self._transport.query(f"RM{meter_type};")
-        # Response: "RM{type}{main:03d}{sub:03d}" (transport strips trailing ;)
-        body = raw[2:]  # strip "RM"
-        if len(body) < 7:
-            raise ValueError(f"Malformed RM meter response: {raw!r}")
-        main_val = int(body[1:4])
-        sub_val = int(body[4:7])
-        return main_val, sub_val
+        """Read the meter's profile-defined command.
+
+        Returns (main, sub) raw 3-digit meter values as parsed by the
+        profile's ``get_meter`` template.
+
+        Routes through the ``get_meter`` profile entry (parameterised read
+        template, e.g. ``"RM{type};"``) rather than a hardcoded command —
+        a malformed or short reply fails the parse template and raises
+        :class:`~.parser.CatParseError` (a ``ValueError`` subclass).
+        """
+        result = await self._query("get_meter", type=meter_type)
+        return result["main"], result["sub"]
 
     async def read_comp_meter(self) -> int:
         """Read COMP (compression) meter without mutating legacy state."""
