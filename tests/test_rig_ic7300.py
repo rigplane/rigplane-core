@@ -274,8 +274,12 @@ class TestCommandOverrides:
 
     def test_quick_split(self, cmdmap):
         """Bare ``quick_split`` key (D2, MOR-2014) -- same bytes as the
-        get_/set_ aliases; the fallback's 0x33 is split lock, not quick
-        split, on this radio (recorded divergence, not a bug)."""
+        get_/set_ aliases; the deleted fallback used to send 0x33 (split
+        lock, not quick split, on this radio -- a recorded divergence, not
+        a bug). No builder resolves this bare key any more since MOR-2007
+        ruling 2 deleted the one-shot quick_split()/quick_dual_watch()
+        triggers it was written for; left declared regardless (see
+        rigs/ic7300.toml's own comment on this row)."""
         assert cmdmap.get("quick_split") == (0x1A, 0x05, 0x00, 0x30)
 
     def test_get_dash_ratio(self, cmdmap):
@@ -288,8 +292,20 @@ class TestCommandOverrides:
 
     def test_scan_start_type(self, cmdmap):
         """D2, MOR-2014: IC-7300 Advanced Manual (11a) p.19-3, 0x0E family;
-        live bench 2026-08-30: 0E 13 and 0E 00 both ACKed."""
+        live bench 2026-08-30: 0E 13 and 0E 00 both ACKed. Domain resolved
+        by MOR-2007 ruling 4's [scan_types] section."""
         assert cmdmap.get("scan_start_type") == (0x0E,)
+
+    def test_scan_set_df_span(self, cmdmap):
+        """MOR-2007 D2 residual: IC-7300 Advanced Manual (11a) p.19-3,
+        0x0E Ax (x=1-7) -- matches VALID_DF_SPANS."""
+        assert cmdmap.get("scan_set_df_span") == (0x0E,)
+
+    def test_scan_set_resume(self, cmdmap):
+        """MOR-2007 D2 residual: IC-7300 Advanced Manual (11a) p.19-3;
+        domain resolved by MOR-2007 ruling 4's [scan_resume] section
+        (0xD0/0xD3 only)."""
+        assert cmdmap.get("scan_set_resume") == (0x0E,)
 
     def test_get_scope_main_sub(self, cmdmap):
         """D2, MOR-2014: exists with a fixed reply (00 = Main, single

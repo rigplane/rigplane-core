@@ -36,14 +36,19 @@ from rigplane.runtime.radio import CoreRadio
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RIGS_DIR = REPO_ROOT / "rigs"
 
-# ``scan_set_df_span`` is a real public builder (``vfo.py:
-# scan_set_df_span``) that no current rig TOML declares or records absent
-# -- confirmed by ``tests/test_profile_command_coverage.py`` recording it
-# as a universal gap across every shipped profile (a plain
-# ``grep -rn scan_set_df_span rigs/*.toml`` also turns up nothing). Using
-# a real, un-synthesised name here means this file exercises the same
-# undeclared surface the coverage guard tracks, rather than a name
-# invented only for this test.
+# ``scan_set_df_span`` was this file's original choice, but MOR-2007
+# (ruling 4, D2 residuals) declared it on IC-7300/IC-7610/IC-9700/IC-705,
+# so it is no longer universally undeclared. ``system_date`` (the key
+# ``system.py: get_system_date``/``set_system_date`` resolve via
+# ``_builders.py: _build_ctl_mem_get``'s ``cmd_name=``) takes over: no
+# current rig TOML declares or records it absent -- confirmed by
+# ``tests/test_profile_command_coverage.py`` recording it as a universal
+# gap across every shipped CI-V profile (a plain
+# ``grep -rn system_date rigs/*.toml`` also turns up nothing, since every
+# profile's own menu address lives under ``get_/set_system_date``, not
+# this internal template key). Using a real, un-synthesised name here
+# means this file exercises the same undeclared surface the coverage
+# guard tracks, rather than a name invented only for this test.
 #
 # NOT ``get_powerstat``: MOR-2014 (D2) declared it absent on IC-7300 (no
 # read marker in the manual; live bench answered NAK), so it moved from
@@ -52,11 +57,7 @@ RIGS_DIR = REPO_ROOT / "rigs"
 # ``tests/test_supports_command.py::
 # TestSupportsCommandReconciliation.test_known_but_declared_absent_command_returns_false``
 # cover that state directly.
-_UNIVERSALLY_UNDECLARED = "scan_set_df_span"
-# 0xA1 = +/-5kHz, the first legal value (``vfo.py: VALID_DF_SPANS``) --
-# passed so the builder's own range check doesn't raise before the
-# undeclared-key check this test targets ever runs.
-_UNIVERSALLY_UNDECLARED_ARG = 0xA1
+_UNIVERSALLY_UNDECLARED = "system_date"
 
 
 class TestDeclaredAbsentRefusal:
@@ -185,9 +186,7 @@ class TestCoreRadioWiring:
         radio = CoreRadio("127.0.0.1", profile=profile)
         with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
             with pytest.raises(CommandError, match="not supported by this radio"):
-                radio._commands.scan_set_df_span(  # noqa: SLF001
-                    _UNIVERSALLY_UNDECLARED_ARG, to_addr=0x94
-                )
+                radio._commands.get_system_date(to_addr=0x94)  # noqa: SLF001
         assert _UNIVERSALLY_UNDECLARED in caplog.text
         assert "not recorded as absent" in caplog.text
 

@@ -46,6 +46,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runtime/radio.py: CoreRadio`, moved onto `self._commands.<builder>(...)`
   in the same change — an external caller of a free function must do the
   same rather than calling it directly with no map.
+- **`rigplane.commands.vfo` builders require `cmd_map`; there is no
+  hardcoded fallback (MOR-2007, Steps 5..N module 3 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** VFO select/
+  swap/equal, split, tuning step, scan start/stop/type/df-span/resume, and
+  dual-watch get/set now require `cmd_map` as a required keyword-only
+  argument, the same way as `rigplane.commands.config`/`levels` above.
+  Three behaviour changes ride along with the migration:
+  - `set_dual_watch_off`/`set_dual_watch_on` resolve the split,
+    get_/set_-prefixed command names `set_dual_watch_off`/
+    `set_dual_watch_on` instead of the bare `set_dual_watch` the fallback
+    used to resolve — IC-7610/IC-9700 declare the two directions at
+    different wire addresses, which one shared name could never carry.
+  - `quick_dual_watch()`/`quick_split()` are deleted. Bench-confirmed on
+    the live IC-7300, `1A 05 0030`/`0032` are persistent, readable/
+    writable menu toggles, not the one-shot triggers their names implied
+    — the deleted builders always sent a bare read frame and their only
+    caller never read the reply, so they fired nothing. Replaced by real
+    `get_quick_split`/`set_quick_split`/`get_quick_dual_watch`/
+    `set_quick_dual_watch` pairs; `runtime/radio.py: CoreRadio` gained
+    matching methods and `web/radio_poller.py`'s `QuickSplit`/
+    `QuickDualWatch` WS commands now call the getter (a strict read
+    improvement over the old fire-and-discard; writing a caller-supplied
+    value through the web layer is not wired yet — the WS handler never
+    parsed one for this intent even before this change).
+  - `scan_start_type`/`scan_set_resume` no longer validate their sub-byte
+    against a code-level frozenset (the deleted `VALID_SCAN_TYPES`, which
+    omitted the documented 0x13 fine-ΔF scan on IC-7300/IC-7610/IC-9700
+    and IC-705's 0x24 mode-select scan; and `VALID_SCAN_RESUME`, which
+    accepted 0xD0-0xD3 where every documented CI-V guide lists only
+    0xD0/0xD3). Domain validation moves to `runtime/radio.py:
+    CoreRadio.scan_start`/`scan_set_resume`, reading the new
+    `RadioProfile.scan_type_values`/`scan_resume_values` (declared per
+    radio in `rigs/*.toml`'s new `[scan_types]`/`[scan_resume]` sections),
+    the same shape `commands/dsp.py: set_agc` already uses for AGC-mode
+    domain validation. `scan_set_df_span`'s `VALID_DF_SPANS` check is
+    unaffected — every profile with a citation for it declares the
+    identical 0xA1-0xA7 table, so it stays a wire-format constant.
+  The only production caller, `runtime/radio.py: CoreRadio`, moved onto
+  `self._commands.<builder>(...)` in the same change — an external caller
+  of a free function must do the same rather than calling it directly
+  with no map.
 - **CLI: `rigplane ptt on` no longer returns while the rig is keyed.** The
   command now holds the key for as long as the process runs and unkeys on the
   way out, so the process that keyed the rig is the one that releases it. A

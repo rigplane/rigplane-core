@@ -1919,11 +1919,14 @@
       "family": "vfo_dualwatch_scan",
       "status": "implemented",
       "runtime_symbols": [
-        "rigplane.commands:quick_dual_watch",
-        "rigplane.radio:IcomRadio.quick_dual_watch"
+        "rigplane.commands:get_quick_dual_watch",
+        "rigplane.commands:set_quick_dual_watch",
+        "rigplane.radio:CoreRadio.get_quick_dual_watch",
+        "rigplane.radio:CoreRadio.set_quick_dual_watch"
       ],
       "test_patterns": [
-        "tests/test_vfo_dual_watch.py::test_quick_dual_watch_builds_correct_frame"
+        "tests/test_vfo_dual_watch.py::test_get_quick_dual_watch_builds_correct_frame",
+        "tests/test_vfo_dual_watch.py::test_set_quick_dual_watch_true_appends_data_byte"
       ]
     },
     {
@@ -1937,11 +1940,14 @@
       "family": "vfo_dualwatch_scan",
       "status": "implemented",
       "runtime_symbols": [
-        "rigplane.commands:quick_split",
-        "rigplane.radio:IcomRadio.quick_split"
+        "rigplane.commands:get_quick_split",
+        "rigplane.commands:set_quick_split",
+        "rigplane.radio:CoreRadio.get_quick_split",
+        "rigplane.radio:CoreRadio.set_quick_split"
       ],
       "test_patterns": [
-        "tests/test_vfo_dual_watch.py::test_quick_split_builds_correct_frame"
+        "tests/test_vfo_dual_watch.py::test_get_quick_split_builds_correct_frame",
+        "tests/test_vfo_dual_watch.py::test_set_quick_split_true_appends_data_byte"
       ]
     },
     {

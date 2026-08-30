@@ -36,6 +36,7 @@ from typing import Any
 import pytest
 
 from rigplane.commands._frame import decode_wire_tuple
+from rigplane.core.types import CivFrame
 from rigplane.runtime.radio import CoreRadio
 
 from test_profile_command_binding import _civ_rig_configs
@@ -102,6 +103,18 @@ MATCHER_BACKED_GETTERS: tuple[_GetterSpec, ...] = (
     _GetterSpec("get_nb_depth", "_get_bcd_level"),
     _GetterSpec("get_nb_width", "_get_bcd_level"),
     _GetterSpec("get_vox_delay", "_get_bcd_level"),
+    # commands/vfo.py's matcher-backed getters (MOR-2007 Steps 5..N,
+    # module 3). get_dual_watch is NOT included: 0x07 carries no CI-V
+    # sub-command (_frame.py: _COMMANDS_WITH_SUB excludes it, unlike
+    # 0x1A here), so its reply marker lands in data[0] rather than
+    # .sub -- it cannot route through _get_bcd_level/_get_bool_value at
+    # all, and is instead pinned directly by
+    # test_get_dual_watch_reply_marker_comes_from_the_map below, this
+    # file's keystone case for that shape. get_vfo, get_main_sub_band,
+    # vfo_a_equals_b and vfo_swap have no production caller in
+    # runtime/radio.py, so there is no CoreRadio getter to register here.
+    _GetterSpec("get_quick_split", "_get_bool_value"),
+    _GetterSpec("get_quick_dual_watch", "_get_bool_value"),
 )
 
 
@@ -166,3 +179,89 @@ async def test_reply_shape_matches_request_shape(
         f"but the request the same call built goes to {expected_shape} -- "
         "the reply matcher was not migrated with the request."
     )
+
+
+@pytest.mark.asyncio
+async def test_get_dual_watch_reply_marker_comes_from_the_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keystone case for ``get_dual_watch``, which cannot register in
+    ``MATCHER_BACKED_GETTERS`` above: 0x07 carries no CI-V sub-command
+    (``_frame.py: _COMMANDS_WITH_SUB`` excludes it, unlike 0x1A/0x16 for
+    the getters above), so its reply marker is echoed in ``data[0]``
+    rather than landing in ``.sub`` -- it cannot route through
+    ``_get_bcd_level``/``_get_bool_value`` at all, and
+    ``runtime/radio.py: CoreRadio.get_dual_watch`` handles both wire
+    shapes itself instead.
+
+    Proven against two profiles whose ``get_dual_watch`` commands are
+    wire-incompatible -- IC-7610's ``[0x07, 0xC2]`` (marker in data[0])
+    and IC-9700's ``[0x16, 0x59]`` (marker in .sub, since 0x16 IS in
+    ``_COMMANDS_WITH_SUB``) -- so a marker hardcoded to either family's
+    byte answers the OTHER family's reply wrongly regardless of the
+    actual on/off value: exactly the "requests moved, replies not"
+    failure mode this file exists to make impossible (plan §7).
+
+    Manually confirmed red for the half-done shape: reverting
+    ``get_dual_watch`` to its pre-migration check (literal
+    ``resp.data[0] == 0xC2``, ignoring ``resp.sub``/the map) makes
+    ``test_ic9700`` below fail -- IC-9700's real reply is
+    ``command=0x16, sub=0x59, data=[value]``, which never contains
+    ``0xC2`` anywhere, so the reverted check would always return
+    ``False`` regardless of the actual toggle state.
+    """
+
+    async def _get_dual_watch_answering(radio: CoreRadio, frame) -> bool:
+        async def _fake_expect(civ: bytes, **kwargs: Any) -> Any:
+            return frame
+
+        monkeypatch.setattr(radio, "_send_civ_expect", _fake_expect)
+        monkeypatch.setattr(radio, "_check_connected", lambda: None)
+        return await radio.get_dual_watch()
+
+    # IC-7610: [0x07, 0xC2] -- 0x07 has no CI-V sub-command, marker in data[0].
+    ic7610 = _civ_rig_configs()["IC-7610"].to_profile()
+    command, sub, prefix = decode_wire_tuple(ic7610.command_map.get("get_dual_watch"))
+    assert (command, sub, prefix) == (0x07, 0xC2, b"")
+    radio_7610 = CoreRadio("198.51.100.1", profile=ic7610)
+
+    on_reply = CivFrame(
+        to_addr=0xE0, from_addr=0x98, command=command, sub=None, data=b"\xc2\x01"
+    )
+    assert await _get_dual_watch_answering(radio_7610, on_reply) is True
+
+    off_reply = CivFrame(
+        to_addr=0xE0, from_addr=0x98, command=command, sub=None, data=b"\xc2\x00"
+    )
+    assert await _get_dual_watch_answering(radio_7610, off_reply) is False
+
+    # A reply with the WRONG marker byte (echoing some other 0x07 query)
+    # must not be misread as dual-watch state.
+    wrong_marker = CivFrame(
+        to_addr=0xE0, from_addr=0x98, command=command, sub=None, data=b"\xd2\x01"
+    )
+    assert await _get_dual_watch_answering(radio_7610, wrong_marker) is False
+
+    # IC-9700: [0x16, 0x59] -- 0x16 IS in _COMMANDS_WITH_SUB, marker in .sub.
+    ic9700 = _civ_rig_configs()["IC-9700"].to_profile()
+    command9700, sub9700, prefix9700 = decode_wire_tuple(
+        ic9700.command_map.get("get_dual_watch")
+    )
+    assert (command9700, sub9700, prefix9700) == (0x16, 0x59, b"")
+    radio_9700 = CoreRadio("198.51.100.1", profile=ic9700)
+
+    on_reply_9700 = CivFrame(
+        to_addr=0xE0, from_addr=0xA2, command=command9700, sub=sub9700, data=b"\x01"
+    )
+    assert await _get_dual_watch_answering(radio_9700, on_reply_9700) is True
+
+    off_reply_9700 = CivFrame(
+        to_addr=0xE0, from_addr=0xA2, command=command9700, sub=sub9700, data=b"\x00"
+    )
+    assert await _get_dual_watch_answering(radio_9700, off_reply_9700) is False
+
+    # Wrong sub-command (not 0x59) must not be misread either.
+    wrong_sub_9700 = CivFrame(
+        to_addr=0xE0, from_addr=0xA2, command=command9700, sub=0x12, data=b"\x01"
+    )
+    assert await _get_dual_watch_answering(radio_9700, wrong_sub_9700) is False

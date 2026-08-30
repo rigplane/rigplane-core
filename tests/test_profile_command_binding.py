@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import itertools
 import pathlib
 import sys
 from typing import Any
@@ -260,6 +261,18 @@ def _exposed_builders() -> list[tuple[str, Any]]:
     return found
 
 
+# A required argument whose own domain has no member in
+# test_command_map_parity.py's shared _INTS ladder -- tried first, ahead of
+# the shared search, rather than widening _INTS itself (shared by every
+# other exposed builder's probe search; adding a value shifts which combo
+# each of them finds first). vfo.py: scan_set_df_span's 0xA1-0xA7 (MOR-2007)
+# is the one case so far: _INTS's largest members (100, 255) both fall
+# outside that range.
+_EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
+    "scan_set_df_span": {"df_span": 0xA1},
+}
+
+
 class TestExposedKeyDriftGuard:
     """The owner ruling's drift test: exposed callable == body's actual key.
 
@@ -314,7 +327,12 @@ class TestExposedKeyDriftGuard:
         """
         target = inspect.unwrap(builder)
         required, _optional = _split_params(target)
-        for kwargs in _candidate_kwargs(target, required):
+        extra = _EXTRA_PROBE_KWARGS.get(getattr(target, "__name__", ""))
+        candidates = itertools.chain(
+            (extra,) if extra is not None else (),
+            _candidate_kwargs(target, required),
+        )
+        for kwargs in candidates:
             try:
                 builder(to_addr=0x94, cmd_map=cmd_map, **kwargs)
             except Exception:

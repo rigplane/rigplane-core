@@ -149,6 +149,8 @@ from rigplane.commands import (
     get_pbt_inner,
     get_pbt_outer,
     get_power_meter,
+    get_quick_dual_watch,
+    get_quick_split,
     get_ref_adjust,
     get_rit_frequency,
     get_rit_status,
@@ -158,7 +160,6 @@ from rigplane.commands import (
     get_s_meter,
     get_s_meter_sql_status,
     get_speech,
-    get_split,
     get_squelch,
     get_ssb_tx_bandwidth,
     get_swr,
@@ -166,7 +167,6 @@ from rigplane.commands import (
     get_system_time,
     get_transceiver_id,
     get_tuner_status,
-    get_tuning_step,
     get_twin_peak_filter,
     get_tx_freq_monitor,
     get_usb_mod_level,
@@ -196,13 +196,6 @@ from rigplane.commands import (
     power_on,
     ptt_off,
     ptt_on,
-    quick_dual_watch,
-    quick_split,
-    scan_set_df_span,
-    scan_set_resume,
-    scan_start,
-    scan_start_type,
-    scan_stop,
     send_cw,
     set_af_mute,
     set_agc,
@@ -218,7 +211,6 @@ from rigplane.commands import (
     set_compressor,
     set_dial_lock,
     set_digisel,
-    set_dual_watch,
     set_filter_shape,
     set_freq,
     set_ip_plus,
@@ -234,12 +226,10 @@ from rigplane.commands import (
     set_rit_tx_status,
     set_rx_antenna_ant1,
     set_rx_antenna_ant2,
-    set_split,
     set_ssb_tx_bandwidth,
     set_system_date,
     set_system_time,
     set_tuner_status,
-    set_tuning_step,
     set_twin_peak_filter,
     set_tx_freq_monitor,
     set_utc_offset,
@@ -263,7 +253,6 @@ from rigplane.commands import set_repeater_tone as _set_repeater_tone_cmd
 from rigplane.commands import set_repeater_tsql as _set_repeater_tsql_cmd
 from rigplane.commands import set_tone_freq as _set_tone_freq_cmd
 from rigplane.commands import set_tsql_freq as _set_tsql_freq_cmd
-from rigplane.commands import set_vfo as _select_vfo_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.state_store import StateStore
@@ -4086,7 +4075,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             raise CommandError(
                 f"profile {self._profile.model} declares no VFO select code for {name}"
             )
-        civ = _select_vfo_cmd(code, to_addr=self._radio_addr)
+        civ = self._commands.set_vfo(code, to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="set_vfo")
         ack = parse_ack_nak(resp)
         if ack is False:
@@ -4096,7 +4085,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_split(self, on: bool) -> None:
         """Enable or disable split mode (CI-V ``0x0F``)."""
         self._check_connected()
-        civ = set_split(on, to_addr=self._radio_addr)
+        civ = self._commands.set_split(on, to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="set_split")
         ack = parse_ack_nak(resp)
         if ack is False:
@@ -4111,7 +4100,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         (defaulting to ``False``).
         """
         self._check_connected()
-        civ = get_split(to_addr=self._radio_addr)
+        civ = self._commands.get_split(to_addr=self._radio_addr)
         try:
             resp = await self._send_civ_expect(civ, label="get_split")
         except (CommandError, TimeoutError):
@@ -4132,7 +4121,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_tuning_step(self) -> int:
         """Read the tuning step index (0-8, BCD-encoded per IC-7610, CI-V 0x10)."""
         self._check_connected()
-        civ = get_tuning_step(to_addr=self._radio_addr)
+        civ = self._commands.get_tuning_step(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_tuning_step")
         if resp.data:
             b = resp.data[0]
@@ -4142,7 +4131,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_tuning_step(self, step: int) -> None:
         """Set the tuning step index (0-8, BCD-encoded, CI-V 0x10). Fire-and-forget."""
         self._check_connected()
-        civ = set_tuning_step(step, to_addr=self._radio_addr)
+        civ = self._commands.set_tuning_step(step, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def scan_start(self, mode: int = 0) -> None:
@@ -4151,64 +4140,145 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Args:
             mode: Scan type sub-byte.  0 (default) sends 0x01 (programmed scan)
                   for backward compatibility.  Non-zero values are forwarded
-                  directly as the scan-type sub-byte (e.g. 0x03 = ΔF scan).
+                  directly as the scan-type sub-byte (e.g. 0x03 = ΔF scan),
+                  validated against the profile's own domain (MOR-2007
+                  ruling 4) when it declares one -- permissive, like
+                  ``set_agc``, when it does not.
         """
         self._check_connected()
         if mode == 0:
-            civ = scan_start(to_addr=self._radio_addr)
+            civ = self._commands.scan_start(to_addr=self._radio_addr)
         else:
-            civ = scan_start_type(mode, to_addr=self._radio_addr)
+            scan_types = self._profile.scan_type_values
+            if scan_types is not None and mode not in scan_types:
+                raise ValueError(
+                    f"Scan type must be one of {sorted(scan_types)} for "
+                    f"{self._profile.model}, got {hex(mode)}"
+                )
+            civ = self._commands.scan_start_type(mode, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def scan_stop(self) -> None:
         """Stop scanning (CI-V 0x0E 0x00). Fire-and-forget."""
         self._check_connected()
-        civ = scan_stop(to_addr=self._radio_addr)
+        civ = self._commands.scan_stop(to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def scan_set_df_span(self, span: int) -> None:
         """Set ΔF scan span (CI-V 0x0E 0xA1-0xA7). Fire-and-forget."""
         self._check_connected()
-        civ = scan_set_df_span(span, to_addr=self._radio_addr)
+        civ = self._commands.scan_set_df_span(span, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def scan_set_resume(self, mode: int) -> None:
-        """Set scan resume mode (CI-V 0x0E 0xD0-0xD3). Fire-and-forget."""
+        """Set scan resume mode (CI-V 0x0E sub). Fire-and-forget.
+
+        Valid values are declared per radio by the profile's
+        ``[scan_resume] values`` (MOR-2007 ruling 4) -- every documented
+        CI-V guide lists only 0xD0 (OFF) and 0xD3 ("Close&Delay"), not the
+        0xD1/0xD2 5s/10s states this method used to accept unconditionally.
+        Permissive when the profile declares no domain, like ``set_agc``.
+        """
         self._check_connected()
-        civ = scan_set_resume(mode, to_addr=self._radio_addr)
+        scan_resume_modes = self._profile.scan_resume_values
+        if scan_resume_modes is not None and mode not in scan_resume_modes:
+            raise ValueError(
+                f"Scan resume mode must be one of {sorted(scan_resume_modes)} for "
+                f"{self._profile.model}, got {hex(mode)}"
+            )
+        civ = self._commands.scan_set_resume(mode, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_dual_watch(self) -> bool:
-        """Query dual watch status (CI-V 0x07 0xC2).
+        """Query dual watch status.
 
         Returns:
             True if dual watch is enabled, False otherwise.
+
+        The reply shape comes from the same map entry the request used
+        (`commands/bound.py: BoundCommands.expect`), but unlike a
+        ``_get_bool_value``-style getter it cannot assume the value lands
+        in ``frame.sub``: IC-7610's ``[0x07, 0xC2]`` is a VFO-select-family
+        command, and ``0x07`` carries no CI-V sub-command per
+        `commands/_frame.py: _COMMANDS_WITH_SUB` (so
+        `runtime/_civ_rx.py`'s unsolicited-frame decoding, which shares
+        that same parser, is unaffected) -- the query's marker byte is
+        echoed as ``data[0]`` instead. IC-9700's ``[0x16, 0x59]`` is a real
+        CI-V sub-command family (``0x16`` IS in that set), so its marker
+        lands in ``frame.sub`` normally. Handling both keeps this getter
+        correct across profiles rather than pinned to whichever shape the
+        request happened to use.
         """
         self._check_connected()
-        civ = get_dual_watch(to_addr=self._radio_addr)
+        command, sub, prefix = self._expect_shape(get_dual_watch)
+        civ = self._commands.get_dual_watch(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_dual_watch")
-        # Response: cmd=0x07, data=[0xC2, <value>]
-        if resp.data and len(resp.data) >= 2 and resp.data[0] == 0xC2:
-            return bool(resp.data[1])
-        return False
+        if resp.command != command:
+            return False
+        if resp.sub is not None:
+            # e.g. IC-9700's [0x16, 0x59]: 0x16 IS in _COMMANDS_WITH_SUB, so
+            # parse_civ_frame already split the marker into .sub.
+            if resp.sub != sub:
+                return False
+            data = resp.data[len(prefix) :]
+            return bool(data) and data[0] != 0x00
+        # e.g. IC-7610's [0x07, 0xC2]: 0x07 carries no CI-V sub-command, so
+        # the marker is echoed as data[0] instead of landing in .sub.
+        if not resp.data or resp.data[0] != sub:
+            return False
+        data = resp.data[1:]
+        return bool(data) and data[0] != 0x00
 
     async def set_dual_watch(self, on: bool) -> None:
-        """Enable or disable dual watch (CI-V 0x07 0xC0/0xC1). Fire-and-forget."""
+        """Enable or disable dual watch. Fire-and-forget."""
         self._check_connected()
-        civ = set_dual_watch(on, to_addr=self._radio_addr)
+        civ = self._commands.set_dual_watch(on, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
-    async def quick_dual_watch(self) -> None:
-        """One-shot dual watch trigger (CI-V 0x1A 0x05 0x00 0x32). Fire-and-forget."""
-        self._check_connected()
-        civ = quick_dual_watch(to_addr=self._radio_addr)
-        await self._send_civ_raw(civ, wait_response=False)
+    async def get_quick_split(self) -> bool:
+        """Read the persistent Quick Split menu toggle (CI-V 0x1A 0x05).
 
-    async def quick_split(self) -> None:
-        """One-shot split trigger (CI-V 0x1A 0x05 0x00 0x33). Fire-and-forget."""
-        self._check_connected()
-        civ = quick_split(to_addr=self._radio_addr)
-        await self._send_civ_raw(civ, wait_response=False)
+        MOR-2007 ruling 2: replaces the pre-migration ``quick_split()``,
+        which always sent this same bare-GET frame and never read the
+        reply -- it fired nothing. ``0x1A`` carries a real CI-V
+        sub-command (unlike ``get_dual_watch``'s ``0x07`` family above),
+        so this is a plain ``_get_bool_value`` getter, the same shape as
+        `commands/config.py: get_civ_transceive`.
+        """
+        command, sub, prefix = self._expect_shape(get_quick_split)
+        return await self._get_bool_value(
+            self._commands.get_quick_split(to_addr=self._radio_addr),
+            key="get_quick_split",
+            command=command,
+            sub=sub,
+            prefix=prefix,
+        )
+
+    async def set_quick_split(self, enabled: bool) -> None:
+        """Write the persistent Quick Split menu toggle. Fire-and-forget."""
+        await self._send_fire_and_forget(
+            self._commands.set_quick_split(enabled, to_addr=self._radio_addr)
+        )
+
+    async def get_quick_dual_watch(self) -> bool:
+        """Read the persistent Quick Dual Watch menu toggle.
+
+        See ``get_quick_split`` -- same ruling, same shape.
+        """
+        command, sub, prefix = self._expect_shape(get_quick_dual_watch)
+        return await self._get_bool_value(
+            self._commands.get_quick_dual_watch(to_addr=self._radio_addr),
+            key="get_quick_dual_watch",
+            command=command,
+            sub=sub,
+            prefix=prefix,
+        )
+
+    async def set_quick_dual_watch(self, enabled: bool) -> None:
+        """Write the persistent Quick Dual Watch menu toggle. Fire-and-forget."""
+        await self._send_fire_and_forget(
+            self._commands.set_quick_dual_watch(enabled, to_addr=self._radio_addr)
+        )
 
     async def get_attenuator_level(self, receiver: int = RECEIVER_MAIN) -> int:
         """Read attenuator level in dB (Command29-aware).

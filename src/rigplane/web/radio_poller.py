@@ -3563,9 +3563,16 @@ class RadioPoller:
             case SetUtcOffset(hours=hours, minutes=minutes, is_negative=is_negative):
                 await _r.set_utc_offset(hours, minutes, is_negative)
             case QuickSplit():
-                await _r.quick_split()
+                # MOR-2007 ruling 2: quick_split()/quick_dual_watch() were
+                # deleted -- they always sent a bare GET and never read the
+                # reply, so they fired nothing. get_quick_split() is the
+                # real read of the same persistent menu toggle; a write
+                # path for this intent needs a value threaded through the
+                # web command (params["on"]), which no caller does yet --
+                # left as a follow-up, not silently invented here.
+                await _r.get_quick_split()
             case QuickDualWatch():
-                await _r.quick_dual_watch()
+                await _r.get_quick_dual_watch()
             case QuickDwTrigger():
                 self._last_user_write_ts = time.monotonic()
                 if CAP_DUAL_RX in self._caps:

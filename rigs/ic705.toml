@@ -133,6 +133,20 @@ values = [0, 1, 2]
 modes = [1, 2, 3]
 labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
 
+[scan_types]
+# CI-V 0x0E family: source IC-705 CI-V Reference Guide (A7560-8EX-1,
+# Jul.2020) p.3. Includes 0x13 (fine dF scan, absent from the old
+# code-level VALID_SCAN_TYPES frozenset) and 0x24 ("Mode Select scan"),
+# IC-705-specific -- not in the IC-7610 guide (MOR-2007 ruling 4).
+values = [0x01, 0x02, 0x03, 0x12, 0x13, 0x22, 0x23, 0x24]
+
+[scan_resume]
+# CI-V 0x0E family: source IC-705 CI-V Reference Guide (A7560-8EX-1,
+# Jul.2020) p.3 -- documents only 0x0E D0/D3 (2 states), not the D0-D3 (4
+# states) the old code-level VALID_SCAN_RESUME frozenset accepted on every
+# radio (MOR-2007 ruling 4).
+values = [0xD0, 0xD3]
+
 [antenna]
 # CI-V 0x12: single antenna path; RX antenna separate command 0x16 0x53
 tx_count = 1
@@ -485,7 +499,10 @@ get_vfo = [0x07]
 set_vfo = [0x07]
 # Single receiver: no dual_watch, no main/sub band select (D2, MOR-2016)
 get_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
-set_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
+# set_dual_watch_off/set_dual_watch_on (not the bare set_dual_watch the
+# pre-migration fallback resolved -- MOR-2007 ruling 1 split the setter key)
+set_dual_watch_off = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
+set_dual_watch_on = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 get_main_sub_band = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table has no D0/D1/D2" }
 # quick_dual_watch (bare key, no get_/set_ prefix) lives here in the base
 # [commands] section, matching the bare-key precedent (scan_start,
@@ -759,10 +776,8 @@ set_antenna = [0x12]
 scan_start = [0x0E]
 scan_stop = [0x0E]
 scan_set_df_span = [0x0E]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3, 0x0E Ax (x=1-7) -- matches VALID_DF_SPANS
-# scan_set_resume: guide documents only 0x0E D0/D3 (2 states); code's
-# VALID_SCAN_RESUME accepts D0-D3 (4 states) -- domain mismatch left open
-# (recorded for MOR-2007, D2, MOR-2016). scan_start_type not resolved in
-# this pass.
+scan_start_type = [0x0E]   # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3; domain resolved below ([scan_types], MOR-2007 ruling 4)
+scan_set_resume = [0x0E]   # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3; domain resolved below ([scan_resume], D2 residual closed, MOR-2007 ruling 4)
 
 # ── Menu / misc (0x1A 0x05 …) — IC-705-specific sub-addresses from wfview ──
 

@@ -533,6 +533,10 @@ class RigConfig:
     ssb_tx_bw_labels: dict[str, str] | None = None
     filter_shape_values: tuple[int, ...] | None = None
     filter_shape_labels: dict[str, str] | None = None
+    scan_type_values: tuple[int, ...] | None = None
+    scan_type_labels: dict[str, str] | None = None
+    scan_resume_values: tuple[int, ...] | None = None
+    scan_resume_labels: dict[str, str] | None = None
     # MOR-1447 leg 2: "separate" (default) or "combined" (Icom-style single
     # RF/SQL knob — see ``VALID_RF_SQL_CONTROL_MODELS``).
     rf_sql_control_model: str = "separate"
@@ -740,6 +744,10 @@ class RigConfig:
             ssb_tx_bw_labels=self.ssb_tx_bw_labels,
             filter_shape_values=self.filter_shape_values,
             filter_shape_labels=self.filter_shape_labels,
+            scan_type_values=self.scan_type_values,
+            scan_type_labels=self.scan_type_labels,
+            scan_resume_values=self.scan_resume_values,
+            scan_resume_labels=self.scan_resume_labels,
             rf_sql_control_model=self.rf_sql_control_model,
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
@@ -2124,6 +2132,15 @@ def load_rig(path: Path) -> RigConfig:
     filter_shape_values, filter_shape_labels = _parse_enumerated_domain(
         filename, "[filter_shape]", data.get("filter_shape", {})
     )
+    # MOR-2007 ruling 4: scan-type and scan-resume validation domains,
+    # generalizing the [agc]-style fail-loud pattern the way break_in/
+    # notch/ssb_tx_bw/filter_shape above already did (MOR-1534).
+    scan_type_values, scan_type_labels = _parse_enumerated_domain(
+        filename, "[scan_types]", data.get("scan_types", {})
+    )
+    scan_resume_values, scan_resume_labels = _parse_enumerated_domain(
+        filename, "[scan_resume]", data.get("scan_resume", {})
+    )
 
     # Parse [data_mode] (optional)
     # If data_mode is in features but no [data_mode] section, default to 1 mode (OFF/DATA)
@@ -2379,6 +2396,10 @@ def load_rig(path: Path) -> RigConfig:
         ssb_tx_bw_labels=ssb_tx_bw_labels,
         filter_shape_values=filter_shape_values,
         filter_shape_labels=filter_shape_labels,
+        scan_type_values=scan_type_values,
+        scan_type_labels=scan_type_labels,
+        scan_resume_values=scan_resume_values,
+        scan_resume_labels=scan_resume_labels,
         rf_sql_control_model=rf_sql_control_model,
         data_mode_count=data_mode_count,
         data_mode_labels=data_mode_labels,

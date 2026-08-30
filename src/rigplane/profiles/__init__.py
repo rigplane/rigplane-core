@@ -362,6 +362,18 @@ class RadioProfile:
     ssb_tx_bw_labels: dict[str, str] | None = None
     filter_shape_values: tuple[int, ...] | None = None
     filter_shape_labels: dict[str, str] | None = None
+    # MOR-2007 ruling 4: scan-type and scan-resume domains are per-radio,
+    # not the uniform code-level frozensets commands/vfo.py used to check
+    # against on every profile (VALID_SCAN_TYPES omitted IC-7300/IC-7610/
+    # IC-9700's documented 0x13 and IC-705's 0x24; VALID_SCAN_RESUME
+    # accepted 0xD0-0xD3 where every documented CI-V guide lists only
+    # 0xD0/0xD3). ``None`` means the profile declares no domain --
+    # permissive, like ``agc_modes`` (see
+    # ``runtime/radio.py: CoreRadio.scan_start``/``scan_set_resume``).
+    scan_type_values: tuple[int, ...] | None = None
+    scan_type_labels: dict[str, str] | None = None
+    scan_resume_values: tuple[int, ...] | None = None
+    scan_resume_labels: dict[str, str] | None = None
     # MOR-1447 leg 2: "separate" (default, two independent controls) or
     # "combined" (Icom-style single RF/SQL knob). Data-driven from
     # ``[capabilities].rf_sql_control_model`` in the rig TOML — never a

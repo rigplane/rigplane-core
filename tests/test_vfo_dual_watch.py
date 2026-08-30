@@ -1,5 +1,33 @@
-"""Unit tests for VFO/dual-watch/scanning commands (Issue #132)."""
+"""Unit tests for VFO/dual-watch/scanning commands (Issue #132).
 
+commands/vfo.py migrated onto the bound command map in MOR-2007 Steps 5..N
+(module 3, docs/plans/2026-08-29-profile-driven-command-bytes.md §4):
+every builder now requires cmd_map, with no hardcoded fallback left. The
+frames pinned below are built against a real IC-7610 CommandMap
+(``cmd_map`` fixture) instead of hand-typed CI-V literals, per MOR-2006's
+"prefer load_rig(...) maps over hand literals" convention -- for every
+builder this file exercises, IC-7610's declared bytes are byte-identical
+to what the deleted fallback used to build, so the expected literals
+below are unchanged from before the migration.
+
+Two classes of pre-migration test do not survive unchanged:
+
+- ``scan_start_type``/``scan_set_resume``'s domain validation
+  (``VALID_SCAN_TYPES``/``VALID_SCAN_RESUME``) moved out of the builder
+  into the profile-aware caller (MOR-2007 ruling 4) -- the builder-level
+  ``rejects_invalid`` tests that pinned it here are replaced by
+  ``TestScanTypeDomainValidation``/``TestScanResumeDomainValidation``
+  below, which pin it at ``CoreRadio.scan_start``/``scan_set_resume``
+  instead, against the real IC-7610 profile domain.
+- ``quick_dual_watch()``/``quick_split()`` (the bare, one-shot-trigger
+  builders) are deleted (MOR-2007 ruling 2): they always sent a bare-GET
+  frame and their only caller never read the reply, so they fired
+  nothing. ``TestQuickCommands`` now pins the real ``get_quick_split``/
+  ``get_quick_dual_watch``/``set_quick_split``/``set_quick_dual_watch``
+  pair that replaced them.
+"""
+
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -9,10 +37,20 @@ from rigplane import IC_7610_ADDR
 from rigplane.commands import CONTROLLER_ADDR, parse_bool_response, parse_level_response
 from rigplane.exceptions import CommandError
 from rigplane.radio import IcomRadio
+from rigplane.rig_loader import load_rig
 from rigplane.types import CivFrame
 from _command_test_helpers import bind_default_addr_globals
 
 bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
+
+RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+
+@pytest.fixture()
+def cmd_map():
+    rig = load_rig(RIG_DIR / "ic7610.toml")
+    return rig.to_command_map()
+
 
 # CI-V frame constants
 _PREAMBLE = b"\xfe\xfe"
@@ -79,6 +117,48 @@ def _response_frame_tuning_step(bcd_value: int) -> CivFrame:
 
 
 # ---------------------------------------------------------------------------
+# cmd_map is required (Q6's API break, MOR-2006/MOR-2007)
+# ---------------------------------------------------------------------------
+
+
+class TestRequiresCmdMap:
+    """Every public builder in vfo.py requires cmd_map -- omitting it, or
+    passing it explicitly as None, raises the same self-explaining
+    TypeError (config.py's test_get_acc1_mod_level_requires_cmd_map is
+    the template)."""
+
+    def test_get_dual_watch_requires_cmd_map(self) -> None:
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.get_dual_watch()  # type: ignore[call-arg]
+
+    def test_get_dual_watch_rejects_explicit_none_the_same_way(self) -> None:
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.get_dual_watch(cmd_map=None)
+
+    def test_set_dual_watch_off_requires_cmd_map(self) -> None:
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.set_dual_watch_off()  # type: ignore[call-arg]
+
+    def test_set_dual_watch_requires_cmd_map(self) -> None:
+        """The delegate itself raises too, not just the branches it picks
+        between (MOR-2007 ruling 1)."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.set_dual_watch(True)  # type: ignore[call-arg]
+
+    def test_get_quick_split_requires_cmd_map(self) -> None:
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.get_quick_split()  # type: ignore[call-arg]
+
+    def test_set_quick_split_requires_cmd_map(self) -> None:
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.set_quick_split(True)  # type: ignore[call-arg]
+
+    def test_scan_start_type_requires_cmd_map(self) -> None:
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.scan_start_type(0x01)  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
 # Tuning Step (0x10)
 # ---------------------------------------------------------------------------
 
@@ -86,46 +166,56 @@ def _response_frame_tuning_step(bcd_value: int) -> CivFrame:
 class TestTuningStep:
     """Tests for get_tuning_step / set_tuning_step."""
 
-    def test_get_tuning_step_builds_correct_frame(self) -> None:
-        assert commands.get_tuning_step() == _frame(_CMD_TUNING_STEP)
+    def test_get_tuning_step_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.get_tuning_step(cmd_map=cmd_map) == _frame(_CMD_TUNING_STEP)
 
-    def test_set_tuning_step_index_0_builds_correct_frame(self) -> None:
-        assert commands.set_tuning_step(0) == _frame(_CMD_TUNING_STEP, 0x00)
+    def test_set_tuning_step_index_0_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.set_tuning_step(0, cmd_map=cmd_map) == _frame(
+            _CMD_TUNING_STEP, 0x00
+        )
 
-    def test_set_tuning_step_index_1_builds_correct_frame(self) -> None:
-        assert commands.set_tuning_step(1) == _frame(_CMD_TUNING_STEP, 0x01)
+    def test_set_tuning_step_index_1_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.set_tuning_step(1, cmd_map=cmd_map) == _frame(
+            _CMD_TUNING_STEP, 0x01
+        )
 
-    def test_set_tuning_step_index_5_builds_correct_frame(self) -> None:
-        assert commands.set_tuning_step(5) == _frame(_CMD_TUNING_STEP, 0x05)
+    def test_set_tuning_step_index_5_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.set_tuning_step(5, cmd_map=cmd_map) == _frame(
+            _CMD_TUNING_STEP, 0x05
+        )
 
-    def test_set_tuning_step_index_8_builds_correct_frame(self) -> None:
+    def test_set_tuning_step_index_8_builds_correct_frame(self, cmd_map) -> None:
         # Max value per IC-7610.rig
-        assert commands.set_tuning_step(8) == _frame(_CMD_TUNING_STEP, 0x08)
+        assert commands.set_tuning_step(8, cmd_map=cmd_map) == _frame(
+            _CMD_TUNING_STEP, 0x08
+        )
 
-    def test_set_tuning_step_rejects_value_above_maximum(self) -> None:
+    def test_set_tuning_step_rejects_value_above_maximum(self, cmd_map) -> None:
         with pytest.raises(ValueError):
-            commands.set_tuning_step(9)
+            commands.set_tuning_step(9, cmd_map=cmd_map)
 
-    def test_set_tuning_step_rejects_negative_value(self) -> None:
+    def test_set_tuning_step_rejects_negative_value(self, cmd_map) -> None:
         with pytest.raises(ValueError):
-            commands.set_tuning_step(-1)
+            commands.set_tuning_step(-1, cmd_map=cmd_map)
 
-    def test_get_tuning_step_starts_with_preamble(self) -> None:
-        assert commands.get_tuning_step().startswith(_PREAMBLE)
+    def test_get_tuning_step_starts_with_preamble(self, cmd_map) -> None:
+        assert commands.get_tuning_step(cmd_map=cmd_map).startswith(_PREAMBLE)
 
-    def test_get_tuning_step_ends_with_terminator(self) -> None:
-        assert commands.get_tuning_step().endswith(_TERMINATOR)
+    def test_get_tuning_step_ends_with_terminator(self, cmd_map) -> None:
+        assert commands.get_tuning_step(cmd_map=cmd_map).endswith(_TERMINATOR)
 
-    def test_get_tuning_step_contains_command_byte(self) -> None:
-        assert _CMD_TUNING_STEP in commands.get_tuning_step()
+    def test_get_tuning_step_contains_command_byte(self, cmd_map) -> None:
+        assert _CMD_TUNING_STEP in commands.get_tuning_step(cmd_map=cmd_map)
 
-    def test_get_tuning_step_custom_addresses(self) -> None:
-        frame = commands.get_tuning_step(to_addr=0xA4, from_addr=0xE1)
+    def test_get_tuning_step_custom_addresses(self, cmd_map) -> None:
+        frame = commands.get_tuning_step(to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map)
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
-    def test_set_tuning_step_custom_addresses(self) -> None:
-        frame = commands.set_tuning_step(3, to_addr=0xA4, from_addr=0xE1)
+    def test_set_tuning_step_custom_addresses(self, cmd_map) -> None:
+        frame = commands.set_tuning_step(
+            3, to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
@@ -150,8 +240,10 @@ class TestTuningStep:
         )
         assert value == 8
 
-    def test_get_and_set_produce_distinct_frames(self) -> None:
-        assert commands.get_tuning_step() != commands.set_tuning_step(0)
+    def test_get_and_set_produce_distinct_frames(self, cmd_map) -> None:
+        assert commands.get_tuning_step(cmd_map=cmd_map) != commands.set_tuning_step(
+            0, cmd_map=cmd_map
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -162,138 +254,192 @@ class TestTuningStep:
 class TestScanning:
     """Tests for start_scan / stop_scan."""
 
-    def test_start_scan_builds_correct_frame(self) -> None:
-        assert commands.scan_start() == _frame(_CMD_SCANNING, 0x01)
+    def test_start_scan_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.scan_start(cmd_map=cmd_map) == _frame(_CMD_SCANNING, 0x01)
 
-    def test_stop_scan_builds_correct_frame(self) -> None:
-        assert commands.scan_stop() == _frame(_CMD_SCANNING, 0x00)
+    def test_stop_scan_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.scan_stop(cmd_map=cmd_map) == _frame(_CMD_SCANNING, 0x00)
 
-    def test_start_scan_starts_with_preamble(self) -> None:
-        assert commands.scan_start().startswith(_PREAMBLE)
+    def test_start_scan_starts_with_preamble(self, cmd_map) -> None:
+        assert commands.scan_start(cmd_map=cmd_map).startswith(_PREAMBLE)
 
-    def test_stop_scan_ends_with_terminator(self) -> None:
-        assert commands.scan_stop().endswith(_TERMINATOR)
+    def test_stop_scan_ends_with_terminator(self, cmd_map) -> None:
+        assert commands.scan_stop(cmd_map=cmd_map).endswith(_TERMINATOR)
 
-    def test_start_and_stop_scan_differ_only_in_data_byte(self) -> None:
-        start = commands.scan_start()
-        stop = commands.scan_stop()
+    def test_start_and_stop_scan_differ_only_in_data_byte(self, cmd_map) -> None:
+        start = commands.scan_start(cmd_map=cmd_map)
+        stop = commands.scan_stop(cmd_map=cmd_map)
         # Same command byte, different data
         assert start != stop
         assert start[4] == _CMD_SCANNING
         assert stop[4] == _CMD_SCANNING
 
-    def test_start_scan_data_byte_is_one(self) -> None:
-        frame = commands.scan_start()
+    def test_start_scan_data_byte_is_one(self, cmd_map) -> None:
+        frame = commands.scan_start(cmd_map=cmd_map)
         assert frame[5] == 0x01
 
-    def test_stop_scan_data_byte_is_zero(self) -> None:
-        frame = commands.scan_stop()
+    def test_stop_scan_data_byte_is_zero(self, cmd_map) -> None:
+        frame = commands.scan_stop(cmd_map=cmd_map)
         assert frame[5] == 0x00
 
-    def test_start_scan_custom_addresses(self) -> None:
-        frame = commands.scan_start(to_addr=0xA4, from_addr=0xE1)
+    def test_start_scan_custom_addresses(self, cmd_map) -> None:
+        frame = commands.scan_start(to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map)
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
-    def test_stop_scan_custom_addresses(self) -> None:
-        frame = commands.scan_stop(to_addr=0xA4, from_addr=0xE1)
+    def test_stop_scan_custom_addresses(self, cmd_map) -> None:
+        frame = commands.scan_stop(to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map)
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
 
 class TestScanTypes:
-    """Tests for extended scan type commands (0x0E with various sub-bytes)."""
+    """Tests for extended scan type commands (0x0E with various sub-bytes).
 
-    def test_scan_start_type_programmed(self) -> None:
+    Which sub-bytes are a radio's legal scan types is now a per-profile
+    domain checked by the caller (MOR-2007 ruling 4,
+    TestScanTypeDomainValidation below) -- this builder encodes whatever
+    byte it is given, unconditionally.
+    """
+
+    def test_scan_start_type_programmed(self, cmd_map) -> None:
         """scan_start_type(0x01) builds programmed scan frame."""
-        assert commands.scan_start_type(0x01) == _frame(_CMD_SCANNING, 0x01)
+        assert commands.scan_start_type(0x01, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0x01
+        )
 
-    def test_scan_start_type_programmed_p2(self) -> None:
+    def test_scan_start_type_programmed_p2(self, cmd_map) -> None:
         """scan_start_type(0x02) builds programmed scan P2 frame."""
-        assert commands.scan_start_type(0x02) == _frame(_CMD_SCANNING, 0x02)
+        assert commands.scan_start_type(0x02, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0x02
+        )
 
-    def test_scan_start_type_df(self) -> None:
+    def test_scan_start_type_df(self, cmd_map) -> None:
         """scan_start_type(0x03) builds delta-F scan frame."""
-        assert commands.scan_start_type(0x03) == _frame(_CMD_SCANNING, 0x03)
+        assert commands.scan_start_type(0x03, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0x03
+        )
 
-    def test_scan_start_type_fine_programmed(self) -> None:
+    def test_scan_start_type_fine_programmed(self, cmd_map) -> None:
         """scan_start_type(0x12) builds fine programmed scan frame."""
-        assert commands.scan_start_type(0x12) == _frame(_CMD_SCANNING, 0x12)
+        assert commands.scan_start_type(0x12, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0x12
+        )
 
-    def test_scan_start_type_memory(self) -> None:
+    def test_scan_start_type_fine_df(self, cmd_map) -> None:
+        """scan_start_type(0x13) builds fine dF scan frame -- the byte
+        VALID_SCAN_TYPES used to omit (MOR-2007 ruling 4)."""
+        assert commands.scan_start_type(0x13, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0x13
+        )
+
+    def test_scan_start_type_memory(self, cmd_map) -> None:
         """scan_start_type(0x22) builds memory scan frame."""
-        assert commands.scan_start_type(0x22) == _frame(_CMD_SCANNING, 0x22)
+        assert commands.scan_start_type(0x22, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0x22
+        )
 
-    def test_scan_start_type_select_memory(self) -> None:
+    def test_scan_start_type_select_memory(self, cmd_map) -> None:
         """scan_start_type(0x23) builds select memory scan frame."""
-        assert commands.scan_start_type(0x23) == _frame(_CMD_SCANNING, 0x23)
+        assert commands.scan_start_type(0x23, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0x23
+        )
 
-    def test_scan_start_type_custom_addresses(self) -> None:
-        frame = commands.scan_start_type(0x03, to_addr=0xA4, from_addr=0xE1)
+    def test_scan_start_type_custom_addresses(self, cmd_map) -> None:
+        frame = commands.scan_start_type(
+            0x03, to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
-
-    def test_scan_start_type_rejects_invalid(self) -> None:
-        """scan_start_type rejects values not in VALID_SCAN_TYPES."""
-        with pytest.raises(ValueError, match="scan_type"):
-            commands.scan_start_type(0xFF)
 
 
 class TestScanDfSpan:
     """Tests for ΔF scan span selection (0x0E 0xA1-0xA7)."""
 
-    def test_scan_set_df_span_5k(self) -> None:
-        assert commands.scan_set_df_span(0xA1) == _frame(_CMD_SCANNING, 0xA1)
+    def test_scan_set_df_span_5k(self, cmd_map) -> None:
+        assert commands.scan_set_df_span(0xA1, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xA1
+        )
 
-    def test_scan_set_df_span_10k(self) -> None:
-        assert commands.scan_set_df_span(0xA2) == _frame(_CMD_SCANNING, 0xA2)
+    def test_scan_set_df_span_10k(self, cmd_map) -> None:
+        assert commands.scan_set_df_span(0xA2, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xA2
+        )
 
-    def test_scan_set_df_span_20k(self) -> None:
-        assert commands.scan_set_df_span(0xA3) == _frame(_CMD_SCANNING, 0xA3)
+    def test_scan_set_df_span_20k(self, cmd_map) -> None:
+        assert commands.scan_set_df_span(0xA3, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xA3
+        )
 
-    def test_scan_set_df_span_50k(self) -> None:
-        assert commands.scan_set_df_span(0xA4) == _frame(_CMD_SCANNING, 0xA4)
+    def test_scan_set_df_span_50k(self, cmd_map) -> None:
+        assert commands.scan_set_df_span(0xA4, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xA4
+        )
 
-    def test_scan_set_df_span_100k(self) -> None:
-        assert commands.scan_set_df_span(0xA5) == _frame(_CMD_SCANNING, 0xA5)
+    def test_scan_set_df_span_100k(self, cmd_map) -> None:
+        assert commands.scan_set_df_span(0xA5, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xA5
+        )
 
-    def test_scan_set_df_span_500k(self) -> None:
-        assert commands.scan_set_df_span(0xA6) == _frame(_CMD_SCANNING, 0xA6)
+    def test_scan_set_df_span_500k(self, cmd_map) -> None:
+        assert commands.scan_set_df_span(0xA6, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xA6
+        )
 
-    def test_scan_set_df_span_1m(self) -> None:
-        assert commands.scan_set_df_span(0xA7) == _frame(_CMD_SCANNING, 0xA7)
+    def test_scan_set_df_span_1m(self, cmd_map) -> None:
+        assert commands.scan_set_df_span(0xA7, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xA7
+        )
 
-    def test_scan_set_df_span_rejects_invalid(self) -> None:
+    def test_scan_set_df_span_rejects_invalid(self, cmd_map) -> None:
         with pytest.raises(ValueError, match="df_span"):
-            commands.scan_set_df_span(0xA0)
+            commands.scan_set_df_span(0xA0, cmd_map=cmd_map)
 
-    def test_scan_set_df_span_custom_addresses(self) -> None:
-        frame = commands.scan_set_df_span(0xA3, to_addr=0xA4, from_addr=0xE1)
+    def test_scan_set_df_span_custom_addresses(self, cmd_map) -> None:
+        frame = commands.scan_set_df_span(
+            0xA3, to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
 
 class TestScanResume:
-    """Tests for scan resume mode (0x0E 0xD0-0xD3)."""
+    """Tests for scan resume mode (0x0E 0xD0-0xD3).
 
-    def test_scan_set_resume_off(self) -> None:
-        assert commands.scan_set_resume(0xD0) == _frame(_CMD_SCANNING, 0xD0)
+    Which sub-bytes are a radio's legal resume modes is now a per-profile
+    domain checked by the caller (MOR-2007 ruling 4,
+    TestScanResumeDomainValidation below) -- this builder encodes whatever
+    byte it is given, unconditionally, including 0xD1/0xD2 which IC-7610
+    does not actually support (per its CI-V guide).
+    """
 
-    def test_scan_set_resume_5s(self) -> None:
-        assert commands.scan_set_resume(0xD1) == _frame(_CMD_SCANNING, 0xD1)
+    def test_scan_set_resume_off(self, cmd_map) -> None:
+        assert commands.scan_set_resume(0xD0, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xD0
+        )
 
-    def test_scan_set_resume_10s(self) -> None:
-        assert commands.scan_set_resume(0xD2) == _frame(_CMD_SCANNING, 0xD2)
+    def test_scan_set_resume_5s(self, cmd_map) -> None:
+        assert commands.scan_set_resume(0xD1, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xD1
+        )
 
-    def test_scan_set_resume_15s(self) -> None:
-        assert commands.scan_set_resume(0xD3) == _frame(_CMD_SCANNING, 0xD3)
+    def test_scan_set_resume_10s(self, cmd_map) -> None:
+        assert commands.scan_set_resume(0xD2, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xD2
+        )
 
-    def test_scan_set_resume_rejects_invalid(self) -> None:
-        with pytest.raises(ValueError, match="resume_mode"):
-            commands.scan_set_resume(0xD4)
+    def test_scan_set_resume_close_and_delay(self, cmd_map) -> None:
+        """0xD3 -- "Close&Delay" per the CI-V guides, not "15sec" (MOR-2007
+        ruling 4 corrected the stale label; the builder still just encodes
+        the byte)."""
+        assert commands.scan_set_resume(0xD3, cmd_map=cmd_map) == _frame(
+            _CMD_SCANNING, 0xD3
+        )
 
-    def test_scan_set_resume_custom_addresses(self) -> None:
-        frame = commands.scan_set_resume(0xD1, to_addr=0xA4, from_addr=0xE1)
+    def test_scan_set_resume_custom_addresses(self, cmd_map) -> None:
+        frame = commands.scan_set_resume(
+            0xD1, to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
@@ -304,54 +450,80 @@ class TestScanResume:
 
 
 class TestDualWatch:
-    """Tests for set_dual_watch_off / set_dual_watch_on / get_dual_watch."""
+    """Tests for set_dual_watch_off / set_dual_watch_on / get_dual_watch.
 
-    def test_set_dual_watch_off_builds_correct_frame(self) -> None:
-        assert commands.set_dual_watch_off() == _frame(_CMD_VFO, _VFO_DUAL_WATCH_OFF)
+    set_dual_watch_off/set_dual_watch_on resolve the split, get_/set_-
+    prefixed keys (MOR-2007 ruling 1) -- IC-7610 already declares them at
+    the same bytes the old shared ``set_dual_watch`` fallback built, so
+    the expected frames below are unchanged.
+    """
 
-    def test_set_dual_watch_on_builds_correct_frame(self) -> None:
-        assert commands.set_dual_watch_on() == _frame(_CMD_VFO, _VFO_DUAL_WATCH_ON)
+    def test_set_dual_watch_off_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.set_dual_watch_off(cmd_map=cmd_map) == _frame(
+            _CMD_VFO, _VFO_DUAL_WATCH_OFF
+        )
 
-    def test_get_dual_watch_builds_correct_frame(self) -> None:
-        assert commands.get_dual_watch() == _frame(_CMD_VFO, _VFO_DUAL_WATCH_QUERY)
+    def test_set_dual_watch_on_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.set_dual_watch_on(cmd_map=cmd_map) == _frame(
+            _CMD_VFO, _VFO_DUAL_WATCH_ON
+        )
 
-    def test_set_dual_watch_wrapper_true_equals_set_on(self) -> None:
-        assert commands.set_dual_watch(True) == commands.set_dual_watch_on()
+    def test_get_dual_watch_builds_correct_frame(self, cmd_map) -> None:
+        assert commands.get_dual_watch(cmd_map=cmd_map) == _frame(
+            _CMD_VFO, _VFO_DUAL_WATCH_QUERY
+        )
 
-    def test_set_dual_watch_wrapper_false_equals_set_off(self) -> None:
-        assert commands.set_dual_watch(False) == commands.set_dual_watch_off()
+    def test_set_dual_watch_wrapper_true_equals_set_on(self, cmd_map) -> None:
+        assert commands.set_dual_watch(
+            True, cmd_map=cmd_map
+        ) == commands.set_dual_watch_on(cmd_map=cmd_map)
 
-    def test_dual_watch_on_and_off_are_distinct(self) -> None:
-        assert commands.set_dual_watch_on() != commands.set_dual_watch_off()
+    def test_set_dual_watch_wrapper_false_equals_set_off(self, cmd_map) -> None:
+        assert commands.set_dual_watch(
+            False, cmd_map=cmd_map
+        ) == commands.set_dual_watch_off(cmd_map=cmd_map)
 
-    def test_dual_watch_on_and_query_are_distinct(self) -> None:
-        assert commands.set_dual_watch_on() != commands.get_dual_watch()
+    def test_dual_watch_on_and_off_are_distinct(self, cmd_map) -> None:
+        assert commands.set_dual_watch_on(
+            cmd_map=cmd_map
+        ) != commands.set_dual_watch_off(cmd_map=cmd_map)
 
-    def test_dual_watch_off_and_query_are_distinct(self) -> None:
-        assert commands.set_dual_watch_off() != commands.get_dual_watch()
+    def test_dual_watch_on_and_query_are_distinct(self, cmd_map) -> None:
+        assert commands.set_dual_watch_on(cmd_map=cmd_map) != commands.get_dual_watch(
+            cmd_map=cmd_map
+        )
 
-    def test_set_dual_watch_off_starts_with_preamble(self) -> None:
-        assert commands.set_dual_watch_off().startswith(_PREAMBLE)
+    def test_dual_watch_off_and_query_are_distinct(self, cmd_map) -> None:
+        assert commands.set_dual_watch_off(cmd_map=cmd_map) != commands.get_dual_watch(
+            cmd_map=cmd_map
+        )
 
-    def test_set_dual_watch_on_ends_with_terminator(self) -> None:
-        assert commands.set_dual_watch_on().endswith(_TERMINATOR)
+    def test_set_dual_watch_off_starts_with_preamble(self, cmd_map) -> None:
+        assert commands.set_dual_watch_off(cmd_map=cmd_map).startswith(_PREAMBLE)
 
-    def test_get_dual_watch_command_byte(self) -> None:
-        frame = commands.get_dual_watch()
+    def test_set_dual_watch_on_ends_with_terminator(self, cmd_map) -> None:
+        assert commands.set_dual_watch_on(cmd_map=cmd_map).endswith(_TERMINATOR)
+
+    def test_get_dual_watch_command_byte(self, cmd_map) -> None:
+        frame = commands.get_dual_watch(cmd_map=cmd_map)
         assert frame[4] == _CMD_VFO
 
-    def test_set_dual_watch_off_custom_addresses(self) -> None:
-        frame = commands.set_dual_watch_off(to_addr=0xA4, from_addr=0xE1)
+    def test_set_dual_watch_off_custom_addresses(self, cmd_map) -> None:
+        frame = commands.set_dual_watch_off(
+            to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
-    def test_set_dual_watch_on_custom_addresses(self) -> None:
-        frame = commands.set_dual_watch_on(to_addr=0xA4, from_addr=0xE1)
+    def test_set_dual_watch_on_custom_addresses(self, cmd_map) -> None:
+        frame = commands.set_dual_watch_on(
+            to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
-    def test_get_dual_watch_custom_addresses(self) -> None:
-        frame = commands.get_dual_watch(to_addr=0xA4, from_addr=0xE1)
+    def test_get_dual_watch_custom_addresses(self, cmd_map) -> None:
+        frame = commands.get_dual_watch(to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map)
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
@@ -373,44 +545,87 @@ class TestDualWatch:
 
 
 # ---------------------------------------------------------------------------
-# Quick Commands (0x1A 0x05 0x00 0x32/0x33)
+# Quick Commands (0x1A 0x05 0x00 0x32/0x33) -- persistent menu toggles
 # ---------------------------------------------------------------------------
 
 
 class TestQuickCommands:
-    """Tests for quick_dual_watch / quick_split (fire-and-forget triggers)."""
+    """Tests for get_/set_quick_split / get_/set_quick_dual_watch.
 
-    def test_quick_dual_watch_builds_correct_frame(self) -> None:
-        """quick_dual_watch builds 0x1A 0x05 0x00 0x32 frame."""
+    MOR-2007 ruling 2: these replace the deleted ``quick_dual_watch()``/
+    ``quick_split()`` one-shot triggers, which always sent a bare-GET
+    frame and never read the reply. The getters below build the identical
+    bare-GET frame the deleted triggers used to (bench-confirmed readable/
+    writable/persistent on the live IC-7300); the setters are new --
+    they append the caller's BCD-encoded boolean as a data byte, the
+    same shape ``commands/config.py: set_civ_transceive`` uses for its
+    own 0x1A 0x05 boolean toggle.
+    """
+
+    def test_get_quick_dual_watch_builds_correct_frame(self, cmd_map) -> None:
+        """get_quick_dual_watch builds the same bare 0x1A 0x05 0x00 0x32
+        frame the deleted quick_dual_watch() trigger used to."""
         expected = (
             _PREAMBLE
             + bytes([IC_7610_ADDR, CONTROLLER_ADDR, _CMD_CTL_MEM, 0x05, 0x00, 0x32])
             + _TERMINATOR
         )
-        assert commands.quick_dual_watch() == expected
+        assert commands.get_quick_dual_watch(cmd_map=cmd_map) == expected
 
-    def test_quick_split_builds_correct_frame(self) -> None:
-        """quick_split builds 0x1A 0x05 0x00 0x33 frame."""
+    def test_get_quick_split_builds_correct_frame(self, cmd_map) -> None:
+        """get_quick_split builds the same bare 0x1A 0x05 0x00 0x33 frame
+        the deleted quick_split() trigger used to."""
         expected = (
             _PREAMBLE
             + bytes([IC_7610_ADDR, CONTROLLER_ADDR, _CMD_CTL_MEM, 0x05, 0x00, 0x33])
             + _TERMINATOR
         )
-        assert commands.quick_split() == expected
+        assert commands.get_quick_split(cmd_map=cmd_map) == expected
 
-    def test_quick_dual_watch_distinct_from_quick_split(self) -> None:
-        """quick_dual_watch and quick_split produce distinct frames."""
-        assert commands.quick_dual_watch() != commands.quick_split()
+    def test_set_quick_split_true_appends_data_byte(self, cmd_map) -> None:
+        expected = (
+            _PREAMBLE
+            + bytes(
+                [IC_7610_ADDR, CONTROLLER_ADDR, _CMD_CTL_MEM, 0x05, 0x00, 0x33, 0x01]
+            )
+            + _TERMINATOR
+        )
+        assert commands.set_quick_split(True, cmd_map=cmd_map) == expected
 
-    def test_quick_dual_watch_custom_addresses(self) -> None:
-        """quick_dual_watch accepts custom to_addr/from_addr."""
-        frame = commands.quick_dual_watch(to_addr=0xA4, from_addr=0xE1)
+    def test_set_quick_split_false_appends_data_byte(self, cmd_map) -> None:
+        expected = (
+            _PREAMBLE
+            + bytes(
+                [IC_7610_ADDR, CONTROLLER_ADDR, _CMD_CTL_MEM, 0x05, 0x00, 0x33, 0x00]
+            )
+            + _TERMINATOR
+        )
+        assert commands.set_quick_split(False, cmd_map=cmd_map) == expected
+
+    def test_set_quick_dual_watch_true_appends_data_byte(self, cmd_map) -> None:
+        expected = (
+            _PREAMBLE
+            + bytes(
+                [IC_7610_ADDR, CONTROLLER_ADDR, _CMD_CTL_MEM, 0x05, 0x00, 0x32, 0x01]
+            )
+            + _TERMINATOR
+        )
+        assert commands.set_quick_dual_watch(True, cmd_map=cmd_map) == expected
+
+    def test_get_quick_dual_watch_distinct_from_get_quick_split(self, cmd_map) -> None:
+        assert commands.get_quick_dual_watch(
+            cmd_map=cmd_map
+        ) != commands.get_quick_split(cmd_map=cmd_map)
+
+    def test_get_quick_dual_watch_custom_addresses(self, cmd_map) -> None:
+        frame = commands.get_quick_dual_watch(
+            to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
-    def test_quick_split_custom_addresses(self) -> None:
-        """quick_split accepts custom to_addr/from_addr."""
-        frame = commands.quick_split(to_addr=0xA4, from_addr=0xE1)
+    def test_get_quick_split_custom_addresses(self, cmd_map) -> None:
+        frame = commands.get_quick_split(to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map)
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
@@ -423,13 +638,17 @@ class TestQuickCommands:
 class TestCommandDistinctness:
     """Verify that different commands produce distinct byte sequences."""
 
-    def test_dual_watch_distinct_from_quick_dual_watch(self) -> None:
+    def test_dual_watch_distinct_from_quick_dual_watch(self, cmd_map) -> None:
         """Regular dual watch != quick dual watch."""
-        assert commands.get_dual_watch() != commands.quick_dual_watch()
+        assert commands.get_dual_watch(
+            cmd_map=cmd_map
+        ) != commands.get_quick_dual_watch(cmd_map=cmd_map)
 
-    def test_scanning_distinct_from_tuning_step(self) -> None:
+    def test_scanning_distinct_from_tuning_step(self, cmd_map) -> None:
         """Scanning commands != tuning step commands."""
-        assert commands.scan_start() != commands.get_tuning_step()
+        assert commands.scan_start(cmd_map=cmd_map) != commands.get_tuning_step(
+            cmd_map=cmd_map
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -606,3 +825,80 @@ class TestSwapMainSubVsSwapVfoAb:
         assert callable(r.equalize_main_sub)
         assert callable(r.set_main_sub_tracking)
         assert callable(r.get_main_sub_tracking)
+
+
+# ---------------------------------------------------------------------------
+# Scan-type / scan-resume domain validation (MOR-2007 ruling 4)
+# ---------------------------------------------------------------------------
+
+
+class TestScanTypeDomainValidation:
+    """CoreRadio.scan_start validates ``mode`` against the profile's
+    declared ``[scan_types] values`` -- commands/vfo.py: scan_start_type
+    itself no longer does (it only encodes the byte it is given)."""
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_undeclared_scan_type(self) -> None:
+        r = _make_radio("IC-7610")
+        send = _RecordingSend()
+        with patch.object(r, "_send_civ_raw", send):
+            with pytest.raises(ValueError, match="Scan type"):
+                await r.scan_start(mode=0xFF)
+        assert send.frames == []
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_fine_df_scan(self) -> None:
+        """0x13 (fine dF scan) -- the byte VALID_SCAN_TYPES used to omit
+        on every radio, IC-7610 included (MOR-2007 ruling 4)."""
+        r = _make_radio("IC-7610")
+        send = _RecordingSend()
+        with patch.object(r, "_send_civ_raw", send):
+            await r.scan_start(mode=0x13)
+        assert len(send.frames) == 1
+        assert send.frames[0].endswith(b"\x0e\x13\xfd")
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_programmed_scan(self) -> None:
+        r = _make_radio("IC-7610")
+        send = _RecordingSend()
+        with patch.object(r, "_send_civ_raw", send):
+            await r.scan_start(mode=0x01)
+        assert len(send.frames) == 1
+        assert send.frames[0].endswith(b"\x0e\x01\xfd")
+
+
+class TestScanResumeDomainValidation:
+    """CoreRadio.scan_set_resume validates ``mode`` against the profile's
+    declared ``[scan_resume] values`` -- commands/vfo.py: scan_set_resume
+    itself no longer does."""
+
+    @pytest.mark.asyncio
+    async def test_ic7610_rejects_undeclared_resume_mode(self) -> None:
+        """0xD1 ("5s") is not in IC-7610's declared domain -- its CI-V
+        guide documents only 0xD0/0xD3 (MOR-2007 ruling 4), unlike the old
+        code-level VALID_SCAN_RESUME frozenset, which accepted it on every
+        radio regardless."""
+        r = _make_radio("IC-7610")
+        send = _RecordingSend()
+        with patch.object(r, "_send_civ_raw", send):
+            with pytest.raises(ValueError, match="Scan resume mode"):
+                await r.scan_set_resume(0xD1)
+        assert send.frames == []
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_off(self) -> None:
+        r = _make_radio("IC-7610")
+        send = _RecordingSend()
+        with patch.object(r, "_send_civ_raw", send):
+            await r.scan_set_resume(0xD0)
+        assert len(send.frames) == 1
+        assert send.frames[0].endswith(b"\x0e\xd0\xfd")
+
+    @pytest.mark.asyncio
+    async def test_ic7610_accepts_close_and_delay(self) -> None:
+        r = _make_radio("IC-7610")
+        send = _RecordingSend()
+        with patch.object(r, "_send_civ_raw", send):
+            await r.scan_set_resume(0xD3)
+        assert len(send.frames) == 1
+        assert send.frames[0].endswith(b"\x0e\xd3\xfd")

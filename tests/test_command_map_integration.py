@@ -101,7 +101,12 @@ class TestGetterParity:
         assert commands.get_alc(cmd_map=cmd_map) == commands.get_alc()
 
     def test_get_tuning_step(self, cmd_map):
-        assert commands.get_tuning_step(cmd_map=cmd_map) == commands.get_tuning_step()
+        # commands/vfo.py migrated onto the bound command map in MOR-2007
+        # Steps 5..N (module 3): get_tuning_step now requires cmd_map --
+        # pinned against the frame the deleted fallback used to build,
+        # same as get_af_level/get_rf_gain/get_rf_power above.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x10)
+        assert commands.get_tuning_step(cmd_map=cmd_map) == expected
 
     def test_get_nb(self, cmd_map):
         assert commands.get_nb(cmd_map=cmd_map) == commands.get_nb()
@@ -192,9 +197,13 @@ class TestSetterParity:
         assert commands.set_squelch(64, cmd_map=cmd_map) == expected
 
     def test_set_tuning_step(self, cmd_map):
-        assert commands.set_tuning_step(3, cmd_map=cmd_map) == commands.set_tuning_step(
-            3
+        # commands/vfo.py migrated onto the bound command map in MOR-2007
+        # Steps 5..N (module 3): set_tuning_step now requires cmd_map --
+        # pinned against the frame the deleted fallback used to build.
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x10, data=bytes([0x03])
         )
+        assert commands.set_tuning_step(3, cmd_map=cmd_map) == expected
 
     def test_ptt_on(self, cmd_map):
         assert commands.ptt_on(cmd_map=cmd_map) == commands.ptt_on()
@@ -212,10 +221,15 @@ class TestSetterParity:
         assert commands.stop_cw(cmd_map=cmd_map) == commands.stop_cw()
 
     def test_start_scan(self, cmd_map):
-        assert commands.scan_start(cmd_map=cmd_map) == commands.scan_start()
+        # commands/vfo.py migrated onto the bound command map in MOR-2007
+        # Steps 5..N (module 3): scan_start now requires cmd_map -- pinned
+        # against the frame the deleted fallback used to build.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x0E, data=b"\x01")
+        assert commands.scan_start(cmd_map=cmd_map) == expected
 
     def test_stop_scan(self, cmd_map):
-        assert commands.scan_stop(cmd_map=cmd_map) == commands.scan_stop()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x0E, data=b"\x00")
+        assert commands.scan_stop(cmd_map=cmd_map) == expected
 
 
 # ── PTT wire-tuple contract: every CI-V profile ─────────────────
@@ -269,8 +283,8 @@ class TestPttWireContractAcrossProfiles:
 
 class TestVfoScopeMapFallbackParityAcrossProfiles:
     """MOR-2002 step 2b-vfo-scope (Q7, ``docs/plans/2026-08-29-profile-driven-
-    command-bytes.md`` §4 Step 2). Two divergences closed as one contract
-    application:
+    command-bytes.md`` §4 Step 2) closed two doubled-byte divergences while
+    ``vfo.py`` still had a fallback to compare against:
 
     ``vfo.py: get_dual_watch`` / ``get_main_sub_band`` declare a 2-byte
     ``[command, sub]`` tuple that already carries the query byte as its
@@ -284,9 +298,13 @@ class TestVfoScopeMapFallbackParityAcrossProfiles:
     the argument outright rather than special-casing it, so there is only
     one call shape left and both branches agree by construction.
 
-    This sweeps every CI-V profile in ``rigs/`` that declares each command
-    and requires the map branch and the fallback branch to build the
-    identical frame.
+    ``vfo.py``'s two getters below no longer have a fallback to compare
+    against (MOR-2007 Steps 5..N module 3 made ``cmd_map`` required and
+    deleted it) -- converted the same way ``config.py``'s/``levels.py``'s
+    own migrations converted their "identical to fallback" classes: pin
+    the map path directly against the frame the deleted fallback used to
+    build. ``scope.py`` is unmigrated (a later module, not this ticket),
+    so its case is unchanged, still comparing both branches.
     """
 
     @staticmethod
@@ -301,34 +319,21 @@ class TestVfoScopeMapFallbackParityAcrossProfiles:
     def test_get_dual_watch_declared_by_ic7610_and_ic9700(self) -> None:
         assert set(self._maps_declaring("get_dual_watch")) == {"IC-7610", "IC-9700"}
 
-    def test_get_dual_watch_identical_to_fallback_on_ic7610(self) -> None:
-        """IC-9700 is excluded here (D2, MOR-2015): its ``get_dual_watch``
-        map entry was corrected from the guide-refuted 0x07 0xC2 family to
-        the guide-confirmed 0x16 0x59 ("Send/read the sub band (the
-        Dualwatch function)"), while the ``vfo.py`` fallback still emits
-        the old 0x07 family -- see
-        ``test_get_dual_watch_diverges_from_fallback_on_ic9700`` below.
-        """
+    def test_get_dual_watch_on_ic7610(self) -> None:
         cmd_map = self._maps_declaring("get_dual_watch")["IC-7610"]
         mapped = commands.get_dual_watch(cmd_map=cmd_map)
-        fallback = commands.get_dual_watch()
-        assert mapped == fallback
         assert mapped.endswith(b"\x07\xc2\xfd")
 
-    def test_get_dual_watch_diverges_from_fallback_on_ic9700(self) -> None:
-        """D2, MOR-2015: IC-9700's map now sends 0x16 0x59 (guide-confirmed
-        Dualwatch toggle, IC-9700 CI-V Reference Guide (Icom, 2019) p.5);
-        the fallback still sends 0x07 0xC2 (guide-refuted for this radio --
-        cmd 0x07's own table has no C0/C1/C2 rows at all). Recorded as a
-        known, correct divergence in
-        ``tests/command_map_parity_divergences.txt``, not a bug.
+    def test_get_dual_watch_on_ic9700(self) -> None:
+        """MOR-2007 ruling 3: IC-9700 has no 0x07 family for dual watch at
+        all -- its ``get_dual_watch`` map entry is the guide-confirmed
+        0x16 0x59 ("Send/read the sub band (the Dualwatch function)",
+        IC-9700 CI-V Reference Guide (Icom, 2019) p.5), where the deleted
+        fallback used to send the guide-refuted 0x07 0xC2 (D2, MOR-2015).
         """
         cmd_map = self._maps_declaring("get_dual_watch")["IC-9700"]
         mapped = commands.get_dual_watch(cmd_map=cmd_map)
-        fallback = commands.get_dual_watch()
-        assert mapped != fallback
         assert mapped.endswith(b"\x16\x59\xfd")
-        assert fallback.endswith(b"\x07\xc2\xfd")
 
     def test_get_main_sub_band_declared_by_ic7610_and_ic9700(self) -> None:
         assert set(self._maps_declaring("get_main_sub_band")) == {
@@ -336,13 +341,9 @@ class TestVfoScopeMapFallbackParityAcrossProfiles:
             "IC-9700",
         }
 
-    def test_get_main_sub_band_identical_to_fallback_on_every_declaring_profile(
-        self,
-    ) -> None:
+    def test_get_main_sub_band_on_every_declaring_profile(self) -> None:
         for model, cmd_map in self._maps_declaring("get_main_sub_band").items():
             mapped = commands.get_main_sub_band(cmd_map=cmd_map)
-            fallback = commands.get_main_sub_band()
-            assert mapped == fallback, model
             assert mapped.endswith(b"\x07\xd2\xfd"), model
 
     def test_get_scope_center_type_declared_by_all_four_scope_profiles(self) -> None:
