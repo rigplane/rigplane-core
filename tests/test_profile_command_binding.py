@@ -1,0 +1,272 @@
+"""Tests for MOR-2003 Step 3 of
+``docs/plans/2026-08-29-profile-driven-command-bytes.md``: binding a
+radio's ``CommandMap`` once, at construction, into
+``commands.bound.BoundCommands``.
+
+Four things are pinned here:
+
+- every CI-V profile the library loads out of ``rigs/`` carries its
+  ``CommandMap`` through ``RigConfig.to_profile`` -> ``RadioProfile`` ->
+  ``CoreRadio.__init__`` -> ``BoundCommands`` unchanged (§4 Step 3's own
+  "red if broken" test);
+- ``BoundCommands.__getattr__`` resolves a builder from
+  ``rigplane.commands``'s public namespace with the map already applied,
+  and refuses a name that is not such a builder;
+- ``BoundCommands.expect`` decodes the same map entry, via the same
+  decoder, that the builder itself would use -- for an exposed builder --
+  and refuses with a named-migration message for one that is not exposed
+  yet;
+- the drift guard the owner ruling on MOR-2003 requires: for every builder
+  that exposes a command-map key (``@expose_command_key`` in
+  ``commands/_frame.py``), the exposed callable resolves to exactly the
+  key the builder's own body passes to ``_build_from_map``. This is
+  checked dynamically -- by capturing what each builder actually passes --
+  rather than by re-stating the literal, so the two cannot silently drift
+  apart.
+
+Constructing a full ``CoreRadio`` per profile (rather than binding
+directly off the ``RadioProfile.command_map`` field) was the more thorough
+option and was cheap to run here (six profiles, all in-memory, no I/O) --
+it also doubles as coverage that construction never raises for a real
+profile's map, plain or empty.
+"""
+
+from __future__ import annotations
+
+import functools
+import pathlib
+import sys
+from typing import Any
+
+import pytest
+
+import rigplane.commands as commands
+from rigplane.commands import get_rf_power, get_speech, ptt_on
+from rigplane.commands._frame import decode_wire_tuple
+from rigplane.commands.bound import BoundCommands
+from rigplane.commands.command_map import CommandMap
+from rigplane.profiles.rig_loader import discover_rigs
+from rigplane.runtime.radio import CoreRadio
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+RIGS_DIR = REPO_ROOT / "rigs"
+
+
+@functools.lru_cache(maxsize=1)
+def _civ_rig_configs() -> dict[str, Any]:
+    """CI-V rig configs out of ``rigs/`` -- CAT-only profiles excluded.
+
+    A CAT-only profile (FTX-1, TX-500: ``protocol_type`` other than
+    ``"civ"``) has an intentionally empty ``CommandMap`` --
+    ``RigConfig.to_command_map`` drops every ``CatCommandSpec`` entry
+    (plan §7, "FTX-1 and TX-500 are not stranded"). Excluding them here
+    keeps this test's "non-empty" assertion meaningful for the profiles it
+    actually covers.
+    """
+    return {
+        model: config
+        for model, config in discover_rigs(RIGS_DIR).items()
+        if config.protocol_type == "civ"
+    }
+
+
+class TestProfileCarriesCommandMap:
+    """Step 3's own red-if-broken test (plan §4)."""
+
+    @pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+    def test_bound_command_set_matches_to_command_map(self, model: str) -> None:
+        config = _civ_rig_configs()[model]
+        expected = set(config.to_command_map())
+        assert expected, f"{model}: to_command_map() produced no CI-V commands"
+
+        profile = config.to_profile()
+        assert profile.command_map is not None
+        assert set(profile.command_map) == expected
+
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        assert set(radio._commands._map) == expected
+
+
+class TestCommandMapEquality:
+    """``CommandMap`` is documented as an immutable mapping; make that true for ``==``.
+
+    Motivated directly by this step: ``RadioProfile`` now carries a
+    ``CommandMap`` field, and
+    ``tests/test_ftx1_control_domains.py:
+    test_ftx1_scalar_domains_are_exact_loader_published_capabilities``
+    sweeps every ``RadioProfile`` field for equality between two profiles
+    independently loaded from the same TOML -- which needs two
+    ``CommandMap`` instances with the same contents to compare equal, not
+    only to hold the same names. Before this, ``CommandMap`` had no
+    ``__eq__``, so two instances built from identical dicts compared
+    unequal (identity), and that sweep failed on the new field.
+    """
+
+    def test_equal_contents_compare_equal(self) -> None:
+        assert CommandMap({"ptt_on": (0x1C, 0x00)}) == CommandMap(
+            {"ptt_on": (0x1C, 0x00)}
+        )
+
+    def test_different_contents_compare_unequal(self) -> None:
+        assert CommandMap({"ptt_on": (0x1C, 0x00)}) != CommandMap(
+            {"ptt_on": (0x1C, 0x01)}
+        )
+
+    def test_not_equal_to_a_non_command_map(self) -> None:
+        assert CommandMap({}) != {}
+        assert CommandMap({}) != object()
+
+    def test_hashable_and_consistent_with_equality(self) -> None:
+        a = CommandMap({"ptt_on": (0x1C, 0x00)})
+        b = CommandMap({"ptt_on": (0x1C, 0x00)})
+        assert hash(a) == hash(b)
+
+
+class TestBoundCommandsGetattr:
+    def test_returns_builder_with_map_applied(self) -> None:
+        cmd_map = CommandMap({"ptt_on": (0x1C, 0x00, 0x01)})
+        bound = BoundCommands(cmd_map)
+        assert bound.ptt_on(to_addr=0x94) == ptt_on(to_addr=0x94, cmd_map=cmd_map)
+
+    def test_unknown_name_raises_attribute_error(self) -> None:
+        bound = BoundCommands(CommandMap({}))
+        with pytest.raises(AttributeError):
+            bound.not_a_real_builder_name  # noqa: B018
+
+    def test_non_builder_name_raises_attribute_error(self) -> None:
+        # Exported from rigplane.commands, but not a cmd_map-taking builder.
+        bound = BoundCommands(CommandMap({}))
+        with pytest.raises(AttributeError):
+            bound.CONTROLLER_ADDR  # noqa: B018
+
+    def test_leading_underscore_name_raises_attribute_error(self) -> None:
+        bound = BoundCommands(CommandMap({}))
+        with pytest.raises(AttributeError):
+            bound._build_from_map  # noqa: B018
+
+
+class TestExpect:
+    def test_expect_on_exposed_builder_matches_decoder(self) -> None:
+        wire = (0x1C, 0x00, 0x01)
+        bound = BoundCommands(CommandMap({"ptt_on": wire}))
+        assert bound.expect(ptt_on) == decode_wire_tuple(wire)
+
+    def test_expect_on_speech_resolves_per_map_probe(self) -> None:
+        """The fourth case in plan §3.1: get_speech's key is a function of the map."""
+        with_set = CommandMap({"set_speech": (0x13,)})
+        assert BoundCommands(with_set).expect(get_speech) == decode_wire_tuple((0x13,))
+
+        with_get = CommandMap({"get_speech": (0x13, 0x01)})
+        assert BoundCommands(with_get).expect(get_speech) == decode_wire_tuple(
+            (0x13, 0x01)
+        )
+
+    def test_expect_on_unexposed_builder_names_the_migration(self) -> None:
+        bound = BoundCommands(CommandMap({"get_rf_power": (0x14, 0x0A)}))
+        with pytest.raises(AttributeError, match="Steps 5..N"):
+            bound.expect(get_rf_power)
+
+
+# ── the drift guard ──
+
+_PROBE_MAPS = (
+    CommandMap({}),
+    CommandMap({"set_speech": (0x13,)}),
+)
+
+
+def _exposed_builders() -> list[tuple[str, Any]]:
+    """Every builder in ``rigplane.commands``'s public namespace exposing a key.
+
+    Deduplicated by identity so a backward-compat alias (``speech =
+    get_speech``) is not exercised twice under two names.
+
+    Not gated on ``inspect.isfunction``: several other test files
+    (``tests/_command_test_helpers.py: bind_default_addr_module``) rebind
+    every builder on the shared ``rigplane.commands`` package namespace
+    into a ``functools.partial`` with a default ``to_addr`` bound, for the
+    rest of that test worker's session, once collected -- so by the time a
+    plain (non-parametrized) test function in this module calls this
+    helper, ``getattr(commands, name)`` may already return such a partial
+    rather than the raw function. ``functools.update_wrapper`` (used by
+    that helper) copies the wrapped function's ``__dict__`` onto the
+    partial, so ``cmd_map_key`` and ``__wrapped__`` both survive; checking
+    ``callable`` instead of ``inspect.isfunction``, and deduplicating via
+    ``__wrapped__`` where present, tolerates it the same way
+    `commands/bound.py: _takes_cmd_map` does.
+    """
+    seen: set[int] = set()
+    found: list[tuple[str, Any]] = []
+    for name in commands.__all__:
+        value = getattr(commands, name, None)
+        if not callable(value):
+            continue
+        if getattr(value, "cmd_map_key", None) is None:
+            continue
+        identity = id(getattr(value, "__wrapped__", value))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        found.append((name, value))
+    return found
+
+
+class TestExposedKeyDriftGuard:
+    """The owner ruling's drift test: exposed callable == body's actual key.
+
+    For each exposed builder and each probe map, the builder is called
+    with ``_build_from_map`` monkeypatched to capture the ``name`` it was
+    given, then that capture is compared against calling the builder's own
+    ``cmd_map_key(cmd_map)``. Two probe maps exercise both branches of
+    ``get_speech``'s per-map probe; the other exposed builders (ptt_on,
+    ptt_off) ignore the map and must produce the same literal for both.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd_map", _PROBE_MAPS, ids=["empty_map", "set_speech_map"]
+    )
+    @pytest.mark.parametrize(
+        "case", _exposed_builders(), ids=[c[0] for c in _exposed_builders()]
+    )
+    def test_exposed_key_matches_build_from_map_argument(
+        self,
+        case: tuple[str, Any],
+        cmd_map: CommandMap,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _name, builder = case
+        captured: dict[str, str] = {}
+
+        def _fake_build_from_map(
+            _cmd_map: CommandMap, key: str, *args: Any, **kwargs: Any
+        ) -> bytes:
+            captured["key"] = key
+            return b""
+
+        # Patch the defining module object directly rather than through
+        # monkeypatch's dotted-string resolution: a backward-compat alias
+        # such as ``speech.py``'s ``speech = get_speech`` rebinds the
+        # package-level attribute ``rigplane.commands.speech`` to the
+        # function itself, shadowing the submodule of the same name that
+        # dotted-string lookup would otherwise walk through.
+        defining_module = sys.modules[builder.__module__]
+        monkeypatch.setattr(defining_module, "_build_from_map", _fake_build_from_map)
+        builder(to_addr=0x94, cmd_map=cmd_map)
+        assert "key" in captured, (
+            f"{builder.__qualname__} did not call _build_from_map with cmd_map set"
+        )
+        assert captured["key"] == builder.cmd_map_key(cmd_map)
+
+
+def test_ptt_off_is_also_covered_directly() -> None:
+    """Sanity check the dynamic enumeration actually found both ptt builders.
+
+    Checked by name, not object identity: by the time this runs, another
+    test file collected in the same session may already have rebound
+    ``rigplane.commands.ptt_off`` into a ``functools.partial`` (see
+    ``_exposed_builders``'s docstring), so comparing against the raw
+    ``ptt_off`` imported at the top of this module would be fragile to
+    collection order rather than testing anything real.
+    """
+    names = {name for name, _ in _exposed_builders()}
+    assert {"get_speech", "ptt_on", "ptt_off"} <= names

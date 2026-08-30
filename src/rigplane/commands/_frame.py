@@ -6,12 +6,16 @@ from here, but this module imports nothing from siblings.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from ..types import CivFrame
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ..command_map import CommandMap
+
+_BuilderT = TypeVar("_BuilderT", bound="Callable[..., bytes]")
 
 # CI-V addresses
 CONTROLLER_ADDR = 0xE0
@@ -289,6 +293,28 @@ def build_cmd29_frame(
     )
 
 
+def decode_wire_tuple(wire: tuple[int, ...]) -> tuple[int, int | None, bytes]:
+    """Decode one ``[commands]`` wire tuple into ``(command, sub, prefix)``.
+
+    The single decoder named in
+    `docs/plans/2026-08-29-profile-driven-command-bytes.md` §2 ("Exactly one
+    decoder of a `[commands]` wire tuple into `(command, sub, prefix)`") and
+    used by Step 3 (§4) to build `commands/bound.py: BoundCommands.expect`
+    from the same map entry `_build_from_map` builds the request from.
+
+    The first element is the CI-V command, the second (if present) is the
+    sub-command, and any remaining elements are the frame's further constant
+    bytes -- per the tuple contract ruled in Q7 (§8.1): a tuple holds every
+    constant byte of the frame, whether that is extended menu addressing
+    (e.g. 0x1A 0x05 0x00 0x64 for IC-7300 ACC1 mod level), a selector byte,
+    or a constant payload byte (e.g. 0x1C 0x00 0x01 for X6100 ptt_on).
+    """
+    command = wire[0]
+    sub = wire[1] if len(wire) > 1 else None
+    prefix = bytes(wire[2:])
+    return command, sub, prefix
+
+
 def _build_from_map(
     cmd_map: CommandMap,
     name: str,
@@ -300,28 +326,49 @@ def _build_from_map(
 ) -> bytes:
     """Build a CI-V frame using wire bytes from a CommandMap.
 
-    Wire bytes may have 1-N elements.  The first byte is the CI-V command,
-    the second (if present) is the sub-command. Any remaining bytes are the
-    frame's further constant bytes, per the tuple contract ruled in Q7
-    (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1): a tuple
-    holds every constant byte of the frame, whether that is extended menu
-    addressing (e.g. 0x1A 0x05 0x00 0x64 for IC-7300 ACC1 mod level), a
-    selector byte, or a constant payload byte (e.g. 0x1C 0x00 0x01 for
-    X6100 ptt_on). They are prepended to *data*; only what the caller
-    passes as *data* is appended after them.
+    Decodes the wire tuple via :func:`decode_wire_tuple`; any prefix bytes
+    it returns are prepended to *data*, and only what the caller passes as
+    *data* is appended after them.
     """
     wire = cmd_map.get(name)
-    command = wire[0]
-    sub = wire[1] if len(wire) > 1 else None
-    # Extra wire bytes beyond command+sub become a data prefix
-    if len(wire) > 2:
-        extra = bytes(wire[2:])
-        data = extra + data if data else extra
+    command, sub, prefix = decode_wire_tuple(wire)
+    if prefix:
+        data = prefix + data if data else prefix
     if command29:
         return build_cmd29_frame(
             to_addr, from_addr, command, sub=sub, data=data, receiver=receiver
         )
     return build_civ_frame(to_addr, from_addr, command, sub=sub, data=data)
+
+
+def expose_command_key(
+    key: Callable[[CommandMap], str],
+) -> Callable[[_BuilderT], _BuilderT]:
+    """Attach the command-map key a builder resolves through `_build_from_map`.
+
+    Per the owner ruling on MOR-2003 (Step 3,
+    `docs/plans/2026-08-29-profile-driven-command-bytes.md` §3.1/§4): every
+    builder that exposes a key does so uniformly as
+    ``Callable[[CommandMap], str]``, even where the key is a fixed literal
+    the callable ignores its argument to return -- so `commands/speech.py:
+    get_speech`'s per-map probe (``"set_speech" if cmd_map.has("set_speech")
+    else "get_speech"``) fits the same shape rather than needing a split.
+
+    `commands/bound.py: BoundCommands.expect` calls the attached callable
+    with the bound map to learn which entry a builder's reply must be
+    matched against, decoded by the same :func:`decode_wire_tuple` the
+    request used. Attaches the callable as *fn*'s ``cmd_map_key`` attribute
+    and returns *fn* unchanged -- it does not wrap the call, so the
+    Step 1 fallback-audit wrapper (`commands/_fallback_audit.py`), which
+    copies a wrapped function's ``__dict__`` via `functools.wraps`, carries
+    the attribute through unaffected either way.
+    """
+
+    def decorator(fn: _BuilderT) -> _BuilderT:
+        fn.cmd_map_key = key  # type: ignore[attr-defined]
+        return fn
+
+    return decorator
 
 
 def parse_civ_frame(data: bytes) -> CivFrame:

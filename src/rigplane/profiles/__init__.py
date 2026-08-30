@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Never, NotRequired, Required, TypedDict
 
+from rigplane.commands.command_map import CommandMap
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
@@ -306,6 +307,18 @@ class RadioProfile:
     modes: tuple[str, ...] = ()
     filters: tuple[str, ...] = ()
     command_names: frozenset[str] = frozenset()
+    # The radio's CI-V wire bytes by command name (MOR-2003 Step 3). ``None``
+    # means this is a hand-built ``RadioProfile`` constructed outside
+    # ``profiles/rig_loader.py`` -- e.g. directly in a test -- with no map
+    # supplied at all. An empty, non-``None`` ``CommandMap`` means the
+    # opposite: a profile that *was* loaded and declares no CI-V commands
+    # (a CAT-only rig, whose TOML entries are all
+    # ``CatCommandSpec`` and get dropped by
+    # ``RigConfig.to_command_map`` -- a known, recorded asymmetry, plan
+    # §8.1 Q8, not resolved here). `runtime/radio.py: CoreRadio.__init__`
+    # treats both the same way: it binds an empty `CommandMap` rather than
+    # raising.
+    command_map: CommandMap | None = None
     filter_width_min: int = 50
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
