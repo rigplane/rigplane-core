@@ -8,18 +8,29 @@
  * `session` — the outputs of `semantic/rx-tx-surface`'s `rfState()` /
  * `txSessionState()`, which are themselves derived from the App-owned
  * `TxAuthoritySnapshot` — plus `fault` and `keyBlocked`. It never reads a raw
- * `ptt`, and because it names every field it consumes, one cannot be smuggled
- * in. Unrecognised values fail CLOSED to the doubt rail, never to the quiet
- * RX one: "nothing is happening" is the dangerous claim.
+ * `ptt`. The fail-closed DECISION over those four fields is
+ * `semantic/rx-tx-surface`'s `resolveTxFeedbackState` (MOR-2031): it takes a
+ * named struct of exactly those four primitives, never a whole
+ * `RendererViewModel`, so a fifth field cannot be smuggled in without
+ * changing that signature. Unrecognised values fail CLOSED to the doubt
+ * rail, never to the quiet RX one: "nothing is happening" is the dangerous
+ * claim.
  *
  * Colour is never the sole channel — every state carries a distinct rail
  * THICKNESS and a distinct text label, so the state survives forced-colors
  * and colour-vision deficiency (MOR-977 §4.4 required mitigation).
+ *
+ * MOR-2031: the THICKNESS/LABEL table below, keyed by
+ * `resolveTxFeedbackState`'s resolved `rail`, is studioline's own — the same
+ * six buckets rank differently on fieldline's rail width (see that
+ * function's doc comment), so the ranking itself cannot be shared, only the
+ * bucket name.
  */
 import type { DesignLanguageTokens, RendererViewModel } from '../contract';
+import {
+  resolveTxFeedbackState, stringField, type TxFeedbackRail, type TxKeyTreatment,
+} from '../../../semantic/rx-tx-surface';
 import { STUDIOLINE_PALETTE } from './tokens';
-
-export type KeyTreatment = 'idle' | 'pending' | 'keyed' | 'fault' | 'blocked';
 
 export interface StudiolineRail {
   readonly thicknessPx: 1 | 2 | 3;
@@ -30,7 +41,7 @@ export interface StudiolineRail {
 }
 
 export interface StudiolineKey {
-  readonly treatment: KeyTreatment;
+  readonly treatment: TxKeyTreatment;
   /** Denied/unknown permit renders inert-but-present — a hidden PTT reads as "no TX capability". */
   readonly present: true;
   readonly filled: boolean;
@@ -50,67 +61,43 @@ export interface StudiolineStateFeedback {
   readonly key: StudiolineKey;
 }
 
-/** Rail step + label per session state. `null` label is the RX baseline — the only silent state. */
-const SESSION_RAIL: Record<string, { thickness: 1 | 2 | 3; label: string | null; keyed: boolean }> = {
-  idle: { thickness: 1, label: null, keyed: false },
-  pending: { thickness: 3, label: 'KEYING', keyed: false },
-  keyed: { thickness: 3, label: 'TX', keyed: true },
-  releasing: { thickness: 2, label: 'UNKEYING', keyed: true },
-  failed: { thickness: 3, label: 'TX FAULT', keyed: false },
-};
-
-/** The fail-closed rail: doubt about RF outranks a tidy silhouette. */
-const DOUBT_RAIL = { thickness: 3, label: 'TX?', keyed: false } as const;
-
-const KEY_TREATMENT: Record<string, KeyTreatment> = {
-  idle: 'idle', pending: 'pending', keyed: 'keyed', releasing: 'keyed', failed: 'fault',
-};
-
-const stringField = (fields: RendererViewModel['fields'], key: string): string => {
-  const value = fields[key];
-  return typeof value === 'string' ? value : '';
+/**
+ * studioline's own thickness/label per rail bucket — the bucket itself comes
+ * from `resolveTxFeedbackState`; only this table, and its RANKING, belongs
+ * to studioline. `null` label at `idle` is the RX baseline — the only
+ * silent state.
+ */
+const RAIL_TABLE: Record<TxFeedbackRail, { thickness: 1 | 2 | 3; label: string | null }> = {
+  idle: { thickness: 1, label: null },
+  pending: { thickness: 3, label: 'KEYING' },
+  keyed: { thickness: 3, label: 'TX' },
+  releasing: { thickness: 2, label: 'UNKEYING' },
+  failed: { thickness: 3, label: 'TX FAULT' },
+  doubt: { thickness: 3, label: 'TX?' },
 };
 
 export function renderStateFeedback(
   viewModel: RendererViewModel, tokens: DesignLanguageTokens,
 ): StudiolineStateFeedback {
-  const rf = stringField(viewModel.fields, 'rf');
-  const session = stringField(viewModel.fields, 'session');
-  const fault = stringField(viewModel.fields, 'fault');
-  const blocked = viewModel.fields.keyBlocked === true;
-
-  const known = SESSION_RAIL[session];
-  // An unrecognised session, or an idle session the authority cannot vouch
-  // for as genuinely receiving, both land on the doubt rail.
-  const state = known && (session !== 'idle' || rf === 'receiving') ? known : DOUBT_RAIL;
-  const failed = session === 'failed';
-
-  const tone = state.label === null ? tokens.rx.idle
-    : state.keyed || failed ? tokens.tx.active
+  const resolved = resolveTxFeedbackState({
+    rf: stringField(viewModel.fields, 'rf'),
+    session: stringField(viewModel.fields, 'session'),
+    fault: stringField(viewModel.fields, 'fault'),
+    keyBlocked: viewModel.fields.keyBlocked === true,
+  });
+  const { treatment, keyed, faultText } = resolved;
+  const rail = RAIL_TABLE[resolved.rail];
+  const tone = resolved.tone === 'rx-idle' ? tokens.rx.idle
+    : resolved.tone === 'tx-active' ? tokens.tx.active
       : tokens.tx.tuning;
-  // Treatment follows the RESOLVED state, not the raw session: a key that
-  // still looks idle under a doubt rail is the contradiction R9 exists to
-  // prevent.
-  //
-  // F3/N3: the inert treatment applies ONLY where the session has nothing
-  // louder to say. `keyBlocked` is true in every TX-adjacent session — you
-  // cannot key what is already keyed — so an unconditional `blocked ?
-  // 'blocked' : …` reported a dotted inert key under a flooded TX rail. The
-  // stylesheet always said the opposite: every `[data-session]` key rule
-  // outranks `.rx-tx-key:disabled` on specificity, precisely so the inert edge
-  // cannot bleed through a solid TX fill. The descriptor now agrees with it.
-  const held = KEY_TREATMENT[session];
-  const treatment: KeyTreatment = held !== undefined && held !== 'idle' ? held
-    : blocked ? 'blocked'
-      : state === DOUBT_RAIL ? 'pending' : 'idle';
 
   return {
     kind: 'studioline-state-feedback',
-    rail: { thicknessPx: state.thickness, tone, label: state.label, fullBleed: true },
-    numeralTone: state.keyed ? 'tx-target' : 'primary',
+    rail: { thicknessPx: rail.thickness, tone, label: rail.label, fullBleed: true },
+    numeralTone: keyed ? 'tx-target' : 'primary',
     // The meter re-zones with the transmitter, not with the request to key.
-    meterScaleLabel: state.keyed ? 'PO' : 'S',
-    micro: failed && fault ? `TX FAULT: ${fault}` : null,
+    meterScaleLabel: keyed ? 'PO' : 'S',
+    micro: faultText,
     key: {
       treatment,
       present: true,
