@@ -13,7 +13,7 @@ import type { AppResource } from '$lib/runtime/resource-demand';
 import {
   normalizeLayoutMode,
   type LayoutMode,
-} from '$lib/stores/layout.svelte';
+} from '$lib/runtime/adapters/layout-mode-adapter';
 
 export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'sdr-test';
