@@ -41,18 +41,47 @@ itself a module of the `commands` package, so an eager, module-level
 ``__init__.py`` to have finished executing already -- true today because
 nothing in that file imports `bound.py`, but not a fact this module should
 depend on. Resolving lazily means it works either way.
+
+**Step 4 (MOR-2005): the undeclared-command policy, D1
+(`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1).** D1 names
+three states, same behaviour in development and production -- the only
+asymmetry lives in a test (`tests/test_profile_command_coverage.py`),
+never here: (1) Declared -- send the profile's bytes, unchanged from Step
+3. (2) Declared absent (confirmed not present, per a named source) --
+refuse with `core.exceptions.CommandError` quoting that source; not an
+exception thrown bare at the end consumer, not log-and-continue, the same
+*shape* of refusal `runtime/radio.py: CoreRadio.set_filter_width` already
+raises for its one production ``supports_command`` caller today. (3)
+Neither declared nor declared absent -- must not exist at release
+(`tests/test_profile_command_coverage.py` is the guard); if reached
+anyway, refuse the same way as (2) and also invoke the optional
+``on_undeclared`` hook, which the caller may wire to a logger.
+
+Both surfaces here consult the same distinction: `__getattr__`'s returned
+wrapper classifies a ``CommandMap.get`` miss when the builder is actually
+called (not every builder's true map key is known without invoking it --
+see ``_missing_command_name``'s docstring), and `expect` classifies before
+decoding, since it already knows the key via ``cmd_map_key``.
+
+This module still performs no I/O itself (`commands/LAYER.md`):
+``on_undeclared`` is a plain callable the caller supplies or omits, never
+a ``logging`` call made from here. `runtime/radio.py: CoreRadio.__init__`
+wires it to a real logger, and is also the one that reads
+``RadioProfile.absent_command_sources`` (plain ``dict[str, str]`` data)
+off the profile and passes it down -- this module still imports nothing
+from `profiles`.
 """
 
 from __future__ import annotations
 
-import functools
 import inspect
 from typing import TYPE_CHECKING, Any
 
+from ..core.exceptions import CommandError
 from ._frame import decode_wire_tuple
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from ..command_map import CommandMap
 
@@ -80,13 +109,67 @@ def _takes_cmd_map(value: Any) -> bool:
     return "cmd_map" in signature.parameters
 
 
+def _missing_command_name(exc: KeyError) -> str:
+    """Recover the command name from a ``CommandMap.get`` miss.
+
+    ``CommandMap.get`` (`commands/command_map.py`) raises with a single
+    formatted message, ``f"Unknown command {name!r}. Available: ..."`` --
+    no structured attribute carries the bare name, and changing that shape
+    would risk the parsing `tests/test_command_map_parity.py: _report`
+    already does against the identical exception. This module reuses that
+    same parsing rather than inventing a second, independent way to read
+    the same message, so the two cannot silently disagree about what it
+    means. A message that does not match the expected shape is a
+    different failure and is re-raised, never swallowed as a refusal.
+    """
+    text = str(exc)
+    marker = "Unknown command "
+    if marker not in text:
+        raise exc
+    return text.split(marker, 1)[1].split(".", 1)[0].strip("'\"")
+
+
 class BoundCommands:
-    """A radio's command builders, pre-bound to its `CommandMap`."""
+    """A radio's command builders, pre-bound to its `CommandMap`.
 
-    __slots__ = ("_map",)
+    ``absent_command_sources`` and ``on_undeclared`` implement D1's
+    undeclared-command policy (module docstring, "Step 4"); both are
+    optional so existing direct construction
+    (`tests/test_profile_command_binding.py`) is unaffected.
+    """
 
-    def __init__(self, cmd_map: CommandMap) -> None:
+    __slots__ = ("_absent", "_map", "_on_undeclared")
+
+    def __init__(
+        self,
+        cmd_map: CommandMap,
+        absent_command_sources: Mapping[str, str] = {},  # noqa: B006 -- read-only
+        *,
+        on_undeclared: Callable[[str], None] | None = None,
+    ) -> None:
         self._map = cmd_map
+        self._absent = dict(absent_command_sources)
+        self._on_undeclared = on_undeclared
+
+    def _refusal_for(self, name: str) -> CommandError:
+        """Build the D1 refusal for *name*, classifying states 2 vs 3.
+
+        State 2 (declared absent) never calls ``on_undeclared`` -- D1 is
+        explicit that it is "not log-and-continue": a confirmed fact needs
+        no warning. State 3 (unknown) does, once, right before raising.
+        """
+        source = self._absent.get(name)
+        if source is not None:
+            return CommandError(
+                f"{name} is not supported by this radio "
+                f"(declared absent by this profile, per {source})"
+            )
+        if self._on_undeclared is not None:
+            self._on_undeclared(name)
+        return CommandError(
+            f"{name} is not supported by this radio "
+            "(not declared by this profile, and not recorded as absent)"
+        )
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -105,7 +188,17 @@ class BoundCommands:
                 f"{type(self).__name__!r} has no builder named {name!r} "
                 f"({name!r} in rigplane.commands does not take cmd_map)"
             )
-        return functools.partial(builder, cmd_map=self._map)
+
+        def _bound_builder(*args: Any, **kwargs: Any) -> bytes:
+            kwargs.setdefault("cmd_map", self._map)
+            try:
+                return builder(*args, **kwargs)  # type: ignore[no-any-return]
+            except KeyError as exc:
+                raise self._refusal_for(_missing_command_name(exc)) from None
+
+        _bound_builder.__name__ = name
+        _bound_builder.__qualname__ = f"{type(self).__name__}.{name}"
+        return _bound_builder
 
     def expect(self, builder: Callable[..., bytes]) -> tuple[int, int | None, bytes]:
         """Return the ``(command, sub, prefix)`` triple *builder*'s reply must match.
@@ -122,6 +215,10 @@ class BoundCommands:
                 `docs/plans/2026-08-29-profile-driven-command-bytes.md`
                 (§4); until a builder's module migrates, `expect` refuses
                 rather than guess.
+            CommandError: *builder*'s key is not declared by this map --
+                D1 states 2/3 (module docstring, "Step 4"), classified the
+                same way `__getattr__`'s wrapper classifies a miss reached
+                by calling the builder.
         """
         key_fn = getattr(builder, "cmd_map_key", None)
         if key_fn is None:
@@ -134,5 +231,7 @@ class BoundCommands:
                 "(§4); BoundCommands.expect refuses rather than guess."
             )
         key = key_fn(self._map)
+        if not self._map.has(key):
+            raise self._refusal_for(key)
         wire = self._map.get(key)
         return decode_wire_tuple(wire)

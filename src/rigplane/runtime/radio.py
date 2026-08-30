@@ -724,9 +724,44 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         }
     )
 
+    def _log_undeclared_command(self, name: str) -> None:
+        """D1 state 3's WARNING (plan §4 Step 4 / §8.1): *name* is neither
+        declared nor declared absent. `commands/bound.py: BoundCommands`
+        calls this hook, supplied here at construction, right before it
+        refuses -- `commands/` performs no logging itself
+        (`commands/LAYER.md`). Reaching this at runtime still refuses,
+        never silently succeeds, per D1.
+        """
+        logger.warning(
+            "%s is not declared by profile %s and not recorded as absent "
+            "-- refusing rather than guessing "
+            "(docs/plans/2026-08-29-profile-driven-command-bytes.md §8.1 D1)",
+            name,
+            self._profile.model,
+        )
+
     def supports_command(self, command: str) -> bool:
-        """Check if this radio supports a specific command."""
-        return command in self._KNOWN_COMMANDS
+        """Check if this radio supports a specific command.
+
+        Reconciled against the profile (MOR-2005 step 4b): before this,
+        ``_KNOWN_COMMANDS`` was the only source, and it disagreed with
+        ``self._profile`` in both directions -- profile-declared names it
+        does not know under that name (e.g. wire-level TOML key
+        ``get_alc``, known here only as ``get_alc_meter``), and
+        literal-known composite API operations a profile can never declare
+        (e.g. ``capture_scope_frame``). Reconciliation: the profile speaks
+        first; the literal is the fallback only for a name the profile does
+        not mention either way; a name the profile records as confirmed
+        absent is never supported even where the literal claims it, which
+        is why that check is tested first below.
+        `tests/test_supports_command.py::TestSupportsCommandReconciliation`
+        pins one concrete case per direction rather than a count that would
+        go stale the next time a rig TOML changes.
+        """
+        return self._profile.supports_command(command) or (
+            command not in self._profile.absent_command_names
+            and command in self._KNOWN_COMMANDS
+        )
 
     def _stop_token_renewal(self) -> None:
         """Delegate to control-phase runtime."""
@@ -890,7 +925,20 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # ``CommandMap`` here rather than raising -- construction must
         # never fail on this. No call site reads ``self._commands`` yet;
         # that migration is Steps 5..N of the same plan.
-        self._commands = BoundCommands(self._profile.command_map or CommandMap({}))
+        #
+        # ``absent_command_sources``/``on_undeclared`` implement D1's
+        # undeclared-command policy (step 4b, plan §4 Step 4 / §8.1): this
+        # is the one place that reads ``RadioProfile.absent_command_sources``
+        # (plain data) and hands it to `commands/bound.py: BoundCommands`
+        # (which imports nothing from `profiles`), and the one place that
+        # supplies the logging side effect state 3 needs, since
+        # `commands/LAYER.md` bans I/O in `commands/` -- BoundCommands only
+        # ever calls the hook it is given, never `logging` directly.
+        self._commands = BoundCommands(
+            self._profile.command_map or CommandMap({}),
+            self._profile.absent_command_sources,
+            on_undeclared=self._log_undeclared_command,
+        )
         # Apply per-profile codec preference override (#797) — only if caller
         # accepted the global default. An explicit non-default value always wins.
         # Limitation kept for compatibility with the historical constructor:

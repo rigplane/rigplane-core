@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -13,15 +14,31 @@ from rigplane.rig_loader import load_rig
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 
 
+@pytest.fixture()
+def ic7300_profile():
+    return load_rig(_RIGS_DIR / "ic7300.toml").to_profile()
+
+
+@pytest.fixture()
+def ic7300_radio(ic7300_profile):
+    return CoreRadio("127.0.0.1", profile=ic7300_profile)
+
+
 # ---------------------------------------------------------------------------
 # CoreRadio (base for all Icom LAN + serial backends)
 # ---------------------------------------------------------------------------
 
 
 class TestIcomSupportsCommand:
-    """CoreRadio.supports_command checks _KNOWN_COMMANDS."""
+    """Reconciled against the profile now (MOR-2005 step 4b): these pins
+    used to call the method unbound against the bare class
+    (``CoreRadio.supports_command(CoreRadio, cmd)``), which worked only
+    because the old body never read ``self`` beyond ``_KNOWN_COMMANDS``.
+    The reconciled body reads ``self._profile``, so every case here goes
+    through a real, profile-bound instance instead.
+    """
 
-    def test_known_commands_return_true(self):
+    def test_known_commands_return_true(self, ic7300_radio):
         known = [
             "get_freq",
             "set_freq",
@@ -45,12 +62,9 @@ class TestIcomSupportsCommand:
             "send_civ",
         ]
         for cmd in known:
-            assert CoreRadio.supports_command(
-                CoreRadio,
-                cmd,  # type: ignore[arg-type]
-            ), f"{cmd} should be supported"
+            assert ic7300_radio.supports_command(cmd), f"{cmd} should be supported"
 
-    def test_unknown_commands_return_false(self):
+    def test_unknown_commands_return_false(self, ic7300_radio):
         unknown = [
             "do_magic",
             "fly_to_moon",
@@ -60,10 +74,9 @@ class TestIcomSupportsCommand:
             "GET_FREQ",
         ]
         for cmd in unknown:
-            assert not CoreRadio.supports_command(
-                CoreRadio,
-                cmd,  # type: ignore[arg-type]
-            ), f"{cmd!r} should NOT be supported"
+            assert not ic7300_radio.supports_command(cmd), (
+                f"{cmd!r} should NOT be supported"
+            )
 
     def test_known_commands_match_public_async_methods(self):
         """Every entry in _KNOWN_COMMANDS must correspond to an actual method."""
@@ -71,6 +84,67 @@ class TestIcomSupportsCommand:
             assert hasattr(CoreRadio, cmd), (
                 f"_KNOWN_COMMANDS lists {cmd!r} but no such method exists"
             )
+
+
+class TestSupportsCommandReconciliation:
+    """MOR-2005 (2026-08-29 comment): before this, ``supports_command``
+    checked only the hardcoded ``_KNOWN_COMMANDS`` literal, disagreeing
+    with the profile in both directions: profile-declared command-map keys
+    the literal does not know under that name (e.g. wire-level TOML keys
+    like ``get_alc`` that the literal only knows under a different,
+    runtime-method-level name such as ``get_alc_meter``), and
+    literal-known names that are composite API operations the profile can
+    never declare (e.g. ``capture_scope_frame``). Neither direction is
+    empty for IC-7300 -- pinned by ``test_reconciliation_directions_are_
+    both_nonempty`` below, recomputed rather than hardcoded, since a count
+    would go stale the next time a rig TOML changes without failing
+    anything.
+
+    Reconciled: the profile speaks first; the literal is the fallback only
+    for a name the profile does not mention either way; a name the profile
+    records as confirmed absent overrides both other checks. No rig TOML
+    uses the ``{ absent = "<source>" }`` spelling yet (plan §8.1 D2 has not
+    filled the profiles), so the absent-wins case is exercised with a
+    profile built via ``dataclasses.replace`` rather than a real one.
+    """
+
+    def test_toml_declared_name_the_literal_does_not_know_is_supported(
+        self, ic7300_profile, ic7300_radio
+    ):
+        candidates = ic7300_profile.command_names - CoreRadio._KNOWN_COMMANDS
+        assert candidates, "fixture assumption: IC-7300 has such a name"
+        name = sorted(candidates)[0]
+        assert ic7300_radio.supports_command(name)
+
+    def test_composite_op_never_a_toml_entry_stays_supported(
+        self, ic7300_profile, ic7300_radio
+    ):
+        assert "capture_scope_frame" in CoreRadio._KNOWN_COMMANDS
+        assert "capture_scope_frame" not in ic7300_profile.command_names
+        assert ic7300_radio.supports_command("capture_scope_frame")
+
+    def test_declared_absent_name_is_not_supported_even_if_literal_claims_it(
+        self, ic7300_profile
+    ):
+        assert "set_agc" in CoreRadio._KNOWN_COMMANDS
+        assert "set_agc" in ic7300_profile.command_names
+        absent_profile = dataclasses.replace(
+            ic7300_profile,
+            command_names=ic7300_profile.command_names - {"set_agc"},
+            absent_command_names=ic7300_profile.absent_command_names | {"set_agc"},
+        )
+        radio = CoreRadio("127.0.0.1", profile=absent_profile)
+        assert not radio.supports_command("set_agc")
+
+    def test_reconciliation_directions_are_both_nonempty(self, ic7300_profile):
+        """Guards the two prior-disagreement counts named in the docstring
+        against silently going to zero -- if either direction vanished, the
+        reconciliation would have nothing left to prove and the two tests
+        above would be exercising an empty case unnoticed."""
+        declared_not_known = ic7300_profile.command_names - CoreRadio._KNOWN_COMMANDS
+        known_not_declared = CoreRadio._KNOWN_COMMANDS - ic7300_profile.command_names
+        assert declared_not_known
+        assert known_not_declared
 
 
 # ---------------------------------------------------------------------------

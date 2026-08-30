@@ -317,6 +317,18 @@ class RadioProfile:
     # policy state: "nobody has looked" — see ``supports_command``'s
     # docstring for what does and does not yet distinguish it from this set.
     absent_command_names: frozenset[str] = frozenset()
+    # Source text for each ``absent_command_names`` entry (MOR-2005 step 4b,
+    # plan §4 Step 4 / §8.1 D1 state 2): ``absent_command_names`` alone does
+    # not carry D2's required provenance
+    # (`commands/command_spec.py: AbsentCommandSpec.source`) -- step 4a's
+    # ``to_profile`` partition kept the name and dropped the source. Keyed
+    # the same as ``absent_command_names``, this lets the runtime refusal
+    # for state 2 (`commands/bound.py: BoundCommands`) quote "per <source>"
+    # without `commands/` importing anything from `profiles`: the caller
+    # (`runtime/radio.py: CoreRadio.__init__`) reads this plain
+    # ``dict[str, str]`` and passes it down as data. See
+    # `profiles/rig_loader.py: RigConfig.to_profile`.
+    absent_command_sources: dict[str, str] = field(default_factory=dict)
     # The radio's CI-V wire bytes by command name (MOR-2003 Step 3). ``None``
     # means this is a hand-built ``RadioProfile`` constructed outside
     # ``profiles/rig_loader.py`` -- e.g. directly in a test -- with no map
