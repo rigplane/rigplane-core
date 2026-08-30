@@ -6,9 +6,14 @@ no test and no profile).
 **Companion — read together, neither is complete alone:**
 `docs/plans/2026-08-29-profile-driven-command-bytes-evidence.md`
 carries the evidence, the measurements and the analysis that this plan acts on.
-The owner ruled the material be split so each part lands inside the 10-file /
-1000-changed-line hard ceiling. **This document is the instruction: what to do,
-in what order, and what goes red if a step is wrong.** The companion is the
+The owner ruled the material be split so each part would land inside the
+10-file / 1000-changed-line hard ceiling. Review-required corrections since
+then took this document past it on its own — 1063 changed lines against the
+merge-base (`a2de2ab0`) at this head, measured with `git diff --numstat` —
+and the owner granted an explicit exception for this document,
+recorded as a PR comment dated 2026-08-29. **This document is the
+instruction: what to do, in what order, and what goes red if a step is
+wrong.** The companion is the
 argument: why the plan is shaped this way, and how every figure in it was
 obtained. Sections here cited as "evidence §Cn" live there.
 **Base commit:** `a2de2ab0`. Every count, census and file claim below was
@@ -54,11 +59,13 @@ The consequence is not theoretical. On the IC-7300 the "ACC1 modulation level"
 control and the "microphone gain" control build the *same eight bytes*. Setting
 one sets the other. The web UI's ACC1 slider physically moves MIC gain.
 
-The end state is one place that knows what bytes to send and what bytes to
-expect back, and that place is the profile. This document says how to get there
-without a flag day: what to measure first, what order to move things in, which
-test turns red at each step, and what cannot be checked at all because the
-radios involved are not on the bench.
+The end state is one place that knows what bytes to send, and what shape to
+expect back for the reply to a command it sent, and that place is the
+profile. (Decoding a frame the radio sends unprompted is a related, larger
+question this document does not answer — see §2 and §8.1 Q3.) This document
+says how to get there without a flag day: what to measure first, what order
+to move things in, which test turns red at each step, and what cannot be
+checked at all because the radios involved are not on the bench.
 
 The acceptance criterion, in the owner's own terms: he believed this binding was
 *already* implemented, once, in one place. The work is done when a reader's
@@ -86,9 +93,12 @@ is the sharper instance of the defect: `rigs/ftx1.toml` already declared a
 complete `get_meter` entry, read *and* parse, and the method ignored it —
 the same fact held twice, profile and code, inside the class this plan holds
 up as the finished target. `fix(MOR-2011)` routed both through
-`_get_spec`/`_query`, so the profile is consulted and an absent entry refuses
-aloud (`CommandError`) rather than a composite read mis-parsing or silently
-doing nothing.
+`_get_spec`/`_query`, so the profile is consulted and an absent entry now
+refuses aloud (`CommandError`) — where before, neither method consulted the
+profile at all: `get_if_status` sent its hardcoded `"IF;"` regardless and
+mis-parsed the reply at the wrong offsets; `_read_meter` sent its hardcoded,
+per-caller `RM{type};` and parsed the reply correctly, ignoring the
+profile's own complete `get_meter` entry rather than failing on it.
 
 So this document is not designing something new. It is a plan to **do on the
 Icom side what already works on the Yaesu side** (evidence §C4), and every
@@ -440,12 +450,22 @@ it stops assuming every tuple ends at the sub-command.
 - `rigs/_schema_v2.md` — record the Q7 contract.
 - `commands/_frame.py: _build_from_map` — the one change Q7's ruling requires.
 - `profiles/rig_loader.py` — validate the contract at load.
-- `rigs/ic7300.toml`, `rigs/ic7610.toml`, `rigs/ic9700.toml` — the rows whose
-  tuple is shorter than the frame it builds grow to carry the full prefix;
-  `rigs/x6100.toml`'s `ptt_on`/`ptt_off` rows already do and are not touched.
-- `commands/scope.py: get_scope_center_type` — its map branch omits the receiver
-  selector the fallback appends (MOR-1981 shape; the parity test's own docstring
-  names this one).
+- `rigs/ic7300.toml` — its `ptt_on`/`ptt_off` rows grow to carry the payload
+  byte each always sends, so `_build_from_map`'s new contract does not turn a
+  working frame into a short one; `rigs/x6100.toml`'s already carry it and
+  are not touched.
+- `commands/vfo.py: get_dual_watch`, `get_main_sub_band` — their `cmd_map`
+  branch appends a selector byte the tuple already carries in full, doubling
+  it (`07 C2 C2`). The fix is in the builder, not `rigs/ic7610.toml` /
+  `rigs/ic9700.toml`, whose tuples are already the complete prefix and are
+  not touched.
+- `commands/scope.py: get_scope_center_type` — refuse its `receiver` keyword
+  argument (MOR-1981, §5 class C): sub `0x1C` is outside
+  `SCOPE_RECEIVER_SELECTOR_SUBS`, so the fallback's `27 1C 00` is a SET, not
+  a bare read, and the `cmd_map` branch already sends the correct frame by
+  omitting the selector. Removing the argument is a public builder signature
+  change, not a tuple edit — `[0x27, 0x1C]` is unchanged in all four
+  profiles.
 - `tests/command_map_parity_divergences.txt` — delete the 10 class-C rows.
 
 **Red if broken:** `tests/test_command_map_parity.py`. It fails if a class-C row
@@ -456,12 +476,16 @@ the loader validation.
 **Rollback:** revert; the divergence rows come back and the test is green again.
 
 **Split if it does not fit:** 2a = contract + `_build_from_map` + loader
-validation + `_schema_v2.md`; 2b = the TOML and `scope.py` fixes with the
-parity-file deletions.
+validation + `_schema_v2.md`; 2b = the TOML, `vfo.py` and `scope.py` fixes
+with the parity-file deletions.
 
-**Bench dependency:** the `scope.py` change and the fix to the doubled X6100
-`ptt_on`/`ptt_off` bytes alter bytes on the wire. IC-7300 can confirm the
-scope one. X6100 is not on the bench (§7).
+**Bench dependency:** the fix to the doubled X6100 `ptt_on`/`ptt_off` bytes
+alters bytes on the wire and is not on the bench (§7). The `scope.py` change
+does not alter what production already sends — `runtime/_scope_runtime.py`
+already reaches `receiver=` for exactly the eight eligible sub-commands and
+no others, `get_scope_center_type` not among them — but the IC-7300
+measurement behind it (`27 1C` reads, `27 1C 00` writes) is worth
+reconfirming before the argument is removed.
 
 ### Step 3 — Bind the map once, at radio construction. (Still no call site changed.)
 
@@ -692,9 +716,18 @@ appends only what the caller supplies. Three shapes, and what each needs
 under the ruled contract:
 
 - `scope.py: get_scope_center_type` (4 rows: IC-705, IC-7300, IC-7610, IC-9700)
-  — the map branch omits the receiver selector byte the fallback appends. On
-  `0x1C` an extra byte is a write, not a read; the tuple needs to carry the
-  selector.
+  — sub `0x1C` is outside `SCOPE_RECEIVER_SELECTOR_SUBS`, the eight
+  sub-commands whose CI-V read legitimately carries a receiver-selector byte
+  (`commands/scope.py: _scope_selector_data`'s own docstring names the
+  membership and this exception, backed by a live-IC-7300 measurement in
+  `tests/test_state_queries.py`). The `cmd_map` branch already sends nothing
+  for it, correctly; the **fallback** is the side at fault — `27 1C 00` is
+  not a bare read, the radio answers it as a SET of center_type to 0
+  (Filter center). Closing the divergence (MOR-1981) means refusing the
+  `receiver` argument on the public `get_scope_center_type` signature, not
+  touching either tuple: all four profiles already declare the same
+  `[0x27, 0x1C]`, which is already the complete frame once that argument is
+  gone.
 - `vfo.py: get_dual_watch` and `vfo.py: get_main_sub_band` (2 rows each,
   IC-7610 and IC-9700) — the TOML puts the query byte in the tuple *and* the
   builder appends it, so the map branch emits it twice (`07 C2 C2`). Under Q7
@@ -780,8 +813,12 @@ states D1 requires. The gaps are largest exactly where verification is hardest
 and do not mean are in evidence §C2).
 
 **Step 2 lands without Step 2's bench check.** The `scope.py: get_scope_center_type`
-fix appends a byte on `0x1C`, and on that command an extra byte is a write. It
-is confirmable on the IC-7300 and must be.
+fix removes the `receiver` argument rather than adding a byte — adding one
+would be the mistake, since on sub `0x1C` an extra byte is a write, not a
+read, which is exactly why the `cmd_map` branch already omits it and the
+fallback is the side at fault (§5, class C). That `27 1C` alone reads as a
+bare GET, and that the retired `27 1C 00` really is answered as a SET, is
+confirmable on the IC-7300 and must be.
 
 **What cannot be verified by measurement.** Per `CLAUDE.md`, the live bench is
 **IC-7300 and FTX-1**, and FTX-1 is not a CI-V radio. IC-7610 is retired; X6200
@@ -838,10 +875,11 @@ level, in three shapes: 18 `config.py` rows with a fallback side of `0x14`
 ×6 — the sub is never `0x0A`); 2 `config.py` rows with a map side of `1C 04`
 (IC-7610 `get_civ_output_ant`/`set_civ_output_ant` — the sub is `0x04`, not
 `0x00`); and 2 `ptt.py` rows (X6100 `ptt_on`/`ptt_off`) where **both** sides
-are `1C 00` — the sub matches — but each carries a payload byte (`01` on the
-fallback side, the doubled `01 01` on the map side, that doubling being the
-separate class-C bug §5 describes), and the mock's `0x1C` branch only ACKs a
-payload-empty GET, so a SET NAKs there too, on both sides. Either way, both
+are `1C 00` — the sub matches — but each carries a payload byte on the
+fallback side (`01` for `ptt_on`, `00` for `ptt_off`), doubled on the map
+side (`01 01` / `00 00`, that doubling being the separate class-C bug §5
+describes), and the mock's `0x1C` branch only ACKs a payload-empty GET, so a
+SET NAKs there too, on both sides. Either way, both
 the map frame and the fallback frame NAK, so the integration doubles cannot
 observe a single one of the 76 frames this migration changes, and will stay
 green through all of them. "The mock has no `0x1A` branch" is not the reason
