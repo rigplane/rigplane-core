@@ -144,8 +144,9 @@ values = [0, 1, 2, 3]
 labels = { "0" = "OFF", "1" = "WIDE", "2" = "MID", "3" = "NAR" }
 
 [notch]
-# NOTE: IC-7300.rig includes Manual Notch Width 0x16 0x57; IC-705.rig does NOT list it.
-# Width labels kept for UI parity; no CI-V mapping in [commands] for IC-705.
+# Manual Notch Width (0x16 0x57) exists on IC-705 -- IC-705 CI-V Reference
+# Guide (A7560-8EX-1, Jul.2020) p.4 confirms it; refutes the earlier "does
+# NOT list it" note (D2, MOR-2016). See get_manual_notch_width in [commands].
 width_values = [0, 1, 2]
 width_labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
 
@@ -180,7 +181,10 @@ dash_ratio_min = 28
 dash_ratio_max = 45
 
 [nb]
-# NB on/off + level 0x14 0x12. wfview IC-705 has NO NB Depth/Width menu cmds (IC-7300 uses 0x01 0x89 / 0x01 0x90).
+# NB on/off + level 0x14 0x12. IC-705 CI-V Reference Guide (A7560-8EX-1,
+# Jul.2020) p.13 confirms NB Depth/Width menu items DO exist, at 1A 05 0357/
+# 0358 -- a different sub-address than IC-7300's 0189/0190 (D2, MOR-2016).
+# See get_nb_depth/get_nb_width in [commands.overrides].
 depth_min = 0
 depth_max = 9
 width_min = 0
@@ -479,6 +483,15 @@ set_mode = [0x06]
 # ── VFO ──
 get_vfo = [0x07]
 set_vfo = [0x07]
+# Single receiver: no dual_watch, no main/sub band select (D2, MOR-2016)
+get_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
+set_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
+get_main_sub_band = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table has no D0/D1/D2" }
+# quick_dual_watch (bare key, no get_/set_ prefix) lives here in the base
+# [commands] section, matching the bare-key precedent (scan_start,
+# power_on, etc.) rather than [commands.overrides] with its get_/set_
+# siblings, which stay grouped with the other 1A 05 submenu addresses.
+quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 
 # ── Memory (wfview MemStart=0, Max=99; Memory Contents Max=101) ──
 get_memory_mode = [0x08]
@@ -496,6 +509,7 @@ get_freq_offset = [0x0D]
 set_freq_offset = [0x0D]
 get_scan = [0x0E]
 set_scan = [0x0E]
+get_split = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 set_split = [0x0F]
 
 # ── Tuning ──
@@ -505,9 +519,11 @@ set_tuning_step = [0x10]
 # ── RF front end ──
 get_attenuator = [0x11]
 set_attenuator = [0x11]
-# NOTE: IC-7300.rig has no DIGI-SEL Shift; IC-705 has 0x14 0x13. No 0x16 0x4E on IC-705.rig.
+# NOTE: IC-7300.rig has no DIGI-SEL Shift; IC-705 has 0x14 0x13.
 get_digisel_shift = [0x14, 0x13]
 set_digisel_shift = [0x14, 0x13]
+get_digisel = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family has no 0x4E" }
+set_digisel = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family has no 0x4E" }
 get_speech = [0x13]
 set_speech = [0x13]
 
@@ -518,6 +534,8 @@ get_rf_gain = [0x14, 0x02]
 set_rf_gain = [0x14, 0x02]
 get_squelch = [0x14, 0x03]
 set_squelch = [0x14, 0x03]
+get_af_mute = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 'mute' occurrence anywhere in the 29-page guide (no 1A 09 row)" }
+set_af_mute = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 'mute' occurrence anywhere in the 29-page guide (no 1A 09 row)" }
 get_apf_type_level = [0x14, 0x05]
 set_apf_type_level = [0x14, 0x05]
 get_nr_level = [0x14, 0x06]
@@ -548,7 +566,10 @@ get_vox_gain = [0x14, 0x16]
 set_vox_gain = [0x14, 0x16]
 get_anti_vox_gain = [0x14, 0x17]
 set_anti_vox_gain = [0x14, 0x17]
-# NOTE: IC-7300.rig: Notch Filter 0x14 0x0D — NOT in IC-705.rig
+# notch_filter (0x14 0x0D) exists on IC-705 -- refutes the earlier "NOT in
+# IC-705.rig" note (D2, MOR-2016).
+get_notch_filter = [0x14, 0x0D]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4
+set_notch_filter = [0x14, 0x0D]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4
 
 # ── Meters ──
 get_s_meter_sql_status = [0x15, 0x01]
@@ -606,20 +627,32 @@ get_dial_lock = [0x16, 0x50]
 set_dial_lock = [0x16, 0x50]
 get_rx_antenna = [0x16, 0x53]
 set_rx_antenna = [0x16, 0x53]
+get_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 0x12 sub-function row for a second RX antenna -- single antenna connector" }
+set_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 0x12 sub-function row for a second RX antenna -- single antenna connector" }
 get_filter_shape = [0x16, 0x56]
 set_filter_shape = [0x16, 0x56]
 get_ssb_tx_bandwidth = [0x16, 0x58]
 set_ssb_tx_bandwidth = [0x16, 0x58]
 get_tone_squelch_type = [0x16, 0x5D]
 set_tone_squelch_type = [0x16, 0x5D]
-# NOTE: IC-7300.rig: IP+ 0x16 0x65 — NOT in IC-705.rig
-# NOTE: IC-7300.rig: Manual Notch Width 0x16 0x57 — NOT in IC-705.rig
+get_ip_plus = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family has no 0x65" }
+set_ip_plus = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family has no 0x65" }
+get_main_sub_tracking = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family list ends at 0x5D, no 0x5E; single receiver" }
+set_main_sub_tracking = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family list ends at 0x5D, no 0x5E; single receiver" }
+# manual_notch_width (0x16 0x57) exists on IC-705 -- refutes the earlier "NOT
+# in IC-705.rig" note (D2, MOR-2016).
+get_manual_notch_width = [0x16, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4 (00=WIDE, 01=MID, 02=NAR)
+set_manual_notch_width = [0x16, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4 (00=WIDE, 01=MID, 02=NAR)
 
 # ── CW / power / ID ──
 send_cw = [0x17]
 stop_cw = [0x17]
 power_on = [0x18]
 power_off = [0x18]
+# get_powerstat (bare 0x18 query) intentionally left undeclared: guide p.4
+# confirms cmd 0x18 SET rows (00=OFF/01=ON) but the "query with empty data"
+# GET convention is not printed as its own row; the IC-7300 bench NAK is not
+# evidence for this radio (D2, MOR-2016; open question, MOR-2007).
 get_transceiver_id = [0x19, 0x00]
 set_transceiver_id = [0x19, 0x00]
 
@@ -630,7 +663,10 @@ get_bsr = [0x1A, 0x01]
 set_bsr = [0x1A, 0x01]
 get_filter_width = [0x1A, 0x03]
 set_filter_width = [0x1A, 0x03]
-# NOTE: IC-7300.rig: AGC Time Constant 0x1A 0x04 — NOT in IC-705.rig
+# agc_time_constant (0x1A 0x04) exists on IC-705 -- refutes the earlier "NOT
+# in IC-705.rig" note (D2, MOR-2016).
+get_agc_time_constant = [0x1A, 0x04]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (table), p.19 (00-13 BCD format)
+set_agc_time_constant = [0x1A, 0x04]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (table), p.19 (00-13 BCD format)
 get_data_mode = [0x1A, 0x06]
 set_data_mode = [0x1A, 0x06]
 
@@ -722,34 +758,69 @@ set_antenna = [0x12]
 # ── Scan alias (same opcode as get_scan) ──
 scan_start = [0x0E]
 scan_stop = [0x0E]
+scan_set_df_span = [0x0E]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3, 0x0E Ax (x=1-7) -- matches VALID_DF_SPANS
+# scan_set_resume: guide documents only 0x0E D0/D3 (2 states); code's
+# VALID_SCAN_RESUME accepts D0-D3 (4 states) -- domain mismatch left open
+# (recorded for MOR-2007, D2, MOR-2016). scan_start_type not resolved in
+# this pass.
 
 # ── Menu / misc (0x1A 0x05 …) — IC-705-specific sub-addresses from wfview ──
 
 [commands.overrides]
+# source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.6, control
+# 0045 "SPLIT > Quick SPLIT setting". get_/set_quick_split never send a
+# data byte, so even a correct address only reads this control, never
+# writes it -- open question (does IC-705 expose a one-shot "engage split
+# now" trigger anywhere, and does this 00/01 control write at all)
+# recorded on MOR-2007, not resolved by this pass (D2, MOR-2016).
 get_quick_split = [0x1A, 0x05, 0x00, 0x45]
 set_quick_split = [0x1A, 0x05, 0x00, 0x45]
-get_ref_adjust = [0x1A, 0x05, 0x00, 0x89]
-set_ref_adjust = [0x1A, 0x05, 0x00, 0x89]
-get_civ_transceive = [0x1A, 0x05, 0x01, 0x12]
-set_civ_transceive = [0x1A, 0x05, 0x01, 0x12]
-get_usb_mod_level = [0x1A, 0x05, 0x01, 0x16]
-set_usb_mod_level = [0x1A, 0x05, 0x01, 0x16]
-get_lan_mod_level = [0x1A, 0x05, 0x01, 0x17]
-set_lan_mod_level = [0x1A, 0x05, 0x01, 0x17]
-get_data_off_mod_input = [0x1A, 0x05, 0x01, 0x18]
-set_data_off_mod_input = [0x1A, 0x05, 0x01, 0x18]
-get_data1_mod_input = [0x1A, 0x05, 0x01, 0x19]
-set_data1_mod_input = [0x1A, 0x05, 0x01, 0x19]
-get_system_date = [0x1A, 0x05, 0x01, 0x65]
-set_system_date = [0x1A, 0x05, 0x01, 0x65]
-get_system_time = [0x1A, 0x05, 0x01, 0x66]
-set_system_time = [0x1A, 0x05, 0x01, 0x66]
-get_utc_offset = [0x1A, 0x05, 0x01, 0x70]
-set_utc_offset = [0x1A, 0x05, 0x01, 0x70]
-get_dash_ratio = [0x1A, 0x05, 0x02, 0x52]
-set_dash_ratio = [0x1A, 0x05, 0x02, 0x52]
-# NOTE: IC-7300.rig ACC1 Mod 0x00 0x64, CI-V Output (ANT) 0x00 0x61, NB depth/width, scope edge tables — not in IC-705.rig
-# NOTE: IC-7300.rig VOX delay 0x01 0x91 — not listed for IC-705 in wfview
+get_ref_adjust = [0x1A, 0x05, 0x00, 0x89]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.7, control 0089 "REF Adjust setting"
+set_ref_adjust = [0x1A, 0x05, 0x00, 0x89]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.7, control 0089 "REF Adjust setting"
+get_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
+set_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
+# civ_transceive corrected (D2, MOR-2016): guide p.8 confirms control 0131 =
+# "CI-V Transceive". The previous 0112 declared here was actually "AF Beep/
+# Speech Output" on this radio -- both this profile's old value and the
+# shared 0129 fallback were wrong (see command_map_parity_divergences.txt).
+get_civ_transceive = [0x1A, 0x05, 0x01, 0x31]
+set_civ_transceive = [0x1A, 0x05, 0x01, 0x31]
+get_usb_mod_level = [0x1A, 0x05, 0x01, 0x16]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0116 "MOD Input > USB MOD Level"; cmd 0x14 has no sub 0x10 on this radio (p.4)
+set_usb_mod_level = [0x1A, 0x05, 0x01, 0x16]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0116 "MOD Input > USB MOD Level"; cmd 0x14 has no sub 0x10 on this radio (p.4)
+get_lan_mod_level = [0x1A, 0x05, 0x01, 0x17]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0117 "MOD Input > WLAN MOD Level"; cmd 0x14 has no sub 0x11 on this radio (p.4)
+set_lan_mod_level = [0x1A, 0x05, 0x01, 0x17]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0117 "MOD Input > WLAN MOD Level"; cmd 0x14 has no sub 0x11 on this radio (p.4)
+get_data_off_mod_input = [0x1A, 0x05, 0x01, 0x18]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0118 "MOD Input > DATA OFF MOD"
+set_data_off_mod_input = [0x1A, 0x05, 0x01, 0x18]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0118 "MOD Input > DATA OFF MOD"
+get_data1_mod_input = [0x1A, 0x05, 0x01, 0x19]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0119 "MOD Input > DATA MOD"
+set_data1_mod_input = [0x1A, 0x05, 0x01, 0x19]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0119 "MOD Input > DATA MOD"
+get_data2_mod_input = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no DATA2/DATA 2 row anywhere; IC-705 has one DATA path only (control 0119)" }
+set_data2_mod_input = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no DATA2/DATA 2 row anywhere; IC-705 has one DATA path only (control 0119)" }
+get_data3_mod_input = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no DATA3/DATA 3 row anywhere; IC-705 has one DATA path only (control 0119)" }
+set_data3_mod_input = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no DATA3/DATA 3 row anywhere; IC-705 has one DATA path only (control 0119)" }
+get_system_date = [0x1A, 0x05, 0x01, 0x65]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.9, control 0165 (yyyymmdd BCD, format p.20); shared fallback 0158 is "Display Unit > Speed setting" on this radio (D2, MOR-2016)
+set_system_date = [0x1A, 0x05, 0x01, 0x65]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.9, control 0165 (yyyymmdd BCD, format p.20); shared fallback 0158 is "Display Unit > Speed setting" on this radio (D2, MOR-2016)
+get_system_time = [0x1A, 0x05, 0x01, 0x66]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.9, control 0166 (HHMM); shared fallback 0159 is "Display Unit > Temperature setting" on this radio (D2, MOR-2016)
+set_system_time = [0x1A, 0x05, 0x01, 0x66]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.9, control 0166 (HHMM); shared fallback 0159 is "Display Unit > Temperature setting" on this radio (D2, MOR-2016)
+get_utc_offset = [0x1A, 0x05, 0x01, 0x70]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.9 (addr), p.20 (3-byte format); shared fallback 0162 is "Display Unit > Wind Speed setting" on this radio (D2, MOR-2016)
+set_utc_offset = [0x1A, 0x05, 0x01, 0x70]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.9 (addr), p.20 (3-byte format); shared fallback 0162 is "Display Unit > Wind Speed setting" on this radio (D2, MOR-2016)
+get_dash_ratio = [0x1A, 0x05, 0x02, 0x52]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.11, control 0252 "Dot/Dash Ratio setting" (28-45)
+set_dash_ratio = [0x1A, 0x05, 0x02, 0x52]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.11, control 0252 "Dot/Dash Ratio setting" (28-45)
+# NOTE: IC-7300.rig ACC1 Mod 0x00 0x64, CI-V Output (ANT) 0x00 0x61, scope
+# edge tables -- confirmed absent on IC-705 (D2, MOR-2016; see the absent
+# entries below).
+get_acc1_mod_level = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no ACC input jack documented anywhere in the guide" }
+set_acc1_mod_level = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no ACC input jack documented anywhere in the guide" }
+get_civ_output_ant = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8: only two CI-V settings exist (0131 Transceive, 0132 USB Echo Back); no ANT-output CI-V setting documented" }
+set_civ_output_ant = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8: only two CI-V settings exist (0131 Transceive, 0132 USB Echo Back); no ANT-output CI-V setting documented" }
+# NB Depth/Width and VOX Delay DO exist on IC-705, at different 1A 05
+# sub-addresses than IC-7300's 0189/0190/0191 -- refutes the earlier "not
+# listed for IC-705 in wfview" framing (D2, MOR-2016).
+get_nb_depth = [0x1A, 0x05, 0x03, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0357 (00-09); NOT the shared fallback's 0290, which is IC-7610's address
+set_nb_depth = [0x1A, 0x05, 0x03, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0357 (00-09); NOT the shared fallback's 0290, which is IC-7610's address
+get_nb_width = [0x1A, 0x05, 0x03, 0x58]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0358 (0000-0255); NOT the shared fallback's 0291, which is IC-7610's address
+set_nb_width = [0x1A, 0x05, 0x03, 0x58]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0358 (0000-0255); NOT the shared fallback's 0291, which is IC-7610's address
+get_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which is IC-7610's address
+set_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which is IC-7610's address
 
 [protocol]
 type = "civ"

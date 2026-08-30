@@ -2684,16 +2684,17 @@ class TestNoShippedProfileUsesAbsentSpellingYet:
     itself (plan `docs/plans/2026-08-29-profile-driven-command-bytes.md`
     §8.1 D1/D2) — it did not fill any profile with it. D2's filling work is
     separate, ticket-tracked, later work: MOR-2014 filled ``ic7300.toml``
-    (27 commands, D2 documentary + live-bench verdicts) and MOR-2015 filled
+    (27 commands, D2 documentary + live-bench verdicts), MOR-2015 filled
     ``ic9700.toml`` (26 commands, D2 documentary verdicts against the
-    IC-9700 CI-V Reference Guide). This pin is narrowed rather than deleted
-    so every *other* shipped profile stays proven empty until its own D2
-    pass fills it too — narrow further (or delete) as each profile gets
-    filled.
+    IC-9700 CI-V Reference Guide), and MOR-2016 filled ``ic705.toml`` (24
+    commands, D2 documentary verdicts against the IC-705 CI-V Reference
+    Guide). This pin is narrowed rather than deleted so every *other*
+    shipped profile stays proven empty until its own D2 pass fills it too
+    — narrow further (or delete) as each profile gets filled.
     """
 
     _NOT_YET_FILLED = tuple(
-        p for p in _SHIPPED_RIG_TOMLS if p.stem not in {"ic7300", "ic9700"}
+        p for p in _SHIPPED_RIG_TOMLS if p.stem not in {"ic7300", "ic9700", "ic705"}
     )
 
     @pytest.mark.parametrize("toml_path", _NOT_YET_FILLED, ids=lambda p: p.stem)
@@ -2811,5 +2812,52 @@ class TestIc9700DeclaresAbsentCommands:
 
     def test_absent_commands_excluded_from_command_map(self):
         cmd_map = load_rig(RIGS_DIR / "ic9700.toml").to_command_map()
+        for name in self._EXPECTED_ABSENT:
+            assert not cmd_map.has(name), f"{name} declared absent but still in map"
+
+
+class TestIc705DeclaresAbsentCommands:
+    """MOR-2016 (D2): IC-705 is filled with the ``{ absent = "<source>" }``
+    spelling for 24 commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
+    Jul.2020) confirms have no row on this radio. Pinned by name, not just
+    count, so a future D2 pass on another command can't silently swap one
+    of these for a different one and still pass a bare-count check.
+    """
+
+    _EXPECTED_ABSENT = frozenset(
+        {
+            "get_acc1_mod_level",
+            "set_acc1_mod_level",
+            "get_af_mute",
+            "set_af_mute",
+            "get_civ_output_ant",
+            "set_civ_output_ant",
+            "get_data2_mod_input",
+            "set_data2_mod_input",
+            "get_data3_mod_input",
+            "set_data3_mod_input",
+            "get_digisel",
+            "set_digisel",
+            "get_dual_watch",
+            "set_dual_watch",
+            "get_ip_plus",
+            "set_ip_plus",
+            "get_main_sub_band",
+            "get_main_sub_tracking",
+            "set_main_sub_tracking",
+            "get_quick_dual_watch",
+            "set_quick_dual_watch",
+            "quick_dual_watch",
+            "get_rx_antenna_ant2",
+            "set_rx_antenna_ant2",
+        }
+    )
+
+    def test_absent_command_names_match(self):
+        profile = load_rig(RIGS_DIR / "ic705.toml").to_profile()
+        assert profile.absent_command_names == self._EXPECTED_ABSENT
+
+    def test_absent_commands_excluded_from_command_map(self):
+        cmd_map = load_rig(RIGS_DIR / "ic705.toml").to_command_map()
         for name in self._EXPECTED_ABSENT:
             assert not cmd_map.has(name), f"{name} declared absent but still in map"

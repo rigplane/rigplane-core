@@ -5,9 +5,15 @@
 # row, never keep it. Regenerating can still add rows, so read any
 # addition as a new divergence someone has to justify.
 IC-705	levels.py:get_dash_ratio	(no arguments)	map=fefea4e01a050252fd fallback=fefea4e01a050228fd
+IC-705	levels.py:get_nb_depth	(no arguments)	map=fefea4e01a050357fd fallback=fefea4e01a050290fd
+IC-705	levels.py:get_nb_width	(no arguments)	map=fefea4e01a050358fd fallback=fefea4e01a050291fd
 IC-705	levels.py:get_ref_adjust	(no arguments)	map=fefea4e01a050089fd fallback=fefea4e01a050070fd
+IC-705	levels.py:get_vox_delay	(no arguments)	map=fefea4e01a050359fd fallback=fefea4e01a050292fd
 IC-705	levels.py:set_dash_ratio	value=30	map=fefea4e01a05025230fd fallback=fefea4e01a05022830fd
+IC-705	levels.py:set_nb_depth	value=0	map=fefea4e01a05035700fd fallback=fefea4e01a05029000fd
+IC-705	levels.py:set_nb_width	value=0	map=fefea4e01a0503580000fd fallback=fefea4e01a0502910000fd
 IC-705	levels.py:set_ref_adjust	value=0	map=fefea4e01a0500890000fd fallback=fefea4e01a0500700000fd
+IC-705	levels.py:set_vox_delay	value=0	map=fefea4e01a05035900fd fallback=fefea4e01a05029200fd
 IC-705	vfo.py:get_quick_split	(no arguments)	map=fefea4e01a050045fd fallback=fefea4e01a050033fd
 IC-705	vfo.py:set_quick_split	(no arguments)	map=fefea4e01a050045fd fallback=fefea4e01a050033fd
 IC-7300	levels.py:get_dash_ratio	(no arguments)	map=fefe94e01a050161fd fallback=fefe94e01a050228fd

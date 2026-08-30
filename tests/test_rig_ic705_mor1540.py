@@ -76,6 +76,67 @@ class TestPollerSkipsDigiselQuery:
         assert digisel_queries == []
 
 
+class TestD2DocumentaryCommandBytes:
+    """MOR-2016 (D2): commands sourced from the IC-705 CI-V Reference Guide
+    (A7560-8EX-1, Jul.2020). Covers the corrected ``civ_transceive`` address
+    and the newly-declared BYTES gap rows this pass fills; the declared-
+    absent gap rows are pinned separately in
+    ``TestIc705DeclaresAbsentCommands`` (tests/test_rig_loader.py).
+    """
+
+    def test_civ_transceive_corrected(self, cmdmap) -> None:
+        """0131, not the previous 0112 (which is AF Beep/Speech Output on
+        this radio) or the shared fallback's 0129 (both wrong, guide p.8)."""
+        assert cmdmap.get("get_civ_transceive") == (0x1A, 0x05, 0x01, 0x31)
+        assert cmdmap.get("set_civ_transceive") == (0x1A, 0x05, 0x01, 0x31)
+
+    def test_get_agc_time_constant(self, cmdmap) -> None:
+        assert cmdmap.get("get_agc_time_constant") == (0x1A, 0x04)
+
+    def test_set_agc_time_constant(self, cmdmap) -> None:
+        assert cmdmap.get("set_agc_time_constant") == (0x1A, 0x04)
+
+    def test_get_manual_notch_width(self, cmdmap) -> None:
+        assert cmdmap.get("get_manual_notch_width") == (0x16, 0x57)
+
+    def test_set_manual_notch_width(self, cmdmap) -> None:
+        assert cmdmap.get("set_manual_notch_width") == (0x16, 0x57)
+
+    def test_get_notch_filter(self, cmdmap) -> None:
+        assert cmdmap.get("get_notch_filter") == (0x14, 0x0D)
+
+    def test_set_notch_filter(self, cmdmap) -> None:
+        assert cmdmap.get("set_notch_filter") == (0x14, 0x0D)
+
+    def test_get_split(self, cmdmap) -> None:
+        assert cmdmap.get("get_split") == (0x0F,)
+
+    def test_scan_set_df_span(self, cmdmap) -> None:
+        assert cmdmap.get("scan_set_df_span") == (0x0E,)
+
+    def test_get_nb_depth(self, cmdmap) -> None:
+        """1A 05 0357, NOT the shared fallback's 0290 (that's IC-7610's
+        address)."""
+        assert cmdmap.get("get_nb_depth") == (0x1A, 0x05, 0x03, 0x57)
+
+    def test_set_nb_depth(self, cmdmap) -> None:
+        assert cmdmap.get("set_nb_depth") == (0x1A, 0x05, 0x03, 0x57)
+
+    def test_get_nb_width(self, cmdmap) -> None:
+        """1A 05 0358, NOT the shared fallback's 0291."""
+        assert cmdmap.get("get_nb_width") == (0x1A, 0x05, 0x03, 0x58)
+
+    def test_set_nb_width(self, cmdmap) -> None:
+        assert cmdmap.get("set_nb_width") == (0x1A, 0x05, 0x03, 0x58)
+
+    def test_get_vox_delay(self, cmdmap) -> None:
+        """1A 05 0359, NOT the shared fallback's 0292."""
+        assert cmdmap.get("get_vox_delay") == (0x1A, 0x05, 0x03, 0x59)
+
+    def test_set_vox_delay(self, cmdmap) -> None:
+        assert cmdmap.get("set_vox_delay") == (0x1A, 0x05, 0x03, 0x59)
+
+
 class TestSetPreampSkipsDigiselPreflight:
     """Cascade: set_preamp(level>0) no longer probes DIGI-SEL on IC-705."""
 
