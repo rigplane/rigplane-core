@@ -715,6 +715,11 @@ class RigConfig:
                 for name, spec in self.commands.items()
                 if isinstance(spec, AbsentCommandSpec)
             ),
+            absent_command_sources={
+                name: spec.source
+                for name, spec in self.commands.items()
+                if isinstance(spec, AbsentCommandSpec)
+            },
             command_map=self.to_command_map(),
             filter_width_min=self.filter_width_min,
             filter_width_max=self.filter_width_max,
