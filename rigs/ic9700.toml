@@ -180,7 +180,13 @@ speed_max_wpm = 48
 # -- fallback bytes are out of this documentary ticket's scope.
 
 [nb]
-# CI-V 0x1A 0x05 0x01 0x89: NB depth 1-10, NB width 0-255 (wfview NB Depth Min/Max)
+# NB depth 1-10, NB width 0-255 (wfview NB Depth Min/Max). NOTE (D2,
+# MOR-2015): these bounds are NOT backed by CI-V 0x1A 0x05 0x01 0x89 on
+# IC-9700 -- that subcmd is "SCOPE>CENTER Type Display" on this radio, not
+# NB depth (see get_nb_depth / get_nb_width declared absent below: no
+# single global NB depth/width control exists, only per-band ones at
+# 0322/0325/0328 resp. 0323/0326/0329). These domain values are retained
+# as display bounds only; not tied to any single IC-9700 CI-V command.
 depth_min = 1
 depth_max = 10
 width_min = 0
@@ -409,6 +415,23 @@ routes = []
 
 [commands]
 
+# PROVENANCE OPEN (D2, MOR-2015): the following 8 declared base-family
+# entries were NOT covered by this ticket's documentary audit (Part 3 of
+# the audit report was a spot-check, not exhaustive, over the base-opcode
+# families) and are not independently confirmed against the IC-9700 CI-V
+# Reference Guide (Icom, 2019). Recorded here so the next D2 pass on this
+# profile sees them without having to rediscover them by re-auditing the
+# whole file:
+#   - get_antenna / set_antenna            [0x12]
+#   - get_apf_type_level / set_apf_type_level [0x14, 0x05]
+#   - get_s_meter_sql_status_04             [0x15, 0x04]
+#   - get_tuner_status / set_tuner_status   [0x1C, 0x01] (name looks
+#     suspect in kind, not just address -- IC-9700 has no internal ATU)
+#   - get_rit_tx_status / set_rit_tx_status [0x21, 0x02]
+#   - get_audio_peak_filter / set_audio_peak_filter [0x16, 0x32]
+#   - get_scope_single_dual                 [0x27, 0x13]
+#   - get_scope_rbw                         [0x27, 0x1F]
+
 # ── Frequency / Mode ──
 get_freq = [0x03]
 set_freq = [0x05]
@@ -466,9 +489,8 @@ set_digisel_shift = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.4: 0
 # ── Antenna ──
 # NOTE (D2, MOR-2015): "Single antenna" here means no antenna-*selection*
 # CI-V function, not one physical jack -- IC-9700 has fixed per-band
-# 144/430/1200M connectors. Base opcode 0x12 itself was not in this ticket's
-# audited scope (Part 3 of the MOR-2015 report spot-checked base families
-# but did not examine 0x12); flagged, not fixed, for a follow-up pass.
+# 144/430/1200M connectors. Base opcode 0x12 itself is provenance open,
+# see the block comment at the top of [commands].
 get_antenna = [0x12]
 set_antenna = [0x12]
 # rx_antenna_ant2 (0x16 0x53): no antenna-connector-selection command exists
@@ -508,9 +530,9 @@ get_notch_filter = [0x14, 0x0D]           # Notch position 0-255
 set_notch_filter = [0x14, 0x0D]
 get_manual_notch_width = [0x16, 0x57]     # 0=WIDE, 1=MID, 2=NAR
 set_manual_notch_width = [0x16, 0x57]
-get_audio_peak_filter = [0x16, 0x32]      # IC-9700: 0=OFF, 1=ON only
+get_audio_peak_filter = [0x16, 0x32]      # 0x16 0x32 not in the IC-9700 CI-V guide's 0x16 table -- declared value inherited, provenance open (see the block comment at the top of [commands], D2, MOR-2015)
 set_audio_peak_filter = [0x16, 0x32]
-get_apf_type_level = [0x14, 0x05]         # NOT_IMPLEMENTED — APF position (not in 7300 wfview)
+get_apf_type_level = [0x14, 0x05]         # NOT_IMPLEMENTED — APF position; provenance open, see the block comment at the top of [commands] (D2, MOR-2015)
 set_apf_type_level = [0x14, 0x05]
 get_twin_peak_filter = [0x16, 0x4F]
 set_twin_peak_filter = [0x16, 0x4F]
@@ -562,6 +584,8 @@ get_tx_freq_monitor = [0x1C, 0x03]
 set_tx_freq_monitor = [0x1C, 0x03]
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
+quick_split = [0x1A, 0x05, 0x00, 0x43]    # source: IC-9700 CI-V Reference Guide p.6 (bare key resolved by vfo.py: quick_split). Base [commands], not overrides: bare (non-get_/set_) keys fail test_naming_parity.py::test_overrides_have_prefix there (D2, MOR-2015).
+quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
 
 # ── CW ──
 send_cw = [0x17]
@@ -655,7 +679,7 @@ power_on = [0x18]
 power_off = [0x18]
 # powerstat: guide's cmd 0x18 table is SET-only (00=Turn OFF, 01=Turn ON) --
 # no read/query row exists at all for this command (D2, MOR-2015)
-get_powerstat = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.11: cmd 0x18 table is SET-only (00=Turn OFF, 01=Turn ON); no read/query row exists" }
+get_powerstat = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.5: cmd 0x18 table is SET-only (00=Turn OFF, 01=Turn ON); no read/query row exists" }
 get_transceiver_id = [0x19, 0x00]
 set_speech = [0x13]
 get_dial_lock = [0x16, 0x50]
@@ -679,11 +703,16 @@ set_bsr = [0x1A, 0x01]
 [commands.overrides]
 # 0x1A 0x05 menu: RX/TX EQ. Source: IC-9700 CI-V Reference Guide (Icom,
 # 2019). MOR-2015 documentary audit found IC-7300's addresses had been
-# copied wholesale into this file: of 82 copied 1A/05 addresses, 9
-# (this RX-side tone block) happened to be byte-identical, 18 were
-# CORRECTED below to this radio's own address, and 53 (the HF-band
-# scope-edge block, deleted below) do not exist on this VHF/UHF-only
-# radio at all. Full verdict table in the MOR-2015 PR body.
+# copied wholesale into this file. Of the 82 copied 1A/05 addresses: 9
+# (this RX-side tone block) happened to be byte-identical; 18 were
+# CORRECTED below to this radio's own address; 52 (the HF-band
+# scope-edge block) do not exist on this VHF/UHF-only radio at all and
+# were deleted; 1 (civ_output_ant) also has no real counterpart but is
+# resolved by a live builder, so it is declared absent below rather than
+# deleted; and 2 (nb_depth/nb_width) are ambiguous -- no single global
+# control exists, only per-band ones -- so they too are declared absent
+# rather than guessed. 9 + 18 + 52 + 1 + 2 = 82. Full verdict table in
+# the MOR-2015 PR body.
 get_ssb_rx_hpflpf = [0x1A, 0x05, 0x00, 0x01]  # source: IC-9700 CI-V Reference Guide p.5
 set_ssb_rx_hpflpf = [0x1A, 0x05, 0x00, 0x01]  # source: IC-9700 CI-V Reference Guide p.5
 get_ssb_rx_bass = [0x1A, 0x05, 0x00, 0x02]    # source: IC-9700 CI-V Reference Guide p.5
@@ -779,13 +808,18 @@ get_utc_offset = [0x1A, 0x05, 0x01, 0x84]   # source: IC-9700 CI-V Reference Gui
 set_utc_offset = [0x1A, 0x05, 0x01, 0x84]   # source: IC-9700 CI-V Reference Guide p.8
 get_quick_split = [0x1A, 0x05, 0x00, 0x43]  # source: IC-9700 CI-V Reference Guide p.6
 set_quick_split = [0x1A, 0x05, 0x00, 0x43]  # source: IC-9700 CI-V Reference Guide p.6
-quick_split = [0x1A, 0x05, 0x00, 0x43]      # source: IC-9700 CI-V Reference Guide p.6 (bare key resolved by vfo.py: quick_split, D2, MOR-2015)
+# bare quick_split: moved to base [commands] (── Split ── section) -- a
+# bare (non-get_/set_) key here fails
+# test_naming_parity.py::test_overrides_have_prefix (D2, MOR-2015)
 # quick_dual_watch: guide's 0032 = "Beep Sound(SUB)"; a doc-wide "quick"
 # search returns exactly one hit -- "Quick SPLIT" (0043); no "Quick Dual
 # Watch" concept exists in this document at all (D2, MOR-2015)
 get_quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
 set_quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
-quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
+# bare quick_dual_watch: also moved to base [commands] -- a dict-valued
+# { absent = ... } entry here escapes test_overrides_have_prefix only via
+# its isinstance(list) short-circuit (the rule only checks list-valued
+# entries); moved rather than relying on that blind spot (D2, MOR-2015)
 # dash_ratio: control 0224, CW-KEY SET>Dot/Dash Ratio; real gap-list
 # address (D2, MOR-2015). The hardcoded fallback constant
 # `_CTL_MEM_DASH_RATIO = 0x0228` is itself wrong for this radio (0228 =

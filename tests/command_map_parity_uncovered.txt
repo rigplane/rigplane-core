@@ -22,10 +22,10 @@
 census	builders_compared	230
 census	cat_only_profiles	2
 census	dual_implementation_sites	139
-census	frames_diverged	68
-census	frames_identical	1350
+census	frames_diverged	71
+census	frames_identical	1353
 census	hardcode_only_builders	16
-census	profile_builder_map_gaps	1004
+census	profile_builder_map_gaps	998
 census	profiles	8
 census	public_builders	232
 census	sites_compared	128
@@ -52,7 +52,7 @@ gap	get_comp_meter	FTX-1,TX-500,X6100,X6200
 gap	get_compressor	FTX-1,TX-500,X6100,X6200
 gap	get_compressor_level	FTX-1,TX-500,X6100,X6200
 gap	get_cw_pitch	FTX-1,TX-500,X6100
-gap	get_dash_ratio	FTX-1,IC-7300,TX-500,X6100,X6200
+gap	get_dash_ratio	FTX-1,TX-500,X6100,X6200
 gap	get_data1_mod_input	FTX-1,TX-500,X6100,X6200
 gap	get_data2_mod_input	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	get_data3_mod_input	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
@@ -109,7 +109,7 @@ gap	get_scope_during_tx	FTX-1,TX-500,X6100,X6200
 gap	get_scope_edge	FTX-1,TX-500,X6100,X6200
 gap	get_scope_fixed_edge	FTX-1,TX-500,X6100,X6200
 gap	get_scope_hold	FTX-1,TX-500,X6100,X6200
-gap	get_scope_main_sub	FTX-1,IC-7300,TX-500,X6100,X6200
+gap	get_scope_main_sub	FTX-1,TX-500,X6100,X6200
 gap	get_scope_mode	FTX-1,TX-500,X6100,X6200
 gap	get_scope_rbw	FTX-1,TX-500,X6100,X6200
 gap	get_scope_ref	FTX-1,TX-500,X6100,X6200
@@ -142,9 +142,9 @@ gap	power_on	FTX-1,TX-500,X6100,X6200
 gap	ptt_off	FTX-1,TX-500
 gap	ptt_on	FTX-1,TX-500
 gap	quick_dual_watch	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
-gap	quick_split	FTX-1,IC-705,IC-7300,IC-7610,TX-500,X6100,X6200
+gap	quick_split	FTX-1,IC-705,IC-7610,TX-500,X6100,X6200
 gap	scan_start	FTX-1,TX-500,X6100,X6200
-gap	scan_start_type	FTX-1,IC-705,IC-7300,IC-7610,TX-500,X6100,X6200
+gap	scan_start_type	FTX-1,IC-705,IC-7610,TX-500,X6100,X6200
 gap	scan_stop	FTX-1,TX-500,X6100,X6200
 gap	scope_data_output	FTX-1,TX-500,X6100,X6200
 gap	scope_off	FTX-1,TX-500,X6100,X6200
@@ -168,7 +168,7 @@ gap	set_civ_transceive	FTX-1,TX-500,X6100,X6200
 gap	set_compressor	FTX-1,TX-500,X6100,X6200
 gap	set_compressor_level	FTX-1,TX-500,X6100,X6200
 gap	set_cw_pitch	FTX-1,TX-500,X6100
-gap	set_dash_ratio	FTX-1,IC-7300,TX-500,X6100,X6200
+gap	set_dash_ratio	FTX-1,TX-500,X6100,X6200
 gap	set_data1_mod_input	FTX-1,TX-500,X6100,X6200
 gap	set_data2_mod_input	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	set_data3_mod_input	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
