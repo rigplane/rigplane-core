@@ -105,11 +105,15 @@ selector byte, or a constant payload byte. Only a value the caller
 supplies at the call site (e.g. a level to encode) is appended on top of
 the tuple.
 
-`rigs/x6100.toml`'s `ptt_on = [0x1C, 0x00, 0x01]` already carries the
-trailing byte and is valid under this contract as written.
-`rigs/ic7300.toml`'s shorter `ptt_on = [0x1C, 0x00]` is the one that
-needs to grow to match it, in Step 2
-(`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Step 2).
+Every CI-V profile in `rigs/` that declares `ptt_on`/`ptt_off` carries the
+full three-byte prefix, payload byte included —
+`ptt_on = [0x1C, 0x00, 0x01]`, `ptt_off = [0x1C, 0x00, 0x00]` — so
+`commands/ptt.py: ptt_on`/`ptt_off`'s `cmd_map` branch appends no payload
+byte of its own; the tuple already carries it.
+`tests/test_command_map_integration.py: TestPttWireContractAcrossProfiles`
+pins this: it builds `ptt_on`/`ptt_off` against every such profile's map
+and its hardcoded fallback and requires the two frames identical, ending
+in the explicit payload byte.
 
 ---
 
