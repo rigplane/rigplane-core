@@ -284,13 +284,19 @@ end_hz = 136000000
 # rigs/x6200.toml "PROVENANCE OPEN (D2, MOR-2019)" is this file's direct
 # copy source and stays open on the same items for the same reasons.
 #
-# - get_freq / set_freq [0x03] / [0x05], get_mode / set_mode [0x04] /
-#   [0x06]: PROVENANCE OPEN on rigs/x6200.toml itself, inherited unchanged.
-#   X6200's Radioddity CI-V V1.0.6 p.4 documents get_freq/set_freq only
-#   inside a worked CAT-control narrative example, not in the opcode table;
-#   get_mode/set_mode (0x04/0x06) are absent from that table entirely, with
-#   no narrative mention either. Neither can ever be closed for X6100 --
-#   there is no manual to re-check and no unit to probe.
+# - get_freq [0x03]: PROVENANCE OPEN on rigs/x6200.toml itself, inherited
+#   unchanged. X6200's Radioddity CI-V V1.0.6 p.4 documents it only
+#   inside a worked CAT-control narrative example (GET direction only),
+#   not in the opcode table.
+# - set_freq [0x05]: PROVENANCE OPEN on rigs/x6200.toml itself, inherited
+#   unchanged -- but there it is absent from the V1.0.6 document
+#   entirely, unlike get_freq above: not in the opcode table, and not in
+#   the p.4 narrative either, which shows the GET direction only.
+# - get_mode / set_mode [0x04] / [0x06]: PROVENANCE OPEN on
+#   rigs/x6200.toml itself, inherited unchanged -- absent from that table
+#   entirely, with no narrative mention either.
+# None of the three can ever be closed for X6100 -- there is no manual to
+# re-check and no unit to probe.
 # - get_xiegu_model_id [0x1D, 0x19] is DELIBERATELY OMITTED, not copied.
 #   X6200 declares it as a positive Xiegu-vs-Icom disambiguator at the
 #   shared CI-V address 0xA4 (MOR-170/MOR-226) -- but
@@ -318,19 +324,25 @@ end_hz = 136000000
 #   confirmed for X6100.
 # - break_in -> hardcoded [0x16, 0x47] in CoreRadio's break-in path, no
 #   [commands] key here or on X6200. CORRECTION (D2, MOR-2019 review
-#   follow-up, applied here rather than inherited): [0x14, 0x0F]
-#   ("break-in delay" / QSK hang time) is NOT reached by a single hardcode.
-#   It is reached by THREE separate paths -- ``CoreRadio.get_break_in_delay``
-#   and ``CoreRadio.set_break_in_delay`` (both via
-#   ``commands/levels.py: get_break_in_delay`` / ``set_break_in_delay``),
-#   plus the unconditional poll in
-#   ``runtime/_state_queries.py: build_state_queries``'s
+#   follow-up; reworded again here, #2838, to match the verified
+#   rigs/x6200.toml wording): the "THREE separate paths" claim previously
+#   recorded here was itself stale by the time it was written. Verified
+#   directly against HEAD (calling both builders against this profile's
+#   own CommandMap): ``CoreRadio.get_break_in_delay`` and
+#   ``CoreRadio.set_break_in_delay`` (both via ``commands/levels.py:
+#   get_break_in_delay`` / ``set_break_in_delay``) were migrated onto the
+#   bound command map (``commands/bound.py: BoundCommands``, MOR-2006) in
+#   a PR that had already landed by the time the three-path wording was
+#   written, and this profile declares neither key present nor
+#   declared-absent -- so both now refuse with ``CommandError`` (the
+#   undeclared-command policy, D1, MOR-2005) instead of reaching the wire.
+#   [0x14, 0x0F] is reached today by exactly ONE path: the unconditional
+#   poll in ``runtime/_state_queries.py: build_state_queries``'s
 #   ``_COMMON_FEATURE_QUERIES`` list, which every CI-V radio using this
-#   query builder sends regardless of capability. None of the three reads
-#   this profile's civ_addr or [commands] table to decide whether to fire
-#   -- they are reached only if something ever constructs a CI-V radio
-#   object against this profile, per the Reachability note in the file
-#   header above.
+#   query builder sends regardless of capability. That poll does not read
+#   this profile's civ_addr or [commands] table either -- it is reached
+#   only if something ever constructs a CI-V radio object against this
+#   profile, per the Reachability note in the file header above.
 # - rit / xit -> hardcoded [0x21] in the RIT/XIT command builders
 #   (commands/_frame.py: _CMD_RIT, consumed by commands/system.py), no
 #   [commands] key here or on X6200. X6200's write-only *behavior* (SET
@@ -354,7 +366,7 @@ end_hz = 136000000
 
 # Frequency / mode (compatible Icom CI-V subset — see PROVENANCE OPEN above)
 get_freq   = [0x03]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- PROVENANCE OPEN even on X6200 (narrative-only PDF p.4 example, not in the opcode table)
-set_freq   = [0x05]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same PROVENANCE OPEN status as get_freq there
+set_freq   = [0x05]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- absent from V1.0.6 entirely, unlike get_freq's narrative mention there
 get_mode   = [0x04]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- PROVENANCE OPEN even on X6200 (0x04 absent from the V1.0.6 table entirely)
 set_mode   = [0x06]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same PROVENANCE OPEN status as get_mode there
 

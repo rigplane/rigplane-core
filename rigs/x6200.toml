@@ -83,12 +83,27 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     documented CI-V table at all — the X6200 PDF only documents QSK hang
 #     time (``0x14 0x0F``), not a BK-IN-mode register. This profile declares
 #     no ``break_in_delay`` key, control or feature either (unlike its four
-#     IC-7300/7610/9700/705 siblings, which all do), so ``0x14 0x0F`` on
-#     X6200 is reached only by ``CoreRadio.get_break_in_delay``'s own
-#     hardcode — the same undeclared-hardcode class this bullet warns
-#     about, not an exception to it (correction, D2 MOR-2019: an earlier
-#     draft of this comment claimed the opposite). There is no trustworthy
-#     in-repo source for an OFF/SEMI/FULL value domain on this radio, so
+#     IC-7300/7610/9700/705 siblings, which all do). ``0x14 0x0F`` on X6200
+#     is reached today by exactly ONE path: the unconditional poll in
+#     ``runtime/_state_queries.py: build_state_queries``'s
+#     ``_COMMON_FEATURE_QUERIES`` list, which every CI-V radio built
+#     through this query builder sends regardless of declared capability
+#     or this profile's ``[commands]`` table — the same undeclared-hardcode
+#     class this bullet warns about, not an exception to it.
+#     ``CoreRadio.get_break_in_delay`` / ``CoreRadio.set_break_in_delay``
+#     (``commands/levels.py: get_break_in_delay`` / ``set_break_in_delay``)
+#     do NOT reach it: both route through the bound command map
+#     (``commands/bound.py: BoundCommands``, MOR-2006) and this profile
+#     declares neither key present nor declared-absent, so both refuse
+#     with ``CommandError`` (the undeclared-command policy, D1, MOR-2005)
+#     instead of sending anything — confirmed by calling both against this
+#     profile's own ``CommandMap`` directly (correction, #2834/#2836
+#     review: an earlier draft of this comment first claimed the opposite
+#     of undeclared-hardcode, then a follow-up undercounted by naming only
+#     ``get_break_in_delay``'s hardcode — a hardcode the bound-command-map
+#     migration had already replaced with this refusal by the time that
+#     follow-up was written). There is no trustworthy in-repo source for
+#     an OFF/SEMI/FULL value domain on this radio, so
 #     ``CoreRadio.set_break_in`` refuses (fails loud) rather than validate
 #     against a guessed table.
 #   - ``notch`` likewise KEEPS the capability tag but intentionally declares
@@ -411,10 +426,18 @@ end_hz = 136000000
 # value is unchanged by this note; the note only records why it stays
 # open. House pattern: rigs/ic9700.toml "PROVENANCE OPEN (D2, MOR-2015)".
 #
-# - get_freq / set_freq [0x03] / [0x05]: Radioddity X6200 CI-V V1.0.6 p.4
-#   documents these only inside a worked CAT-control narrative example,
-#   not in the opcode table itself (narrative-only per
+# - get_freq [0x03]: Radioddity X6200 CI-V V1.0.6 p.4 documents it only
+#   inside a worked CAT-control narrative example (GET active VFO
+#   frequency), not in the opcode table itself (narrative-only per
 #   docs/validation/cat-audits/x6200.md's per-opcode matrix).
+# - set_freq [0x05]: absent from the V1.0.6 document entirely, not just
+#   from the table -- the p.4 narrative example shows the GET direction
+#   only, and grepping the extract for "0x05" as a command turns up
+#   nothing else: its three hits are the unrelated 0x1A 0x05 LOCK GET row
+#   and LOCK SET row (both p.8) plus a Table 3 mode-data row for NFM
+#   (correction: an earlier draft of this entry grouped set_freq with
+#   get_freq under the same narrative citation, which overstated
+#   set_freq's sourcing).
 # - get_mode / set_mode [0x04] / [0x06]: this entry's own comment used to
 #   group get_mode/set_mode with get_freq/set_freq under one "PDF page 4
 #   example" citation. docs/validation/cat-audits/x6200.md's per-opcode
@@ -433,10 +456,21 @@ end_hz = 136000000
 #   [0x14, 0x0F], not a BK-IN-mode register (MOR-1534,
 #   docs/validation/cat-audits/x6200.md § "D. MISMATCH / WRONG",
 #   break-in row). This profile declares no break_in_delay key either
-#   (unlike its four IC-7300/7610/9700/705 siblings), so [0x14, 0x0F] is
-#   itself reached only by CoreRadio.get_break_in_delay's hardcode -- the
-#   same undeclared-hardcode class this bullet is about, not an exception
-#   to it.
+#   (unlike its four IC-7300/7610/9700/705 siblings). [0x14, 0x0F] is
+#   reached today by exactly one path: the unconditional poll in
+#   runtime/_state_queries.py: build_state_queries's
+#   _COMMON_FEATURE_QUERIES list, sent regardless of declared capability
+#   or this profile's [commands] table -- the same undeclared-hardcode
+#   class this bullet is about, not an exception to it. CoreRadio.
+#   get_break_in_delay / CoreRadio.set_break_in_delay (commands/levels.py)
+#   do NOT reach it: both route through the bound command map
+#   (commands/bound.py: BoundCommands, MOR-2006), and since this profile
+#   declares neither key present nor declared-absent, both refuse with
+#   CommandError instead (the undeclared-command policy, D1, MOR-2005) --
+#   confirmed by calling both against this profile's own CommandMap
+#   (correction, #2834/#2836 review: an earlier fix here undercounted by
+#   naming only get_break_in_delay's hardcode, which the bound-command-map
+#   migration had already replaced with this refusal).
 # - rit / xit -> hardcoded [0x21] in the RIT/XIT command builders
 #   (commands/_frame.py: _CMD_RIT, consumed by commands/system.py), no
 #   [commands] key: [0x21] itself is absent from the V1.0.6 table, but
@@ -456,7 +490,7 @@ end_hz = 136000000
 
 # Frequency / mode (compatible Icom CI-V subset — see PROVENANCE OPEN above)
 get_freq         = [0x03]  # source: Radioddity X6200 CI-V V1.0.6 p.4, narrative example only (via docs/validation/cat-audits/x6200.md) -- PROVENANCE OPEN above
-set_freq         = [0x05]  # source: same as get_freq -- PROVENANCE OPEN above
+set_freq         = [0x05]  # source: none in V1.0.6 -- absent from both the opcode table and the p.4 narrative (which shows GET only) -- PROVENANCE OPEN above
 get_mode         = [0x04]  # source: PROVENANCE OPEN above -- 0x04 absent from the V1.0.6 table entirely (corrects the prior overstated comment)
 set_mode         = [0x06]  # source: PROVENANCE OPEN above -- grouped with get_mode; 0x06 absent from the table under the same row
 
