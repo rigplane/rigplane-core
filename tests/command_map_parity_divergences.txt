@@ -4,34 +4,12 @@
 # here, and on a row here that no longer disagrees -- delete that
 # row, never keep it. Regenerating can still add rows, so read any
 # addition as a new divergence someone has to justify.
-IC-705	config.py:get_civ_transceive	(no arguments)	map=fefea4e01a050112fd fallback=fefea4e01a050129fd
-IC-705	config.py:get_data1_mod_input	(no arguments)	map=fefea4e01a050119fd fallback=fefea4e01a050092fd
-IC-705	config.py:get_data_off_mod_input	(no arguments)	map=fefea4e01a050118fd fallback=fefea4e01a050091fd
-IC-705	config.py:get_lan_mod_level	(no arguments)	map=fefea4e01a050117fd fallback=fefea4e01411fd
-IC-705	config.py:get_usb_mod_level	(no arguments)	map=fefea4e01a050116fd fallback=fefea4e01410fd
-IC-705	config.py:set_civ_transceive	enabled=False	map=fefea4e01a05011200fd fallback=fefea4e01a05012900fd
-IC-705	config.py:set_data1_mod_input	source=0	map=fefea4e01a05011900fd fallback=fefea4e01a05009200fd
-IC-705	config.py:set_data_off_mod_input	source=0	map=fefea4e01a05011800fd fallback=fefea4e01a05009100fd
-IC-705	config.py:set_lan_mod_level	level=0	map=fefea4e01a0501170000fd fallback=fefea4e014110000fd
-IC-705	config.py:set_usb_mod_level	level=0	map=fefea4e01a0501160000fd fallback=fefea4e014100000fd
 IC-705	levels.py:get_dash_ratio	(no arguments)	map=fefea4e01a050252fd fallback=fefea4e01a050228fd
 IC-705	levels.py:get_ref_adjust	(no arguments)	map=fefea4e01a050089fd fallback=fefea4e01a050070fd
 IC-705	levels.py:set_dash_ratio	value=30	map=fefea4e01a05025230fd fallback=fefea4e01a05022830fd
 IC-705	levels.py:set_ref_adjust	value=0	map=fefea4e01a0500890000fd fallback=fefea4e01a0500700000fd
 IC-705	vfo.py:get_quick_split	(no arguments)	map=fefea4e01a050045fd fallback=fefea4e01a050033fd
 IC-705	vfo.py:set_quick_split	(no arguments)	map=fefea4e01a050045fd fallback=fefea4e01a050033fd
-IC-7300	config.py:get_acc1_mod_level	(no arguments)	map=fefe94e01a050064fd fallback=fefe94e0140bfd
-IC-7300	config.py:get_civ_output_ant	(no arguments)	map=fefe94e01a050061fd fallback=fefe94e01a050130fd
-IC-7300	config.py:get_civ_transceive	(no arguments)	map=fefe94e01a050071fd fallback=fefe94e01a050129fd
-IC-7300	config.py:get_data1_mod_input	(no arguments)	map=fefe94e01a050067fd fallback=fefe94e01a050092fd
-IC-7300	config.py:get_data_off_mod_input	(no arguments)	map=fefe94e01a050066fd fallback=fefe94e01a050091fd
-IC-7300	config.py:get_usb_mod_level	(no arguments)	map=fefe94e01a050065fd fallback=fefe94e01410fd
-IC-7300	config.py:set_acc1_mod_level	level=0	map=fefe94e01a0500640000fd fallback=fefe94e0140b0000fd
-IC-7300	config.py:set_civ_output_ant	enabled=False	map=fefe94e01a05006100fd fallback=fefe94e01a05013000fd
-IC-7300	config.py:set_civ_transceive	enabled=False	map=fefe94e01a05007100fd fallback=fefe94e01a05012900fd
-IC-7300	config.py:set_data1_mod_input	source=0	map=fefe94e01a05006700fd fallback=fefe94e01a05009200fd
-IC-7300	config.py:set_data_off_mod_input	source=0	map=fefe94e01a05006600fd fallback=fefe94e01a05009100fd
-IC-7300	config.py:set_usb_mod_level	level=0	map=fefe94e01a0500650000fd fallback=fefe94e014100000fd
 IC-7300	levels.py:get_dash_ratio	(no arguments)	map=fefe94e01a050161fd fallback=fefe94e01a050228fd
 IC-7300	levels.py:get_nb_depth	(no arguments)	map=fefe94e01a050189fd fallback=fefe94e01a050290fd
 IC-7300	levels.py:get_nb_width	(no arguments)	map=fefe94e01a050190fd fallback=fefe94e01a050291fd
@@ -43,28 +21,6 @@ IC-7300	levels.py:set_vox_delay	value=0	map=fefe94e01a05019100fd fallback=fefe94
 IC-7300	vfo.py:get_quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
 IC-7300	vfo.py:quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
 IC-7300	vfo.py:set_quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
-IC-7610	config.py:get_acc1_mod_level	(no arguments)	map=fefe98e01a050088fd fallback=fefe98e0140bfd
-IC-7610	config.py:get_civ_output_ant	(no arguments)	map=fefe98e01c04fd fallback=fefe98e01a050130fd
-IC-7610	config.py:get_civ_transceive	(no arguments)	map=fefe98e01a050112fd fallback=fefe98e01a050129fd
-IC-7610	config.py:get_lan_mod_level	(no arguments)	map=fefe98e01a050090fd fallback=fefe98e01411fd
-IC-7610	config.py:get_usb_mod_level	(no arguments)	map=fefe98e01a050089fd fallback=fefe98e01410fd
-IC-7610	config.py:set_acc1_mod_level	level=0	map=fefe98e01a0500880000fd fallback=fefe98e0140b0000fd
-IC-7610	config.py:set_civ_output_ant	enabled=False	map=fefe98e01c0400fd fallback=fefe98e01a05013000fd
-IC-7610	config.py:set_civ_transceive	enabled=False	map=fefe98e01a05011200fd fallback=fefe98e01a05012900fd
-IC-7610	config.py:set_lan_mod_level	level=0	map=fefe98e01a0500900000fd fallback=fefe98e014110000fd
-IC-7610	config.py:set_usb_mod_level	level=0	map=fefe98e01a0500890000fd fallback=fefe98e014100000fd
-IC-9700	config.py:get_acc1_mod_level	(no arguments)	map=fefea2e01a050112fd fallback=fefea2e0140bfd
-IC-9700	config.py:get_civ_transceive	(no arguments)	map=fefea2e01a050127fd fallback=fefea2e01a050129fd
-IC-9700	config.py:get_data1_mod_input	(no arguments)	map=fefea2e01a050116fd fallback=fefea2e01a050092fd
-IC-9700	config.py:get_data_off_mod_input	(no arguments)	map=fefea2e01a050115fd fallback=fefea2e01a050091fd
-IC-9700	config.py:get_lan_mod_level	(no arguments)	map=fefea2e01a050114fd fallback=fefea2e01411fd
-IC-9700	config.py:get_usb_mod_level	(no arguments)	map=fefea2e01a050113fd fallback=fefea2e01410fd
-IC-9700	config.py:set_acc1_mod_level	level=0	map=fefea2e01a0501120000fd fallback=fefea2e0140b0000fd
-IC-9700	config.py:set_civ_transceive	enabled=False	map=fefea2e01a05012700fd fallback=fefea2e01a05012900fd
-IC-9700	config.py:set_data1_mod_input	source=0	map=fefea2e01a05011600fd fallback=fefea2e01a05009200fd
-IC-9700	config.py:set_data_off_mod_input	source=0	map=fefea2e01a05011500fd fallback=fefea2e01a05009100fd
-IC-9700	config.py:set_lan_mod_level	level=0	map=fefea2e01a0501140000fd fallback=fefea2e014110000fd
-IC-9700	config.py:set_usb_mod_level	level=0	map=fefea2e01a0501130000fd fallback=fefea2e014100000fd
 IC-9700	levels.py:get_dash_ratio	(no arguments)	map=fefea2e01a050224fd fallback=fefea2e01a050228fd
 IC-9700	levels.py:get_ref_adjust	(no arguments)	map=fefea2e01a050072fd fallback=fefea2e01a050070fd
 IC-9700	levels.py:get_vox_delay	(no arguments)	map=fefea2e01a050330fd fallback=fefea2e01a050292fd

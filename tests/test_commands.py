@@ -2173,8 +2173,20 @@ class TestSystemConfigCommands:
         """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
         from rigplane.commands import get_acc1_mod_level
 
-        with pytest.raises(TypeError, match="cmd_map"):
+        with pytest.raises(TypeError, match="MOR-2006"):
             get_acc1_mod_level()  # type: ignore[call-arg]
+
+    def test_get_acc1_mod_level_rejects_explicit_none_the_same_way(self) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely -- not a bare ``AttributeError`` from
+        ``_build_from_map``'s ``None.get(name)``, the exact path
+        de-delegating from the shared ``_build_ctl_mem_get``/
+        ``_build_ctl_mem_set`` templates (this migration's rationale)
+        would otherwise reopen."""
+        from rigplane.commands import get_acc1_mod_level
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_acc1_mod_level(cmd_map=None)
 
     def test_get_usb_mod_level_frame(self, cmd_map) -> None:
         from rigplane.commands import get_usb_mod_level

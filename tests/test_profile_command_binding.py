@@ -34,6 +34,7 @@ profile's map, plain or empty.
 from __future__ import annotations
 
 import functools
+import inspect
 import pathlib
 import sys
 from typing import Any
@@ -288,9 +289,29 @@ class TestExposedKeyDriftGuard:
         set_data_off_mod_input``'s ``0 <= source <= 5``) is what is being
         satisfied here, never a real map lookup -- the probe *cmd_map*'s
         contents never matter to this search, only its type.
+
+        Synthesises against ``inspect.unwrap(builder)``, not *builder*
+        itself -- a full-suite-only failure (18 deterministic failures,
+        standalone file green) traced to this: when one of the five files
+        that rebind the shared ``rigplane.commands`` namespace into
+        ``functools.partial`` objects (``bind_default_addr_module``, this
+        class's docstring) collects first, ``_exposed_builders`` enumerates
+        a partial, not the raw function. Its ``inspect.signature`` is
+        identical to the raw function's (verified directly), so
+        ``_split_params`` is unaffected -- but ``functools.partial`` has no
+        ``__globals__`` (``update_wrapper`` never copies it), so
+        ``_values_for``'s ``eval(param.annotation, fn.__globals__)`` raises,
+        its bare ``except Exception: return ()`` turns that into an empty
+        probe ladder for every required parameter, and
+        ``_candidate_kwargs`` yields nothing at all -- the loop below never
+        calls *builder* even once. ``inspect.unwrap`` follows the
+        ``__wrapped__`` chain ``update_wrapper`` sets, however many
+        collected files stacked a layer each, back to a function with a
+        real ``__globals__``.
         """
-        required, _optional = _split_params(builder)
-        for kwargs in _candidate_kwargs(builder, required):
+        target = inspect.unwrap(builder)
+        required, _optional = _split_params(target)
+        for kwargs in _candidate_kwargs(target, required):
             try:
                 builder(to_addr=0x94, cmd_map=cmd_map, **kwargs)
             except Exception:

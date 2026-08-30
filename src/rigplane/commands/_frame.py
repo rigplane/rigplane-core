@@ -361,18 +361,32 @@ def expose_command_key(
     return decorator
 
 
+_CMD_MAP_EXPLANATION = (
+    "as of MOR-2006 (docs/plans/2026-08-29-profile-driven-command-bytes.md), "
+    "every rigplane.commands builder requires the radio's CommandMap and no "
+    "longer has a hardcoded fallback. Call it through the radio's bound "
+    "commands instead of the free function directly (commands/bound.py: "
+    "BoundCommands, e.g. self._commands.<builder>(...))."
+)
+
+
 def require_cmd_map(fn: _BuilderT) -> _BuilderT:
-    """Wrap *fn* so a call omitting ``cmd_map`` explains the Q6 API break.
+    """Wrap *fn* so a missing or ``None`` ``cmd_map`` explains the Q6 API break.
 
     Per Q6 (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1):
-    ``cmd_map`` is now required, no default, no deprecation cycle -- but
-    Python's own missing-argument ``TypeError`` names only the parameter,
-    not what changed or what to do about it. This appends both to that
-    same message (so a call missing some *other* required argument too
-    still shows it) rather than replacing it. A call that already supplies
-    ``cmd_map`` -- including a literal ``None``, which reaches *fn* and
-    fails there on its own terms -- is unaffected: this only ever fires on
-    Python's missing-argument wording, never an unrelated error from *fn*.
+    ``cmd_map`` is required, no default, no deprecation cycle. Two ways a
+    call can still lack a real map, both raising ``TypeError`` with the
+    same ``_CMD_MAP_EXPLANATION`` appended:
+
+    - **Omitted entirely.** Python's own missing-argument ``TypeError``
+      names only the parameter -- caught here and the explanation appended,
+      so a call missing some *other* required argument too still shows it.
+    - **Passed explicitly as ``None``.** Nothing in *fn*'s own signature
+      rejects this at runtime (a type checker would) -- previously it
+      reached *fn*'s body and failed there on its own terms, e.g. an
+      ``AttributeError`` from ``None.get(name)`` inside `_build_from_map`
+      for the de-delegated builders this migration writes. Checked before
+      *fn* is ever called, so this can no longer produce a byte either.
 
     Applied module by module as Steps 5..N reach each one;
     `commands/config.py` (module 1) is the first caller.
@@ -380,20 +394,16 @@ def require_cmd_map(fn: _BuilderT) -> _BuilderT:
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if "cmd_map" in kwargs and kwargs["cmd_map"] is None:
+            raise TypeError(
+                f"{fn.__name__}() cmd_map is None -- {_CMD_MAP_EXPLANATION}"
+            )
         try:
             return fn(*args, **kwargs)
         except TypeError as exc:
             if "cmd_map" in kwargs or "'cmd_map'" not in str(exc):
                 raise
-            raise TypeError(
-                f"{exc} -- as of MOR-2006 "
-                "(docs/plans/2026-08-29-profile-driven-command-bytes.md), "
-                "every rigplane.commands builder requires the radio's "
-                "CommandMap and no longer has a hardcoded fallback. Call it "
-                "through the radio's bound commands instead of the free "
-                "function directly (commands/bound.py: BoundCommands, e.g. "
-                "self._commands.<builder>(...))."
-            ) from None
+            raise TypeError(f"{exc} -- {_CMD_MAP_EXPLANATION}") from None
 
     return wrapper  # type: ignore[return-value]
 
