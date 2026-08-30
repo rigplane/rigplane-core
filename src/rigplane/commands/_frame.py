@@ -301,9 +301,14 @@ def _build_from_map(
     """Build a CI-V frame using wire bytes from a CommandMap.
 
     Wire bytes may have 1-N elements.  The first byte is the CI-V command,
-    the second (if present) is the sub-command, and any remaining bytes are
-    prepended to *data* as extended sub-command addressing (e.g. 0x1A 0x05
-    0x00 0x64 for IC-7300 ACC1 mod level).
+    the second (if present) is the sub-command. Any remaining bytes are the
+    frame's further constant bytes, per the tuple contract ruled in Q7
+    (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §8.1): a tuple
+    holds every constant byte of the frame, whether that is extended menu
+    addressing (e.g. 0x1A 0x05 0x00 0x64 for IC-7300 ACC1 mod level), a
+    selector byte, or a constant payload byte (e.g. 0x1C 0x00 0x01 for
+    X6100 ptt_on). They are prepended to *data*; only what the caller
+    passes as *data* is appended after them.
     """
     wire = cmd_map.get(name)
     command = wire[0]

@@ -1660,6 +1660,23 @@ class TestToCommandMap:
         cm = load_rig(TEMPLATE_PATH).to_command_map()
         assert len(cm) > 50  # template has ~100 commands
 
+    def test_three_byte_wire_round_trips_intact(self, tmp_path):
+        """Q7 (docs/plans/2026-08-29-profile-driven-command-bytes.md §8.1):
+        a [commands] entry longer than command+sub — here a constant
+        payload byte, the shape of rigs/x6100.toml's
+        ptt_on = [0x1C, 0x00, 0x01] — must arrive in to_command_map()
+        byte-for-byte. Pins against a future "normalization" that cuts a
+        tuple back to (command, sub); nothing in the loader does that
+        today, but nothing would catch it either without this test.
+        """
+        toml = _MINIMAL_TOML.replace(
+            "set_freq = [0x05]",
+            "set_freq = [0x05]\nptt_on = [0x1C, 0x00, 0x01]",
+        )
+        rig = load_rig(_write_toml(tmp_path, toml))
+        cm = rig.to_command_map()
+        assert cm.get("ptt_on") == (0x1C, 0x00, 0x01)
+
     def test_ic7610_drops_dead_tone_commands(self):
         """MOR-682: IC-7610 has no FM-repeater tone capability, so the
         repeater-tone / TSQL command entries must not be in the command map."""
