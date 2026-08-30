@@ -178,22 +178,49 @@ _PROBE_MAPS = (
 def _exposed_builders() -> list[tuple[str, Any]]:
     """Every builder in ``rigplane.commands``'s public namespace exposing a key.
 
-    Deduplicated by identity so a backward-compat alias (``speech =
-    get_speech``) is not exercised twice under two names.
+    Deduplicated by the identity of the attached ``cmd_map_key`` callable --
+    not by ``id(value)`` or a single ``__wrapped__`` hop, and not by
+    ``__qualname__`` -- so a backward-compat alias (``speech = get_speech``)
+    is not exercised twice under two names, and stays that way regardless of
+    how many times the shared ``rigplane.commands`` package namespace has
+    already been rebound by the time this file is collected.
 
-    Not gated on ``inspect.isfunction``: several other test files
-    (``tests/_command_test_helpers.py: bind_default_addr_module``) rebind
-    every builder on the shared ``rigplane.commands`` package namespace
-    into a ``functools.partial`` with a default ``to_addr`` bound, for the
-    rest of that test worker's session, once collected -- so by the time a
-    plain (non-parametrized) test function in this module calls this
-    helper, ``getattr(commands, name)`` may already return such a partial
-    rather than the raw function. ``functools.update_wrapper`` (used by
-    that helper) copies the wrapped function's ``__dict__`` onto the
-    partial, so ``cmd_map_key`` and ``__wrapped__`` both survive; checking
-    ``callable`` instead of ``inspect.isfunction``, and deduplicating via
-    ``__wrapped__`` where present, tolerates it the same way
-    `commands/bound.py: _takes_cmd_map` does.
+    Not gated on ``inspect.isfunction``: five other test files
+    (``tests/_command_test_helpers.py: bind_default_addr_module``, called
+    from ``test_commands.py``, ``test_commands_extended.py``,
+    ``test_main_sub_tracking.py``, ``test_rf_gain_af_level.py`` and
+    ``test_scope.py``) each rebind every builder on the shared
+    ``rigplane.commands`` package namespace into a fresh
+    ``functools.partial`` with a default ``to_addr`` bound, at their own
+    collection time -- and each rebind wraps whatever is *currently* bound
+    to a name, not the original function, so when more than one of those
+    files is collected before this one the same underlying builder ends up
+    wrapped through two or more independent layers (measured: 24 items
+    standalone, 26 in the full suite, before this fix).
+
+    A single ``__wrapped__`` hop only reaches the immediately-inner layer.
+    Two names that alias the same function (``speech`` and ``get_speech``)
+    are wrapped *separately* at every layer -- each rebind iterates
+    ``dir(module)`` and wraps each qualifying name on its own -- so at two
+    or more layers ``speech.__wrapped__`` and ``get_speech.__wrapped__`` are
+    two different partial objects (each wrapping the *previous* layer's own
+    partial for that name), and comparing their identity no longer
+    collapses the alias. ``__qualname__`` would collapse it correctly here
+    (it is copied by value at every layer and is intrinsic to the
+    underlying function, not the name it is reached through), but two
+    *different* builders in two different modules could coincidence-collide
+    on a bare function name as Steps 5..N add more exposed builders here,
+    which ``__qualname__`` alone cannot tell apart.
+
+    ``cmd_map_key`` has neither problem: ``commands/_frame.py:
+    expose_command_key`` attaches it once, directly, to the underlying
+    function's own ``__dict__``, and ``functools.update_wrapper``'s
+    ``__dict__.update()`` step re-copies that exact object -- never a copy
+    of a copy, the same object every time -- onto each new wrapper,
+    however many layers stack, and it is unique per builder (an alias
+    shares the object because it shares the underlying function; two
+    distinct builders never do, even if their keys happen to return the
+    same literal).
     """
     seen: set[int] = set()
     found: list[tuple[str, Any]] = []
@@ -201,9 +228,10 @@ def _exposed_builders() -> list[tuple[str, Any]]:
         value = getattr(commands, name, None)
         if not callable(value):
             continue
-        if getattr(value, "cmd_map_key", None) is None:
+        key_fn = getattr(value, "cmd_map_key", None)
+        if key_fn is None:
             continue
-        identity = id(getattr(value, "__wrapped__", value))
+        identity = id(key_fn)
         if identity in seen:
             continue
         seen.add(identity)
