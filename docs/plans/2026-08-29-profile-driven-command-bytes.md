@@ -13,9 +13,11 @@ argument: why the plan is shaped this way, and how every figure in it was
 obtained. Sections here cited as "evidence §Cn" live there.
 **Base commit:** `a2de2ab0`. Every count, census and file claim below was
 re-measured against that commit in a dedicated worktree, not carried forward
-from an earlier round. `main` has since moved to `e8fe6e45` (one commit,
-`test(MOR-1900)` #2808, touching only `tests/integration/`); the two places that
-commit is relevant are marked where they appear.
+from an earlier round. `main` has since moved twice: to `e8fe6e45` (one
+commit, `test(MOR-1900)` #2808, touching only `tests/integration/`), then to
+`f793dd99` (`fix(MOR-2011)` #2817, routing the Yaesu reference's two
+remaining hardcoded commands through the profile). The places either commit
+is relevant are marked where they appear.
 **Format model:** `docs/plans/2026-08-20-transmit-authority.md`
 **Owner ruling this document implements (settled, not re-argued here):** the
 hardcoded fallback and its constants are DELETED; the command map becomes
@@ -24,7 +26,11 @@ from the profile.
 **Two further owner rulings, settled 2026-08-29 and folded in as §8.1:**
 what an undeclared command does (**D1**, three states, implemented by Step 4),
 and how the profiles of radios nobody can measure get filled (**D2**, from
-documentation, with the source recorded per entry). Q3–Q8 in §8.2 remain open.
+documentation, with the source recorded per entry). **Six more owner rulings,
+settled the evening of the same day and folded into the same section:** Q3–Q8,
+covering the reverse index's scope, the measurement hook's charter exception,
+the IC-7610 default, the release shape, the tuple contract and the command
+carrier. Nothing in §8 remains open.
 **The spine of this plan, in one line:** do on the Icom side what already
 works on the Yaesu side — that architecture ships today for Yaesu radios and is
 walked through in evidence §C4.
@@ -60,13 +66,34 @@ assumption that "of course the bytes come from the profile" is true, and when a
 new call site cannot silently opt out of it.
 
 **And he was half right, which changes what this plan is.** That assumption is
-already true — for Yaesu radios. `backends/yaesu_cat/radio.py: YaesuCatRadio`
-holds no wire bytes at all: it names a command, the profile supplies the command
-text, and an undeclared command is refused aloud. It ships, and it was exercised
-on the bench FTX-1 the afternoon this was written. So this document is not
-designing something new. It is a plan to **do on the Icom side what already
-works on the Yaesu side** (evidence §C4), and every mechanism choice below is measured
-against that working example rather than argued from first principles.
+already true — for Yaesu radios, as of `f793dd99` (`fix(MOR-2011)` #2817).
+`backends/yaesu_cat/radio.py: YaesuCatRadio` holds no wire bytes at all: it
+names a command, the profile supplies the command text, and an undeclared
+command is refused aloud. It ships, and it was exercised on the bench FTX-1
+the afternoon this was written.
+
+**It was not always true, and the gap was an instance of this plan's own
+defect class, found living in its own reference implementation.** Before
+`f793dd99`, two methods held command text in code and never reached
+`_get_spec`: `get_if_status` sent the literal `"IF;"` and parsed the reply at
+hand-picked offsets in Python, and `_read_meter` sent `f"RM{meter_type};"`
+with the meter type hardcoded per caller. A bench measurement on the live
+FTX-1 showed `get_if_status`'s hand-picked offsets were wrong — freq was read
+at body offset 0, yielding 142 Hz for a 14.228 MHz dial, and the fields it
+called `tx`/`split` held RX CLAR and the tone mode instead, with the scan
+offset it skipped holding the actual VFO/memory select. `_read_meter`'s case
+is the sharper instance of the defect: `rigs/ftx1.toml` already declared a
+complete `get_meter` entry, read *and* parse, and the method ignored it —
+the same fact held twice, profile and code, inside the class this plan holds
+up as the finished target. `fix(MOR-2011)` routed both through
+`_get_spec`/`_query`, so the profile is consulted and an absent entry refuses
+aloud (`CommandError`) rather than a composite read mis-parsing or silently
+doing nothing.
+
+So this document is not designing something new. It is a plan to **do on the
+Icom side what already works on the Yaesu side** (evidence §C4), and every
+mechanism choice below is measured against that working example rather than
+argued from first principles.
 
 ---
 
@@ -90,8 +117,8 @@ CI-V knowledge is held twice, and only the second copy ever executes.
 | Quantity | Count |
 |---|---|
 | Public builders taking `cmd_map` | 232 |
-| Private helpers taking `cmd_map` (`commands/_builders.py`) | 11 |
-| `_CMD_*` / `_SUB_*` / `_CTL_*` byte constants in `commands/_frame.py` | 124 |
+| Private helpers taking `cmd_map` (10 in `commands/_builders.py`, 1 in `commands/_frame.py`) | 11 |
+| `_CMD_*` / `_SUB_*` / `_CTL_*` byte constants in `commands/_frame.py` | 140 |
 | Production call sites passing `cmd_map=` outside `commands/` | **0** |
 
 ### 1.2 The collision on the bench radio
@@ -206,15 +233,17 @@ Concretely enough to tell whether you have arrived.
 - **One sentence that is true of both radio families**, where today it is true
   of one: *the command comes from the profile, is reached by name, and is
   refused aloud if the profile does not declare it.* That sentence already
-  describes `backends/yaesu_cat/radio.py` (evidence §C4). Arrival is when it also
-  describes `runtime/radio.py`.
+  describes `backends/yaesu_cat/radio.py`, as of `f793dd99` (evidence §C4; the
+  two exceptions found there, `get_if_status` and `_read_meter`, were fixed
+  by `fix(MOR-2011)` #2817 with bench verification on the live FTX-1).
+  Arrival is when it also describes `runtime/radio.py`.
 
 **Deleted:**
 
 - Every `if cmd_map is not None:` branch and every hardcoded fallback in
   `src/rigplane/commands/`.
 - The `_CMD_*` / `_SUB_*` / `_CTL_*` constants in `commands/_frame.py` that no
-  longer have a reader (124 exist at `a2de2ab0`; re-measure at deletion time —
+  longer have a reader (140 exist at `a2de2ab0`; re-measure at deletion time —
   some are used by parsers and survive).
 - `web/radio_poller.py: RadioPoller._load_command_map`, which re-scans `rigs/`
   off disk by guessing at paths relative to `__file__` and returns `{}` on any
@@ -236,6 +265,13 @@ Concretely enough to tell whether you have arrived.
 reports `dual_implementation_sites 0`, and
 `tests/command_map_parity_divergences.txt` has no rows. The parity test asserts
 both, so neither can drift.
+
+**Scope boundary, said out loud (Q3, §8.1):** this document's end state is
+*every byte we **send** comes from the profile* — narrower than "every byte",
+and stated here explicitly because the owner ruled the reverse direction out
+of this programme. Decoding a byte the radio sends unprompted into a command
+name is separate work, tracked as **MOR-1993**, which now blocks
+**MOR-2010**.
 
 ---
 
@@ -274,7 +310,7 @@ public builders that take `cmd_map` fall into four cases, and the four sum to
 | Case | Count | Example |
 |---|---|---|
 | One literal key, equal to the function's own name | **195** | `commands/levels.py: get_rf_power` |
-| One literal key, different from the function's name | **34** | `commands/system.py: get_system_date` and `set_system_date` both resolve `system_date`; all thirteen `commands/scope.py: scope_set_*` setters resolve the matching `get_scope_*`; `commands/vfo.py: set_dual_watch_on` and `set_dual_watch_off` both resolve `set_dual_watch` |
+| One literal key, different from the function's name | **34** | `commands/system.py: get_system_date` and `set_system_date` both resolve `system_date`; all eleven `commands/scope.py: scope_set_*` setters resolve the matching `get_scope_*`; `commands/vfo.py: set_dual_watch_on` and `set_dual_watch_off` both resolve `set_dual_watch` |
 | No literal key — delegates to a shared template that supplies one | **2** | `commands/dsp.py: set_attenuator`, `commands/vfo.py: set_dual_watch` |
 | **No literal key — chooses between two keys at runtime, by asking the map** | **1** | `commands/speech.py: get_speech` |
 
@@ -370,7 +406,8 @@ guess. One session with the IC-7300 turns it into fact.
   exported builder so that a call with `cmd_map is None` emits one WARNING
   naming the builder. Off unless the flag is set.
 - `commands/__init__.py` — install the wrapper.
-- `commands/LAYER.md` — record the temporary exception (see Q4).
+- `commands/LAYER.md` — record the temporary exception, approved and bounded
+  by Q4 (§8.1).
 - `tests/test_command_fallback_audit.py` (new).
 
 **Red if broken:** `tests/test_command_fallback_audit.py` — flag off, the
@@ -387,18 +424,25 @@ bytes are correct. Nothing but a radio or a manual tells you that.
 
 **Rollback:** revert the commit. Nothing depends on it.
 
-### Step 2 — Pin the wire-tuple contract, and fix the frames whose shape is wrong
+### Step 2 — Apply the pinned wire-tuple contract, and fix the frames whose shape is wrong
 
 *Why before anything moves:* right now a `[commands]` tuple has two meanings.
 `rigs/x6100.toml` writes `ptt_on = [0x1C, 0x00, 0x01]`, including the payload
 byte; `rigs/ic7300.toml` writes `ptt_on = [0x1C, 0x00]`, not including it. The
 builder appends its own payload either way, so the X6100 map branch emits
-`1C 00 01 01`. This is class C of §5 and it must be settled before any builder
-depends on the map.
+`1C 00 01 01`. This is class C of §5, and Q7 (§8.1) settles which side is
+right: a tuple carries the frame's full constant prefix, selector bytes
+included, and the builder appends only what the caller supplies. X6100's
+longer tuple already matches that contract; IC-7300's shorter one is the row
+that needs to grow, and `commands/_frame.py: _build_from_map` changes once so
+it stops assuming every tuple ends at the sub-command.
 
-- `rigs/_schema_v2.md` — state the contract.
-- `profiles/rig_loader.py` — validate it at load.
-- `rigs/x6100.toml`, `rigs/ic7610.toml`, `rigs/ic9700.toml` — the offending rows.
+- `rigs/_schema_v2.md` — record the Q7 contract.
+- `commands/_frame.py: _build_from_map` — the one change Q7's ruling requires.
+- `profiles/rig_loader.py` — validate the contract at load.
+- `rigs/ic7300.toml`, `rigs/ic7610.toml`, `rigs/ic9700.toml` — the rows whose
+  tuple is shorter than the frame it builds grow to carry the full prefix;
+  `rigs/x6100.toml`'s `ptt_on`/`ptt_off` rows already do and are not touched.
 - `commands/scope.py: get_scope_center_type` — its map branch omits the receiver
   selector the fallback appends (MOR-1981 shape; the parity test's own docstring
   names this one).
@@ -411,12 +455,13 @@ the loader validation.
 
 **Rollback:** revert; the divergence rows come back and the test is green again.
 
-**Split if it does not fit:** 2a = contract + loader validation + `_schema_v2.md`;
-2b = the TOML and `scope.py` fixes with the parity-file deletions.
+**Split if it does not fit:** 2a = contract + `_build_from_map` + loader
+validation + `_schema_v2.md`; 2b = the TOML and `scope.py` fixes with the
+parity-file deletions.
 
-**Bench dependency:** the `scope.py` change and the X6100 `ptt_on` change alter
-bytes on the wire. IC-7300 can confirm the scope one. X6100 is not on the bench
-(§7).
+**Bench dependency:** the `scope.py` change and the fix to the doubled X6100
+`ptt_on`/`ptt_off` bytes alter bytes on the wire. IC-7300 can confirm the
+scope one. X6100 is not on the bench (§7).
 
 ### Step 3 — Bind the map once, at radio construction. (Still no call site changed.)
 
@@ -560,7 +605,7 @@ Order, riskiest-first among the ones that matter, safest-first among the rest:
 
 - Delete `commands/_fallback_audit.py` and its env flag.
 - Delete the `commands/_frame.py` constants that no reader is left for
-  (re-measure; 124 exist at `a2de2ab0` and some are read by parsers).
+  (re-measure; 140 exist at `a2de2ab0` and some are read by parsers).
 - Rewrite `docs/api/commands.md` — evidence §C3 lists three claims in it that are false
   at `a2de2ab0`.
 - `tests/command_map_parity_divergences.txt` empty;
@@ -603,9 +648,14 @@ overstatement and is corrected here.**
 
 *Observed:* `rigs/ic9700.toml` contains a block introduced by the comment
 `# IC-7300-specific menu sub-addresses (also in wfview; not all rigs share
-these)` whose 23 following lines are byte-identical to the same block in
-`rigs/ic7300.toml` — I diffed them, including the comment. All 20 IC-9700 rows
-come from that block.
+these)` whose 24 following lines are byte-identical to the same block in
+`rigs/ic7300.toml` — I diffed them, including the comment. 18 of the 20
+IC-9700 rows come from that identical run. The other two,
+`get_vox_delay`/`set_vox_delay`, come from the same block but sit just
+outside the byte-identical run: the address matches (`1A 05 01 91`) but the
+trailing comment does not (`ic9700.toml` carries a `NOT_IMPLEMENTED` note
+`ic7300.toml` does not), so the two lines diverge as text even though the
+value they declare does not.
 
 *Not observed, and not established:* that any one of those values is wrong for
 an IC-9700. Copied is not the same as wrong; Icom reuses menu addresses across
@@ -634,18 +684,26 @@ instance). I did **not** audit the whole of every TOML for copied blocks that
 happen *not* to diverge, and those are invisible to the parity file by
 definition. D2 makes that sweep part of the work.
 
-### Class C — the tuple contract is not pinned (10 rows)
+### Class C — the tuple contract, pinned by Q7 (10 rows)
 
-Not "which address" but "how many bytes belong in the tuple". Three shapes:
+Not "which address" but "how many bytes belong in the tuple" — settled by Q7
+(§8.1): a tuple carries the frame's full constant prefix, and the builder
+appends only what the caller supplies. Three shapes, and what each needs
+under the ruled contract:
 
 - `scope.py: get_scope_center_type` (4 rows: IC-705, IC-7300, IC-7610, IC-9700)
   — the map branch omits the receiver selector byte the fallback appends. On
-  `0x1C` an extra byte is a write, not a read.
+  `0x1C` an extra byte is a write, not a read; the tuple needs to carry the
+  selector.
 - `vfo.py: get_dual_watch` and `vfo.py: get_main_sub_band` (2 rows each,
   IC-7610 and IC-9700) — the TOML puts the query byte in the tuple *and* the
-  builder appends it, so the map branch emits it twice (`07 C2 C2`).
+  builder appends it, so the map branch emits it twice (`07 C2 C2`). Under Q7
+  the tuple is already right; the builder is the one that needs to stop
+  appending a byte the tuple already carries.
 - `ptt.py: ptt_on` / `ptt_off` (2 rows, X6100) — `rigs/x6100.toml` includes the
-  payload byte in the tuple where `rigs/ic7300.toml` does not.
+  payload byte in the tuple where `rigs/ic7300.toml` does not. Under Q7,
+  X6100's longer tuple is the one that already matches the contract;
+  `rigs/ic7300.toml`'s shorter tuple is the one that needs to grow.
 
 These are Step 2 and they block everything else, because the meaning of a tuple
 has to be one thing before 232 builders depend on it.
@@ -696,11 +754,14 @@ They disappear into `expect()` rather than being migrated.
 **Population 3 — `runtime/_civ_rx.py`, 105 comparisons.** Structurally
 different: it decodes frames the radio sends unprompted, so it needs bytes to
 name, and `CommandMap` offers only name to bytes. Building a reverse index is a
-change to `CommandMap`'s surface, which this design was told not to reopen. The
-plan therefore stops at population 2 and names this as scope for a decision —
-Q3. Leaving it is not free: until it moves, unsolicited frames are still decoded
-against IC-7610-era literals, so a radio whose profile disagrees will have its
-own broadcasts misread even after every request and reply is profile-driven.
+change to `CommandMap`'s surface, which this design was told not to reopen. Q3
+(§8.1) settles it: the reverse index is a separate programme, tracked as
+**MOR-1993**, which now blocks **MOR-2010**. The plan therefore stops at
+population 2, and this document's end state is *every byte we **send** comes
+from the profile* — narrower than "every byte" (§2). Leaving it is not free:
+until MOR-1993 lands, unsolicited frames are still decoded against
+IC-7610-era literals, so a radio whose profile disagrees will have its own
+broadcasts misread even after every request and reply is profile-driven.
 
 ---
 
@@ -745,11 +806,12 @@ that requirement rather than an objection to it: its values may well be correct,
 but nothing in the file says where they came from, so nobody can tell a
 verified byte from an inherited one — which is the defect D2 removes.
 
-**The IC-7610 default survives the migration.** `profiles: resolve_radio_profile`
+**The IC-7610 default is removed (Q5, §8.1).** `profiles: resolve_radio_profile`
 falls back to the IC-7610 profile when nothing identifies the radio — observed
 in its body, with the comment "prefer IC-7610 (primary LAN reference rig)".
-After this work, a misidentified radio gets IC-7610 bytes from a *profile*
-instead of from a *hardcode*. Visible rather than hidden, but still wrong. Q5.
+The owner ruled this fails closed: the silent default goes, an unidentified
+radio refuses with a clear message instead of guessing, and a profile passed
+explicitly by the caller remains the deliberate override it already is.
 
 **FTX-1 and TX-500 are not stranded.** They are the two `cat_only_profiles`
 whose `CommandMap` is empty, which looks fatal for a required map. It is not:
@@ -760,14 +822,27 @@ whose `CommandMap` is empty, which looks fatal for a required map. It is not:
 are empty in the first place, which is a narrower carrier rather than missing
 data.
 
-**A green integration run is not evidence that a step was safe.** *Observed:*
-`tests/mock_server.py: MockIcomRadio` dispatches eight CI-V commands and has
-**no `0x1A` branch and no `0x27` branch**, while all 60 `config.py`/`levels.py`
-divergence rows are `1A 05` menu addresses and all four `scope.py` rows are
-`0x27`. The integration doubles therefore cannot observe a single one of the 76
-frames this migration changes, and will stay green through all of them. The
-safety net for every step in §4 is `tests/test_command_map_parity.py` and the
-per-step tests named there — never the integration suite.
+**A green integration run is not evidence that a step was safe — and the
+reason is narrower than "no branch".** *Observed:* `tests/mock_server.py:
+MockIcomRadio` dispatches eight CI-V commands, including `0x14` and `0x1C`.
+But its `0x14` branch handles only sub `0x0A` (RF power) and its `0x1C`
+branch handles only sub `0x00` with an empty payload (PTT get) — anything
+else on those two commands still NAKs. Of the 60 `config.py`/`levels.py`
+divergence rows, only 40 have both the map and the fallback side at a plain
+`1A 05` menu address (24 in `config.py`, all 16 in `levels.py`, a command the
+mock has no branch for at all); the other 20, all in `config.py`, put one
+side inside the `0x14`/`0x1C` branches the mock *does* have — 18 with a
+fallback side of `0x14` (`14 11` lan_mod_level ×4, `14 10` usb_mod_level ×8,
+`14 0B` acc1_mod_level ×6) and 2 with a map side of `1C 04` (IC-7610
+`get_civ_output_ant`/`set_civ_output_ant`) — and those NAK on the sub-command
+check inside the branch, not on an absent top-level one. All four `scope.py`
+rows are `0x27`, which the mock has no branch for at all. Either way, both
+the map frame and the fallback frame NAK, so the integration doubles cannot
+observe a single one of the 76 frames this migration changes, and will stay
+green through all of them. "The mock has no `0x1A` branch" is not the reason
+to reach for when `MockIcomRadio` is next touched — the safety net for every
+step in §4 is `tests/test_command_map_parity.py` and the per-step tests named
+there, never the integration suite.
 
 The owner has ruled that the two missing command families are **not** patched
 into the existing double now: the single profile-driven double closes the gap
@@ -778,15 +853,16 @@ evidence §C8.
 **The compatibility break.** Measured and costed in evidence §C7; the short
 version is that it is cheap.
 
-**The measurement hook is in tension with its own layer charter.**
-`commands/LAYER.md` forbids I/O and forbids import-time mutation. A logging
-wrapper installed over the exported builders is arguably both. It is temporary
-and deleted in Step Z, which is the argument for allowing it — but it is an
-argument, not a fact. Q4.
+**The measurement hook's charter exception is approved, and bounded (Q4,
+§8.1).** `commands/LAYER.md` forbids I/O and forbids import-time mutation,
+and Step 1's logging wrapper is arguably both. The exception is recorded in
+`commands/LAYER.md` with the date and this ticket, the hook stays confined to
+the one file Step 1 already names, and it is deleted in Step Z — with a test
+that goes red if it survives past that step.
 
 ---
 
-## 8. Decisions taken, and questions still open
+## 8. Decisions taken — nothing left open
 
 ### 8.1 Settled by the owner (2026-08-29)
 
@@ -849,75 +925,73 @@ bench in the past is unknown and does not matter here — none is available now.
 Of the 76 divergences, 21 are bench-settleable and 55 are
 documentation-settleable only.
 
-### 8.2 Still open
+**Six more, settled the same day, later that evening.** These were open
+questions (Q3–Q8) at the time D1 and D2 were ruled; the owner closed all six in
+a second pass the same evening.
 
-Answerable without reading the rest of this document.
+**Q3 — The reverse index is a separate programme.** `runtime/_civ_rx.py`
+decodes what the radio sends unprompted by comparing against 105 hardcoded
+command/sub literals. Making that profile-driven needs a **bytes-to-name**
+lookup; the code can only go name-to-bytes today (`commands/command_map.py:
+CommandMap` offers `get`, `has`, `__iter__`, `__len__`, `__repr__` and nothing
+else). It is real, non-trivial work: a reverse index is **not injective**, and
+not marginally so — on IC-7300, 142 of 177 wire tuples carry more than one
+name, and `1C 00` resolves to four names on IC-705 and X6200 (evidence §C9).
+The owner ruled it out of this programme's scope: it is tracked separately as
+**MOR-1993**, which now blocks **MOR-2010**. This document's end state
+narrows accordingly, and says so out loud: not "every byte", but **every byte
+we send comes from the profile** (§2). Reading an unsolicited frame still
+resolves against `runtime/_civ_rx.py`'s literals until MOR-1993 lands, and
+evidence §C8's single test double stays unbuildable until then too, for the
+same reason.
 
-**Q3 — The reverse index, which turns out to have three customers, not one.**
-`runtime/_civ_rx.py` decodes what the radio sends unprompted by comparing
-against 105 hardcoded command/sub literals. Making that profile-driven needs a
-**bytes-to-name** lookup; the code can only go name-to-bytes today
-(`commands/command_map.py: CommandMap` offers `get`, `has`, `__iter__`, `__len__`
-and nothing else). The single test double of evidence §C8 needs the same lookup, for the
-same reason. So this is one piece of work with two production consumers and one
-test consumer, not two unrelated ones — which changes the answer considerably
-from "is the ingress decoder worth it".
+**Q4 — The temporary measurement hook's charter exception is approved,
+bounded.** Step 1's logging wrapper installed over the exported builders at
+import is a genuine exception to `commands/LAYER.md`'s ban on I/O and
+import-time mutation. The owner approved it for the duration: recorded in
+`commands/LAYER.md` with the date and this ticket, confined to the one file
+Step 1 already names, and deleted in Step Z with a test that goes red if it
+survives past that step.
 
-*Measured, because the connection is only worth acting on if it survives
-measurement:* a reverse index is **not injective**, and not marginally so — on
-IC-7300, 142 of 177 wire tuples carry more than one name, and `1C 00` resolves
-to four names on IC-705 and X6200. So the index alone answers neither consumer;
-what closes the gap is a small per-language rule set written once per radio
-language, not per model. Full figures and method in evidence §C9. The
-connection therefore holds and is stronger than "same lookup": one deliverable
-serves the ingress decoder, the test double, and any future consumer that must
-interpret a frame it did not build.
+**Q5 — The IC-7610 default fails closed.** `resolve_radio_profile`'s silent
+fallback to the IC-7610 profile when nothing identifies the radio is removed.
+An unidentified radio refuses with a clear message instead of guessing; a
+profile passed explicitly by the caller remains the deliberate override it
+already is.
 
-**The question for you is still the scoping one:** is that deliverable part of
-this programme, or its own? If it is separate, the end state of *this* document
-is "every byte we **send** comes from the profile", which is narrower than
-"every byte" and should be said out loud — and evidence §C8 stays unbuildable until the
-separate one lands.
+**Q6 — Release shape: minor version bump, no deprecation release.** `cmd_map`
+becomes required in the public `rigplane.commands` API with a changelog entry
+and no intermediate deprecation cycle — rigplane-pro is measured clean
+(evidence §C7) and no other consumer is evidenced. The error the
+now-required `cmd_map` raises must itself explain what changed and what to do
+about it, not just that a parameter is missing.
 
-**Q4 — The temporary measurement hook.** It installs a logging wrapper over the
-exported builders at import. `commands/LAYER.md` forbids I/O and import-time
-mutation. Approve the exception for the duration (deleted in Step Z), or take
-the slower route of instrumenting each of the 232 fallback branches by hand?
+**Q7 — The tuple contract carries the full constant prefix.** A `[commands]`
+tuple holds every constant byte of the frame, selector bytes included; only a
+value the caller supplies at the call site is appended on top.
+`rigs/x6100.toml`'s `ptt_on = [0x1C, 0x00, 0x01]`, which already carries the
+trailing byte, is valid under the ruling; `rigs/ic7300.toml`'s shorter
+`ptt_on = [0x1C, 0x00]` is the one that needs to grow. Consequence:
+`commands/_frame.py: _build_from_map` changes once, to stop assuming a tuple
+always ends at the sub-command. Step 2 (§4) and §5 class C are written to
+this ruling.
 
-**Q5 — The IC-7610 default.** `resolve_radio_profile` falls back to the IC-7610
-profile when nothing identifies the radio. Keep it, or fail closed once bytes
-come only from profiles?
+**Q8 — Per-family carriers, one shared pattern.** The object that carries
+commands from a profile to a radio stays split by family — CI-V and CAT keep
+their own path — rather than becoming generic over `CommandSpec`. Three
+reasons favoured this going in: the per-family dispatch already exists and
+works (`backends/factory.py: create_radio`, evidence §C5); the two families
+differ in what the profile carries — a whole command versus an address
+(evidence §C4) — so a generic carrier's two branches would share the name
+lookup and nothing else; and what is genuinely worth unifying is narrow:
+resolution by name and refusal when undeclared, which is D1, and which is
+stated once without merging the carriers.
 
-**Q6 — Release shape.** `cmd_map` becomes required in the public
-`rigplane.commands` API. Minor version bump plus a changelog entry, or a
-deprecation release first? rigplane-pro is measured clean (evidence §C7) and no other
-consumer is evidenced.
-
-**Q7 — The tuple contract.** Does a `[commands]` tuple stop at the sub-command,
-or may it carry payload bytes? `rigs/x6100.toml` says one thing for `ptt_on` and
-`rigs/ic7300.toml` says the other. The answer decides whether Step 2 shortens
-the X6100 rows or changes `commands/_frame.py: _build_from_map`.
-
-**Q8 — One carrier or two.** evidence §C5: the object that carries commands from a
-profile to a radio handles only `CivCommandSpec`, while the profile schema
-defines two spec kinds and the profiles use both. Should the carrier become
-generic over `CommandSpec` — one mechanism, two spec kinds — or should each
-family keep its own path with the *pattern* shared rather than the code?
-
-*Which the evidence favours, stated as input rather than as a decision:*
-**per-family paths, pattern shared.** Three reasons. The per-family dispatch
-already exists and works (`backends/factory.py: create_radio`, evidence §C5). The two
-families differ in what the profile carries — a whole command versus an address
-(evidence §C4) — so a generic carrier's two branches would share the name lookup and
-nothing else. And what is genuinely worth unifying is narrow: resolution by name
-and refusal when undeclared, which is D1, and which can be stated once without
-merging the carriers.
-
-*The counter-evidence, which is real:* `RigConfig.to_command_map` silently drops
-CAT specs, so "this profile declares nothing" and "this profile speaks another
-language" are indistinguishable to every caller. That is a defect whichever way
-Q8 goes, and it is fixable without a generic carrier — by making the drop
-explicit in the method's name or its result type.
+Independently of which way this went, `RigConfig.to_command_map` silently
+dropping CAT specs is a defect: "this profile declares nothing" and "this
+profile speaks another language" must stop being indistinguishable to every
+caller. The fix is to make the drop explicit in the method's name or its
+result type — it does not need a generic carrier.
 
 ---
 
