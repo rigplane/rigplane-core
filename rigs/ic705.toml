@@ -781,8 +781,11 @@ get_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul
 set_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 # civ_transceive corrected (D2, MOR-2016): guide p.8 confirms control 0131 =
 # "CI-V Transceive". The previous 0112 declared here was actually "AF Beep/
-# Speech Output" on this radio -- both this profile's old value and the
-# shared 0129 fallback were wrong (see command_map_parity_divergences.txt).
+# Speech Output" on this radio. Control 0129 -- the address config.py's
+# builder used to fall back to before MOR-2006 (#2827) removed that
+# fallback -- was "External Keypad > KEYER setting" here, not CI-V
+# Transceive either. Both addresses were wrong (see
+# command_map_parity_divergences.txt).
 get_civ_transceive = [0x1A, 0x05, 0x01, 0x31]
 set_civ_transceive = [0x1A, 0x05, 0x01, 0x31]
 get_usb_mod_level = [0x1A, 0x05, 0x01, 0x16]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0116 "MOD Input > USB MOD Level"; cmd 0x14 has no sub 0x10 on this radio (p.4)

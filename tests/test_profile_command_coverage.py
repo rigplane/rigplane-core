@@ -28,9 +28,13 @@ command-map key -- deduplicated by key, per the plan's own phrasing
 ("enumerate every public builder KEY") -- with the profiles missing that
 key comma-separated on the row, the same compact shape
 ``tests/command_map_parity_uncovered.txt``'s own ``gap`` rows use. The
-baseline starts large by construction (D2, plan §8.1, has not filled the
-profiles yet -- no rig TOML uses the ``{ absent = "<source>" }`` spelling
-as of this commit) and is meant to shrink only, never grow silently.
+baseline started large by construction (D2, plan §8.1: at that point no rig
+TOML used the ``{ absent = "<source>" }`` spelling at all). Which profiles
+have since been filled with it is tracked by
+``tests/test_rig_loader.py::TestNoShippedProfileUsesAbsentSpellingYet``
+(narrowed, not deleted, as each profile's own D2 pass lands) rather than
+restated here; this file's baseline is meant to shrink only, never grow
+silently.
 
 Regenerate after an intentional change (a profile gains or loses a
 declaration, or a builder's key changes)::
