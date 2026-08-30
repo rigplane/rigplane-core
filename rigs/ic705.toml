@@ -785,7 +785,8 @@ set_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul
 # builder used to fall back to before MOR-2006 (#2827) removed that
 # fallback -- was "External Keypad > KEYER setting" here, not CI-V
 # Transceive either. Both addresses were wrong (see
-# command_map_parity_divergences.txt).
+# command_map_parity_divergences.txt as of 90a8a2dd^ -- #2827's
+# regeneration removed the civ_transceive rows that showed this).
 get_civ_transceive = [0x1A, 0x05, 0x01, 0x31]
 set_civ_transceive = [0x1A, 0x05, 0x01, 0x31]
 get_usb_mod_level = [0x1A, 0x05, 0x01, 0x16]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.8, control 0116 "MOD Input > USB MOD Level"; cmd 0x14 has no sub 0x10 on this radio (p.4)
