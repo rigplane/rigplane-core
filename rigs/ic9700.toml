@@ -47,10 +47,13 @@ features = [
     "attenuator",
     "preamp",
     "ip_plus",
-    # NOTE: no digisel on IC-7300
+    # NOTE: no digisel on IC-9700 -- IC-9700 CI-V Reference Guide (Icom,
+    # 2019): 0x16 family has no 0x4E row (D2, MOR-2015)
     # Antenna
     "antenna",
-    # NOTE: no rx_antenna on IC-7300 (single antenna)
+    # NOTE: no rx_antenna on IC-9700 -- fixed per-band 144/430/1200M antenna
+    # connectors, no software-selectable ANT; IC-9700 CI-V Reference Guide
+    # (Icom, 2019) has no antenna-selection command at all (D2, MOR-2015)
     # DSP / Noise
     "nb",
     "nr",
@@ -67,7 +70,8 @@ features = [
     "vox",
     "compressor",
     "monitor",
-    # NOTE: no drive_gain on IC-7300
+    # NOTE: no drive_gain on IC-9700 -- IC-9700 CI-V Reference Guide (Icom,
+    # 2019): 0x14 family has no 0x14 row (D2, MOR-2015)
     "ssb_tx_bw",
     # CW
     "cw",
@@ -168,10 +172,21 @@ pitch_min_hz = 300
 pitch_max_hz = 900
 speed_min_wpm = 6
 speed_max_wpm = 48
-# NOTE: no dash_ratio on IC-7300 (not in wfview rig file)
+# dash_ratio: control 0224, IC-9700 CI-V Reference Guide (Icom, 2019) p.9
+# (CW-KEY SET>Dot/Dash Ratio). Refutes the earlier "no dash_ratio" note --
+# see get_dash_ratio / set_dash_ratio in [commands.overrides] (D2, MOR-2015).
+# The hardcoded fallback constant `_CTL_MEM_DASH_RATIO = 0x0228` is itself
+# wrong for this radio (0228 = CW-KEY SET>MIC Up/Down Keyer); not fixed here
+# -- fallback bytes are out of this documentary ticket's scope.
 
 [nb]
-# CI-V 0x1A 0x05 0x01 0x89: NB depth 1-10, NB width 0-255 (wfview NB Depth Min/Max)
+# NB depth 1-10, NB width 0-255 (wfview NB Depth Min/Max). NOTE (D2,
+# MOR-2015): these bounds are NOT backed by CI-V 0x1A 0x05 0x01 0x89 on
+# IC-9700 -- that subcmd is "SCOPE>CENTER Type Display" on this radio, not
+# NB depth (see get_nb_depth / get_nb_width declared absent below: no
+# single global NB depth/width control exists, only per-band ones at
+# 0322/0325/0328 resp. 0323/0326/0329). These domain values are retained
+# as display bounds only; not tied to any single IC-9700 CI-V command.
 depth_min = 1
 depth_max = 10
 width_min = 0
@@ -185,12 +200,14 @@ list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"]
 
 [data_mode]
 # CI-V 0x1A 0x06: DATA sub-mode (0=OFF, 1=DATA1)
-# IC-7300 has only 1 DATA mode
+# IC-9700 has only 1 DATA mode
 count = 1
 labels = { "0" = "OFF", "1" = "DATA" }
 
 # Modulation input sources
-# CI-V 0x1A 0x05 0x00 0x66-0x67: get/set mod input per DATA mode
+# CI-V 0x1A 0x05 0x01 0x15-0x16: get/set mod input per DATA mode (source:
+# IC-9700 CI-V Reference Guide (Icom, 2019) p.7; corrected from the
+# IC-7300-copied 0x00 0x66-0x67 addresses, D2, MOR-2015)
 inputs = [
     { value = 0, name = "MIC" },
     { value = 1, name = "ACC" },
@@ -398,6 +415,23 @@ routes = []
 
 [commands]
 
+# PROVENANCE OPEN (D2, MOR-2015): the following 8 declared base-family
+# entries were NOT covered by this ticket's documentary audit (Part 3 of
+# the audit report was a spot-check, not exhaustive, over the base-opcode
+# families) and are not independently confirmed against the IC-9700 CI-V
+# Reference Guide (Icom, 2019). Recorded here so the next D2 pass on this
+# profile sees them without having to rediscover them by re-auditing the
+# whole file:
+#   - get_antenna / set_antenna            [0x12]
+#   - get_apf_type_level / set_apf_type_level [0x14, 0x05]
+#   - get_s_meter_sql_status_04             [0x15, 0x04]
+#   - get_tuner_status / set_tuner_status   [0x1C, 0x01] (name looks
+#     suspect in kind, not just address -- IC-9700 has no internal ATU)
+#   - get_rit_tx_status / set_rit_tx_status [0x21, 0x02]
+#   - get_audio_peak_filter / set_audio_peak_filter [0x16, 0x32]
+#   - get_scope_single_dual                 [0x27, 0x13]
+#   - get_scope_rbw                         [0x27, 0x1F]
+
 # ── Frequency / Mode ──
 get_freq = [0x03]
 set_freq = [0x05]
@@ -414,12 +448,23 @@ get_vfo = [0x07]
 set_vfo = [0x07]
 get_split = [0x0F]
 set_split = [0x0F]
-# Dual Watch on/off: 0x07 0xC2 = read state, 0x07 0xC1 = ON, 0x07 0xC0 = OFF.
-# (wfview IC-9700.rig exposes VFO Dual Watch via menu path 0x16 0x59;
-#  0x07 0xCx is the direct CI-V opcode per Icom CI-V reference guide.)
-get_dual_watch = [0x07, 0xC2]
-set_dual_watch_on = [0x07, 0xC1]
-set_dual_watch_off = [0x07, 0xC0]
+# Dual Watch on/off: previously declared at 0x07 0xC2/0xC1/0xC0 (read/ON/OFF)
+# citing "Icom CI-V reference guide" as authority -- this guide's own
+# cmd-0x07 table has no C0/C1/C2 rows at all (only 00/01/A0/B0/D0/D1/D2).
+# The real, guide-confirmed Dualwatch toggle is 0x16 0x59 ("Send/read the
+# sub band (the Dualwatch function)"), IC-9700 CI-V Reference Guide (Icom,
+# 2019) p.5 (D2, MOR-2015). The vfo.py fallback still builds the old 0x07
+# 0xCx family (fallback bytes are out of this documentary ticket's scope),
+# so this map entry now diverges from the fallback by design -- see
+# tests/command_map_parity_divergences.txt and the MOR-2015 PR body.
+get_dual_watch = [0x16, 0x59]              # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.5
+set_dual_watch_on = [0x16, 0x59, 0x01]     # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.5
+set_dual_watch_off = [0x16, 0x59, 0x00]    # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.5
+# main_sub_tracking: no such function in this guide -- 0x16 family jumps
+# 5C -> 65 (no 0x5E row) and a doc-wide search for "tracking" returns zero
+# hits (D2, MOR-2015).
+get_main_sub_tracking = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) pp.5-6: 0x16 family has no 0x5E row; doc-wide search for 'tracking' returns zero hits" }
+set_main_sub_tracking = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) pp.5-6: 0x16 family has no 0x5E row; doc-wide search for 'tracking' returns zero hits" }
 # 0x07 0xD2: read/write which band is bound to MAIN/SUB (0=MAIN, 1=SUB).
 get_main_sub_band = [0x07, 0xD2]
 
@@ -434,12 +479,25 @@ get_preamp = [0x16, 0x02]
 set_preamp = [0x16, 0x02]
 get_ip_plus = [0x16, 0x65]
 set_ip_plus = [0x16, 0x65]
-# NOTE: no digisel (0x16 0x4E), no digisel_shift (0x14 0x13) on IC-7300
+# digisel (0x16 0x4E) and digisel_shift (0x14 0x13): no such rows in the
+# IC-9700 CI-V Reference Guide (Icom, 2019) command table (D2, MOR-2015)
+get_digisel = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) pp.5-6: 0x16 family sub-list (02,12,22,40,41,42,43,44,45,46,47,48,4A,4B,4F,50,56,57,58,59,5A,5B,5C,65) has no 0x4E" }
+set_digisel = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) pp.5-6: 0x16 family sub-list (02,12,22,40,41,42,43,44,45,46,47,48,4A,4B,4F,50,56,57,58,59,5A,5B,5C,65) has no 0x4E" }
+get_digisel_shift = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.4: 0x14 family sub-list (01,02,03,06,07,08,09,0A,0B,0C,0D,0E,0F,12,15,16,17,19) has no 0x13" }
+set_digisel_shift = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.4: 0x14 family sub-list (01,02,03,06,07,08,09,0A,0B,0C,0D,0E,0F,12,15,16,17,19) has no 0x13" }
 
 # ── Antenna ──
-get_antenna = [0x12]                      # Single antenna
+# NOTE (D2, MOR-2015): "Single antenna" here means no antenna-*selection*
+# CI-V function, not one physical jack -- IC-9700 has fixed per-band
+# 144/430/1200M connectors. Base opcode 0x12 itself is provenance open,
+# see the block comment at the top of [commands].
+get_antenna = [0x12]
 set_antenna = [0x12]
-# NOTE: no rx_antenna (0x16 0x53) on IC-7300
+# rx_antenna_ant2 (0x16 0x53): no antenna-connector-selection command exists
+# on this radio at all -- IC-9700 has fixed per-band 144/430/1200M antenna
+# connectors, no software-selectable ANT (D2, MOR-2015)
+get_rx_antenna_ant2 = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019): fixed per-band 144/430/1200M antenna connectors; no antenna-connector-selection command exists on this radio" }
+set_rx_antenna_ant2 = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019): fixed per-band 144/430/1200M antenna connectors; no antenna-connector-selection command exists on this radio" }
 
 # ── Audio / AF ──
 get_af_level = [0x14, 0x01]
@@ -448,7 +506,12 @@ get_rf_gain = [0x14, 0x02]
 set_rf_gain = [0x14, 0x02]
 get_squelch = [0x14, 0x03]
 set_squelch = [0x14, 0x03]
-# NOTE: no af_mute (0x1A 0x09) on IC-7300
+# af_mute (0x1A 0x09): guide's 1A/09 sub-command is "Read NTP server access
+# result", an unrelated function; a doc-wide "mute" search finds only
+# "Sub Band Mute (TX)" (0033-0035, unrelated dualwatch-audio feature)
+# (D2, MOR-2015)
+get_af_mute = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.11: 1A/09 = 'Read NTP server access result', not AF mute; doc-wide 'mute' search finds only Sub Band Mute (TX) 0033-0035" }
+set_af_mute = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.11: 1A/09 = 'Read NTP server access result', not AF mute; doc-wide 'mute' search finds only Sub Band Mute (TX) 0033-0035" }
 
 # ── DSP / Noise (NB, NR, Notch, APF, Twin Peak) ──
 get_nb = [0x16, 0x22]
@@ -467,9 +530,9 @@ get_notch_filter = [0x14, 0x0D]           # Notch position 0-255
 set_notch_filter = [0x14, 0x0D]
 get_manual_notch_width = [0x16, 0x57]     # 0=WIDE, 1=MID, 2=NAR
 set_manual_notch_width = [0x16, 0x57]
-get_audio_peak_filter = [0x16, 0x32]      # IC-7300: 0=OFF, 1=ON only
+get_audio_peak_filter = [0x16, 0x32]      # 0x16 0x32 not in the IC-9700 CI-V guide's 0x16 table -- declared value inherited, provenance open (see the block comment at the top of [commands], D2, MOR-2015)
 set_audio_peak_filter = [0x16, 0x32]
-get_apf_type_level = [0x14, 0x05]         # NOT_IMPLEMENTED — APF position (not in 7300 wfview)
+get_apf_type_level = [0x14, 0x05]         # NOT_IMPLEMENTED — APF position; provenance open, see the block comment at the top of [commands] (D2, MOR-2015)
 set_apf_type_level = [0x14, 0x05]
 get_twin_peak_filter = [0x16, 0x4F]
 set_twin_peak_filter = [0x16, 0x4F]
@@ -495,7 +558,10 @@ get_rf_power = [0x14, 0x0A]
 set_rf_power = [0x14, 0x0A]
 get_mic_gain = [0x14, 0x0B]
 set_mic_gain = [0x14, 0x0B]
-# NOTE: no drive_gain (0x14 0x14) on IC-7300
+# drive_gain (0x14 0x14): no such row in the IC-9700 CI-V Reference Guide
+# (Icom, 2019); doc-wide "drive" search only hits "USB driver" (D2, MOR-2015)
+get_drive_gain = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.4: 0x14 family has no 0x14; doc-wide 'drive' search only hits 'USB driver'" }
+set_drive_gain = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.4: 0x14 family has no 0x14; doc-wide 'drive' search only hits 'USB driver'" }
 get_compressor = [0x16, 0x44]
 set_compressor = [0x16, 0x44]
 get_compressor_level = [0x14, 0x0E]
@@ -518,6 +584,8 @@ get_tx_freq_monitor = [0x1C, 0x03]
 set_tx_freq_monitor = [0x1C, 0x03]
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
+quick_split = [0x1A, 0x05, 0x00, 0x43]    # source: IC-9700 CI-V Reference Guide p.6 (bare key resolved by vfo.py: quick_split). Base [commands], not overrides: bare (non-get_/set_) keys fail test_naming_parity.py::test_overrides_have_prefix there (D2, MOR-2015).
+quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
 
 # ── CW ──
 send_cw = [0x17]
@@ -576,7 +644,12 @@ set_scope_wave = [0x27, 0x00]
 scope_on = [0x27, 0x10]
 scope_off = [0x27, 0x10]
 scope_data_output = [0x27, 0x11]
-# NOTE: no scope_main_sub (0x27 0x12) — single receiver
+# scope_main_sub (0x27 0x12) exists on the wire: "Send/read the Main or Sub
+# scope setting (00=Main, 01=Sub)" -- an exact name-and-function match. The
+# old "single receiver" note above was factually wrong for IC-9700, which
+# is a dual-receiver (MAIN/SUB) radio; that reasoning was evidently ported
+# unchanged from IC-7300 (genuinely single-receiver) (D2, MOR-2015).
+get_scope_main_sub = [0x27, 0x12]         # source: IC-9700 CI-V Reference Guide p.12
 get_scope_single_dual = [0x27, 0x13]
 get_scope_mode = [0x27, 0x14]
 get_scope_span = [0x27, 0x15]
@@ -593,10 +666,20 @@ get_scope_rbw = [0x27, 0x1F]
 # ── Scan ──
 scan_start = [0x0E]
 scan_stop = [0x0E]
+scan_set_df_span = [0x0E]                 # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.4 ("Ax (x=1 to 7)" table matches the code's own 7-value table)
+scan_start_type = [0x0E]                  # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.4 (0x0E family incl. Programmed/dF/Fine programmed/Memory/Select memory scan)
+# scan_set_resume (0x0E, sub D0-D3): AMBIGUOUS, not filled here. Guide's
+# cmd-0x0E table documents only D0 (Scan resume OFF) and D3 (Scan resume
+# ON, "Close&Delay") -- no D1/D2 rows exist, and D3's semantics don't match
+# the code's "15s" label. Resolving requires an implementation decision
+# (drop D1/D2, or reinterpret D3), not more reading (D2, MOR-2015).
 
 # ── System / Power ──
 power_on = [0x18]
 power_off = [0x18]
+# powerstat: guide's cmd 0x18 table is SET-only (00=Turn OFF, 01=Turn ON) --
+# no read/query row exists at all for this command (D2, MOR-2015)
+get_powerstat = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.5: cmd 0x18 table is SET-only (00=Turn OFF, 01=Turn ON); no read/query row exists" }
 get_transceiver_id = [0x19, 0x00]
 set_speech = [0x13]
 get_dial_lock = [0x16, 0x50]
@@ -612,176 +695,148 @@ set_bsr = [0x1A, 0x01]
 # set_memory_mode = [0x08]
 # memory_clear = [0x0B]
 
-# Menu 0x1A 0x05 sub-addresses: see [commands.overrides] (wfview IC-7300.rig)
+# Menu 0x1A 0x05 sub-addresses: see [commands.overrides] (source: IC-9700
+# CI-V Reference Guide (Icom, 2019); corrected/absent per the MOR-2015
+# documentary audit, superseding the IC-7300-copied addresses this file
+# used to carry)
 
 [commands.overrides]
-# 0x1A 0x05 menu: RX/TX EQ + per-band scope edges (wfview IC-7300.rig)
-get_ssb_rx_hpflpf = [0x1A, 0x05, 0x00, 0x01]
-set_ssb_rx_hpflpf = [0x1A, 0x05, 0x00, 0x01]
-get_ssb_rx_bass = [0x1A, 0x05, 0x00, 0x02]
-set_ssb_rx_bass = [0x1A, 0x05, 0x00, 0x02]
-get_ssb_rx_treble = [0x1A, 0x05, 0x00, 0x03]
-set_ssb_rx_treble = [0x1A, 0x05, 0x00, 0x03]
-get_am_rx_hpflpf = [0x1A, 0x05, 0x00, 0x04]
-set_am_rx_hpflpf = [0x1A, 0x05, 0x00, 0x04]
-get_am_rx_bass = [0x1A, 0x05, 0x00, 0x05]
-set_am_rx_bass = [0x1A, 0x05, 0x00, 0x05]
-get_am_rx_treble = [0x1A, 0x05, 0x00, 0x06]
-set_am_rx_treble = [0x1A, 0x05, 0x00, 0x06]
-get_fm_rx_hpflpf = [0x1A, 0x05, 0x00, 0x07]
-set_fm_rx_hpflpf = [0x1A, 0x05, 0x00, 0x07]
-get_fm_rx_bass = [0x1A, 0x05, 0x00, 0x08]
-set_fm_rx_bass = [0x1A, 0x05, 0x00, 0x08]
-get_fm_rx_treble = [0x1A, 0x05, 0x00, 0x09]
-set_fm_rx_treble = [0x1A, 0x05, 0x00, 0x09]
-get_cw_rx_hpflpf = [0x1A, 0x05, 0x00, 0x10]
-set_cw_rx_hpflpf = [0x1A, 0x05, 0x00, 0x10]
-get_ssb_tx_bass = [0x1A, 0x05, 0x00, 0x12]
-set_ssb_tx_bass = [0x1A, 0x05, 0x00, 0x12]
-get_ssb_tx_treble = [0x1A, 0x05, 0x00, 0x13]
-set_ssb_tx_treble = [0x1A, 0x05, 0x00, 0x13]
-get_am_tx_bass = [0x1A, 0x05, 0x00, 0x17]
-set_am_tx_bass = [0x1A, 0x05, 0x00, 0x17]
-get_am_tx_treble = [0x1A, 0x05, 0x00, 0x18]
-set_am_tx_treble = [0x1A, 0x05, 0x00, 0x18]
-get_fm_tx_bass = [0x1A, 0x05, 0x00, 0x19]
-set_fm_tx_bass = [0x1A, 0x05, 0x00, 0x19]
-get_fm_tx_treble = [0x1A, 0x05, 0x00, 0x20]
-set_fm_tx_treble = [0x1A, 0x05, 0x00, 0x20]
-get_scope_edge1_1p6mhz = [0x1A, 0x05, 0x01, 0x12]
-set_scope_edge1_1p6mhz = [0x1A, 0x05, 0x01, 0x12]
-get_scope_edge2_1p6mhz = [0x1A, 0x05, 0x01, 0x13]
-set_scope_edge2_1p6mhz = [0x1A, 0x05, 0x01, 0x13]
-get_scope_edge3_1p6mhz = [0x1A, 0x05, 0x01, 0x14]
-set_scope_edge3_1p6mhz = [0x1A, 0x05, 0x01, 0x14]
-get_scope_edge1_2mhz = [0x1A, 0x05, 0x01, 0x15]
-set_scope_edge1_2mhz = [0x1A, 0x05, 0x01, 0x15]
-get_scope_edge2_2mhz = [0x1A, 0x05, 0x01, 0x16]
-set_scope_edge2_2mhz = [0x1A, 0x05, 0x01, 0x16]
-get_scope_edge3_2mhz = [0x1A, 0x05, 0x01, 0x17]
-set_scope_edge3_2mhz = [0x1A, 0x05, 0x01, 0x17]
-get_scope_edge1_6mhz = [0x1A, 0x05, 0x01, 0x18]
-set_scope_edge1_6mhz = [0x1A, 0x05, 0x01, 0x18]
-get_scope_edge2_6mhz = [0x1A, 0x05, 0x01, 0x19]
-set_scope_edge2_6mhz = [0x1A, 0x05, 0x01, 0x19]
-get_scope_edge3_6mhz = [0x1A, 0x05, 0x01, 0x20]
-set_scope_edge3_6mhz = [0x1A, 0x05, 0x01, 0x20]
-get_scope_edge1_8mhz = [0x1A, 0x05, 0x01, 0x21]
-set_scope_edge1_8mhz = [0x1A, 0x05, 0x01, 0x21]
-get_scope_edge2_8mhz = [0x1A, 0x05, 0x01, 0x22]
-set_scope_edge2_8mhz = [0x1A, 0x05, 0x01, 0x22]
-get_scope_edge3_8mhz = [0x1A, 0x05, 0x01, 0x23]
-set_scope_edge3_8mhz = [0x1A, 0x05, 0x01, 0x23]
-get_scope_edge1_11mhz = [0x1A, 0x05, 0x01, 0x24]
-set_scope_edge1_11mhz = [0x1A, 0x05, 0x01, 0x24]
-get_scope_edge2_11mhz = [0x1A, 0x05, 0x01, 0x25]
-set_scope_edge2_11mhz = [0x1A, 0x05, 0x01, 0x25]
-get_scope_edge3_11mhz = [0x1A, 0x05, 0x01, 0x26]
-set_scope_edge3_11mhz = [0x1A, 0x05, 0x01, 0x26]
-get_scope_edge1_15mhz = [0x1A, 0x05, 0x01, 0x27]
-set_scope_edge1_15mhz = [0x1A, 0x05, 0x01, 0x27]
-get_scope_edge2_15mhz = [0x1A, 0x05, 0x01, 0x28]
-set_scope_edge2_15mhz = [0x1A, 0x05, 0x01, 0x28]
-get_scope_edge3_15mhz = [0x1A, 0x05, 0x01, 0x29]
-set_scope_edge3_15mhz = [0x1A, 0x05, 0x01, 0x29]
-get_scope_edge1_20mhz = [0x1A, 0x05, 0x01, 0x30]
-set_scope_edge1_20mhz = [0x1A, 0x05, 0x01, 0x30]
-get_scope_edge2_20mhz = [0x1A, 0x05, 0x01, 0x31]
-set_scope_edge2_20mhz = [0x1A, 0x05, 0x01, 0x31]
-get_scope_edge3_20mhz = [0x1A, 0x05, 0x01, 0x32]
-set_scope_edge3_20mhz = [0x1A, 0x05, 0x01, 0x32]
-get_scope_edge1_22mhz = [0x1A, 0x05, 0x01, 0x33]
-set_scope_edge1_22mhz = [0x1A, 0x05, 0x01, 0x33]
-get_scope_edge2_22mhz = [0x1A, 0x05, 0x01, 0x34]
-set_scope_edge2_22mhz = [0x1A, 0x05, 0x01, 0x34]
-get_scope_edge3_22mhz = [0x1A, 0x05, 0x01, 0x35]
-set_scope_edge3_22mhz = [0x1A, 0x05, 0x01, 0x35]
-get_scope_edge1_26mhz = [0x1A, 0x05, 0x01, 0x36]
-set_scope_edge1_26mhz = [0x1A, 0x05, 0x01, 0x36]
-get_scope_edge2_26mhz = [0x1A, 0x05, 0x01, 0x37]
-set_scope_edge2_26mhz = [0x1A, 0x05, 0x01, 0x37]
-get_scope_edge3_26mhz = [0x1A, 0x05, 0x01, 0x38]
-set_scope_edge3_26mhz = [0x1A, 0x05, 0x01, 0x38]
-get_scope_edge1_30mhz = [0x1A, 0x05, 0x01, 0x39]
-set_scope_edge1_30mhz = [0x1A, 0x05, 0x01, 0x39]
-get_scope_edge2_30mhz = [0x1A, 0x05, 0x01, 0x40]
-set_scope_edge2_30mhz = [0x1A, 0x05, 0x01, 0x40]
-get_scope_edge3_30mhz = [0x1A, 0x05, 0x01, 0x41]
-set_scope_edge3_30mhz = [0x1A, 0x05, 0x01, 0x41]
-get_scope_edge1_45mhz = [0x1A, 0x05, 0x01, 0x42]
-set_scope_edge1_45mhz = [0x1A, 0x05, 0x01, 0x42]
-get_scope_edge2_45mhz = [0x1A, 0x05, 0x01, 0x43]
-set_scope_edge2_45mhz = [0x1A, 0x05, 0x01, 0x43]
-get_scope_edge3_45mhz = [0x1A, 0x05, 0x01, 0x44]
-set_scope_edge3_45mhz = [0x1A, 0x05, 0x01, 0x44]
-get_scope_edge1_60mhz = [0x1A, 0x05, 0x01, 0x45]
-set_scope_edge1_60mhz = [0x1A, 0x05, 0x01, 0x45]
-get_scope_edge2_60mhz = [0x1A, 0x05, 0x01, 0x46]
-set_scope_edge2_60mhz = [0x1A, 0x05, 0x01, 0x46]
-get_scope_edge3_60mhz = [0x1A, 0x05, 0x01, 0x47]
-set_scope_edge3_60mhz = [0x1A, 0x05, 0x01, 0x47]
-get_scope_edge1_74mhz = [0x1A, 0x05, 0x01, 0x48]
-set_scope_edge1_74mhz = [0x1A, 0x05, 0x01, 0x48]
-get_scope_edge2_74mhz = [0x1A, 0x05, 0x01, 0x49]
-set_scope_edge2_74mhz = [0x1A, 0x05, 0x01, 0x49]
-get_scope_edge3_74mhz = [0x1A, 0x05, 0x01, 0x50]
-set_scope_edge3_74mhz = [0x1A, 0x05, 0x01, 0x50]
-get_scope_edge4_1p6mhz = [0x1A, 0x05, 0x02, 0x04]
-set_scope_edge4_1p6mhz = [0x1A, 0x05, 0x02, 0x04]
-get_scope_edge4_2mhz = [0x1A, 0x05, 0x02, 0x05]
-set_scope_edge4_2mhz = [0x1A, 0x05, 0x02, 0x05]
-get_scope_edge4_6mhz = [0x1A, 0x05, 0x02, 0x06]
-set_scope_edge4_6mhz = [0x1A, 0x05, 0x02, 0x06]
-get_scope_edge4_8mhz = [0x1A, 0x05, 0x02, 0x07]
-set_scope_edge4_8mhz = [0x1A, 0x05, 0x02, 0x07]
-get_scope_edge4_11mhz = [0x1A, 0x05, 0x02, 0x08]
-set_scope_edge4_11mhz = [0x1A, 0x05, 0x02, 0x08]
-get_scope_edge4_15mhz = [0x1A, 0x05, 0x02, 0x09]
-set_scope_edge4_15mhz = [0x1A, 0x05, 0x02, 0x09]
-get_scope_edge4_20mhz = [0x1A, 0x05, 0x02, 0x10]
-set_scope_edge4_20mhz = [0x1A, 0x05, 0x02, 0x10]
-get_scope_edge4_22mhz = [0x1A, 0x05, 0x02, 0x11]
-set_scope_edge4_22mhz = [0x1A, 0x05, 0x02, 0x11]
-get_scope_edge4_26mhz = [0x1A, 0x05, 0x02, 0x12]
-set_scope_edge4_26mhz = [0x1A, 0x05, 0x02, 0x12]
-get_scope_edge4_30mhz = [0x1A, 0x05, 0x02, 0x13]
-set_scope_edge4_30mhz = [0x1A, 0x05, 0x02, 0x13]
-get_scope_edge4_45mhz = [0x1A, 0x05, 0x02, 0x14]
-set_scope_edge4_45mhz = [0x1A, 0x05, 0x02, 0x14]
-get_scope_edge4_60mhz = [0x1A, 0x05, 0x02, 0x15]
-set_scope_edge4_60mhz = [0x1A, 0x05, 0x02, 0x15]
-get_scope_edge4_74mhz = [0x1A, 0x05, 0x02, 0x16]
-set_scope_edge4_74mhz = [0x1A, 0x05, 0x02, 0x16]
+# 0x1A 0x05 menu: RX/TX EQ. Source: IC-9700 CI-V Reference Guide (Icom,
+# 2019). MOR-2015 documentary audit found IC-7300's addresses had been
+# copied wholesale into this file. Of the 82 copied 1A/05 addresses: 9
+# (this RX-side tone block) happened to be byte-identical; 18 were
+# CORRECTED below to this radio's own address; 52 (the HF-band
+# scope-edge block) do not exist on this VHF/UHF-only radio at all and
+# were deleted; 1 (civ_output_ant) also has no real counterpart but is
+# resolved by a live builder, so it is declared absent below rather than
+# deleted; and 2 (nb_depth/nb_width) are ambiguous -- no single global
+# control exists, only per-band ones -- so they too are declared absent
+# rather than guessed. 9 + 18 + 52 + 1 + 2 = 82. Full verdict table in
+# the MOR-2015 PR body.
+get_ssb_rx_hpflpf = [0x1A, 0x05, 0x00, 0x01]  # source: IC-9700 CI-V Reference Guide p.5
+set_ssb_rx_hpflpf = [0x1A, 0x05, 0x00, 0x01]  # source: IC-9700 CI-V Reference Guide p.5
+get_ssb_rx_bass = [0x1A, 0x05, 0x00, 0x02]    # source: IC-9700 CI-V Reference Guide p.5
+set_ssb_rx_bass = [0x1A, 0x05, 0x00, 0x02]    # source: IC-9700 CI-V Reference Guide p.5
+get_ssb_rx_treble = [0x1A, 0x05, 0x00, 0x03]  # source: IC-9700 CI-V Reference Guide p.5
+set_ssb_rx_treble = [0x1A, 0x05, 0x00, 0x03]  # source: IC-9700 CI-V Reference Guide p.5
+get_am_rx_hpflpf = [0x1A, 0x05, 0x00, 0x04]   # source: IC-9700 CI-V Reference Guide p.5
+set_am_rx_hpflpf = [0x1A, 0x05, 0x00, 0x04]   # source: IC-9700 CI-V Reference Guide p.5
+get_am_rx_bass = [0x1A, 0x05, 0x00, 0x05]     # source: IC-9700 CI-V Reference Guide p.5
+set_am_rx_bass = [0x1A, 0x05, 0x00, 0x05]     # source: IC-9700 CI-V Reference Guide p.5
+get_am_rx_treble = [0x1A, 0x05, 0x00, 0x06]   # source: IC-9700 CI-V Reference Guide p.5
+set_am_rx_treble = [0x1A, 0x05, 0x00, 0x06]   # source: IC-9700 CI-V Reference Guide p.5
+get_fm_rx_hpflpf = [0x1A, 0x05, 0x00, 0x07]   # source: IC-9700 CI-V Reference Guide p.5
+set_fm_rx_hpflpf = [0x1A, 0x05, 0x00, 0x07]   # source: IC-9700 CI-V Reference Guide p.5
+get_fm_rx_bass = [0x1A, 0x05, 0x00, 0x08]     # source: IC-9700 CI-V Reference Guide p.5
+set_fm_rx_bass = [0x1A, 0x05, 0x00, 0x08]     # source: IC-9700 CI-V Reference Guide p.5
+get_fm_rx_treble = [0x1A, 0x05, 0x00, 0x09]   # source: IC-9700 CI-V Reference Guide p.5
+set_fm_rx_treble = [0x1A, 0x05, 0x00, 0x09]   # source: IC-9700 CI-V Reference Guide p.5
+# cw_rx_hpflpf: copied 0010 = "DV RX HPF/LPF" on IC-9700 (D-STAR, which
+# IC-7300 lacks); real CW RX HPF/LPF = 0013 (D2, MOR-2015)
+get_cw_rx_hpflpf = [0x1A, 0x05, 0x00, 0x13]   # source: IC-9700 CI-V Reference Guide p.5
+set_cw_rx_hpflpf = [0x1A, 0x05, 0x00, 0x13]   # source: IC-9700 CI-V Reference Guide p.5
+# ssb_tx_bass/treble, am_tx_bass/treble, fm_tx_bass/treble: IC-9700 inserts
+# DV RX HPF/LPF+Bass+Treble (0010-0012) and four SSB-bandwidth slots
+# (0017-0020) ahead of these, pushing every TX-side slot down 3-4 positions
+# relative to IC-7300's own numbering (D2, MOR-2015)
+get_ssb_tx_bass = [0x1A, 0x05, 0x00, 0x15]    # source: IC-9700 CI-V Reference Guide p.5
+set_ssb_tx_bass = [0x1A, 0x05, 0x00, 0x15]    # source: IC-9700 CI-V Reference Guide p.5
+get_ssb_tx_treble = [0x1A, 0x05, 0x00, 0x16]  # source: IC-9700 CI-V Reference Guide p.5
+set_ssb_tx_treble = [0x1A, 0x05, 0x00, 0x16]  # source: IC-9700 CI-V Reference Guide p.5
+get_am_tx_bass = [0x1A, 0x05, 0x00, 0x21]     # source: IC-9700 CI-V Reference Guide p.5
+set_am_tx_bass = [0x1A, 0x05, 0x00, 0x21]     # source: IC-9700 CI-V Reference Guide p.5
+get_am_tx_treble = [0x1A, 0x05, 0x00, 0x22]   # source: IC-9700 CI-V Reference Guide p.5
+set_am_tx_treble = [0x1A, 0x05, 0x00, 0x22]   # source: IC-9700 CI-V Reference Guide p.5
+get_fm_tx_bass = [0x1A, 0x05, 0x00, 0x23]     # source: IC-9700 CI-V Reference Guide p.5
+set_fm_tx_bass = [0x1A, 0x05, 0x00, 0x23]     # source: IC-9700 CI-V Reference Guide p.5
+get_fm_tx_treble = [0x1A, 0x05, 0x00, 0x24]   # source: IC-9700 CI-V Reference Guide p.5
+set_fm_tx_treble = [0x1A, 0x05, 0x00, 0x24]   # source: IC-9700 CI-V Reference Guide p.5
 
-# IC-7300-specific menu sub-addresses (also in wfview; not all rigs share these)
-get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x64]
-set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x64]
-get_usb_mod_level = [0x1A, 0x05, 0x00, 0x65]
-set_usb_mod_level = [0x1A, 0x05, 0x00, 0x65]
-get_data_off_mod_input = [0x1A, 0x05, 0x00, 0x66]
-set_data_off_mod_input = [0x1A, 0x05, 0x00, 0x66]
-get_data1_mod_input = [0x1A, 0x05, 0x00, 0x67]
-set_data1_mod_input = [0x1A, 0x05, 0x00, 0x67]
-get_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
-set_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
-get_civ_output_ant = [0x1A, 0x05, 0x00, 0x61]
-set_civ_output_ant = [0x1A, 0x05, 0x00, 0x61]
-get_system_date = [0x1A, 0x05, 0x00, 0x94]
-set_system_date = [0x1A, 0x05, 0x00, 0x94]
-get_system_time = [0x1A, 0x05, 0x00, 0x95]
-set_system_time = [0x1A, 0x05, 0x00, 0x95]
-get_utc_offset = [0x1A, 0x05, 0x00, 0x96]
-set_utc_offset = [0x1A, 0x05, 0x00, 0x96]
-get_quick_split = [0x1A, 0x05, 0x00, 0x30]
-set_quick_split = [0x1A, 0x05, 0x00, 0x30]
-get_nb_depth = [0x1A, 0x05, 0x01, 0x89]
-set_nb_depth = [0x1A, 0x05, 0x01, 0x89]
-get_nb_width = [0x1A, 0x05, 0x01, 0x90]
-set_nb_width = [0x1A, 0x05, 0x01, 0x90]
-get_vox_delay = [0x1A, 0x05, 0x01, 0x91]     # NOT_IMPLEMENTED — 0-20 (0.0-2.0 sec)
-set_vox_delay = [0x1A, 0x05, 0x01, 0x91]     # NOT_IMPLEMENTED — 0-20 (0.0-2.0 sec)
-get_ref_adjust = [0x1A, 0x05, 0x00, 0x70]    # NOT_IMPLEMENTED — not listed in wfview IC-7300.rig
-set_ref_adjust = [0x1A, 0x05, 0x00, 0x70]    # NOT_IMPLEMENTED — not listed in wfview IC-7300.rig
+# scope_edge1..4_{1p6,2,6,8,11,15,20,22,26,30,45,60,74}mhz (52 addresses):
+# DELETED (D2, MOR-2015). These keys named the HF-band-edge concept copied
+# from IC-7300 (13 HF ham-band segments x up to 4 edge slots); IC-9700 is
+# VHF/UHF-only (144/430/1200M) and has no such concept -- its own
+# "SCOPE > Fixed Edges" function lives at a structurally different set of
+# subcmds (0202-0210, 3 slots x 3 bands). No builder in src/rigplane/commands/
+# ever resolved any of these 52 specific key names -- the scope-edge base
+# family builder in scope.py resolves the unrelated bare "get_scope_edge"
+# key at [0x27, 0x16] (declared in [commands] above), a single query/set
+# command, not 52 per-band-edge keys -- so these were unused wrong data, not
+# merely wrong-address data: every one of the 52 numeric addresses is
+# assigned to a real, unrelated IC-9700 function (ACC/USB/LAN MOD level,
+# ACC SEND/USB SEND/Keying, External Keypad, CI-V settings, Network
+# settings, SCOPE Fixed Edges, AUDIO SCOPE SET, VOICE TX -- full collision
+# table in the MOR-2015 PR body), so sending any of them to a real radio
+# would have silently hit that other function instead of erroring.
+
+# IC-9700-specific menu sub-addresses. Source: IC-9700 CI-V Reference Guide
+# (Icom, 2019), pp.6-11. MOR-2015 documentary audit corrected 11 of these
+# from IC-7300-copied addresses, declared civ_output_ant and the
+# nb_depth/nb_width pair absent, and filled dash_ratio/lan_mod_input gap
+# rows with this menu family's real addresses.
+get_acc1_mod_level = [0x1A, 0x05, 0x01, 0x12]  # source: IC-9700 CI-V Reference Guide p.7
+set_acc1_mod_level = [0x1A, 0x05, 0x01, 0x12]  # source: IC-9700 CI-V Reference Guide p.7
+get_usb_mod_level = [0x1A, 0x05, 0x01, 0x13]   # source: IC-9700 CI-V Reference Guide p.7
+set_usb_mod_level = [0x1A, 0x05, 0x01, 0x13]   # source: IC-9700 CI-V Reference Guide p.7
+# lan_mod_level: real gap-list address in this menu family (D2, MOR-2015)
+get_lan_mod_level = [0x1A, 0x05, 0x01, 0x14]   # source: IC-9700 CI-V Reference Guide p.7
+set_lan_mod_level = [0x1A, 0x05, 0x01, 0x14]   # source: IC-9700 CI-V Reference Guide p.7
+get_data_off_mod_input = [0x1A, 0x05, 0x01, 0x15]  # source: IC-9700 CI-V Reference Guide p.7
+set_data_off_mod_input = [0x1A, 0x05, 0x01, 0x15]  # source: IC-9700 CI-V Reference Guide p.7
+get_data1_mod_input = [0x1A, 0x05, 0x01, 0x16]     # source: IC-9700 CI-V Reference Guide p.7
+set_data1_mod_input = [0x1A, 0x05, 0x01, 0x16]     # source: IC-9700 CI-V Reference Guide p.7
+# data2_mod_input/data3_mod_input: guide's MOD-input list has only
+# ACC/USB/LAN/"DATA OFF"/"DATA" (0112-0116) -- no DATA1/2/3 distinction
+# anywhere in the document (D2, MOR-2015)
+get_data2_mod_input = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019): MOD-input list has only ACC/USB/LAN/DATA OFF/DATA (0112-0116); no DATA1/2/3 distinction anywhere in the document" }
+set_data2_mod_input = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019): MOD-input list has only ACC/USB/LAN/DATA OFF/DATA (0112-0116); no DATA1/2/3 distinction anywhere in the document" }
+get_data3_mod_input = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019): MOD-input list has only ACC/USB/LAN/DATA OFF/DATA (0112-0116); no DATA1/2/3 distinction anywhere in the document" }
+set_data3_mod_input = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019): MOD-input list has only ACC/USB/LAN/DATA OFF/DATA (0112-0116); no DATA1/2/3 distinction anywhere in the document" }
+get_civ_transceive = [0x1A, 0x05, 0x01, 0x27]  # source: IC-9700 CI-V Reference Guide p.7
+set_civ_transceive = [0x1A, 0x05, 0x01, 0x27]  # source: IC-9700 CI-V Reference Guide p.7
+# civ_output_ant: copied 0061 = "MAIN DIAL Auto TS" on IC-9700; searched the
+# whole document for "antenna"/"ant"/cmd 0x12/0x1C 0x04 -- no
+# antenna-output/selection CI-V function exists anywhere in this guide
+# (D2, MOR-2015)
+get_civ_output_ant = { absent = "IC-9700 CI-V Reference Guide (2019): no antenna-output/selection CI-V function; fixed per-band antenna connectors" }
+set_civ_output_ant = { absent = "IC-9700 CI-V Reference Guide (2019): no antenna-output/selection CI-V function; fixed per-band antenna connectors" }
+get_system_date = [0x1A, 0x05, 0x01, 0x79]  # source: IC-9700 CI-V Reference Guide p.8
+set_system_date = [0x1A, 0x05, 0x01, 0x79]  # source: IC-9700 CI-V Reference Guide p.8
+get_system_time = [0x1A, 0x05, 0x01, 0x80]  # source: IC-9700 CI-V Reference Guide p.8
+set_system_time = [0x1A, 0x05, 0x01, 0x80]  # source: IC-9700 CI-V Reference Guide p.8
+get_utc_offset = [0x1A, 0x05, 0x01, 0x84]   # source: IC-9700 CI-V Reference Guide p.8
+set_utc_offset = [0x1A, 0x05, 0x01, 0x84]   # source: IC-9700 CI-V Reference Guide p.8
+get_quick_split = [0x1A, 0x05, 0x00, 0x43]  # source: IC-9700 CI-V Reference Guide p.6
+set_quick_split = [0x1A, 0x05, 0x00, 0x43]  # source: IC-9700 CI-V Reference Guide p.6
+# bare quick_split: moved to base [commands] (── Split ── section) -- a
+# bare (non-get_/set_) key here fails
+# test_naming_parity.py::test_overrides_have_prefix (D2, MOR-2015)
+# quick_dual_watch: guide's 0032 = "Beep Sound(SUB)"; a doc-wide "quick"
+# search returns exactly one hit -- "Quick SPLIT" (0043); no "Quick Dual
+# Watch" concept exists in this document at all (D2, MOR-2015)
+get_quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
+set_quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
+# bare quick_dual_watch: also moved to base [commands] -- a dict-valued
+# { absent = ... } entry here escapes test_overrides_have_prefix only via
+# its isinstance(list) short-circuit (the rule only checks list-valued
+# entries); moved rather than relying on that blind spot (D2, MOR-2015)
+# dash_ratio: control 0224, CW-KEY SET>Dot/Dash Ratio; real gap-list
+# address (D2, MOR-2015). The hardcoded fallback constant
+# `_CTL_MEM_DASH_RATIO = 0x0228` is itself wrong for this radio (0228 =
+# CW-KEY SET>MIC Up/Down Keyer); not fixed here -- fallback bytes are out
+# of this documentary ticket's scope.
+get_dash_ratio = [0x1A, 0x05, 0x02, 0x24]  # source: IC-9700 CI-V Reference Guide p.9
+set_dash_ratio = [0x1A, 0x05, 0x02, 0x24]  # source: IC-9700 CI-V Reference Guide p.9
+# nb_depth/nb_width: AMBIGUOUS -- no single global NB depth/width; per-band
+# only. Declared absent rather than guessing a band (D2, MOR-2015).
+get_nb_depth = { absent = "IC-9700 CI-V Reference Guide p.11: no single global NB depth/width; per-band only (0322/0325/0328 resp. 0323/0326/0329), unreachable by this single-key command" }
+set_nb_depth = { absent = "IC-9700 CI-V Reference Guide p.11: no single global NB depth/width; per-band only (0322/0325/0328 resp. 0323/0326/0329), unreachable by this single-key command" }
+get_nb_width = { absent = "IC-9700 CI-V Reference Guide p.11: no single global NB depth/width; per-band only (0322/0325/0328 resp. 0323/0326/0329), unreachable by this single-key command" }
+set_nb_width = { absent = "IC-9700 CI-V Reference Guide p.11: no single global NB depth/width; per-band only (0322/0325/0328 resp. 0323/0326/0329), unreachable by this single-key command" }
+get_vox_delay = [0x1A, 0x05, 0x03, 0x30]     # source: IC-9700 CI-V Reference Guide p.11, control 0330 (0.0-2.0 sec, 0.1-sec steps)
+set_vox_delay = [0x1A, 0x05, 0x03, 0x30]     # source: IC-9700 CI-V Reference Guide p.11, control 0330 (0.0-2.0 sec, 0.1-sec steps)
+get_ref_adjust = [0x1A, 0x05, 0x00, 0x72]    # source: IC-9700 CI-V Reference Guide p.6, control 0072 (a separate REF Adjust (FINE) exists at 0073, not represented here)
+set_ref_adjust = [0x1A, 0x05, 0x00, 0x72]    # source: IC-9700 CI-V Reference Guide p.6, control 0072 (a separate REF Adjust (FINE) exists at 0073, not represented here)
 
 [protocol]
 type = "civ"
