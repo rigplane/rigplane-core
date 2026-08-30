@@ -1249,10 +1249,17 @@ set_main_sub_prefix = [0x29]
 scan_start = [0x0E]
 scan_stop = [0x0E]
 scan_set_df_span = [0x0E]                 # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3, 0x0E Ax (x=1-7) -- matches VALID_DF_SPANS
-scan_start_type = [0x0E]                  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3, valid types 01,02,03,12,22,23 -- matches code's VALID_SCAN_TYPES exactly on this radio (no domain mismatch, unlike IC-705 which also has 0x13/0x24)
+scan_start_type = [0x0E]                  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3
 # scan_set_resume: guide documents only 0x0E D0/D3 (2 states); code's
 # VALID_SCAN_RESUME accepts D0-D3 (4 states) -- domain mismatch left open
 # (recorded for MOR-2007, D2, MOR-2017).
+# scan_start_type domain: the guide's own valid-type list for this radio
+# (01,02,03,12,22,23,13 -- 13 = "Start a Fine dF scan") includes 0x13,
+# which code's shared VALID_SCAN_TYPES frozenset (commands/vfo.py) does
+# NOT accept -- IC-7610 has the same 0x13 mismatch IC-705 does. Only 0x24
+# ("Mode Select scan") is IC-705-specific; it is not in the IC-7610 guide.
+# This byte declaration does not resolve that domain gap -- left open,
+# recorded for MOR-2007, same as scan_set_resume above.
 
 # ── System / Power ──
 power_on = [0x18]
@@ -1288,12 +1295,12 @@ set_memory_contents = [0x1A, 0x00]
 # acc1_mod_level (1A 05 0088) is the exact 0x14 0x0B collision already
 # recorded in civ-0x140b-collision-acc1-vs-micgain.md: 14 0B is MIC gain on
 # this radio, not ACC MOD level. Guide confirms both (D2, MOR-2017).
-get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.6, control 0088 "MOD Input > ACC MOD Level"; 14 0B = "MIC gain" (p.4)
-set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.6, control 0088 "MOD Input > ACC MOD Level"; 14 0B = "MIC gain" (p.4)
-get_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x10), p.6, control 0089 "MOD Input > USB MOD Level"
-set_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x10), p.6, control 0089 "MOD Input > USB MOD Level"
-get_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x11), p.6, control 0090 "MOD Input > LAN MOD Level"
-set_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x11), p.6, control 0090 "MOD Input > LAN MOD Level"
+get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.5, control 0088 "MOD Input > ACC MOD Level"; 14 0B = "MIC gain" (p.3)
+set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.5, control 0088 "MOD Input > ACC MOD Level"; 14 0B = "MIC gain" (p.3)
+get_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x10), p.5, control 0089 "MOD Input > USB MOD Level"
+set_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x10), p.5, control 0089 "MOD Input > USB MOD Level"
+get_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x11), p.5, control 0090 "MOD Input > LAN MOD Level"
+set_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]  # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.3 (cmd 0x14 has no sub 0x11), p.5, control 0090 "MOD Input > LAN MOD Level"
 get_data_off_mod_input = [0x1A, 0x05, 0x00, 0x91]
 set_data_off_mod_input = [0x1A, 0x05, 0x00, 0x91]
 get_data1_mod_input = [0x1A, 0x05, 0x00, 0x92]

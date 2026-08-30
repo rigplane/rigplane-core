@@ -312,9 +312,12 @@ class TestCommandMapParity:
         assert cmdmap.get("scan_set_df_span") == (0x0E,)
 
     def test_scan_start_type(self, cmdmap):
-        """D2, MOR-2017: guide's valid types (01,02,03,12,22,23) match
-        code's VALID_SCAN_TYPES exactly on this radio -- no domain
-        mismatch, unlike IC-705 which also documents 0x13/0x24."""
+        """D2, MOR-2017: the base command byte (0x0E) is guide-confirmed.
+        The guide's valid-type list for this radio also includes 0x13
+        ("Start a Fine dF scan"), which code's shared VALID_SCAN_TYPES
+        does not accept -- IC-7610 has the same 0x13 domain mismatch
+        IC-705 does; only 0x24 is IC-705-specific. Not resolved by this
+        byte declaration -- left open, recorded for MOR-2007."""
         assert cmdmap.get("scan_start_type") == (0x0E,)
 
     def test_no_repeater_tone_family(self, cmdmap):
