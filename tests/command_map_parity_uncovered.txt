@@ -1,17 +1,10 @@
 # What tests/test_command_map_parity.py could NOT compare, and how
-# much it did. Tab separated, six row kinds:
-#   census        <name>              <count>
-#   cat-only      <profile>           <commands, every one of them CAT>
-#   gap           <command name>      <profiles whose map omits it>
-#   noargs        <module>:<builder>  no probe value satisfied its OTHER
-#                                     required arguments (cmd_map still
-#                                     optional there -- a genuinely
-#                                     unsynthesisable case)
-#   requires-map  <module>:<builder>  cmd_map has no default (MOR-2006
-#                                     Steps 5..N migrated it) -- this
-#                                     file's cmd_map=None probe can never
-#                                     be accepted, whatever else is tried
-#   unpinned      <module>:<builder>  no compared builder reaches it
+# much it did. Tab separated, five row kinds:
+#   census    <name>              <count>
+#   cat-only  <profile>           <commands, every one of them CAT>
+#   gap       <command name>      <profiles whose map omits it>
+#   noargs    <module>:<builder>  no probe value was accepted
+#   unpinned  <module>:<builder>  no compared builder reaches it
 # A 'gap' row means that profile's CommandMap holds no CI-V entry
 # for the command, so the cmd_map branch raises KeyError and there
 # is no frame to compare. Two causes land a command here: the rig
@@ -26,22 +19,23 @@
 # reachable from a builder that was compared, not sites observed to
 # execute. Every number here is re-measured and asserted by that
 # test. Regenerate, do not edit.
-census	builders_compared	212
+census	builders_compared	230
 census	cat_only_profiles	2
-census	dual_implementation_sites	133
-census	frames_diverged	27
-census	frames_identical	1345
+census	dual_implementation_sites	139
+census	frames_diverged	72
+census	frames_identical	1369
 census	hardcode_only_builders	16
-census	profile_builder_map_gaps	906
+census	profile_builder_map_gaps	993
 census	profiles	8
 census	public_builders	232
-census	sites_compared	122
+census	sites_compared	126
 cat-only	FTX-1	108
 cat-only	TX-500	50
+gap	get_acc1_mod_level	FTX-1,IC-705,TX-500,X6100,X6200
 gap	get_af_level	FTX-1,TX-500
 gap	get_af_mute	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	get_agc	FTX-1,TX-500,X6100
-gap	get_agc_time_constant	FTX-1,IC-705,TX-500,X6100,X6200
+gap	get_agc_time_constant	FTX-1,TX-500,X6100,X6200
 gap	get_alc	FTX-1,TX-500,X6100,X6200
 gap	get_antenna	FTX-1,TX-500,X6100,X6200
 gap	get_anti_vox_gain	FTX-1,TX-500,X6100,X6200
@@ -52,12 +46,18 @@ gap	get_auto_notch	FTX-1,TX-500,X6100,X6200
 gap	get_band_edge_freq	FTX-1,TX-500,X6100
 gap	get_break_in	FTX-1,TX-500,X6100,X6200
 gap	get_break_in_delay	FTX-1,TX-500,X6100,X6200
+gap	get_civ_output_ant	FTX-1,IC-705,TX-500,X6100,X6200
+gap	get_civ_transceive	FTX-1,TX-500,X6100,X6200
 gap	get_comp_meter	FTX-1,TX-500,X6100,X6200
 gap	get_compressor	FTX-1,TX-500,X6100,X6200
 gap	get_compressor_level	FTX-1,TX-500,X6100,X6200
 gap	get_cw_pitch	FTX-1,TX-500,X6100
-gap	get_dash_ratio	FTX-1,TX-500,X6100,X6200
+gap	get_dash_ratio	FTX-1,IC-7300,IC-9700,TX-500,X6100,X6200
+gap	get_data1_mod_input	FTX-1,TX-500,X6100,X6200
+gap	get_data2_mod_input	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
+gap	get_data3_mod_input	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	get_data_mode	FTX-1,TX-500,X6100,X6200
+gap	get_data_off_mod_input	FTX-1,TX-500,X6100,X6200
 gap	get_dial_lock	FTX-1,TX-500,X6100
 gap	get_digisel	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	get_digisel_shift	FTX-1,IC-7300,IC-9700,TX-500,X6100,X6200
@@ -69,19 +69,20 @@ gap	get_freq	FTX-1,TX-500
 gap	get_id_meter	FTX-1,TX-500,X6100,X6200
 gap	get_ip_plus	FTX-1,IC-705,TX-500,X6100,X6200
 gap	get_key_speed	FTX-1,TX-500,X6100
+gap	get_lan_mod_level	FTX-1,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	get_main_sub_band	FTX-1,IC-705,IC-7300,TX-500,X6100,X6200
 gap	get_main_sub_tracking	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	get_manual_notch	FTX-1,TX-500,X6100,X6200
-gap	get_manual_notch_width	FTX-1,IC-705,TX-500,X6100,X6200
+gap	get_manual_notch_width	FTX-1,TX-500,X6100,X6200
 gap	get_mic_gain	FTX-1,TX-500,X6100
 gap	get_mode	FTX-1,TX-500
 gap	get_monitor	FTX-1,TX-500,X6100,X6200
 gap	get_monitor_gain	FTX-1,TX-500,X6100
 gap	get_nb	FTX-1,TX-500,X6100
-gap	get_nb_depth	FTX-1,IC-705,IC-9700,TX-500,X6100,X6200
+gap	get_nb_depth	FTX-1,TX-500,X6100,X6200
 gap	get_nb_level	FTX-1,TX-500,X6100
-gap	get_nb_width	FTX-1,IC-705,IC-9700,TX-500,X6100,X6200
-gap	get_notch_filter	FTX-1,IC-705,TX-500,X6100,X6200
+gap	get_nb_width	FTX-1,TX-500,X6100,X6200
+gap	get_notch_filter	FTX-1,TX-500,X6100,X6200
 gap	get_nr	FTX-1,TX-500,X6100,X6200
 gap	get_nr_level	FTX-1,TX-500,X6100
 gap	get_overflow_status	FTX-1,TX-500,X6100,X6200
@@ -108,7 +109,7 @@ gap	get_scope_during_tx	FTX-1,TX-500,X6100,X6200
 gap	get_scope_edge	FTX-1,TX-500,X6100,X6200
 gap	get_scope_fixed_edge	FTX-1,TX-500,X6100,X6200
 gap	get_scope_hold	FTX-1,TX-500,X6100,X6200
-gap	get_scope_main_sub	FTX-1,TX-500,X6100,X6200
+gap	get_scope_main_sub	FTX-1,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	get_scope_mode	FTX-1,TX-500,X6100,X6200
 gap	get_scope_rbw	FTX-1,TX-500,X6100,X6200
 gap	get_scope_ref	FTX-1,TX-500,X6100,X6200
@@ -117,7 +118,7 @@ gap	get_scope_span	FTX-1,TX-500,X6100,X6200
 gap	get_scope_speed	FTX-1,TX-500,X6100,X6200
 gap	get_scope_vbw	FTX-1,TX-500,X6100,X6200
 gap	get_speech	FTX-1,TX-500,X6100,X6200
-gap	get_split	FTX-1,IC-705,TX-500,X6100,X6200
+gap	get_split	FTX-1,TX-500,X6100,X6200
 gap	get_squelch	FTX-1,TX-500
 gap	get_ssb_tx_bandwidth	FTX-1,TX-500,X6100,X6200
 gap	get_swr	FTX-1,TX-500,X6100
@@ -128,11 +129,12 @@ gap	get_tuner_status	FTX-1,TX-500,X6100
 gap	get_tuning_step	FTX-1,TX-500,X6100,X6200
 gap	get_twin_peak_filter	FTX-1,TX-500,X6100,X6200
 gap	get_tx_freq_monitor	FTX-1,TX-500,X6100,X6200
+gap	get_usb_mod_level	FTX-1,TX-500,X6100,X6200
 gap	get_various_squelch	FTX-1,TX-500,X6100,X6200
 gap	get_vd_meter	FTX-1,TX-500,X6100
 gap	get_vfo	FTX-1,TX-500,X6100
 gap	get_vox	FTX-1,TX-500,X6100,X6200
-gap	get_vox_delay	FTX-1,IC-705,TX-500,X6100,X6200
+gap	get_vox_delay	FTX-1,TX-500,X6100,X6200
 gap	get_vox_gain	FTX-1,TX-500,X6100,X6200
 gap	get_xfc_status	FTX-1,TX-500,X6100,X6200
 gap	power_off	FTX-1,TX-500,X6100,X6200
@@ -140,18 +142,19 @@ gap	power_on	FTX-1,TX-500,X6100,X6200
 gap	ptt_off	FTX-1,TX-500
 gap	ptt_on	FTX-1,TX-500
 gap	quick_dual_watch	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
-gap	quick_split	FTX-1,IC-705,IC-7610,TX-500,X6100,X6200
+gap	quick_split	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
 gap	scan_start	FTX-1,TX-500,X6100,X6200
-gap	scan_start_type	FTX-1,IC-705,IC-7610,TX-500,X6100,X6200
+gap	scan_start_type	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
 gap	scan_stop	FTX-1,TX-500,X6100,X6200
 gap	scope_data_output	FTX-1,TX-500,X6100,X6200
 gap	scope_off	FTX-1,TX-500,X6100,X6200
 gap	scope_on	FTX-1,TX-500,X6100,X6200
 gap	send_cw	FTX-1,TX-500,X6100,X6200
+gap	set_acc1_mod_level	FTX-1,IC-705,TX-500,X6100,X6200
 gap	set_af_level	FTX-1,TX-500
 gap	set_af_mute	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	set_agc	FTX-1,TX-500,X6100
-gap	set_agc_time_constant	FTX-1,IC-705,TX-500,X6100,X6200
+gap	set_agc_time_constant	FTX-1,TX-500,X6100,X6200
 gap	set_antenna	FTX-1,TX-500,X6100,X6200
 gap	set_anti_vox_gain	FTX-1,TX-500,X6100,X6200
 gap	set_apf_type_level	FTX-1,IC-7300,TX-500,X6100,X6200
@@ -160,11 +163,17 @@ gap	set_audio_peak_filter	FTX-1,TX-500,X6100,X6200
 gap	set_auto_notch	FTX-1,TX-500,X6100,X6200
 gap	set_break_in	FTX-1,TX-500,X6100,X6200
 gap	set_break_in_delay	FTX-1,TX-500,X6100,X6200
+gap	set_civ_output_ant	FTX-1,IC-705,TX-500,X6100,X6200
+gap	set_civ_transceive	FTX-1,TX-500,X6100,X6200
 gap	set_compressor	FTX-1,TX-500,X6100,X6200
 gap	set_compressor_level	FTX-1,TX-500,X6100,X6200
 gap	set_cw_pitch	FTX-1,TX-500,X6100
-gap	set_dash_ratio	FTX-1,TX-500,X6100,X6200
+gap	set_dash_ratio	FTX-1,IC-7300,IC-9700,TX-500,X6100,X6200
+gap	set_data1_mod_input	FTX-1,TX-500,X6100,X6200
+gap	set_data2_mod_input	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
+gap	set_data3_mod_input	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	set_data_mode	FTX-1,TX-500,X6100,X6200
+gap	set_data_off_mod_input	FTX-1,TX-500,X6100,X6200
 gap	set_dial_lock	FTX-1,TX-500,X6100
 gap	set_digisel	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	set_digisel_shift	FTX-1,IC-7300,IC-9700,TX-500,X6100,X6200
@@ -175,18 +184,19 @@ gap	set_filter_width	FTX-1,TX-500,X6100,X6200
 gap	set_freq	FTX-1,TX-500
 gap	set_ip_plus	FTX-1,IC-705,TX-500,X6100,X6200
 gap	set_key_speed	FTX-1,TX-500,X6100
+gap	set_lan_mod_level	FTX-1,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	set_main_sub_tracking	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	set_manual_notch	FTX-1,TX-500,X6100,X6200
-gap	set_manual_notch_width	FTX-1,IC-705,TX-500,X6100,X6200
+gap	set_manual_notch_width	FTX-1,TX-500,X6100,X6200
 gap	set_mic_gain	FTX-1,TX-500,X6100
 gap	set_mode	FTX-1,TX-500
 gap	set_monitor	FTX-1,TX-500,X6100,X6200
 gap	set_monitor_gain	FTX-1,TX-500,X6100
 gap	set_nb	FTX-1,TX-500,X6100
-gap	set_nb_depth	FTX-1,IC-705,IC-9700,TX-500,X6100,X6200
+gap	set_nb_depth	FTX-1,TX-500,X6100,X6200
 gap	set_nb_level	FTX-1,TX-500,X6100
-gap	set_nb_width	FTX-1,IC-705,IC-9700,TX-500,X6100,X6200
-gap	set_notch_filter	FTX-1,IC-705,TX-500,X6100,X6200
+gap	set_nb_width	FTX-1,TX-500,X6100,X6200
+gap	set_notch_filter	FTX-1,TX-500,X6100,X6200
 gap	set_nr	FTX-1,TX-500,X6100,X6200
 gap	set_nr_level	FTX-1,TX-500,X6100
 gap	set_pbt_inner	FTX-1,TX-500,X6100,X6200
@@ -212,9 +222,10 @@ gap	set_tuner_status	FTX-1,TX-500,X6100
 gap	set_tuning_step	FTX-1,TX-500,X6100,X6200
 gap	set_twin_peak_filter	FTX-1,TX-500,X6100,X6200
 gap	set_tx_freq_monitor	FTX-1,TX-500,X6100,X6200
+gap	set_usb_mod_level	FTX-1,TX-500,X6100,X6200
 gap	set_vfo	FTX-1,TX-500,X6100
 gap	set_vox	FTX-1,TX-500,X6100,X6200
-gap	set_vox_delay	FTX-1,IC-705,TX-500,X6100,X6200
+gap	set_vox_delay	FTX-1,TX-500,X6100,X6200
 gap	set_vox_gain	FTX-1,TX-500,X6100,X6200
 gap	set_xfc_status	FTX-1,TX-500,X6100,X6200
 gap	stop_cw	FTX-1,TX-500,X6100,X6200
@@ -223,24 +234,6 @@ gap	system_time	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
 gap	utc_offset	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
 noargs	vfo.py:scan_set_df_span
 noargs	vfo.py:scan_set_resume
-requires-map	config.py:get_acc1_mod_level
-requires-map	config.py:get_civ_output_ant
-requires-map	config.py:get_civ_transceive
-requires-map	config.py:get_data1_mod_input
-requires-map	config.py:get_data2_mod_input
-requires-map	config.py:get_data3_mod_input
-requires-map	config.py:get_data_off_mod_input
-requires-map	config.py:get_lan_mod_level
-requires-map	config.py:get_usb_mod_level
-requires-map	config.py:set_acc1_mod_level
-requires-map	config.py:set_civ_output_ant
-requires-map	config.py:set_civ_transceive
-requires-map	config.py:set_data1_mod_input
-requires-map	config.py:set_data2_mod_input
-requires-map	config.py:set_data3_mod_input
-requires-map	config.py:set_data_off_mod_input
-requires-map	config.py:set_lan_mod_level
-requires-map	config.py:set_usb_mod_level
 unpinned	antenna.py:get_rx_antenna_ant2
 unpinned	antenna.py:set_rx_antenna_ant2
 unpinned	power.py:get_powerstat
@@ -248,7 +241,9 @@ unpinned	system.py:set_system_date
 unpinned	system.py:set_system_time
 unpinned	system.py:set_utc_offset
 unpinned	vfo.py:quick_dual_watch
+unpinned	vfo.py:quick_split
 unpinned	vfo.py:scan_set_df_span
 unpinned	vfo.py:scan_set_resume
+unpinned	vfo.py:scan_start_type
 unpinned	vfo.py:set_dual_watch_off
 unpinned	vfo.py:set_dual_watch_on
