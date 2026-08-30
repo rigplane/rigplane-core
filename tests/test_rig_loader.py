@@ -2680,17 +2680,19 @@ class TestFilterShapeDomainDeclaredOrCapabilityAbsent:
 
 
 class TestNoShippedProfileUsesAbsentSpellingYet:
-    """MOR-2005 step 4a lands only the ``{ absent = "<source>" }`` spelling
+    """MOR-2005 step 4a landed only the ``{ absent = "<source>" }`` spelling
     itself (plan `docs/plans/2026-08-29-profile-driven-command-bytes.md`
-    §8.1 D1/D2) — it does not fill any profile with it. This is the
-    regression pin for that: today every shipped ``rigs/*.toml`` yields
-    zero ``AbsentCommandSpec`` entries. D2's filling work is separate,
-    ticket-tracked, later work; once a profile starts using the spelling,
-    delete or narrow this test (it is not a promise the spelling stays
-    unused, only a record that it is unused as of this PR).
+    §8.1 D1/D2) — it did not fill any profile with it. D2's filling work is
+    separate, ticket-tracked, later work: MOR-2014 is the first to land it,
+    for ``ic7300.toml`` (27 commands, D2 documentary + live-bench verdicts).
+    This pin is narrowed rather than deleted so every *other* shipped
+    profile stays proven empty until its own D2 pass fills it too — narrow
+    further (or delete) as each profile gets filled.
     """
 
-    @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+    _NOT_YET_FILLED = tuple(p for p in _SHIPPED_RIG_TOMLS if p.stem != "ic7300")
+
+    @pytest.mark.parametrize("toml_path", _NOT_YET_FILLED, ids=lambda p: p.stem)
     def test_no_absent_commands_declared(self, toml_path):
         rig = load_rig(toml_path)
         absent = {
@@ -2702,3 +2704,54 @@ class TestNoShippedProfileUsesAbsentSpellingYet:
             f"{toml_path.name}: declares absent commands {sorted(absent)} — "
             f"update/delete this pin now that D2 filling has started"
         )
+
+
+class TestIc7300DeclaresAbsentCommands:
+    """MOR-2014 (D2): IC-7300 is the first shipped profile to use the
+    ``{ absent = "<source>" }`` spelling, for 27 commands the IC-7300
+    Advanced Manual (11a) command table (pp.19-2..19-8) confirms have no
+    row on this radio. Pinned by name, not just count, so a future D2 pass
+    on another command can't silently swap one of these for a different
+    one and still pass a bare-count check.
+    """
+
+    _EXPECTED_ABSENT = frozenset(
+        {
+            "get_af_mute",
+            "set_af_mute",
+            "get_apf_type_level",
+            "set_apf_type_level",
+            "get_data2_mod_input",
+            "set_data2_mod_input",
+            "get_data3_mod_input",
+            "set_data3_mod_input",
+            "get_digisel",
+            "set_digisel",
+            "get_digisel_shift",
+            "set_digisel_shift",
+            "get_drive_gain",
+            "set_drive_gain",
+            "get_dual_watch",
+            "set_dual_watch",
+            "get_lan_mod_level",
+            "set_lan_mod_level",
+            "get_main_sub_band",
+            "get_main_sub_tracking",
+            "set_main_sub_tracking",
+            "get_powerstat",
+            "get_quick_dual_watch",
+            "set_quick_dual_watch",
+            "quick_dual_watch",
+            "get_rx_antenna_ant2",
+            "set_rx_antenna_ant2",
+        }
+    )
+
+    def test_absent_command_names_match(self):
+        profile = load_rig(RIGS_DIR / "ic7300.toml").to_profile()
+        assert profile.absent_command_names == self._EXPECTED_ABSENT
+
+    def test_absent_commands_excluded_from_command_map(self):
+        cmd_map = load_rig(RIGS_DIR / "ic7300.toml").to_command_map()
+        for name in self._EXPECTED_ABSENT:
+            assert not cmd_map.has(name), f"{name} declared absent but still in map"

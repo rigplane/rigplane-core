@@ -32,13 +32,16 @@ IC-7300	config.py:set_civ_transceive	enabled=False	map=fefe94e01a05007100fd fall
 IC-7300	config.py:set_data1_mod_input	source=0	map=fefe94e01a05006700fd fallback=fefe94e01a05009200fd
 IC-7300	config.py:set_data_off_mod_input	source=0	map=fefe94e01a05006600fd fallback=fefe94e01a05009100fd
 IC-7300	config.py:set_usb_mod_level	level=0	map=fefe94e01a0500650000fd fallback=fefe94e014100000fd
+IC-7300	levels.py:get_dash_ratio	(no arguments)	map=fefe94e01a050161fd fallback=fefe94e01a050228fd
 IC-7300	levels.py:get_nb_depth	(no arguments)	map=fefe94e01a050189fd fallback=fefe94e01a050290fd
 IC-7300	levels.py:get_nb_width	(no arguments)	map=fefe94e01a050190fd fallback=fefe94e01a050291fd
 IC-7300	levels.py:get_vox_delay	(no arguments)	map=fefe94e01a050191fd fallback=fefe94e01a050292fd
+IC-7300	levels.py:set_dash_ratio	value=30	map=fefe94e01a05016130fd fallback=fefe94e01a05022830fd
 IC-7300	levels.py:set_nb_depth	value=0	map=fefe94e01a05018900fd fallback=fefe94e01a05029000fd
 IC-7300	levels.py:set_nb_width	value=0	map=fefe94e01a0501900000fd fallback=fefe94e01a0502910000fd
 IC-7300	levels.py:set_vox_delay	value=0	map=fefe94e01a05019100fd fallback=fefe94e01a05029200fd
 IC-7300	vfo.py:get_quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
+IC-7300	vfo.py:quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
 IC-7300	vfo.py:set_quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
 IC-7610	config.py:get_acc1_mod_level	(no arguments)	map=fefe98e01a050088fd fallback=fefe98e0140bfd
 IC-7610	config.py:get_civ_output_ant	(no arguments)	map=fefe98e01c04fd fallback=fefe98e01a050130fd

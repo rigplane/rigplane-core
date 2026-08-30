@@ -272,6 +272,33 @@ class TestCommandOverrides:
     def test_get_quick_split(self, cmdmap):
         assert cmdmap.get("get_quick_split") == (0x1A, 0x05, 0x00, 0x30)
 
+    def test_quick_split(self, cmdmap):
+        """Bare ``quick_split`` key (D2, MOR-2014) -- same bytes as the
+        get_/set_ aliases; the fallback's 0x33 is split lock, not quick
+        split, on this radio (recorded divergence, not a bug)."""
+        assert cmdmap.get("quick_split") == (0x1A, 0x05, 0x00, 0x30)
+
+    def test_get_dash_ratio(self, cmdmap):
+        """D2, MOR-2014: control 0161, IC-7300 Advanced Manual (11a) p.19-6;
+        live bench 2026-08-30 read confirmed 30."""
+        assert cmdmap.get("get_dash_ratio") == (0x1A, 0x05, 0x01, 0x61)
+
+    def test_set_dash_ratio(self, cmdmap):
+        assert cmdmap.get("set_dash_ratio") == (0x1A, 0x05, 0x01, 0x61)
+
+    def test_scan_start_type(self, cmdmap):
+        """D2, MOR-2014: IC-7300 Advanced Manual (11a) p.19-3, 0x0E family;
+        live bench 2026-08-30: 0E 13 and 0E 00 both ACKed."""
+        assert cmdmap.get("scan_start_type") == (0x0E,)
+
+    def test_get_scope_main_sub(self, cmdmap):
+        """D2, MOR-2014: exists with a fixed reply (00 = Main, single
+        receiver) -- IC-7300 Advanced Manual (11a) p.19-7; live bench
+        2026-08-30 replied 27 12 00. Supersedes the old
+        TestRemovedCommands.test_no_scope_main_sub, which assumed the
+        command was entirely absent from the wire."""
+        assert cmdmap.get("get_scope_main_sub") == (0x27, 0x12)
+
     def test_get_nb_depth(self, cmdmap):
         assert cmdmap.get("get_nb_depth") == (0x1A, 0x05, 0x01, 0x89)
 
@@ -355,9 +382,6 @@ class TestRemovedCommands:
     def test_no_drive_gain(self, cmdmap):
         assert not cmdmap.has("get_drive_gain")
         assert not cmdmap.has("set_drive_gain")
-
-    def test_no_scope_main_sub(self, cmdmap):
-        assert not cmdmap.has("get_scope_main_sub")
 
 
 # ── Spectrum params ────────────────────────────────────────────
