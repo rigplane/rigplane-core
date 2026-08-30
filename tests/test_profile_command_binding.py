@@ -34,6 +34,7 @@ profile's map, plain or empty.
 from __future__ import annotations
 
 import functools
+import inspect
 import pathlib
 import sys
 from typing import Any
@@ -47,6 +48,11 @@ from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.runtime.radio import CoreRadio
+
+# Reused rather than re-implemented, per the MOR-2006 drift-guard extension:
+# the same probe-ladder search test_command_map_parity.py uses to find a
+# builder's required arguments (see TestExposedKeyDriftGuard below).
+from test_command_map_parity import _candidate_kwargs, _split_params
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RIGS_DIR = REPO_ROOT / "rigs"
@@ -221,8 +227,20 @@ def _exposed_builders() -> list[tuple[str, Any]]:
     shares the object because it shares the underlying function; two
     distinct builders never do, even if their keys happen to return the
     same literal).
+
+    Deduplicated on ``(id(key_fn), qualname)``, not ``id(key_fn)`` alone
+    (a Step 3/4 review trap recorded against MOR-2006): bare ``id``
+    dedup goes false-green the moment two *distinct* builders ever end up
+    sharing one ``cmd_map_key`` callable object -- e.g. a shared, named key
+    function (unlike each builder's own one-off ``lambda``) passed to
+    ``@expose_command_key`` on two different functions by mistake -- because
+    the second builder found would be silently skipped as "the same
+    alias" and never exercised below. The alias case this function must
+    still collapse (``speech = get_speech``) keeps working: both names
+    resolve to the same underlying function, so they share both ``id``
+    and ``qualname``. Two genuinely different builders share neither.
     """
-    seen: set[int] = set()
+    seen: set[tuple[int, str]] = set()
     found: list[tuple[str, Any]] = []
     for name in commands.__all__:
         value = getattr(commands, name, None)
@@ -231,7 +249,7 @@ def _exposed_builders() -> list[tuple[str, Any]]:
         key_fn = getattr(value, "cmd_map_key", None)
         if key_fn is None:
             continue
-        identity = id(key_fn)
+        identity = (id(key_fn), getattr(value, "__qualname__", name))
         if identity in seen:
             continue
         seen.add(identity)
@@ -248,7 +266,61 @@ class TestExposedKeyDriftGuard:
     ``cmd_map_key(cmd_map)``. Two probe maps exercise both branches of
     ``get_speech``'s per-map probe; the other exposed builders (ptt_on,
     ptt_off) ignore the map and must produce the same literal for both.
+
+    A fixed call shape of ``builder(to_addr=..., cmd_map=...)`` was the
+    original design here, and it broke the moment MOR-2006 exposed
+    ``commands/config.py``'s nine setters, each with a required value
+    argument (``level``, ``source`` or ``enabled``): every one of them
+    raised ``missing 1 required positional argument`` before
+    ``_build_from_map`` was ever reached, so the drift guard never ran the
+    check it exists for. ``_synthesize_case`` below finds a value that
+    argument accepts, reusing ``tests/test_command_map_parity.py``'s own
+    probe-ladder search (``_split_params``/``_candidate_kwargs``) rather
+    than re-implementing it -- ``to_addr``/``from_addr``/``cmd_map`` are
+    supplied by the harness, so those never need synthesising here.
     """
+
+    @staticmethod
+    def _synthesize_case(builder: Any, cmd_map: CommandMap) -> dict[str, Any]:
+        """First argument combination *builder* accepts, beyond the harness.
+
+        Probed with ``_build_from_map`` already faked out (see the caller),
+        so a builder's own validation (e.g. ``config.py:
+        set_data_off_mod_input``'s ``0 <= source <= 5``) is what is being
+        satisfied here, never a real map lookup -- the probe *cmd_map*'s
+        contents never matter to this search, only its type.
+
+        Synthesises against ``inspect.unwrap(builder)``, not *builder*
+        itself -- a full-suite-only failure (18 deterministic failures,
+        standalone file green) traced to this: when one of the five files
+        that rebind the shared ``rigplane.commands`` namespace into
+        ``functools.partial`` objects (``bind_default_addr_module``, this
+        class's docstring) collects first, ``_exposed_builders`` enumerates
+        a partial, not the raw function. Its ``inspect.signature`` is
+        identical to the raw function's (verified directly), so
+        ``_split_params`` is unaffected -- but ``functools.partial`` has no
+        ``__globals__`` (``update_wrapper`` never copies it), so
+        ``_values_for``'s ``eval(param.annotation, fn.__globals__)`` raises,
+        its bare ``except Exception: return ()`` turns that into an empty
+        probe ladder for every required parameter, and
+        ``_candidate_kwargs`` yields nothing at all -- the loop below never
+        calls *builder* even once. ``inspect.unwrap`` follows the
+        ``__wrapped__`` chain ``update_wrapper`` sets, however many
+        collected files stacked a layer each, back to a function with a
+        real ``__globals__``.
+        """
+        target = inspect.unwrap(builder)
+        required, _optional = _split_params(target)
+        for kwargs in _candidate_kwargs(target, required):
+            try:
+                builder(to_addr=0x94, cmd_map=cmd_map, **kwargs)
+            except Exception:
+                continue
+            return kwargs
+        raise AssertionError(
+            f"{builder.__qualname__}: no synthesized argument combination was "
+            "accepted, even with _build_from_map faked out"
+        )
 
     @pytest.mark.parametrize(
         "cmd_map", _PROBE_MAPS, ids=["empty_map", "set_speech_map"]
@@ -279,7 +351,8 @@ class TestExposedKeyDriftGuard:
         # dotted-string lookup would otherwise walk through.
         defining_module = sys.modules[builder.__module__]
         monkeypatch.setattr(defining_module, "_build_from_map", _fake_build_from_map)
-        builder(to_addr=0x94, cmd_map=cmd_map)
+        case_kwargs = self._synthesize_case(builder, cmd_map)
+        builder(to_addr=0x94, cmd_map=cmd_map, **case_kwargs)
         assert "key" in captured, (
             f"{builder.__qualname__} did not call _build_from_map with cmd_map set"
         )

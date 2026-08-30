@@ -106,7 +106,8 @@ _HARNESS_PARAMS = frozenset({"to_addr", "from_addr", "cmd_map"})
 _PROBE_ADDR = 0x94
 # Probe values, tried in order. The search that consumes them has no
 # per-builder branch: a builder no value satisfies is reported as a
-# ``noargs`` row, never given a bespoke argument here.
+# ``noargs`` (or, if its own ``cmd_map`` is required, ``requires-map``)
+# row, never given a bespoke argument here.
 _INTS = (0, 1, 2, 3, 5, 10, 18, 30, 50, 100, 255, 600, 1000, 2026)
 _FREQS = (14_074_000, 21_074_000)
 _FLOATS = (0.0, 88.5, 1000.0, 14_074_000.0)
@@ -301,6 +302,22 @@ def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, .
     return ()
 
 
+def _requires_cmd_map(fn: typing.Any) -> bool:
+    """True if *fn*'s ``cmd_map`` parameter has no default.
+
+    A migrated builder (MOR-2006 Steps 5..N) can never accept this file's
+    ``cmd_map=None`` probe (`_accepts`), whatever value its other
+    parameters are given -- a purely structural fact about the signature,
+    independent of why any particular probe call failed. Used in `_cases`
+    to tell that population apart from a builder no probe value happens to
+    satisfy for an unrelated reason (e.g. `vfo.py: scan_set_df_span`,
+    still optional-`cmd_map`, whose own argument has no value in `_INTS`
+    that passes its validation).
+    """
+    param = inspect.signature(fn).parameters.get("cmd_map")
+    return param is not None and param.default is inspect.Parameter.empty
+
+
 def _split_params(
     fn: typing.Any,
 ) -> tuple[list[inspect.Parameter], list[inspect.Parameter]]:
@@ -356,7 +373,9 @@ def _format_case(kwargs: dict[str, typing.Any]) -> str:
 
 
 @functools.lru_cache(maxsize=1)
-def _cases() -> tuple[dict[Key, list[dict[str, typing.Any]]], frozenset[Key]]:
+def _cases() -> tuple[
+    dict[Key, list[dict[str, typing.Any]]], frozenset[Key], frozenset[Key]
+]:
     """Argument cases per builder, plus the builders none could be found for.
 
     The first case passes only required arguments; one further case per
@@ -369,16 +388,25 @@ def _cases() -> tuple[dict[Key, list[dict[str, typing.Any]]], frozenset[Key]]:
     every remaining optional argument the same way, on the same reasoning.
     Argument validation happens before a builder reads ``to_addr``, so
     this search runs once and its result is reused for every profile.
+
+    A builder with no accepted combination splits into two populations,
+    per ``_requires_cmd_map``: one whose ``cmd_map`` is required, so this
+    file's ``cmd_map=None`` probe can never be accepted regardless of any
+    other argument's value (MOR-2006 Steps 5..N — a fact about the
+    signature, not a failed search); and the genuine ``unsynthesisable``
+    case, where ``cmd_map`` is still optional and no value in the probe
+    ladders for its *other* required arguments satisfies its validation.
     """
     per_builder: dict[Key, list[dict[str, typing.Any]]] = {}
     unsynthesisable: set[Key] = set()
+    requires_map: set[Key] = set()
     for key, fn in _builders().items():
         required, optional = _split_params(fn)
         base = next(
             (kw for kw in _candidate_kwargs(fn, required) if _accepts(fn, kw)), None
         )
         if base is None:
-            unsynthesisable.add(key)
+            (requires_map if _requires_cmd_map(fn) else unsynthesisable).add(key)
             continue
         cases = [base]
         for param in optional:
@@ -390,7 +418,7 @@ def _cases() -> tuple[dict[Key, list[dict[str, typing.Any]]], frozenset[Key]]:
                     cases.append(probe)
                     break
         per_builder[key] = cases
-    return per_builder, frozenset(unsynthesisable)
+    return per_builder, frozenset(unsynthesisable), frozenset(requires_map)
 
 
 # ── the comparison ──
@@ -401,6 +429,7 @@ class _Report(typing.NamedTuple):
     map_gaps: dict[str, tuple[str, ...]]
     cat_only_profiles: dict[str, int]
     unsynthesisable: tuple[str, ...]
+    requires_map: tuple[str, ...]
     uncompared_sites: tuple[str, ...]
     census: dict[str, int]
 
@@ -424,7 +453,7 @@ def _cat_only_profiles(rigs: dict[str, typing.Any]) -> dict[str, int]:
 
 @functools.lru_cache(maxsize=1)
 def _report() -> _Report:
-    per_builder, unsynthesisable = _cases()
+    per_builder, unsynthesisable, requires_map = _cases()
     rigs = discover_rigs(RIGS_DIR)
     divergences: dict[tuple[str, str, str], str] = {}
     gaps: dict[str, set[str]] = defaultdict(set)
@@ -463,6 +492,7 @@ def _report() -> _Report:
         map_gaps={name: tuple(sorted(models)) for name, models in gaps.items()},
         cat_only_profiles=cat_only,
         unsynthesisable=tuple(sorted(f"{m}:{f}" for m, f in unsynthesisable)),
+        requires_map=tuple(sorted(f"{m}:{f}" for m, f in requires_map)),
         uncompared_sites=tuple(
             sorted(f"{m}:{f}" for m, f in _graph().sites - compared)
         ),
@@ -510,12 +540,19 @@ def _render_divergences(report: _Report) -> str:
 def _render_uncovered(report: _Report) -> str:
     header = [
         "# What tests/test_command_map_parity.py could NOT compare, and how",
-        "# much it did. Tab separated, five row kinds:",
-        "#   census    <name>              <count>",
-        "#   cat-only  <profile>           <commands, every one of them CAT>",
-        "#   gap       <command name>      <profiles whose map omits it>",
-        "#   noargs    <module>:<builder>  no probe value was accepted",
-        "#   unpinned  <module>:<builder>  no compared builder reaches it",
+        "# much it did. Tab separated, six row kinds:",
+        "#   census        <name>              <count>",
+        "#   cat-only      <profile>           <commands, every one of them CAT>",
+        "#   gap           <command name>      <profiles whose map omits it>",
+        "#   noargs        <module>:<builder>  no probe value satisfied its OTHER",
+        "#                                     required arguments (cmd_map still",
+        "#                                     optional there -- a genuinely",
+        "#                                     unsynthesisable case)",
+        "#   requires-map  <module>:<builder>  cmd_map has no default (MOR-2006",
+        "#                                     Steps 5..N migrated it) -- this",
+        "#                                     file's cmd_map=None probe can never",
+        "#                                     be accepted, whatever else is tried",
+        "#   unpinned      <module>:<builder>  no compared builder reaches it",
         "# A 'gap' row means that profile's CommandMap holds no CI-V entry",
         "# for the command, so the cmd_map branch raises KeyError and there",
         "# is no frame to compare. Two causes land a command here: the rig",
@@ -541,6 +578,7 @@ def _render_uncovered(report: _Report) -> str:
         for name, models in sorted(report.map_gaps.items())
     ]
     rows += [f"noargs\t{name}" for name in report.unsynthesisable]
+    rows += [f"requires-map\t{name}" for name in report.requires_map]
     rows += [f"unpinned\t{name}" for name in report.uncompared_sites]
     return "\n".join(header + rows) + "\n"
 
@@ -586,7 +624,8 @@ def test_allowlist_records_the_observed_frames(report: _Report) -> None:
 
 
 def test_uncovered_inventory_matches(report: _Report) -> None:
-    """Census, CAT-only profiles, map gaps, noargs builders, uncompared sites."""
+    """Census, CAT-only profiles, map gaps, noargs/requires-map builders,
+    uncompared sites."""
     rows = _read_rows(UNCOVERED_FILE)
     assert {r[1]: int(r[2]) for r in rows if r[0] == "census"} == report.census
     assert {r[1]: int(r[2]) for r in rows if r[0] == "cat-only"} == (
@@ -596,6 +635,7 @@ def test_uncovered_inventory_matches(report: _Report) -> None:
         report.map_gaps
     )
     assert tuple(r[1] for r in rows if r[0] == "noargs") == report.unsynthesisable
+    assert tuple(r[1] for r in rows if r[0] == "requires-map") == report.requires_map
     assert tuple(r[1] for r in rows if r[0] == "unpinned") == report.uncompared_sites
 
 

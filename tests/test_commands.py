@@ -1,11 +1,13 @@
 """Tests for CI-V command encoding and decoding."""
 
 import inspect
+from pathlib import Path
 
 import pytest
 import rigplane.commands as raw_commands
 
 from rigplane import IC_7610_ADDR
+from rigplane.rig_loader import load_rig
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
@@ -39,6 +41,8 @@ from rigplane.types import (
     SsbTxBandwidth,
 )
 from _command_test_helpers import bind_default_addr_globals, bind_default_addr_module
+
+RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
 
 _ORIGINAL_COMMANDS = {
     name: getattr(raw_commands, name) for name in raw_commands.__all__
@@ -2118,153 +2122,189 @@ class TestSystemConfigCommands:
         result = parse_bool_response(frame, command=0x12, sub=0x01)
         assert result is False
 
-    # --- Modulation Levels (0x14 0x0B / 0x10 / 0x11) ---
+    # --- Modulation Levels, Modulation Input Routing and CI-V Options ---
+    #
+    # commands/config.py migrated onto the bound command map in MOR-2006
+    # Steps 5..N (module 1): every builder here now requires ``cmd_map``,
+    # and the wire bytes it builds are whatever the profile declares (IC-7610
+    # extended menu addresses, per ``rigs/ic7610.toml``) rather than a
+    # hardcoded fallback -- so the expected frames below are pinned against
+    # the real IC-7610 map, not hand-typed CI-V literals, per MOR-2006's
+    # "prefer load_rig(...) maps over hand literals" convention.
 
-    def test_get_acc1_mod_level_frame(self) -> None:
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_get_acc1_mod_level_frame(self, cmd_map) -> None:
         from rigplane.commands import get_acc1_mod_level
 
-        frame = get_acc1_mod_level()
-        assert frame == b"\xfe\xfe\x98\xe0\x14\x0b\xfd"
+        frame = get_acc1_mod_level(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x88]
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x88\xfd"
 
-    def test_set_acc1_mod_level_128(self) -> None:
+    def test_set_acc1_mod_level_128(self, cmd_map) -> None:
         from rigplane.commands import set_acc1_mod_level
 
-        frame = set_acc1_mod_level(128)
+        frame = set_acc1_mod_level(128, cmd_map=cmd_map)
         # 128 BCD-encoded: 0x01 0x28
-        assert frame == b"\xfe\xfe\x98\xe0\x14\x0b\x01\x28\xfd"
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x88\x01\x28\xfd"
 
-    def test_set_acc1_mod_level_0(self) -> None:
+    def test_set_acc1_mod_level_0(self, cmd_map) -> None:
         from rigplane.commands import set_acc1_mod_level
 
-        frame = set_acc1_mod_level(0)
-        assert frame == b"\xfe\xfe\x98\xe0\x14\x0b\x00\x00\xfd"
+        frame = set_acc1_mod_level(0, cmd_map=cmd_map)
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x88\x00\x00\xfd"
 
-    def test_set_acc1_mod_level_255(self) -> None:
+    def test_set_acc1_mod_level_255(self, cmd_map) -> None:
         from rigplane.commands import set_acc1_mod_level
 
-        frame = set_acc1_mod_level(255)
-        assert frame == b"\xfe\xfe\x98\xe0\x14\x0b\x02\x55\xfd"
+        frame = set_acc1_mod_level(255, cmd_map=cmd_map)
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x88\x02\x55\xfd"
 
-    def test_set_acc1_mod_level_rejects_out_of_range(self) -> None:
+    def test_set_acc1_mod_level_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_acc1_mod_level
 
         with pytest.raises(ValueError, match="Level must be 0-255"):
-            set_acc1_mod_level(256)
+            set_acc1_mod_level(256, cmd_map=cmd_map)
 
-    def test_get_usb_mod_level_frame(self) -> None:
+    def test_get_acc1_mod_level_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import get_acc1_mod_level
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_acc1_mod_level()  # type: ignore[call-arg]
+
+    def test_get_acc1_mod_level_rejects_explicit_none_the_same_way(self) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely -- not a bare ``AttributeError`` from
+        ``_build_from_map``'s ``None.get(name)``, the exact path
+        de-delegating from the shared ``_build_ctl_mem_get``/
+        ``_build_ctl_mem_set`` templates (this migration's rationale)
+        would otherwise reopen."""
+        from rigplane.commands import get_acc1_mod_level
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_acc1_mod_level(cmd_map=None)
+
+    def test_get_usb_mod_level_frame(self, cmd_map) -> None:
         from rigplane.commands import get_usb_mod_level
 
-        frame = get_usb_mod_level()
-        assert frame == b"\xfe\xfe\x98\xe0\x14\x10\xfd"
+        frame = get_usb_mod_level(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_usb_mod_level = [0x1A, 0x05, 0x00, 0x89]
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x89\xfd"
 
-    def test_set_usb_mod_level_100(self) -> None:
+    def test_set_usb_mod_level_100(self, cmd_map) -> None:
         from rigplane.commands import set_usb_mod_level
 
-        frame = set_usb_mod_level(100)
+        frame = set_usb_mod_level(100, cmd_map=cmd_map)
         # 100 BCD-encoded: 0x01 0x00
-        assert frame == b"\xfe\xfe\x98\xe0\x14\x10\x01\x00\xfd"
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x89\x01\x00\xfd"
 
-    def test_get_lan_mod_level_frame(self) -> None:
+    def test_get_lan_mod_level_frame(self, cmd_map) -> None:
         from rigplane.commands import get_lan_mod_level
 
-        frame = get_lan_mod_level()
-        assert frame == b"\xfe\xfe\x98\xe0\x14\x11\xfd"
+        frame = get_lan_mod_level(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_lan_mod_level = [0x1A, 0x05, 0x00, 0x90]
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x90\xfd"
 
-    def test_set_lan_mod_level_50(self) -> None:
+    def test_set_lan_mod_level_50(self, cmd_map) -> None:
         from rigplane.commands import set_lan_mod_level
 
-        frame = set_lan_mod_level(50)
+        frame = set_lan_mod_level(50, cmd_map=cmd_map)
         # 50 BCD-encoded: 0x00 0x50
-        assert frame == b"\xfe\xfe\x98\xe0\x14\x11\x00\x50\xfd"
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x90\x00\x50\xfd"
 
     def test_parse_mod_level_response(self) -> None:
         from rigplane.commands import parse_civ_frame, parse_level_response
 
-        # ACC1 mod level = 128 (0x01 0x28)
-        civ = b"\xfe\xfe\xe0\x98\x14\x0b\x01\x28\xfd"
+        # ACC1 mod level = 128 (0x01 0x28) at the IC-7610 extended address.
+        civ = b"\xfe\xfe\xe0\x98\x1a\x05\x00\x88\x01\x28\xfd"
         frame = parse_civ_frame(civ)
-        level = parse_level_response(frame, command=0x14, sub=0x0B)
+        level = parse_level_response(frame, command=0x1A, sub=0x05, prefix=b"\x00\x88")
         assert level == 128
 
-    # --- Modulation Input Routing (0x1A 0x05 0x00 0x91-0x94) ---
-
-    def test_get_data_off_mod_input_frame(self) -> None:
+    def test_get_data_off_mod_input_frame(self, cmd_map) -> None:
         from rigplane.commands import get_data_off_mod_input
 
-        frame = get_data_off_mod_input()
-        # FE FE 98 E0 1A 05 00 91 FD
+        frame = get_data_off_mod_input(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_data_off_mod_input = [0x1A, 0x05, 0x00, 0x91]
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x91\xfd"
 
-    def test_set_data_off_mod_input_mic(self) -> None:
+    def test_set_data_off_mod_input_mic(self, cmd_map) -> None:
         from rigplane.commands import set_data_off_mod_input
 
-        frame = set_data_off_mod_input(0)  # MIC
+        frame = set_data_off_mod_input(0, cmd_map=cmd_map)  # MIC
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x91\x00\xfd"
 
-    def test_set_data_off_mod_input_lan(self) -> None:
+    def test_set_data_off_mod_input_lan(self, cmd_map) -> None:
         from rigplane.commands import set_data_off_mod_input
 
-        frame = set_data_off_mod_input(5)  # LAN
+        frame = set_data_off_mod_input(5, cmd_map=cmd_map)  # LAN
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x91\x05\xfd"
 
-    def test_set_data_off_mod_input_rejects_out_of_range(self) -> None:
+    def test_set_data_off_mod_input_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_data_off_mod_input
 
         with pytest.raises(ValueError, match="0-5"):
-            set_data_off_mod_input(6)
+            set_data_off_mod_input(6, cmd_map=cmd_map)
 
-    def test_get_data1_mod_input_frame(self) -> None:
+    def test_get_data1_mod_input_frame(self, cmd_map) -> None:
         from rigplane.commands import get_data1_mod_input
 
-        frame = get_data1_mod_input()
+        frame = get_data1_mod_input(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_data1_mod_input = [0x1A, 0x05, 0x00, 0x92]
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x92\xfd"
 
-    def test_set_data1_mod_input_lan(self) -> None:
+    def test_set_data1_mod_input_lan(self, cmd_map) -> None:
         from rigplane.commands import set_data1_mod_input
 
-        frame = set_data1_mod_input(5)  # LAN
+        frame = set_data1_mod_input(5, cmd_map=cmd_map)  # LAN
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x92\x05\xfd"
 
-    def test_set_data1_mod_input_rejects_out_of_range(self) -> None:
+    def test_set_data1_mod_input_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_data1_mod_input
 
         with pytest.raises(ValueError, match="0-5"):
-            set_data1_mod_input(6)
+            set_data1_mod_input(6, cmd_map=cmd_map)
 
-    def test_get_data2_mod_input_frame(self) -> None:
+    def test_get_data2_mod_input_frame(self, cmd_map) -> None:
         from rigplane.commands import get_data2_mod_input
 
-        frame = get_data2_mod_input()
+        frame = get_data2_mod_input(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_data2_mod_input = [0x1A, 0x05, 0x00, 0x93]
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x93\xfd"
 
-    def test_set_data2_mod_input_lan(self) -> None:
+    def test_set_data2_mod_input_lan(self, cmd_map) -> None:
         from rigplane.commands import set_data2_mod_input
 
-        frame = set_data2_mod_input(5)
+        frame = set_data2_mod_input(5, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x93\x05\xfd"
 
-    def test_get_data3_mod_input_frame(self) -> None:
+    def test_get_data3_mod_input_frame(self, cmd_map) -> None:
         from rigplane.commands import get_data3_mod_input
 
-        frame = get_data3_mod_input()
+        frame = get_data3_mod_input(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_data3_mod_input = [0x1A, 0x05, 0x00, 0x94]
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x94\xfd"
 
-    def test_set_data3_mod_input_lan(self) -> None:
+    def test_set_data3_mod_input_lan(self, cmd_map) -> None:
         from rigplane.commands import set_data3_mod_input
 
-        frame = set_data3_mod_input(5)
+        frame = set_data3_mod_input(5, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x94\x05\xfd"
 
-    def test_set_data3_mod_input_lan_usb(self) -> None:
+    def test_set_data3_mod_input_lan_usb(self, cmd_map) -> None:
         from rigplane.commands import set_data3_mod_input
 
-        frame = set_data3_mod_input(4)  # LAN+USB
+        frame = set_data3_mod_input(4, cmd_map=cmd_map)  # LAN+USB
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x00\x94\x04\xfd"
 
     def test_parse_mod_input_response(self) -> None:
         from rigplane.commands import parse_civ_frame, parse_level_response
 
-        # Data Off mod input = 3 (USB)
+        # Data Off mod input = 3 (USB) at the IC-7610 extended address.
         civ = b"\xfe\xfe\xe0\x98\x1a\x05\x00\x91\x03\xfd"
         frame = parse_civ_frame(civ)
         source = parse_level_response(
@@ -2272,53 +2312,55 @@ class TestSystemConfigCommands:
         )
         assert source == 3
 
-    # --- CI-V Options (0x1A 0x05 0x01 0x29 / 0x30) ---
-
-    def test_get_civ_transceive_frame(self) -> None:
+    def test_get_civ_transceive_frame(self, cmd_map) -> None:
         from rigplane.commands import get_civ_transceive
 
-        frame = get_civ_transceive()
-        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x29\xfd"
+        frame = get_civ_transceive(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_civ_transceive = [0x1A, 0x05, 0x01, 0x12]
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x12\xfd"
 
-    def test_set_civ_transceive_on(self) -> None:
+    def test_set_civ_transceive_on(self, cmd_map) -> None:
         from rigplane.commands import set_civ_transceive
 
-        frame = set_civ_transceive(True)
-        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x29\x01\xfd"
+        frame = set_civ_transceive(True, cmd_map=cmd_map)
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x12\x01\xfd"
 
-    def test_set_civ_transceive_off(self) -> None:
+    def test_set_civ_transceive_off(self, cmd_map) -> None:
         from rigplane.commands import set_civ_transceive
 
-        frame = set_civ_transceive(False)
-        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x29\x00\xfd"
+        frame = set_civ_transceive(False, cmd_map=cmd_map)
+        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x12\x00\xfd"
 
-    def test_get_civ_output_ant_frame(self) -> None:
+    def test_get_civ_output_ant_frame(self, cmd_map) -> None:
         from rigplane.commands import get_civ_output_ant
 
-        frame = get_civ_output_ant()
-        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x30\xfd"
+        frame = get_civ_output_ant(cmd_map=cmd_map)
+        # rigs/ic7610.toml: get_civ_output_ant = [0x1C, 0x04] -- a different
+        # CI-V command family entirely, not another 0x1A 0x05 menu address.
+        assert frame == b"\xfe\xfe\x98\xe0\x1c\x04\xfd"
 
-    def test_set_civ_output_ant_on(self) -> None:
+    def test_set_civ_output_ant_on(self, cmd_map) -> None:
         from rigplane.commands import set_civ_output_ant
 
-        frame = set_civ_output_ant(True)
-        assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x30\x01\xfd"
+        frame = set_civ_output_ant(True, cmd_map=cmd_map)
+        assert frame == b"\xfe\xfe\x98\xe0\x1c\x04\x01\xfd"
 
     def test_parse_civ_bool_response(self) -> None:
         from rigplane.commands import parse_bool_response, parse_civ_frame
 
-        # CI-V transceive = ON
-        civ = b"\xfe\xfe\xe0\x98\x1a\x05\x01\x29\x01\xfd"
+        # CI-V transceive = ON at the IC-7610 extended address.
+        civ = b"\xfe\xfe\xe0\x98\x1a\x05\x01\x12\x01\xfd"
         frame = parse_civ_frame(civ)
-        result = parse_bool_response(frame, command=0x1A, sub=0x05, prefix=b"\x01\x29")
+        result = parse_bool_response(frame, command=0x1A, sub=0x05, prefix=b"\x01\x12")
         assert result is True
 
     def test_parse_civ_output_ant_off_response(self) -> None:
         from rigplane.commands import parse_bool_response, parse_civ_frame
 
-        civ = b"\xfe\xfe\xe0\x98\x1a\x05\x01\x30\x00\xfd"
+        # IC-7610's get_civ_output_ant is plain 0x1C 0x04, no data prefix.
+        civ = b"\xfe\xfe\xe0\x98\x1c\x04\x00\xfd"
         frame = parse_civ_frame(civ)
-        result = parse_bool_response(frame, command=0x1A, sub=0x05, prefix=b"\x01\x30")
+        result = parse_bool_response(frame, command=0x1C, sub=0x04)
         assert result is False
 
     # --- System Date (0x1A 0x05 0x01 0x58) ---
