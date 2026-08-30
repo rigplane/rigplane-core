@@ -123,8 +123,11 @@ describe('formatSValue (calibrated radio)', () => {
     expect(formatSValue(-24)).toBe('S5');
   });
 
-  it('returns S9+ for values above S9 but below the next anchor', () => {
-    expect(formatSValue(20)).toBe('S9+');
+  it('returns a continuous S9+ reading for values above S9 but below the next anchor, not the bare "S9+" hole (MOR-2024)', () => {
+    // This profile's only declared over-S9 knot is the S9+60 top anchor —
+    // exactly the wide-gap shape that used to fall through rawToSUnit's
+    // backwards knot search and return the literal "S9+" with no number.
+    expect(formatSValue(20)).toBe('S9+20');
   });
 
   // Kills: the old hardcoded +40 clamp — the documented Icom top anchor is

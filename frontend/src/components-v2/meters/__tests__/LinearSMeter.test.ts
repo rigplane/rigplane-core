@@ -150,12 +150,23 @@ describe('rawToSUnit', () => {
     expect(rawToSUnit(130)).toBe('S9');
   });
 
-  it('returns S9+ for raw just above S9 but below S9+10', () => {
-    expect(rawToSUnit(140)).toBe('S9+');
+  it('reads a continuous dB-over-S9 value for raw between S9 and S9+10, not the bare "S9+" hole (MOR-2024)', () => {
+    // Before MOR-2024, any raw strictly between s9Raw and the FIRST
+    // declared over-S9 knot fell through the backwards knot search and
+    // returned the literal string "S9+" with no number attached.
+    expect(rawToSUnit(140)).toBe('S9+3');
   });
 
   it('returns S9+20 for raw 200', () => {
     expect(rawToSUnit(200)).toBe('S9+20');
+  });
+
+  it('reads continuously between two declared over-S9 knots too, not snapped down to the lower one (MOR-2024)', () => {
+    // raw 220 sits between the S9+20 (200) and S9+40 (240) knots. The old
+    // code walked overPoints backwards and returned the highest knot at
+    // or below v, i.e. it silently under-reported "S9+20" for anything up
+    // to (but not including) 240 -- not just the narrower hole above.
+    expect(rawToSUnit(220)).toBe('S9+30');
   });
 
   it('returns S9+40 for raw 240', () => {

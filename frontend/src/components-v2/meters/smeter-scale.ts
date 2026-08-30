@@ -144,7 +144,6 @@ export function rawToSUnit(raw: number): string {
   const v = Math.max(0, Math.min(MAX_RAW, raw));
   if (!isSmeterCalibrated()) return String(Math.round(v));
 
-  const cal = getCal();
   const s9Raw = getS9Raw();
 
   if (v <= s9Raw) {
@@ -152,16 +151,16 @@ export function rawToSUnit(raw: number): string {
     return `S${Math.min(9, s)}`;
   }
 
-  // Over S9: find matching calibration label
-  const overPoints = cal.filter(p => p.raw > s9Raw);
-  let label = 'S9+';
-  for (let i = overPoints.length - 1; i >= 0; i--) {
-    if (v >= overPoints[i].raw) {
-      label = overPoints[i].label;
-      break;
-    }
-  }
-  return label;
+  // Over S9: an honest, continuous dB-over-S9 reading interpolated from
+  // the profile's own table (MOR-2024) — not a knot-snapped label. The
+  // previous version walked the declared over-S9 knots backwards and
+  // returned the first one at or below `v`, which silently under-reported
+  // any raw strictly between two knots, and fell through to the bare
+  // literal "S9+" with no number at all once `v` was short of every
+  // declared knot (e.g. a profile with a single over-point leaves a wide
+  // gap right above S9 where that used to happen).
+  const over = Math.round(interpolate(v, getCal(), 'actual'));
+  return over > 0 ? `S9+${over}` : 'S9';
 }
 
 /** Map raw 0-255 to dBm value (linear interpolation between calibration
