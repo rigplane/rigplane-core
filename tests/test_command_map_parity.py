@@ -11,10 +11,11 @@ and
 ``test_rig_ic7300.py: test_get_speech_cmd_map_uses_set_speech`` each pin
 ``get_speech`` alone. Outside that subset the two copies could disagree
 silently, and at least one pair does: the ``cmd_map`` branch of
-``config.py: get_acc1_mod_level`` sends the IC-7300/IC-7610/IC-9700
-extended-menu address ``1A 05 00 64`` where the fallback sends the
-legacy command ``14 0B`` -- two different CI-V commands for the same
-control, not a byte-count mismatch. (``scope.py: get_scope_center_type``
+``config.py: get_acc1_mod_level`` sends an extended-menu address --
+``1A 05 00 64`` on IC-7300 and IC-9700, ``1A 05 00 88`` on IC-7610 -- where
+the fallback sends the legacy command ``14 0B`` on all three -- two
+different CI-V commands for the same control, not a byte-count mismatch.
+(``scope.py: get_scope_center_type``
 used to be this module's worked example here: its ``cmd_map`` branch sent
 a bare ``27 1c`` where the fallback appended a receiver byte that turned
 0x1C's read into a SET. MOR-2002 step 2b-vfo-scope closed that by

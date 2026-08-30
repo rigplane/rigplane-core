@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing surfaces. Hand-built restore dicts should use "MAIN"/"SUB".
 - **`rigplane.commands.get_scope_center_type` takes no `receiver` argument**
   (MOR-1981, MOR-2002). The parameter let a caller name the MAIN or SUB
-  scope for this reading, like the library's other seven scope-selector
+  scope for this reading, like the library's other eight scope-selector
   getters, but 0x1C is not one of them: on the wire, `27 1C 00` is a SET of
   center_type=0 (Filter center), not a selector prefix on a read — confirmed
   by a live IC-7300 bench recheck and by all four official Icom CI-V
