@@ -1,5 +1,7 @@
 """Unit tests for DSP level commands — Part 2: special cases (Issue #130)."""
 
+from pathlib import Path
+
 import pytest
 
 from rigplane import commands
@@ -11,10 +13,22 @@ from rigplane.commands import (
     parse_bool_response,
     parse_level_response,
 )
+from rigplane.rig_loader import load_rig
 from rigplane.types import CivFrame, FilterShape, SsbTxBandwidth
 from _command_test_helpers import bind_default_addr_globals
 
 bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
+
+# commands/levels.py migrated onto the bound command map in MOR-2006 Steps
+# 5..N (module 2): get_/set_digisel_shift now require cmd_map. Every case
+# in TestDigiselShift below targets IC-7610 (the bound default) except
+# test_get_digisel_shift_custom_addresses, which overrides to_addr=0xA4
+# (IC-705) explicitly -- that one case gets the IC-705 map to match. Both
+# profiles declare the same [0x14, 0x13] wire tuple (no menu address, no
+# divergence row), so every expected literal below is unchanged.
+RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+_IC7610_CMD_MAP = load_rig(RIG_DIR / "ic7610.toml").to_command_map()
+_IC705_CMD_MAP = load_rig(RIG_DIR / "ic705.toml").to_command_map()
 
 # CI-V frame constants
 _PREAMBLE = b"\xfe\xfe"
@@ -89,55 +103,69 @@ class TestDigiselShift:
     """Tests for get_digisel_shift / set_digisel_shift."""
 
     def test_get_digisel_shift_main_receiver(self) -> None:
-        assert commands.get_digisel_shift(receiver=RECEIVER_MAIN) == _cmd29_get(
-            _CMD_LEVEL, _SUB_DIGISEL_SHIFT, RECEIVER_MAIN
-        )
+        assert commands.get_digisel_shift(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_get(_CMD_LEVEL, _SUB_DIGISEL_SHIFT, RECEIVER_MAIN)
 
     def test_get_digisel_shift_sub_receiver(self) -> None:
-        assert commands.get_digisel_shift(receiver=RECEIVER_SUB) == _cmd29_get(
-            _CMD_LEVEL, _SUB_DIGISEL_SHIFT, RECEIVER_SUB
-        )
+        assert commands.get_digisel_shift(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_get(_CMD_LEVEL, _SUB_DIGISEL_SHIFT, RECEIVER_SUB)
 
     def test_get_digisel_shift_default_is_main(self) -> None:
-        assert commands.get_digisel_shift() == commands.get_digisel_shift(
-            receiver=RECEIVER_MAIN
-        )
+        assert commands.get_digisel_shift(
+            cmd_map=_IC7610_CMD_MAP
+        ) == commands.get_digisel_shift(receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_digisel_shift_zero_main(self) -> None:
         # 0 -> 2-byte BCD: 0x00 0x00
-        assert commands.set_digisel_shift(0, receiver=RECEIVER_MAIN) == _cmd29_set(
+        assert commands.set_digisel_shift(
+            0, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(
             _CMD_LEVEL, _SUB_DIGISEL_SHIFT, 0x00, 0x00, receiver=RECEIVER_MAIN
         )
 
     def test_set_digisel_shift_128_main(self) -> None:
         # 128 -> 2-byte BCD: 0x01 0x28
-        assert commands.set_digisel_shift(128, receiver=RECEIVER_MAIN) == _cmd29_set(
+        assert commands.set_digisel_shift(
+            128, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(
             _CMD_LEVEL, _SUB_DIGISEL_SHIFT, 0x01, 0x28, receiver=RECEIVER_MAIN
         )
 
     def test_set_digisel_shift_255_main(self) -> None:
         # 255 -> 2-byte BCD: 0x02 0x55
-        assert commands.set_digisel_shift(255, receiver=RECEIVER_MAIN) == _cmd29_set(
+        assert commands.set_digisel_shift(
+            255, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(
             _CMD_LEVEL, _SUB_DIGISEL_SHIFT, 0x02, 0x55, receiver=RECEIVER_MAIN
         )
 
     def test_set_digisel_shift_sub_receiver(self) -> None:
-        assert commands.set_digisel_shift(64, receiver=RECEIVER_SUB) == _cmd29_set(
+        assert commands.set_digisel_shift(
+            64, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(
             _CMD_LEVEL, _SUB_DIGISEL_SHIFT, 0x00, 0x64, receiver=RECEIVER_SUB
         )
 
     def test_set_digisel_shift_default_receiver_is_main(self) -> None:
-        assert commands.set_digisel_shift(100) == commands.set_digisel_shift(
-            100, receiver=RECEIVER_MAIN
+        assert commands.set_digisel_shift(
+            100, cmd_map=_IC7610_CMD_MAP
+        ) == commands.set_digisel_shift(
+            100, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
         )
 
     def test_set_digisel_shift_rejects_above_255(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_digisel_shift(256, receiver=RECEIVER_MAIN)
+            commands.set_digisel_shift(
+                256, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+            )
 
     def test_set_digisel_shift_rejects_negative(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_digisel_shift(-1, receiver=RECEIVER_MAIN)
+            commands.set_digisel_shift(
+                -1, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+            )
 
     def test_parse_digisel_shift_zero(self) -> None:
         frame = _response_frame(_CMD_LEVEL, _SUB_DIGISEL_SHIFT, b"\x00\x00")
@@ -167,7 +195,9 @@ class TestDigiselShift:
         )
 
     def test_get_digisel_shift_custom_addresses(self) -> None:
-        frame = commands.get_digisel_shift(to_addr=0xA4, from_addr=0xE1)
+        frame = commands.get_digisel_shift(
+            to_addr=0xA4, from_addr=0xE1, cmd_map=_IC705_CMD_MAP
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 

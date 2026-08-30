@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reach these builders through a radio's bound commands rather than
   calling `rigplane.commands.get_acc1_mod_level(...)` (or any of its
   seventeen siblings above) directly with no map.
+- **`rigplane.commands.levels` builders require `cmd_map`; there is no
+  hardcoded fallback (MOR-2006, Steps 5..N module 2 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** The other
+  half of the ACC1/MIC-gain collision above: `set_mic_gain`'s fallback
+  built the same eight bytes on the IC-7300 as `set_acc1_mod_level`'s did.
+  All fifty builders in this module — RF power/gain, AF level, squelch,
+  APF/NR/PBT/notch/compressor/break-in/NB/DIGI-SEL/drive/monitor/VOX/anti-VOX
+  levels, CW pitch, mic gain, key speed, and the REF-adjust/dash-ratio/NB-depth/
+  NB-width/VOX-delay menu-address group — now require `cmd_map` as a required
+  keyword-only argument; a call that omits it raises `TypeError` the same way
+  as `rigplane.commands.config`'s eighteen. The only production caller,
+  `runtime/radio.py: CoreRadio`, moved onto `self._commands.<builder>(...)`
+  in the same change — an external caller of a free function must do the
+  same rather than calling it directly with no map.
 - **CLI: `rigplane ptt on` no longer returns while the rig is keyed.** The
   command now holds the key for as long as the process runs and unkeys on the
   way out, so the process that keyed the rig is the one that releases it. A

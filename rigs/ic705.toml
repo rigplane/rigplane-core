@@ -819,12 +819,12 @@ set_civ_output_ant = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2
 # NB Depth/Width and VOX Delay DO exist on IC-705, at different 1A 05
 # sub-addresses than IC-7300's 0189/0190/0191 -- refutes the earlier "not
 # listed for IC-705 in wfview" framing (D2, MOR-2016).
-get_nb_depth = [0x1A, 0x05, 0x03, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0357 (00-09); NOT the shared fallback's 0290, which is IC-7610's address
-set_nb_depth = [0x1A, 0x05, 0x03, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0357 (00-09); NOT the shared fallback's 0290, which is IC-7610's address
-get_nb_width = [0x1A, 0x05, 0x03, 0x58]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0358 (0000-0255); NOT the shared fallback's 0291, which is IC-7610's address
-set_nb_width = [0x1A, 0x05, 0x03, 0x58]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0358 (0000-0255); NOT the shared fallback's 0291, which is IC-7610's address
-get_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which is IC-7610's address
-set_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which is IC-7610's address
+get_nb_depth = [0x1A, 0x05, 0x03, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0357 (00-09); NOT the shared fallback's 0290, which was IC-7610's address -- that fallback and its `_CTL_MEM_NB_DEPTH` constant were deleted in MOR-2006 Steps 5..N module 2
+set_nb_depth = [0x1A, 0x05, 0x03, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0357 (00-09); NOT the shared fallback's 0290, which was IC-7610's address -- that fallback and its `_CTL_MEM_NB_DEPTH` constant were deleted in MOR-2006 Steps 5..N module 2
+get_nb_width = [0x1A, 0x05, 0x03, 0x58]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0358 (0000-0255); NOT the shared fallback's 0291, which was IC-7610's address -- that fallback and its `_CTL_MEM_NB_WIDTH` constant were deleted in MOR-2006 Steps 5..N module 2
+set_nb_width = [0x1A, 0x05, 0x03, 0x58]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0358 (0000-0255); NOT the shared fallback's 0291, which was IC-7610's address -- that fallback and its `_CTL_MEM_NB_WIDTH` constant were deleted in MOR-2006 Steps 5..N module 2
+get_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which was IC-7610's address -- that builder-side fallback and its `_CTL_MEM_VOX_DELAY` constant were deleted in MOR-2006 Steps 5..N module 2; 0292 survives only as an RX-parser value in runtime/_civ_rx.py for decoding unsolicited frames, not as anything any builder can emit
+set_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which was IC-7610's address -- that builder-side fallback and its `_CTL_MEM_VOX_DELAY` constant were deleted in MOR-2006 Steps 5..N module 2; 0292 survives only as an RX-parser value in runtime/_civ_rx.py for decoding unsolicited frames, not as anything any builder can emit
 
 [protocol]
 type = "civ"

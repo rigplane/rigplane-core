@@ -117,22 +117,29 @@ class TestD2DocumentaryCommandBytes:
         assert cmdmap.get("scan_set_df_span") == (0x0E,)
 
     def test_get_nb_depth(self, cmdmap) -> None:
-        """1A 05 0357, NOT the shared fallback's 0290 (that's IC-7610's
-        address)."""
+        """1A 05 0357, NOT the shared fallback's 0290 (that was IC-7610's
+        address) -- that fallback and its `_CTL_MEM_NB_DEPTH` constant were
+        deleted in MOR-2006 Steps 5..N module 2."""
         assert cmdmap.get("get_nb_depth") == (0x1A, 0x05, 0x03, 0x57)
 
     def test_set_nb_depth(self, cmdmap) -> None:
         assert cmdmap.get("set_nb_depth") == (0x1A, 0x05, 0x03, 0x57)
 
     def test_get_nb_width(self, cmdmap) -> None:
-        """1A 05 0358, NOT the shared fallback's 0291."""
+        """1A 05 0358, NOT the shared fallback's 0291 -- that fallback and
+        its `_CTL_MEM_NB_WIDTH` constant were deleted in MOR-2006 Steps
+        5..N module 2."""
         assert cmdmap.get("get_nb_width") == (0x1A, 0x05, 0x03, 0x58)
 
     def test_set_nb_width(self, cmdmap) -> None:
         assert cmdmap.get("set_nb_width") == (0x1A, 0x05, 0x03, 0x58)
 
     def test_get_vox_delay(self, cmdmap) -> None:
-        """1A 05 0359, NOT the shared fallback's 0292."""
+        """1A 05 0359, NOT the shared fallback's 0292 -- that builder-side
+        fallback and its `_CTL_MEM_VOX_DELAY` constant were deleted in
+        MOR-2006 Steps 5..N module 2; 0292 survives only as an RX-parser
+        value in runtime/_civ_rx.py for unsolicited frames, not as anything
+        any builder can emit."""
         assert cmdmap.get("get_vox_delay") == (0x1A, 0x05, 0x03, 0x59)
 
     def test_set_vox_delay(self, cmdmap) -> None:

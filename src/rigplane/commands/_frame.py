@@ -48,27 +48,15 @@ _CMD_SELECTED_MODE = 0x26  # Selected/Unselected receiver mode
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 
-# Sub-commands for 0x14 (Levels)
-_SUB_AF_LEVEL = 0x01
-_SUB_RF_GAIN = 0x02
-_SUB_SQL = 0x03
-_SUB_APF_TYPE_LEVEL = 0x05
-_SUB_NR_LEVEL = 0x06
-_SUB_PBT_INNER = 0x07
-_SUB_PBT_OUTER = 0x08
-_SUB_CW_PITCH = 0x09
+# Sub-command for 0x14 (Levels). The rest of the 0x14 family
+# (`commands/levels.py`, MOR-2006 Steps 5..N module 2) is profile-only now:
+# every other sub-command byte lives solely in `rigs/*.toml`, reached by
+# name through the required ``cmd_map``, with no code-level constant left
+# to read -- `_SUB_RF_POWER` itself survives only because
+# `tests/test_backend_contract_matrix.py` and
+# `tests/test_civ_command_profiling.py` build raw frames with it directly,
+# never through `levels.py: get_rf_power`/`set_rf_power`.
 _SUB_RF_POWER = 0x0A
-_SUB_MIC_GAIN = 0x0B
-_SUB_KEY_SPEED = 0x0C
-_SUB_NOTCH_FILTER = 0x0D
-_SUB_COMPRESSOR_LEVEL = 0x0E
-_SUB_BREAK_IN_DELAY = 0x0F
-_SUB_NB_LEVEL = 0x12
-_SUB_DIGISEL_SHIFT = 0x13
-_SUB_DRIVE_GAIN = 0x14
-_SUB_MONITOR_GAIN = 0x15
-_SUB_VOX_GAIN = 0x16
-_SUB_ANTI_VOX_GAIN = 0x17
 
 # Sub-commands for 0x15 (Meters)
 _SUB_S_METER = 0x02
@@ -95,12 +83,10 @@ _SUB_BAND_STACK = 0x01
 _SUB_AGC_TIME_CONSTANT = 0x04
 _SUB_FILTER_WIDTH = 0x03
 
-# CTL_MEM prefixes (0x1A 0x05 ...)
-_CTL_MEM_REF_ADJUST = b"\x00\x70"
-_CTL_MEM_DASH_RATIO = b"\x02\x28"
-_CTL_MEM_NB_DEPTH = b"\x02\x90"
-_CTL_MEM_NB_WIDTH = b"\x02\x91"
-_CTL_MEM_VOX_DELAY = b"\x02\x92"
+# CTL_MEM prefixes (0x1A 0x05 ...). `commands/levels.py`'s own five
+# (ref_adjust, dash_ratio, nb_depth, nb_width, vox_delay) are gone as of
+# MOR-2006 Steps 5..N module 2 -- their menu addresses live only in
+# `rigs/*.toml` now, reached by name.
 _CTL_MEM_SYSTEM_DATE = b"\x01\x58"
 _CTL_MEM_SYSTEM_TIME = b"\x01\x59"
 _CTL_MEM_UTC_OFFSET = b"\x01\x62"

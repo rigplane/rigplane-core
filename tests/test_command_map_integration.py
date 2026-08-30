@@ -29,6 +29,13 @@ import pytest
 
 from rigplane import commands, IC_7610_ADDR
 from rigplane.command_map import CommandMap
+from rigplane.commands import (
+    CONTROLLER_ADDR,
+    RECEIVER_MAIN,
+    _level_bcd_encode,
+    build_civ_frame,
+    build_cmd29_frame,
+)
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.rig_loader import load_rig
 from _command_test_helpers import bind_default_addr_globals
@@ -48,7 +55,17 @@ def cmd_map():
 
 
 class TestGetterParity:
-    """These getters must build the same frame with IC-7610 cmd_map as without."""
+    """These getters must build the same frame with IC-7610 cmd_map as without.
+
+    commands/levels.py migrated onto the bound command map in MOR-2006
+    Steps 5..N (module 2): ``get_af_level``, ``get_rf_gain`` and
+    ``get_rf_power`` now require ``cmd_map`` -- there is no more "without"
+    to compare against, so their three cases below pin the map path
+    against the frame the deleted fallback used to build instead
+    (``rigs/ic7610.toml`` declares the same wire tuples the fallback did,
+    per ``tests/command_map_parity_divergences.txt`` naming no IC-7610 row
+    for any of the three).
+    """
 
     def test_get_frequency(self, cmd_map):
         assert commands.get_freq(cmd_map=cmd_map) == commands.get_freq()
@@ -57,13 +74,22 @@ class TestGetterParity:
         assert commands.get_mode(cmd_map=cmd_map) == commands.get_mode()
 
     def test_get_af_level(self, cmd_map):
-        assert commands.get_af_level(cmd_map=cmd_map) == commands.get_af_level()
+        # IC-7610 declares a cmd29 route for 0x14/0x01, so command29=True
+        # (the builder's default) wraps MAIN too (MOR-1543).
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x14, sub=0x01, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_af_level(cmd_map=cmd_map) == expected
 
     def test_get_rf_gain(self, cmd_map):
-        assert commands.get_rf_gain(cmd_map=cmd_map) == commands.get_rf_gain()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x14, sub=0x02, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_rf_gain(cmd_map=cmd_map) == expected
 
     def test_get_power(self, cmd_map):
-        assert commands.get_rf_power(cmd_map=cmd_map) == commands.get_rf_power()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x14, sub=0x0A)
+        assert commands.get_rf_power(cmd_map=cmd_map) == expected
 
     def test_get_s_meter(self, cmd_map):
         assert commands.get_s_meter(cmd_map=cmd_map) == commands.get_s_meter()
@@ -112,7 +138,13 @@ class TestGetterParity:
 
 
 class TestSetterParity:
-    """These setters must build the same frame with IC-7610 cmd_map as without."""
+    """These setters must build the same frame with IC-7610 cmd_map as without.
+
+    Same MOR-2006 migration as ``TestGetterParity`` above: ``set_rf_power``,
+    ``set_af_level``, ``set_rf_gain`` and ``set_squelch`` now require
+    ``cmd_map``, so their cases pin the map path against the frame the
+    deleted fallback used to build.
+    """
 
     def test_set_frequency(self, cmd_map):
         assert commands.set_freq(14_200_000, cmd_map=cmd_map) == commands.set_freq(
@@ -120,16 +152,44 @@ class TestSetterParity:
         )
 
     def test_set_power(self, cmd_map):
-        assert commands.set_rf_power(128, cmd_map=cmd_map) == commands.set_rf_power(128)
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x14, sub=0x0A, data=_level_bcd_encode(128)
+        )
+        assert commands.set_rf_power(128, cmd_map=cmd_map) == expected
 
     def test_set_af_level(self, cmd_map):
-        assert commands.set_af_level(200, cmd_map=cmd_map) == commands.set_af_level(200)
+        # IC-7610 declares a cmd29 route for 0x14/0x01 (MOR-1543).
+        expected = build_cmd29_frame(
+            IC_7610_ADDR,
+            CONTROLLER_ADDR,
+            0x14,
+            sub=0x01,
+            data=_level_bcd_encode(200),
+            receiver=RECEIVER_MAIN,
+        )
+        assert commands.set_af_level(200, cmd_map=cmd_map) == expected
 
     def test_set_rf_gain(self, cmd_map):
-        assert commands.set_rf_gain(128, cmd_map=cmd_map) == commands.set_rf_gain(128)
+        expected = build_cmd29_frame(
+            IC_7610_ADDR,
+            CONTROLLER_ADDR,
+            0x14,
+            sub=0x02,
+            data=_level_bcd_encode(128),
+            receiver=RECEIVER_MAIN,
+        )
+        assert commands.set_rf_gain(128, cmd_map=cmd_map) == expected
 
     def test_set_squelch(self, cmd_map):
-        assert commands.set_squelch(64, cmd_map=cmd_map) == commands.set_squelch(64)
+        expected = build_cmd29_frame(
+            IC_7610_ADDR,
+            CONTROLLER_ADDR,
+            0x14,
+            sub=0x03,
+            data=_level_bcd_encode(64),
+            receiver=RECEIVER_MAIN,
+        )
+        assert commands.set_squelch(64, cmd_map=cmd_map) == expected
 
     def test_set_tuning_step(self, cmd_map):
         assert commands.set_tuning_step(3, cmd_map=cmd_map) == commands.set_tuning_step(
@@ -311,19 +371,32 @@ class TestVfoScopeMapFallbackParityAcrossProfiles:
 
 
 class TestHelperCallerParity:
-    """These _build_*-delegating functions must match with cmd_map."""
+    """These _build_*-delegating functions must match with cmd_map.
+
+    ``get_apf_type_level``, ``get_nr_level`` and ``get_nb_level``
+    (commands/levels.py) and ``get_ref_adjust`` (below) migrated onto the
+    bound command map in MOR-2006 Steps 5..N (module 2) and now require
+    ``cmd_map`` -- their cases pin the map path against the frame the
+    deleted fallback used to build.
+    """
 
     def test_get_apf_type_level(self, cmd_map):
-        assert (
-            commands.get_apf_type_level(cmd_map=cmd_map)
-            == commands.get_apf_type_level()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x14, sub=0x05, receiver=RECEIVER_MAIN
         )
+        assert commands.get_apf_type_level(cmd_map=cmd_map) == expected
 
     def test_get_nr_level(self, cmd_map):
-        assert commands.get_nr_level(cmd_map=cmd_map) == commands.get_nr_level()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x14, sub=0x06, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_nr_level(cmd_map=cmd_map) == expected
 
     def test_get_nb_level(self, cmd_map):
-        assert commands.get_nb_level(cmd_map=cmd_map) == commands.get_nb_level()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x14, sub=0x12, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_nb_level(cmd_map=cmd_map) == expected
 
     def test_get_agc(self, cmd_map):
         assert commands.get_agc(cmd_map=cmd_map) == commands.get_agc()
@@ -347,7 +420,10 @@ class TestHelperCallerParity:
         assert commands.get_filter_shape(cmd_map=cmd_map) == commands.get_filter_shape()
 
     def test_get_ref_adjust(self, cmd_map):
-        assert commands.get_ref_adjust(cmd_map=cmd_map) == commands.get_ref_adjust()
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x05, data=b"\x00\x70"
+        )
+        assert commands.get_ref_adjust(cmd_map=cmd_map) == expected
 
     def test_get_s_meter_sql_status(self, cmd_map):
         assert (
@@ -443,11 +519,14 @@ class TestCmd29Parity:
 class TestCommandMapOverride:
     """A hand-made CommandMap's wire bytes must show up in the frame it builds."""
 
-    def test_different_wire_bytes_produce_different_frame(self):
+    def test_different_wire_bytes_produce_different_frame(self, cmd_map):
+        # MOR-2006 Steps 5..N (module 2): get_af_level now requires
+        # cmd_map, so "different wire bytes" is shown against the real
+        # IC-7610 map rather than the deleted fallback.
         custom = CommandMap({"get_af_level": (0x16, 0x43)})
         result = commands.get_af_level(cmd_map=custom)
-        hardcoded = commands.get_af_level()
-        assert result != hardcoded
+        known_good = commands.get_af_level(cmd_map=cmd_map)
+        assert result != known_good
         assert b"\x16\x43" in result
 
     def test_custom_single_byte_command(self):
@@ -456,11 +535,14 @@ class TestCommandMapOverride:
         assert b"\xff" in result
         assert result != commands.get_freq()
 
-    def test_custom_setter(self):
+    def test_custom_setter(self, cmd_map):
+        # MOR-2006 Steps 5..N (module 2): set_rf_power now requires
+        # cmd_map, so the "different wire bytes" comparison uses the real
+        # IC-7610 map rather than the deleted fallback.
         custom = CommandMap({"set_rf_power": (0x14, 0xFF)})
         result = commands.set_rf_power(128, cmd_map=custom)
-        hardcoded = commands.set_rf_power(128)
-        assert result != hardcoded
+        known_good = commands.set_rf_power(128, cmd_map=cmd_map)
+        assert result != known_good
         assert b"\x14\xff" in result
 
     def test_four_byte_wire_extended_sub(self):

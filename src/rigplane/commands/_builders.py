@@ -5,9 +5,9 @@ Imports from ``_frame`` and ``_codec`` only -- never from leaf modules.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
-from ._codec import _bcd_byte, _bcd_decode_value, _level_bcd_encode, bcd_encode_value
+from ._codec import _bcd_byte, _bcd_decode_value
 from ._frame import (
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
@@ -24,71 +24,6 @@ from ._frame import (
 if TYPE_CHECKING:
     from ..command_map import CommandMap
     from ..types import CivFrame
-
-
-def _build_level_get(
-    sub: int,
-    *,
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    receiver: int = RECEIVER_MAIN,
-    command29: bool = False,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
-) -> bytes:
-    if cmd_map is not None and cmd_name is not None:
-        return _build_from_map(
-            cmd_map,
-            cmd_name,
-            to_addr=to_addr,
-            from_addr=from_addr,
-            receiver=receiver,
-            command29=command29,
-        )
-    if command29:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_LEVEL,
-            sub=sub,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_LEVEL, sub=sub)
-
-
-def _build_level_set(
-    sub: int,
-    value: int,
-    *,
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    receiver: int = RECEIVER_MAIN,
-    command29: bool = False,
-    encoder: Callable[[int], bytes] = _level_bcd_encode,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
-) -> bytes:
-    payload = encoder(value)
-    if cmd_map is not None and cmd_name is not None:
-        return _build_from_map(
-            cmd_map,
-            cmd_name,
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=payload,
-            receiver=receiver,
-            command29=command29,
-        )
-    if command29:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_LEVEL,
-            sub=sub,
-            data=payload,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_LEVEL, sub=sub, data=payload)
 
 
 def _build_ctl_mem_get(
@@ -111,35 +46,6 @@ def _build_ctl_mem_get(
         _CMD_CTL_MEM,
         sub=_SUB_CTL_MEM,
         data=prefix,
-    )
-
-
-def _build_ctl_mem_set(
-    prefix: bytes,
-    value: int,
-    *,
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    byte_count: int,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
-) -> bytes:
-    encoded = bcd_encode_value(value, byte_count=byte_count)
-    if cmd_map is not None and cmd_name is not None:
-        # When using cmd_map, wire bytes already include the full command
-        # structure including any data prefix, so pass only the encoded value
-        # -- the same rule ``_build_ctl_mem_get`` above applies by passing
-        # ``data=None``. Passing ``prefix`` here too sends the sub-address
-        # twice.
-        return _build_from_map(
-            cmd_map, cmd_name, to_addr=to_addr, from_addr=from_addr, data=encoded
-        )
-    return build_civ_frame(
-        to_addr,
-        from_addr,
-        _CMD_CTL_MEM,
-        sub=_SUB_CTL_MEM,
-        data=prefix + encoded,
     )
 
 

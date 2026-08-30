@@ -1,5 +1,7 @@
 """Unit tests for DSP level commands — Part 1: APF/NR/PBT/NB (Issue #130)."""
 
+from pathlib import Path
+
 import pytest
 
 from rigplane import commands
@@ -10,10 +12,21 @@ from rigplane.commands import (
     RECEIVER_SUB,
     parse_level_response,
 )
+from rigplane.rig_loader import load_rig
 from rigplane.types import CivFrame
 from _command_test_helpers import bind_default_addr_globals
 
 bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
+
+# commands/levels.py migrated onto the bound command map in MOR-2006 Steps
+# 5..N (module 2): get_/set_apf_type_level, get_/set_nr_level,
+# get_/set_pbt_inner, get_/set_pbt_outer and get_/set_nb_level now require
+# cmd_map. This file exercises only IC-7610 (bind_default_addr_globals
+# above), and IC-7610 declares byte-identical [0x14, sub] wire tuples for
+# all five (no menu address, no divergence row for any of them), so every
+# expected literal below is unchanged; only the cmd_map= wiring is new.
+RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+_IC7610_CMD_MAP = load_rig(RIG_DIR / "ic7610.toml").to_command_map()
 
 # CI-V frame constants
 _PREAMBLE = b"\xfe\xfe"
@@ -74,47 +87,49 @@ class TestAPFTypeLevel:
     """Tests for get_apf_type_level / set_apf_type_level."""
 
     def test_get_apf_type_level_main_receiver(self) -> None:
-        assert commands.get_apf_type_level(receiver=RECEIVER_MAIN) == _cmd29_level_get(
-            _SUB_APF_TYPE_LEVEL, RECEIVER_MAIN
-        )
+        assert commands.get_apf_type_level(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_APF_TYPE_LEVEL, RECEIVER_MAIN)
 
     def test_get_apf_type_level_sub_receiver(self) -> None:
-        assert commands.get_apf_type_level(receiver=RECEIVER_SUB) == _cmd29_level_get(
-            _SUB_APF_TYPE_LEVEL, RECEIVER_SUB
-        )
+        assert commands.get_apf_type_level(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_APF_TYPE_LEVEL, RECEIVER_SUB)
 
     def test_get_apf_type_level_default_is_main(self) -> None:
-        assert commands.get_apf_type_level() == commands.get_apf_type_level(
-            receiver=RECEIVER_MAIN
+        assert commands.get_apf_type_level(
+            cmd_map=_IC7610_CMD_MAP
+        ) == commands.get_apf_type_level(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
         )
 
     def test_set_apf_type_level_main_receiver(self) -> None:
         assert commands.set_apf_type_level(
-            128, receiver=RECEIVER_MAIN
+            128, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
         ) == _cmd29_level_set(_SUB_APF_TYPE_LEVEL, 128, RECEIVER_MAIN)
 
     def test_set_apf_type_level_sub_receiver(self) -> None:
         assert commands.set_apf_type_level(
-            64, receiver=RECEIVER_SUB
+            64, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
         ) == _cmd29_level_set(_SUB_APF_TYPE_LEVEL, 64, RECEIVER_SUB)
 
     def test_set_apf_type_level_boundary_zero(self) -> None:
-        assert commands.set_apf_type_level(0) == _cmd29_level_set(
-            _SUB_APF_TYPE_LEVEL, 0
-        )
+        assert commands.set_apf_type_level(
+            0, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_APF_TYPE_LEVEL, 0)
 
     def test_set_apf_type_level_boundary_255(self) -> None:
-        assert commands.set_apf_type_level(255) == _cmd29_level_set(
-            _SUB_APF_TYPE_LEVEL, 255
-        )
+        assert commands.set_apf_type_level(
+            255, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_APF_TYPE_LEVEL, 255)
 
     def test_set_apf_type_level_rejects_negative(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_apf_type_level(-1)
+            commands.set_apf_type_level(-1, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_apf_type_level_rejects_over_255(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_apf_type_level(256)
+            commands.set_apf_type_level(256, cmd_map=_IC7610_CMD_MAP)
 
     def test_parse_apf_type_level_response(self) -> None:
         frame = _level_response_frame(_SUB_APF_TYPE_LEVEL, 128)
@@ -141,41 +156,47 @@ class TestNRLevel:
     """Tests for get_nr_level / set_nr_level."""
 
     def test_get_nr_level_main_receiver(self) -> None:
-        assert commands.get_nr_level(receiver=RECEIVER_MAIN) == _cmd29_level_get(
-            _SUB_NR_LEVEL, RECEIVER_MAIN
-        )
+        assert commands.get_nr_level(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_NR_LEVEL, RECEIVER_MAIN)
 
     def test_get_nr_level_sub_receiver(self) -> None:
-        assert commands.get_nr_level(receiver=RECEIVER_SUB) == _cmd29_level_get(
-            _SUB_NR_LEVEL, RECEIVER_SUB
-        )
+        assert commands.get_nr_level(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_NR_LEVEL, RECEIVER_SUB)
 
     def test_get_nr_level_default_is_main(self) -> None:
-        assert commands.get_nr_level() == commands.get_nr_level(receiver=RECEIVER_MAIN)
+        assert commands.get_nr_level(cmd_map=_IC7610_CMD_MAP) == commands.get_nr_level(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        )
 
     def test_set_nr_level_main_receiver(self) -> None:
-        assert commands.set_nr_level(100, receiver=RECEIVER_MAIN) == _cmd29_level_set(
-            _SUB_NR_LEVEL, 100, RECEIVER_MAIN
-        )
+        assert commands.set_nr_level(
+            100, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_NR_LEVEL, 100, RECEIVER_MAIN)
 
     def test_set_nr_level_sub_receiver(self) -> None:
-        assert commands.set_nr_level(200, receiver=RECEIVER_SUB) == _cmd29_level_set(
-            _SUB_NR_LEVEL, 200, RECEIVER_SUB
-        )
+        assert commands.set_nr_level(
+            200, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_NR_LEVEL, 200, RECEIVER_SUB)
 
     def test_set_nr_level_boundary_zero(self) -> None:
-        assert commands.set_nr_level(0) == _cmd29_level_set(_SUB_NR_LEVEL, 0)
+        assert commands.set_nr_level(0, cmd_map=_IC7610_CMD_MAP) == _cmd29_level_set(
+            _SUB_NR_LEVEL, 0
+        )
 
     def test_set_nr_level_boundary_255(self) -> None:
-        assert commands.set_nr_level(255) == _cmd29_level_set(_SUB_NR_LEVEL, 255)
+        assert commands.set_nr_level(255, cmd_map=_IC7610_CMD_MAP) == _cmd29_level_set(
+            _SUB_NR_LEVEL, 255
+        )
 
     def test_set_nr_level_rejects_negative(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_nr_level(-1)
+            commands.set_nr_level(-1, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_nr_level_rejects_over_255(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_nr_level(256)
+            commands.set_nr_level(256, cmd_map=_IC7610_CMD_MAP)
 
     def test_parse_nr_level_response(self) -> None:
         frame = _level_response_frame(_SUB_NR_LEVEL, 50)
@@ -202,43 +223,47 @@ class TestPBTInner:
     """Tests for get_pbt_inner / set_pbt_inner."""
 
     def test_get_pbt_inner_main_receiver(self) -> None:
-        assert commands.get_pbt_inner(receiver=RECEIVER_MAIN) == _cmd29_level_get(
-            _SUB_PBT_INNER, RECEIVER_MAIN
-        )
+        assert commands.get_pbt_inner(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_PBT_INNER, RECEIVER_MAIN)
 
     def test_get_pbt_inner_sub_receiver(self) -> None:
-        assert commands.get_pbt_inner(receiver=RECEIVER_SUB) == _cmd29_level_get(
-            _SUB_PBT_INNER, RECEIVER_SUB
-        )
+        assert commands.get_pbt_inner(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_PBT_INNER, RECEIVER_SUB)
 
     def test_get_pbt_inner_default_is_main(self) -> None:
-        assert commands.get_pbt_inner() == commands.get_pbt_inner(
-            receiver=RECEIVER_MAIN
-        )
+        assert commands.get_pbt_inner(
+            cmd_map=_IC7610_CMD_MAP
+        ) == commands.get_pbt_inner(receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_pbt_inner_main_receiver(self) -> None:
-        assert commands.set_pbt_inner(75, receiver=RECEIVER_MAIN) == _cmd29_level_set(
-            _SUB_PBT_INNER, 75, RECEIVER_MAIN
-        )
+        assert commands.set_pbt_inner(
+            75, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_PBT_INNER, 75, RECEIVER_MAIN)
 
     def test_set_pbt_inner_sub_receiver(self) -> None:
-        assert commands.set_pbt_inner(150, receiver=RECEIVER_SUB) == _cmd29_level_set(
-            _SUB_PBT_INNER, 150, RECEIVER_SUB
-        )
+        assert commands.set_pbt_inner(
+            150, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_PBT_INNER, 150, RECEIVER_SUB)
 
     def test_set_pbt_inner_boundary_zero(self) -> None:
-        assert commands.set_pbt_inner(0) == _cmd29_level_set(_SUB_PBT_INNER, 0)
+        assert commands.set_pbt_inner(0, cmd_map=_IC7610_CMD_MAP) == _cmd29_level_set(
+            _SUB_PBT_INNER, 0
+        )
 
     def test_set_pbt_inner_boundary_255(self) -> None:
-        assert commands.set_pbt_inner(255) == _cmd29_level_set(_SUB_PBT_INNER, 255)
+        assert commands.set_pbt_inner(255, cmd_map=_IC7610_CMD_MAP) == _cmd29_level_set(
+            _SUB_PBT_INNER, 255
+        )
 
     def test_set_pbt_inner_rejects_negative(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_pbt_inner(-1)
+            commands.set_pbt_inner(-1, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_pbt_inner_rejects_over_255(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_pbt_inner(256)
+            commands.set_pbt_inner(256, cmd_map=_IC7610_CMD_MAP)
 
     def test_parse_pbt_inner_response(self) -> None:
         frame = _level_response_frame(_SUB_PBT_INNER, 75)
@@ -256,7 +281,9 @@ class TestPBTInner:
         assert value == 255
 
     def test_pbt_inner_sub_distinct_from_pbt_outer(self) -> None:
-        assert commands.get_pbt_inner() != commands.get_pbt_outer()
+        assert commands.get_pbt_inner(
+            cmd_map=_IC7610_CMD_MAP
+        ) != commands.get_pbt_outer(cmd_map=_IC7610_CMD_MAP)
 
 
 # ---------------------------------------------------------------------------
@@ -268,43 +295,47 @@ class TestPBTOuter:
     """Tests for get_pbt_outer / set_pbt_outer."""
 
     def test_get_pbt_outer_main_receiver(self) -> None:
-        assert commands.get_pbt_outer(receiver=RECEIVER_MAIN) == _cmd29_level_get(
-            _SUB_PBT_OUTER, RECEIVER_MAIN
-        )
+        assert commands.get_pbt_outer(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_PBT_OUTER, RECEIVER_MAIN)
 
     def test_get_pbt_outer_sub_receiver(self) -> None:
-        assert commands.get_pbt_outer(receiver=RECEIVER_SUB) == _cmd29_level_get(
-            _SUB_PBT_OUTER, RECEIVER_SUB
-        )
+        assert commands.get_pbt_outer(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_PBT_OUTER, RECEIVER_SUB)
 
     def test_get_pbt_outer_default_is_main(self) -> None:
-        assert commands.get_pbt_outer() == commands.get_pbt_outer(
-            receiver=RECEIVER_MAIN
-        )
+        assert commands.get_pbt_outer(
+            cmd_map=_IC7610_CMD_MAP
+        ) == commands.get_pbt_outer(receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_pbt_outer_main_receiver(self) -> None:
-        assert commands.set_pbt_outer(90, receiver=RECEIVER_MAIN) == _cmd29_level_set(
-            _SUB_PBT_OUTER, 90, RECEIVER_MAIN
-        )
+        assert commands.set_pbt_outer(
+            90, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_PBT_OUTER, 90, RECEIVER_MAIN)
 
     def test_set_pbt_outer_sub_receiver(self) -> None:
-        assert commands.set_pbt_outer(180, receiver=RECEIVER_SUB) == _cmd29_level_set(
-            _SUB_PBT_OUTER, 180, RECEIVER_SUB
-        )
+        assert commands.set_pbt_outer(
+            180, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_PBT_OUTER, 180, RECEIVER_SUB)
 
     def test_set_pbt_outer_boundary_zero(self) -> None:
-        assert commands.set_pbt_outer(0) == _cmd29_level_set(_SUB_PBT_OUTER, 0)
+        assert commands.set_pbt_outer(0, cmd_map=_IC7610_CMD_MAP) == _cmd29_level_set(
+            _SUB_PBT_OUTER, 0
+        )
 
     def test_set_pbt_outer_boundary_255(self) -> None:
-        assert commands.set_pbt_outer(255) == _cmd29_level_set(_SUB_PBT_OUTER, 255)
+        assert commands.set_pbt_outer(255, cmd_map=_IC7610_CMD_MAP) == _cmd29_level_set(
+            _SUB_PBT_OUTER, 255
+        )
 
     def test_set_pbt_outer_rejects_negative(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_pbt_outer(-1)
+            commands.set_pbt_outer(-1, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_pbt_outer_rejects_over_255(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_pbt_outer(256)
+            commands.set_pbt_outer(256, cmd_map=_IC7610_CMD_MAP)
 
     def test_parse_pbt_outer_response(self) -> None:
         frame = _level_response_frame(_SUB_PBT_OUTER, 90)
@@ -331,41 +362,47 @@ class TestNBLevel:
     """Tests for get_nb_level / set_nb_level."""
 
     def test_get_nb_level_main_receiver(self) -> None:
-        assert commands.get_nb_level(receiver=RECEIVER_MAIN) == _cmd29_level_get(
-            _SUB_NB_LEVEL, RECEIVER_MAIN
-        )
+        assert commands.get_nb_level(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_NB_LEVEL, RECEIVER_MAIN)
 
     def test_get_nb_level_sub_receiver(self) -> None:
-        assert commands.get_nb_level(receiver=RECEIVER_SUB) == _cmd29_level_get(
-            _SUB_NB_LEVEL, RECEIVER_SUB
-        )
+        assert commands.get_nb_level(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_get(_SUB_NB_LEVEL, RECEIVER_SUB)
 
     def test_get_nb_level_default_is_main(self) -> None:
-        assert commands.get_nb_level() == commands.get_nb_level(receiver=RECEIVER_MAIN)
+        assert commands.get_nb_level(cmd_map=_IC7610_CMD_MAP) == commands.get_nb_level(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        )
 
     def test_set_nb_level_main_receiver(self) -> None:
-        assert commands.set_nb_level(55, receiver=RECEIVER_MAIN) == _cmd29_level_set(
-            _SUB_NB_LEVEL, 55, RECEIVER_MAIN
-        )
+        assert commands.set_nb_level(
+            55, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_NB_LEVEL, 55, RECEIVER_MAIN)
 
     def test_set_nb_level_sub_receiver(self) -> None:
-        assert commands.set_nb_level(210, receiver=RECEIVER_SUB) == _cmd29_level_set(
-            _SUB_NB_LEVEL, 210, RECEIVER_SUB
-        )
+        assert commands.set_nb_level(
+            210, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_level_set(_SUB_NB_LEVEL, 210, RECEIVER_SUB)
 
     def test_set_nb_level_boundary_zero(self) -> None:
-        assert commands.set_nb_level(0) == _cmd29_level_set(_SUB_NB_LEVEL, 0)
+        assert commands.set_nb_level(0, cmd_map=_IC7610_CMD_MAP) == _cmd29_level_set(
+            _SUB_NB_LEVEL, 0
+        )
 
     def test_set_nb_level_boundary_255(self) -> None:
-        assert commands.set_nb_level(255) == _cmd29_level_set(_SUB_NB_LEVEL, 255)
+        assert commands.set_nb_level(255, cmd_map=_IC7610_CMD_MAP) == _cmd29_level_set(
+            _SUB_NB_LEVEL, 255
+        )
 
     def test_set_nb_level_rejects_negative(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_nb_level(-1)
+            commands.set_nb_level(-1, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_nb_level_rejects_over_255(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_nb_level(256)
+            commands.set_nb_level(256, cmd_map=_IC7610_CMD_MAP)
 
     def test_parse_nb_level_response(self) -> None:
         frame = _level_response_frame(_SUB_NB_LEVEL, 55)
@@ -383,4 +420,6 @@ class TestNBLevel:
         assert value == 255
 
     def test_nb_level_sub_distinct_from_nr_level(self) -> None:
-        assert commands.get_nb_level() != commands.get_nr_level()
+        assert commands.get_nb_level(cmd_map=_IC7610_CMD_MAP) != commands.get_nr_level(
+            cmd_map=_IC7610_CMD_MAP
+        )

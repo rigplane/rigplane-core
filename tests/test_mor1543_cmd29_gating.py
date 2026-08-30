@@ -44,6 +44,8 @@ import pytest
 from rigplane.types import CivFrame
 
 from test_mor1517_cmd29_gating import (
+    _IC7300_CMD_MAP,
+    _IC7610_CMD_MAP,
     _connected_icom,
     _mock_expect,
     _mock_raw,
@@ -80,100 +82,149 @@ class TestRouteTableSanity:
 
 
 class TestBuilderOverride:
+    """commands/levels.py migrated onto the bound command map in MOR-2006
+    Steps 5..N (module 2): all four builders here now require ``cmd_map``.
+    ``_IC7610_CMD_MAP``/``_IC7300_CMD_MAP`` (imported from
+    test_mor1517_cmd29_gating) supply it -- both profiles declare
+    byte-identical ``[0x14, sub]`` wire tuples for all four commands (no
+    menu address, no divergence row for any of them), so the expected
+    literals below are unchanged.
+    """
+
     def test_set_rf_gain_wrapped_by_default_for_main(self) -> None:
         from rigplane.commands import set_rf_gain
 
-        frame = set_rf_gain(128, to_addr=_IC7610_ADDR, receiver=0)
+        frame = set_rf_gain(
+            128, to_addr=_IC7610_ADDR, receiver=0, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe98e0290014020128fd")
 
     def test_set_rf_gain_unwrapped_with_override(self) -> None:
         from rigplane.commands import set_rf_gain
 
-        frame = set_rf_gain(128, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        frame = set_rf_gain(
+            128,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert frame == bytes.fromhex("fefe94e014020128fd")
 
     def test_get_rf_gain_wrapped_by_default(self) -> None:
         from rigplane.commands import get_rf_gain
 
-        frame = get_rf_gain(to_addr=_IC7610_ADDR)
+        frame = get_rf_gain(to_addr=_IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e029001402fd")
 
     def test_get_rf_gain_unwrapped_with_override(self) -> None:
         from rigplane.commands import get_rf_gain
 
-        frame = get_rf_gain(to_addr=_IC7300_ADDR, command29=False)
+        frame = get_rf_gain(
+            to_addr=_IC7300_ADDR, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe94e01402fd")
 
     def test_set_af_level_wrapped_by_default_for_main(self) -> None:
         from rigplane.commands import set_af_level
 
-        frame = set_af_level(200, to_addr=_IC7610_ADDR, receiver=0)
+        frame = set_af_level(
+            200, to_addr=_IC7610_ADDR, receiver=0, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe98e0290014010200fd")
 
     def test_set_af_level_unwrapped_with_override(self) -> None:
         from rigplane.commands import set_af_level
 
-        frame = set_af_level(200, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        frame = set_af_level(
+            200,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert frame == bytes.fromhex("fefe94e014010200fd")
 
     def test_get_af_level_wrapped_by_default(self) -> None:
         from rigplane.commands import get_af_level
 
-        frame = get_af_level(to_addr=_IC7610_ADDR)
+        frame = get_af_level(to_addr=_IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e029001401fd")
 
     def test_get_af_level_unwrapped_with_override(self) -> None:
         from rigplane.commands import get_af_level
 
-        frame = get_af_level(to_addr=_IC7300_ADDR, command29=False)
+        frame = get_af_level(
+            to_addr=_IC7300_ADDR, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe94e01401fd")
 
     def test_set_squelch_wrapped_by_default_for_main(self) -> None:
         from rigplane.commands import set_squelch
 
-        frame = set_squelch(64, to_addr=_IC7610_ADDR, receiver=0)
+        frame = set_squelch(
+            64, to_addr=_IC7610_ADDR, receiver=0, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe98e0290014030064fd")
 
     def test_set_squelch_unwrapped_with_override(self) -> None:
         from rigplane.commands import set_squelch
 
-        frame = set_squelch(64, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        frame = set_squelch(
+            64,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert frame == bytes.fromhex("fefe94e014030064fd")
 
     def test_get_squelch_wrapped_by_default(self) -> None:
         from rigplane.commands import get_squelch
 
-        frame = get_squelch(to_addr=_IC7610_ADDR)
+        frame = get_squelch(to_addr=_IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e029001403fd")
 
     def test_get_squelch_unwrapped_with_override(self) -> None:
         from rigplane.commands import get_squelch
 
-        frame = get_squelch(to_addr=_IC7300_ADDR, command29=False)
+        frame = get_squelch(
+            to_addr=_IC7300_ADDR, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe94e01403fd")
 
     def test_set_notch_filter_wrapped_by_default_for_main(self) -> None:
         from rigplane.commands import set_notch_filter
 
-        frame = set_notch_filter(90, to_addr=_IC7610_ADDR, receiver=0)
+        frame = set_notch_filter(
+            90, to_addr=_IC7610_ADDR, receiver=0, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe98e02900140d0090fd")
 
     def test_set_notch_filter_unwrapped_with_override(self) -> None:
         from rigplane.commands import set_notch_filter
 
-        frame = set_notch_filter(90, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        frame = set_notch_filter(
+            90,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert frame == bytes.fromhex("fefe94e0140d0090fd")
 
     def test_get_notch_filter_wrapped_by_default(self) -> None:
         from rigplane.commands import get_notch_filter
 
-        frame = get_notch_filter(to_addr=_IC7610_ADDR)
+        frame = get_notch_filter(to_addr=_IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e02900140dfd")
 
     def test_get_notch_filter_unwrapped_with_override(self) -> None:
         from rigplane.commands import get_notch_filter
 
-        frame = get_notch_filter(to_addr=_IC7300_ADDR, command29=False)
+        frame = get_notch_filter(
+            to_addr=_IC7300_ADDR, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe94e0140dfd")
 
 

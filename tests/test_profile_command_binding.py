@@ -42,7 +42,7 @@ from typing import Any
 import pytest
 
 import rigplane.commands as commands
-from rigplane.commands import get_rf_power, get_speech, ptt_on
+from rigplane.commands import get_s_meter, get_speech, ptt_on
 from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
@@ -168,9 +168,12 @@ class TestExpect:
         )
 
     def test_expect_on_unexposed_builder_names_the_migration(self) -> None:
-        bound = BoundCommands(CommandMap({"get_rf_power": (0x14, 0x0A)}))
+        # get_rf_power (commands/levels.py) is exposed as of MOR-2006 Steps
+        # 5..N module 2 -- get_s_meter (commands/meters.py) is still
+        # unmigrated and stands in as the "not exposed yet" example.
+        bound = BoundCommands(CommandMap({"get_s_meter": (0x15, 0x02)}))
         with pytest.raises(AttributeError, match="Steps 5..N"):
-            bound.expect(get_rf_power)
+            bound.expect(get_s_meter)
 
 
 # ── the drift guard ──
