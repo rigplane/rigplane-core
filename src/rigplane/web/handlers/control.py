@@ -681,10 +681,12 @@ class ControlHandler:
         if self._radio is None:
             return caps
         # getattr, not self._radio_model: a few TestCommandGuards fixtures
-        # build ControlHandler via __new__ (bypassing __init__) and set only
-        # ._radio, matching the pre-existing behavior where this attribute
-        # was read lazily and only when self._radio.profile did not already
-        # resolve — which is always true for those fixtures' radios.
+        # build ControlHandler via __new__ (bypassing __init__), setting
+        # only ._radio. Those radios always carry a resolved RadioProfile,
+        # so this argument is never actually read for them (the pre-fix
+        # code read self._radio_model just as eagerly, building its
+        # fallback tuple up front, and would have raised the same
+        # AttributeError had one of these radios ever lacked a profile).
         configured_model = getattr(self, "_radio_model", None)
         return caps | projected_vfo_capability_tags(self._radio, configured_model)
 

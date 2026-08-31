@@ -215,10 +215,17 @@ class TestInfoEndpoint:
         Unlike the sibling test above (which builds ``ControlHandler`` directly
         with ``radio.model`` as its configured-model argument, so both
         fallback candidates share the same non-resolving value), this test
-        goes through the production ``WebServer._control_handler_for`` factory,
-        which always passes ``self._config.radio_model`` as that argument
-        regardless of ``radio.model``. That is the one construction where the
-        two candidates differ and can diverge.
+        goes through the production ``WebServer._control_handler_for`` factory.
+        That factory is one of three server.py constructions that pass
+        ``self._config.radio_model`` unconditionally (alongside the CW-text
+        and CW-stop HTTP handlers); the two constructions that actually emit
+        ``hello`` over a live control channel — the WS-connect handshake and
+        the WebRTC session manager wiring — pre-collapse the model to
+        ``radio.model`` whenever it is a string, so they cannot diverge this
+        way. This test pins the shared helper's fail-closed semantics at the
+        seam an embedder hits by passing its own ``WebConfig`` with a
+        ``radio_model`` different from the radio's own reported model, not a
+        regression reachable through the shipped WS client.
         """
         reserved = {"vfo_swap", "vfo_equalize"}
         radio = _make_radio("IC-7300", caps=reserved)
@@ -250,6 +257,45 @@ class TestInfoEndpoint:
 
         assert info_tags == capabilities_tags == hello_tags
         assert not info_tags
+
+    @pytest.mark.asyncio
+    async def test_reserved_vfo_tags_absent_when_no_usable_candidate_model_exists(
+        self,
+    ):
+        """Empty-candidate guard: neither side ever reaches resolve_radio_profile.
+
+        ``resolve_radio_profile``'s empty-input path silently returns a
+        default rig profile, so ``projected_vfo_capability_tags`` must
+        short-circuit before calling it when both ``radio.model`` (absent
+        here) and ``configured_model`` (an empty string here) are unusable.
+        """
+        reserved = {"vfo_swap", "vfo_equalize"}
+        radio = _make_radio("IC-7300", caps=reserved)
+        del radio.model
+        del radio.profile
+        server = WebServer(radio, WebConfig(radio_model=""))
+
+        info_writer = _FakeWriter()
+        await server._serve_info(info_writer)  # noqa: SLF001
+        info = _parse_json_body(info_writer)
+
+        capabilities_writer = _FakeWriter()
+        await server._serve_capabilities(capabilities_writer)  # noqa: SLF001
+        capabilities = _parse_json_body(capabilities_writer)
+
+        sent: list[str] = []
+
+        async def send_text(payload: str) -> None:
+            sent.append(payload)
+
+        handler = server._control_handler_for()  # noqa: SLF001
+        handler._ws = SimpleNamespace(send_text=send_text)  # noqa: SLF001
+        await handler._send_hello()  # noqa: SLF001
+        hello = json.loads(sent.pop())
+
+        assert not (reserved & set(info["capabilities"]["tags"]))
+        assert not (reserved & set(capabilities["capabilities"]))
+        assert not (reserved & set(hello["capabilities"]))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

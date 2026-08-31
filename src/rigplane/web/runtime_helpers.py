@@ -595,24 +595,31 @@ def projected_vfo_capability_tags(
 ) -> frozenset[str]:
     """Return the reserved VFO tags (:data:`VFO_CAPABILITY_TAGS`) this radio backs.
 
-    Fail-closed contract, pinned by
-    ``test_ws_hello_and_http_capability_payloads_agree_for_non_resolving_runtime_model``
-    and ``test_unknown_runtime_model_fails_closed_for_reserved_vfo_tags_across_consumers``
-    (``tests/test_web_capability_guards.py``):
+    Fail-closed contract. Each bullet names the test in
+    ``tests/test_web_capability_guards.py`` that fails if that bullet stops
+    being true:
 
     - A resolved :class:`~rigplane.profiles.RadioProfile` on ``radio.profile``
-      is used as-is.
+      is used as-is, and each tag is included only when its profile field
+      (``swap_ab_code``/``equal_ab_code`` for ``vfo_scheme == "ab"``,
+      ``swap_main_sub_code``/``equal_main_sub_code`` for
+      ``vfo_scheme == "main_sub"``) is not ``None`` — pinned by
+      ``test_vfo_tags_match_across_consumers_for_real_profiles`` and
+      ``test_vfo_tags_keep_partial_and_mismatched_schemes_in_parity``.
     - Otherwise exactly one candidate model string is tried: ``radio.model``
       if it is a non-empty (after ``.strip()``) string, else
       ``configured_model``. There is no second candidate — a radio-reported
-      model that fails to resolve yields no tags without falling back to
-      ``configured_model``.
-    - A candidate that is not a non-empty string, or that raises ``KeyError``
-      from :func:`~rigplane.profiles.resolve_radio_profile`, yields no tags.
-    - Each tag is included only when its profile field
-      (``swap_ab_code``/``equal_ab_code`` for ``vfo_scheme == "ab"``,
-      ``swap_main_sub_code``/``equal_main_sub_code`` for
-      ``vfo_scheme == "main_sub"``) is not ``None``.
+      model that fails to resolve (``KeyError`` from
+      :func:`~rigplane.profiles.resolve_radio_profile`) yields no tags
+      without falling back to ``configured_model`` — pinned by
+      ``test_ws_hello_and_http_capability_payloads_agree_for_non_resolving_runtime_model``
+      and
+      ``test_unknown_runtime_model_fails_closed_for_reserved_vfo_tags_across_consumers``.
+    - A candidate that is not a non-empty string (``radio.model`` absent or
+      blank and ``configured_model`` likewise) never reaches
+      ``resolve_radio_profile`` — whose empty-input path silently returns a
+      default rig profile — and instead yields no tags — pinned by
+      ``test_reserved_vfo_tags_absent_when_no_usable_candidate_model_exists``.
     """
     profile = getattr(radio, "profile", None)
     if not isinstance(profile, RadioProfile):
