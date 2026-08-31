@@ -105,46 +105,80 @@ class TestPreamp:
 
 
 class TestCw:
-    def test_send_short(self):
-        frames = send_cw("CQ CQ")
+    """commands/cw.py migrated onto the bound command map in MOR-2008
+    (batch 1): both builders now require ``cmd_map``. IC-7610's own
+    ``send_cw``/``stop_cw`` tuples are byte-identical to the deleted
+    fallback's ``0x17``, so the expected frames below are unchanged.
+    """
+
+    def test_send_short(self, cmd_map):
+        frames = send_cw("CQ CQ", cmd_map=cmd_map)
         assert len(frames) == 1
         parsed = parse_civ_frame(frames[0])
         assert parsed.command == 0x17
         assert parsed.data == b"CQ CQ"
 
-    def test_send_long_splits(self):
+    def test_send_long_splits(self, cmd_map):
         text = "A" * 65
-        frames = send_cw(text)
+        frames = send_cw(text, cmd_map=cmd_map)
         assert len(frames) == 3
         # First chunk 30, second 30, third 5
         assert len(parse_civ_frame(frames[0]).data) == 30
         assert len(parse_civ_frame(frames[1]).data) == 30
         assert len(parse_civ_frame(frames[2]).data) == 5
 
-    def test_send_uppercased(self):
-        frames = send_cw("cq cq")
+    def test_send_uppercased(self, cmd_map):
+        frames = send_cw("cq cq", cmd_map=cmd_map)
         parsed = parse_civ_frame(frames[0])
         assert parsed.data == b"CQ CQ"
 
-    def test_stop_cw(self):
-        frame = stop_cw()
+    def test_stop_cw(self, cmd_map):
+        frame = stop_cw(cmd_map=cmd_map)
         parsed = parse_civ_frame(frame)
         assert parsed.command == 0x17
         assert parsed.data == b"\xff"
 
+    def test_send_cw_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            send_cw("CQ")  # type: ignore[call-arg]
+
+    def test_stop_cw_rejects_explicit_none_the_same_way(self) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            stop_cw(cmd_map=None)
+
 
 class TestPowerOnOff:
-    def test_power_on(self):
-        frame = power_on()
+    """commands/power.py migrated onto the bound command map in MOR-2008
+    (batch 1): all three builders now require ``cmd_map``. IC-7610's own
+    tuples are byte-identical to the deleted fallback's ``0x18``, so the
+    expected frames below are unchanged.
+    """
+
+    def test_power_on(self, cmd_map):
+        frame = power_on(cmd_map=cmd_map)
         parsed = parse_civ_frame(frame)
         assert parsed.command == 0x18
         assert parsed.data == b"\x01"
 
-    def test_power_off(self):
-        frame = power_off()
+    def test_power_off(self, cmd_map):
+        frame = power_off(cmd_map=cmd_map)
         parsed = parse_civ_frame(frame)
         assert parsed.command == 0x18
         assert parsed.data == b"\x00"
+
+    def test_power_on_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            power_on()  # type: ignore[call-arg]
+
+    def test_power_off_rejects_explicit_none_the_same_way(self) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            power_off(cmd_map=None)
 
 
 class TestParseAckNak:

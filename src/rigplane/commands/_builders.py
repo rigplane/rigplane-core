@@ -15,7 +15,6 @@ from ._frame import (
     _CMD_LEVEL,
     _CMD_METER,
     _CMD_PREAMP,
-    _SUB_CTL_MEM,
     _build_from_map,
     build_civ_frame,
     build_cmd29_frame,
@@ -24,29 +23,6 @@ from ._frame import (
 if TYPE_CHECKING:
     from ..command_map import CommandMap
     from ..types import CivFrame
-
-
-def _build_ctl_mem_get(
-    prefix: bytes,
-    *,
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
-) -> bytes:
-    if cmd_map is not None and cmd_name is not None:
-        # When using cmd_map, wire bytes already include the full command structure
-        # including any data prefix, so don't pass prefix as data
-        return _build_from_map(
-            cmd_map, cmd_name, to_addr=to_addr, from_addr=from_addr, data=None
-        )
-    return build_civ_frame(
-        to_addr,
-        from_addr,
-        _CMD_CTL_MEM,
-        sub=_SUB_CTL_MEM,
-        data=prefix,
-    )
 
 
 def _build_meter_bool_get(

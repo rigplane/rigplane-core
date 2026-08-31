@@ -1042,7 +1042,6 @@ get_tx_freq_monitor = [0x1C, 0x03]
 set_tx_freq_monitor = [0x1C, 0x03]
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
-quick_split = [0x1A, 0x05, 0x00, 0x30]    # source: IC-7300 Advanced Manual (11a) p.19-4, control 0030 "quick split set" (the hardcoded fallback used to send 0x33, split lock on this radio, not declared -- deleted along with the fallback, MOR-2007 ruling 2). No builder resolves this bare key any more: get_quick_split/set_quick_split below (same 0030 address) replaced the one-shot quick_split()/quick_dual_watch() triggers this key was written for. Left declared rather than removed here -- MOR-2007's scope was the builders, not a TOML sweep for orphaned bare keys.
 
 # ── CW ──
 send_cw = [0x17]
@@ -1319,7 +1318,6 @@ set_quick_split = [0x1A, 0x05, 0x00, 0x30]
 # radio (D2, MOR-2014)
 get_quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }
 set_quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }
-quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }
 get_dash_ratio = [0x1A, 0x05, 0x01, 0x61]  # source: IC-7300 Advanced Manual (11a) command table p.19-6, control 0161 (28..45); live bench 2026-08-30: read of 1A 05 01 61 answered 30
 set_dash_ratio = [0x1A, 0x05, 0x01, 0x61]  # source: IC-7300 Advanced Manual (11a) command table p.19-6, control 0161 (28..45); live bench 2026-08-30: read of 1A 05 01 61 answered 30
 get_nb_depth = [0x1A, 0x05, 0x01, 0x89]

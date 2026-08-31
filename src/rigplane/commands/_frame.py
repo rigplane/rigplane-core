@@ -36,7 +36,6 @@ _CMD_METER = 0x15  # Meter readings
 _CMD_PTT = 0x1C  # Transceiver status / PTT
 _CMD_CTL_MEM = 0x1A  # Memory / configuration command
 _CMD_BAND_EDGE = 0x02  # Band edge frequency
-_CMD_RIT = 0x21  # RIT/XIT
 _CMD_TONE = 0x1B  # Tone/TSQL frequency
 _CMD_MEMORY_MODE = 0x08  # Memory mode (select channel)
 _CMD_MEMORY_WRITE = 0x09  # Memory write
@@ -70,9 +69,6 @@ _SUB_ID_METER = 0x16
 
 # Sub-commands for 0x1C (PTT / Transceiver status)
 _SUB_PTT = 0x00
-_SUB_TUNER_STATUS = 0x01
-_SUB_XFC_STATUS = 0x02
-_SUB_TX_FREQ_MONITOR = 0x03
 
 # Sub-commands for 0x1A (CTL_MEM)
 _SUB_CTL_MEM = 0x05
@@ -129,23 +125,8 @@ _SUB_REPEATER_TSQL = 0x43
 _SUB_TONE_FREQ = 0x00
 _SUB_TSQL_FREQ = 0x01
 
-# RIT sub-commands (0x21)
-_SUB_RIT_FREQ = 0x00
-_SUB_RIT_STATUS = 0x01
-_SUB_RIT_TX_STATUS = 0x02
-
-# CW keying
-_CMD_SEND_CW = 0x17
-
 # Power control
 _CMD_POWER_CTRL = 0x18
-
-# Speech
-_CMD_SPEECH = 0x13
-
-# Transceiver ID
-_CMD_TRANSCEIVER_ID = 0x19
-_SUB_TRANSCEIVER_ID = 0x00
 
 # Scope / Waterfall (0x27)
 _CMD_SCOPE = 0x27
@@ -175,7 +156,8 @@ _COMMANDS_WITH_SUB: set[int] = {
     _CMD_METER,
     _CMD_PTT,
     _CMD_CTL_MEM,
-    _CMD_RIT,
+    0x21,  # RIT/XIT -- named _CMD_RIT until system.py's own reader
+    # (MOR-2008 batch 1) was its last, same as 0x27/0x16/0x19 below
     0x27,
     0x16,
     _CMD_TONE,

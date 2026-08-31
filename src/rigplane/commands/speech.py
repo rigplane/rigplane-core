@@ -1,4 +1,21 @@
-"""Speech announcement command (0x13)."""
+"""Speech announcement command (0x13).
+
+Migrated onto the bound command map in MOR-2008 (batch 1,
+`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps 5..N):
+``get_speech`` now requires ``cmd_map``, with no hardcoded fallback left.
+Zero divergence rows, zero gap rows -- every profile that declares
+``get_speech``/``set_speech`` already carries the identical ``[0x13]``
+tuple the fallback built (verified by grep across ``rigs/*.toml`` before
+deleting it), so ``tests/command_map_parity_divergences.txt`` stays empty
+of this module's rows.
+
+The pre-migration ``cmd_map`` branch never validated ``what`` -- only the
+fallback branch did, so a caller reaching the map branch with an
+out-of-range value got a frame built anyway, not a ``ValueError``. Folding
+the two branches into one (there is only one left now) applies the
+validation unconditionally, closing that gap rather than carrying it
+forward silently.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +23,9 @@ from typing import TYPE_CHECKING
 
 from ._frame import (
     CONTROLLER_ADDR,
-    _CMD_SPEECH,
     _build_from_map,
-    build_civ_frame,
     expose_command_key,
+    require_cmd_map,
 )
 
 if TYPE_CHECKING:
@@ -32,12 +48,13 @@ def _speech_key(cmd_map: CommandMap) -> str:
 
 
 @expose_command_key(_speech_key)
+@require_cmd_map
 def get_speech(
     what: int = 0,
     *,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a speech announcement CI-V command (0x13).
 
@@ -48,17 +65,15 @@ def get_speech(
               1 = frequency + S-meter,
               2 = mode.
     """
-    if cmd_map is not None:
-        return _build_from_map(
-            cmd_map,
-            _speech_key(cmd_map),
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=bytes([what]),
-        )
     if what not in (0, 1, 2):
         raise ValueError(f"speech 'what' must be 0, 1, or 2, got {what}")
-    return build_civ_frame(to_addr, from_addr, _CMD_SPEECH, data=bytes([what]))
+    return _build_from_map(
+        cmd_map,
+        _speech_key(cmd_map),
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=bytes([what]),
+    )
 
 
 # Backward-compat alias

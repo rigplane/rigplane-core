@@ -36,29 +36,6 @@ from rigplane.runtime.radio import CoreRadio
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RIGS_DIR = REPO_ROOT / "rigs"
 
-# ``scan_set_df_span`` was this file's original choice, but MOR-2007
-# (ruling 4, D2 residuals) declared it on IC-7300/IC-7610/IC-9700/IC-705,
-# so it is no longer universally undeclared. ``system_date`` (the key
-# ``system.py: get_system_date``/``set_system_date`` resolve via
-# ``_builders.py: _build_ctl_mem_get``'s ``cmd_name=``) takes over: no
-# current rig TOML declares or records it absent -- confirmed by
-# ``tests/test_profile_command_coverage.py`` recording it as a universal
-# gap across every shipped CI-V profile (a plain
-# ``grep -rn system_date rigs/*.toml`` also turns up nothing, since every
-# profile's own menu address lives under ``get_/set_system_date``, not
-# this internal template key). Using a real, un-synthesised name here
-# means this file exercises the same undeclared surface the coverage
-# guard tracks, rather than a name invented only for this test.
-#
-# NOT ``get_powerstat``: MOR-2014 (D2) declared it absent on IC-7300 (no
-# read marker in the manual; live bench answered NAK), so it moved from
-# state 3 (neither declared nor declared absent) to state 2 (declared
-# absent) for this profile -- ``TestDeclaredAbsentRefusal`` and
-# ``tests/test_supports_command.py::
-# TestSupportsCommandReconciliation.test_known_but_declared_absent_command_returns_false``
-# cover that state directly.
-_UNIVERSALLY_UNDECLARED = "system_date"
-
 
 class TestDeclaredAbsentRefusal:
     """State 2: declared absent, via ``absent_command_names``."""
@@ -152,6 +129,11 @@ class TestCoreRadioWiring:
         config = discover_rigs(RIGS_DIR)["IC-7300"]
         return config.to_profile()
 
+    @staticmethod
+    def _x6100_profile():
+        config = discover_rigs(RIGS_DIR)["X6100"]
+        return config.to_profile()
+
     def test_declared_absent_source_reaches_the_refusal(self) -> None:
         profile = self._ic7300_profile()
         assert "set_agc" in profile.command_names, (
@@ -180,14 +162,26 @@ class TestCoreRadioWiring:
             radio._commands.set_agc(0, to_addr=0x94)  # noqa: SLF001
 
     def test_state_three_logs_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
-        profile = self._ic7300_profile()
-        assert _UNIVERSALLY_UNDECLARED not in profile.command_names
-        assert _UNIVERSALLY_UNDECLARED not in profile.absent_command_names
+        """State 3 through the real ``CoreRadio``/``BoundCommands`` wiring.
+
+        Uses X6100, not IC-7300: MOR-2008 batch 1 moved
+        ``system.py: get_system_date`` onto the direction-prefixed
+        ``get_system_date`` key (the owner ruling -- see that module's
+        docstring), which IC-7300/IC-7610/IC-9700/IC-705 all now declare,
+        so IC-7300 no longer has a state-3 case for this builder.
+        X6100/X6200 do not declare a system-date CI-V address at all,
+        which is exactly state 3 (neither declared nor declared absent) --
+        pinned by ``tests/profile_command_coverage_gaps.txt``'s
+        ``get_system_date`` gap row for both.
+        """
+        profile = self._x6100_profile()
+        assert "get_system_date" not in profile.command_names
+        assert "get_system_date" not in profile.absent_command_names
         radio = CoreRadio("127.0.0.1", profile=profile)
         with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
             with pytest.raises(CommandError, match="not supported by this radio"):
-                radio._commands.get_system_date(to_addr=0x94)  # noqa: SLF001
-        assert _UNIVERSALLY_UNDECLARED in caplog.text
+                radio._commands.get_system_date(to_addr=0x70)  # noqa: SLF001
+        assert "get_system_date" in caplog.text
         assert "not recorded as absent" in caplog.text
 
     def test_declared_command_is_unaffected(self) -> None:

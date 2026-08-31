@@ -14,16 +14,17 @@ did, for two unrelated controls.
 Every builder calls `_frame.py: _build_from_map` directly rather than the
 shared `_builders.py` templates used before migrating
 (``_build_level_get`` / ``_build_level_set`` / ``_build_ctl_mem_set``, all
-now deleted -- this module was their only caller, so their own
+deleted here -- this module was their only caller, so their own
 ``cmd_map is None`` fallback branches would otherwise become dead code
-nobody reads; ``_build_ctl_mem_get`` is kept, since `system.py`'s own
-date/time/UTC-offset getters still route through its fallback,
-unmigrated). Routing this module's builders through a template that
-retains a fallback would leave an explicit ``cmd_map=None`` call one layer
-away from silently reaching old, sometimes-wrong bytes instead of failing
-loudly through `_frame.py: require_cmd_map` -- the same reasoning
-`config.py`'s own module docstring records for the first half of this
-migration.
+nobody reads; ``_build_ctl_mem_get`` was kept at the time, since
+`system.py`'s own date/time/UTC-offset getters still routed through its
+fallback -- it was deleted later, when `system.py` migrated (MOR-2008
+batch 1) removed that last caller too). Routing this module's builders
+through a template that retains a fallback would leave an explicit
+``cmd_map=None`` call one layer away from silently reaching old,
+sometimes-wrong bytes instead of failing loudly through `_frame.py:
+require_cmd_map` -- the same reasoning `config.py`'s own module docstring
+records for the first half of this migration.
 """
 
 from __future__ import annotations
