@@ -492,8 +492,9 @@ async def test_pacing_gap_is_not_charged_to_the_answer_window(
     out of the same budget as the response.  The response here is already
     queued when the frame goes out, so the window is never spent waiting
     for the radio, and the pacing gap outlasting it makes the mis-charge
-    decisive rather than a matter of scheduling luck.  Both values sit an
-    order of magnitude above the delivery they wait for, for the reason
+    decisive rather than a matter of scheduling luck.  The window sits an
+    order of magnitude above the handover it does wait for, and the
+    outbound gap above the window, for the reason
     ``test_radio.py: TestResponseDeadlineOpensAtSend`` records; that test
     pins the same mis-charge in ``_execute_civ_raw``.
     """

@@ -744,8 +744,9 @@ class TestPtt:
     # ``func_only``: this bound guards the body, which measured 0.00-0.16 s
     # on a loaded machine.  Charging setup to it as well made whichever
     # parametrisation ran first carry the process's first ``IcomRadio``
-    # construction, which costs hundreds of milliseconds against a fraction
-    # of one for every later construction in the same process -- 1.5-2.0 s
+    # construction, which costs a hundred milliseconds or more against a
+    # fraction of one for every later construction in the same process --
+    # 1.5-2.0 s
     # of setup on a loaded run, against 0.00 s for the other two -- so the
     # marker expired on machine speed rather than on anything this test
     # drives.
@@ -1354,9 +1355,9 @@ class TestResponseDeadlineOpensAtSend:
         # budget is what makes the mis-charge decisive rather than a matter
         # of scheduling luck: the response is already queued when the frame
         # goes out, so the window is never spent waiting for the radio.
-        # The two are an order of magnitude above the delivery they wait
-        # for, deliberately.  At 0.05/0.08 this test still passed on the
-        # mis-charge it is meant to catch, but the 50 ms left for the RX
+        # The window sits an order of magnitude above the handover it does
+        # wait for, and the outbound gap above the window, deliberately.  At 0.05/0.08 this test still caught the
+        # mis-charge it exists for, but the 50 ms left for the RX
         # pump to hand over an already-queued response was the same margin
         # this change exists to stop relying on, and it reddened on correct
         # code about once in 27 loaded runs.
