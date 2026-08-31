@@ -8,6 +8,14 @@
  * Neither imports runtime/capability/transport/command code — enforced at
  * lint time by the presentation/ zone (MOR-1061). See v3 ADR and MOR-977
  * §4 (frozen 2026-08-03).
+ *
+ * This file is also a member of the MOR-1077/1078/1079 workspace-purity
+ * closures (`presentation/workspace/__tests__/purity.isolated.test.ts` and
+ * its two siblings), which forbid naming `semantic/` in any import here —
+ * type-only or not. The MOR-2036 data-* vocabulary (`RfState`,
+ * `TxSessionState`, and the `data-fault`/`data-reason` collision types)
+ * needs the real `semantic/` unions, so it lives in the sibling module
+ * `./state-vocabulary.ts` instead of here.
  */
 
 /**

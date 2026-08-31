@@ -21,6 +21,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { STUDIOLINE_PALETTE } from '../tokens';
+import type { RfState, TxSessionState } from '../../state-vocabulary';
 
 const source = readFileSync('src/presentation/languages/studioline/studioline.css', 'utf8');
 // Comments name the very constructs several tests below forbid, so they are
@@ -65,9 +66,15 @@ function parseRules(sheet: string): Rule[] {
 const RULES = parseRules(css);
 const STATE_SCOPED = /:has\(\[data-(?:session|rf)=/;
 
+/**
+ * MOR-2036: `session`/`rf` are the contract's own `TxSessionState`/`RfState`
+ * types, not bare `string` — a fixture below with a typo'd value (e.g.
+ * `'recieving'`) now fails `npm run check` instead of silently making
+ * `matches()` return false for a reason no one asserts on.
+ */
 interface SurfaceState {
-  session: string;
-  rf: string;
+  session: TxSessionState;
+  rf: RfState;
   keyDisabled?: boolean;
 }
 
@@ -92,15 +99,15 @@ function winner(property: string, state: SurfaceState, target: 'surface' | 'key'
   return candidates.at(-1)?.declarations[property];
 }
 
-const RX = { session: 'idle', rf: 'receiving' };
-const PENDING = { session: 'pending', rf: 'uncertain', keyDisabled: true };
-const KEYED = { session: 'keyed', rf: 'transmitting', keyDisabled: true };
-const RELEASING = { session: 'releasing', rf: 'transmitting', keyDisabled: true };
+const RX: SurfaceState = { session: 'idle', rf: 'receiving' };
+const PENDING: SurfaceState = { session: 'pending', rf: 'uncertain', keyDisabled: true };
+const KEYED: SurfaceState = { session: 'keyed', rf: 'transmitting', keyDisabled: true };
+const RELEASING: SurfaceState = { session: 'releasing', rf: 'transmitting', keyDisabled: true };
 // The crux state: a failed session almost always reports RF doubt as well, so
 // the fault rule and the doubt rule both match and one of them has to win.
-const FAULT = { session: 'failed', rf: 'uncertain', keyDisabled: true };
-const RF_UNKNOWN = { session: 'idle', rf: 'unknown' };
-const BLOCKED = { session: 'idle', rf: 'receiving', keyDisabled: true };
+const FAULT: SurfaceState = { session: 'failed', rf: 'uncertain', keyDisabled: true };
+const RF_UNKNOWN: SurfaceState = { session: 'idle', rf: 'unknown' };
+const BLOCKED: SurfaceState = { session: 'idle', rf: 'receiving', keyDisabled: true };
 
 describe('the sheet parses into something worth asserting against', () => {
   it('found the rail and key rules it is about to rank', () => {
