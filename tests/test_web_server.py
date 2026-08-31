@@ -474,12 +474,10 @@ def mock_radio() -> MagicMock:
     radio.set_attenuator_level = AsyncMock()
     radio.set_preamp = AsyncMock()
     radio.set_vfo = AsyncMock()
-    radio.vfo_swap = AsyncMock()
     # Canonical dual-RX VFO methods on ``DualReceiverCapable`` (post-#1114);
     # the radio_poller invokes these directly.
     radio.swap_main_sub = AsyncMock()
     radio.equalize_main_sub = AsyncMock()
-    radio.vfo_a_equals_b = AsyncMock()
     radio.set_main_sub_tracking = AsyncMock()
     radio.get_main_sub_tracking = AsyncMock(return_value=False)
     # ScopeCapable protocol attrs (all required for isinstance check in Python 3.12+)

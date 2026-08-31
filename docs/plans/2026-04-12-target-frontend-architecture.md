@@ -24,7 +24,7 @@ Four layers, strict one-way dependency:
 │  (amber-lcd, desktop-v2, mobile, future skins)      │
 ├─────────────────��───────────────────────────��───────┤
 │  SEMANTIC COMPONENTS                                │  ← behavior contracts
-│  (VfoDisplay, MeterPanel, RxAudioControl, ...)      │
+│  (VfoDisplay, MetersSurface, RxAudioControl, ...)   │
 ├───────────────���─────────────────────────��───────────┤
 │  VIEW-MODEL ADAPTERS                                │  ← pure functions
 │  (toVfoProps, toMeterProps, toRxAudioProps, ...)     │
@@ -229,7 +229,7 @@ Rules:
 | `VfoDisplay` | freq, mode, filter, dataMode, badges | onFreqChange, onModeChange, onFilterChange |
 | `RxAudioControl` | monitorMode, hasLiveAudio, volume, muted | onMonitorModeChange, onVolumeChange |
 | `TxControl` | pttActive, txEnabled, txSupported | onPttToggle, onStartTx, onStopTx |
-| `MeterPanel` | sMeter, swr, power, alc, comp | — |
+| `MetersSurface` | sMeter, swr, power, alc, comp | — |
 | `ScopeSurface` | available, frame | onTuneToFreq, onSpanChange |
 | `BandSelector` | currentBand, bands | onBandChange |
 | `ModeSelector` | currentMode, modes | onModeChange |
@@ -427,7 +427,7 @@ frontend/src/
 │   ├── VfoDisplay.svelte
 │   ├── RxAudioControl.svelte
 │   ├── TxControl.svelte
-│   ├── MeterPanel.svelte
+│   ├── MetersSurface.svelte
 │   ├── ScopeSurface.svelte
 │   ├── BandSelector.svelte
 │   ├── ModeSelector.svelte

@@ -12,8 +12,6 @@ from rigplane.commands import (
     build_civ_frame,
     parse_civ_frame,
     select_vfo,
-    vfo_a_equals_b,
-    vfo_swap,
     set_split,
     set_attenuator,
     set_preamp,
@@ -59,20 +57,6 @@ class TestSelectVfo:
         # on cmd_map being omitted (both now raise TypeError post-MOR-2007).
         with pytest.raises(TypeError):
             select_vfo("MAIN", cmd_map=cmd_map)
-
-
-class TestVfoCommands:
-    def test_vfo_a_equals_b(self, cmd_map):
-        frame = vfo_a_equals_b(cmd_map=cmd_map)
-        parsed = parse_civ_frame(frame)
-        assert parsed.command == 0x07
-        assert parsed.data == b"\xa0"
-
-    def test_vfo_swap(self, cmd_map):
-        frame = vfo_swap(cmd_map=cmd_map)
-        parsed = parse_civ_frame(frame)
-        assert parsed.command == 0x07
-        assert parsed.data == b"\xb0"
 
 
 class TestSplit:

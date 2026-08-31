@@ -87,6 +87,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `self._commands.<builder>(...)` in the same change — an external caller
   of a free function must do the same rather than calling it directly
   with no map.
+- **`rigplane.commands.vfo_a_equals_b` and `rigplane.commands.vfo_swap` are
+  removed** (mechanism audit D1; see
+  `.claude/audits/2026-08-30-mechanism-audit-vfo-swap-equalize.md`). The
+  MOR-2007 migration above made `cmd_map` required on both without
+  changing their bytes; this change deletes them outright. Both had zero
+  production call sites and built the identical frame to `set_vfo(0xA0, ...)`
+  and `set_vfo(0xB0, ...)` respectively — both go through the same
+  `_build_from_map(cmd_map, "set_vfo", ...)` call, so a caller wanting the
+  raw bytes gets identical frames from `set_vfo` either way. The
+  profile-driven replacements are
+  `DualReceiverCapable.swap_main_sub`/`equalize_main_sub` and
+  `VfoSlotCapable.swap_vfo_ab`/`equalize_vfo_ab` on the `Radio` protocol.
+  `vfo_a_equals_b`'s hardcoded `0xA0` equalize byte matched no shipped
+  dual-RX profile: IC-7610 and IC-9700, the only two `main_sub`-scheme
+  profiles, both declare `equal_main_sub = [0xB1]`.
 - **`rigplane.commands.ptt` builders require `cmd_map`; there is no
   hardcoded fallback (MOR-2007, Steps 5..N module 4 of
   `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** `ptt_on`/
@@ -174,6 +189,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the `Radio` protocol method never took a receiver for this reading —
   so this closes a footgun rather than changing observed behaviour; a caller
   that did pass `receiver=` now gets a `TypeError` instead of a silent SET.
+- **`RadioProfile.vfo_swap_code` and `RadioProfile.vfo_equal_code` are
+  removed** (mechanism-audit D2; both were self-documented deprecated since
+  issue #710). Read `swap_ab_code`/`swap_main_sub_code` (or
+  `equal_ab_code`/`equal_main_sub_code`) directly; the alias resolution the
+  properties performed was `swap_main_sub_code or swap_ab_code` (and the
+  `equal_` equivalent), so a caller that needs the old ordering inlines that
+  expression. No production code in this repository read either property —
+  consumers were tests only.
 
 ### Changed
 
