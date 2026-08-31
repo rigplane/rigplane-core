@@ -15,10 +15,8 @@ import { describe, it, expect } from 'vitest';
 import { SEMANTIC_SURFACE_NAMES, validateLayoutManifest } from '../contract';
 import { RENDERER_SLOT_NAMES } from '../../languages/contract';
 import { validLayoutManifest } from './fixtures';
-import {
-  desktopV2Layout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
-  sdrTestLayout,
-} from '../declarations';
+import { isLayoutManifest } from './manifest-guard';
+import * as layoutDeclarationsBarrel from '../declarations';
 
 describe('filter is a declarable semantic surface', () => {
   // Kills: reverting the SEMANTIC_SURFACE_NAMES addition.
@@ -51,11 +49,11 @@ describe('exactly the reviewed manifests declare a filter zone (MOR-1366)', () =
   /** The literal — extend by hand, with a layout review, never silently. */
   const DECLARES_FILTER = ['desktop-v2'];
 
-  const ALL = [
-    ['sdr-test', sdrTestLayout], ['dual-receiver-cockpit', dualReceiverCockpitLayout],
-    ['lcd-cockpit', lcdCockpitLayout], ['lcd-scope', lcdScopeLayout],
-    ['mobile', mobileLayout], ['desktop-v2', desktopV2Layout],
-  ] as const;
+  // [id, manifest] pairs derived from the barrel's export surface
+  // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.
+  const ALL = Object.values(layoutDeclarationsBarrel)
+    .filter(isLayoutManifest)
+    .map((m) => [m.id, m] as const);
 
   // Kills BOTH directions: a family losing the zone S7 gave it, and a family
   // gaining one without review.
