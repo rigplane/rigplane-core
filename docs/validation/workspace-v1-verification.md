@@ -48,14 +48,16 @@ npm ci
 npx vitest run src/presentation/workspace/__tests__/workspace-compatibility-verification.test.ts
 ```
 
-Full gate (what CI runs):
+Full gate — the `Frontend install + check + tests + build` step of
+`.github/workflows/quick.yml`, its checks in that order:
 
 ```bash
 cd frontend
-npx vitest run          # whole frontend suite
-npm run lint
-npm run lint:boundaries
+npm ci
+npm run i18n:check
 npm run check
+npx vitest run          # whole frontend suite
+npm run build
 ```
 
 The suite is **fast-pool** (MOR-1272): storage is injected as a fake, so there
