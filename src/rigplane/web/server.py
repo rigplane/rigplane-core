@@ -960,7 +960,7 @@ class WebServer:
         candidates = [
             m
             for m in (radio_model, self._config.radio_model)
-            if isinstance(m, str) and m != _RADIO_MODEL_UNSPECIFIED
+            if isinstance(m, str) and m.strip() and m != _RADIO_MODEL_UNSPECIFIED
         ]
         for candidate in candidates:
             try:
