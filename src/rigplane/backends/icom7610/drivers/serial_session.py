@@ -190,6 +190,15 @@ class SerialCivTransport:
         if not self._packet_queue.empty():
             return self._packet_queue.get_nowait()
 
+        if not self.connected:
+            # ``self._civ_link.receive`` returns ``None`` with no ``await``
+            # at all once the link is disconnected, so calling into it here
+            # would raise below without ever yielding to the event loop.
+            # Honor the ``timeout`` contract explicitly instead, matching
+            # ``SerialControlTransport.receive_packet`` in this module.
+            await asyncio.sleep(timeout)
+            raise asyncio.TimeoutError()
+
         try:
             frame = await self._civ_link.receive(timeout=timeout)
         except Exception as exc:
