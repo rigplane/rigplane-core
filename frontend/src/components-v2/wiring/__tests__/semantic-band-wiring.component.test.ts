@@ -7,7 +7,8 @@
  * and runtime SEAMS are spied:
  *
  *   (a) THE MOUNTING CANON. The surface is control-bearing (band buttons, a
- *       frequency field, a Set button) and no manifest declares a `band` zone,
+ *       frequency field, a Set button) and the dual composition's only layout
+ *       (`dual-receiver-cockpit.ts`) declares no `band` zone,
  *       so it must NOT appear in the dual composition — and the pin renders the
  *       dual composition with caps that DO emit the group, because a fixture
  *       that cannot see the surface is the bug, not the proof (MOR-1304 §1).
@@ -214,7 +215,8 @@ describe('the band surface obeys the zone-mount canon (MOR-1069 / MOR-1304)', ()
   /**
    * THE DUAL-ABSENCE PIN. MUTATION KILLED: mounting this surface in the dual
    * composition — bare, or through `zoned()`, which renders bare anyway while
-   * no manifest declares a `band` zone (`zoneOwning()` answers `null`). The
+   * the cockpit manifest declares no `band` zone (`zoneOwning()` answers
+   * `null`). The
    * view model here DOES carry the band group (asserted below via the single
    * composition), so this is not the vacuous green MOR-1304 §1 warned about.
    */

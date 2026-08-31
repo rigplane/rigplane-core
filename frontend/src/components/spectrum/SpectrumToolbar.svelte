@@ -58,9 +58,14 @@
      * (`scopeDemandOn`) is client-side scope-streaming demand, not a
      * `scopeControls.*` field either, and also stays unconditional.
      *
-     * Landed INERT (MOR-1369, S6b-1): no manifest declares a `scopeControls`
-     * zone yet, so this defaults `false` and nothing renders differently.
-     * Safe only because an omitting caller keeps the prop `false` — the same
+     * Landed INERT with MOR-1369 (S6b-1) and is LIVE now: MOR-1370 (S6b-2)
+     * declared the `scopeControls` zone on `desktop-v2`, so
+     * `RadioLayout.svelte` forwards
+     * `hideScopeControls={declared.has('scopeControls')}` — `true` on the
+     * flagship skin, pinned by "passes hideScopeControls=true on real
+     * desktop-v2, which declares the scope-controls zone" in
+     * `components-v2/layout/__tests__/RadioLayout.isolated.test.ts`. It still
+     * defaults `false`, which is what keeps an omitting caller safe — the same
      * shape as `hideSourceControls` above and the MOR-1364 `hideTxPanel`/
      * `declared` channel (S5-N3: safe because the surface degrades to a bare
      * render when unzoned, a guarantee that lives in

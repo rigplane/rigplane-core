@@ -16,8 +16,12 @@
  *       `defaultScopeStatus` — the composed-tree analogue of the adapter-level
  *       probe in `scope-display-adapter.test.ts`.
  *   (c) Unlike `rxAudio` (control-bearing, single-composition-only), this
- *       surface is PURE READOUT and mounts BARE in BOTH compositions, the
- *       `meters`/`txAux` shape — proved by mounting it in `dual` too.
+ *       surface is PURE READOUT and mounts in BOTH compositions, the
+ *       `meters`/`txAux` shape — proved by mounting it in `dual` too. It is
+ *       zoned wherever `zoneOwning()` finds a zone carrying `scopeDisplay`
+ *       (`desktop-v2` declares one as `scope-display`, MOR-1365/S6a), and
+ *       bare otherwise — the dual composition, a standalone mount with no
+ *       plan, or a workspace subtraction that emptied the zone.
  *   (d) The default path must stay byte-identical: a radio that declares no
  *       scope capability renders exactly the pre-1312 element shape.
  */
@@ -295,9 +299,13 @@ describe('the scope-display surface mounts only when the view model carries the 
     },
   );
 
-  // Same shape as `meters`/`txAux`: declarable, but no manifest declares a
-  // `scopeDisplay` zone in this slice — the surface renders bare in BOTH
-  // compositions, unlike `rxAudio`'s single-only mount.
+  // Mounted in BOTH compositions, unlike `rxAudio`'s single-only mount. This
+  // pin renders bare because a STANDALONE mount resolves no surface plan
+  // (`useSurfacePlan()` falls back to `NO_PLAN`), so `zoneOwning()` answers
+  // `null` for every surface here whatever any manifest declares — not
+  // because the zone is undeclared program-wide. `desktop-v2` has declared a
+  // `scopeDisplay` zone since MOR-1365 (S6a); the dual composition's own
+  // layout (`dual-receiver-cockpit.ts`) still declares none.
   it('binds no zone id to the scope-display surface in either composition', () => {
     h.caps = liveCaps(true);
     h.scopeStatus = { ...LIVE_SCOPE_STATUS };

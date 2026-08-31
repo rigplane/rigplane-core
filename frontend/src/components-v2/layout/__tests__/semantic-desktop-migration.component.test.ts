@@ -599,16 +599,23 @@ describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () =
  * same `declaredSurfaces(manifest)` set `RadioLayout` already derives down to
  * `LeftSidebar`, `RightSidebar` and `StatusBar`.
  *
- * Nothing renders differently today (no manifest declares any of these zones),
- * which is the whole point: the risky plumbing lands once, independently
- * pinned, and each zone slice after it is a two-file manifest edit. The ONE
+ * Nothing rendered differently WHEN THIS LANDED — no manifest declared any of
+ * these zones yet — which was the whole point: the risky plumbing lands once,
+ * independently pinned, and each zone slice after it is a two-file manifest
+ * edit. Those slices have since landed and `desktop-v2` declares every one of
+ * these zones (S6a/S7/S8/S9), so the channel is LIVE on the flagship
+ * skin rather than inert. The ONE
  * exception is the settings modal's SPLIT/A↔B/A=B row, which gates on the
  * already-true `semanticDeck` — a real, deliberate change, pinned by its own
  * named test below rather than folded into the inertness claim.
  *
- * The probes are `desktop-v2`'s REAL manifest plus exactly ONE zone — the
- * literal shape S6a/S7/S8/S9 will land — so a row that fails here is a
- * statement about the channel and not about a hand-built fixture.
+ * The probe apparatus this paragraph used to describe — `desktop-v2`'s REAL
+ * manifest plus exactly ONE synthetic zone — is GONE. Every surface graduated
+ * to a real declaration, so `ZONES` below is an empty literal and THIS
+ * describe registers no zone probe of its own (that literal's own docstring
+ * records why it was left empty rather than deleted). Each graduate's coverage
+ * moved to a describe asserting the REAL registration, which is the stronger
+ * statement.
  */
 describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   /** Every panel id either sidebar can host. Without these the pins would pass

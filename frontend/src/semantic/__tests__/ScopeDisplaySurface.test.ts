@@ -99,8 +99,9 @@ describe('the scope-display surface is display-only and self-gates on group pres
 
   // MUTATION PROBE (1 of 2 required by the ticket): grows a button/input of
   // any kind. Zero focusable elements is what lets `SemanticRadioSurfaces`
-  // mount this surface bare in BOTH compositions (the `meters` shape, not
-  // `rxAudio`'s single-only shape) — see `ScopeDisplaySurface.svelte`'s doc
+  // mount this surface in BOTH compositions (the `meters` shape, not
+  // `rxAudio`'s single-only shape), bare included wherever `zoneOwning()`
+  // finds no zone carrying `scopeDisplay` — see `ScopeDisplaySurface.svelte`'s doc
   // comment and `semantic-scope-display-wiring.component.test.ts`.
   it('contributes no focusable control of any kind', () => {
     withSurface(base(), () => {

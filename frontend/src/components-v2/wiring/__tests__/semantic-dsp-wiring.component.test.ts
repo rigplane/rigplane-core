@@ -329,8 +329,9 @@ describe('the dsp surface mounts only when the view model carries the group', ()
    * range inputs and 7 buttons — it is control-bearing, and the cockpit's
    * MOR-1069 rule forbids mounting any control-bearing surface bare in the
    * dual composition: every focusable control must live inside a declared
-   * zone, with rx-tx last in the tab order. No manifest declares a `dsp`
-   * zone, so the dual composition renders NO dsp surface at all — same
+   * zone, with rx-tx last in the tab order. `dual-receiver-cockpit.ts` — the
+   * only layout with a dual composition — declares no `dsp` zone, so the dual
+   * composition renders NO dsp surface at all — same
    * precedent as `rxAudioSurface`
    * (`semantic-rx-audio-wiring.component.test.ts`). The view model here DOES
    * carry the `dsp` group (see `beforeEach`) — a fixture that cannot see the

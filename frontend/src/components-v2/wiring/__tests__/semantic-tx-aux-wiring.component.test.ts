@@ -624,7 +624,9 @@ describe('MOR-1082 — the semantic vertical consults the resolved surface plan'
 // `zoneOwning`/`zoned` in `SemanticRadioSurfaces` is written ONCE and applied
 // uniformly to every optional surface (txAux, meters, and — single
 // composition only — rxAudio). Every pin above proves it exclusively against
-// txAux, which is also the one real manifest happens to declare a zone for —
+// txAux, which was the only one OF THOSE THREE a real manifest declared a
+// zone for when these pins were written (`vfo`/`rxTx` had zones from the
+// start; `desktop-v2` declares all fourteen surfaces today) —
 // a wiring change that special-cased `if (surface === 'txAux')` would pass
 // every one of them just as well. These pins exercise the SAME mechanism
 // against `meters`, a structurally unrelated surface, through a SYNTHETIC
@@ -710,8 +712,13 @@ describe('MOR-1336 — a declared zone renders nothing for a radio without the g
  * `filter`, the MOR-1279 rxAudio shape.
  *
  * `FilterSurface` renders up to 14 focusable controls (mode/filter/shape
- * choice buttons, the width slider, three passband-level sliders) and no
- * shipped manifest declares a `filter` zone (`filter-declarability.test.ts`).
+ * choice buttons, the width slider, three passband-level sliders), and the
+ * DUAL composition's only layout (`dual-receiver-cockpit.ts`) declares no
+ * `filter` zone. `desktop-v2` DOES declare one — MOR-1366 (S7) — and
+ * `filter-declarability.test.ts` pins the declaring set as exactly
+ * `['desktop-v2']`. This sentence previously cited that same file as evidence
+ * that NO shipped manifest declared the zone, which that file has contradicted
+ * since S7 landed.
  * The cockpit's MOR-1069 invariant requires every focusable control to sit
  * inside a zone the active layout's manifest actually declares, with `rx-tx`
  * last in the tab order — a control-bearing surface mounted bare in the DUAL

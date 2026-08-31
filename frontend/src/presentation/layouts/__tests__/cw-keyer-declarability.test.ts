@@ -1,9 +1,11 @@
 /**
- * MOR-1310 — `cwKeyer` is DECLARABLE, and nothing declares it yet.
+ * MOR-1310 — `cwKeyer` is DECLARABLE. MOR-1368 (S9) declares it for real.
  *
- * Slice 9B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
+ * Slice 9B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
+ * the surface later; it deliberately did not touch any manifest, and it added
  * no design-language renderer slot (that set was frozen by MOR-1072).
+ * MOR-1368 flips the second half, on `desktop-v2` ONLY; the inventory below
+ * is a LITERAL of who declares it.
  *
  * Same three pins as `rx-audio-declarability.test.ts` /
  * `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`:

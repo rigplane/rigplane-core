@@ -7,9 +7,11 @@
  * transport/runtime/authority SEAMS are spied:
  *
  *   (a) MOUNTING CANON (MOR-1304 ruling). The surface is control-bearing and
- *       no manifest declares an `antenna` zone, so it must NOT appear in the
- *       DUAL composition — bare OR through `zoned()`, which renders bare for an
- *       undeclared surface and is therefore not permission. The pin below
+ *       the dual composition's only layout (`dual-receiver-cockpit.ts`)
+ *       declares no `antenna` zone, so it must NOT appear in the
+ *       DUAL composition — bare OR through `zoned()`, which renders bare for a
+ *       surface the ACTIVE layout has not declared and is therefore not
+ *       permission. The pin below
  *       renders `strips="dual"` with a view model that DOES carry the antenna
  *       group; a fixture that cannot see the surface would make it vacuous.
  *   (b) SAFETY, end to end: while the App-owned TX authority reports the
@@ -192,8 +194,9 @@ afterEach(() => {
 describe('the antenna surface never mounts in the dual composition (MOR-1304 canon)', () => {
   /**
    * MUTATION KILLED: mounting this surface in the cockpit, bare or through
-   * `zoned()`. It renders focusable controls and no manifest declares an
-   * `antenna` zone, so `zoneOwning()` returns null and `zoned` renders BARE —
+   * `zoned()`. It renders focusable controls and `dual-receiver-cockpit.ts`
+   * declares no `antenna` zone, so `zoneOwning()` returns null and `zoned`
+   * renders BARE —
    * outside every declared zone, breaking the MOR-1069 invariant that every
    * focusable control sits inside a declared zone with rx-tx last in the tab
    * order. The view model here DOES carry the group (asserted below), so this

@@ -23,8 +23,9 @@
  *       band-plan lookup anywhere in the CW path.
  *   (d) Receiver-scoped intents (APF, TPF) target the ACTIVE VFO — the facts
  *       and the commands must name the same receiver.
- *   (e) MOUNTING: the surface is control-bearing and no manifest declares a
- *       `cwKeyer` zone, so it renders in the SINGLE composition only. The dual
+ *   (e) MOUNTING: the surface is control-bearing and the dual composition's
+ *       only layout (`dual-receiver-cockpit.ts`) declares no `cwKeyer` zone,
+ *       so it renders in the SINGLE composition only. The dual
  *       composition must not grow it — asserted with a view model that DOES
  *       carry the group, because a fixture that cannot see the surface would
  *       reproduce the very hole the MOR-1304 ruling was written about.
@@ -657,8 +658,9 @@ describe('the surface mounts only where a declared zone can hold it', () => {
 
   /**
    * MUTATION KILLED: mounting this surface bare in the cockpit (the MOR-1304
-   * ruling). It is control-bearing and no manifest declares a `cwKeyer` zone,
-   * so MOR-1069's cockpit rule — every focusable control inside a declared
+   * ruling). It is control-bearing and `dual-receiver-cockpit.ts` — the only
+   * layout with a dual composition — declares no `cwKeyer` zone, so
+   * MOR-1069's cockpit rule — every focusable control inside a declared
    * zone, tab order ending in rx-tx — would break on both clauses; folding it
    * into the rx-tx zone would put break-in choices between the operator and
    * the unkey button.
