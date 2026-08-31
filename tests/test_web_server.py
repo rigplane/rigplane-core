@@ -4303,6 +4303,49 @@ class TestGetProfileRouting:
         IC-7610 (MOR-174)."""
         assert WebConfig().radio_model != "IC-7610"
 
+    @pytest.mark.parametrize("blank_model", ["", "   "])
+    def test_blank_radio_model_does_not_short_circuit_configured_model(
+        self, caplog, blank_model
+    ):
+        """A blank radio.model must not win the candidate loop and silently
+        yield the default resolution chain's rig — the configured
+        radio_model is still a usable candidate."""
+        import logging
+
+        from rigplane.profiles import resolve_radio_profile
+
+        radio = SimpleNamespace(model=blank_model, capabilities=set())
+        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
+            srv = self._make_server(radio, radio_model="FTX-1")
+            profile = srv._get_profile()
+
+        assert profile.vfo_scheme == "ab_shared"
+        assert profile != resolve_radio_profile()
+        assert not any(r.levelno == logging.WARNING for r in caplog.records)
+        assert srv._profile_fallback_warned is False  # noqa: SLF001
+
+    def test_blank_radio_and_config_model_still_warns_and_falls_back(self, caplog):
+        """When both radio.model and the configured radio_model are blank,
+        _get_profile() still falls back through the default resolution
+        chain and emits the MOR-174 warning naming the profile actually
+        used — the fix must not turn a warned fallback into a silent one."""
+        import logging
+
+        from rigplane.profiles import RadioProfile, resolve_radio_profile
+
+        radio = SimpleNamespace(model="", capabilities=set())
+        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
+            srv = self._make_server(radio, radio_model="")
+            profile = srv._get_profile()
+
+        assert isinstance(profile, RadioProfile)
+        assert profile == resolve_radio_profile()
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+        ]
+        assert warnings, "expected a WARNING for the MOR-174 fallback"
+        assert profile.model in warnings[0]
+
 
 class TestGetMeterCalPayload:
     """Unit tests for WebServer._get_meter_cal_payload()."""
