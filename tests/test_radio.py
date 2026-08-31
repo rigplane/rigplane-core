@@ -3451,19 +3451,41 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
     """MOR-1545 (PR #2458 follow-up 1): get_repeater_tone/get_repeater_tsql
     deduped GETs on a bare ``key="get_repeater_tone"`` shared across
     MAIN/SUB (``IcomCommander._pending_by_key`` in
-    ``commands/commander.py``, see ``send()`` lines ~151-156). A concurrent
+    ``commands/commander.py``, see ``IcomCommander.send``). A concurrent
     in-flight MAIN read could coalesce a SUB caller onto MAIN's answer.
     Fixed to receiver-scope the key (``key=f"get_repeater_tone:{receiver}"``),
     mirroring ``get_filter_width``'s precedent (MOR-1538/#2458).
 
-    Uses IC-7300, not the module's default IC-7610 ``radio`` fixture, for
-    the same reason as ``TestToneTsqlParity`` above: IC-7610 does not
-    declare this family (MOR-2008 batch 2's D1 refusal fix), so a call
-    that used to build and send a wrong-but-successful frame on the
-    default fixture now raises ``CommandError`` instead. IC-7300 is
-    single-receiver, so the MAIN+SUB variant below has no working radio
-    left to run against (below); the same-receiver variant needs no SUB
-    at all and is otherwise unaffected.
+    ``test_concurrent_same_receiver_reads_still_dedupe`` below still uses
+    IC-7300 (``radio`` fixture), the same reason as ``TestToneTsqlParity``
+    above: IC-7610 does not declare this family (``rigs/ic7610.toml``), so
+    a call that used to build and send a wrong-but-successful frame on the
+    module's default IC-7610 fixture now raises ``CommandError`` instead.
+    ``test_concurrent_main_and_sub_reads_do_not_coalesce`` below instead
+    runs against IC-9700 (``ic9700_radio`` fixture): IC-7300 is
+    single-receiver and so cannot host a MAIN-vs-SUB race, and IC-9700 is
+    the only remaining dual-RX CI-V profile that declares the
+    repeater-tone/TSQL family at all. IC-9700 declares
+    ``[cmd29] routes = []`` for this family, so its SUB path goes through
+    ``DualRxRuntimeMixin._run_with_receiver_vfo_fallback`` (select SUB,
+    plain GET, restore MAIN -- three frames) rather than one cmd29-wrapped
+    frame, which is why this test's response queue and frame-tail
+    assertions below differ from the single-frame same-receiver test
+    underneath it. (The direct, non-fallback ``key=`` site in
+    ``get_repeater_tone``/``get_repeater_tsql`` needs both a declared
+    command and a cmd29 route for ``0x16 0x42``/``0x16 0x43`` to be
+    reachable with ``receiver != MAIN``; checked against every profile
+    under ``rigs/*.toml``, none currently ships both -- IC-7610 has the
+    route but not the declaration, IC-9700 has the declaration but
+    ``routes = []`` -- so only the fallback ``key=`` site below is
+    reachable for SUB today. A future profile could ship both.)
+
+    ``asyncio.gather`` below is called SUB-first (``method(receiver=1)``
+    before ``method(receiver=0)``) by design: verified, a reverted tree
+    (bare ``key="get_repeater_tone"``/``key="get_repeater_tsql"``) fails
+    this test on both parametrizations with SUB dispatched first -- see
+    the method docstring for what each assertion below is checking and
+    why.
     """
 
     @pytest.fixture
@@ -3475,22 +3497,19 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
         yield r
         r._connected = False  # reset _conn_state so __del__ stays quiet
 
-    @pytest.mark.skip(
-        reason=(
-            "MOR-2008 batch 2: IC-7610, the only dual-RX profile this test "
-            "ever ran against, does not declare the repeater-tone/TSQL "
-            "family at all (rigs/ic7610.toml, live-bench garbage-readback "
-            "finding) -- calling it now raises CommandError instead of "
-            "building a frame. IC-9700, the only other dual-RX profile "
-            "that declares the family, has no cmd29 route for it and "
-            "reaches SUB through a 3-frame VFO-select fallback "
-            "(TestToneTsqlDualRxCmd29Guard above) instead of one cmd29 "
-            "frame -- redesigning this concurrency test's timing "
-            "assumptions (exact sent_packets count, interleaving) around "
-            "that shape is a real piece of work, not a fixture swap, so "
-            "it is left for a dedicated follow-up rather than rushed here."
-        )
-    )
+    @pytest.fixture
+    def ic9700_radio(self, mock_transport: MockTransport):
+        # Same shape as TestToneTsqlDualRxCmd29Guard.ic9700_radio above,
+        # including timeout=0.05. Whether a larger timeout would reduce
+        # this test's flake rate under -n auto is unmeasured and deferred
+        # -- not decided here.
+        r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        yield r
+        r._connected = False  # reset _conn_state so __del__ stays quiet
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method_name", "sub"),
@@ -3498,30 +3517,52 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
     )
     async def test_concurrent_main_and_sub_reads_do_not_coalesce(
         self,
-        radio: IcomRadio,
+        ic9700_radio: IcomRadio,
         mock_transport: MockTransport,
         method_name: str,
         sub: int,
     ) -> None:
-        """Two receivers in flight at once must each get their own wire
-        read and their own answer -- not one coalesced onto the other."""
-        radio._civ_runtime.start_worker()
+        """MAIN and SUB reads in flight at once must each get their own
+        wire read and their own answer -- not one coalesced onto the
+        other. SUB reaches SUB via the VFO-select fallback (select SUB,
+        GET, restore MAIN); MAIN reaches MAIN directly, so the wire
+        sequence is 4 frames, not 2. The frame-tail assertions below pin
+        that real 3-frame-fallback-plus-1 shape (and are what distinguish
+        this test from the stubbed-``_set_vfo_wire`` sibling in
+        ``test_mor1545_vfo_fallback_failure_paths.
+        TestVfoFallbackReadDedupeKeyReceiverScoped``) -- they are not what
+        catches the coalescing regression itself, which fails the earlier
+        ``assert sub_result is False`` instead. See the class docstring
+        for why ``gather`` is called SUB-first."""
+        ic9700_radio._civ_runtime.start_worker()
         try:
-            mock_transport.queue_response_on_send(
-                1, _function_response_ic7300(sub, b"\x01")
+            ack = _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA2, _CMD_ACK))
+            main_civ = build_civ_frame(
+                CONTROLLER_ADDR, 0xA2, 0x16, sub=sub, data=b"\x01"
             )
-            mock_transport.queue_response_on_send(
-                2, _function_response_ic7300(sub, b"\x00")
+            sub_civ = build_civ_frame(
+                CONTROLLER_ADDR, 0xA2, 0x16, sub=sub, data=b"\x00"
             )
-            method = getattr(radio, method_name)
-            main_result, sub_result = await asyncio.gather(
-                method(receiver=0), method(receiver=1)
+            mock_transport.queue_response_on_send(1, ack)  # select SUB ack
+            mock_transport.queue_response_on_send(2, _wrap_civ_in_udp(main_civ))
+            mock_transport.queue_response_on_send(3, _wrap_civ_in_udp(sub_civ))
+            mock_transport.queue_response_on_send(4, ack)  # restore MAIN ack
+
+            method = getattr(ic9700_radio, method_name)
+            sub_result, main_result = await asyncio.gather(
+                method(receiver=1), method(receiver=0)
             )
+
             assert main_result is True
             assert sub_result is False
-            assert len(mock_transport.sent_packets) == 2
+
+            frames = mock_transport.sent_packets
+            assert frames[0].endswith(b"\x07\xd1\xfd")  # select SUB
+            assert frames[1].endswith(bytes([0x16, sub, 0xFD]))  # MAIN GET
+            assert frames[2].endswith(bytes([0x16, sub, 0xFD]))  # SUB GET
+            assert frames[3].endswith(b"\x07\xd0\xfd")  # restore MAIN
         finally:
-            await radio._civ_runtime.stop_worker()
+            await ic9700_radio._civ_runtime.stop_worker()
 
     @pytest.mark.asyncio
     async def test_concurrent_same_receiver_reads_still_dedupe(
