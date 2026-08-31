@@ -121,10 +121,8 @@ describe('loader identity — pins the real desktop-v2 entrypoint (verify.md N1)
   // green under that mutation, because neither ties THIS manifest's loader
   // to the file it actually names. Read as TEXT — the same idiom as every
   // other module-specifier pin in this suite — because invoking the loader
-  // would pull in RadioLayout.svelte's full import graph, including
-  // `lib/stores/layout.svelte.ts`'s module-scope `localStorage` read, which
-  // throws outside a DOM environment (why F8 reads `skins/registry.ts` as
-  // text instead of importing it).
+  // would pull in RadioLayout.svelte's full import graph, which this suite
+  // avoids importing wholesale.
   it('the manifest loader names DesktopSkin.svelte, not a sibling skin entrypoint', () => {
     const source = readFileSync('src/presentation/layouts/desktop-declarations.ts', 'utf8');
     const match = source.match(/loader:\s*\(\)\s*=>\s*import\(['"]([^'"]+)['"]\)/);

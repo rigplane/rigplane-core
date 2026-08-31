@@ -8,9 +8,9 @@
  *
  * This file reads each skin's OWN source as TEXT, never imports it — the
  * same reason `cockpit-topology-adaptation.test.ts`'s F8 rule and every
- * other module-specifier pin in this suite do: several of these skins
- * transitively import `lib/stores/layout.svelte.ts`, whose module-scope
- * `localStorage` read throws outside a DOM environment.
+ * other module-specifier pin in this suite do: invoking a loader pulls in
+ * its skin's full import graph, which this suite avoids importing
+ * wholesale.
  *
  * The expected forward-declared set below is a LITERAL, not a derived count:
  * a new manifest that lands still forward-declared must be added to it by

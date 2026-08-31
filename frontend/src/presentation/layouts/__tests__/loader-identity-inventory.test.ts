@@ -15,12 +15,11 @@
  * a stale object never actually registered). Its `loader` closure is then
  * stringified with `Function.prototype.toString()` and the dynamic import's
  * resolved specifier is pulled out with a regex. This is read, never
- * invoked — invoking a loader pulls in its skin's full import graph
- * (several transitively import `lib/stores/layout.svelte.ts`, whose
- * module-scope `localStorage` read throws outside a DOM environment; the
- * same reason every other module-specifier pin in this suite, e.g.
- * `desktop-v2-registration.test.ts`'s F8 rule, reads source as TEXT instead
- * of importing it). Stringifying the closure obtained from the live
+ * invoked — invoking a loader pulls in its skin's full import graph, which
+ * this suite avoids importing wholesale, the same reason every other
+ * module-specifier pin in this suite, e.g. `desktop-v2-registration.test.ts`'s
+ * F8 rule, reads source as TEXT instead of importing it. Stringifying the
+ * closure obtained from the live
  * registry is the stronger cousin of that idiom: it pins the specifier
  * actually wired into the object other code resolves through, not a
  * separate copy of the text found by reading a declarations file.
