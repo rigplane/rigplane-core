@@ -132,6 +132,15 @@ implementation agent may not be the review agent.
   where applicable, risk, required fixes, and checks to run.
 - The implementation agent must address BLOCKED feedback, push updates, and
   rerun or wait for checks before merge.
+- A PASS may still carry corrections, marked REQUIRED BEFORE MERGE or MANDATORY
+  SQUASH-BODY CORRECTION: findings real enough to state but not fixable by a
+  commit — a false claim in the PR body or a comment, or one in a pushed commit
+  message that the squash body will carry onto `main`. No workflow checks them;
+  nothing reads a PR body, and the gate matches its directive pattern against
+  only the first non-blank line of a comment.
+  Whoever merges must apply them before merge anyway — editing the body or
+  comment, or writing the corrected squash body at merge — and say in the PR
+  that it did.
 - A failed `Agent Review Gate` without BLOCKED feedback usually means no fresh
   PASS comment exists for the current head; perform or refresh the review
   instead of skipping the PR.
