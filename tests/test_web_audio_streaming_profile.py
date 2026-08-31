@@ -4,6 +4,17 @@ Measures latency and throughput of:
 - Audio codec operations (ulaw decode, PCM16 encode)
 - Frame building and serialization
 - End-to-end relay loop processing
+
+Marked ``benchmark`` and so deselected from the default suite: every
+assertion below compares a wall-clock measurement against a fixed
+threshold that idle hardware clears by more than an order of magnitude.
+That makes them measurements rather than gates -- a slowdown small enough
+to matter passes, while a host busy enough to slow the process by that
+same order fails, which is what ``pytest -n auto`` on a loaded machine
+produces. Run them deliberately with ``uv run pytest -m benchmark
+tests/`` and read the printed numbers; tightening a threshold here means
+revisiting that marker, because a threshold tight enough to catch a
+regression is also tight enough to catch a busy neighbour.
 """
 
 from __future__ import annotations
@@ -23,6 +34,8 @@ from rigplane.web.protocol import (
     MSG_TYPE_AUDIO_RX,
     AUDIO_CODEC_PCM16,
 )
+
+pytestmark = pytest.mark.benchmark
 
 
 class TestAudioCodecPerformance:

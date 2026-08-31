@@ -117,12 +117,13 @@ markers = [
     "e2e: end-to-end tests for PCM API and CLI audio workflows",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "validation_hardware: real-radio validation runs; requires explicit env opt-in",
+    "benchmark: wall-clock measurements, reported rather than gated on; deselected by default (run with -m benchmark)",
 ]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -m 'not slow'"
+addopts = "-v --tb=short -m 'not slow and not benchmark'"
 
 [tool.ruff]
 target-version = "py311"

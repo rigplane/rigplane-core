@@ -10,6 +10,17 @@ Operations profiled:
 - Command queue processing
 - Response parsing latency
 - Full roundtrip (send + receive + parse)
+
+Marked ``benchmark`` and so deselected from the default suite: every
+assertion below compares a wall-clock measurement against a fixed
+threshold that idle hardware clears by more than an order of magnitude.
+That makes them measurements rather than gates -- a slowdown small enough
+to matter passes, while a host busy enough to slow the process by that
+same order fails, which is what ``pytest -n auto`` on a loaded machine
+produces. Run them deliberately with ``uv run pytest -m benchmark
+tests/`` and read the printed numbers; tightening a threshold here means
+revisiting that marker, because a threshold tight enough to catch a
+regression is also tight enough to catch a busy neighbour.
 """
 
 from __future__ import annotations
@@ -30,6 +41,8 @@ from rigplane.commands import (
     build_civ_frame,
 )
 from rigplane.types import Mode, bcd_encode
+
+pytestmark = pytest.mark.benchmark
 
 
 class TestCIVCommandProfiling:
