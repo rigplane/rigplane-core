@@ -15,7 +15,7 @@
  * hand-listed literals by design (that file's own comment says so) — they
  * back that file's own completeness assertion, registration-identity pin
  * and per-id loader-specifier pinning. This file needs none of the three:
- * its own completeness check is structural (`SHIPPED_MANIFESTS` above), and
+ * its own completeness check is structural (`SHIPPED_MANIFESTS` below), and
  * it takes no registry read or loader specifier at all.
  *
  * Deliberately NOT sourced from `listDesignLanguageIds()`/the live registry:

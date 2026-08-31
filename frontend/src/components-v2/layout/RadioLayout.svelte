@@ -123,10 +123,10 @@
   // this shell's own third copy of six of those panels — gates in place.
   // Landed INERT, then activated by S7/S8/S9 (MOR-1366/1367/1368): the
   // desktop-v2 manifest now declares all of `filter`/`rfFrontEnd`/`band`/
-  // `antenna`/`ritXitScan`/`rxAudio`/`dsp`/`cwKeyer`, so every predicate
-  // above is live and the branches are reachable on that skin. Separately,
-  // the modal's SPLIT/A↔B/A=B row gates on `semanticDeck`, not on a
-  // `declared` zone (S10 §4 — a real, deliberate change, not inert
+  // `antenna`/`ritXitScan`/`rxAudio`/`dsp`/`cwKeyer`, so every one of those
+  // predicates is live and the branches are reachable on that skin.
+  // Separately, the modal's SPLIT/A↔B/A=B row gates on `semanticDeck`, not
+  // on a `declared` zone (S10 §4 — a real, deliberate change, not inert
   // plumbing).
   //
   // Same two rules as `semanticRxTx`/`semanticMeters`, restated because this
@@ -333,9 +333,9 @@
                  `hideScopeControls` is the MOR-1369 (S6b-1) suppression
                  channel: reuses the SAME `declared` set as `LeftSidebar`/
                  `RightSidebar`/`StatusBar` above (S6-pre, MOR-1364) rather
-                 than a second derivation. Landed INERT — no manifest
-                 declares a `scopeControls` zone yet, so this is always
-                 `false` today; S6b-2 wires the zone that flips it. -->
+                 than a second derivation. Landed INERT, then activated by
+                 S6b-2 (MOR-1370): the desktop-v2 manifest now declares a
+                 `scopeControls` zone, so this predicate is live too. -->
             <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} />
           </div>
         </div>

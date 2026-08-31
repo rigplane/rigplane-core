@@ -94,7 +94,8 @@ describe('skin registry', () => {
 describe('MOR-1257: QA-only dual-receiver-cockpit reachability', () => {
   // Kill-test: removing this branch (or mistyping the literal) leaves the
   // QA-only preference falling through `normalizeLayoutMode` to 'auto',
-  // which resolves to 'desktop-v2' or 'lcd-cockpit' — never the cockpit.
+  // which resolves to 'desktop-v2' unconditionally (MOR-1097 cutover) —
+  // never the cockpit.
   it('resolves the QA-only preference to the cockpit skin', () => {
     expect(resolve({ layoutPreference: 'dual-receiver-cockpit' })).toBe('dual-receiver-cockpit');
     expect(resolve({ layoutPreference: 'dual-receiver-cockpit', hasAnyScope: true })).toBe('dual-receiver-cockpit');

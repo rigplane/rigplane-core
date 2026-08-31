@@ -793,8 +793,9 @@ const sub = state.sub ?? null;
   the current (v2) skins-based UI. Mobile interactions (sheet/panel swipe, touch-first
   PTT flow) are always active on a mobile-sized viewport; no query param or stored
   selection is required.
-- **Layout mode expectations:** layout preference (`rigplane-layout`) is capability-aware;
-  `auto` resolves to desktop-v2 unconditionally (MOR-1097 cutover); scope availability plays no part in it.
+- **Layout mode expectations:** layout preference (`rigplane-layout`) resolution is not
+  capability-aware; `auto` resolves to desktop-v2 unconditionally (MOR-1097 cutover), and scope
+  availability plays no part in it.
 - **System action error surfacing:** connect/disconnect/power actions in v2 call
   `runtime.system.*` and surface backend HTTP errors directly in the UI.
 - **Battery API availability:** polling slowdown on low battery is best-effort; browsers without
