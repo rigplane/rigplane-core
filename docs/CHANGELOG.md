@@ -87,6 +87,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `self._commands.<builder>(...)` in the same change — an external caller
   of a free function must do the same rather than calling it directly
   with no map.
+- **`rigplane.commands.ptt` builders require `cmd_map`; there is no
+  hardcoded fallback (MOR-2007, Steps 5..N module 4 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** `ptt_on`/
+  `ptt_off` now require `cmd_map` as a required keyword-only argument, the
+  same way as `rigplane.commands.config`/`levels`/`vfo` above. No wire
+  bytes changed: every CI-V profile already declared the identical
+  `[0x1C, 0x00, 0x01]`/`[0x1C, 0x00, 0x00]` tuple the deleted fallback
+  built (the one profile that used to disagree, X6100, was already fixed
+  before this migration). The two production call sites, both in
+  `runtime/radio.py: CoreRadio` — `set_ptt` and the managed-TX
+  `_write_managed_ptt` — moved onto `self._commands.ptt_on`/`.ptt_off` in
+  the same change, touching only the frame-building expression and
+  nothing else in either method (the latter sits in the managed-TX
+  transmit-interlock path).
 - **CLI: `rigplane ptt on` no longer returns while the rig is keyed.** The
   command now holds the key for as long as the process runs and unkeys on the
   way out, so the process that keyed the rig is the one that releases it. A
