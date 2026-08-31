@@ -352,6 +352,26 @@ class TestIcomRadioMemoryMethods:
         assert frame_arg[4] == 0x1A
         assert frame_arg[5] == 0x01
 
+    @pytest.mark.asyncio
+    async def test_get_memory_mode_still_raises_not_implemented(self) -> None:
+        """Pins the T9 registry rationale (validation/registry/_memory.py) for get_memory_mode."""
+        from rigplane.radio import IcomRadio
+
+        radio = self._make_radio()
+        bound = IcomRadio.get_memory_mode.__get__(radio, type(radio))
+        with pytest.raises(NotImplementedError):
+            await bound()
+
+    @pytest.mark.asyncio
+    async def test_get_memory_contents_still_raises_not_implemented(self) -> None:
+        """Pins the T9 registry rationale (validation/registry/_memory.py) for get_memory_contents."""
+        from rigplane.radio import IcomRadio
+
+        radio = self._make_radio()
+        bound = IcomRadio.get_memory_contents.__get__(radio, type(radio))
+        with pytest.raises(NotImplementedError):
+            await bound(1)
+
 
 # ---------------------------------------------------------------------------
 # Band-stack READ (get_bsr) — MOR-681
