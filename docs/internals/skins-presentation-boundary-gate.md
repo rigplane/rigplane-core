@@ -155,30 +155,43 @@ presentation layer" — has two readings. Gates 1 and 2 above enforce the
 *import-direction* reading: a skin's own code may not import transport,
 stores, or the audio manager. Read as an *authoring-reach* claim — which
 files a skin author must edit to ship a new, selectable skin — no mechanism
-enforces it, and it does not hold today:
+enforces it as a blanket guarantee. The bullets below describe the specific
+violation this document originally found; MOR-2059 closed that one
+specifically (detail after the table) — the general claim still is not
+enforced, pending any other site MOR-2054 may still track:
 
-- `frontend/src/lib/stores/layout.svelte.ts` owns the `LayoutMode` union and
-  `CANONICAL_LAYOUT_MODES`; `normalizeLayoutMode` maps any id outside that
-  set to `'auto'` before it can be selected or persisted.
+- `frontend/src/presentation/layout-mode.ts` owns the `LayoutMode` union and
+  `CANONICAL_LAYOUT_MODES` (moved here from `lib/stores/layout.svelte.ts` by
+  MOR-2059 — see below); `normalizeLayoutMode` maps any id outside that set
+  to `'auto'` before it can be selected or persisted.
 - `frontend/src/skins/registry.ts: resolveSkinId` normalizes the user's
   layout preference through that same function — reached, correctly, via
-  `frontend/src/lib/runtime/adapters/layout-mode-adapter.ts`'s unchanged
-  re-export, so Gate 1's import-boundary rule is not itself violated here —
-  and `frontend/src/App.svelte`'s call to `getLayoutMode()` is what feeds
-  `resolveSkinId` its preference. A new skin id is therefore unreachable and
-  unpersistable through the real selection path until
-  `lib/stores/layout.svelte.ts` itself is edited to add it: a `$lib/stores/*`
-  module `FORBIDDEN_SKINS_IMPORTS` (Gate 1) bans a skin from even importing.
-- Adding the id to the presentation-side
-  `frontend/src/presentation/workspace/contract.ts: WORKSPACE_LAYOUT_IDS`
-  does not avoid this: that array is pinned as a literal specifically
-  because the workspace module cannot reach `layout.svelte.ts` either (its
-  own file header explains why), and `resolveSkinId` still normalizes an id
-  outside `CANONICAL_LAYOUT_MODES` away regardless.
+  `frontend/src/lib/runtime/adapters/layout-mode-adapter.ts`'s re-export
+  (which now forwards through `lib/stores/layout.svelte.ts`'s compatibility
+  shim to `presentation/layout-mode.ts`), so Gate 1's import-boundary rule
+  is not itself violated here — and `frontend/src/App.svelte`'s call to
+  `getLayoutMode()` is what feeds `resolveSkinId` its preference. Making a
+  new skin id selectable requires adding it to `presentation/layout-mode.ts`
+  — as of MOR-2059 that module sits inside the presentation layer and is
+  not named by `FORBIDDEN_SKINS_IMPORTS` (Gate 1) at all, so this is no
+  longer an edit "below the presentation layer" in either reading of the
+  criterion.
+- `frontend/src/presentation/workspace/contract.ts: WORKSPACE_LAYOUT_IDS` is
+  no longer pinned as a literal (MOR-2059): it now derives directly from
+  `CANONICAL_LAYOUT_MODES`, so adding an id in the previous bullet is
+  reflected here with no further edit. It was pinned before because
+  `contract.ts` could not import `lib/stores/layout.svelte.ts` at all —
+  `presentation/workspace/**` is eslint-banned from importing
+  `$lib/stores/*` (`frontend/eslint.config.js: FORBIDDEN_WORKSPACE_IMPORTS`,
+  inherited from `FORBIDDEN_PANEL_IMPORTS`'s `$lib/stores/*` ban via
+  `FORBIDDEN_PRESENTATION_IMPORTS`) — the vocabulary lived in exactly that
+  banned path. `presentation/layout-mode.ts` is pure, so that obstacle is
+  gone.
 - The one pre-normalization exception, `dual-receiver-cockpit`, is QA-only:
-  `layout.svelte.ts`'s own comment records that it "can therefore never be
-  persisted via setLayoutMode/the workspace and never appears in the
-  StatusBar skin selector" — not a general path a real skin can use.
+  `presentation/layout-mode.ts`'s own comment records that it "can
+  therefore never be persisted via setLayoutMode/the workspace and never
+  appears in the StatusBar skin selector" — not a general path a real skin
+  can use.
 
 | Clause | Mechanism | Verdict |
 |---|---|---|
@@ -187,11 +200,19 @@ enforces it, and it does not hold today:
 | replicate an IC-7610/FTX-1 front panel; draw an original SDR interface | — | no mechanism; not claimed elsewhere in this document either |
 | without touching anything below the presentation layer | — (Gate 1 covers only the import-direction reading) | **not enforced; false today** for a genuinely new, selectable skin |
 
-Tracked as MOR-2054, which names this exact link — a `LayoutMode` union
+Tracked as MOR-2054, which named this exact link — a `LayoutMode` union
 living in a `$lib/stores/*` zone skins are otherwise forbidden to import —
 as one of several hand-maintained or silently-noncovering sites a new skin
-must currently clear. Closing it is that ticket's scope, not this one's;
-recording the gap honestly is what this document is for.
+must currently clear. **Update (MOR-2059):** this specific instance is now
+closed — the vocabulary moved to `frontend/src/presentation/layout-mode.ts`,
+inside the presentation layer and off the skins forbidden-import list, and
+`lib/stores/layout.svelte.ts` is now a re-export shim an author no longer
+needs to touch to add a selectable id. MOR-2054's other named sites (not
+enumerated in this document) are unaffected by MOR-2059 and are not
+re-verified here — this update corrects only the claim this document itself
+made about the `LayoutMode`/`CANONICAL_LAYOUT_MODES` site, not the overall
+verdict in the table above, which still depends on sites this document does
+not track.
 
 ## See also
 
@@ -200,7 +221,8 @@ recording the gap honestly is what this document is for.
 - `docs/architecture/building-a-skin.md` (MOR-2042) — the skin-authoring
   guide; this document records what is enforced, that one explains how to
   work within it. Its "Only if your skin should be reachable from
-  user-facing layout preference" section independently reaches the same
-  conclusion as Gate 3 above: `lib/stores/layout.svelte.ts` must be edited
-  to add a selectable skin, and doing so is not a boundary violation because
-  the eslint ban applies to import statements, not to owning the file.
+  user-facing layout preference" section points at
+  `frontend/src/presentation/layout-mode.ts` for the same
+  `LayoutMode`/`CANONICAL_LAYOUT_MODES` edit Gate 3 discusses above
+  (MOR-2059) — inside the presentation layer, so no boundary-violation
+  caveat is needed there any more.

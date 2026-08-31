@@ -20,7 +20,7 @@ import { designLanguageActivation } from '../activation';
 import { WORKSPACE_MIGRATION_SENTINEL_KEY, WORKSPACE_STORAGE_KEY } from '../repository';
 import { getWorkspace, initWorkspaceStore, setDesignLanguage } from '../store.svelte';
 import {
-  cycleLayoutMode, getLayoutMode, setLayoutMode,
+  getLayoutMode, setLayoutMode,
 } from '../../../lib/stores/layout.svelte';
 import { readQaCockpitLayoutOverride } from '../../../lib/stores/qa-cockpit-override';
 import {
@@ -133,7 +133,6 @@ describe('MOR-1081 — one workspace field set owns the selection', () => {
 
     setLayoutMode('lcd-scope');
     setThemeUserChoice('nord');
-    cycleLayoutMode(true);
 
     expect(foreignWrites(rec)).toEqual([]);
     expect(rec.writes.every((k) => k === WORKSPACE_STORAGE_KEY)).toBe(true);

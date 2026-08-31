@@ -185,7 +185,7 @@ preference, and one of its links has no check behind it at all.
    preference** (not just a fixed id, the way `dual-receiver-cockpit` is
    reachable only via an exact query param) — four sites need an entry,
    not just `resolveSkinId`:
-   - **`frontend/src/lib/stores/layout.svelte.ts`**: add your id to the
+   - **`frontend/src/presentation/layout-mode.ts`**: add your id to the
      `LayoutMode` union, and — unless it should stay QA-only the way
      `dual-receiver-cockpit` deliberately is not — to the
      `CANONICAL_LAYOUT_MODES` set. `CanonicalLayoutMode` derives from
@@ -194,16 +194,14 @@ preference, and one of its links has no check behind it at all.
      `normalizeLayoutMode` silently normalizes your id to `'auto'` before
      `resolveSkinId` (below) ever sees it — no error, the branch you add
      there just never runs.
-   - **`frontend/src/presentation/workspace/contract.ts`**: add your id to
-     `WORKSPACE_LAYOUT_IDS`, and a matching entry to the map
-     `workspaceLayoutManifestId` reads. `WORKSPACE_LAYOUT_IDS` is checked
-     for agreement with `CANONICAL_LAYOUT_MODES` above — not for
-     completeness on its own — by
-     `frontend/src/presentation/workspace/__tests__/contract.test.ts`'s
-     "layout ids are exactly the store's CanonicalLayoutMode set" test (a
-     `vitest` failure, not a compile one); the manifest-id map is
-     `Record<WorkspaceLayoutId, string | null>`, so a missing key is a
-     `npm run check` failure.
+   - **`frontend/src/presentation/workspace/contract.ts`**: add a matching
+     entry to the map `workspaceLayoutManifestId` reads
+     (`Record<WorkspaceLayoutId, string | null>`), keyed by your new id —
+     a missing key is an `npm run check` failure. You do not edit
+     `WORKSPACE_LAYOUT_IDS` itself (MOR-2059): it derives automatically
+     from `CANONICAL_LAYOUT_MODES` in the previous step, so adding your id
+     there is what makes `WorkspaceLayoutId` — and therefore this map's
+     required keys — include it.
    - **`frontend/src/components-v2/layout/StatusBar.svelte`**: add your id
      to the `skinOptions` array, or the skin picker never offers it. This
      site has no check at all: `skinOptions` is a plain array, not a
@@ -215,19 +213,22 @@ preference, and one of its links has no check behind it at all.
      Read its existing doc comment first — the resolution order there is
      deliberate.
 
-   The first of these sits under `$lib/stores/*`, which "What a skin may
-   not import" below bans — but that is not a conflict. The ban
-   (`frontend/eslint.config.js`'s `FORBIDDEN_SKINS_IMPORTS`) is scoped by
-   file location to import statements written inside
-   `src/skins/**/*.svelte` and `src/skins/**/*.ts`; it has nothing to say
-   about editing `lib/stores/layout.svelte.ts` itself, which sits outside
-   that tree. You extend that module as its own owner here, not as a skin
-   importing it. The one file in this chain that IS under `src/skins/**`
-   (`registry.ts`) needs no new import either: it already reaches
-   `normalizeLayoutMode`/`LayoutMode` through
-   `frontend/src/lib/runtime/adapters/layout-mode-adapter.ts`, the
-   re-export that eslint rule's own comment says was created for this
-   exact file when the ban landed (MOR-2039).
+   The first of these, `presentation/layout-mode.ts`, is not on "What a
+   skin may not import" below's list at all — `FORBIDDEN_SKINS_IMPORTS`
+   bans `$lib/stores/*`, `$lib/transport/*` and `$lib/audio/audio-manager`,
+   and says nothing about `presentation/`. You extend it as its own owner,
+   the same as any other file in this guide's "Read these first" table;
+   unlike before MOR-2059, no explanation of "editing isn't importing" is
+   needed for this step. The one file in this chain that IS under
+   `src/skins/**` (`registry.ts`) needs no new import either: it already
+   reaches `normalizeLayoutMode`/`LayoutMode` through
+   `frontend/src/lib/runtime/adapters/layout-mode-adapter.ts`, which
+   re-exports from `lib/stores/layout.svelte.ts` — now itself a thin
+   compatibility shim re-exporting the vocabulary from
+   `presentation/layout-mode.ts`, kept only because `layout-mode-adapter.ts`
+   sits under `lib/runtime/adapters/`, which eslint's own isolation rule
+   for that directory bans from importing `presentation/**` directly (see
+   that rule's comment in `frontend/eslint.config.js`).
 
 ## If your skin adds a new meter component
 
