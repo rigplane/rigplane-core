@@ -121,12 +121,13 @@
   // `LeftSidebar`, `RightSidebar` and `StatusBar` (which each gate their own
   // panels on `!declared.has('<surface>')`), and the settings modal below —
   // this shell's own third copy of six of those panels — gates in place.
-  // Landed INERT: no manifest declares any of `filter`/`rfFrontEnd`/`band`/
-  // `antenna`/`ritXitScan`/`rxAudio`/`dsp`/`cwKeyer` yet, so every predicate
-  // is `false` and the rendered tree is unchanged until S6a/S7/S8/S9 declare
-  // the zones. The ONE exception is the modal's SPLIT/A↔B/A=B row, which
-  // gates on the ALREADY-TRUE `semanticDeck` (S10 §4 — a real, deliberate
-  // change, not inert plumbing).
+  // Landed INERT, then activated by S7/S8/S9 (MOR-1366/1367/1368): the
+  // desktop-v2 manifest now declares all of `filter`/`rfFrontEnd`/`band`/
+  // `antenna`/`ritXitScan`/`rxAudio`/`dsp`/`cwKeyer`, so every predicate
+  // above is live and the branches are reachable on that skin. Separately,
+  // the modal's SPLIT/A↔B/A=B row gates on `semanticDeck`, not on a
+  // `declared` zone (S10 §4 — a real, deliberate change, not inert
+  // plumbing).
   //
   // Same two rules as `semanticRxTx`/`semanticMeters`, restated because this
   // channel now carries them to three more files:

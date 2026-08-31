@@ -12,9 +12,11 @@
  * to remove (a list that silently stops matching reality the moment someone
  * adds a manifest and forgets to update the list). That file's separate
  * `ALL_MANIFESTS`/`EXPECTED_LOADER_SPECIFIER` tables are, by contrast,
- * hand-listed literals by design (that file's own comment says so) — used
- * only for per-id loader-specifier pinning, a check this file has no need
- * for.
+ * hand-listed literals by design (that file's own comment says so) — they
+ * back that file's own completeness assertion, registration-identity pin
+ * and per-id loader-specifier pinning. This file needs none of the three:
+ * its own completeness check is structural (`SHIPPED_MANIFESTS` above), and
+ * it takes no registry read or loader specifier at all.
  *
  * Deliberately NOT sourced from `listDesignLanguageIds()`/the live registry:
  * `contract.ts`'s registry is module-scope, private, mutable state that

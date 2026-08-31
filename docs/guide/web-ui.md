@@ -612,7 +612,7 @@ delegation wrappers that mount the layout components with a fixed
    - `lcd-scope` -> LCD Scope skin (IC-7300-style scope-dominant)
    - `standard` -> desktop-v2 skin
    - `sdr-test` -> SDR Screen test skin
-   - `auto` -> desktop-v2 when any scope is available, LCD Cockpit when no scope is available.
+   - `auto` -> desktop-v2 unconditionally (MOR-1097 cutover); scope availability does not affect this resolution.
 
 `normalizeLayoutMode()` (`lib/stores/layout.svelte.ts`) normalizes legacy
 persisted values so old localStorage entries keep resolving:
@@ -794,7 +794,7 @@ const sub = state.sub ?? null;
   PTT flow) are always active on a mobile-sized viewport; no query param or stored
   selection is required.
 - **Layout mode expectations:** layout preference (`rigplane-layout`) is capability-aware;
-  `auto` resolves to desktop-v2 only when any scope exists, otherwise LCD Cockpit is selected.
+  `auto` resolves to desktop-v2 unconditionally (MOR-1097 cutover); scope availability plays no part in it.
 - **System action error surfacing:** connect/disconnect/power actions in v2 call
   `runtime.system.*` and surface backend HTTP errors directly in the UI.
 - **Battery API availability:** polling slowdown on low battery is best-effort; browsers without

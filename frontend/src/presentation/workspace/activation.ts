@@ -14,8 +14,9 @@
  * (MOR-1048/MOR-1263), not this ticket. The gate is the language's OWN frozen
  * manifest data rather than new policy: a family declares, in
  * `layoutCompatibility`, which layouts it can serve. Today `studioline`
- * declares exactly one (`dual-receiver-cockpit`), so the selection activates
- * there and every v2 skin renders byte-identically to before.
+ * declares two (`dual-receiver-cockpit` and `desktop-v2`), so the selection
+ * activates on those and every other v2 skin renders byte-identically to
+ * before.
  *
  * Pure: takes the manifest the caller already resolved, touches no DOM, no
  * storage and no registry — the registry-populating `languages/declarations`
