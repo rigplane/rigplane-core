@@ -6,11 +6,10 @@
  * (b) a target the DOM does not reach yet — today that is `desktop-v2` only
  * (MOR-1263 §3 "manifest first"; see `desktop-v2-registration.test.ts`).
  *
- * This file reads each skin's OWN source as TEXT, never imports it — the
- * same reason `cockpit-topology-adaptation.test.ts`'s F8 rule and every
- * other module-specifier pin in this suite do: invoking a loader pulls in
- * its skin's full import graph, which this suite avoids importing
- * wholesale.
+ * This file reads each skin's OWN source as TEXT, never imports it: the
+ * `DOM_BACKED` probes below regex-match a literal marker
+ * (`<SemanticRadioSurfaces />`) in each shell's own source — a check that
+ * needs the literal text, not a mounted or imported component.
  *
  * The expected forward-declared set below is a LITERAL, not a derived count:
  * a new manifest that lands still forward-declared must be added to it by

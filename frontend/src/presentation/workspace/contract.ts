@@ -8,12 +8,12 @@
  * ID sources. `SEMANTIC_SURFACE_NAMES` is imported LIVE from the layout
  * contract — a pure module. The other id spaces are PINNED literals with a
  * registry-sync test (`__tests__/contract.test.ts`), because every module
- * that owns them is unusable from here: `lib/stores/layout.svelte.ts` reads
- * `localStorage` at module scope and is `$lib/stores/*` (lint-banned in this
- * zone), the two `declarations.ts` barrels fire `registerLayout`/
- * `registerDesignLanguage` as import side effects, and
- * `components-v2/theme/theme-switcher.ts` is banned by the workspace zone
- * (v3 ADR invariant 6). The sync test imports all three and fails on drift.
+ * that owns them is unusable from here: `lib/stores/layout.svelte.ts` is
+ * `$lib/stores/*` (lint-banned in this zone), the two `declarations.ts`
+ * barrels fire `registerLayout`/`registerDesignLanguage` as import side
+ * effects, and `components-v2/theme/theme-switcher.ts` is banned by the
+ * workspace zone (v3 ADR invariant 6). The sync test imports all three and
+ * fails on drift.
  */
 import { SEMANTIC_SURFACE_NAMES, type SemanticSurfaceName } from '../layouts/contract';
 import type { DensityLevel } from '../languages/contract';

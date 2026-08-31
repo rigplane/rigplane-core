@@ -24,11 +24,10 @@ import { fieldline, studioline } from '../../languages/declarations';
 import { getAvailableThemes } from '../../../components-v2/theme/theme-switcher';
 
 /**
- * The layout id space is synced from SOURCE TEXT, not an import: `lib/stores/
- * layout.svelte.ts` reads `localStorage` at module scope and throws in a Node
- * env without one — the same reason `presentation/layouts/__tests__/
- * loader-identity-inventory.test.ts` reads specifiers as text rather than
- * importing the modules that hold them.
+ * The layout id space is synced from SOURCE TEXT, not an import:
+ * `CANONICAL_LAYOUT_MODES`/`LEGACY_LAYOUT_ALIASES` are regexed directly out
+ * of `lib/stores/layout.svelte.ts`'s own source below, verifying
+ * `contract.ts`'s pinned literals against what the file actually contains.
  */
 const LAYOUT_STORE_SOURCE = readFileSync('src/lib/stores/layout.svelte.ts', 'utf8');
 function block(marker: string, open: string, close: string): string {
