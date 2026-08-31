@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
-import type { Capabilities } from '$lib/types/capabilities';
+import type { Capabilities, MeterCalPoint } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import {
   SSB_STEPS, CW_STEPS, AM_STEPS, FM_STEPS, DEFAULT_STEPS,
   getStepsForMode, formatStep, formatSValue, formatDbm, formatPower,
 } from '../mobile-layout-logic';
+import {
+  calibratedToSUnit, calibratedToDbm, formatDbm as canonicalFormatDbm,
+} from '../../meters/smeter-scale';
 
 // MOR-1451 follow-up: the mobile skin's S-meter readouts must follow the
 // active radio's profile-declared calibration curve (via the shared
@@ -205,4 +208,68 @@ describe('formatPower', () => {
   it('clamps out-of-range normalized input', () => {
     expect(formatPower(1.4)).toBe('100W');
   });
+});
+
+// ── MOR-2034: non-uniform-calibration discrimination ────────────────────────
+// `formatSValue`/`formatDbm` above are one-line delegates to
+// `smeter-scale.ts`'s `calibratedToSUnit`/`calibratedToDbm` (see this file's
+// import). `IC7300_LIKE_CAL` above is deliberately UNIFORM — a straight
+// -54..0 dB line over S0..S9, matching IC-7300's real curve — because its
+// job is pinning the OTHER MOR-2024 fix (the continuous S9+ reading), not
+// this one: a uniform table cannot tell "calls calibratedToSUnit" apart from
+// a hardcoded 6 dB/S-unit reimplementation, because both agree everywhere on
+// it. That is the exact shape MOR-2024 found and fixed in a sibling file
+// (`components-v2/panels/meter-utils.ts`'s old `formatSMeter`). This block
+// reuses `meter-contract.test.ts`'s own non-uniform fixture and probe
+// reasoning (`components-v2/meters/__tests__/meter-contract.test.ts` — see
+// its file header for the full worked-out argument for why these three
+// probes rule out every fixed per-S-unit step) to pin the same guarantee at
+// this call site, which that file's `.svelte`-only census cannot see: this
+// call site is a `.ts` helper behind the `mobile` skin's own layout, not a
+// file directly under `components-v2/meters/`.
+//
+// No ruler-collision caveat applies here (unlike meter-contract.test.ts's
+// DOM-textContent check): `formatSValue`/`formatDbm` are plain
+// string-returning functions with nothing else rendered alongside them, so
+// the exact `.toBe()` comparison below cannot pass by matching an unrelated
+// label.
+const NON_UNIFORM_CAL: MeterCalPoint[] = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 52, actual: -45, label: 'S2' },
+  { raw: 78, actual: -42, label: 'S3' },
+  { raw: 104, actual: -36, label: 'S4' },
+  { raw: 130, actual: -30, label: 'S5' },
+  { raw: 156, actual: -12, label: 'S6' }, // +18 dB step, vs. 3-6 dB elsewhere
+  { raw: 182, actual: -6, label: 'S7' },
+  { raw: 208, actual: -3, label: 'S8' },
+  { raw: 230, actual: 0, label: 'S9' },
+  { raw: 255, actual: 20, label: 'S9+20' },
+];
+
+describe('formatSValue / formatDbm — non-uniform calibration (MOR-2034)', () => {
+  beforeEach(() => {
+    setCapabilities(makeCaps({ meterCalibrations: { s_meter: NON_UNIFORM_CAL } }));
+  });
+
+  // Kills: formatSValue reimplementing its own S-unit math (a fixed step or
+  // any other formula) instead of delegating to calibratedToSUnit — on this
+  // non-uniform table the two would diverge at one of these three probes
+  // (worked out in meter-contract.test.ts's file header) even though they
+  // agree everywhere on the uniform IC7300_LIKE_CAL table above.
+  it.each([-43, -33, -11])(
+    'formatSValue(%d) matches a fresh calibratedToSUnit call, not a local approximation',
+    (actual) => {
+      expect(formatSValue(actual)).toBe(calibratedToSUnit(actual));
+    },
+  );
+
+  // Kills: formatDbm reimplementing its own dBm math instead of delegating
+  // to calibratedToDbm/formatDbm.
+  it.each([-43, -33, -11])(
+    'formatDbm(%d) matches a fresh calibratedToDbm/formatDbm call, not a local approximation',
+    (actual) => {
+      expect(formatDbm(actual)).toBe(canonicalFormatDbm(calibratedToDbm(actual)));
+    },
+  );
 });

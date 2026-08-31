@@ -9,12 +9,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount } from 'svelte';
+import type { MeterCalPoint } from '$lib/types/capabilities';
 
 // Fixture calibration table — the numbers `rigs/ic7610.toml` declares, no
 // longer a production default (MOR-1451): a radio profile with no
 // `[meters.s_meter]` table now renders an honest raw-scale label instead of
 // borrowing these.
-const IC7610_LIKE_S_METER_CAL = [
+const IC7610_LIKE_S_METER_CAL: MeterCalPoint[] = [
   { raw: 0, actual: -54, label: 'S0' },
   { raw: 26, actual: -48, label: 'S1' },
   { raw: 52, actual: -36, label: 'S3' },
@@ -26,9 +27,16 @@ const IC7610_LIKE_S_METER_CAL = [
   { raw: 240, actual: 40, label: 'S9+40' },
 ];
 
+// Mutable indirection so the MOR-2034 discrimination suite (bottom of file)
+// can swap in a non-uniform table for its own tests, then hand the default
+// back — `vi.mock` factories are hoisted, but this arrow function re-reads
+// the variable on every call, so a later reassignment is picked up without
+// re-registering the mock.
+let activeSMeterCal: MeterCalPoint[] = IC7610_LIKE_S_METER_CAL;
+
 // Mock capabilities store before any component import
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getSmeterCalibration: () => IC7610_LIKE_S_METER_CAL,
+  getSmeterCalibration: () => activeSMeterCal,
   getSmeterRedline: () => null,
   isAudioFftScope: () => false,
   hasAudioFft: () => false,
@@ -39,7 +47,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   // by MOR-1451, out of its scope). s_meter is the one exception: it has no
   // such fallback, hence the explicit fixture above.
   getMeterCalibration: (meterType: string) =>
-    meterType === 's_meter' ? IC7610_LIKE_S_METER_CAL : null,
+    meterType === 's_meter' ? activeSMeterCal : null,
   getMeterRedline: () => null,
   getControlRange: () => null,
 }));
@@ -78,6 +86,7 @@ import {
   formatAlc,
   formatCompDb,
 } from '../../meter-utils';
+import { calibratedToSUnit, calibratedToDbm, formatDbm } from '../../../meters/smeter-scale';
 
 let target: HTMLDivElement;
 
@@ -275,4 +284,77 @@ describe('AmberSmeter', () => {
     expect(sub.textContent).toBe(formatCompDb(75)); // '15 dB', not '6dB'
     unmount(component);
   });
+});
+
+// ── MOR-2034: non-uniform-calibration discrimination ────────────────────────
+// The S-source tests above ('handles the calibrated floor', 'shows dBm in
+// readout') only assert exact text at S0 and S9 — both calibration ANCHORS,
+// reproduced identically by any reasonable derivation — and `IC7610_LIKE_S_
+// METER_CAL` is itself uniform between them (6 dB/S-unit). Neither can tell
+// AmberSmeter's real `calibratedToSUnit`/`calibratedToDbm` delegation
+// (`AmberSmeter.svelte`'s import) apart from a hardcoded 6 dB/S-unit
+// reimplementation — the exact shape MOR-2024 found and fixed in a sibling
+// file (`components-v2/panels/meter-utils.ts`'s old `formatSMeter`).
+// AmberSmeter is outside `meter-contract.ts`'s `METER_REGISTRY` census (that
+// census is `.svelte` files directly under `components-v2/meters/`; this one
+// lives under `components-v2/panels/lcd/`, mounted by the `lcd-cockpit`/
+// `lcd-scope` skins), so nothing else in the suite would catch a regression
+// here. This block reuses `meter-contract.test.ts`'s own non-uniform
+// fixture and probe reasoning (`components-v2/meters/__tests__/
+// meter-contract.test.ts` — see its file header for the full worked-out
+// argument for why these three probes rule out every fixed per-S-unit step)
+// against the real mounted component, the same technique that file already
+// applies to `LinearSMeter.svelte`.
+describe('AmberSmeter — non-uniform calibration (MOR-2034)', () => {
+  const NON_UNIFORM_CAL: MeterCalPoint[] = [
+    { raw: 0, actual: -54, label: 'S0' },
+    { raw: 26, actual: -48, label: 'S1' },
+    { raw: 52, actual: -45, label: 'S2' },
+    { raw: 78, actual: -42, label: 'S3' },
+    { raw: 104, actual: -36, label: 'S4' },
+    { raw: 130, actual: -30, label: 'S5' },
+    { raw: 156, actual: -12, label: 'S6' }, // +18 dB step, vs. 3-6 dB elsewhere
+    { raw: 182, actual: -6, label: 'S7' },
+    { raw: 208, actual: -3, label: 'S8' },
+    { raw: 230, actual: 0, label: 'S9' },
+    { raw: 255, actual: 20, label: 'S9+20' },
+  ];
+
+  beforeEach(() => {
+    activeSMeterCal = NON_UNIFORM_CAL;
+  });
+
+  afterEach(() => {
+    activeSMeterCal = IC7610_LIKE_S_METER_CAL;
+  });
+
+  // Kills: AmberSmeter reimplementing its own S-unit math (a fixed step or
+  // any other formula) instead of delegating to calibratedToSUnit — on this
+  // non-uniform table the two would diverge at one of these three probes
+  // even though they agree everywhere on the uniform table above. Reads
+  // `.readout-s` specifically, not the whole component's textContent: the
+  // scale ruler renders odd S-unit tick labels (S1/S3/S5/S7/S9) elsewhere in
+  // the same component (see `majorTicks` in `AmberSmeter.svelte`), so a
+  // whole-textContent search would risk a false pass the way
+  // `meter-contract.test.ts`'s file header warns about; scoping to the
+  // readout element side-steps that collision entirely.
+  it.each([-43, -33, -11])(
+    'renders the exact S-unit calibratedToSUnit computes at probe %d, not a local approximation',
+    (actual) => {
+      const component = mount(AmberSmeter, { target, props: { value: actual } });
+      const readout = target.querySelector('.readout-s')!.textContent;
+      expect(readout).toBe(calibratedToSUnit(actual));
+      unmount(component);
+    },
+  );
+
+  it.each([-43, -33, -11])(
+    'renders the exact dBm text calibratedToDbm/formatDbm compute at probe %d, not a local approximation',
+    (actual) => {
+      const component = mount(AmberSmeter, { target, props: { value: actual } });
+      const readout = target.querySelector('.readout-dbm')!.textContent;
+      expect(readout).toBe(formatDbm(calibratedToDbm(actual)));
+      unmount(component);
+    },
+  );
 });

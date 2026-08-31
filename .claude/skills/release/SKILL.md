@@ -95,6 +95,11 @@ uv build && rm -rf dist/
 # 2k. Warn-only: prior FAILED issues in .claude/queue/history.json
 ```
 
+```bash
+# 2l. Warn-only, frontend/skins changes: review open gaps in
+# docs/internals/skins-presentation-boundary-gate.md (MOR-2034)
+```
+
 Report: "All pre-flight checks passed ✓" and continue.
 
 ## Step 3 — Generate CHANGELOG content
