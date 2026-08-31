@@ -28,6 +28,7 @@ import {
 } from '../../../components-v2/theme/theme-switcher';
 import { resolveSkinId } from '../../../skins/registry';
 import { fieldline, studioline } from '../../languages/declarations';
+import { validManifest } from '../../languages/__tests__/fixtures';
 
 const LEGACY_LAYOUT_KEY = 'rigplane-layout';
 const LEGACY_SKIN_KEY = 'rigplane-skin';
@@ -282,6 +283,14 @@ describe('MOR-1278 — the workspace is the only source [data-design-language] i
 
   it('honours an explicit incompatible declaration', () => {
     expect(designLanguageActivation(fieldline, 'dual-receiver-cockpit')).toBeNull();
+  });
+
+  // Distinct from the "unadopted layouts" case above, which still uses real
+  // manifests that DO declare other layout ids: this manifest declares NONE
+  // at all, so activation cannot depend on which id happens to be missing.
+  it('a manifest that declares no compatibility does not activate', () => {
+    const noDeclarations = validManifest({ layoutCompatibility: [] });
+    expect(designLanguageActivation(noDeclarations, 'dual-receiver-cockpit')).toBeNull();
   });
 
   it('is inert when the selected id resolves to no registered manifest', () => {

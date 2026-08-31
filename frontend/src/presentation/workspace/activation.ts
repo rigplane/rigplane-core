@@ -24,7 +24,14 @@
  */
 import type { DesignLanguageManifest } from '../languages/contract';
 
-/** The value `[data-design-language]` may take, or `null` for "no language active". */
+/**
+ * The value `[data-design-language]` may take, or `null` for "no language active".
+ *
+ * A layout id absent from `manifest.layoutCompatibility` does not activate:
+ * this returns the manifest id only for an explicit `{ compatible: true }`
+ * declaration; a missing declaration and an explicit `false` both fall
+ * through to `null`.
+ */
 export function designLanguageActivation(
   manifest: DesignLanguageManifest | undefined,
   layoutId: string,
