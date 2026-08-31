@@ -35,7 +35,7 @@ gap and the ticket tracking it (MOR-2054).
 This document is this repo's `docs/internals/*.md` MOR-XXXX-keyed
 executable-gate entry (the form `radio-state-pipeline-validation.md` uses for
 MOR-348 and `backend-neutral-readiness-gap-register.md` uses for MOR-424) for
-these two guarantees specifically. It does not restate the mechanisms below —
+Gates 1 and 2 specifically. It does not restate the mechanisms below —
 it names them, so a reviewer can re-run the cited test file and get a real
 pass/fail, not a prose claim.
 
@@ -54,7 +54,7 @@ adjacency that could not be confirmed.
 |---|---|---|---|
 | Import-boundary ESLint rules | `frontend/eslint.config.js`: `FORBIDDEN_RUNTIME_IMPORTS`, `FORBIDDEN_PANEL_IMPORTS`, `FORBIDDEN_SKINS_IMPORTS` | `src/skins/**/*.svelte`, `src/skins/**/*.ts`, and `src/components-v2/panels/**` cannot import `$lib/stores/*`, `$lib/transport/*`, or the audio manager | A lint rule, not a test by itself — see the next row for how it is actually exercised |
 | Rules exercised through the real linter | `frontend/src/__tests__/architecture-boundaries.test.ts`: `restrictedImportHits` | Lints synthetic fixture code through `ESLint.lintText` against the real flat config at real skin/panel paths (e.g. `src/skins/sdr-test/SdrTestSkin.svelte`, `src/skins/registry.ts`) — a rule regression here fails the same way `npm run lint` would | Fixture paths need not exist on disk; this proves the *rule*, not that every real file in `skins/` obeys it (no file in the tree currently violates it, but nothing scans the whole tree for a new violation) |
-| Both directions proven | same file, e.g. `'rejects a skins .ts file importing $lib/stores/* directly...'` paired with `'allows skins/registry.ts to import layout-mode normalization through the adapter...'` | Within the skins zone, for every forbidden import there is a paired case proving the *legitimate* migrated replacement still passes — a custom skin's own instruments are not collateral damage of this rule | Not file-wide: e.g. the workspace zone's four `rejects …` cases in this same file have no paired `allows …` case |
+| Both directions proven | same file, e.g. `'rejects a skins .ts file importing $lib/stores/* directly...'` paired with `'allows skins/registry.ts to import layout-mode normalization through the adapter...'` | Within the skins zone, for every forbidden import there is a paired case proving the *legitimate* migrated replacement still passes — a custom skin's own instruments are not collateral damage of this rule | Not file-wide: e.g. the workspace zone's four rejection cases in this same file have no paired `allows …` case |
 | Skin registry is exhaustive and its entry points really mount | `frontend/src/skins/__tests__/entrypoints.test.ts`: `SKIN_ENTRYPOINT_COVERAGE` | Every `SkinId` in `frontend/src/skins/registry.ts` mounts its declared component through the same `loadSkin()` `App.svelte` calls | The one `'covered-elsewhere'` entry (`dual-receiver-cockpit`) is a substring check on another test file's source text, not a behavioral one — documented as such in the file's own header, not restated here as more than it is |
 
 ## Gate 2 — truth derivation stays out of skins
@@ -78,10 +78,12 @@ under MOR-2024; `formatSMeter`'s calibrated branch now defers entirely to
 ### Residual found by this ticket, and closed for two of the four call sites found
 
 `METER_REGISTRY`'s census is scoped to `components-v2/meters/`. Grepping
-every production (non-test) importer of `smeter-scale.ts` —
+every production (non-test) mention of `smeter-scale.ts` —
 `grep -rn "smeter-scale" frontend/src | grep -v __tests__ | grep -v '\.test\.'`
-— finds four call sites outside that directory — i.e., in the
-presentation-layer code a skin author actually writes:
+— returns nine lines across six files. Filtering out `LinearSMeter.svelte`
+(already inside that directory) and four comment-only lines in
+`meter-utils.ts`/`AmberCockpit.svelte` leaves four real call sites outside
+it — i.e., in the presentation-layer code a skin author actually writes:
 
 1. `frontend/src/components-v2/panels/lcd/AmberSmeter.svelte` — the
    `amber-lcd` theme's own S-meter, mounted by the `lcd-cockpit`/`lcd-scope`
@@ -131,9 +133,10 @@ test files above (instances 1 and 2), reusing `meter-contract.test.ts`'s own
 fixture and probe reasoning against the real mounted component /
 plain-function call site, proven both ways during development (a throwaway
 hardcoded-6-dB-ladder mutant in each production file, run against the new
-tests, then reverted): the mutant failed all three new probes in both
-files with the same off-by-one-S-unit pattern the meter-contract.test.ts
-header predicts; the real code passes all of them.
+tests, then reverted): the mutant failed all three S-unit probes — of six
+new cases per file, three S-unit and three dBm — in both files with the
+same off-by-one-S-unit pattern the meter-contract.test.ts header predicts;
+the real code passes all six.
 
 What is **not** closed by this PR, and is filed as a follow-up rather than
 attempted here: `METER_REGISTRY`'s census has no structural mechanism that
