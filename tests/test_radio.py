@@ -744,10 +744,11 @@ class TestPtt:
     # ``func_only``: this bound guards the body, which measured 0.00-0.16 s
     # on a loaded machine.  Charging setup to it as well made whichever
     # parametrisation ran first carry the process's first ``IcomRadio``
-    # construction -- 158 ms against 0.1 ms for the next one when timed
-    # bare, and 1.5-2.0 s of setup on that same loaded run, against 0.00 s
-    # for the other two -- so the marker expired on machine speed rather
-    # than on anything this test drives.
+    # construction, which costs hundreds of milliseconds against a fraction
+    # of one for every later construction in the same process -- 1.5-2.0 s
+    # of setup on a loaded run, against 0.00 s for the other two -- so the
+    # marker expired on machine speed rather than on anything this test
+    # drives.
     @pytest.mark.timeout(2, func_only=True)
     @pytest.mark.parametrize("invalidation", ["rebind", "poison", "reconnect"])
     async def test_managed_ptt_port_token_safety(
@@ -761,8 +762,9 @@ class TestPtt:
         # read's own window, not the behaviour under test, decided the
         # verdict.  The shipped default (``CoreRadio.__init__``:
         # ``min(timeout, 2.0)``) takes it out of the race without hiding a
-        # hang: the body bound above starts before the read is even sent, so
-        # it expires first either way.
+        # read that never answers: the ``asyncio.wait_for(pending_read,
+        # 0.5)`` below is this test's real guard for that, and it is
+        # tighter than both this window and the body bound above.
         radio._civ_get_timeout = 2.0
         sent: list[bytes] = []
         responses: asyncio.Queue[bytes] = asyncio.Queue()
@@ -1349,11 +1351,17 @@ class TestResponseDeadlineOpensAtSend:
     ) -> None:
         # A frame went out just now, so this one is held back a full
         # ``_civ_min_interval``.  Making that gap outlast the whole answer
-        # budget is what lets this fail on the mis-charge alone: the
-        # response is queued before the call, so the only way to time out
-        # is to have spent the window before sending.
-        radio._civ_get_timeout = 0.05
-        radio._civ_min_interval = 0.08
+        # budget is what makes the mis-charge decisive rather than a matter
+        # of scheduling luck: the response is already queued when the frame
+        # goes out, so the window is never spent waiting for the radio.
+        # The two are an order of magnitude above the delivery they wait
+        # for, deliberately.  At 0.05/0.08 this test still passed on the
+        # mis-charge it is meant to catch, but the 50 ms left for the RX
+        # pump to hand over an already-queued response was the same margin
+        # this change exists to stop relying on, and it reddened on correct
+        # code about once in 27 loaded runs.
+        radio._civ_get_timeout = 0.5
+        radio._civ_min_interval = 0.8
         radio._last_civ_send_monotonic = time.monotonic()
 
         mock_transport.queue_response_on_send(1, _freq_response(14_074_000))

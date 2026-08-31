@@ -154,8 +154,14 @@ the step returns `civ_owner_conflict`.
 Queued command steps keep the existing 10 second command batch step timeout.
 Transaction steps use `timeout_ms` when present, otherwise `10000`
 milliseconds. Units are always milliseconds in JSON and seconds only inside
-Python internals. Timeout covers ownership acquisition plus the send/wait path
-for the transaction step; it does not include earlier or later batch steps.
+Python internals. Timeout covers ownership acquisition and the wait for the
+radio's answer; it does not include earlier or later batch steps, and it does
+not include this side's outbound work before the frame is sent.
+`_civ_rx.py: CivRuntime.execute_civ_transaction` opens the window when the
+frame reaches the transport, so the ACK-sink drain and the `_civ_min_interval`
+pacing gap inside `CivRuntime._send_civ_frame_now` fall outside it. A step's
+wall time can therefore exceed `timeout_ms` by up to the sum of those two, and
+`web/server.py: _HttpCommandExecutor.execute` adds no outer cap of its own.
 
 On timeout, the transaction primitive must unregister pending CI-V waiters,
 release ownership, and return a per-step timeout result. It must not leave the
