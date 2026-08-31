@@ -180,11 +180,13 @@ enforced, pending any other site MOR-2054 may still track:
   no longer pinned as a literal (MOR-2059): it now derives directly from
   `CANONICAL_LAYOUT_MODES`, so adding an id in the previous bullet is
   reflected here with no further edit. It was pinned before because
-  `contract.ts` could not import `lib/stores/layout.svelte.ts` at all — that
-  file touches `localStorage` at module scope and throws in the Node test
-  environment `contract.ts` must stay usable in, not because of an eslint
-  ban (`contract.ts` is not a skin). `presentation/layout-mode.ts` is pure,
-  so that obstacle is gone.
+  `contract.ts` could not import `lib/stores/layout.svelte.ts` at all —
+  `presentation/workspace/**` is eslint-banned from importing
+  `$lib/stores/*` (`frontend/eslint.config.js: FORBIDDEN_WORKSPACE_IMPORTS`,
+  inherited from `FORBIDDEN_PANEL_IMPORTS`'s `$lib/stores/*` ban via
+  `FORBIDDEN_PRESENTATION_IMPORTS`) — the vocabulary lived in exactly that
+  banned path. `presentation/layout-mode.ts` is pure, so that obstacle is
+  gone.
 - The one pre-normalization exception, `dual-receiver-cockpit`, is QA-only:
   `presentation/layout-mode.ts`'s own comment records that it "can
   therefore never be persisted via setLayoutMode/the workspace and never
