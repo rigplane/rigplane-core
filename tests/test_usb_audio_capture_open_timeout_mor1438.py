@@ -392,11 +392,16 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
         # The fail-fast path never reaches the pool: it closes the open
         # coroutine instead of submitting it, so the probe's handle is never
         # started -- whereas an open that QUEUED behind the wedged workers is
-        # started as soon as one of them frees. The whole fail-fast path
-        # through start_rx() has no await points, so a timing bound on it
-        # measures only whether the OS descheduled this process mid-call
-        # (observed: 32ms on an idle host against a 25ms bound), which is
-        # machine speed rather than driver behaviour.
+        # started as soon as one of them frees.
+        #
+        # A wall-clock bound here would not isolate the saturation decision.
+        # That decision is one counter comparison; the rest of what the call
+        # costs is the preamble every start_rx() pays before it -- device
+        # enumeration, which on macOS re-runs an uncached CoreAudio
+        # name->UID lookup (``_get_uid_map``). None of the path's await
+        # points yields to the loop, so that preamble and any descheduling
+        # land in one uninterrupted window. The pre-change bound was 25ms and
+        # went red on an idle host.
         #
         # Release the pool and wait for it to DRAIN -- every wedged open
         # completes and its abandoned handle is closed -- before reading the
