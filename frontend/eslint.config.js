@@ -331,9 +331,13 @@ export default [
       'src/components-v2/layout/**/*.svelte',
       'src/components-v2/layout/**/*.ts',
       'src/components-v2/display/**/*.svelte',
+      'src/components-v2/display/**/*.ts',
       'src/components-v2/meters/**/*.svelte',
+      'src/components-v2/meters/**/*.ts',
       'src/components-v2/vfo/**/*.svelte',
+      'src/components-v2/vfo/**/*.ts',
       'src/components-v2/controls/**/*.svelte',
+      'src/components-v2/controls/**/*.ts',
       // semantic and primitives get their own stricter blocks below (MOR-1061):
       'src/skins/**/*.svelte',
     ],

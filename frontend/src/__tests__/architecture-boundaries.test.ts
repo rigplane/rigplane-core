@@ -562,6 +562,19 @@ describe('v3 package boundaries (MOR-1061)', () => {
     );
     expect(hits).toBe(0);
   });
+
+  it.each([
+    ['display', 'src/components-v2/display/frequency-format.ts'],
+    ['meters', 'src/components-v2/meters/bar-gauge-utils.ts'],
+    ['vfo', 'src/components-v2/vfo/vfo-utils.ts'],
+    ['controls', 'src/components-v2/controls/band-utils.ts'],
+  ])('rejects a %s .ts file importing $lib/audio/audio-manager directly (the glob fix — .ts had zero coverage before)', async (_zone, filePath) => {
+    const hits = await restrictedImportHits(
+      `import { audioManager } from '$lib/audio/audio-manager';`,
+      filePath,
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
 });
 
 describe('radio authority boundary (MOR-1406)', () => {
