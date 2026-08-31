@@ -42,7 +42,7 @@ REGISTRY: tuple[CheckSpec, ...] = (
     # stable-sort by level so new checks slot in without reordering 1-21) ---
     + _TONE_CHECKS  # T7: repeater_tone, tone_freq, tsql, tsql_freq
     + _VFO_CHECKS  # T8: split, vfo_slot, dual_watch
-    + _MEMORY_CHECKS  # T9: bsr (manual; CI-V memory surface is SET-only)
+    + _MEMORY_CHECKS  # T9: bsr (manual)
     + _SYSTEM_CHECKS  # T10: system clock, key_speed, vox, dial_lock
     + _SCOPE_CHECKS  # T11 (MOR-646): scope-control SET commands (cmd 0x27)
 )
