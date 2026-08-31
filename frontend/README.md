@@ -45,9 +45,17 @@ All interactive controls use `HardwareButton`. All read-only status displays use
 <StatusIndicator label={mode} active color="cyan" />
 ```
 
-See [`docs/component-architecture.md`](docs/component-architecture.md) for full component API and layout docs.
+The button library's API lives with the code in `src/lib/Button/`: `index.ts`
+is the entry point and re-exports the components, with prop types in
+`types.ts`.
 
-See [`docs/css-design-tokens.md`](docs/css-design-tokens.md) for all `--v2-*` CSS design tokens.
+The `--v2-*` CSS design tokens live in `src/components-v2/theme/`:
+`tokens.css` holds the base set, and the files under `themes/` and
+`vfo-themes/` override it — a few `themes/` files also define badge-color
+tokens of their own.
+
+Layout and skin composition are covered by the frontend ADR,
+[`docs/plans/2026-04-12-target-frontend-architecture.md`](../docs/plans/2026-04-12-target-frontend-architecture.md).
 
 ## Directory Structure
 
@@ -79,11 +87,9 @@ src/
 │   │   └── VfoPanel.svelte         # Individual VFO receiver display
 │   ├── panels/                     # DspPanel, TxPanel, CwPanel, …
 │   ├── theme/
-│   │   ├── tokens.css              # All --v2-* design tokens
+│   │   ├── tokens.css              # Base --v2-* design tokens
 │   │   └── themes/                 # 20+ theme overrides
-│   └── wiring/
-│       ├── state-adapter.ts        # Radio state → component props
-│       └── command-bus.ts          # User actions → radio commands
+│   └── wiring/                     # Where surfaces meet live state
 └── components/                     # Legacy v1 components
 ```
 
