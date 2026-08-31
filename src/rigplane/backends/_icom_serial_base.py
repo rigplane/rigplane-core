@@ -126,6 +126,11 @@ class _IcomSerialRadioBase(CoreRadio):
     # forever (MOR-1440 bench evidence). CI-V timeouts on the existing
     # keep-alive cadence are the reliable probe.
     _SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD = 3
+    # Defence in depth for MOR-2081 (see ``_stop_civ_data_watchdog``): bounds
+    # the await on the watchdog task during teardown so a future regression
+    # of the same absorbed-cancellation shape is a loud, bounded failure
+    # instead of a 300s pytest-timeout / hung disconnect().
+    _SERIAL_CIV_WATCHDOG_TEARDOWN_TIMEOUT_S = 5.0
 
     def __init__(
         self,
@@ -935,9 +940,24 @@ class _IcomSerialRadioBase(CoreRadio):
         if task is not None and not task.done():
             task.cancel()
             try:
-                await task
+                await asyncio.wait_for(
+                    task, timeout=self._SERIAL_CIV_WATCHDOG_TEARDOWN_TIMEOUT_S
+                )
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                # MOR-2081 defence in depth: the primary fix (the two
+                # discriminators in CivRuntime.stop_pump / IcomCommander.stop)
+                # makes this branch unreachable for the traced mechanism;
+                # this bounds any future regression of the same shape to a
+                # loud, diagnosable failure instead of a hung disconnect().
+                logger.error(
+                    "civ-data-watchdog: teardown await exceeded %.1fs bound "
+                    "(task cancelled=%s, %r); continuing disconnect",
+                    self._SERIAL_CIV_WATCHDOG_TEARDOWN_TIMEOUT_S,
+                    task.cancelled(),
+                    task,
+                )
         self._civ_data_watchdog_task = None
 
     async def _serial_civ_watchdog_loop(self) -> None:
