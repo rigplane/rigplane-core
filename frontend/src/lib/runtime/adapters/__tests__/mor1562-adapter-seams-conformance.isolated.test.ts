@@ -117,7 +117,8 @@ afterEach(() => {
   resetCommandLifecycle();
 });
 
-/* ── capabilities-adapter.ts — full 4-export surface, zero prior coverage ── */
+/* ── capabilities-adapter.ts — 4 of its 6 exports, zero prior coverage
+ * (getAgcLabels/getAttValues, added under MOR-2039, aren't covered here) ── */
 
 describe('capabilities-adapter.ts over the live ic7300 caps (MOR-1562)', () => {
   it('getMeterCalibration: exact swr knot points from the live capture', () => {

@@ -483,8 +483,8 @@ describe('v3 package boundaries (MOR-1061)', () => {
   // ── MOR-1093: the sdr-test entrypoint's own import boundary ────────────
   // `src/skins/**/*.svelte` (and components-v2/layout/**) carried the looser
   // FORBIDDEN_RUNTIME_IMPORTS ban (transport + audioManager only — unlike
-  // the presentation/ zone above, capabilities and commands were legal here)
-  // since MOR-1061, but nothing in this file had ever run that rule through
+  // the presentation/ zone above, capabilities were legal here) since
+  // MOR-1061, but nothing in this file had ever run that rule through
   // the real config for the sdr-test path. SdrTestSkin.svelte is a pure
   // RadioLayout delegate with no other import; these pin the rule that keeps
   // it that way.
@@ -520,10 +520,10 @@ describe('v3 package boundaries (MOR-1061)', () => {
   });
 
   // ── MOR-2039: skins tightened to the panels tier ───────────────────────
-  // Skins no longer get the "capabilities and commands are legal here"
-  // exception the MOR-1093 comment above used to describe: `$lib/stores/*`
-  // is now banned here too (matching FORBIDDEN_PANEL_IMPORTS), and the zone
-  // now also covers `src/skins/**/*.ts` — before this, a `.ts` file under
+  // Skins no longer get the "capabilities are legal here" exception the
+  // MOR-1093 comment above used to describe: `$lib/stores/*` is now banned
+  // here too (matching FORBIDDEN_PANEL_IMPORTS), and the zone now also
+  // covers `src/skins/**/*.ts` — before this, a `.ts` file under
   // skins/ (e.g. registry.ts) matched no skins-specific rule at all, because
   // the file glob this zone used was `src/skins/**/*.svelte` only.
   // SdrVfoScreen.svelte and registry.ts migrated their store reads to
