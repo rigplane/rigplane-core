@@ -200,8 +200,6 @@ from .vfo import (
     set_vfo,
     start_scan,
     stop_scan,
-    vfo_a_equals_b,
-    vfo_swap,
 )
 
 # --- dsp.py ---
@@ -750,8 +748,6 @@ __all__ = [
     "get_xfc_status",
     "set_xfc_status",
     # VFO extras
-    "vfo_a_equals_b",
-    "vfo_swap",
     "get_split",
     "set_split",
     # Memory

@@ -34,7 +34,7 @@ census	frames_identical	971
 census	hardcode_only_builders	16
 census	profile_builder_map_gaps	566
 census	profiles	8
-census	public_builders	230
+census	public_builders	228
 census	sites_compared	98
 cat-only	FTX-1	108
 cat-only	TX-500	50
@@ -241,8 +241,6 @@ requires-map	vfo.py:set_quick_split
 requires-map	vfo.py:set_split
 requires-map	vfo.py:set_tuning_step
 requires-map	vfo.py:set_vfo
-requires-map	vfo.py:vfo_a_equals_b
-requires-map	vfo.py:vfo_swap
 unpinned	_builders.py:_build_ctl_mem_get
 unpinned	power.py:get_powerstat
 unpinned	system.py:set_system_date
