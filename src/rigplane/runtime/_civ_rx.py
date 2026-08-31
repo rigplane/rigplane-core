@@ -894,7 +894,14 @@ class CivRuntime:
             try:
                 await self._host._civ_rx_task
             except asyncio.CancelledError:
-                pass
+                # See MOR-2081: same discriminator IcomCommander._loop uses
+                # (#2145). item.future.cancelled()-style checks alone cannot
+                # tell "the rx task I just cancelled finished" from "this
+                # task itself was cancelled from outside" -- Task.cancelling()
+                # (3.11+) exposes this task's own pending cancel request.
+                me = asyncio.current_task()
+                if me is not None and me.cancelling():
+                    raise
         self._host._civ_rx_task = None
 
     def start_data_watchdog(self) -> None:
