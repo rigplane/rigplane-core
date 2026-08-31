@@ -3788,7 +3788,6 @@ async def test_on_radio_state_change_broadcasts_canonical_state_payload() -> Non
     radio.profile.supports_cmd29 = MagicMock(return_value=False)
     radio.profile.vfo_sub_code = None
     radio.profile.vfo_main_code = None
-    radio.profile.vfo_swap_code = None
 
     srv = WebServer(radio)
     queue = BoundedQueue[dict[str, object]](maxsize=4)

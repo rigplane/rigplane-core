@@ -189,9 +189,6 @@ class TestProfileParity:
     def test_vfo_sub_code(self, profile):
         assert profile.vfo_sub_code == 0xD1
 
-    def test_vfo_swap_code(self, profile):
-        assert profile.vfo_swap_code == 0xB0
-
     def test_freq_ranges_count(self, profile):
         assert len(profile.freq_ranges) == 2
 

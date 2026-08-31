@@ -192,9 +192,6 @@ class TestVFOScheme:
         # In ab scheme, "sub" maps to VFO-B
         assert profile.vfo_sub_code == 0x01
 
-    def test_vfo_swap_code(self, profile):
-        assert profile.vfo_swap_code == 0xB0
-
 
 # ── Capabilities ───────────────────────────────────────────────
 

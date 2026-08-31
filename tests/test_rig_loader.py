@@ -1377,8 +1377,6 @@ class TestToProfile:
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert profile.vfo_main_code == 0xD0
         assert profile.vfo_sub_code == 0xD1
-        # Legacy alias still works (issue #710)
-        assert profile.vfo_swap_code == 0xB0
         # IC-7610 template uses legacy [vfo].swap with scheme=main_sub
         assert profile.swap_main_sub_code == 0xB0
         assert profile.swap_ab_code is None
@@ -1502,13 +1500,6 @@ class TestVfoSchemeSplit:
         assert profile.swap_ab_code == 0x07
         assert profile.equal_ab_code == 0x07
 
-    def test_legacy_aliases_prefer_main_sub_when_dual(self, tmp_path):
-        p = _write_toml(tmp_path, self._MAIN_SUB_SPLIT)
-        profile = load_rig(p).to_profile()
-        # Legacy alias returns main_sub value when both are set
-        assert profile.vfo_swap_code == 0xB0
-        assert profile.vfo_equal_code == 0xB1
-
     def test_legacy_swap_maps_to_main_sub_on_dual_scheme(self, tmp_path):
         toml = """\
         [radio]
@@ -1547,8 +1538,6 @@ class TestVfoSchemeSplit:
         assert profile.equal_main_sub_code == 0xB1
         assert profile.swap_ab_code is None
         assert profile.equal_ab_code is None
-        # Legacy alias still resolves
-        assert profile.vfo_swap_code == 0xB0
 
     def test_legacy_swap_maps_to_ab_on_single_rx_scheme(self, tmp_path):
         toml = """\
@@ -1586,9 +1575,6 @@ class TestVfoSchemeSplit:
         assert profile.equal_ab_code == 0xA0
         assert profile.swap_main_sub_code is None
         assert profile.equal_main_sub_code is None
-        # Legacy alias still resolves to the ab code
-        assert profile.vfo_swap_code == 0xB0
-        assert profile.vfo_equal_code == 0xA0
 
     def test_no_deprecation_when_only_new_keys(self, tmp_path, recwarn):
         p = _write_toml(tmp_path, self._MAIN_SUB_SPLIT, name="new_only.toml")

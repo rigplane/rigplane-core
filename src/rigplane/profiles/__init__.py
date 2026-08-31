@@ -429,24 +429,6 @@ class RadioProfile:
     # consume it lands in a later row of the same epic.
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
 
-    @property
-    def vfo_swap_code(self) -> int | None:
-        """Legacy alias — prefers ``swap_main_sub_code`` for dual-RX rigs.
-
-        Deprecated: use :attr:`swap_ab_code` or :attr:`swap_main_sub_code`
-        directly (issue #710).
-        """
-        return self.swap_main_sub_code or self.swap_ab_code
-
-    @property
-    def vfo_equal_code(self) -> int | None:
-        """Legacy alias — prefers ``equal_main_sub_code`` for dual-RX rigs.
-
-        Deprecated: use :attr:`equal_ab_code` or :attr:`equal_main_sub_code`
-        directly (issue #710).
-        """
-        return self.equal_main_sub_code or self.equal_ab_code
-
     def supports_capability(self, capability: str) -> bool:
         return capability in self.capabilities
 
