@@ -119,8 +119,12 @@ serves as the template for the minimal (first) shape; use it directly.
 
 ## Wiring a new skin into the app
 
-Every file below is typed so that skipping a step is a compile error, not a
-silent gap — `npm run check` (below) is what catches it.
+Most files below are typed `Record<SkinId, ...>`, so skipping one is a
+compile error `npm run check` catches. A few instead pin a hand-listed
+table against one derived from real source, which only `npx vitest run`
+catches — each such step says so. The last step is different again: it
+only applies if your skin should be reachable from user-facing layout
+preference, and one of its links has no check behind it at all.
 
 1. **`frontend/src/skins/registry.ts`**: add your id to the `SkinId` union;
    add a loader to `SKIN_LOADERS` (reached only through `loadSkin`); add an
@@ -129,15 +133,46 @@ silent gap — `npm run check` (below) is what catches it.
    resource. Both `SKIN_LOADERS` and `SKIN_RESOURCE_PLAN` are typed
    `Record<SkinId, ...>`, so a missing key fails to compile. Pinned by
    `frontend/src/skins/__tests__/registry.test.ts`.
-2. **A `LayoutManifest`**, registered via `registerLayout` from
+2. **`frontend/src/__tests__/presentation-switch-resources.component.test.ts`**:
+   add your id to `SKIN_PLAN`, a hand-mirrored copy of `SKIN_RESOURCE_PLAN`
+   that this file's own "mirrors the production per-skin resource plan"
+   test checks against the real one, and to `WIDTH_FOR`, the viewport
+   width its fixtures resize to per skin. Both are typed
+   `Record<SkinId, ...>`, so a missing key is the same `npm run check`
+   failure as step 1, in a second file. Give `WIDTH_FOR` a value none of
+   the other entries already use — `widthToSkin()` in that file picks a
+   skin by exact width equality, so a duplicate resolves to whichever
+   entry `Object.keys` visits first, not necessarily yours.
+3. **A `LayoutManifest`**, registered via `registerLayout` from
    `frontend/src/presentation/layouts/contract.ts`, re-exported from
    `frontend/src/presentation/layouts/declarations.ts` (directly, or from
    your own sibling `<name>-declarations.ts` the way `lcd-declarations.ts`
    and `mobile-declarations.ts` are). Pinned by
    `frontend/src/presentation/layouts/__tests__/registry.test.ts` and, by
    convention, a dedicated `<your-skin>-registration.test.ts` alongside
-   `sdr-registration.test.ts`/`desktop-v2-registration.test.ts`.
-3. **`frontend/src/skins/__tests__/entrypoints.test.ts`**: add your `SkinId`
+   `sdr-registration.test.ts`/`desktop-v2-registration.test.ts` — plus one
+   more that nothing above names:
+   `frontend/src/presentation/layouts/__tests__/loader-identity-inventory.test.ts`
+   needs a row for your manifest in both `ALL_MANIFESTS` and
+   `EXPECTED_LOADER_SPECIFIER` (the latter is your skin component's
+   resolved import specifier, e.g. `/src/skins/sdr-test/SdrTestSkin.svelte`
+   for `sdr-test`). Both are hand-listed literals, not
+   `Record<SkinId, ...>`, checked against the barrel's actual export
+   surface by that file's "the manifest table matches every id the barrel
+   exports" test — so a missing row fails `npx vitest run`, not
+   `npm run check`.
+
+   A different family of files also hand-lists every registered manifest,
+   for its own purpose, and does not fail when a new one is missing — it
+   just stops covering it:
+   `frontend/src/presentation/layouts/__tests__/forward-declaration-inventory.test.ts`
+   (`ALL_MANIFESTS`, `DOM_BACKED`) and the sibling `*-declarability.test.ts`
+   files in the same directory, one per semantic surface (e.g.
+   `meters-declarability.test.ts`'s `ALL` — its own comment reads "extend
+   by hand, with a layout review, never silently"). Nothing here is
+   required for a minimal skin; know they exist because if your skin
+   should be counted in one of them, nothing will tell you that it isn't.
+4. **`frontend/src/skins/__tests__/entrypoints.test.ts`**: add your `SkinId`
    to `SKIN_ENTRYPOINT_COVERAGE`, picking the coverage `kind` that matches
    how you actually mount (`radio-layout` / `lcd-layout` / `mobile-layout`
    if you genuinely delegate to one of those three shared shells, or
@@ -146,11 +181,53 @@ silent gap — `npm run check` (below) is what catches it.
    is typed `Record<SkinId, ...>`, so an omission is a compile error — but
    only `npm run check` (svelte-check) catches it; the file's own header
    explains why a plain `vitest run` would not.
-4. **Only if your skin should be reachable from user-facing layout
+5. **Only if your skin should be reachable from user-facing layout
    preference** (not just a fixed id, the way `dual-receiver-cockpit` is
-   reachable only via an exact query param): add a branch to
-   `resolveSkinId` in `frontend/src/skins/registry.ts`. Read its existing
-   doc comment first — the resolution order there is deliberate.
+   reachable only via an exact query param) — four sites need an entry,
+   not just `resolveSkinId`:
+   - **`frontend/src/lib/stores/layout.svelte.ts`**: add your id to the
+     `LayoutMode` union, and — unless it should stay QA-only the way
+     `dual-receiver-cockpit` deliberately is not — to the
+     `CANONICAL_LAYOUT_MODES` set. `CanonicalLayoutMode` derives from
+     `LayoutMode` automatically; `CANONICAL_LAYOUT_MODES` does not derive
+     from anything and is not checked against that type. Miss it and
+     `normalizeLayoutMode` silently normalizes your id to `'auto'` before
+     `resolveSkinId` (below) ever sees it — no error, the branch you add
+     there just never runs.
+   - **`frontend/src/presentation/workspace/contract.ts`**: add your id to
+     `WORKSPACE_LAYOUT_IDS`, and a matching entry to the map
+     `workspaceLayoutManifestId` reads. `WORKSPACE_LAYOUT_IDS` is checked
+     for agreement with `CANONICAL_LAYOUT_MODES` above — not for
+     completeness on its own — by
+     `frontend/src/presentation/workspace/__tests__/contract.test.ts`'s
+     "layout ids are exactly the store's CanonicalLayoutMode set" test (a
+     `vitest` failure, not a compile one); the manifest-id map is
+     `Record<WorkspaceLayoutId, string | null>`, so a missing key is a
+     `npm run check` failure.
+   - **`frontend/src/components-v2/layout/StatusBar.svelte`**: add your id
+     to the `skinOptions` array, or the skin picker never offers it. This
+     site has no check at all: `skinOptions` is a plain array, not a
+     `Record`, and its own suite (`StatusBar.skin-options.test.ts`) only
+     pins that the QA-only id stays excluded and that the array keeps its
+     declared type. Skip this step and both commands below stay green
+     while your skin is unreachable from the picker.
+   - **`frontend/src/skins/registry.ts`**: add a branch to `resolveSkinId`.
+     Read its existing doc comment first — the resolution order there is
+     deliberate.
+
+   The first of these sits under `$lib/stores/*`, which "What a skin may
+   not import" below bans — but that is not a conflict. The ban
+   (`frontend/eslint.config.js`'s `FORBIDDEN_SKINS_IMPORTS`) is scoped by
+   file location to import statements written inside
+   `src/skins/**/*.svelte` and `src/skins/**/*.ts`; it has nothing to say
+   about editing `lib/stores/layout.svelte.ts` itself, which sits outside
+   that tree. You extend that module as its own owner here, not as a skin
+   importing it. The one file in this chain that IS under `src/skins/**`
+   (`registry.ts`) needs no new import either: it already reaches
+   `normalizeLayoutMode`/`LayoutMode` through
+   `frontend/src/lib/runtime/adapters/layout-mode-adapter.ts`, the
+   re-export that eslint rule's own comment says was created for this
+   exact file when the ban landed (MOR-2039).
 
 ## If your skin adds a new meter component
 
