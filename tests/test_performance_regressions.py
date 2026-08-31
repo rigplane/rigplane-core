@@ -8,16 +8,18 @@ These tests establish performance guarantees for key operations:
 
 All tests use mocked UDP transport to isolate command processing from network latency.
 
-Marked ``benchmark`` and so deselected from the default suite: every
-assertion below compares a wall-clock measurement against a fixed
-threshold that idle hardware clears by more than an order of magnitude.
-That makes them measurements rather than gates -- a slowdown small enough
-to matter passes, while a host busy enough to slow the process by that
-same order fails, which is what ``pytest -n auto`` on a loaded machine
-produces. Run them deliberately with ``uv run pytest -m benchmark
-tests/`` and read the printed numbers; tightening a threshold here means
-revisiting that marker, because a threshold tight enough to catch a
-regression is also tight enough to catch a busy neighbour.
+Marked ``benchmark`` and so deselected from the default suite, module name
+notwithstanding. These assertions compare wall-clock measurements against
+fixed thresholds, and the margins are too wide for any regression worth
+catching to trip one first: the narrowest,
+``TestPerformanceSloValidation.test_frame_overhead_acceptable``, measured
+about seven times its floor across ten runs, and the rest clear theirs by
+far more. A host busy enough to slow the process sevenfold does trip it,
+which is what ``pytest -n auto`` on a loaded machine produces. Run them
+deliberately with ``uv run pytest -m benchmark tests/``; this module prints
+nothing, so a pass is the whole result. Tightening a threshold here means revisiting the marker, because a threshold
+tight enough to catch a regression is also tight enough to catch a busy
+neighbour.
 """
 
 from __future__ import annotations
