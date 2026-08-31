@@ -604,6 +604,12 @@ During Phases 4-5, old and new code coexist:
 | Phase 3 | Semantic component contracts stable for both desktop and LCD |
 | Before Phase 6 | All 4 capability scenarios pass; Scenario B (`scope=false + audio=true`) explicitly verified; manual hardware validation |
 
+These phase gates cover the migration. `docs/internals/skins-presentation-boundary-gate.md`
+(MOR-2034) is the permanent, post-migration release-gate check for this ADR's
+central guarantee — a skin depends only on the presentation layer, and never
+derives radio truth locally — naming the mechanisms that enforce it and
+recording where their reach currently ends.
+
 ---
 
 ## Relationship to existing code
