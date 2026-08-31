@@ -96,7 +96,7 @@ describe('the workspace contract is pure at load (MOR-1077)', () => {
   });
 
   // ── Pin 2: structural, transitive over the enumerated closure ───────────
-  it('the closure is exactly the contract plus the two pure presentation contracts', () => {
+  it('the closure is exactly the contract plus the two pure presentation contracts and the layout-compatibility guard', () => {
     expect(closure(ENTRY).sort()).toEqual([
       'src/presentation/languages/contract.ts',
       // MOR-2054: dev-only, pass-through guard `contract.ts` calls from

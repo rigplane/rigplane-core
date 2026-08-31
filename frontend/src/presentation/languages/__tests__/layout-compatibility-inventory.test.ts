@@ -5,34 +5,40 @@
  * failing the suite outright if any manifest actually shipped here does.
  *
  * Mirrors `../../layouts/__tests__/loader-identity-inventory.test.ts`'s
- * discipline: the manifest list is derived structurally from the barrel's
- * own export surface, not hand-listed — hand-listing manifest ids here
- * would be the exact defect MOR-2054 exists to remove (a list that silently
- * stops matching reality the moment someone adds a manifest and forgets to
- * update the list).
+ * completeness-check discipline specifically: like that file's own
+ * `BARREL_MANIFESTS` derivation, the manifest list here is derived
+ * structurally from the barrel's own export surface, not hand-listed —
+ * hand-listing manifest ids here would be the exact defect MOR-2054 exists
+ * to remove (a list that silently stops matching reality the moment someone
+ * adds a manifest and forgets to update the list). That file's separate
+ * `ALL_MANIFESTS`/`EXPECTED_LOADER_SPECIFIER` tables are, by contrast,
+ * hand-listed literals by design (that file's own comment says so) — used
+ * only for per-id loader-specifier pinning, a check this file has no need
+ * for.
  *
  * Deliberately NOT sourced from `listDesignLanguageIds()`/the live registry:
  * `contract.ts`'s registry is module-scope, private, mutable state that
  * sibling test files write throwaway entries into via `registerDesignLanguage`
  * (e.g. `registry.test.ts`'s "no hardcoded family count" case registers a
  * `thirdline` id built from `fixtures.ts`'s `validManifest()`, whose default
- * `layoutCompatibility` is `[]`) — the same class of shared cross-file state
- * `loader-identity-inventory.test.ts` measured as polluting a registry-sourced
- * list for the analogous layout registry (22 ids instead of 6, that file's
- * own comment). Probed directly for this file before writing it (running this
- * directory, and separately the whole `src/presentation/` tree, under
- * `--no-file-parallelism` with `listDesignLanguageIds()`): this specific
- * registry did not currently show `thirdline` leaking across files in either
- * run, so the risk is not currently observed here — but relying on that would
- * make correctness depend on vitest's module-sharing behavior under
- * `isolate: false` never changing and no sibling file ever registering a
- * colliding id, neither of which this file can pin. The barrel's own export
- * surface depends on none of that, costs nothing extra to use instead, and
- * needs no `*.isolated.test.ts` escape hatch (unlike
- * `loader-identity-inventory.test.ts`, which additionally proves
- * REGISTRATION identity via `getLayout(id)` — a registry read this file has
- * no need for, since `declaresNoLayoutCompatibility` is a pure structural
- * check on the manifest object itself).
+ * `layoutCompatibility` is `[]`). Measured 2026-08-31: the shared layout
+ * registry returns extra ids under `isolate: false` when sibling suites
+ * register probe manifests — the same class of shared cross-file state this
+ * file's own registry is exposed to. Probed directly for THIS file before
+ * writing it (running this directory, and separately the whole
+ * `src/presentation/` tree, under `--no-file-parallelism` with
+ * `listDesignLanguageIds()`): this specific registry did not currently show
+ * `thirdline` leaking across files in either run, so the risk is not
+ * currently observed here — but relying on that would make correctness
+ * depend on vitest's module-sharing behavior under `isolate: false` never
+ * changing and no sibling file ever registering a colliding id, neither of
+ * which this file can pin. The barrel's own export surface depends on none
+ * of that, costs nothing extra to use instead, and needs no
+ * `*.isolated.test.ts` escape hatch (unlike `loader-identity-inventory.test.ts`,
+ * which additionally proves REGISTRATION identity via `getLayout(id)` — a
+ * registry read this file has no need for, since
+ * `declaresNoLayoutCompatibility` is a pure structural check on the manifest
+ * object itself).
  */
 import { describe, expect, it } from 'vitest';
 import { declaresNoLayoutCompatibility } from '../layout-compatibility-guard';

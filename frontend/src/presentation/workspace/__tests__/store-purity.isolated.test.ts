@@ -101,7 +101,7 @@ describe('the workspace store is inert until it is initialised (MOR-1079)', () =
     expect([...keys].sort()).toEqual(['rigplane:workspace', 'rigplane:workspace-migrated:v1']);
   });
 
-  it('the closure is the store, the repository and the three pure contracts', () => {
+  it('the closure is the store, the repository, the three pure contracts and the layout-compatibility guard', () => {
     expect(closure(ENTRY).sort()).toEqual([
       'src/presentation/languages/contract.ts',
       // MOR-2054: dev-only, pass-through guard `contract.ts` calls from
