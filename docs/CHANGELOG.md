@@ -138,6 +138,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runtime/_scope_runtime.py: ScopeRuntimeMixin` and
   `backends/_icom_serial_base.py`, moved onto `self._commands.<builder>`
   in the same change.
+- **`rigplane.commands.scope`'s fifteen `parse_scope_*_response` functions
+  take a map-derived `command`/`sub`, closing the response-side gap the
+  builder migration above left open (MOR-2008).** Each now accepts
+  optional `command`/`sub` keywords, defaulting to the same `_CMD_SCOPE`/
+  `_SUB_SCOPE_*` constants checked before this change, so a caller that
+  never passes them — `runtime/_civ_rx.py`'s unsolicited-frame decoding
+  (no command-map entry to derive a shape from) and every pre-migration
+  direct test call — keeps working unchanged. The sixteen production call
+  sites in `runtime/_scope_runtime.py: ScopeRuntimeMixin` (fifteen getters
+  plus `set_scope_fixed_edge`'s self-reparse of the frame it just built,
+  which shares `get_scope_fixed_edge`'s reply shape) now derive both
+  values via `runtime/radio.py: CoreRadio._expect_shape`, the mechanism
+  batch 1's `system.py` date/time/UTC parsers and batch 3's twelve
+  dsp.py getters already use. No observable behaviour change on any of
+  the four CI-V profiles that declare scope commands: every one already
+  declares the identical `[0x27, sub]` tuple these constants held (this
+  module's own divergence-free history, noted in the entry above).
+  Registered in `tests/test_response_shape_from_profile.py` as three
+  dedicated cases (one generic, covering thirteen of the fifteen parsers;
+  one for `get_scope_session_state`'s two-key round trip; one for
+  `set_scope_fixed_edge`'s self-reparse) rather than a `MATCHER_BACKED_GETTERS`
+  row, since none of the fifteen route through `_get_bcd_level`/
+  `_get_bool_value` — the same reason batch 1's date/time/UTC trio and
+  `get_dual_watch` are each a dedicated case there instead of a table row.
 - **`rigplane.commands.system`/`cw`/`speech`/`power` builders require
   `cmd_map`; there is no hardcoded fallback (MOR-2008, batch 1 of
   `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** All 26
