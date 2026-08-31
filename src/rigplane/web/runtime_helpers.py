@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
 from ..core.state_store import FieldSnapshot, FreshnessState, StateSnapshot
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
+from ..profiles import RadioProfile, resolve_radio_profile
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
@@ -28,7 +29,14 @@ __all__ = [
     "build_public_state_payload",
     "build_public_state_payload_from_snapshot",
     "primary_receiver_snapshot_ids",
+    "VFO_CAPABILITY_TAGS",
+    "projected_vfo_capability_tags",
 ]
+
+# Reserved runtime capability tags for the VFO-primitive commands
+# (``vfo_swap``, ``vfo_equalize``). These are never trusted from
+# ``radio.capabilities`` directly — see ``projected_vfo_capability_tags``.
+VFO_CAPABILITY_TAGS: frozenset[str] = frozenset({"vfo_swap", "vfo_equalize"})
 
 _RECEIVER_KEY_MAP = {"freq": "freqHz"}
 _SNAPSHOT_RECEIVER_IDS = {
@@ -580,6 +588,71 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
     if isinstance(radio, DualReceiverCapable):
         result.add("dual_rx")
     return result
+
+
+def projected_vfo_capability_tags(
+    radio: "Radio | None", configured_model: str | None
+) -> frozenset[str]:
+    """Return the reserved VFO tags (:data:`VFO_CAPABILITY_TAGS`) this radio backs.
+
+    Fail-closed contract. Each bullet names the test in
+    ``tests/test_web_capability_guards.py`` that fails if that bullet stops
+    being true:
+
+    - A resolved :class:`~rigplane.profiles.RadioProfile` on ``radio.profile``
+      is used as-is, and each tag is included only when its profile field
+      (``swap_ab_code``/``equal_ab_code`` for ``vfo_scheme == "ab"``,
+      ``swap_main_sub_code``/``equal_main_sub_code`` for
+      ``vfo_scheme == "main_sub"``) is not ``None`` — pinned by
+      ``test_vfo_tags_match_across_consumers_for_real_profiles`` and
+      ``test_vfo_tags_keep_partial_and_mismatched_schemes_in_parity``.
+    - Otherwise exactly one candidate model string is tried: ``radio.model``
+      if it is a non-empty (after ``.strip()``) string, else
+      ``configured_model``. There is no second candidate — a radio-reported
+      model that fails to resolve (``KeyError`` from
+      :func:`~rigplane.profiles.resolve_radio_profile`) yields no tags
+      without falling back to ``configured_model`` — pinned by
+      ``test_ws_hello_and_http_capability_payloads_agree_for_non_resolving_runtime_model``
+      and
+      ``test_unknown_runtime_model_fails_closed_for_reserved_vfo_tags_across_consumers``.
+    - A candidate that is not a non-empty string (``radio.model`` absent or
+      blank and ``configured_model`` likewise) never reaches
+      ``resolve_radio_profile`` — whose empty-input path silently returns a
+      default rig profile — and instead yields no tags — pinned by
+      ``test_reserved_vfo_tags_absent_when_no_usable_candidate_model_exists``.
+    """
+    profile = getattr(radio, "profile", None)
+    if not isinstance(profile, RadioProfile):
+        raw_model = getattr(radio, "model", None) if radio is not None else None
+        candidate = (
+            raw_model
+            if isinstance(raw_model, str) and raw_model.strip()
+            else configured_model
+        )
+        if not isinstance(candidate, str) or not candidate.strip():
+            return frozenset()
+        try:
+            profile = resolve_radio_profile(model=candidate)
+        except KeyError:
+            return frozenset()
+
+    if not isinstance(profile, RadioProfile):
+        return frozenset()
+
+    primitives: tuple[tuple[str, int | None], ...]
+    if profile.vfo_scheme == "ab":
+        primitives = (
+            ("vfo_swap", profile.swap_ab_code),
+            ("vfo_equalize", profile.equal_ab_code),
+        )
+    elif profile.vfo_scheme == "main_sub":
+        primitives = (
+            ("vfo_swap", profile.swap_main_sub_code),
+            ("vfo_equalize", profile.equal_main_sub_code),
+        )
+    else:
+        primitives = ()
+    return frozenset(tag for tag, primitive in primitives if primitive is not None)
 
 
 def radio_ready(radio: "Radio | None") -> bool:

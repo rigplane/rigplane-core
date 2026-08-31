@@ -94,9 +94,11 @@ from .radio_poller import (  # noqa: TID251
     RadioPoller,
 )
 from .runtime_helpers import (  # noqa: TID251
+    VFO_CAPABILITY_TAGS,
     build_public_state_payload_from_snapshot,
     classify_radio_health,
     primary_receiver_snapshot_ids,
+    projected_vfo_capability_tags,
     radio_ready,
     runtime_capabilities,
 )
@@ -981,42 +983,10 @@ class WebServer:
 
     def _projected_runtime_capabilities(self) -> set[str]:
         """Return runtime tags with VFO primitives trusted only from a profile."""
-        from ..profiles import RadioProfile, resolve_radio_profile
-
-        vfo_tags = {"vfo_swap", "vfo_equalize"}
-        caps = _runtime_capabilities(self._radio) - vfo_tags
-        profile = getattr(self._radio, "profile", None) if self._radio else None
-        if not isinstance(profile, RadioProfile):
-            raw_model = (
-                getattr(self._radio, "model", None) if self._radio is not None else None
-            )
-            candidates = (
-                (raw_model,)
-                if isinstance(raw_model, str) and raw_model.strip()
-                else (self._config.radio_model,)
-            )
-            for model in candidates:
-                try:
-                    profile = resolve_radio_profile(model=model)
-                except KeyError:
-                    continue
-                break
-        if not isinstance(profile, RadioProfile):
-            return caps
-        primitives: tuple[tuple[str, int | None], ...]
-        if profile.vfo_scheme == "ab":
-            primitives = (
-                ("vfo_swap", profile.swap_ab_code),
-                ("vfo_equalize", profile.equal_ab_code),
-            )
-        elif profile.vfo_scheme == "main_sub":
-            primitives = (
-                ("vfo_swap", profile.swap_main_sub_code),
-                ("vfo_equalize", profile.equal_main_sub_code),
-            )
-        else:
-            primitives = ()
-        return caps | {tag for tag, primitive in primitives if primitive is not None}
+        caps = _runtime_capabilities(self._radio) - VFO_CAPABILITY_TAGS
+        return caps | projected_vfo_capability_tags(
+            self._radio, self._config.radio_model
+        )
 
     def _bootstrap_state_acquisition(self) -> None:
         """Attach shared StateStore-backed acquisition services when profiled."""
