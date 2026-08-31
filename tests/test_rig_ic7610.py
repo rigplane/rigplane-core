@@ -311,13 +311,21 @@ class TestCommandMapParity:
     def test_scan_set_df_span(self, cmdmap):
         assert cmdmap.get("scan_set_df_span") == (0x0E,)
 
+    def test_scan_set_resume(self, cmdmap):
+        """D2, MOR-2017 declared the base command byte (0x0E); MOR-2007
+        ruling 4 added the [scan_resume] domain (0xD0/0xD3 only) this
+        byte declaration alone did not resolve."""
+        assert cmdmap.get("scan_set_resume") == (0x0E,)
+
     def test_scan_start_type(self, cmdmap):
         """D2, MOR-2017: the base command byte (0x0E) is guide-confirmed.
         The guide's valid-type list for this radio also includes 0x13
-        ("Start a Fine dF scan"), which code's shared VALID_SCAN_TYPES
-        does not accept -- IC-7610 has the same 0x13 domain mismatch
-        IC-705 does; only 0x24 is IC-705-specific. Not resolved by this
-        byte declaration -- left open, recorded for MOR-2007."""
+        ("Start a Fine dF scan"), which the old code-level
+        VALID_SCAN_TYPES frozenset did not accept -- IC-7610 had the same
+        0x13 domain mismatch IC-705 did; only 0x24 was IC-705-specific.
+        Resolved by MOR-2007 ruling 4's [scan_types] domain, not by this
+        byte declaration alone.
+        """
         assert cmdmap.get("scan_start_type") == (0x0E,)
 
     def test_no_repeater_tone_family(self, cmdmap):

@@ -116,6 +116,18 @@ class TestD2DocumentaryCommandBytes:
     def test_scan_set_df_span(self, cmdmap) -> None:
         assert cmdmap.get("scan_set_df_span") == (0x0E,)
 
+    def test_scan_start_type(self, cmdmap) -> None:
+        """MOR-2007 ruling 4: the base command byte (0x0E) is
+        guide-confirmed; [scan_types] resolves the domain (0x13 fine dF
+        scan and 0x24 mode-select scan, both IC-705-specific per the
+        cross-check against IC-7610's guide, which lacks 0x24)."""
+        assert cmdmap.get("scan_start_type") == (0x0E,)
+
+    def test_scan_set_resume(self, cmdmap) -> None:
+        """MOR-2007 ruling 4: [scan_resume] resolves the domain (0xD0/0xD3
+        only, per the IC-705 CI-V Reference Guide)."""
+        assert cmdmap.get("scan_set_resume") == (0x0E,)
+
     def test_get_nb_depth(self, cmdmap) -> None:
         """1A 05 0357, NOT the shared fallback's 0290 (that was IC-7610's
         address) -- that fallback and its `_CTL_MEM_NB_DEPTH` constant were

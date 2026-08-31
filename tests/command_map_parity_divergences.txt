@@ -4,12 +4,3 @@
 # here, and on a row here that no longer disagrees -- delete that
 # row, never keep it. Regenerating can still add rows, so read any
 # addition as a new divergence someone has to justify.
-IC-705	vfo.py:get_quick_split	(no arguments)	map=fefea4e01a050045fd fallback=fefea4e01a050033fd
-IC-705	vfo.py:set_quick_split	(no arguments)	map=fefea4e01a050045fd fallback=fefea4e01a050033fd
-IC-7300	vfo.py:get_quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
-IC-7300	vfo.py:quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
-IC-7300	vfo.py:set_quick_split	(no arguments)	map=fefe94e01a050030fd fallback=fefe94e01a050033fd
-IC-9700	vfo.py:get_dual_watch	(no arguments)	map=fefea2e01659fd fallback=fefea2e007c2fd
-IC-9700	vfo.py:get_quick_split	(no arguments)	map=fefea2e01a050043fd fallback=fefea2e01a050033fd
-IC-9700	vfo.py:quick_split	(no arguments)	map=fefea2e01a050043fd fallback=fefea2e01a050033fd
-IC-9700	vfo.py:set_quick_split	(no arguments)	map=fefea2e01a050043fd fallback=fefea2e01a050033fd

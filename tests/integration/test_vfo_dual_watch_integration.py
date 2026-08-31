@@ -7,10 +7,10 @@ Commands under test:
   1. Tuning Step — get/set (CI-V 0x10)
   2. Scanning — start/stop (CI-V 0x0E)
   3. Dual Watch — on/off/state (CI-V 0x07 0xC0/0xC1/0xC2)
-  4. Quick Dual Watch — fire-and-forget (CI-V 0x1A 0x05 0x00 0x32)
-  5. Quick Split — fire-and-forget (CI-V 0x1A 0x05 0x00 0x33)
+  4. Quick Dual Watch — persistent menu toggle, get/set (CI-V 0x1A 0x05 0x00 0x32)
+  5. Quick Split — persistent menu toggle, get/set (CI-V 0x1A 0x05 0x00 0x33)
 
-Wire encoding (matches actual implementation in commands.py):
+Wire encoding (matches actual implementation in commands/vfo.py):
   Tuning step 0x10:
     - GET: empty payload → radio replies with 1-byte BCD step index
     - SET: 1-byte BCD step index payload → radio ACKs
@@ -20,8 +20,17 @@ Wire encoding (matches actual implementation in commands.py):
     - SET OFF 0x07 0xC0 → ACK
     - SET ON  0x07 0xC1 → ACK
     - QUERY   0x07 0xC2 → radio replies with [0xC2, 0x00=off | 0x01=on]
-  Quick DW (0x1A 0x05 0x00 0x32) → ACK
-  Quick Split (0x1A 0x05 0x00 0x33) → ACK
+  Quick DW (0x1A 0x05 0x00 0x32):
+    - GET: 3-byte menu address → radio replies [0x00, 0x32, 0x00=off | 0x01=on]
+    - SET: 4th byte 0x00/0x01 → ACK
+  Quick Split (0x1A 0x05 0x00 0x33): same shape as Quick DW, at 0x33.
+
+MOR-2007 ruling 2 replaced the pre-migration ``quick_dual_watch()``/
+``quick_split()`` one-shot triggers with real ``get_/set_quick_dual_watch``/
+``get_/set_quick_split`` pairs: bench-confirmed on the live IC-7300, this
+menu item is readable, writable and persistent, not a fire-and-forget
+trigger -- the deleted builders always sent the bare-GET frame above and
+never read the reply, so they fired nothing.
 
 Note on get_dual_watch():
   The current implementation routes the dual-watch query as an ACK-waiter
@@ -88,6 +97,11 @@ class VfoDualWatchMockRadio(MockIcomRadio):
         self._tuning_step: int = 0x04  # BCD index 4 (maps to 1kHz in IC-7610 table)
         self._scanning: bool = False
         self._dual_watch_on: bool = False
+        # Quick Split / Quick Dual Watch (MOR-2007 ruling 2): persistent
+        # menu toggles, readable and writable -- not the one-shot triggers
+        # the pre-migration wire-encoding note below described.
+        self._quick_dual_watch_on: bool = False
+        self._quick_split_on: bool = False
         # Unsolicited frame injection (for push-from-radio state update tests)
         self._civ_client_addr: tuple[str, int] | None = None
         self._civ_client_proto: object = None
@@ -160,12 +174,27 @@ class VfoDualWatchMockRadio(MockIcomRadio):
             # Other 0x07 sub-commands (VFO select, equalize, swap) → parent
             return super()._dispatch_civ(cmd, payload, from_addr)
 
-        # --- Quick Dual Watch / Quick Split (0x1A sub=0x05) ---
+        # --- Quick Dual Watch / Quick Split (0x1A 0x05 0x00 0x32/0x33) ---
+        # MOR-2007 ruling 2: persistent menu toggles. A payload with only
+        # the 3-byte menu address is a GET (reply echoes it plus a value
+        # byte); a 4th byte is the SET value.
         if cmd == _CMD_CTL_MEM:
-            if payload == b"\x05\x00\x32":  # Quick Dual Watch
-                return self._civ_ack(to, frm)
-            if payload == b"\x05\x00\x33":  # Quick Split
-                return self._civ_ack(to, frm)
+            if payload[:3] == b"\x05\x00\x32":  # Quick Dual Watch
+                if len(payload) > 3:
+                    self._quick_dual_watch_on = payload[3] != 0x00
+                    return self._civ_ack(to, frm)
+                flag = 0x01 if self._quick_dual_watch_on else 0x00
+                return self._civ_frame(
+                    to, frm, _CMD_CTL_MEM, sub=0x05, data=b"\x00\x32" + bytes([flag])
+                )
+            if payload[:3] == b"\x05\x00\x33":  # Quick Split
+                if len(payload) > 3:
+                    self._quick_split_on = payload[3] != 0x00
+                    return self._civ_ack(to, frm)
+                flag = 0x01 if self._quick_split_on else 0x00
+                return self._civ_frame(
+                    to, frm, _CMD_CTL_MEM, sub=0x05, data=b"\x00\x33" + bytes([flag])
+                )
 
         return super()._dispatch_civ(cmd, payload, from_addr)
 
@@ -470,16 +499,38 @@ class TestDualWatch:
 
 
 class TestQuickDualWatch:
-    """Quick Dual Watch: fire-and-forget (no persistent state, no response)."""
+    """Quick Dual Watch: persistent menu toggle, get/set roundtrip
+    (MOR-2007 ruling 2 -- replaces the deleted fire-and-forget trigger)."""
 
-    async def test_quick_dual_watch_no_exception(self, vfo_radio: IcomRadio) -> None:
-        """quick_dual_watch() completes without raising."""
-        await vfo_radio.quick_dual_watch()
+    async def test_quick_dual_watch_initial_state_off(
+        self, vfo_mock: VfoDualWatchMockRadio
+    ) -> None:
+        assert vfo_mock._quick_dual_watch_on is False
 
-    async def test_quick_dual_watch_multiple_calls(self, vfo_radio: IcomRadio) -> None:
-        """Calling quick_dual_watch() repeatedly does not raise."""
+    async def test_get_quick_dual_watch_reads_mock_state(
+        self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
+    ) -> None:
+        assert await vfo_radio.get_quick_dual_watch() is False
+
+    async def test_set_quick_dual_watch_roundtrip(
+        self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
+    ) -> None:
+        await vfo_radio.set_quick_dual_watch(True)
+        await asyncio.sleep(_SETTLE)
+        assert vfo_mock._quick_dual_watch_on is True
+        assert await vfo_radio.get_quick_dual_watch() is True
+
+        await vfo_radio.set_quick_dual_watch(False)
+        await asyncio.sleep(_SETTLE)
+        assert vfo_mock._quick_dual_watch_on is False
+        assert await vfo_radio.get_quick_dual_watch() is False
+
+    async def test_set_quick_dual_watch_multiple_calls(
+        self, vfo_radio: IcomRadio
+    ) -> None:
+        """Calling set_quick_dual_watch() repeatedly does not raise."""
         for _ in range(3):
-            await vfo_radio.quick_dual_watch()
+            await vfo_radio.set_quick_dual_watch(True)
             await asyncio.sleep(0.02)
 
 
@@ -489,16 +540,36 @@ class TestQuickDualWatch:
 
 
 class TestQuickSplit:
-    """Quick Split: fire-and-forget (no persistent state, no response)."""
+    """Quick Split: persistent menu toggle, get/set roundtrip
+    (MOR-2007 ruling 2 -- replaces the deleted fire-and-forget trigger)."""
 
-    async def test_quick_split_no_exception(self, vfo_radio: IcomRadio) -> None:
-        """quick_split() completes without raising."""
-        await vfo_radio.quick_split()
+    async def test_quick_split_initial_state_off(
+        self, vfo_mock: VfoDualWatchMockRadio
+    ) -> None:
+        assert vfo_mock._quick_split_on is False
 
-    async def test_quick_split_multiple_calls(self, vfo_radio: IcomRadio) -> None:
-        """Calling quick_split() repeatedly does not raise."""
+    async def test_get_quick_split_reads_mock_state(
+        self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
+    ) -> None:
+        assert await vfo_radio.get_quick_split() is False
+
+    async def test_set_quick_split_roundtrip(
+        self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
+    ) -> None:
+        await vfo_radio.set_quick_split(True)
+        await asyncio.sleep(_SETTLE)
+        assert vfo_mock._quick_split_on is True
+        assert await vfo_radio.get_quick_split() is True
+
+        await vfo_radio.set_quick_split(False)
+        await asyncio.sleep(_SETTLE)
+        assert vfo_mock._quick_split_on is False
+        assert await vfo_radio.get_quick_split() is False
+
+    async def test_set_quick_split_multiple_calls(self, vfo_radio: IcomRadio) -> None:
+        """Calling set_quick_split() repeatedly does not raise."""
         for _ in range(3):
-            await vfo_radio.quick_split()
+            await vfo_radio.set_quick_split(True)
             await asyncio.sleep(0.02)
 
 
@@ -537,18 +608,22 @@ class TestStateIndependence:
         assert vfo_mock._dual_watch_on is False
         assert vfo_mock._scanning is False
 
-    async def test_quick_commands_do_not_affect_persistent_state(
+    async def test_quick_commands_do_not_affect_regular_dual_watch_or_scan_state(
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
-        """quick_dual_watch / quick_split don't alter dual watch or scan state."""
+        """Quick Split / Quick Dual Watch are their own persistent toggles
+        (MOR-2007 ruling 2) -- independent of the regular dual-watch/scan
+        state exercised elsewhere in this file."""
         await vfo_radio.set_dual_watch(True)
         await vfo_radio.start_scan()
         await asyncio.sleep(_SETTLE)
 
-        await vfo_radio.quick_dual_watch()
-        await vfo_radio.quick_split()
+        await vfo_radio.set_quick_dual_watch(True)
+        await vfo_radio.set_quick_split(True)
         await asyncio.sleep(_SETTLE)
 
-        # Persistent state must be unchanged by one-shot commands
+        # Regular dual-watch/scan state must be unchanged by the quick toggles.
         assert vfo_mock._dual_watch_on is True
         assert vfo_mock._scanning is True
+        assert vfo_mock._quick_dual_watch_on is True
+        assert vfo_mock._quick_split_on is True

@@ -309,14 +309,18 @@ def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, .
 def _requires_cmd_map(fn: typing.Any) -> bool:
     """True if *fn*'s ``cmd_map`` parameter has no default.
 
-    A migrated builder (MOR-2006 Steps 5..N) can never accept this file's
-    ``cmd_map=None`` probe (`_accepts`), whatever value its other
+    A migrated builder (MOR-2006/MOR-2007 Steps 5..N) can never accept this
+    file's ``cmd_map=None`` probe (`_accepts`), whatever value its other
     parameters are given -- a purely structural fact about the signature,
     independent of why any particular probe call failed. Used in `_cases`
-    to tell that population apart from a builder no probe value happens to
-    satisfy for an unrelated reason (e.g. `vfo.py: scan_set_df_span`,
-    still optional-`cmd_map`, whose own argument has no value in `_INTS`
-    that passes its validation).
+    to tell that population apart from a genuinely unsynthesisable builder,
+    whose ``cmd_map`` is still optional but no probe value in `_INTS`
+    satisfies its OTHER required argument's own validation (e.g.
+    `vfo.py: scan_set_df_span`/`scan_set_resume` before MOR-2007 migrated
+    them, whose 0xA1-0xA7/0xD0-0xD3 domains have no member in `_INTS`) --
+    the "noargs" bucket in `command_map_parity_uncovered.txt` is empty as of
+    MOR-2007, since that was the last such case in the tree, but the
+    distinction stays live for whatever migrates next.
     """
     param = inspect.signature(fn).parameters.get("cmd_map")
     return param is not None and param.default is inspect.Parameter.empty

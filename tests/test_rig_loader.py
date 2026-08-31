@@ -2713,11 +2713,13 @@ class TestNoShippedProfileUsesAbsentSpellingYet:
 
 class TestIc7300DeclaresAbsentCommands:
     """MOR-2014 (D2): IC-7300 is the first shipped profile to use the
-    ``{ absent = "<source>" }`` spelling, for 27 commands the IC-7300
+    ``{ absent = "<source>" }`` spelling, for 28 commands the IC-7300
     Advanced Manual (11a) command table (pp.19-2..19-8) confirms have no
-    row on this radio. Pinned by name, not just count, so a future D2 pass
-    on another command can't silently swap one of these for a different
-    one and still pass a bare-count check.
+    row on this radio (27 at D2 time; MOR-2007 ruling 1 later split
+    ``set_dual_watch`` into ``set_dual_watch_off``/``set_dual_watch_on``,
+    +1 net). Pinned by name, not just count, so a future D2 pass on
+    another command can't silently swap one of these for a different one
+    and still pass a bare-count check.
     """
 
     _EXPECTED_ABSENT = frozenset(
@@ -2737,7 +2739,11 @@ class TestIc7300DeclaresAbsentCommands:
             "get_drive_gain",
             "set_drive_gain",
             "get_dual_watch",
-            "set_dual_watch",
+            # set_dual_watch_off/set_dual_watch_on, not the bare
+            # set_dual_watch the pre-migration fallback used to resolve
+            # (MOR-2007 ruling 1 split the setter key).
+            "set_dual_watch_off",
+            "set_dual_watch_on",
             "get_lan_mod_level",
             "set_lan_mod_level",
             "get_main_sub_band",
@@ -2818,10 +2824,13 @@ class TestIc9700DeclaresAbsentCommands:
 
 class TestIc705DeclaresAbsentCommands:
     """MOR-2016 (D2): IC-705 is filled with the ``{ absent = "<source>" }``
-    spelling for 24 commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
-    Jul.2020) confirms have no row on this radio. Pinned by name, not just
-    count, so a future D2 pass on another command can't silently swap one
-    of these for a different one and still pass a bare-count check.
+    spelling for 25 commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
+    Jul.2020) confirms have no row on this radio (24 at D2 time; MOR-2007
+    ruling 1 later split ``set_dual_watch`` into
+    ``set_dual_watch_off``/``set_dual_watch_on``, +1 net). Pinned by name,
+    not just count, so a future D2 pass on another command can't silently
+    swap one of these for a different one and still pass a bare-count
+    check.
     """
 
     _EXPECTED_ABSENT = frozenset(
@@ -2839,7 +2848,8 @@ class TestIc705DeclaresAbsentCommands:
             "get_digisel",
             "set_digisel",
             "get_dual_watch",
-            "set_dual_watch",
+            "set_dual_watch_off",
+            "set_dual_watch_on",
             "get_ip_plus",
             "set_ip_plus",
             "get_main_sub_band",

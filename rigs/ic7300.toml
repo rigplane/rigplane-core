@@ -652,6 +652,20 @@ values = [0, 1, 2]
 modes = [1, 2, 3]
 labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
 
+[scan_types]
+# CI-V 0x0E family: source IC-7300 Advanced Manual (11a) p.19-3 + live
+# bench 2026-08-30 (0E 13 ACKed). 0x13 = fine dF scan, absent from the old
+# code-level VALID_SCAN_TYPES frozenset this domain replaces (MOR-2007
+# ruling 4).
+values = [0x01, 0x02, 0x03, 0x12, 0x13, 0x22, 0x23]
+
+[scan_resume]
+# CI-V 0x0E family: source IC-7300 Advanced Manual (11a) p.19-3, per the
+# owner's cross-check that all four documented CI-V guides list only
+# these two states -- not the 0xD1/0xD2 5s/10s the old code-level
+# VALID_SCAN_RESUME frozenset accepted on every radio (MOR-2007 ruling 4).
+values = [0xD0, 0xD3]
+
 [antenna]
 # CI-V 0x12: single antenna, no RX antenna
 tx_count = 1
@@ -915,7 +929,10 @@ get_split = [0x0F]
 set_split = [0x0F]
 # Single receiver: no dual_watch, no main/sub band select, no main/sub tracking (D2, MOR-2014)
 get_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
-set_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
+# set_dual_watch_off/set_dual_watch_on (not the bare set_dual_watch the
+# pre-migration fallback resolved -- MOR-2007 ruling 1 split the setter key)
+set_dual_watch_off = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
+set_dual_watch_on = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
 get_main_sub_band = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table has no 0xD2" }
 get_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
 set_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
@@ -1025,7 +1042,7 @@ get_tx_freq_monitor = [0x1C, 0x03]
 set_tx_freq_monitor = [0x1C, 0x03]
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
-quick_split = [0x1A, 0x05, 0x00, 0x30]    # source: IC-7300 Advanced Manual (11a) p.19-4, control 0030 "quick split set" (the hardcoded fallback's 0x33 is split lock on this radio, not declared). Base [commands], not overrides: bare (non-get_/set_) keys fail test_naming_parity.py::test_overrides_have_prefix there (D2, MOR-2014).
+quick_split = [0x1A, 0x05, 0x00, 0x30]    # source: IC-7300 Advanced Manual (11a) p.19-4, control 0030 "quick split set" (the hardcoded fallback used to send 0x33, split lock on this radio, not declared -- deleted along with the fallback, MOR-2007 ruling 2). No builder resolves this bare key any more: get_quick_split/set_quick_split below (same 0030 address) replaced the one-shot quick_split()/quick_dual_watch() triggers this key was written for. Left declared rather than removed here -- MOR-2007's scope was the builders, not a TOML sweep for orphaned bare keys.
 
 # ── CW ──
 send_cw = [0x17]
@@ -1106,6 +1123,8 @@ get_scope_rbw = [0x27, 0x1F]
 scan_start = [0x0E]
 scan_stop = [0x0E]
 scan_start_type = [0x0E]                  # source: IC-7300 Advanced Manual (11a) p.19-3 (0x0E family incl. 0x13 fine-ΔF); live bench 2026-08-30: 0E 13 ACKed, 0E 00 stop ACKed
+scan_set_df_span = [0x0E]                 # source: IC-7300 Advanced Manual (11a) p.19-3, 0x0E Ax (x=1-7) -- matches VALID_DF_SPANS (D2 residual closed, MOR-2007)
+scan_set_resume = [0x0E]                  # source: IC-7300 Advanced Manual (11a) p.19-3; domain resolved below (MOR-2007 ruling 4, D2 residual closed)
 
 # ── System / Power ──
 power_on = [0x18]

@@ -183,16 +183,12 @@ from .vfo import (
     get_split,
     get_tuning_step,
     get_vfo,
-    quick_dual_watch,
-    quick_split,
     scan_set_df_span,
     scan_set_resume,
     scan_start,
     scan_start_type,
     scan_stop,
     VALID_DF_SPANS,
-    VALID_SCAN_RESUME,
-    VALID_SCAN_TYPES,
     select_vfo,
     set_dual_watch,
     set_dual_watch_off,
@@ -670,9 +666,7 @@ __all__ = [
     "scan_stop",
     "scan_set_df_span",
     "scan_set_resume",
-    "VALID_SCAN_TYPES",
     "VALID_DF_SPANS",
-    "VALID_SCAN_RESUME",
     # Backward-compat aliases
     "start_scan",
     "stop_scan",
@@ -680,9 +674,9 @@ __all__ = [
     "set_dual_watch_on",
     "get_dual_watch",
     "set_dual_watch",
-    "quick_dual_watch",
-    "quick_split",
-    # Quick commands (TOML canonical)
+    # Quick commands (persistent menu toggles, MOR-2007 ruling 2 -- the
+    # pre-migration quick_dual_watch()/quick_split() one-shot triggers are
+    # deleted, see commands/vfo.py's module docstring)
     "get_quick_dual_watch",
     "set_quick_dual_watch",
     "get_quick_split",

@@ -1,5 +1,7 @@
 """Extended tests for commands module — VFO, split, att, preamp, CW, power."""
 
+from pathlib import Path
+
 import pytest
 
 import rigplane.commands as raw_commands
@@ -21,10 +23,19 @@ from rigplane.commands import (
     power_off,
     parse_ack_nak,
 )
+from rigplane.rig_loader import load_rig
 from _command_test_helpers import bind_default_addr_globals, bind_default_addr_module
 
 bind_default_addr_module(raw_commands, to_addr=IC_7610_ADDR)
 bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
+
+RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+
+@pytest.fixture()
+def cmd_map():
+    rig = load_rig(RIG_DIR / "ic7610.toml")
+    return rig.to_command_map()
 
 
 class TestSelectVfo:
@@ -37,39 +48,42 @@ class TestSelectVfo:
     """
 
     @pytest.mark.parametrize("code", [0x00, 0x01, 0xD0, 0xD1])
-    def test_code_reaches_the_wire_unchanged(self, code):
-        parsed = parse_civ_frame(select_vfo(code))
+    def test_code_reaches_the_wire_unchanged(self, code, cmd_map):
+        parsed = parse_civ_frame(select_vfo(code, cmd_map=cmd_map))
         assert parsed.command == 0x07
         assert parsed.data == bytes([code])
 
-    def test_a_name_is_not_accepted(self):
+    def test_a_name_is_not_accepted(self, cmd_map):
+        # cmd_map is passed so the TypeError below is discriminating on
+        # "MAIN" being a str where bytes([code]) needs an int, not merely
+        # on cmd_map being omitted (both now raise TypeError post-MOR-2007).
         with pytest.raises(TypeError):
-            select_vfo("MAIN")
+            select_vfo("MAIN", cmd_map=cmd_map)
 
 
 class TestVfoCommands:
-    def test_vfo_a_equals_b(self):
-        frame = vfo_a_equals_b()
+    def test_vfo_a_equals_b(self, cmd_map):
+        frame = vfo_a_equals_b(cmd_map=cmd_map)
         parsed = parse_civ_frame(frame)
         assert parsed.command == 0x07
         assert parsed.data == b"\xa0"
 
-    def test_vfo_swap(self):
-        frame = vfo_swap()
+    def test_vfo_swap(self, cmd_map):
+        frame = vfo_swap(cmd_map=cmd_map)
         parsed = parse_civ_frame(frame)
         assert parsed.command == 0x07
         assert parsed.data == b"\xb0"
 
 
 class TestSplit:
-    def test_split_on(self):
-        frame = set_split(True)
+    def test_split_on(self, cmd_map):
+        frame = set_split(True, cmd_map=cmd_map)
         parsed = parse_civ_frame(frame)
         assert parsed.command == 0x0F
         assert parsed.data == b"\x01"
 
-    def test_split_off(self):
-        frame = set_split(False)
+    def test_split_off(self, cmd_map):
+        frame = set_split(False, cmd_map=cmd_map)
         parsed = parse_civ_frame(frame)
         assert parsed.data == b"\x00"
 

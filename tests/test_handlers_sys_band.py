@@ -172,9 +172,12 @@ def _capable_radio() -> SimpleNamespace:
         set_rit_tx_status=AsyncMock(),
         get_tx_freq_monitor=AsyncMock(return_value=True),
         set_tx_freq_monitor=AsyncMock(),
-        # Trigger methods
-        quick_split=AsyncMock(),
-        quick_dual_watch=AsyncMock(),
+        # Persistent menu toggles (MOR-2007 ruling 2 renamed these from the
+        # dead one-shot quick_split()/quick_dual_watch() triggers)
+        get_quick_split=AsyncMock(return_value=False),
+        set_quick_split=AsyncMock(),
+        get_quick_dual_watch=AsyncMock(return_value=False),
+        set_quick_dual_watch=AsyncMock(),
     )
 
 
