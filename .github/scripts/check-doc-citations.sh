@@ -278,10 +278,9 @@
 #
 # WHEN THIS RUNS: doc-citation-gate.yml path-filters on **/*.md, docs/**,
 # and this gate's own files -- a PR that only touches src/** or frontend/**
-# (the only kind of PR that can create this exact rot, by moving or
-# shrinking cited code) does not trigger the workflow at all. The rot is
-# invisible at the moment it is created and surfaces later, on whatever
-# next PR happens to touch a doc file and trips the workflow's path filter.
+# does not trigger the workflow at all. The rot is invisible at the moment
+# it is created and surfaces later, on whatever next PR happens to touch a
+# doc file and trips the workflow's path filter.
 #
 # RESOLUTION RULE (see parse_citation, find_candidates, classify_citation
 # below): split a citation's path from its cited line number(s) -- the same
