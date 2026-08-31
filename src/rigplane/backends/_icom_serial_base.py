@@ -953,9 +953,10 @@ class _IcomSerialRadioBase(CoreRadio):
                 # loud, diagnosable failure instead of a hung disconnect().
                 logger.error(
                     "civ-data-watchdog: teardown await exceeded %.1fs bound "
-                    "(task done=%s); abandoning wait and continuing disconnect",
+                    "(task cancelled=%s, %r); continuing disconnect",
                     self._SERIAL_CIV_WATCHDOG_TEARDOWN_TIMEOUT_S,
-                    task.done(),
+                    task.cancelled(),
+                    task,
                 )
         self._civ_data_watchdog_task = None
 

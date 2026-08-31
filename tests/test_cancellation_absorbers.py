@@ -31,12 +31,22 @@ from rigplane.commands.commander import IcomCommander
 from rigplane.runtime._civ_rx import CivRuntime
 
 
-async def _one_tick() -> None:
-    """Yield exactly one event-loop turn via a bare ``Event.wait()``.
+async def _two_ticks() -> None:
+    """Yield exactly two event-loop turns via a bare ``Event.wait()``.
 
-    Deliberately not ``asyncio.sleep(0)`` or ``asyncio.wait_for``: either
-    adds its own extra scheduling hop, which was measured to shift the
-    interleaving below past the single-turn window it depends on.
+    Measured on Python 3.11.13 (this repo's floor, and the only version
+    ``quick.yml`` runs) with a self-rescheduling ``call_soon`` callback as
+    the turn counter (it re-queues itself, so it fires exactly once per
+    ``_run_once()``): ``asyncio.sleep(0)`` yields 1 turn, this helper
+    yields 2, ``asyncio.wait_for(Event.wait(), ...)`` yields 3.
+
+    Confirmed by substitution on the tests below, same interpreter:
+    swapping this body for ``asyncio.sleep(0)`` (1 turn, too few) or for
+    ``asyncio.wait_for(tick.wait(), ...)`` (3 turns, too many) reddens both
+    ``test_stop_pump_...`` and ``test_commander_stop_...`` with
+    ``DID NOT RAISE CancelledError`` (2 failed, 1 passed, either way);
+    ``asyncio.sleep(0)`` twice is turn-for-turn equivalent to this helper
+    (3 passed).
     """
     tick = asyncio.Event()
     asyncio.get_running_loop().call_soon(tick.set)
@@ -84,7 +94,7 @@ async def test_stop_pump_reraises_its_own_teardown_cancellation() -> None:
     runtime = CivRuntime(host)
 
     outer = asyncio.create_task(runtime.stop_pump())
-    await _one_tick()
+    await _two_ticks()
 
     outer.cancel()
 
@@ -115,7 +125,7 @@ async def test_commander_stop_reraises_its_own_teardown_cancellation() -> None:
     commander._queue = None
 
     outer = asyncio.create_task(commander.stop())
-    await _one_tick()
+    await _two_ticks()
 
     outer.cancel()
 

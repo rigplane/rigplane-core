@@ -114,7 +114,7 @@ class IcomCommander:
                 await self._worker
             except asyncio.CancelledError:
                 # See MOR-2081: same discriminator as _loop's own teardown
-                # cancel above (#2145) -- distinguishes "the worker I just
+                # cancel below (#2145) -- distinguishes "the worker I just
                 # cancelled finished" from "this task itself was cancelled
                 # from outside" via this task's own pending cancel request.
                 me = asyncio.current_task()
