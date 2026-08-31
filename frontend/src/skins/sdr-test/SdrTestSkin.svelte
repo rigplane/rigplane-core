@@ -15,11 +15,11 @@
   key/unkey argument on RadioLayout's `declared` / `semanticRxTx` derivations,
   and is not repeated here.
 
-  Not every suppression keys on the surface it hides. Mounting the deck also
-  retires the settings modal's `.settings-vfo-ops-row` — split/swap/equalize,
-  which the semantic `VfoSurface` has owned since MOR-1321 — and that one,
-  like the TX twin above, follows the deck rather than its own zone
-  declaration.
+  The deck reaches past the receiver row: the settings modal's
+  `.settings-vfo-ops-row` retires with it too. Split/swap/equalize pair with
+  `vfo`, not a zone of their own — `VfoSurface` owns those controls
+  (MOR-1321) — so the row retires on `declared.has('vfo')`, the same shape as
+  `<AgcPanel>` retiring on `declared.has('dsp')`.
 
   What this manifest does not subtract: it declares no `meters` zone, so the
   legacy meters dock still renders, and the spectrum, the status bar and the
