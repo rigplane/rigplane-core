@@ -45,9 +45,16 @@ All interactive controls use `HardwareButton`. All read-only status displays use
 <StatusIndicator label={mode} active color="cyan" />
 ```
 
-See [`docs/component-architecture.md`](docs/component-architecture.md) for full component API and layout docs.
+Component APIs live with the code in `src/lib/Button/`: `index.ts` is the entry
+point and re-exports the components, with prop types in `types.ts`.
 
-See [`docs/css-design-tokens.md`](docs/css-design-tokens.md) for all `--v2-*` CSS design tokens.
+The `--v2-*` CSS design tokens live in `src/components-v2/theme/`:
+`tokens.css` holds the base set, and the per-theme files under `themes/`
+and `vfo-themes/` override them and define a few badge-color tokens of
+their own.
+
+Layout and skin composition are covered by the frontend ADR,
+[`docs/plans/2026-04-12-target-frontend-architecture.md`](../docs/plans/2026-04-12-target-frontend-architecture.md).
 
 ## Directory Structure
 
