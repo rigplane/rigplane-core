@@ -91,12 +91,6 @@ from rigplane.commands import (
     build_civ_frame,
     filter_hz_to_index,
     filter_index_to_hz,
-    build_band_stack_get,
-    build_memory_clear,
-    build_memory_contents_set,
-    build_memory_mode_set,
-    build_memory_to_vfo,
-    build_memory_write,
     get_acc1_mod_level,
     get_af_mute,
     get_agc,
@@ -166,7 +160,6 @@ from rigplane.commands import (
     parse_tsql_freq_response,
     parse_utc_offset_response,
     parse_powerstat,
-    set_bsr,
 )
 from rigplane.commands import get_main_sub_tracking as _get_main_sub_tracking_cmd
 from rigplane.commands import get_repeater_tone as _get_repeater_tone_cmd
@@ -5275,19 +5268,21 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if not 1 <= channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {channel}")
         await self._send_fire_and_forget(
-            build_memory_mode_set(channel, to_addr=self._radio_addr)
+            self._commands.build_memory_mode_set(channel, to_addr=self._radio_addr)
         )
 
     async def memory_write(self) -> None:
         """Write current VFO state to selected memory channel."""
-        await self._send_fire_and_forget(build_memory_write(to_addr=self._radio_addr))
+        await self._send_fire_and_forget(
+            self._commands.build_memory_write(to_addr=self._radio_addr)
+        )
 
     async def memory_to_vfo(self, channel: int) -> None:
         """Load memory channel to VFO."""
         if not 1 <= channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {channel}")
         await self._send_fire_and_forget(
-            build_memory_to_vfo(channel, to_addr=self._radio_addr)
+            self._commands.build_memory_to_vfo(channel, to_addr=self._radio_addr)
         )
 
     async def memory_clear(self, channel: int) -> None:
@@ -5295,7 +5290,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if not 1 <= channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {channel}")
         await self._send_fire_and_forget(
-            build_memory_clear(channel, to_addr=self._radio_addr)
+            self._commands.build_memory_clear(channel, to_addr=self._radio_addr)
         )
 
     async def get_memory_contents(self, channel: int) -> MemoryChannel:
@@ -5321,7 +5316,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if not 1 <= mem.channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {mem.channel}")
         await self._send_fire_and_forget(
-            build_memory_contents_set(mem, to_addr=self._radio_addr)
+            self._commands.build_memory_contents_set(mem, to_addr=self._radio_addr)
         )
 
     async def get_bsr(self, band: int, register: int) -> BandStackRegister:
@@ -5344,7 +5339,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if not 1 <= register <= 3:
             raise ValueError(f"Register must be 1-3, got {register}")
         self._check_connected()
-        civ = build_band_stack_get(band, register, to_addr=self._radio_addr)
+        civ = self._commands.get_bsr(band, register, to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_bsr")
         return parse_band_stack_response(resp)
 
@@ -5354,7 +5349,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             raise ValueError(f"Band must be 0-24, got {bsr.band}")
         if not 1 <= bsr.register <= 3:
             raise ValueError(f"Register must be 1-3, got {bsr.register}")
-        await self._send_fire_and_forget(set_bsr(bsr, to_addr=self._radio_addr))
+        await self._send_fire_and_forget(
+            self._commands.set_bsr(bsr, to_addr=self._radio_addr)
+        )
 
     # ------------------------------------------------------------------
     # Backward-compat aliases — old names kept for existing callers

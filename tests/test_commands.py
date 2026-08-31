@@ -2029,26 +2029,39 @@ class TestToneTsqlCommands:
         assert freq == pytest.approx(110.9)
 
     def test_build_memory_mode_get(self) -> None:
+        """get_memory_mode is PROVENANCE OPEN on every shipped Icom profile
+        (MOR-2008 batch 4) -- no profile declares it, so this pins pure
+        byte assembly against a synthetic literal map, the same pattern
+        ``TestExpect: test_expect_on_speech_resolves_per_map_probe`` uses.
+        """
+        from rigplane.command_map import CommandMap
         from rigplane.commands import build_memory_mode_get
 
-        civ = build_memory_mode_get()
+        civ = build_memory_mode_get(cmd_map=CommandMap({"get_memory_mode": (0x08,)}))
         # FE FE 98 E0 08 FD
         assert civ == b"\xfe\xfe\x98\xe0\x08\xfd"
 
-    def test_build_memory_mode_set(self) -> None:
+    def test_build_memory_mode_get_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import build_memory_mode_get
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_memory_mode_get()  # type: ignore[call-arg]
+
+    def test_build_memory_mode_set(self, cmd_map) -> None:
         from rigplane.commands import build_memory_mode_set
 
-        civ = build_memory_mode_set(42)
+        civ = build_memory_mode_set(42, cmd_map=cmd_map)
         # FE FE 98 E0 08 00 42 FD (channel 42 in BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x08\x00\x42\xfd"
 
-    def test_build_memory_mode_set_validates_range(self) -> None:
+    def test_build_memory_mode_set_validates_range(self, cmd_map) -> None:
         from rigplane.commands import build_memory_mode_set
 
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_mode_set(0)
+            build_memory_mode_set(0, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_mode_set(102)
+            build_memory_mode_set(102, cmd_map=cmd_map)
 
     def test_parse_memory_mode_response(self) -> None:
         from rigplane.commands import parse_civ_frame, parse_memory_mode_response
@@ -2059,35 +2072,42 @@ class TestToneTsqlCommands:
         channel = parse_memory_mode_response(frame)
         assert channel == 42
 
-    def test_build_memory_write(self) -> None:
+    def test_build_memory_write(self, cmd_map) -> None:
         from rigplane.commands import build_memory_write
 
-        civ = build_memory_write()
+        civ = build_memory_write(cmd_map=cmd_map)
         # FE FE 98 E0 09 FD
         assert civ == b"\xfe\xfe\x98\xe0\x09\xfd"
 
-    def test_build_memory_to_vfo(self) -> None:
+    def test_build_memory_to_vfo(self, cmd_map) -> None:
         from rigplane.commands import build_memory_to_vfo
 
-        civ = build_memory_to_vfo(99)
+        civ = build_memory_to_vfo(99, cmd_map=cmd_map)
         # FE FE 98 E0 0A 00 99 FD (channel 99 in BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x0a\x00\x99\xfd"
 
-    def test_build_memory_clear(self) -> None:
+    def test_build_memory_clear(self, cmd_map) -> None:
         from rigplane.commands import build_memory_clear
 
-        civ = build_memory_clear(1)
+        civ = build_memory_clear(1, cmd_map=cmd_map)
         # FE FE 98 E0 0B 00 01 FD (channel 1 in BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x0b\x00\x01\xfd"
 
-    def test_build_memory_contents_get(self) -> None:
+    def test_build_memory_clear_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import build_memory_clear
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_memory_clear(1)  # type: ignore[call-arg]
+
+    def test_build_memory_contents_get(self, cmd_map) -> None:
         from rigplane.commands import build_memory_contents_get
 
-        civ = build_memory_contents_get(50)
+        civ = build_memory_contents_get(50, cmd_map=cmd_map)
         # FE FE 98 E0 1A 00 00 50 FD (0x1A sub=0x00, channel 50 BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x1a\x00\x00\x50\xfd"
 
-    def test_build_memory_contents_set(self) -> None:
+    def test_build_memory_contents_set(self, cmd_map) -> None:
         from rigplane.commands import build_memory_contents_set
         from rigplane.types import MemoryChannel
 
@@ -2103,7 +2123,7 @@ class TestToneTsqlCommands:
             tsql_freq_hz=None,
             name="FT8",
         )
-        civ = build_memory_contents_set(mem)
+        civ = build_memory_contents_set(mem, cmd_map=cmd_map)
         # FE FE 98 E0 1A 00 <channel 2 bytes> <payload 26 bytes> FD
         # Structure: FE FE(2) + to/from(2) + cmd(1) + sub(1) + data(28) + FD(1) = 35 bytes
         assert len(civ) == 35
@@ -2140,24 +2160,31 @@ class TestToneTsqlCommands:
         assert mem.scan == 0
         assert mem.name == "TEST"
 
-    def test_build_band_stack_get(self) -> None:
+    def test_build_band_stack_get(self, cmd_map) -> None:
         from rigplane.commands import build_band_stack_get
 
-        civ = build_band_stack_get(15, 1)  # band 15 (20m), register 1
+        civ = build_band_stack_get(15, 1, cmd_map=cmd_map)  # band 15 (20m), register 1
         # FE FE 98 E0 1A 01 0F 01 FD (0x1A sub=0x01, band=15, reg=1)
         assert civ == b"\xfe\xfe\x98\xe0\x1a\x01\x0f\x01\xfd"
 
-    def test_build_band_stack_get_validates_range(self) -> None:
+    def test_build_band_stack_get_validates_range(self, cmd_map) -> None:
         from rigplane.commands import build_band_stack_get
 
         with pytest.raises(ValueError, match="Band must be 0-24"):
-            build_band_stack_get(25, 1)
+            build_band_stack_get(25, 1, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Register must be 1-3"):
-            build_band_stack_get(15, 0)
+            build_band_stack_get(15, 0, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Register must be 1-3"):
-            build_band_stack_get(15, 4)
+            build_band_stack_get(15, 4, cmd_map=cmd_map)
 
-    def test_build_band_stack_set(self) -> None:
+    def test_build_band_stack_get_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import build_band_stack_get
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_band_stack_get(15, 1)  # type: ignore[call-arg]
+
+    def test_build_band_stack_set(self, cmd_map) -> None:
         from rigplane.commands import set_bsr
         from rigplane.types import BandStackRegister
 
@@ -2168,7 +2195,7 @@ class TestToneTsqlCommands:
             mode=1,  # USB
             filter=1,
         )
-        civ = set_bsr(bsr)
+        civ = set_bsr(bsr, cmd_map=cmd_map)
         # FE FE 98 E0 1A 01 0F 01 <freq 5 bytes> <mode 1 byte> <filter 1 byte> FD
         assert civ[:8] == b"\xfe\xfe\x98\xe0\x1a\x01\x0f\x01"
         # freq 14.200 MHz = 00 00 20 14 00 (BCD little-endian)

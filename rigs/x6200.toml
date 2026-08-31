@@ -510,14 +510,27 @@ end_hz = 136000000
 #   Icom model -- MOR-208/179 (commit 5a493d70) and MOR-207 (commit
 #   b1df1e71). See [validation] write_only_controls above.
 #
-# Two more V1.0.6-documented registers (both p.8) have no capability and
-# no [commands] key at all, named here so nobody assumes an existing
-# entry already covers them:
+# One more V1.0.6-documented register (p.8) has no capability and no
+# [commands] key at all, named here so nobody assumes an existing entry
+# already covers it:
 # - front-panel LOCK, [0x1A, 0x05, 0x00, 0x62] -- distinct from
 #   get_dial_lock/set_dial_lock [0x16, 0x50] below.
-# - the band-stacking WRITE side of [0x1A, 0x01] -- get_band_spectrum_display
-#   below is only the read-only GET half; the write/recall direction is
-#   undeclared.
+#
+# Correction (D2, MOR-2008 batch 4): the sentence this note used to carry
+# here -- "the write/recall direction [of [0x1A, 0x01]] is undeclared" --
+# was factually wrong against the source it cited. p.8 documents BOTH
+# directions in the same table cell group: the GET row
+# get_band_spectrum_display declares below, and a SET row right beneath it
+# ("Set Band stacking register D1-Band Number(01-0C), D2 irrelevant").
+# That SET row is real and documented, but it is not the same command as
+# Icom's own set_bsr: its payload is 2 bytes (a filler byte + a 1-byte
+# band number 01-0C), where memory.py: set_bsr builds a 9-byte
+# band+register+frequency+mode+filter record -- same opcode, structurally
+# incompatible wire contract. Canonical set_bsr/get_bsr are therefore
+# declared ABSENT below (not DECLARE), and the X6200-specific 2-byte
+# command stays exposed only as get_band_spectrum_display, with no
+# set_band_spectrum_display key added for the SET row -- that would need
+# its own Python builder, out of this batch's scope.
 
 # Frequency / mode (compatible Icom CI-V subset — see PROVENANCE OPEN above)
 get_freq         = [0x03]  # source: Radioddity X6200 CI-V V1.0.6 p.4, narrative example only (via docs/validation/cat-audits/x6200.md) -- PROVENANCE OPEN above
@@ -608,7 +621,7 @@ get_transceiver_id = [0x19, 0x00]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (v
 
 # 0x1A family (band/spectrum documented by the PDF; filter_width sourced
 # from LIVE evidence instead, per the doctrine live > hamlib > doc)
-get_band_spectrum_display = [0x1A, 0x01]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md; re-checked against the local extract, D2 MOR-2019 -- the whole 0x1A family is on p.8, not p.8-9); read-only GET half only -- see PROVENANCE OPEN above for the undeclared write/band-stacking side
+get_band_spectrum_display = [0x1A, 0x01]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md; re-checked against the local extract, D2 MOR-2019 -- the whole 0x1A family is on p.8, not p.8-9); GET half only -- the SET row on the same page is documented too (D2, MOR-2008 batch 4) but is a different, 2-byte command, not canonical set_bsr -- see PROVENANCE OPEN above
 get_filter_width          = [0x1A, 0x03]  # source: LIVE -- commit 74986b77 (MOR-706, 2026-06-12), raw USB CI-V 0xA4 captures; formula recorded in [filters] above; pinned by tests/test_dsp_filter_family.py::test_x6200_get_filter_width_decodes_raw_byte_index
 
 # PTT / tuner (0x1C family)
@@ -627,6 +640,11 @@ get_xiegu_model_id = [0x1D, 0x19]  # source: Radioddity X6200 CI-V V1.0.6 p.9 (v
 
 # Selected / unselected VFO (0x25 / 0x26)
 get_selected_freq    = [0x25, 0x00]  # source: Radioddity X6200 CI-V V1.0.6 p.9 (via docs/validation/cat-audits/x6200.md)
+# set_selected_freq/set_unselected_freq/set_unselected_mode: no Python
+# builder resolves any of these three keys yet (git grep, zero hits in
+# src/rigplane/ -- MOR-2008 batch 4 D2 audit). Kept, not deleted: each
+# documents a real, sourced capability the same 0x25/0x26 opcodes
+# above confirm, data completeness rather than a code orphan.
 set_selected_freq    = [0x25, 0x00]  # source: same as get_selected_freq
 get_unselected_freq  = [0x25, 0x01]  # source: same as get_selected_freq
 set_unselected_freq  = [0x25, 0x01]  # source: same as get_selected_freq
@@ -638,6 +656,32 @@ set_unselected_mode  = [0x26, 0x01]  # source: same as get_selected_freq
 # Protocol ack/nak echoes (used by transport-level matchers)
 get_command_error_fa = [0xFA]  # source: Icom CI-V protocol convention; copied from the IC-705 profile at MOR-170, no X6200-specific row
 get_command_ok_fb    = [0xFB]  # source: same as get_command_error_fa
+
+# Memory / TX band edge (D2, MOR-2008 batch 4): none of these 11 opcodes
+# appear anywhere in V1.0.6 Table 1 parts 1-5 (pp.5-9, the complete
+# documented opcode list) -- absent, not merely undeclared.
+get_memory_mode      = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 (complete opcode list) -- no 0x08/0x09/0x0A/0x0B row anywhere" }
+set_memory_mode      = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x08 row anywhere" }
+memory_write         = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x09 row anywhere" }
+memory_to_vfo        = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x0A row anywhere" }
+memory_clear         = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x0B row anywhere" }
+get_memory_contents  = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x1A 0x00 row anywhere" }
+set_memory_contents  = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x1A 0x00 row anywhere" }
+# get_bsr/set_bsr: the opcode [0x1A, 0x01] IS documented (see
+# get_band_spectrum_display above and the PROVENANCE OPEN note), but as a
+# different, structurally incompatible command -- 2-byte payload, not
+# Icom's 9-byte band+register+frequency+mode+filter record. Absent for
+# these canonical keys specifically; the opcode is not free for reuse
+# under this name.
+get_bsr              = { absent = "Radioddity X6200 CI-V implementation V1.0.6 p.8 -- [0x1A, 0x01] documented, but as get_band_spectrum_display's 2-byte command, not Icom's 9-byte get_bsr record" }
+set_bsr              = { absent = "Radioddity X6200 CI-V implementation V1.0.6 p.8 -- [0x1A, 0x01] SET row documented, but as a 2-byte band-select command, not Icom's 9-byte set_bsr record" }
+# get_tx_band_count/get_tx_band_edge: no 0x1E row in Table 1 either --
+# slightly softer confidence than the seven above, since the curator's own
+# "KNOWN-ABSENT" preface list (0x18/0x1B/0x21/0x27) does not name 0x1E
+# explicitly; this rests on table exhaustiveness, not an explicit vendor
+# statement.
+get_tx_band_count    = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x1E row anywhere (table-exhaustiveness inference, not an explicit vendor statement)" }
+get_tx_band_edge     = { absent = "Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x1E row anywhere (table-exhaustiveness inference, not an explicit vendor statement)" }
 
 [commands.overrides]
 

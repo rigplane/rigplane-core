@@ -27,24 +27,26 @@ repointed to ``dsp.py`` when MOR-2008 batch 2 migrated ``get_freq``/
 MOR-2008 batch 3 migrated ``dsp.py`` too, so ``get_attenuator`` no longer has
 a fallback branch either: calling it with ``cmd_map=None`` now raises
 ``TypeError`` (`_frame.py: require_cmd_map`) instead of returning fallback
-bytes. **No repoint is possible this time** -- a census of every public
-builder across ``commands/*.py`` at this head (``inspect.signature(fn).
+bytes. **No repoint is possible, batch 3 or since** -- a census of every
+public builder across ``commands/*.py`` at this head (``inspect.signature(fn).
 parameters["cmd_map"].default``) found zero builders with an *optional*
-``cmd_map`` left: 238 now require it, and the 51 that lack the parameter
-entirely (``memory.py``, ``tx_band.py``, ``freq.py``'s five selected-
-receiver builders -- Group B, deferred per an owner ruling recorded in
-MOR-2008 batch 2's PR body) never had it in the first place, so
-``_fallback_audit.install`` would not even wrap them (its own gate is
-``"cmd_map" in inspect.signature(value).parameters``). The tests below that
-used to assert "no exception, fallback bytes returned, one warning logged"
-now assert "warning still logged, then the builder's own ``TypeError``
-propagates unchanged" -- the wrapper's log-then-delegate contract holds even
-though delegating no longer has a soft landing. This is exactly the
-precondition ``docs/plans/2026-08-29-profile-driven-command-bytes.md``'s
-Step Z names for deleting this file and ``_fallback_audit.py`` outright;
-Step Z is a separate, larger step (it also touches
-``commands/_frame.py``'s dead-constant census and ``docs/api/commands.md``)
-and is not done here.
+``cmd_map`` left: 238 required it at batch 3 (256 now that MOR-2008 batch 4
+migrated ``memory.py``/``tx_band.py``/``freq.py``'s five selected-receiver
+builders too -- Group B, the last builders anywhere in the package with no
+``cmd_map`` parameter at all), and the 51 that lacked the parameter entirely
+at batch 3 are down to 33 -- every one of them a ``parse_*`` response
+decoder now, never a byte-emitting builder, so none of them ever had a
+fallback to repoint at in the first place; ``_fallback_audit.install``
+would not even wrap them (its own gate is ``"cmd_map" in
+inspect.signature(value).parameters``). The tests below that used to assert
+"no exception, fallback bytes returned, one warning logged" now assert
+"warning still logged, then the builder's own ``TypeError`` propagates
+unchanged" -- the wrapper's log-then-delegate contract holds even though
+delegating no longer has a soft landing. This is exactly the precondition
+``docs/plans/2026-08-29-profile-driven-command-bytes.md``'s Step Z names for
+deleting this file and ``_fallback_audit.py`` outright; Step Z is a
+separate, larger step (it also touches ``commands/_frame.py``'s
+dead-constant census and ``docs/api/commands.md``) and is not done here.
 """
 
 from __future__ import annotations

@@ -27,17 +27,15 @@
 # execute. Every number here is re-measured and asserted by that
 # test. Regenerate, do not edit.
 census	builders_compared	0
-census	cat_only_profiles	2
+census	cat_only_profiles	0
 census	dual_implementation_sites	0
 census	frames_diverged	0
 census	frames_identical	0
-census	hardcode_only_builders	16
+census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
 census	profiles	8
-census	public_builders	228
+census	public_builders	244
 census	sites_compared	0
-cat-only	FTX-1	108
-cat-only	TX-500	50
 requires-map	antenna.py:get_antenna_1
 requires-map	antenna.py:get_antenna_2
 requires-map	antenna.py:get_rx_antenna_ant1
@@ -104,7 +102,12 @@ requires-map	dsp.py:set_preamp
 requires-map	dsp.py:set_twin_peak_filter
 requires-map	dsp.py:set_vox
 requires-map	freq.py:get_freq
+requires-map	freq.py:get_selected_freq
+requires-map	freq.py:get_selected_mode
+requires-map	freq.py:get_unselected_freq
+requires-map	freq.py:get_unselected_mode
 requires-map	freq.py:set_freq
+requires-map	freq.py:set_selected_mode
 requires-map	levels.py:get_af_level
 requires-map	levels.py:get_anti_vox_gain
 requires-map	levels.py:get_apf_type_level
@@ -155,6 +158,15 @@ requires-map	levels.py:set_rf_power
 requires-map	levels.py:set_squelch
 requires-map	levels.py:set_vox_delay
 requires-map	levels.py:set_vox_gain
+requires-map	memory.py:build_memory_clear
+requires-map	memory.py:build_memory_contents_get
+requires-map	memory.py:build_memory_contents_set
+requires-map	memory.py:build_memory_mode_get
+requires-map	memory.py:build_memory_mode_set
+requires-map	memory.py:build_memory_to_vfo
+requires-map	memory.py:build_memory_write
+requires-map	memory.py:get_bsr
+requires-map	memory.py:set_bsr
 requires-map	meters.py:get_alc
 requires-map	meters.py:get_comp_meter
 requires-map	meters.py:get_id_meter
@@ -246,6 +258,8 @@ requires-map	tone.py:set_repeater_tone
 requires-map	tone.py:set_repeater_tsql
 requires-map	tone.py:set_tone_freq
 requires-map	tone.py:set_tsql_freq
+requires-map	tx_band.py:get_tx_band_count
+requires-map	tx_band.py:get_tx_band_edge
 requires-map	vfo.py:get_dual_watch
 requires-map	vfo.py:get_main_sub_band
 requires-map	vfo.py:get_quick_dual_watch

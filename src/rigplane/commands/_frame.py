@@ -37,10 +37,13 @@ _CMD_PTT = 0x1C  # Transceiver status / PTT
 _CMD_CTL_MEM = 0x1A  # Memory / configuration command
 _CMD_BAND_EDGE = 0x02  # Band edge frequency
 _CMD_TONE = 0x1B  # Tone/TSQL frequency
-_CMD_MEMORY_MODE = 0x08  # Memory mode (select channel)
-_CMD_MEMORY_WRITE = 0x09  # Memory write
-_CMD_MEMORY_TO_VFO = 0x0A  # Memory to VFO
-_CMD_MEMORY_CLEAR = 0x0B  # Memory clear
+_CMD_MEMORY_MODE = 0x08  # Memory mode (select channel). 0x09 (write) / 0x0A
+# (memory-to-VFO) / 0x0B (memory clear) have no surviving constant here as
+# of MOR-2008 batch 4: memory.py's own builders read the wire bytes off
+# the profile's CommandMap now, and no importer anywhere else in
+# src/tests ever read `_CMD_MEMORY_WRITE`/`_CMD_MEMORY_TO_VFO`/
+# `_CMD_MEMORY_CLEAR` directly (AST-verified census, not text grep) --
+# deleted rather than left with zero readers.
 _CMD_TX_BAND_EDGE = 0x1E  # TX band edge frequencies
 _CMD_SELECTED_FREQ = 0x25  # Selected/Unselected receiver frequency
 _CMD_SELECTED_MODE = 0x26  # Selected/Unselected receiver mode

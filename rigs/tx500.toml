@@ -256,6 +256,33 @@ get_voltage     = { cat = { read = "VL;", parse = "VL{volts:04d};" } }
 # Transceiver ID (ID) — 019 / 500 / 505.
 get_id          = { cat = { read = "ID;", parse = "ID{id};" } }
 
+# ── Memory / TX band edge / selected-VFO (absent, D2 MOR-2008 batch 4) ──
+# Protocol mismatch, not a documentation gap: [protocol] type is
+# "kenwood_cat" above, every entry in this table is a { cat = ... } spec,
+# and profiles/rig_loader.py: RigConfig.to_command_map keeps only the
+# CI-V half of CommandSpec -- none of these 16 canonical CI-V key names
+# can be declared under the [opcode, sub]-array syntax at all on this
+# profile. The Lab599 CAT protocol this radio speaks documents an
+# analogous MC/MR/MW memory-channel family (see the "lab599" variant note
+# above) that this profile does not declare today -- out of Group B's
+# scope, noted only so nobody double-declares it here.
+get_memory_mode      = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio (tests/command_map_parity_uncovered.txt: cat-only TX-500)" }
+set_memory_mode      = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+memory_write         = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+memory_to_vfo        = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+memory_clear         = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+get_memory_contents  = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+set_memory_contents  = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+get_bsr              = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+set_bsr              = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+get_tx_band_count    = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+get_tx_band_edge     = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+get_selected_freq    = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+get_unselected_freq  = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+get_selected_mode    = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+get_unselected_mode  = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+set_selected_mode    = { absent = "protocol mismatch: [protocol] type = \"kenwood_cat\", no CI-V command table on this radio" }
+
 [tx_policy]
 # Deliberately empty (MOR-1947) — a declared decision, not an oversight.
 # TX-500 has no serial backend: backends/factory.py refuses the model, so
