@@ -16,7 +16,6 @@ Reference: wfview icomcommander.cpp, IC-7610.rig
 
 # Re-export everything from sub-modules -- no logic in this file.
 
-from . import _fallback_audit
 from ..types import bcd_decode
 
 # --- _frame.py (kernel) ---
@@ -778,7 +777,3 @@ __all__ = [
     "parse_tx_band_count_response",
     "parse_tx_band_edge_response",
 ]
-
-# --- Step 1 measurement hook (temporary; see LAYER.md and
-# docs/plans/2026-08-29-profile-driven-command-bytes.md Step Z) ---
-_fallback_audit.install(globals())
