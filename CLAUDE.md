@@ -105,6 +105,9 @@ When making changes:
 - One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
 - Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, narrow it until it is true, tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure), or delete it — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). `builder.md` and `verifier.md` point here.
+  - **Narrow before you delete; delete before you weaken.** Prefer narrowing a false claim until it is true and tied to something that fails when it stops being true — a named constant, a named test, a parsed structure. Delete it instead only when you cannot establish the narrower version — with a command actually run or a file actually read. Never weaken a claim you cannot establish: a deleted sentence cannot be wrong, and a softened one still can be.
+  - **Every claim carries how it was established.** When a change states a corrected value, a measurement, or a citation — in a comment, a document, a PR body or a report — name the command actually run, or the file actually read, that established it. A corrected value that is also wrong is worse than the original it replaced.
+  - **Review a correction's own new prose separately.** When a change fixes a false statement, read the prose it added as its own review pass, not only as part of the whole diff.
 
 ---
 
