@@ -200,8 +200,9 @@ import { presentationResources, runtime } from '../lib/runtime/frontend-runtime'
 /**
  * The real per-skin resource plan. Mirrored rather than imported because
  * `skins/registry` is mocked here (its `loadSkin` must be controllable);
- * `assertPlanMirrorsProduction()` below fails if production ever diverges,
- * and `skins/__tests__/registry.test.ts` owns the plan's own pin.
+ * the `'mirrors the production per-skin resource plan'` test below fails
+ * if production ever diverges, and `skins/__tests__/registry.test.ts` owns
+ * the plan's own pin.
  */
 const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
   'desktop-v2': ['hardware-scope', 'audio-fft'],

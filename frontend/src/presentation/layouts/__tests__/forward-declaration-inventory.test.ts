@@ -30,6 +30,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import type { LayoutManifest } from '../contract';
+import { isLayoutManifest } from './manifest-guard';
 // Barrel-only — the M7 lesson, restated on every family in this directory:
 // importing a manifest module directly fires `registerLayout` from this file
 // and, under the fast pool's `isolate: false`, leaks the registration into
@@ -49,17 +50,6 @@ import { desktopV2Layout, sdrTestLayout } from '../declarations';
 // state. Same derivation as `loader-identity-inventory.test.ts`'s
 // `BARREL_MANIFESTS` (MOR-2060).
 import * as layoutDeclarationsBarrel from '../declarations';
-
-/** Structural `LayoutManifest` guard for filtering the barrel's export
- *  surface — copied from `loader-identity-inventory.test.ts` verbatim. */
-function isLayoutManifest(value: unknown): value is LayoutManifest {
-  return (
-    typeof value === 'object' && value !== null &&
-    (value as { schemaVersion?: unknown }).schemaVersion === 1 &&
-    typeof (value as { id?: unknown }).id === 'string' &&
-    typeof (value as { loader?: unknown }).loader === 'function'
-  );
-}
 
 /** Every manifest currently registered by the barrel (mirrors F8's
  *  `REAL_LAYOUTS`), derived from the barrel's own export surface instead of

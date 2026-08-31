@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { AppResource } from '$lib/runtime/resource-demand';
 import type { SkinId } from '../registry';
 
 const entrypoints = vi.hoisted(() => ({
@@ -94,7 +95,8 @@ describe('skin registry', () => {
 describe('MOR-1257: QA-only dual-receiver-cockpit reachability', () => {
   // Kill-test: removing this branch (or mistyping the literal) leaves the
   // QA-only preference falling through `normalizeLayoutMode` to 'auto',
-  // which resolves to 'desktop-v2' or 'lcd-cockpit' — never the cockpit.
+  // which resolves to 'desktop-v2' unconditionally (MOR-1097 cutover) —
+  // never the cockpit.
   it('resolves the QA-only preference to the cockpit skin', () => {
     expect(resolve({ layoutPreference: 'dual-receiver-cockpit' })).toBe('dual-receiver-cockpit');
     expect(resolve({ layoutPreference: 'dual-receiver-cockpit', hasAnyScope: true })).toBe('dual-receiver-cockpit');
@@ -138,18 +140,34 @@ describe('MOR-1257: QA-only dual-receiver-cockpit reachability', () => {
 // composition root can bridge demand across a swap; it is read off the actual
 // component trees, not invented per skin.
 describe('presentation resource plan', () => {
-  const everySkin = ['desktop-v2', 'lcd-cockpit', 'lcd-scope', 'mobile', 'sdr-test'] as const;
-
-  it.each([
-    ['desktop-v2', ['audio-fft', 'hardware-scope']],
-    ['sdr-test', ['audio-fft', 'hardware-scope']],
-    ['lcd-cockpit', ['audio-fft']],
-    ['lcd-scope', ['audio-fft']],
+  // MOR-2062: `everySkin` and this it.each table used to be two separately
+  // hand-listed arrays, and both silently dropped `dual-receiver-cockpit` —
+  // five of six skins, no failure anywhere. `Record<SkinId, ...>` is the
+  // same technique the sibling `entrypoints.test.ts` already uses for this
+  // exact constraint (see that file's header: there is no runtime-
+  // enumerable list of `SkinId` values, and both `SKIN_LOADERS` and
+  // `SKIN_RESOURCE_PLAN` in registry.ts are module-private), so a skin
+  // missing from this table is now a `npm run check` compile error instead
+  // of a silent gap. `everySkin` is derived from this table's own keys, so
+  // the two can no longer drift from each other either.
+  const EXPECTED_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
+    'desktop-v2': ['audio-fft', 'hardware-scope'],
+    'dual-receiver-cockpit': [],
+    'sdr-test': ['audio-fft', 'hardware-scope'],
+    'lcd-cockpit': ['audio-fft'],
+    'lcd-scope': ['audio-fft'],
     // The mobile layout mounts SpectrumPanel but no audio-FFT surface.
-    ['mobile', ['hardware-scope']],
-  ] as const)('names the resources the %s tree can demand', (skinId: SkinId, resources) => {
-    expect([...presentationResourcePlan(skinId)].sort()).toEqual([...resources]);
-  });
+    'mobile': ['hardware-scope'],
+  };
+
+  const everySkin = Object.keys(EXPECTED_RESOURCE_PLAN) as SkinId[];
+
+  it.each(Object.entries(EXPECTED_RESOURCE_PLAN) as Array<[SkinId, readonly AppResource[]]>)(
+    'names the resources the %s tree can demand',
+    (skinId, resources) => {
+      expect([...presentationResourcePlan(skinId)].sort()).toEqual([...resources]);
+    },
+  );
 
   // MUTATION KILLED: adding `rx-audio` to any plan. Its lease belongs to the
   // runtime (`setRxLive`), not to a presentation subtree — bridging it would
