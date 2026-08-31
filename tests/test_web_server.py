@@ -3340,18 +3340,34 @@ class TestRadioPoller:
         queue = CommandQueue()
         poller = RadioPoller(radio, cache, queue)
 
+        def meter_calls() -> list[Any]:
+            return [c for c in radio.send_civ.call_args_list if c[0][0] == 0x15]
+
         poller.start()
         # Initial state fetch is done by CoreRadio._fetch_initial_state() on
         # connect; the poller just runs meter polls every _FAST_INTERVAL=25ms.
-        # 0.2s is plenty for ≥3 meter polls.
-        await asyncio.sleep(0.2)
+        #
+        # Wait for those polls; do not count whatever a fixed sleep happened to
+        # fit. A fixed window counts event-loop wakeups, and a loaded host fits
+        # fewer of them into the same wall-clock time -- so the count measures
+        # machine speed, not poller behaviour (this test failed as
+        # ``assert 3 >= 4`` under `-n auto` on a busy host). At
+        # _FAST_INTERVAL=25ms an idle host reaches both counts below well
+        # inside 0.2s, so only a poller that has stopped polling reaches the
+        # bound.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 10.0
+        while loop.time() < deadline:
+            if radio.send_civ.await_count >= 4 and len(meter_calls()) >= 3:
+                break
+            await asyncio.sleep(0.005)
         poller.stop()
 
+        # Asserted after the wait, not folded into it: when the poller is
+        # healthy the loop breaks the moment these hold, and when the bound
+        # expires they report the counts actually observed.
         assert radio.send_civ.await_count >= 4
-        meter_calls = [
-            c for c in radio.send_civ.call_args_list if c[0][0] == 0x15
-        ]  # cmd=0x15
-        assert len(meter_calls) >= 3
+        assert len(meter_calls()) >= 3  # cmd=0x15
 
     async def test_poller_idempotent_start(self) -> None:
         """Calling start() twice does not create duplicate tasks."""
