@@ -27,6 +27,17 @@ import {
   desktopV2Layout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
   sdrTestLayout,
 } from '../declarations';
+// Namespace import of the SAME barrel, used ONLY to derive the F8
+// completeness set structurally (MOR-2074) — never to register anything (a
+// namespace import has no side effect beyond the module evaluation the named
+// import above already triggers). Same derivation as `loader-identity-
+// inventory.test.ts`'s `BARREL_MANIFESTS` and `forward-declaration-
+// inventory.test.ts`'s `ALL_MANIFESTS` (MOR-2060): NOT `listLayoutIds()`,
+// because the fast pool's `isolate: false` (vite.config.ts) shares
+// `contract.ts`'s module-scoped registry Map across every test file in the
+// run, and sibling suites register their own probe manifests into it.
+import * as layoutDeclarationsBarrel from '../declarations';
+import { isLayoutManifest } from './manifest-guard';
 import { forReceiver, receiversOf } from '../../../components-v2/wiring/dual-receiver-strips';
 import { topologyFixtures, withAudioOnlyScope } from '../../../semantic/fixtures/topologies';
 
@@ -119,12 +130,29 @@ describe('F8 — every registered layout manifest names a loadable skin', () => 
     sdrTestLayout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
     desktopV2Layout,
   ];
+
+  // MOR-2074: REAL_LAYOUTS above is a hand-list, so a new manifest exported
+  // from the barrel without a matching entry here used to fall through the
+  // whole F8 rule silently — the it.each below only iterates what this list
+  // names, never what the barrel actually exports. BARREL_MANIFESTS is the
+  // same structural derivation `loader-identity-inventory.test.ts`'s
+  // `BARREL_MANIFESTS` and `forward-declaration-inventory.test.ts`'s
+  // `ALL_MANIFESTS` use (MOR-2060's `isLayoutManifest` guard), so a missing
+  // or stale REAL_LAYOUTS entry now reddens the completeness test below
+  // instead of being skipped.
+  const BARREL_MANIFESTS: readonly LayoutManifest[] =
+    Object.values(layoutDeclarationsBarrel).filter(isLayoutManifest);
+
   const source = readFileSync('src/skins/registry.ts', 'utf8');
   const loadersStart = source.indexOf('const SKIN_LOADERS');
   const loaderIds = [...source.slice(loadersStart, source.indexOf('};', loadersStart))
     .matchAll(/'([a-z0-9-]+)':/g)].map((m) => m[1]);
   const unionStart = source.indexOf('export type SkinId');
   const skinIdUnion = source.slice(unionStart, source.indexOf(';', unionStart));
+
+  it('REAL_LAYOUTS names exactly the manifests the barrel exports', () => {
+    expect(REAL_LAYOUTS.map((m) => m.id).sort()).toEqual(BARREL_MANIFESTS.map((m) => m.id).sort());
+  });
 
   it.each(REAL_LAYOUTS.map((m) => [m.id, m] as const))(
     '"%s" is registered and reachable as a SkinId with a loader', (id, manifest) => {

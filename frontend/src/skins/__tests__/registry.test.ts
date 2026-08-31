@@ -1,31 +1,57 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppResource } from '$lib/runtime/resource-demand';
 import type { SkinId } from '../registry';
 
-const entrypoints = vi.hoisted(() => ({
-  desktop: { name: 'desktop-v2' },
-  cockpit: { name: 'lcd-cockpit' },
-  scope: { name: 'lcd-scope' },
-  mobile: { name: 'mobile' },
-  sdr: { name: 'sdr-test' },
-  dualReceiverCockpit: { name: 'dual-receiver-cockpit' },
-}));
+// MOR-2074: which SkinId is QA-gated, read off `resolveSkinId`'s actual
+// early-return branch in `../registry.ts` (`if (ctx.layoutPreference ===
+// 'X') return 'X';`, checked on the RAW `ctx.layoutPreference` before
+// `normalizeLayoutMode` runs — the regex requires the `ctx.` prefix
+// specifically so it does not also match the normal forced-preference
+// branches further down, which check the normalized local instead) rather
+// than hand-copied, so this list cannot silently drift from the production
+// branch that actually makes an id reachable only through the QA-only param.
+const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
+const QA_GATED_LAZY_LOAD_IDS = [...registrySource.matchAll(
+  /if \(ctx\.layoutPreference === '([a-z0-9-]+)'\) return '\1';/g,
+)].map((m) => m[1]) as SkinId[];
 
-const lazyImports = vi.hoisted(() => ({
-  desktop: vi.fn(() => ({ default: entrypoints.desktop })),
-  cockpit: vi.fn(() => ({ default: entrypoints.cockpit })),
-  scope: vi.fn(() => ({ default: entrypoints.scope })),
-  mobile: vi.fn(() => ({ default: entrypoints.mobile })),
-  sdr: vi.fn(() => ({ default: entrypoints.sdr })),
-  dualReceiverCockpit: vi.fn(() => ({ default: entrypoints.dualReceiverCockpit })),
-}));
+// MOR-2074: keyed by the literal `SkinId` itself (not an arbitrary local
+// name) and typed `Record<SkinId, ...>`, so a `SkinId` union member added
+// without a matching entry here is a `npm run check` compile error — the
+// same technique `EXPECTED_RESOURCE_PLAN` below already uses (MOR-2062),
+// generalized to the mock entrypoints/loaders every other case in this file
+// reads from.
+const entrypoints = vi.hoisted(() => {
+  const table: Record<SkinId, { name: SkinId }> = {
+    'desktop-v2': { name: 'desktop-v2' },
+    'lcd-cockpit': { name: 'lcd-cockpit' },
+    'lcd-scope': { name: 'lcd-scope' },
+    'mobile': { name: 'mobile' },
+    'sdr-test': { name: 'sdr-test' },
+    'dual-receiver-cockpit': { name: 'dual-receiver-cockpit' },
+  };
+  return table;
+});
 
-vi.mock('../desktop-v2/DesktopSkin.svelte', () => lazyImports.desktop());
-vi.mock('../lcd-cockpit/LcdCockpitSkin.svelte', () => lazyImports.cockpit());
-vi.mock('../lcd-scope/LcdScopeSkin.svelte', () => lazyImports.scope());
-vi.mock('../mobile/MobileSkin.svelte', () => lazyImports.mobile());
-vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports.sdr());
-vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports.dualReceiverCockpit());
+const lazyImports = vi.hoisted(() => {
+  const table: Record<SkinId, () => { default: { name: SkinId } }> = {
+    'desktop-v2': vi.fn(() => ({ default: entrypoints['desktop-v2'] })),
+    'lcd-cockpit': vi.fn(() => ({ default: entrypoints['lcd-cockpit'] })),
+    'lcd-scope': vi.fn(() => ({ default: entrypoints['lcd-scope'] })),
+    'mobile': vi.fn(() => ({ default: entrypoints['mobile'] })),
+    'sdr-test': vi.fn(() => ({ default: entrypoints['sdr-test'] })),
+    'dual-receiver-cockpit': vi.fn(() => ({ default: entrypoints['dual-receiver-cockpit'] })),
+  };
+  return table;
+});
+
+vi.mock('../desktop-v2/DesktopSkin.svelte', () => lazyImports['desktop-v2']());
+vi.mock('../lcd-cockpit/LcdCockpitSkin.svelte', () => lazyImports['lcd-cockpit']());
+vi.mock('../lcd-scope/LcdScopeSkin.svelte', () => lazyImports['lcd-scope']());
+vi.mock('../mobile/MobileSkin.svelte', () => lazyImports['mobile']());
+vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports['sdr-test']());
+vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports['dual-receiver-cockpit']());
 
 import { loadSkin, presentationResourcePlan, resolveSkinId } from '../registry';
 
@@ -62,23 +88,45 @@ describe('skin registry', () => {
     expect(resolve({ hasAnyScope })).toBe(skinId);
   });
 
+  // MOR-2074: derived from `lazyImports` (now `Record<SkinId, ...>`) instead
+  // of a hand-picked five of the six keys — this used to omit
+  // `dual-receiver-cockpit` with no completeness check to catch it, so a
+  // regression that eagerly imported it at module-init time would have
+  // stayed silent here (the only other guard, "does not import ... merely by
+  // resolving other preferences" below, runs later and after several
+  // `resolve()` calls, not at true module-init time).
   it('does not import a skin entrypoint while the registry is initialized', () => {
-    expect(lazyImports.desktop).not.toHaveBeenCalled();
-    expect(lazyImports.cockpit).not.toHaveBeenCalled();
-    expect(lazyImports.scope).not.toHaveBeenCalled();
-    expect(lazyImports.mobile).not.toHaveBeenCalled();
-    expect(lazyImports.sdr).not.toHaveBeenCalled();
+    for (const lazyImport of Object.values(lazyImports)) {
+      expect(lazyImport).not.toHaveBeenCalled();
+    }
   });
 
-  it.each([
-    ['desktop-v2', entrypoints.desktop, lazyImports.desktop],
-    ['lcd-cockpit', entrypoints.cockpit, lazyImports.cockpit],
-    ['lcd-scope', entrypoints.scope, lazyImports.scope],
-    ['mobile', entrypoints.mobile, lazyImports.mobile],
-    ['sdr-test', entrypoints.sdr, lazyImports.sdr],
-  ] as const)('lazily loads the %s entrypoint', async (skinId: SkinId, entrypoint, lazyImport) => {
+  // `dual-receiver-cockpit` is deliberately absent from this table: its own
+  // lazy-load pin lives in the QA-only describe block below and must run
+  // AFTER this table (see that block's call-order comment) — this file has
+  // no per-test mock reset, so merging it here would double-invoke its
+  // loader before that block's "not called merely by resolving" assertion.
+  const LAZY_LOAD_TABLE = [
+    ['desktop-v2', entrypoints['desktop-v2'], lazyImports['desktop-v2']],
+    ['lcd-cockpit', entrypoints['lcd-cockpit'], lazyImports['lcd-cockpit']],
+    ['lcd-scope', entrypoints['lcd-scope'], lazyImports['lcd-scope']],
+    ['mobile', entrypoints['mobile'], lazyImports['mobile']],
+    ['sdr-test', entrypoints['sdr-test'], lazyImports['sdr-test']],
+  ] as const;
+
+  it.each(LAZY_LOAD_TABLE)('lazily loads the %s entrypoint', async (skinId: SkinId, entrypoint, lazyImport) => {
     await expect(loadSkin(skinId)).resolves.toBe(entrypoint);
     expect(lazyImport).toHaveBeenCalledTimes(1);
+  });
+
+  // `QA_GATED_LAZY_LOAD_IDS` is now derived from `../registry.ts` itself
+  // (see its declaration above), not hand-copied, so this only catches a
+  // `SkinId` left off BOTH lists entirely — it does not by itself prove the
+  // QA-gated id's own pin test still exists (see the check next to that
+  // test in the describe block below).
+  it('pins a lazy-load case for every skin, in this table or the QA-gated one', () => {
+    const pinnedIds = [...LAZY_LOAD_TABLE.map(([id]) => id), ...QA_GATED_LAZY_LOAD_IDS];
+    expect(pinnedIds.sort()).toEqual((Object.keys(entrypoints) as SkinId[]).sort());
   });
 });
 
@@ -122,12 +170,30 @@ describe('MOR-1257: QA-only dual-receiver-cockpit reachability', () => {
     for (const layoutPreference of ['auto', 'standard', 'lcd-cockpit', 'lcd-scope', 'sdr-test'] as const) {
       resolve({ layoutPreference });
     }
-    expect(lazyImports.dualReceiverCockpit).not.toHaveBeenCalled();
+    expect(lazyImports['dual-receiver-cockpit']).not.toHaveBeenCalled();
   });
 
-  it('lazily loads the dual-receiver-cockpit entrypoint through the real loader', async () => {
-    await expect(loadSkin('dual-receiver-cockpit')).resolves.toBe(entrypoints.dualReceiverCockpit);
-    expect(lazyImports.dualReceiverCockpit).toHaveBeenCalledTimes(1);
+  // MOR-2074 review: unlike `LAZY_LOAD_TABLE` above, whose "has a pin"
+  // guarantee is structural (`it.each` iterates the array itself, so
+  // deleting a row also removes it from the derived id list the
+  // completeness test compares against), each QA-gated id's pin here is a
+  // freestanding `it.each` case with no array tying its EXISTENCE to
+  // `QA_GATED_LAZY_LOAD_IDS` — deleting this whole block previously left
+  // every other check in this file green. `observedQaGatedLazyLoadPins`
+  // records which ids actually got a pin that ran and passed; the test
+  // below fails if an id in `QA_GATED_LAZY_LOAD_IDS` never reached it.
+  const observedQaGatedLazyLoadPins = new Set<SkinId>();
+
+  it.each(QA_GATED_LAZY_LOAD_IDS)('lazily loads the %s entrypoint through the real loader', async (skinId) => {
+    await expect(loadSkin(skinId)).resolves.toBe(entrypoints[skinId]);
+    expect(lazyImports[skinId]).toHaveBeenCalledTimes(1);
+    observedQaGatedLazyLoadPins.add(skinId);
+  });
+
+  it('every QA-gated id actually reached its own lazy-load pin above', () => {
+    for (const id of QA_GATED_LAZY_LOAD_IDS) {
+      expect(observedQaGatedLazyLoadPins.has(id), `no lazy-load pin ran for QA-gated id "${id}"`).toBe(true);
+    }
   });
 });
 
