@@ -540,7 +540,7 @@ describe('formatSMeter / sLevel / isSmeterCalibrated — one-knot table cannot s
   // returned its `raw` unconditionally, so `formatSMeter` printed the same
   // fabricated S-unit for every reading regardless of the true value --
   // verified: against a lone `{ raw: 130, actual: 0, label: 'S9' }` knot,
-  // both -20 and 0 produced 'S7' -- while `sLevel`, which already gated on
+  // both -20 and 0 produced 'S9' -- while `sLevel`, which already gated on
   // `getSmeterKnots().length >= 2`, correctly reported the neutral
   // raw-proportional fallback on the very same tile. No shipped profile
   // declares a one-knot table today (`rig_loader` enforces no minimum), so
