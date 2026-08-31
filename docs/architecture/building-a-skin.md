@@ -43,6 +43,7 @@ restated shape drifts and a pointer does not.
 | `frontend/src/presentation/layouts/contract.ts` | `LayoutManifest`, `SEMANTIC_SURFACE_NAMES`, `registerLayout`, `getLayout`, `declaredSurfaces` | Which semantic surfaces a layout may mount, its topology/sizing declaration, and the registry every layout goes through. A name in `SEMANTIC_SURFACE_NAMES` is *declarable*, not necessarily *mounted* — the file's own header lists which names nothing renders through a manifest yet. |
 | `frontend/src/skins/registry.ts` | `SkinId`, `SKIN_LOADERS` (via `loadSkin`), `SKIN_RESOURCE_PLAN` (via `presentationResourcePlan`), `resolveSkinId` | The single place a skin becomes reachable at runtime. `frontend/src/App.svelte` is the only caller of `loadSkin`/`resolveSkinId`. |
 | `frontend/src/lib/runtime/props/panel-props.ts` and `frontend/src/lib/runtime/adapters/*` | e.g. `toVfoProps`, `toMeterProps`, `panel-adapters.ts`'s handlers | Pure state→props mappers and bound callbacks. A skin (or anything it mounts) reaches state and commands through these, never through stores or transport directly — see "What a skin may not import" below. |
+| `frontend/src/lib/runtime/index.ts` (re-exporting `frontend-runtime.ts`) | `runtime` | The one import that supplies the live `state`/`caps` the mappers above take as arguments. `components-v2/layout/RadioLayout.svelte` and `components-v2/layout/MobileRadioLayout.svelte` both import it from `$lib/runtime`, derive `radioState`/`caps` from `runtime.state`/`runtime.caps`; `MobileRadioLayout.svelte` calls `toMeterProps` the same way. `panel-adapters.ts`'s `deriveAmberCockpitProps` (used by `components-v2/panels/lcd/AmberCockpit.svelte`, which also calls `toMeterProps`) supplies `runtime.state`/`runtime.caps` one layer removed. |
 
 ## Two skins to learn the shape from
 
@@ -131,8 +132,12 @@ preference, and one of its links has no check behind it at all.
    entry to `SKIN_RESOURCE_PLAN` (reached only through
    `presentationResourcePlan`) — `[]` if your skin bridges no App-owned
    resource. Both `SKIN_LOADERS` and `SKIN_RESOURCE_PLAN` are typed
-   `Record<SkinId, ...>`, so a missing key fails to compile. Pinned by
-   `frontend/src/skins/__tests__/registry.test.ts`.
+   `Record<SkinId, ...>`, so a missing key fails to compile.
+   `frontend/src/skins/__tests__/registry.test.ts` pins this file's
+   behaviour, and separately hand-mirrors `SKIN_RESOURCE_PLAN` in its own
+   `EXPECTED_RESOURCE_PLAN` for its own assertions — also typed
+   `Record<SkinId, ...>`, so add your id there too or `npm run check` fails
+   on this file next.
 2. **`frontend/src/__tests__/presentation-switch-resources.component.test.ts`**:
    add your id to `SKIN_PLAN`, a hand-mirrored copy of `SKIN_RESOURCE_PLAN`
    that this file's own "mirrors the production per-skin resource plan"
@@ -162,16 +167,24 @@ preference, and one of its links has no check behind it at all.
    exports" test — so a missing row fails `npx vitest run`, not
    `npm run check`.
 
-   A different family of files also hand-lists every registered manifest,
-   for its own purpose, and does not fail when a new one is missing — it
-   just stops covering it:
+   A related family of files also touches every registered manifest, for
+   narrower purposes of their own, and each one fails loudly when it falls
+   out of sync:
    `frontend/src/presentation/layouts/__tests__/forward-declaration-inventory.test.ts`
-   (`ALL_MANIFESTS`, `DOM_BACKED`) and the sibling `*-declarability.test.ts`
-   files in the same directory, one per semantic surface (e.g.
-   `meters-declarability.test.ts`'s `ALL` — its own comment reads "extend
-   by hand, with a layout review, never silently"). Nothing here is
-   required for a minimal skin; know they exist because if your skin
-   should be counted in one of them, nothing will tell you that it isn't.
+   derives its manifest set (`ALL_MANIFESTS`) from the barrel rather than
+   hand-listing it, and fails its own "every registered manifest has an
+   asserted DOM-backing proof" test the moment a new manifest has no entry
+   in the file's hand-listed `DOM_BACKED` table — its own header states
+   this outright. The sibling `*-declarability.test.ts` files (e.g.
+   `meters-declarability.test.ts`) share that shape: the manifest set each
+   one checks (its own `ALL`) is likewise derived from the barrel, and
+   only a narrower, curated table is
+   hand-listed (e.g. that file's `DECLARES_METERS`, "extend by hand, with a
+   layout review, never silently") — a manifest whose actual declarations
+   drift from that table fails the file's own equality assertion. Nothing
+   here is required for a minimal skin that declares none of these
+   surfaces; if yours does, read the relevant file rather than assume a
+   compile error is the only way to find out.
 4. **`frontend/src/skins/__tests__/entrypoints.test.ts`**: add your `SkinId`
    to `SKIN_ENTRYPOINT_COVERAGE`, picking the coverage `kind` that matches
    how you actually mount (`radio-layout` / `lcd-layout` / `mobile-layout`
@@ -238,12 +251,17 @@ preference, and one of its links has no check behind it at all.
 `frontend/src/components-v2/meters/`. A new one must be registered there
 under the correct domain: `'calibrated-db-rel-s9'` (derive S-unit/dBm text
 only through `smeter-scale.ts`'s own functions, never a local formula) or
-`'preformatted'` (render the given `displayValue` verbatim). Reusing one of
-the two existing components (`BarGauge.svelte`, `LinearSMeter.svelte`)
-needs no new registration. `lcd-cockpit`'s own instruments live under
-`components-v2/panels/lcd/` instead and do not touch this contract at all —
-read `meter-contract.ts`'s header before assuming it governs every
-meter-shaped widget in the app.
+`'preformatted'` (render the given `displayValue` verbatim). That
+registration alone is not the whole story: `meter-contract.test.ts` keeps
+its own `COMPONENTS` map — the mounted-component reference for every
+registered file — separately from `METER_REGISTRY`, and its "every
+METER_REGISTRY entry has a mounted-component mapping in this suite" test
+fails until your new component is added there too. Reusing one of the two
+existing components (`BarGauge.svelte`, `LinearSMeter.svelte`) needs no
+new registration.
+`lcd-cockpit`'s own instruments live under `components-v2/panels/lcd/`
+instead and do not touch this contract at all — read `meter-contract.ts`'s
+header before assuming it governs every meter-shaped widget in the app.
 
 ## What a skin may not import
 
