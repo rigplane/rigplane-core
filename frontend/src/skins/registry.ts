@@ -18,13 +18,6 @@ import {
 export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'sdr-test';
 
-/**
- * Persisted skin IDs include the legacy `amber-lcd` alias, which routes to
- * `lcd-cockpit`. Kept indefinitely for backwards compatibility with stored
- * user preferences (see docs/plans/archive/2026-04-19-lcd-twin-skins.md §2).
- */
-export type PersistedSkinId = SkinId | 'amber-lcd';
-
 export interface SkinResolutionContext {
   capabilities: Capabilities | null;
   layoutPreference: LayoutMode;
@@ -75,7 +68,8 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
  * Each LCD variant has its own wrapper that mounts `LcdLayout` with the
  * appropriate `variant` prop — this is how the cockpit/scope selection
  * reaches LcdLayout (registry → skin wrapper → LcdLayout). The legacy
- * `amber-lcd` alias is accepted via `resolvePersistedSkinId()`.
+ * `amber-lcd` alias is accepted via `normalizeLayoutMode`'s
+ * `LEGACY_LAYOUT_ALIASES` table.
  */
 const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
@@ -90,16 +84,6 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   'mobile': () => import('./mobile/MobileSkin.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
 };
-
-/**
- * Normalize a persisted skin ID, mapping the legacy `amber-lcd` alias to
- * `lcd-cockpit`. Use this when reading from localStorage or other stored
- * preferences.
- */
-export function resolvePersistedSkinId(id: PersistedSkinId): SkinId {
-  if (id === 'amber-lcd') return normalizeLayoutMode(id);
-  return id;
-}
 
 export async function loadSkin(id: SkinId): Promise<Component> {
   return (await SKIN_LOADERS[id]()).default;

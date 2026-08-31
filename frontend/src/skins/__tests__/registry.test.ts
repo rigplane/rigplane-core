@@ -26,7 +26,7 @@ vi.mock('../mobile/MobileSkin.svelte', () => lazyImports.mobile());
 vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports.sdr());
 vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports.dualReceiverCockpit());
 
-import { loadSkin, presentationResourcePlan, resolvePersistedSkinId, resolveSkinId } from '../registry';
+import { loadSkin, presentationResourcePlan, resolveSkinId } from '../registry';
 
 const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =>
   resolveSkinId({
@@ -59,11 +59,6 @@ describe('skin registry', () => {
     [false, 'desktop-v2'],
   ] as const)('resolves auto to the v3 desktop default regardless of scope availability (%s)', (hasAnyScope, skinId) => {
     expect(resolve({ hasAnyScope })).toBe(skinId);
-  });
-
-  it('normalizes the persisted amber-lcd preference before resolution', () => {
-    expect(resolvePersistedSkinId('amber-lcd')).toBe('lcd-cockpit');
-    expect(resolvePersistedSkinId('desktop-v2')).toBe('desktop-v2');
   });
 
   it('does not import a skin entrypoint while the registry is initialized', () => {
