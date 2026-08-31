@@ -36,12 +36,15 @@ function getCal(): CalPoint[] {
   return getSmeterCalibration() ?? [];
 }
 
-/** True when the active radio profile declared a real s_meter calibration
- *  table. False means the S-unit/dBm text below must fall back to an honest
- *  raw-scale label instead of fabricating a reading against a borrowed
- *  curve (MOR-1451). */
+/** True when the active radio profile declared an s_meter calibration table
+ *  with at least two knots. Interpolation needs two points to define a
+ *  line; a single knot cannot support a calibrated reading, so it counts
+ *  as uncalibrated the same as zero knots (MOR-2024) rather than resolving
+ *  every input to that one knot's value. False means the S-unit/dBm text
+ *  below must fall back to an honest raw-scale label instead of
+ *  fabricating a reading against a borrowed curve (MOR-1451). */
 export function isSmeterCalibrated(): boolean {
-  return getCal().length > 0;
+  return getCal().length >= 2;
 }
 
 /** Find S9 raw value from calibration; the raw-scale midpoint when
