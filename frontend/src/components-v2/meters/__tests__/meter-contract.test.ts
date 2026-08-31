@@ -6,12 +6,18 @@
  * independent guarantees:
  *
  *  1. CENSUS — every `.svelte` file directly under `components-v2/meters/`
- *     is registered, every registration still names a real file, every
- *     registered file has a mount mapping in this suite, AND every
- *     registered file actually mounts here regardless of its declared
- *     domain. A new meter added without registering (or without a mount
- *     mapping), or registered under a domain with no conformance suite
- *     below, fails here, not silently.
+ *     is registered, every registration still names a real file, and
+ *     every registered file has a mount mapping in this suite. A new
+ *     meter added without registering (or without a mount mapping) fails
+ *     here, not silently. Separately, every registered file actually
+ *     mounts here regardless of its declared domain, so a registration
+ *     under a domain with no conformance suite below cannot silently
+ *     skip being exercised — but that is a weaker guarantee than
+ *     conformance-checked: the mount only fails on rendering no text at
+ *     all, so a real meter registered under such a domain mounts,
+ *     renders its normal output, and passes here with its derivation
+ *     never checked against anything, because no suite below exists for
+ *     a domain nobody wrote one for.
  *  2. DOMAIN CONFORMANCE — a 'calibrated-db-rel-s9' meter's rendered
  *     S-unit/dBm text must come from `smeter-scale.ts`'s own functions,
  *     never a local reimplementation; a 'preformatted' meter must render
