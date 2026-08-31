@@ -90,6 +90,49 @@ Rules:
   artifact, because the directive pins the exact head SHA the lines refer to;
   everywhere else in your output, cite file plus symbol name. Do not soften a
   BLOCKED into a PASS; do not block on stylistic taste.
+- BLOCKED is for defects a new commit is the only way to fix. Before blocking,
+  ask two things: does the defect land in the repository, and does correcting it
+  need a commit? Three cases, and only the first blocks.
+  **In the diff** — the changed lines and any prose among them. It lands, and
+  only a commit changes it. BLOCKED.
+  **In a pushed commit message.** This repo squash-merges with
+  `squash_merge_commit_message: COMMIT_MESSAGES`, so branch commit messages are
+  concatenated into the squash body and do land on `main`. But that body is
+  written at merge time and the coordinator can replace it there, so the fix
+  needs neither a commit nor a history rewrite. PASS, naming the correction as
+  MANDATORY SQUASH-BODY CORRECTION. Blocking here buys a round-trip that does
+  not even produce the fix.
+  **In the PR body or a PR comment.** Never enters the repository, and editable
+  in place — editing leaves the head SHA untouched, so a PASS issued now stays
+  valid once the correction is made. PASS, corrections listed as REQUIRED
+  BEFORE MERGE.
+  Say per finding which case it is, so the coordinator knows what needs a
+  commit, what needs a squash-body line, and what needs an edit. Blocking on
+  either of the last two costs a full round — new commit, new head, every
+  directive stale, another review, another CI run — for something a commit was
+  never going to fix.
+  This softens nothing, but be clear about what carries it: no automation
+  enforces these corrections — no workflow reads a PR body, and the gate matches
+  its directive pattern against only the first non-blank line of a comment — so
+  the obligation is the coordinator's, and it is recorded against them in
+  `AGENTS.md` § Protected main and review gate. State each
+  correction concretely enough to be applied without you. None of this is
+  licence to pass a false claim *inside* the diff: that is the first case, and
+  it blocks.
+- A file the change pulls into the diff enters review whole, not one line at a
+  time. When a fix edits one row of a list, table or bullet set, check the
+  neighbouring rows of that same structure: the author was looking at their row,
+  not at the list. A stale neighbour beside a freshly corrected line is the
+  commonest way one round of fixes becomes three, and it is invisible to anyone
+  reading only the diff hunk.
+- Gate verdict format when reviewing a PR: first line exactly
+  `Agent Review: PASS <full-40-hex-head-sha>` or
+  `Agent Review: BLOCKED <full-40-hex-head-sha>`, then a blank line and the
+  justification. BLOCKED requires concrete problems with file:line references,
+  risk, required fixes, and checks to run — file:line is correct in this one
+  artifact, because the directive pins the exact head SHA the lines refer to;
+  everywhere else in your output, cite file plus symbol name. Do not soften a
+  BLOCKED into a PASS; do not block on stylistic taste.
 - BLOCKED is for defects that survive the merge. Before blocking, ask where the
   defect lives: in the tree — the diff, and any prose inside it — or only in the
   surrounding record: the PR body, a PR comment, an already-pushed commit
