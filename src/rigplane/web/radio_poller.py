@@ -202,6 +202,8 @@ __all__ = [
     "SetXfcStatus",
     "SetTxFreqMonitor",
     "SetUtcOffset",
+    "SetQuickSplit",
+    "SetQuickDualWatch",
     "QuickSplit",
     "QuickDualWatch",
     "QuickDwTrigger",
@@ -433,6 +435,8 @@ from .._poller_types import (  # noqa: E402
     SetPower,
     SetPowerstat,
     SetPreamp,
+    SetQuickDualWatch,
+    SetQuickSplit,
     SetRefAdjust,
     SetRepeaterTone,
     SetRepeaterTsql,
@@ -3566,13 +3570,15 @@ class RadioPoller:
                 # MOR-2007 ruling 2: quick_split()/quick_dual_watch() were
                 # deleted -- they always sent a bare GET and never read the
                 # reply, so they fired nothing. get_quick_split() is the
-                # real read of the same persistent menu toggle; a write
-                # path for this intent needs a value threaded through the
-                # web command (params["on"]), which no caller does yet --
-                # left as a follow-up, not silently invented here.
+                # real read of the same persistent menu toggle; the write
+                # path is SetQuickSplit/SetQuickDualWatch below (MOR-2045).
                 await _r.get_quick_split()
             case QuickDualWatch():
                 await _r.get_quick_dual_watch()
+            case SetQuickSplit(on=on):
+                await _r.set_quick_split(on)
+            case SetQuickDualWatch(on=on):
+                await _r.set_quick_dual_watch(on)
             case QuickDwTrigger():
                 self._last_user_write_ts = time.monotonic()
                 if CAP_DUAL_RX in self._caps:

@@ -22,6 +22,8 @@ from rigplane.web.radio_poller import (
     SetAfMute,
     SetCivOutputAnt,
     SetCivTransceive,
+    SetQuickDualWatch,
+    SetQuickSplit,
     SetRefAdjust,
     SetTuningStep,
     SetTxFreqMonitor,
@@ -496,12 +498,23 @@ async def test_get_quick_split() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_quick_split() -> None:
+async def test_set_quick_split_on() -> None:
     srv, q = _server()
     h = _handler(radio=_capable_radio(), server=srv)
-    result = await h._enqueue_command("set_quick_split", {})
-    assert result == {}
-    assert isinstance(q.items[0], QuickSplit)
+    result = await h._enqueue_command("set_quick_split", {"on": True})
+    assert result == {"on": True}
+    assert isinstance(q.items[0], SetQuickSplit)
+    assert q.items[0].on is True
+
+
+@pytest.mark.asyncio
+async def test_set_quick_split_off() -> None:
+    srv, q = _server()
+    h = _handler(radio=_capable_radio(), server=srv)
+    result = await h._enqueue_command("set_quick_split", {"on": False})
+    assert result == {"on": False}
+    assert isinstance(q.items[0], SetQuickSplit)
+    assert q.items[0].on is False
 
 
 # ---------------------------------------------------------------------------
@@ -520,12 +533,23 @@ async def test_get_quick_dual_watch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_quick_dual_watch() -> None:
+async def test_set_quick_dual_watch_on() -> None:
     srv, q = _server()
     h = _handler(radio=_capable_radio(), server=srv)
-    result = await h._enqueue_command("set_quick_dual_watch", {})
-    assert result == {}
-    assert isinstance(q.items[0], QuickDualWatch)
+    result = await h._enqueue_command("set_quick_dual_watch", {"on": True})
+    assert result == {"on": True}
+    assert isinstance(q.items[0], SetQuickDualWatch)
+    assert q.items[0].on is True
+
+
+@pytest.mark.asyncio
+async def test_set_quick_dual_watch_off() -> None:
+    srv, q = _server()
+    h = _handler(radio=_capable_radio(), server=srv)
+    result = await h._enqueue_command("set_quick_dual_watch", {"on": False})
+    assert result == {"on": False}
+    assert isinstance(q.items[0], SetQuickDualWatch)
+    assert q.items[0].on is False
 
 
 # ---------------------------------------------------------------------------

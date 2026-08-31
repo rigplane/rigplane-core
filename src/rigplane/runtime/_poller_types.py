@@ -95,6 +95,8 @@ __all__ = [
     "SetPower",
     "SetPowerstat",
     "SetPreamp",
+    "SetQuickDualWatch",
+    "SetQuickSplit",
     "SetRefAdjust",
     "SetRepeaterTone",
     "SetRepeaterTsql",
@@ -809,6 +811,16 @@ class QuickDualWatch:
 
 
 @dataclass(frozen=True, slots=True)
+class SetQuickSplit:
+    on: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SetQuickDualWatch:
+    on: bool
+
+
+@dataclass(frozen=True, slots=True)
 class QuickDwTrigger:
     """Emulate the physical [DUAL-W] long-press:
     equalize MAIN→SUB, then enable Dual Watch.
@@ -950,6 +962,8 @@ Command = (
     | SetUtcOffset
     | QuickSplit
     | QuickDualWatch
+    | SetQuickSplit
+    | SetQuickDualWatch
     | QuickDwTrigger
     | QuickSplitTrigger
     | Speak
