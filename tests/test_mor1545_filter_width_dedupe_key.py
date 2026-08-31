@@ -167,7 +167,9 @@ class TestFilterWidthDirectBranchDedupeKeyReceiverScoped:
         self, ic7610_radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         """Control: the dedupe mechanism itself is intact, so a change that
-        simply stopped deduping would not keep the test above green."""
+        stopped deduping at the direct-branch call site would not go
+        unnoticed -- this test would redden (the cross-receiver test above
+        would not)."""
         ic7610_radio._civ_runtime.start_worker()
         try:
             mock_transport.queue_response_on_send(
@@ -242,8 +244,9 @@ class TestFilterWidthVfoFallbackDedupeKeyReceiverScoped:
         self, ic9700_radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         """Control: the fallback branch's dedupe mechanism is intact, so a
-        change that stopped deduping at the fallback site would not keep
-        the test above green.
+        change that stopped deduping at the fallback site would not go
+        unnoticed -- this test would redden (the cross-receiver test above
+        would not).
 
         Both reads use ``receiver=1`` (SUB), the only receiver that reaches
         the fallback call site on this profile -- ``receiver=0`` (MAIN)
