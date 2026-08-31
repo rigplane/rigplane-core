@@ -4562,7 +4562,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
                 return await self._get_bool_value(
                     civ,
-                    key=f"get_repeater_tone:{receiver}",
+                    key=f"repeater_tone|rx{receiver}",
                     command=command,
                     sub=sub,
                 )
@@ -4582,7 +4582,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         return await self._get_bool_value(
             civ,
-            key=f"get_repeater_tone:{receiver}",
+            key=f"repeater_tone|rx{receiver}",
             command=command,
             sub=sub,
         )
@@ -4641,7 +4641,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
                 return await self._get_bool_value(
                     civ,
-                    key=f"get_repeater_tsql:{receiver}",
+                    key=f"repeater_tsql|rx{receiver}",
                     command=command,
                     sub=sub,
                 )
@@ -4661,7 +4661,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         return await self._get_bool_value(
             civ,
-            key=f"get_repeater_tsql:{receiver}",
+            key=f"repeater_tsql|rx{receiver}",
             command=command,
             sub=sub,
         )
