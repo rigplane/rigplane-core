@@ -110,9 +110,14 @@ MATCHER_BACKED_GETTERS: tuple[_GetterSpec, ...] = (
     # .sub -- it cannot route through _get_bcd_level/_get_bool_value at
     # all, and is instead pinned directly by
     # test_get_dual_watch_reply_marker_comes_from_the_map below, this
-    # file's keystone case for that shape. get_vfo, get_main_sub_band,
-    # vfo_a_equals_b and vfo_swap have no production caller in
-    # runtime/radio.py, so there is no CoreRadio getter to register here.
+    # file's keystone case for that shape. get_vfo and get_main_sub_band
+    # have no production caller in runtime/radio.py, so there is no
+    # CoreRadio getter to register here. The 0x07 swap/equalize ops --
+    # `runtime/_dual_rx_runtime.py: DualRxRuntimeMixin.swap_vfo_ab`/
+    # `equalize_vfo_ab`/`swap_main_sub`/`equalize_main_sub` -- are
+    # runtime methods that build the frame from a profile-declared code,
+    # not `rigplane.commands` builders, so there is no commands-layer
+    # getter to register for them either.
     _GetterSpec("get_quick_split", "_get_bool_value"),
     _GetterSpec("get_quick_dual_watch", "_get_bool_value"),
 )

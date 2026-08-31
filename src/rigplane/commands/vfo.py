@@ -121,37 +121,6 @@ def set_vfo(
     )
 
 
-@expose_command_key(lambda cmd_map: "set_vfo")
-@require_cmd_map
-def vfo_a_equals_b(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
-) -> bytes:
-    """Copy VFO A to VFO B (A=B).
-
-    No production caller reaches this builder (or ``vfo_swap`` below):
-    `runtime/_dual_rx_runtime.py: equalize_vfo_ab`/``swap_vfo_ab`` build
-    the same ``0x07`` frame directly from ``RadioProfile.equal_ab_code``/
-    ``swap_ab_code`` instead, which is the profile-driven byte this
-    builder's ``data=b"\\xa0"`` is not -- out of scope for MOR-2007 (no
-    divergence row and no owner ruling name it); left unchanged, migrated
-    only for ``cmd_map`` per the module-wide contract.
-    """
-    return _build_from_map(
-        cmd_map, "set_vfo", to_addr=to_addr, from_addr=from_addr, data=b"\xa0"
-    )
-
-
-@expose_command_key(lambda cmd_map: "set_vfo")
-@require_cmd_map
-def vfo_swap(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
-) -> bytes:
-    """Swap VFO A and B. See ``vfo_a_equals_b`` -- same caller situation."""
-    return _build_from_map(
-        cmd_map, "set_vfo", to_addr=to_addr, from_addr=from_addr, data=b"\xb0"
-    )
-
-
 @expose_command_key(lambda cmd_map: "set_split")
 @require_cmd_map
 def set_split(

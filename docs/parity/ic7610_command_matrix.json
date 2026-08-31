@@ -274,11 +274,11 @@
       "family": "baseline_core",
       "status": "implemented",
       "runtime_symbols": [
-        "rigplane.commands:vfo_swap",
+        "rigplane.runtime._dual_rx_runtime:DualRxRuntimeMixin.swap_main_sub",
         "rigplane.radio:CoreRadio.swap_main_sub"
       ],
       "test_patterns": [
-        "tests/test_commands_extended.py::test_vfo_swap"
+        "tests/test_vfo_dual_watch.py::test_ic7610_swap_main_sub_sends_0x07_0xb0"
       ]
     },
     {
@@ -292,11 +292,11 @@
       "family": "baseline_core",
       "status": "implemented",
       "runtime_symbols": [
-        "rigplane.commands:vfo_a_equals_b",
+        "rigplane.runtime._dual_rx_runtime:DualRxRuntimeMixin.equalize_main_sub",
         "rigplane.radio:CoreRadio.equalize_main_sub"
       ],
       "test_patterns": [
-        "tests/test_commands_extended.py::test_vfo_a_equals_b"
+        "tests/test_vfo_dual_watch.py::test_ic7610_equalize_main_sub_sends_0x07_0xb1"
       ]
     },
     {
