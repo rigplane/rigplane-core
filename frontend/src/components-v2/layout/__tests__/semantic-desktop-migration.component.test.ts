@@ -315,6 +315,26 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
     },
   );
 
+  // MOR-1346 — the bottom dock joins the matrix for `sdr-test` too, the same
+  // move MOR-1341 (S5) made for `desktop-v2` below. `sdr-test`'s manifest does
+  // not yet declare a `meters` zone, so `<MetersDockPanel>` stays mounted
+  // ALONGSIDE the bare semantic meters surface that `SemanticRadioSurfaces`
+  // already mounts unconditionally via its `zoned('meters', ...)` fallback
+  // (MOR-1273) whenever the view model carries a `meters` group — a double
+  // presentation of the same readout. Proven with a state that reports a
+  // real meter reading, not the bare `liveState()` fixture every other test
+  // in this describe uses — see the MOR-1341 comment on the `desktop-v2`
+  // block below for why a bare fixture (no meter fields at all) would prove
+  // nothing about suppression.
+  it('drops the legacy meters dock in favour of the semantic meters surface', () => {
+    const state = liveState() as { main: Record<string, unknown> };
+    h.state = { ...state, main: { ...state.main, sMeter: 120 } };
+    const t = render('sdr-test');
+    expect(t.querySelector('.bottom-dock')).toBeNull();
+    expect(t.querySelector('[data-testid="meters-dock-panel"]')).toBeNull();
+    expect(t.querySelector('[data-testid="meters-surface"]')).not.toBeNull();
+  });
+
   it('renders the chrome but no surfaces when capabilities have not loaded', () => {
     h.caps = null;
     const t = render('sdr-test');
