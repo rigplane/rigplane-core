@@ -151,6 +151,8 @@ from ..radio_poller import (  # noqa: TID251
     Speak,
 )
 from ..runtime_helpers import (  # noqa: TID251
+    VFO_CAPABILITY_TAGS,
+    projected_vfo_capability_tags,
     radio_ready,
     runtime_capabilities,
 )
@@ -184,7 +186,6 @@ __all__ = ["ControlHandler", "RadioNotReadyError"]
 
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
-_VFO_CAPABILITY_TAGS = frozenset({"vfo_swap", "vfo_equalize"})
 
 # MOR-624: maps the per-DATA-group MOD-input SET command name (as sent by the
 # frontend auto-restore) to its allowed teardown arm name (MOR-993).
@@ -676,38 +677,16 @@ class ControlHandler:
         await self._ws.send_text(encode_json(msg))
 
     def _capabilities(self) -> set[str]:
-        caps = set(runtime_capabilities(self._radio)) - _VFO_CAPABILITY_TAGS
+        caps = set(runtime_capabilities(self._radio)) - VFO_CAPABILITY_TAGS
         if self._radio is None:
             return caps
-
-        profile = getattr(self._radio, "profile", None)
-        if not isinstance(profile, RadioProfile):
-            radio_model = getattr(self._radio, "model", None)
-            for model in (radio_model, self._radio_model):
-                if not isinstance(model, str) or not model.strip():
-                    continue
-                try:
-                    profile = resolve_radio_profile(model=model)
-                except KeyError:
-                    continue
-                break
-
-        if not isinstance(profile, RadioProfile):
-            return caps
-        primitives: tuple[tuple[str, int | None], ...]
-        if profile.vfo_scheme == "ab":
-            primitives = (
-                ("vfo_swap", profile.swap_ab_code),
-                ("vfo_equalize", profile.equal_ab_code),
-            )
-        elif profile.vfo_scheme == "main_sub":
-            primitives = (
-                ("vfo_swap", profile.swap_main_sub_code),
-                ("vfo_equalize", profile.equal_main_sub_code),
-            )
-        else:
-            primitives = ()
-        return caps | {tag for tag, primitive in primitives if primitive is not None}
+        # getattr, not self._radio_model: a few TestCommandGuards fixtures
+        # build ControlHandler via __new__ (bypassing __init__) and set only
+        # ._radio, matching the pre-existing behavior where this attribute
+        # was read lazily and only when self._radio.profile did not already
+        # resolve — which is always true for those fixtures' radios.
+        configured_model = getattr(self, "_radio_model", None)
+        return caps | projected_vfo_capability_tags(self._radio, configured_model)
 
     def _ensure_receiver_supported(self, receiver: int) -> None:
         if self._radio is None:

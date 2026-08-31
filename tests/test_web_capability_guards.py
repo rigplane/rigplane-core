@@ -207,6 +207,51 @@ class TestInfoEndpoint:
         assert not (reserved & set(hello["capabilities"]))
 
     @pytest.mark.asyncio
+    async def test_ws_hello_and_http_capability_payloads_agree_for_non_resolving_runtime_model(
+        self,
+    ):
+        """Production factory: radio.model fails to resolve, configured model does.
+
+        Unlike the sibling test above (which builds ``ControlHandler`` directly
+        with ``radio.model`` as its configured-model argument, so both
+        fallback candidates share the same non-resolving value), this test
+        goes through the production ``WebServer._control_handler_for`` factory,
+        which always passes ``self._config.radio_model`` as that argument
+        regardless of ``radio.model``. That is the one construction where the
+        two candidates differ and can diverge.
+        """
+        reserved = {"vfo_swap", "vfo_equalize"}
+        radio = _make_radio("IC-7300", caps=reserved)
+        radio.model = "UNKNOWN-RADIO"
+        del radio.profile
+        server = WebServer(radio, WebConfig(radio_model="IC-7300"))
+
+        info_writer = _FakeWriter()
+        await server._serve_info(info_writer)  # noqa: SLF001
+        info = _parse_json_body(info_writer)
+
+        capabilities_writer = _FakeWriter()
+        await server._serve_capabilities(capabilities_writer)  # noqa: SLF001
+        capabilities = _parse_json_body(capabilities_writer)
+
+        sent: list[str] = []
+
+        async def send_text(payload: str) -> None:
+            sent.append(payload)
+
+        handler = server._control_handler_for()  # noqa: SLF001
+        handler._ws = SimpleNamespace(send_text=send_text)  # noqa: SLF001
+        await handler._send_hello()  # noqa: SLF001
+        hello = json.loads(sent.pop())
+
+        info_tags = reserved & set(info["capabilities"]["tags"])
+        capabilities_tags = reserved & set(capabilities["capabilities"])
+        hello_tags = reserved & set(hello["capabilities"])
+
+        assert info_tags == capabilities_tags == hello_tags
+        assert not info_tags
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("model", "expected"),
         [
