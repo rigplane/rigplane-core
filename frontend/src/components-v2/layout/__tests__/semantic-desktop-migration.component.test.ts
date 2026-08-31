@@ -343,6 +343,11 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
     expect(t.querySelector('.bottom-dock')).not.toBeNull();
   });
 
+  it('keeps the dock for a layout that declares rxTx but not meters', () => {
+    const t = render(RX_TX_ONLY);
+    expect(t.querySelector('.bottom-dock')).not.toBeNull();
+  });
+
   it('renders the chrome but no surfaces when capabilities have not loaded', () => {
     h.caps = null;
     const t = render('sdr-test');
