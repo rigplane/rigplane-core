@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ from rigplane.backends._icom_serial_base import (
 from rigplane.backends.discovery import SerialPortCandidate
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane import IC_7610_ADDR
 from rigplane.commands import (
     CONTROLLER_ADDR,
@@ -564,6 +566,58 @@ async def test_serial_link_down_while_ptt_active_parks_managed_tx_safely() -> No
     assert managed_tx.ready_calls == [False]
 
     await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_receive_packet_yields_to_event_loop_when_link_drops() -> None:
+    """``SerialCivTransport.receive_packet`` must yield to the event loop
+    while honoring ``timeout``, even once the underlying link is down.
+
+    ``_FakeSerialCivLink.receive`` (like the real ``SerialCivLink.receive``)
+    returns ``None`` with no ``await`` suspension once ``connected`` is
+    False. Before the fix, ``receive_packet`` turned that straight into
+    ``asyncio.TimeoutError`` without any ``await`` of its own, so a caller
+    polling it in a tight ``except TimeoutError: continue`` loop (as
+    ``CivRuntime._civ_rx_loop`` does) never got preempted -- the call
+    returned in the very same event-loop turn it was made in.
+
+    A concurrent task makes this observable directly: it is scheduled
+    before ``receive_packet`` is awaited, so it only gets to run if
+    ``receive_packet`` actually suspends at least once. On the unfixed
+    code the task never runs and ``ticks`` stays at 0.
+    """
+    link = _FakeSerialCivLink()  # connected defaults to False
+    transport = SerialCivTransport(link)
+
+    ticks = 0
+
+    async def _yielder() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    yielder = asyncio.create_task(_yielder())
+    try:
+        started = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=0.05)
+        elapsed = time.monotonic() - started
+    finally:
+        yielder.cancel()
+        try:
+            await yielder
+        except asyncio.CancelledError:
+            pass
+
+    assert ticks > 0, (
+        "receive_packet() returned without ever yielding to the event "
+        "loop -- a caller polling it in a tight loop would starve every "
+        "other task on a downed link"
+    )
+    # Direction, not magnitude: it must actually wait roughly the
+    # requested timeout rather than yield once and return early.
+    assert elapsed >= 0.04
 
 
 @pytest.mark.asyncio
