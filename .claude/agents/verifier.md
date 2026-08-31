@@ -61,14 +61,17 @@ Rules:
   step the coordinator takes, not yours.
 - Bash always runs foreground with an explicit timeout; never use
   run_in_background.
-- That timeout is local only. A test run started on the remote runner
-  through the helper script that drives it keeps running, and keeps holding
-  its queue lock, even after the local process that started it is killed —
-  killing the local side does not stop the remote command. This is easy to
-  trigger by accident: a remote run that exceeds the harness's own
-  10-minute single-command ceiling gets backgrounded, and if the task is
-  then stopped or the agent finishes, the remote side is left running with
-  no parent. The symptom is a stalled queue for everyone on that machine,
-  including the other repository sharing it — not an obviously stuck
-  process. If you kill or abandon a remote run, confirm it actually died on
-  the runner; killing the local process is not enough.
+- That timeout is local only. A test run started on the remote test host
+  through the helper script that drives it keeps running, and keeps
+  holding whatever lock that script uses, even after the local process
+  that started it is killed — killing the local side does not stop the
+  remote command. (This manual helper is a different mechanism from the
+  GitHub Actions self-hosted runner behind `quick.yml`/`full.yml`/
+  `visual.yml` — do not confuse the two.) This is easy to trigger by
+  accident: a remote run that exceeds the harness's own 10-minute
+  single-command ceiling gets backgrounded, and if the task is then
+  stopped or the agent finishes, the remote side is left running with no
+  parent. The symptom is a stalled queue for other work on that host — not
+  an obviously stuck process. If you kill or abandon a remote run, confirm
+  it actually died on the remote host; killing the local process is not
+  enough.

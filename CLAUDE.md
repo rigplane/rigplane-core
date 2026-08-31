@@ -30,11 +30,13 @@ and whether to add it as a CI gate is a separate, still-open decision.
 
 ## CI workflows (Actions billing-aware)
 
-Three workflows, tiered by cost:
+The three workflows below dominate Actions billing and are tiered by cost
+(eleven workflow files exist under `.github/workflows/` in total; the rest
+are narrower path- or event-scoped gates):
 
 | Workflow | Trigger | Scope |
 |---|---|---|
-| `quick.yml` | push/PR to `main` only when `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, or `.github/workflows/**` change | Python 3.11 only · ruff · import-linter · pytest (incl. `tests/integration`, hardware-gated tests skip automatically) · frontend block runs **only** if `frontend/**` or `src/rigplane/web/**` changed · badges |
+| `quick.yml` | push/PR to `main`, unconditionally — the workflow always runs, then skips its own steps unless the changed paths match its internal `core`/`frontend` filters (see `quick.yml`) | Python 3.11 only · ruff · import-linter · pytest (incl. `tests/integration`, hardware-gated tests skip automatically) · frontend block runs **only** if `frontend/**` or `src/rigplane/web/**` changed · badges |
 | `full.yml` | cron Mon/Wed/Fri 03:00 UTC + `workflow_dispatch` + push with `[full-ci]` in commit message | Full matrix 3.11/3.12/3.13, everything |
 | `publish.yml` | `release: published` | New `validate` job (full matrix) → `build` → `publish`. No publish if validate fails. |
 

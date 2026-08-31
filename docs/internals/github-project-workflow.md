@@ -85,8 +85,9 @@ Before merging a non-trivial PR:
 3. Coordinator, immediately before merging: confirm the PR is non-draft,
    all required checks are green, and the exact-head `Agent Review Gate` is
    green. On `main` itself, also confirm the previous merge's `Tests
-   (quick)` run finished rather than getting cancelled by this one
-   (AGENTS.md § Protected main and review gate).
+   (quick)` run has **started**, not merely queued — a queued run would
+   otherwise be displaced by this merge's own push (AGENTS.md § Protected
+   main and review gate; tracked as MOR-2048).
 4. Merge with the expected head SHA guarded by the platform.
 5. Re-read Linear acceptance criteria and reconcile Linear status deliberately;
    a merged PR or closed GitHub issue alone is not acceptance.

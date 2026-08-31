@@ -44,7 +44,7 @@ deleted**. That is the rollback window.
 
 ```bash
 cd frontend
-npm ci                       # or symlink an existing node_modules
+npm ci
 npx vitest run src/presentation/workspace/__tests__/workspace-compatibility-verification.test.ts
 ```
 
