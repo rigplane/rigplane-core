@@ -257,8 +257,11 @@ ws.send(JSON.stringify({
 - `layout/` — `RadioLayout.svelte` (desktop), responsive frame
 - `panels/` — `MetersDockPanel.svelte` plus the per-function control panels (DSP, CW, filter, antenna, …)
 - `vfo/` — dual-receiver VFO UI with bridge controls
-- `display/` — meters, indicators, DX cluster
-- `controls/` — buttons, switches, mode/filter selectors
+- `display/` — `FrequencyDisplay.svelte` and frequency formatting
+- `meters/` — `BarGauge.svelte`, `LinearSMeter.svelte` and their scale helpers
+- `controls/` — band and attenuator selectors, theme/language pickers, status
+  badges, `value-control/`
+- `dialogs/` — `SendReportDialog.svelte`
 - `wiring/` — where the pure surfaces meet live state (per CLAUDE.md)
 - `theme/` — design tokens, theme catalogue, fonts (the skin registry is `skins/registry.ts`)
 
