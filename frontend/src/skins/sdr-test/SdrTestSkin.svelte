@@ -1,16 +1,22 @@
 <!--
-  SDR Test Skin — the MOR-1065 migrated reference vertical. Delegates to
-  RadioLayout, which branches on skinId === 'sdr-test' and mounts the
-  semantic VFO/RX-TX surfaces (SemanticRadioSurfaces, MOR-1063/1064) in
-  place of the legacy twin-VFO block and sidebar TX panel. Everything else
-  (sidebars, spectrum, meters dock, status bar) is inherited from the
-  standard desktop layout.
+  SDR Test Skin — the sdr-test presentation entrypoint (MOR-1066). A pure
+  RadioLayout delegate; its import boundary (no transport, no audioManager)
+  is pinned by architecture-boundaries.test.ts, "the sdr-test entrypoint's
+  own import boundary" (MOR-1093).
 
-  Registered as the 'sdr-test' v1 layout manifest under this same id
-  (MOR-1066, presentation/layouts/declarations.ts) — see
-  presentation/layouts/__tests__/sdr-registration.test.ts. The pre-migration
-  SdrVfoScreen prototype is no longer mounted here; RadioLayout stopped
-  swapping it in once the semantic surfaces landed.
+  Which areas of that shell render as semantic surfaces and which keep their
+  legacy twin is decided inside RadioLayout, off the ACTIVE layout manifest's
+  zone declarations — NOT by this file, and no longer by a hardcoded skin-id
+  comparison. The per-zone rule is stated once, in RadioLayout.svelte's own
+  header comment (MOR-1313), and that comment is the authority. It is not
+  restated here on purpose: the description this one replaces kept describing
+  the pre-MOR-1313 `skinId === 'sdr-test'` boolean long after RadioLayout had
+  stopped deciding anything with it.
+
+  This skin's manifest is `sdrTestLayout` (presentation/layouts/declarations.ts);
+  its registration, zones and requiredSemanticSurfaces are pinned by
+  presentation/layouts/__tests__/sdr-registration.test.ts. `SdrVfoScreen.svelte`
+  next door is a diagnostic renderer this entrypoint does not mount.
 -->
 <script lang="ts">
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';
