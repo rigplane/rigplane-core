@@ -54,5 +54,24 @@ Rules:
   artifact, because the directive pins the exact head SHA the lines refer to;
   everywhere else in your output, cite file plus symbol name. Do not soften a
   BLOCKED into a PASS; do not block on stylistic taste.
+- Post PASS/BLOCKED on the code as soon as review is done. Report CI state as
+  you find it — queued, running, or complete with counts — but do not wait
+  for CI to finish and do not withhold a verdict solely because it hasn't.
+  Confirming checks are green at the exact head before merge is a separate
+  step the coordinator takes, not yours.
 - Bash always runs foreground with an explicit timeout; never use
   run_in_background.
+- That timeout is local only. A test run started on the remote test host
+  through the helper script that drives it keeps running, and keeps
+  holding whatever lock that script uses, even after the local process
+  that started it is killed — killing the local side does not stop the
+  remote command. (This manual helper is a different mechanism from the
+  GitHub Actions self-hosted runner behind `quick.yml`/`full.yml`/
+  `visual.yml` — do not confuse the two.) This is easy to trigger by
+  accident: a remote run that exceeds the harness's own 10-minute
+  single-command ceiling gets backgrounded, and if the task is then
+  stopped or the agent finishes, the remote side is left running with no
+  parent. The symptom is a stalled queue for other work on that host — not
+  an obviously stuck process. If you kill or abandon a remote run, confirm
+  it actually died on the remote host; killing the local process is not
+  enough.

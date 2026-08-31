@@ -76,11 +76,18 @@ Before opening a PR:
 
 Before merging a non-trivial PR:
 
-1. Use a fresh independent reviewer who did not author the change.
-2. Review the exact current 40-hex head SHA and post a normal comment beginning
-   `Agent Review: PASS <full-40-hex-head-SHA>` only after a PASS result.
-3. Confirm the PR is non-draft, all required checks are green, and the exact-head
-   `Agent Review Gate` is green.
+1. Use a fresh independent reviewer (the verifier) who did not author the
+   change.
+2. Verifier: review the exact current 40-hex head SHA and post a normal
+   comment beginning `Agent Review: PASS <full-40-hex-head-SHA>` only after
+   a PASS result. Report CI state as found; do not wait for it to finish
+   (AGENTS.md § Protected main and review gate).
+3. Coordinator, immediately before merging: confirm the PR is non-draft,
+   all required checks are green, and the exact-head `Agent Review Gate` is
+   green. On `main` itself, also confirm the previous merge's `Tests
+   (quick)` run has **started**, not merely queued — a queued run would
+   otherwise be displaced by this merge's own push (AGENTS.md § Protected
+   main and review gate; tracked as MOR-2048).
 4. Merge with the expected head SHA guarded by the platform.
 5. Re-read Linear acceptance criteria and reconcile Linear status deliberately;
    a merged PR or closed GitHub issue alone is not acceptance.
