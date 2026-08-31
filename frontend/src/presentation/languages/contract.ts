@@ -17,6 +17,7 @@
  * needs the real `semantic/` unions, so it lives in the sibling module
  * `./state-vocabulary.ts` instead of here.
  */
+import { guardLayoutCompatibility } from './layout-compatibility-guard';
 
 /**
  * Naming policy (MOR-977 §4.6, MOR-1071): kebab-case, no vendor/model
@@ -176,10 +177,18 @@ export function validateManifest(manifest: DesignLanguageManifest): void {
 
 const registry = new Map<string, DesignLanguageManifest>();
 
-/** Validates then registers `manifest`. Re-registering an ID overwrites it. */
+/**
+ * Validates then registers `manifest`. Re-registering an ID overwrites it.
+ *
+ * `guardLayoutCompatibility` (MOR-2054) is a dev-only, pass-through check:
+ * it never throws and never changes `manifest`, so it has no effect on
+ * validation, registration, or on what `designLanguageActivation` later
+ * returns for this manifest — see that module's doc comment for what it
+ * warns about and why this is the one place every manifest passes through.
+ */
 export function registerDesignLanguage(manifest: DesignLanguageManifest): void {
   validateManifest(manifest);
-  registry.set(manifest.id, manifest);
+  registry.set(manifest.id, guardLayoutCompatibility(manifest));
 }
 export function getDesignLanguage(id: string): DesignLanguageManifest | undefined {
   return registry.get(id);

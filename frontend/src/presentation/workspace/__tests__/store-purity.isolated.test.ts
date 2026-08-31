@@ -104,6 +104,10 @@ describe('the workspace store is inert until it is initialised (MOR-1079)', () =
   it('the closure is the store, the repository and the three pure contracts', () => {
     expect(closure(ENTRY).sort()).toEqual([
       'src/presentation/languages/contract.ts',
+      // MOR-2054: dev-only, pass-through guard `contract.ts` calls from
+      // `registerDesignLanguage` — imports nothing but `contract.ts` itself
+      // (type-only), so it is pure and belongs in this closure too.
+      'src/presentation/languages/layout-compatibility-guard.ts',
       'src/presentation/layouts/contract.ts',
       'src/presentation/workspace/contract.ts',
       'src/presentation/workspace/legacy-readers.ts',
