@@ -839,11 +839,7 @@ export function toMeterProps(
   const rx = state ? activeRx(state) : null;
   // MOR-1409 A12: no fabricated zero-meter reading for an unobserved
   // receiver — a real S0/zero-power/zero-SWR reading is indistinguishable
-  // from "never read" without this fix. No production `.svelte` file was
-  // found to call `toMeterProps` repo-wide (`MetersDockPanel.svelte`, the
-  // live desktop meter component, reads raw `radioState` fields directly,
-  // bypassing this function entirely — plan §5) — zero golden/display risk
-  // either way; this is a direct honesty fix at the projection layer.
+  // from "never read" without this fix.
   return {
     sValue: rx?.sMeter ?? Number.NaN,
     signal: rx?.sMeter ?? Number.NaN,

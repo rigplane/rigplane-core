@@ -65,7 +65,6 @@ Don't add per-push matrix builds back without explicit reason — the goal is mi
 - `lib/runtime/` → singleton FrontendRuntime, wraps stores + transport + audio
 - `lib/runtime/adapters/` → pure functions mapping runtime state → component props
 - `components-v2/wiring/` → where the pure surfaces meet live state: derives view models via `lib/runtime/adapters/` and turns surface callbacks into commands
-- `components-v2/panels/` + `layout/` → presentation only, NO direct store/transport imports
 - `skins/` → skin registry + entry points (see `SkinId` in `skins/registry.ts` for the current list; `amber-lcd` is a legacy persisted-preference alias, not a live entry point)
 - eslint `no-restricted-imports` enforces: panels/layouts cannot import `$lib/transport/*` or `$lib/audio/audio-manager`
 - ADR: `docs/plans/2026-04-12-target-frontend-architecture.md`
