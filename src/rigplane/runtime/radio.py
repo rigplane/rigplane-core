@@ -4311,7 +4311,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         await self._send_civ_raw(civ, wait_response=False)
         self._attenuator_state = db > 0
-        logger.debug("self._commands.set_attenuator(%d dB) sent (fire-and-forget)", db)
+        logger.debug("set_attenuator(%d dB) sent (fire-and-forget)", db)
 
     async def set_attenuator(self, on: bool, receiver: int = RECEIVER_MAIN) -> None:
         """Enable or disable attenuator (compat wrapper, Command29-aware)."""

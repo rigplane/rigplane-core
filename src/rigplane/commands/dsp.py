@@ -25,16 +25,26 @@ module was still calling them with ``cmd_map=None`` (see batch 2's own
 `mode.py` docstring) -- this batch is what makes their fallback branches
 finally dead, and `_builders.py` drops them in the same commit.
 
-**Constant census** (repo-wide grep before deleting): ``_SUB_NB``,
-``_SUB_NR``, ``_SUB_IP_PLUS`` had no reader left anywhere once this
-module's own fallback branches were gone, and are deleted from `_frame.py`.
-``_CMD_ATT``, ``_CMD_PREAMP``, ``_SUB_AF_MUTE``, ``_SUB_DIGISEL_STATUS``,
-``_SUB_PREAMP_STATUS`` stay defined in `_frame.py` (and, for ``_CMD_PREAMP``,
-re-exported from `commands/__init__.py`): ``tests/mock_server.py``,
-``tests/test_single_rx_plain_routing.py``, ``tests/test_dsp_levels_part2.py``
-and ``tests/integration/test_dsp_levels_integration.py`` all still read one
-or more of them directly to build expected wire frames. ``_CMD_CTL_MEM``
-stays for the same reason batch 2 kept it: `mode.py: parse_data_mode_response`,
+**Constant census** (resolved by AST import analysis against `_frame.py`,
+not by name occurrence -- several test files below define their own
+same-named local literals rather than importing, which a text grep
+conflates with a real reader): ``_SUB_NB``, ``_SUB_NR``, ``_SUB_IP_PLUS``,
+``_SUB_AF_MUTE`` and ``_SUB_DIGISEL_STATUS`` have no importer left
+anywhere in `src/` or `tests/` once this module's own fallback branches
+were gone -- the last two were missed in this batch's first pass (found by
+review, MOR-2008 batch 3 round 2) because `tests/mock_server.py`,
+`tests/test_dsp_levels_part2.py` and `tests/integration/
+test_dsp_levels_integration.py` each hold an unrelated local literal of
+the same name, not an ``from .._frame import`` of it. All five are
+deleted from `_frame.py`. ``_CMD_ATT`` and ``_SUB_PREAMP_STATUS`` stay:
+each has exactly one real importer, `tests/test_single_rx_plain_routing.py`
+(confirmed by AST, not by the four candidate files the first pass named).
+``_CMD_PREAMP`` stays for a different, stronger reason: `_frame.py` reads
+its own definition directly, in the cmd29 decode path
+(``if real_command == _CMD_PREAMP``), and `commands/__init__.py`
+re-exports it -- `tests/test_single_rx_plain_routing.py` also imports it,
+but that import is not why it survives. ``_CMD_CTL_MEM`` stays for the
+same reason batch 2 kept it: `mode.py: parse_data_mode_response`,
 `system.py` and `memory.py` all still read it directly. This module drops
 its own import of all of them except the ``_SUB_*`` values still passed as
 the leading, now-unread ``sub`` argument to the three shared templates
