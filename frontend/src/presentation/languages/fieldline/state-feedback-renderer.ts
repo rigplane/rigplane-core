@@ -10,12 +10,12 @@
  * `txSessionState()`, themselves derived from the App-owned
  * `TxAuthoritySnapshot` — plus `fault` and `keyBlocked`. It never reads a raw
  * `ptt`. The fail-closed DECISION over those four fields is
- * `semantic/rx-tx-surface`'s `resolveTxFeedbackState` (MOR-2031): it takes a
- * named struct of exactly those four primitives, never a whole
- * `RendererViewModel`, so a fifth field cannot be smuggled in without
- * changing that signature. Unrecognised values fail CLOSED to the doubt
- * rail, never to the quiet RX one: "nothing is happening" is the dangerous
- * claim.
+ * `resolveTxFeedbackState` (MOR-2031, `presentation/languages/tx-feedback-
+ * state.ts`): it takes a named struct of exactly those four primitives,
+ * never a whole `RendererViewModel`, so a fifth field cannot be smuggled in
+ * without changing that signature. Unrecognised values fail CLOSED to the
+ * doubt rail, never to the quiet RX one: "nothing is happening" is the
+ * dangerous claim.
  *
  * Colour is never the sole channel. Every state carries a distinct rail WIDTH,
  * a distinct band TREATMENT (absent / outlined / filled) and a distinct text
@@ -32,7 +32,7 @@
 import type { DesignLanguageTokens, RendererViewModel } from '../contract';
 import {
   resolveTxFeedbackState, stringField, type TxFeedbackRail, type TxKeyTreatment,
-} from '../../../semantic/rx-tx-surface';
+} from '../tx-feedback-state';
 import { FIELDLINE_KNOCKOUT, FIELDLINE_PALETTE } from './tokens';
 
 export type BandTreatment = 'absent' | 'outlined' | 'filled';

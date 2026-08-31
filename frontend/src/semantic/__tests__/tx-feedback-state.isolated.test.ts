@@ -1,13 +1,17 @@
 /**
  * MOR-2031 — `resolveTxFeedbackState`, the ONE fail-closed decision both
  * `fieldline` and `studioline` state-feedback renderers now defer to instead
- * of each carrying its own copy. Before this ticket
- * `presentation/languages/{fieldline,studioline}/state-feedback-renderer.ts`
- * were character-for-character identical apart from vocabulary (rail
- * geometry, labels); this file pins that one shared decision once, at its
- * source, rather than per language.
+ * of each carrying its own copy. Before this ticket the two renderers were
+ * NOT byte-identical (159 vs 124 lines — fieldline alone owns
+ * `BandTreatment`, `FieldlineBand`, `SLAB_EDGE` and a knockout branch); what
+ * was identical, character for character, was the DECISION itself — the
+ * `renderStateFeedback` header down through the `held`/`treatment` ternary.
+ * This file pins that one shared decision once, at its source, rather than
+ * per language.
  *
- * Every fixture below is produced by the real MOR-1064 vocabulary
+ * Every fixture below, except the deliberately unrecognised ones (a
+ * hand-written `{ rf: 'who-knows', session: 'brand-new-phase' }` literal in
+ * each `describe` block), is produced by the real MOR-1064 vocabulary
  * (`rfState`/`txSessionState` over a `TxAuthoritySnapshot`), the same way
  * both renderers' own test files build theirs.
  *
@@ -18,15 +22,20 @@
  * convention routes any `*.isolated.test.ts` file to the isolated project,
  * hence this file's name.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { rfState, txSessionState, type TxAuthoritySnapshot } from '../rx-tx-surface';
 import {
-  resolveTxFeedbackState, rfState, stringField, txSessionState,
-  type TxAuthoritySnapshot, type TxFeedbackRail, type TxFeedbackState,
-} from '../rx-tx-surface';
+  resolveTxFeedbackState, stringField, type TxFeedbackRail, type TxFeedbackState,
+} from '../../presentation/languages/tx-feedback-state';
+import * as txFeedbackState from '../../presentation/languages/tx-feedback-state';
 import {
   registerDesignLanguage, resolveRenderer, type RendererViewModel,
 } from '../../presentation/languages/contract';
 import { validManifest } from '../../presentation/languages/__tests__/fixtures';
+import { renderStateFeedback as renderFieldlineFeedback } from '../../presentation/languages/fieldline/state-feedback-renderer';
+import { FIELDLINE_TOKENS } from '../../presentation/languages/fieldline/tokens';
+import { renderStateFeedback as renderStudiolineFeedback } from '../../presentation/languages/studioline/state-feedback-renderer';
+import { STUDIOLINE_TOKENS } from '../../presentation/languages/studioline/tokens';
 
 const authority = (over: Partial<TxAuthoritySnapshot> = {}): TxAuthoritySnapshot => ({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null, ...over,
@@ -120,13 +129,18 @@ describe('resolveTxFeedbackState — the shared session-bucket decision (MOR-203
 });
 
 describe('a third design language inherits the decision without copying it (MOR-2031 acceptance)', () => {
-  // The actual proof the duplication is gone: this renderer contains NO
-  // fail-closed logic of its own — no session table, no doubt fallback, no
-  // keyBlocked-vs-keyed ordering — only a lookup table indexed by the
-  // SHARED resolver's `rail`. A fix to the shared decision reaches this
-  // language for free; a bug in a per-language copy could not have been
-  // caught by this test before MOR-2031, because there was no shared
-  // decision to index into.
+  // This renderer contains NO fail-closed logic of its own — no session
+  // table, no doubt fallback, no keyBlocked-vs-keyed ordering — only a
+  // lookup table indexed by the SHARED resolver's `rail`. A fix to the
+  // shared decision reaches this language for free.
+  //
+  // Output equality alone cannot show that: a hand-duplicated PRIVATE copy
+  // of `resolveTxFeedbackState` (its own session table, its own doubt
+  // fallback, its own keyBlocked ordering) reproduces the same
+  // widths/keyed/treatment below and passes every `it.each` in this
+  // `describe` block too. What such a copy cannot fake is the CALL itself
+  // — see "thirdline actually calls" below, which spies on the shared
+  // resolver instead of only comparing output.
   const THIRDLINE_RAIL_WIDTH: Record<TxFeedbackRail, number> = {
     idle: 2, pending: 5, keyed: 9, releasing: 5, failed: 9, doubt: 5,
   };
@@ -168,5 +182,39 @@ describe('a third design language inherits the decision without copying it (MOR-
     ) as ReturnType<typeof renderThirdlineFeedback>;
     expect(out.widthPx).toBe(THIRDLINE_RAIL_WIDTH.doubt);
     expect(out.treatment).not.toBe('idle');
+  });
+
+  it('thirdline actually calls the shared resolveTxFeedbackState (not a private copy of it)', () => {
+    const spy = vi.spyOn(txFeedbackState, 'resolveTxFeedbackState');
+    try {
+      renderThirdline(TX);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('fieldline and studioline both call the shared resolver, not a private copy (MOR-2031 acceptance)', () => {
+  const viewModel: RendererViewModel = { kind: 'state-feedback', fields: fieldsOf(TX) };
+
+  it('fieldline calls the shared resolveTxFeedbackState rather than a private copy of it', () => {
+    const spy = vi.spyOn(txFeedbackState, 'resolveTxFeedbackState');
+    try {
+      renderFieldlineFeedback(viewModel, FIELDLINE_TOKENS);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('studioline calls the shared resolveTxFeedbackState rather than a private copy of it', () => {
+    const spy = vi.spyOn(txFeedbackState, 'resolveTxFeedbackState');
+    try {
+      renderStudiolineFeedback(viewModel, STUDIOLINE_TOKENS);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
