@@ -6,11 +6,10 @@
  * (b) a target the DOM does not reach yet — today that is `desktop-v2` only
  * (MOR-1263 §3 "manifest first"; see `desktop-v2-registration.test.ts`).
  *
- * This file reads each skin's OWN source as TEXT, never imports it — the
- * same reason `cockpit-topology-adaptation.test.ts`'s F8 rule and every
- * other module-specifier pin in this suite do: several of these skins
- * transitively import `lib/stores/layout.svelte.ts`, whose module-scope
- * `localStorage` read throws outside a DOM environment.
+ * This file reads each skin's OWN source as TEXT, never imports it: the
+ * `DOM_BACKED` probes below check for markers in each shell's own source
+ * that a mounted or compiled `.svelte` component would not expose as
+ * inspectable text.
  *
  * The expected forward-declared set below is a LITERAL, not a derived count:
  * a new manifest that lands still forward-declared must be added to it by
@@ -51,9 +50,10 @@ import { desktopV2Layout, sdrTestLayout } from '../declarations';
 // `BARREL_MANIFESTS` (MOR-2060).
 import * as layoutDeclarationsBarrel from '../declarations';
 
-/** Every manifest currently registered by the barrel (mirrors F8's
- *  `REAL_LAYOUTS`), derived from the barrel's own export surface instead of
- *  hand-listed (MOR-2060) — see the namespace-import comment above. */
+/** Every manifest currently registered by the barrel (mirrors
+ *  `cockpit-topology-adaptation.test.ts`'s F8 `REAL_LAYOUTS`), derived
+ *  from the barrel's own export surface instead of hand-listed
+ *  (MOR-2060) — see the namespace-import comment above. */
 const ALL_MANIFESTS: readonly LayoutManifest[] =
   Object.values(layoutDeclarationsBarrel).filter(isLayoutManifest);
 

@@ -109,8 +109,8 @@ describe('audio-only scope survives the cockpit slicing (scope=false + audioFft=
 // SkinId and no loader, so the cockpit was the only registered layout manifest
 // the App could not load. `lcd-registration.test.ts` pins the same rule for
 // `lcd-*` ids only; this generalizes it to every real manifest. Read as TEXT,
-// not imported: `skins/registry.ts` pulls in the layout preference store,
-// which touches `localStorage` at module scope.
+// not imported: this checks the literal `SkinId` union and `SKIN_LOADERS`
+// keys written in the source, not the imported module's runtime shape.
 describe('F8 — every registered layout manifest names a loadable skin', () => {
   // MOR-1266 adds desktop-v2 to the generalized set — the rule this ticket's
   // acceptance criteria requires to stay green for every newly registered
