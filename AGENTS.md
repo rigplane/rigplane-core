@@ -138,9 +138,9 @@ implementation agent may not be the review agent.
   message that the squash body will carry onto `main`. No workflow checks them;
   nothing reads a PR body, and the gate matches its directive pattern against
   only the first non-blank line of a comment.
-  The implementation agent must apply them before merge anyway — editing the
-  body or comment, or writing the corrected squash body at merge — and say in
-  the PR that it did.
+  Whoever merges must apply them before merge anyway — editing the body or
+  comment, or writing the corrected squash body at merge — and say in the PR
+  that it did.
 - A failed `Agent Review Gate` without BLOCKED feedback usually means no fresh
   PASS comment exists for the current head; perform or refresh the review
   instead of skipping the PR.
