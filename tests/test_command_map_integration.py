@@ -206,10 +206,19 @@ class TestSetterParity:
         assert commands.set_tuning_step(3, cmd_map=cmd_map) == expected
 
     def test_ptt_on(self, cmd_map):
-        assert commands.ptt_on(cmd_map=cmd_map) == commands.ptt_on()
+        # commands/ptt.py migrated onto the bound command map in MOR-2007
+        # Steps 5..N (module 4): ptt_on now requires cmd_map -- pinned
+        # against the frame the deleted fallback used to build.
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00, data=b"\x01"
+        )
+        assert commands.ptt_on(cmd_map=cmd_map) == expected
 
     def test_ptt_off(self, cmd_map):
-        assert commands.ptt_off(cmd_map=cmd_map) == commands.ptt_off()
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00, data=b"\x00"
+        )
+        assert commands.ptt_off(cmd_map=cmd_map) == expected
 
     def test_power_on(self, cmd_map):
         assert commands.power_on(cmd_map=cmd_map) == commands.power_on()
@@ -237,18 +246,22 @@ class TestSetterParity:
 
 class TestPttWireContractAcrossProfiles:
     """MOR-2002 step 2b-ptt (Q7, ``docs/plans/2026-08-29-profile-driven-
-    command-bytes.md`` §8.1): a ``[commands]`` tuple carries the full
-    constant prefix, payload byte included. Before this fix,
-    ``rigs/ic705.toml``, ``rigs/ic7300.toml``, ``rigs/ic7610.toml``,
-    ``rigs/ic9700.toml`` and ``rigs/x6200.toml`` held a 2-byte
-    ``ptt_on``/``ptt_off`` tuple and the ``cmd_map`` branch appended the
-    payload byte itself; ``rigs/x6100.toml`` already held the 3-byte tuple,
-    so its map branch doubled the payload
-    (``tests/command_map_parity_divergences.txt``, X6100 rows). This
-    sweeps every CI-V profile in ``rigs/`` that declares
-    ``ptt_on``/``ptt_off`` and requires the map branch and the fallback
-    branch to build the identical frame, ending in the explicit payload
-    byte.
+    command-bytes.md`` §8.1) fixed a doubled-payload divergence while
+    ``ptt.py`` still had a fallback to compare against: ``rigs/ic705.toml``,
+    ``rigs/ic7300.toml``, ``rigs/ic7610.toml``, ``rigs/ic9700.toml`` and
+    ``rigs/x6200.toml`` held a 2-byte ``ptt_on``/``ptt_off`` tuple and the
+    ``cmd_map`` branch appended the payload byte itself; ``rigs/x6100.toml``
+    already held the 3-byte tuple, so its map branch doubled the payload
+    (``tests/command_map_parity_divergences.txt``, X6100 rows, since fixed
+    by commits 9957ee49/713172a6).
+
+    MOR-2007 Steps 5..N (module 4) made ``cmd_map`` required and deleted the
+    fallback, so there is no more "identical to fallback" to assert --
+    converted the same way ``config.py``'s/``levels.py``'s/``vfo.py``'s own
+    migrations converted their equivalent classes (the transitional pin
+    recorded from the #2820 review): every CI-V profile that declares
+    ``ptt_on``/``ptt_off`` is swept and each is pinned directly, ending in
+    the explicit payload byte the Q7 contract requires.
     """
 
     @staticmethod
@@ -263,18 +276,14 @@ class TestPttWireContractAcrossProfiles:
     def test_at_least_one_civ_profile_declares_ptt(self) -> None:
         assert self._civ_ptt_maps()
 
-    def test_ptt_on_identical_to_fallback_on_every_civ_profile(self) -> None:
+    def test_ptt_on_ends_with_the_payload_byte_on_every_civ_profile(self) -> None:
         for model, cmd_map in self._civ_ptt_maps().items():
             mapped = commands.ptt_on(cmd_map=cmd_map)
-            fallback = commands.ptt_on()
-            assert mapped == fallback, model
             assert mapped.endswith(b"\x1c\x00\x01\xfd"), model
 
-    def test_ptt_off_identical_to_fallback_on_every_civ_profile(self) -> None:
+    def test_ptt_off_ends_with_the_payload_byte_on_every_civ_profile(self) -> None:
         for model, cmd_map in self._civ_ptt_maps().items():
             mapped = commands.ptt_off(cmd_map=cmd_map)
-            fallback = commands.ptt_off()
-            assert mapped == fallback, model
             assert mapped.endswith(b"\x1c\x00\x00\xfd"), model
 
 

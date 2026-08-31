@@ -26,16 +26,16 @@
 # reachable from a builder that was compared, not sites observed to
 # execute. Every number here is re-measured and asserted by that
 # test. Regenerate, do not edit.
-census	builders_compared	140
+census	builders_compared	138
 census	cat_only_profiles	2
-census	dual_implementation_sites	105
+census	dual_implementation_sites	103
 census	frames_diverged	0
-census	frames_identical	983
+census	frames_identical	971
 census	hardcode_only_builders	16
-census	profile_builder_map_gaps	570
+census	profile_builder_map_gaps	566
 census	profiles	8
 census	public_builders	230
-census	sites_compared	100
+census	sites_compared	98
 cat-only	FTX-1	108
 cat-only	TX-500	50
 gap	get_af_mute	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
@@ -105,8 +105,6 @@ gap	get_vox	FTX-1,TX-500,X6100,X6200
 gap	get_xfc_status	FTX-1,TX-500,X6100,X6200
 gap	power_off	FTX-1,TX-500,X6100,X6200
 gap	power_on	FTX-1,TX-500,X6100,X6200
-gap	ptt_off	FTX-1,TX-500
-gap	ptt_on	FTX-1,TX-500
 gap	scope_data_output	FTX-1,TX-500,X6100,X6200
 gap	scope_off	FTX-1,TX-500,X6100,X6200
 gap	scope_on	FTX-1,TX-500,X6100,X6200
@@ -221,6 +219,8 @@ requires-map	levels.py:set_rf_power
 requires-map	levels.py:set_squelch
 requires-map	levels.py:set_vox_delay
 requires-map	levels.py:set_vox_gain
+requires-map	ptt.py:ptt_off
+requires-map	ptt.py:ptt_on
 requires-map	vfo.py:get_dual_watch
 requires-map	vfo.py:get_main_sub_band
 requires-map	vfo.py:get_quick_dual_watch

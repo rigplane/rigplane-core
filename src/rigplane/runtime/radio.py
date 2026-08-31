@@ -194,8 +194,6 @@ from rigplane.commands import (
     parse_powerstat,
     power_off,
     power_on,
-    ptt_off,
-    ptt_on,
     send_cw,
     set_af_mute,
     set_agc,
@@ -3763,9 +3761,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         civ = (
-            ptt_on(to_addr=self._radio_addr)
+            self._commands.ptt_on(to_addr=self._radio_addr)
             if on
-            else ptt_off(to_addr=self._radio_addr)
+            else self._commands.ptt_off(to_addr=self._radio_addr)
         )
         await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
@@ -3849,7 +3847,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return self._civ_runtime.capture_managed_port(provider_generation, observer)
 
     async def _write_managed_ptt(self, provider_generation: int, on: bool) -> None:
-        civ = (ptt_on if on else ptt_off)(to_addr=self._radio_addr)
+        civ = (self._commands.ptt_on if on else self._commands.ptt_off)(
+            to_addr=self._radio_addr
+        )
         await self._civ_runtime.write_managed_ptt(civ, provider_generation)
 
     async def _retire_managed_tx_port(self, provider_generation: int) -> None:
