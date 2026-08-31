@@ -255,12 +255,12 @@ ws.send(JSON.stringify({
 
 **Components** (organized under `components-v2/`):
 - `layout/` — `RadioLayout.svelte` (desktop), responsive frame
-- `panels/` — `VfoPanel.svelte`, `MetersDockPanel.svelte`, `ControlPanel.svelte` (sliders, toggles)
+- `panels/` — `MetersDockPanel.svelte` plus the per-function control panels (DSP, CW, filter, antenna, …)
 - `vfo/` — dual-receiver VFO UI with bridge controls
 - `display/` — meters, indicators, DX cluster
 - `controls/` — buttons, switches, mode/filter selectors
 - `wiring/` — where the pure surfaces meet live state (per CLAUDE.md)
-- `theme/` — skin registry, visual system
+- `theme/` — design tokens, theme catalogue, fonts (the skin registry is `skins/registry.ts`)
 
 **State management:**
 - Server state = single source of truth (via WS state_update)
