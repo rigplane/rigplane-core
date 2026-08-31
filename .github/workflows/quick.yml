@@ -128,11 +128,32 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Frontend install + check + tests + build
+      - name: Frontend install
         if: steps.filter.outputs.frontend == 'true'
         run: |
           cd frontend
           npm ci
+
+      # `npm run lint` (`eslint src/`), not `npm run lint:boundaries`
+      # (`eslint src/components-v2/panels/ src/components-v2/layout/
+      # src/presentation/` — frontend/package.json): frontend/eslint.config.js's
+      # no-restricted-imports boundary rules are not confined to those three
+      # paths. FORBIDDEN_SEMANTIC_IMPORTS, FORBIDDEN_PRIMITIVES_IMPORTS,
+      # FORBIDDEN_SKINS_IMPORTS, and the lib/runtime isolation block also gate
+      # src/semantic/, src/primitives/, src/skins/, and src/lib/runtime/ —
+      # zones lint:boundaries never scans. Runs ahead of the check/test/build
+      # step below (MOR-2043): eslint takes seconds, that step takes minutes,
+      # so a boundary violation fails fast.
+      - name: Frontend lint
+        if: steps.filter.outputs.frontend == 'true'
+        run: |
+          cd frontend
+          npm run lint
+
+      - name: Frontend check + tests + build
+        if: steps.filter.outputs.frontend == 'true'
+        run: |
+          cd frontend
           npm run i18n:check
           npm run check
           npx vitest run

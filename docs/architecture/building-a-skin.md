@@ -266,25 +266,28 @@ every file under `src/skins/**` — `.svelte` and `.ts` alike. Route state
 through `lib/runtime/adapters/*` (see the contracts table above) and
 callback props instead.
 
-Nothing in `.github/` runs `eslint` on the frontend as a CI step —
-`npm run lint` exists but `.github/workflows/quick.yml`'s frontend block
-never calls it. The only thing that actually exercises this boundary in CI
-is `frontend/src/__tests__/architecture-boundaries.test.ts`, which
+`.github/workflows/quick.yml`'s `Frontend lint` step runs `npm run lint`
+(`eslint src/`) in CI (MOR-2043), so every real file under `src/skins/**`
+is scanned on every PR that touches frontend paths — not just on a
+contributor's own machine. That only catches a violation that already
+exists in a real file, though: proving a rule's *shape* is correct — that
+it rejects the forbidden import and still accepts the legitimate one — is
+`frontend/src/__tests__/architecture-boundaries.test.ts`'s job. It
 instantiates a real `ESLint` and lints virtual fixture text against the
 live flat config, as an ordinary case inside `npx vitest run`. If you need
 to confirm your skin's imports are legal — or add a new ban — add or extend
 a fixture case there (search that file for `MOR-2039` for the existing
-skins fixtures); a rule with no fixture case is not actually checked
-anywhere.
+skins fixtures).
 
 ## Proving it works
 
 ```
 cd frontend
-npm run check     # svelte-check + tsc — catches every missing Record<SkinId, ...> entry above
-npx vitest run     # entrypoints, registry, layout registration, meter-contract, architecture-boundaries, and everything else
+npm run lint        # eslint — the import-boundary rules from "What a skin may not import" above
+npm run check       # svelte-check + tsc — catches every missing Record<SkinId, ...> entry above
+npx vitest run      # entrypoints, registry, layout registration, meter-contract, architecture-boundaries, and everything else
 ```
 
-These are the same two commands `.github/workflows/quick.yml`'s frontend
+These are the same three commands `.github/workflows/quick.yml`'s frontend
 block runs (minus the i18n check, Playwright visual smoke, and build steps,
 which a new skin does not need to touch).
