@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Callable, Literal, Protocol
 from .._connection_state import RadioConnectionState
 from ..audio import AudioPacket
 from ..audio.lan_stream import SYNTHETIC_RX_IDENT
-from ..commands import parse_ack_nak, scope_off as _scope_off_cmd
+from ..commands import parse_ack_nak
 from ..exceptions import AudioFormatError, CommandError, ConnectionError
 from ..radio import CoreRadio
 from ..types import AudioCodec, ScopeCompletionPolicy, get_audio_capabilities
@@ -628,7 +628,7 @@ class _IcomSerialRadioBase(CoreRadio):
         pol = ScopeCompletionPolicy(policy)
         wait_resp = pol == ScopeCompletionPolicy.STRICT
         resp = await self._send_civ_raw(
-            _scope_off_cmd(to_addr=self._radio_addr),
+            self._commands.scope_off(to_addr=self._radio_addr),
             wait_response=wait_resp,
         )
         if wait_resp and resp is not None and parse_ack_nak(resp) is False:

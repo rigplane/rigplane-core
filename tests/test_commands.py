@@ -1559,73 +1559,90 @@ class TestAdvancedScopeParsers:
 
 
 class TestAdvancedScopeValidation:
-    """Negative tests for scope builder input validation."""
+    """Negative tests for scope builder input validation.
 
-    def test_scope_set_mode_rejects_out_of_range(self) -> None:
+    commands/scope.py migrated onto the bound command map in MOR-2007
+    Steps 5..N (module 5): every builder now requires cmd_map. Passed
+    explicitly below so each call reaches its own ``_validate_scope_*``
+    check (raising the intended ValueError) rather than stopping at the
+    Q6 "missing cmd_map" TypeError first -- a call omitting cmd_map can no
+    longer reach its own validation logic at all.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_scope_set_mode_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import scope_set_mode
 
         with pytest.raises(ValueError, match="scope mode must be 0-3"):
-            scope_set_mode(5)
+            scope_set_mode(5, cmd_map=cmd_map)
 
-    def test_scope_set_span_rejects_negative(self) -> None:
+    def test_scope_set_span_rejects_negative(self, cmd_map) -> None:
         from rigplane.commands import scope_set_span
 
         with pytest.raises(ValueError, match="scope span must be 0-7"):
-            scope_set_span(-1)
+            scope_set_span(-1, cmd_map=cmd_map)
 
-    def test_scope_set_edge_rejects_zero(self) -> None:
+    def test_scope_set_edge_rejects_zero(self, cmd_map) -> None:
         from rigplane.commands import scope_set_edge
 
         with pytest.raises(ValueError, match="scope edge must be 1-4"):
-            scope_set_edge(0)
+            scope_set_edge(0, cmd_map=cmd_map)
 
-    def test_scope_set_speed_rejects_out_of_range(self) -> None:
+    def test_scope_set_speed_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import scope_set_speed
 
         with pytest.raises(ValueError, match="scope speed must be 0-2"):
-            scope_set_speed(3)
+            scope_set_speed(3, cmd_map=cmd_map)
 
-    def test_scope_set_center_type_rejects_out_of_range(self) -> None:
+    def test_scope_set_center_type_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import scope_set_center_type
 
         with pytest.raises(ValueError, match="scope center type must be 0-2"):
-            scope_set_center_type(5)
+            scope_set_center_type(5, cmd_map=cmd_map)
 
-    def test_scope_set_rbw_rejects_out_of_range(self) -> None:
+    def test_scope_set_rbw_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import scope_set_rbw
 
         with pytest.raises(ValueError, match="scope rbw must be 0-2"):
-            scope_set_rbw(3)
+            scope_set_rbw(3, cmd_map=cmd_map)
 
-    def test_scope_set_ref_rejects_out_of_range(self) -> None:
+    def test_scope_set_ref_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import scope_set_ref
 
         with pytest.raises(ValueError, match="scope ref must be"):
-            scope_set_ref(15.0)
+            scope_set_ref(15.0, cmd_map=cmd_map)
 
-    def test_scope_set_fixed_edge_rejects_end_before_start(self) -> None:
+    def test_scope_set_fixed_edge_rejects_end_before_start(self, cmd_map) -> None:
         from rigplane.commands import scope_set_fixed_edge
 
         with pytest.raises(ValueError, match="end_hz must be greater"):
-            scope_set_fixed_edge(edge=1, start_hz=14_350_000, end_hz=14_000_000)
+            scope_set_fixed_edge(
+                edge=1, start_hz=14_350_000, end_hz=14_000_000, cmd_map=cmd_map
+            )
 
-    def test_scope_set_fixed_edge_rejects_edge_out_of_range(self) -> None:
+    def test_scope_set_fixed_edge_rejects_edge_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import scope_set_fixed_edge
 
         with pytest.raises(ValueError, match="scope fixed edge must be 1-4"):
-            scope_set_fixed_edge(edge=5, start_hz=14_000_000, end_hz=14_350_000)
+            scope_set_fixed_edge(
+                edge=5, start_hz=14_000_000, end_hz=14_350_000, cmd_map=cmd_map
+            )
 
-    def test_scope_receiver_rejects_invalid(self) -> None:
+    def test_scope_receiver_rejects_invalid(self, cmd_map) -> None:
         from rigplane.commands import scope_main_sub
 
         with pytest.raises(ValueError, match="scope receiver must be 0 or 1"):
-            scope_main_sub(5)
+            scope_main_sub(5, cmd_map=cmd_map)
 
-    def test_scope_payload_rejects_invalid_receiver(self) -> None:
+    def test_scope_payload_rejects_invalid_receiver(self, cmd_map) -> None:
         from rigplane.commands import scope_set_mode
 
         with pytest.raises(ValueError, match="scope receiver must be 0 or 1"):
-            scope_set_mode(0, receiver=5)
+            scope_set_mode(0, receiver=5, cmd_map=cmd_map)
 
 
 class TestToneTsqlCommands:

@@ -116,6 +116,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same change, touching only the frame-building expression and
   nothing else in either method (the latter sits in the managed-TX
   transmit-interlock path).
+- **`rigplane.commands.scope` builders require `cmd_map`; there is no
+  hardcoded fallback (MOR-2007, Steps 5..N module 5 -- the last module of
+  this migration series --
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** All
+  thirty-three scope/waterfall builders (`scope_on`/`scope_off`, data
+  output, main/sub, single/dual, mode, span, edge, hold, ref, speed,
+  during-TX, center type, VBW, fixed edge, RBW — each get/set pair) now
+  require `cmd_map` as a required keyword-only argument, the same way as
+  `rigplane.commands.config`/`levels`/`vfo`/`ptt` above. No wire bytes
+  changed: every CI-V profile already declared the identical `[0x27, sub]`
+  tuple the deleted fallback built (this module's own 4 divergence rows —
+  `get_scope_center_type` with `receiver=0` — closed earlier, in #2821).
+  One behaviour change rides along: **`scope_set_center_type` no longer
+  accepts a `receiver` keyword** — the latent setter-side twin of the
+  `get_scope_center_type` fix in #2821 (MOR-1981). `0x27 0x1C` takes
+  exactly one data byte, no selector, on all four official CI-V references
+  and the two bench sessions behind #2821; a `receiver` byte built a
+  genuinely different, wrong frame rather than addressing Main/Sub. No
+  production caller ever passed it. The production call sites, in
+  `runtime/_scope_runtime.py: ScopeRuntimeMixin` and
+  `backends/_icom_serial_base.py`, moved onto `self._commands.<builder>`
+  in the same change.
 - **CLI: `rigplane ptt on` no longer returns while the rig is keyed.** The
   command now holds the key for as long as the process runs and unkeys on the
   way out, so the process that keyed the rig is the one that releases it. A
