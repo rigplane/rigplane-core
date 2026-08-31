@@ -4,14 +4,9 @@ A skin is a top-level Svelte component, addressable by a `SkinId`, that
 composes the shared semantic surfaces and/or its own bespoke components into
 a renderable UI. For the conceptual picture of how a skin relates to layout
 and design-language choice, see "Three independent knobs" in
-`docs/plans/2026-04-12-target-frontend-architecture.md` — but that section's
-own "Skin implementation (Svelte 5)" and "Skin resolution and lazy loading"
-code samples further down do not match current code (compare them to
-`SkinId` and `SKIN_LOADERS` in `frontend/src/skins/registry.ts`) and are
-tracked stale under MOR-2044 — do not copy them. Everything below points at
-real, current source instead. Concretely, and independent of that ADR's
-staleness: both worked examples below show that a skin's own code never
-special-cases which design language is active — see the
+`docs/plans/2026-04-12-target-frontend-architecture.md`. Everything below
+points at real, current source. Both worked examples below show that a
+skin's own code never special-cases which design language is active — see the
 `presentation/languages/*` row below for why.
 
 This doc plus the two worked examples it names is meant to be enough:

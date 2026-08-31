@@ -625,15 +625,6 @@ listing all five values above, not a cycle button. `cycleLayoutMode()` — a
 vestigial cycle-through-values helper with no caller — was deleted
 (MOR-2059).
 
-!!! note "Current v2 skins vs. the planned v3 architecture"
-    This is the current (v2 migration-era) skin system — skins are chosen
-    synchronously and rendered from one shared component tree, not
-    lazy-loaded. The target v3 frontend architecture
-    ([`docs/plans/2026-04-12-target-frontend-architecture.md`](../plans/2026-04-12-target-frontend-architecture.md))
-    describes a different, not-yet-implemented design — `import()`-loaded
-    skin components and a workspace/slot layout model. Treat that document
-    as a plan, not as shipped behavior.
-
 ### Bottom sheet gestures
 
 Bottom sheets support swipe-to-dismiss:
