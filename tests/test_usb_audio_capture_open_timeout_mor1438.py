@@ -394,15 +394,6 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
         # started -- whereas an open that QUEUED behind the wedged workers is
         # started as soon as one of them frees.
         #
-        # A wall-clock bound here would not isolate the saturation decision.
-        # That decision is one counter comparison; the rest of what the call
-        # costs is the preamble every start_rx() pays before it -- device
-        # enumeration, which on macOS re-runs an uncached CoreAudio
-        # name->UID lookup (``_get_uid_map``). None of the path's await
-        # points yields to the loop, so that preamble and any descheduling
-        # land in one uninterrupted window. The pre-change bound was 25ms and
-        # went red on an idle host.
-        #
         # Release the pool and wait for it to DRAIN -- every wedged open
         # completes and its abandoned handle is closed -- before reading the
         # probe. Draining is what gives the read its meaning: a queued probe
