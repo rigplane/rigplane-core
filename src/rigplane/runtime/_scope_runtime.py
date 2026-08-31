@@ -36,39 +36,6 @@ from rigplane.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
-from rigplane.commands import (
-    get_scope_data_output_enabled as _get_scope_data_output_enabled_cmd,
-)
-from rigplane.commands import get_scope_enabled as _get_scope_enabled_cmd
-from rigplane.commands import get_scope_center_type as _get_scope_center_type_cmd
-from rigplane.commands import get_scope_during_tx as _get_scope_during_tx_cmd
-from rigplane.commands import get_scope_edge as _get_scope_edge_cmd
-from rigplane.commands import get_scope_fixed_edge as _get_scope_fixed_edge_cmd
-from rigplane.commands import get_scope_hold as _get_scope_hold_cmd
-from rigplane.commands import get_scope_main_sub as _get_scope_main_sub_cmd
-from rigplane.commands import get_scope_mode as _get_scope_mode_cmd
-from rigplane.commands import get_scope_rbw as _get_scope_rbw_cmd
-from rigplane.commands import get_scope_ref as _get_scope_ref_cmd
-from rigplane.commands import get_scope_single_dual as _get_scope_single_dual_cmd
-from rigplane.commands import get_scope_span as _get_scope_span_cmd
-from rigplane.commands import get_scope_speed as _get_scope_speed_cmd
-from rigplane.commands import get_scope_vbw as _get_scope_vbw_cmd
-from rigplane.commands import scope_data_output as _scope_data_output_cmd
-from rigplane.commands import scope_main_sub as _scope_main_sub_cmd
-from rigplane.commands import scope_off as _scope_off_cmd
-from rigplane.commands import scope_on as _scope_on_cmd
-from rigplane.commands import scope_set_center_type as _scope_set_center_type_cmd
-from rigplane.commands import scope_set_during_tx as _scope_set_during_tx_cmd
-from rigplane.commands import scope_set_edge as _scope_set_edge_cmd
-from rigplane.commands import scope_set_fixed_edge as _scope_set_fixed_edge_cmd
-from rigplane.commands import scope_set_hold as _scope_set_hold_cmd
-from rigplane.commands import scope_set_mode as _scope_set_mode_cmd
-from rigplane.commands import scope_set_rbw as _scope_set_rbw_cmd
-from rigplane.commands import scope_set_ref as _scope_set_ref_cmd
-from rigplane.commands import scope_set_span as _scope_set_span_cmd
-from rigplane.commands import scope_set_speed as _scope_set_speed_cmd
-from rigplane.commands import scope_set_vbw as _scope_set_vbw_cmd
-from rigplane.commands import scope_single_dual as _scope_single_dual_cmd
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.radio_state import ScopeControlsState
 from rigplane.scope import ScopeFrame
@@ -147,14 +114,14 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._scope_activity_event.clear()
 
         resp = await self._send_civ_raw(
-            _scope_on_cmd(to_addr=self._radio_addr), wait_response=wait_resp
+            self._commands.scope_on(to_addr=self._radio_addr), wait_response=wait_resp
         )
         if wait_resp and resp is not None:
             if parse_ack_nak(resp) is False:
                 raise CommandError("Radio rejected scope enable")
         if output:
             resp = await self._send_civ_raw(
-                _scope_data_output_cmd(True, to_addr=self._radio_addr),
+                self._commands.scope_data_output(True, to_addr=self._radio_addr),
                 wait_response=wait_resp,
             )
             if wait_resp and resp is not None:
@@ -173,11 +140,11 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Read panel-scope and waveform-output state without changing either."""
         self._check_connected()
         panel_response = await self._send_civ_expect(
-            _get_scope_enabled_cmd(to_addr=self._radio_addr),
+            self._commands.get_scope_enabled(to_addr=self._radio_addr),
             label="get_scope_enabled",
         )
         output_response = await self._send_civ_expect(
-            _get_scope_data_output_enabled_cmd(to_addr=self._radio_addr),
+            self._commands.get_scope_data_output_enabled(to_addr=self._radio_addr),
             label="get_scope_data_output_enabled",
         )
         return (
@@ -190,13 +157,13 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         panel_enabled, output_enabled = state
         await self._send_civ_raw(
-            (_scope_on_cmd if panel_enabled else _scope_off_cmd)(
+            (self._commands.scope_on if panel_enabled else self._commands.scope_off)(
                 to_addr=self._radio_addr
             ),
             wait_response=False,
         )
         await self._send_civ_raw(
-            _scope_data_output_cmd(output_enabled, to_addr=self._radio_addr),
+            self._commands.scope_data_output(output_enabled, to_addr=self._radio_addr),
             wait_response=False,
         )
 
@@ -216,7 +183,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         wait_resp = pol == ScopeCompletionPolicy.STRICT
 
         resp = await self._send_civ_raw(
-            _scope_data_output_cmd(False, to_addr=self._radio_addr),
+            self._commands.scope_data_output(False, to_addr=self._radio_addr),
             wait_response=wait_resp,
         )
         if wait_resp and resp is not None:
@@ -227,7 +194,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Read the selected scope receiver (0=MAIN, 1=SUB)."""
         self._check_connected()
         resp = await self._send_civ_expect(
-            _get_scope_main_sub_cmd(to_addr=self._radio_addr),
+            self._commands.get_scope_main_sub(to_addr=self._radio_addr),
             label="get_scope_receiver",
         )
         receiver = parse_scope_main_sub_response(resp)
@@ -240,7 +207,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if receiver not in (0, 1):
             raise ValueError(f"scope receiver must be 0 or 1, got {receiver}")
         await self._send_civ_raw(
-            _scope_main_sub_cmd(receiver, to_addr=self._radio_addr),
+            self._commands.scope_main_sub(receiver, to_addr=self._radio_addr),
             wait_response=False,
         )
         self._scope_controls().receiver = receiver
@@ -249,7 +216,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Read whether the scope is in dual-display mode."""
         self._check_connected()
         resp = await self._send_civ_expect(
-            _get_scope_single_dual_cmd(to_addr=self._radio_addr),
+            self._commands.get_scope_single_dual(to_addr=self._radio_addr),
             label="get_scope_dual",
         )
         dual: bool = parse_scope_single_dual_response(resp)
@@ -263,7 +230,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         # receiver prefix, so the setter must not either (MOR-664). A stray
         # receiver byte malforms the write and the radio ignores it.
         await self._send_civ_raw(
-            _scope_single_dual_cmd(dual, to_addr=self._radio_addr),
+            self._commands.scope_single_dual(dual, to_addr=self._radio_addr),
             wait_response=False,
         )
         self._scope_controls().dual = dual
@@ -273,7 +240,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         resp = await self._send_civ_expect(
-            _get_scope_mode_cmd(to_addr=self._radio_addr, receiver=receiver),
+            self._commands.get_scope_mode(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_mode",
         )
         rx_hint, mode = parse_scope_mode_response(resp)
@@ -286,7 +253,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_mode_cmd(mode, to_addr=self._radio_addr, receiver=receiver),
+            self._commands.scope_set_mode(
+                mode, to_addr=self._radio_addr, receiver=receiver
+            ),
             wait_response=False,
         )
         self._scope_controls().mode = mode
@@ -296,7 +265,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         resp = await self._send_civ_expect(
-            _get_scope_span_cmd(to_addr=self._radio_addr, receiver=receiver),
+            self._commands.get_scope_span(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_span",
         )
         rx_hint, span = parse_scope_span_response(resp)
@@ -309,7 +278,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_span_cmd(span, to_addr=self._radio_addr, receiver=receiver),
+            self._commands.scope_set_span(
+                span, to_addr=self._radio_addr, receiver=receiver
+            ),
             wait_response=False,
         )
         self._scope_controls().span = span
@@ -319,7 +290,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         resp = await self._send_civ_expect(
-            _get_scope_edge_cmd(to_addr=self._radio_addr, receiver=receiver),
+            self._commands.get_scope_edge(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_edge",
         )
         rx_hint, edge = parse_scope_edge_response(resp)
@@ -332,7 +303,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_edge_cmd(edge, to_addr=self._radio_addr, receiver=receiver),
+            self._commands.scope_set_edge(
+                edge, to_addr=self._radio_addr, receiver=receiver
+            ),
             wait_response=False,
         )
         self._scope_controls().edge = edge
@@ -342,7 +315,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         resp = await self._send_civ_expect(
-            _get_scope_hold_cmd(to_addr=self._radio_addr, receiver=receiver),
+            self._commands.get_scope_hold(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_hold",
         )
         rx_hint, hold = parse_scope_hold_response(resp)
@@ -355,7 +328,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_hold_cmd(on, to_addr=self._radio_addr, receiver=receiver),
+            self._commands.scope_set_hold(
+                on, to_addr=self._radio_addr, receiver=receiver
+            ),
             wait_response=False,
         )
         self._scope_controls().hold = on
@@ -365,7 +340,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         resp = await self._send_civ_expect(
-            _get_scope_ref_cmd(to_addr=self._radio_addr, receiver=receiver),
+            self._commands.get_scope_ref(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_ref",
         )
         rx_hint, ref_db = parse_scope_ref_response(resp)
@@ -378,7 +353,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_ref_cmd(ref, to_addr=self._radio_addr, receiver=receiver),
+            self._commands.scope_set_ref(
+                ref, to_addr=self._radio_addr, receiver=receiver
+            ),
             wait_response=False,
         )
         self._scope_controls().ref_db = ref
@@ -388,7 +365,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         resp = await self._send_civ_expect(
-            _get_scope_speed_cmd(to_addr=self._radio_addr, receiver=receiver),
+            self._commands.get_scope_speed(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_speed",
         )
         rx_hint, speed = parse_scope_speed_response(resp)
@@ -401,7 +378,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_speed_cmd(speed, to_addr=self._radio_addr, receiver=receiver),
+            self._commands.scope_set_speed(
+                speed, to_addr=self._radio_addr, receiver=receiver
+            ),
             wait_response=False,
         )
         self._scope_controls().speed = speed
@@ -410,7 +389,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Read whether the scope remains visible during transmit."""
         self._check_connected()
         resp = await self._send_civ_expect(
-            _get_scope_during_tx_cmd(to_addr=self._radio_addr),
+            self._commands.get_scope_during_tx(to_addr=self._radio_addr),
             label="get_scope_during_tx",
         )
         during_tx = parse_scope_during_tx_response(resp)
@@ -421,7 +400,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Enable or disable scope during transmit."""
         self._check_connected()
         await self._send_civ_raw(
-            _scope_set_during_tx_cmd(on, to_addr=self._radio_addr),
+            self._commands.scope_set_during_tx(on, to_addr=self._radio_addr),
             wait_response=False,
         )
         self._scope_controls().during_tx = on
@@ -430,7 +409,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Read the scope center-type setting (0..2)."""
         self._check_connected()
         resp = await self._send_civ_expect(
-            _get_scope_center_type_cmd(to_addr=self._radio_addr),
+            self._commands.get_scope_center_type(to_addr=self._radio_addr),
             label="get_scope_center_type",
         )
         receiver, center_type = parse_scope_center_type_response(resp)
@@ -442,7 +421,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Set the scope center-type setting (0..2)."""
         self._check_connected()
         await self._send_civ_raw(
-            _scope_set_center_type_cmd(center_type, to_addr=self._radio_addr),
+            self._commands.scope_set_center_type(center_type, to_addr=self._radio_addr),
             wait_response=False,
         )
         self._scope_controls().center_type = center_type
@@ -452,7 +431,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         resp = await self._send_civ_expect(
-            _get_scope_vbw_cmd(to_addr=self._radio_addr, receiver=receiver),
+            self._commands.get_scope_vbw(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_vbw",
         )
         rx_hint, narrow = parse_scope_vbw_response(resp)
@@ -468,7 +447,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         # reflects back (MOR-664).
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_vbw_cmd(narrow, to_addr=self._radio_addr, receiver=receiver),
+            self._commands.scope_set_vbw(
+                narrow, to_addr=self._radio_addr, receiver=receiver
+            ),
             wait_response=False,
         )
         self._scope_controls().vbw_narrow = narrow
@@ -495,7 +476,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         )
         resolved_edge = edge if edge is not None else (current.edge or 1)
         resp = await self._send_civ_expect(
-            _get_scope_fixed_edge_cmd(
+            self._commands.get_scope_fixed_edge(
                 to_addr=self._radio_addr,
                 range_index=resolved_range,
                 edge=resolved_edge,
@@ -517,7 +498,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
     ) -> None:
         """Set the fixed-edge scope bounds."""
         self._check_connected()
-        civ = _scope_set_fixed_edge_cmd(
+        civ = self._commands.scope_set_fixed_edge(
             edge=edge,
             start_hz=start_hz,
             end_hz=end_hz,
@@ -529,7 +510,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             wait_response=False,
         )
         # Re-parse the frame we just built to recover the resolved range_index
-        # (computed inside scope_set_fixed_edge_cmd) without duplicating logic.
+        # (computed inside commands/scope.py: scope_set_fixed_edge) without
+        # duplicating logic.
         fixed_edge = parse_scope_fixed_edge_response(parse_civ_frame(civ))
         self._scope_controls().fixed_edge = fixed_edge
         self._scope_controls().edge = fixed_edge.edge
@@ -539,7 +521,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._check_connected()
         receiver = self._scope_controls().receiver
         resp = await self._send_civ_expect(
-            _get_scope_rbw_cmd(to_addr=self._radio_addr, receiver=receiver),
+            self._commands.get_scope_rbw(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_rbw",
         )
         rx_hint, rbw = parse_scope_rbw_response(resp)
@@ -555,7 +537,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         # reflects back (MOR-664).
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
-            _scope_set_rbw_cmd(rbw, to_addr=self._radio_addr, receiver=receiver),
+            self._commands.scope_set_rbw(
+                rbw, to_addr=self._radio_addr, receiver=receiver
+            ),
             wait_response=False,
         )
         self._scope_controls().rbw = rbw

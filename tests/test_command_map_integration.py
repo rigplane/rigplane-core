@@ -133,10 +133,19 @@ class TestGetterParity:
         )
 
     def test_scope_on(self, cmd_map):
-        assert commands.scope_on(cmd_map=cmd_map) == commands.scope_on()
+        # commands/scope.py migrated onto the bound command map in MOR-2007
+        # Steps 5..N (module 5): scope_on now requires cmd_map -- pinned
+        # against the frame the deleted fallback used to build.
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x01"
+        )
+        assert commands.scope_on(cmd_map=cmd_map) == expected
 
     def test_scope_off(self, cmd_map):
-        assert commands.scope_off(cmd_map=cmd_map) == commands.scope_off()
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x00"
+        )
+        assert commands.scope_off(cmd_map=cmd_map) == expected
 
 
 # ── Profile parity: setters (with data) ────────────────────────
@@ -307,13 +316,13 @@ class TestVfoScopeMapFallbackParityAcrossProfiles:
     the argument outright rather than special-casing it, so there is only
     one call shape left and both branches agree by construction.
 
-    ``vfo.py``'s two getters below no longer have a fallback to compare
-    against (MOR-2007 Steps 5..N module 3 made ``cmd_map`` required and
-    deleted it) -- converted the same way ``config.py``'s/``levels.py``'s
-    own migrations converted their "identical to fallback" classes: pin
-    the map path directly against the frame the deleted fallback used to
-    build. ``scope.py`` is unmigrated (a later module, not this ticket),
-    so its case is unchanged, still comparing both branches.
+    ``vfo.py``'s two getters and ``scope.py``'s ``get_scope_center_type``
+    below no longer have a fallback to compare against (MOR-2007 Steps
+    5..N modules 3 and 5 made ``cmd_map`` required and deleted it in each)
+    -- converted the same way ``config.py``'s/``levels.py``'s own
+    migrations converted their "identical to fallback" classes: pin the
+    map path directly against the frame the deleted fallback used to
+    build.
     """
 
     @staticmethod
@@ -363,18 +372,16 @@ class TestVfoScopeMapFallbackParityAcrossProfiles:
             "IC-9700",
         }
 
-    def test_get_scope_center_type_identical_to_fallback_on_every_declaring_profile(
-        self,
-    ) -> None:
+    def test_get_scope_center_type_on_every_declaring_profile(self) -> None:
         for model, cmd_map in self._maps_declaring("get_scope_center_type").items():
             mapped = commands.get_scope_center_type(cmd_map=cmd_map)
-            fallback = commands.get_scope_center_type()
-            assert mapped == fallback, model
             assert mapped.endswith(b"\x27\x1c\xfd"), model
 
-    def test_get_scope_center_type_refuses_receiver_argument(self) -> None:
-        with pytest.raises(TypeError):
-            commands.get_scope_center_type(receiver=0)
+    def test_get_scope_center_type_refuses_receiver_argument(self, cmd_map) -> None:
+        # cmd_map is passed so this raises on the removed receiver kwarg
+        # specifically, not merely because cmd_map was omitted.
+        with pytest.raises(TypeError, match="receiver"):
+            commands.get_scope_center_type(receiver=0, cmd_map=cmd_map)
 
 
 # ── Helper-delegating functions ─────────────────────────────────

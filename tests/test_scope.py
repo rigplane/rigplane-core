@@ -9,12 +9,14 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import rigplane.commands as raw_commands
 
 from rigplane import IC_7610_ADDR
+from rigplane.rig_loader import load_rig
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
@@ -62,6 +64,8 @@ from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
 
 bind_default_addr_module(raw_commands, to_addr=IC_7610_ADDR)
 bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
+
+RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
 
 
 # ---------------------------------------------------------------------------
@@ -684,24 +688,37 @@ class TestScopeAssemblerShedIncomplete:
 
 
 class TestScopeCommandBuilders:
-    """Verify scope CI-V command bytes."""
+    """Verify scope CI-V command bytes.
 
-    def test_scope_on(self) -> None:
-        frame = scope_on()
+    commands/scope.py migrated onto the bound command map in MOR-2007
+    Steps 5..N (module 5): every builder now requires cmd_map. IC-7610's
+    declared bytes are unchanged from the deleted fallback's (every CI-V
+    profile already agreed, per the empty
+    tests/command_map_parity_divergences.txt), so the expected literals
+    below are unchanged too -- only the cmd_map= wiring is new.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_scope_on(self, cmd_map) -> None:
+        frame = scope_on(cmd_map=cmd_map)
         assert frame[:2] == b"\xfe\xfe"
         assert frame[4] == 0x27
         assert frame[5] == 0x10
         assert frame[6] == 0x01
         assert frame[-1] == 0xFD
 
-    def test_scope_off(self) -> None:
-        frame = scope_off()
+    def test_scope_off(self, cmd_map) -> None:
+        frame = scope_off(cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x10
         assert frame[6] == 0x00
 
-    def test_get_scope_enabled_is_read_only(self) -> None:
-        assert get_scope_enabled() == b"\xfe\xfe\x98\xe0\x27\x10\xfd"
+    def test_get_scope_enabled_is_read_only(self, cmd_map) -> None:
+        assert get_scope_enabled(cmd_map=cmd_map) == b"\xfe\xfe\x98\xe0\x27\x10\xfd"
 
     def test_parse_scope_enabled_response(self) -> None:
         off = parse_civ_frame(
@@ -713,20 +730,23 @@ class TestScopeCommandBuilders:
         assert parse_scope_enabled_response(off) is False
         assert parse_scope_enabled_response(on) is True
 
-    def test_scope_data_output_on(self) -> None:
-        frame = scope_data_output_on()
+    def test_scope_data_output_on(self, cmd_map) -> None:
+        frame = scope_data_output_on(cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x11
         assert frame[6] == 0x01
 
-    def test_scope_data_output_off(self) -> None:
-        frame = scope_data_output_off()
+    def test_scope_data_output_off(self, cmd_map) -> None:
+        frame = scope_data_output_off(cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x11
         assert frame[6] == 0x00
 
-    def test_get_scope_data_output_enabled_is_read_only(self) -> None:
-        assert get_scope_data_output_enabled() == b"\xfe\xfe\x98\xe0\x27\x11\xfd"
+    def test_get_scope_data_output_enabled_is_read_only(self, cmd_map) -> None:
+        assert (
+            get_scope_data_output_enabled(cmd_map=cmd_map)
+            == b"\xfe\xfe\x98\xe0\x27\x11\xfd"
+        )
 
     def test_parse_scope_data_output_enabled_response(self) -> None:
         off = parse_civ_frame(
@@ -738,154 +758,163 @@ class TestScopeCommandBuilders:
         assert parse_scope_data_output_enabled_response(off) is False
         assert parse_scope_data_output_enabled_response(on) is True
 
-    def test_scope_main_sub_main(self) -> None:
-        frame = scope_main_sub(0)
+    def test_scope_main_sub_main(self, cmd_map) -> None:
+        frame = scope_main_sub(0, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x12
         assert frame[6] == 0x00
 
-    def test_scope_main_sub_sub(self) -> None:
-        frame = scope_main_sub(1)
+    def test_scope_main_sub_sub(self, cmd_map) -> None:
+        frame = scope_main_sub(1, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x12
         assert frame[6] == 0x01
 
-    def test_scope_single_dual_single(self) -> None:
-        frame = scope_single_dual(False)
+    def test_scope_single_dual_single(self, cmd_map) -> None:
+        frame = scope_single_dual(False, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x13
         assert frame[6] == 0x00
 
-    def test_scope_single_dual_dual(self) -> None:
-        frame = scope_single_dual(True)
+    def test_scope_single_dual_dual(self, cmd_map) -> None:
+        frame = scope_single_dual(True, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x13
         assert frame[6] == 0x01
 
-    def test_scope_set_mode(self) -> None:
-        frame = scope_set_mode(2)
+    def test_scope_set_mode(self, cmd_map) -> None:
+        frame = scope_set_mode(2, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x14
         assert frame[6] == 0x02
 
-    def test_scope_set_span(self) -> None:
-        frame = scope_set_span(3)  # index 3 = 25000 Hz
+    def test_scope_set_span(self, cmd_map) -> None:
+        frame = scope_set_span(3, cmd_map=cmd_map)  # index 3 = 25000 Hz
         assert frame[4] == 0x27
         assert frame[5] == 0x15
         # BCD-encoded 25000 Hz (little-endian): 00 50 02 00 00
         assert frame[6:11] == bytes([0x00, 0x50, 0x02, 0x00, 0x00])
 
-    def test_scope_set_edge(self) -> None:
-        frame = scope_set_edge(4)
+    def test_scope_set_edge(self, cmd_map) -> None:
+        frame = scope_set_edge(4, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x16
         assert frame[6] == 0x04
 
-    def test_scope_set_hold(self) -> None:
-        frame = scope_set_hold(True)
+    def test_scope_set_hold(self, cmd_map) -> None:
+        frame = scope_set_hold(True, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x17
         assert frame[6] == 0x01
 
-    def test_scope_set_ref(self) -> None:
+    def test_scope_set_ref(self, cmd_map) -> None:
         # -10.5 dB → [10dB=1, 1dB=0] [0.1dB=5, 0] [sign=minus]
-        frame = scope_set_ref(-10.5)
+        frame = scope_set_ref(-10.5, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x19
         assert frame[6:9] == b"\x10\x50\x01"
 
-    def test_scope_set_speed(self) -> None:
-        frame = scope_set_speed(1)
+    def test_scope_set_speed(self, cmd_map) -> None:
+        frame = scope_set_speed(1, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x1A
         assert frame[6] == 0x01
 
-    def test_scope_set_vbw(self) -> None:
-        frame = scope_set_vbw(True)
+    def test_scope_set_vbw(self, cmd_map) -> None:
+        frame = scope_set_vbw(True, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x1D
         assert frame[6] == 0x01
 
-    def test_scope_set_rbw(self) -> None:
-        frame = scope_set_rbw(2)
+    def test_scope_set_rbw(self, cmd_map) -> None:
+        frame = scope_set_rbw(2, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x1F
         assert frame[6] == 0x02
 
-    def test_get_scope_main_sub(self) -> None:
-        frame = get_scope_main_sub()
+    def test_get_scope_main_sub(self, cmd_map) -> None:
+        frame = get_scope_main_sub(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x12\xfd"
 
-    def test_get_scope_single_dual(self) -> None:
-        frame = get_scope_single_dual()
+    def test_get_scope_single_dual(self, cmd_map) -> None:
+        frame = get_scope_single_dual(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x13\xfd"
 
-    def test_get_scope_mode(self) -> None:
-        frame = get_scope_mode()
+    def test_get_scope_mode(self, cmd_map) -> None:
+        frame = get_scope_mode(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x14\xfd"
 
-    def test_get_scope_span(self) -> None:
-        frame = get_scope_span()
+    def test_get_scope_span(self, cmd_map) -> None:
+        frame = get_scope_span(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x15\xfd"
 
-    def test_get_scope_edge(self) -> None:
-        frame = get_scope_edge()
+    def test_get_scope_edge(self, cmd_map) -> None:
+        frame = get_scope_edge(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x16\xfd"
 
-    def test_get_scope_hold(self) -> None:
-        frame = get_scope_hold()
+    def test_get_scope_hold(self, cmd_map) -> None:
+        frame = get_scope_hold(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x17\xfd"
 
-    def test_get_scope_ref(self) -> None:
-        frame = get_scope_ref()
+    def test_get_scope_ref(self, cmd_map) -> None:
+        frame = get_scope_ref(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x19\xfd"
 
-    def test_get_scope_speed(self) -> None:
-        frame = get_scope_speed()
+    def test_get_scope_speed(self, cmd_map) -> None:
+        frame = get_scope_speed(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x1a\xfd"
 
-    def test_get_scope_during_tx(self) -> None:
-        frame = get_scope_during_tx()
+    def test_get_scope_during_tx(self, cmd_map) -> None:
+        frame = get_scope_during_tx(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x1b\xfd"
 
-    def test_scope_set_during_tx(self) -> None:
-        frame = scope_set_during_tx(True)
+    def test_scope_set_during_tx(self, cmd_map) -> None:
+        frame = scope_set_during_tx(True, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x1B
         assert frame[6] == 0x01
 
-    def test_get_scope_center_type(self) -> None:
-        frame = get_scope_center_type()
+    def test_get_scope_center_type(self, cmd_map) -> None:
+        frame = get_scope_center_type(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x1c\xfd"
 
-    def test_scope_set_center_type(self) -> None:
-        frame = scope_set_center_type(2)
+    def test_scope_set_center_type(self, cmd_map) -> None:
+        frame = scope_set_center_type(2, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x1C
         assert frame[6] == 0x02
 
-    def test_get_scope_vbw(self) -> None:
-        frame = get_scope_vbw()
+    def test_scope_set_center_type_no_longer_accepts_receiver(self, cmd_map) -> None:
+        """MOR-2007: the latent setter-side twin of MOR-1981/#2821 -- see
+        commands/scope.py's module docstring. No production caller ever
+        passed receiver= (confirmed by grep before removing it)."""
+        with pytest.raises(TypeError, match="receiver"):
+            scope_set_center_type(2, receiver=0, cmd_map=cmd_map)
+
+    def test_get_scope_vbw(self, cmd_map) -> None:
+        frame = get_scope_vbw(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x1d\xfd"
 
-    def test_get_scope_fixed_edge(self) -> None:
+    def test_get_scope_fixed_edge(self, cmd_map) -> None:
         # IC-7610 NAKs a bare 0x27 0x1E query; it requires a <range><edge>
         # selector. Defaults are range=1, edge=1 (MOR-662).
-        frame = get_scope_fixed_edge()
+        frame = get_scope_fixed_edge(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x1e\x01\x01\xfd"
 
-    def test_get_scope_fixed_edge_selector(self) -> None:
-        frame = get_scope_fixed_edge(range_index=6, edge=4)
+    def test_get_scope_fixed_edge_selector(self, cmd_map) -> None:
+        frame = get_scope_fixed_edge(range_index=6, edge=4, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x1e\x06\x04\xfd"
 
-    def test_get_scope_fixed_edge_rejects_bad_edge(self) -> None:
+    def test_get_scope_fixed_edge_rejects_bad_edge(self, cmd_map) -> None:
         with pytest.raises(ValueError):
-            get_scope_fixed_edge(edge=5)
+            get_scope_fixed_edge(edge=5, cmd_map=cmd_map)
         with pytest.raises(ValueError):
-            get_scope_fixed_edge(edge=0)
+            get_scope_fixed_edge(edge=0, cmd_map=cmd_map)
 
-    def test_scope_set_fixed_edge(self) -> None:
-        frame = scope_set_fixed_edge(edge=4, start_hz=14_000_000, end_hz=14_350_000)
+    def test_scope_set_fixed_edge(self, cmd_map) -> None:
+        frame = scope_set_fixed_edge(
+            edge=4, start_hz=14_000_000, end_hz=14_350_000, cmd_map=cmd_map
+        )
         assert frame[4] == 0x27
         assert frame[5] == 0x1E
         assert frame[6] == 0x06
@@ -893,14 +922,25 @@ class TestScopeCommandBuilders:
         assert frame[8:13] == bcd_encode(14_000_000)
         assert frame[13:18] == bcd_encode(14_350_000)
 
-    def test_get_scope_rbw(self) -> None:
-        frame = get_scope_rbw()
+    def test_get_scope_rbw(self, cmd_map) -> None:
+        frame = get_scope_rbw(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x27\x1f\xfd"
 
-    def test_custom_addrs(self) -> None:
-        frame = scope_on(to_addr=0x70, from_addr=0xE1)
+    def test_custom_addrs(self, cmd_map) -> None:
+        frame = scope_on(to_addr=0x70, from_addr=0xE1, cmd_map=cmd_map)
         assert frame[2] == 0x70
         assert frame[3] == 0xE1
+
+    def test_scope_on_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            scope_on()  # type: ignore[call-arg]
+
+    def test_scope_set_mode_rejects_explicit_none_the_same_way(self, cmd_map) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            scope_set_mode(2, cmd_map=None)
 
 
 # ---------------------------------------------------------------------------
@@ -1071,7 +1111,10 @@ class TestRadioScopeCallback:
 
         transport.queue_response(_ack_udp())
 
-        civ_cmd = scope_on(to_addr=IC_7610_ADDR)
+        civ_cmd = scope_on(
+            to_addr=IC_7610_ADDR,
+            cmd_map=load_rig(RIG_DIR / "ic7610.toml").to_command_map(),
+        )
         response = await radio._execute_civ_raw(civ_cmd)
         assert response.command == 0xFB
         assert len(received) == 0
