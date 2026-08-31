@@ -455,10 +455,9 @@ describe('RadioLayout structure', () => {
 
   // MOR-1341: `desktop-v2` (the default here) now declares a `meters` zone
   // and retires `.bottom-dock` — see the suppression matrix in
-  // `semantic-desktop-migration.component.test.ts`. `sdr-test` declares no
-  // such zone, so it stays the layout that proves the dock still exists.
+  // `semantic-desktop-migration.component.test.ts`.
   it('renders .bottom-dock for a layout that declares no meters zone', () => {
-    const t = mountLayout('sdr-test');
+    const t = mountLayout(UNDECLARED);
     expect(t.querySelector('.bottom-dock')).not.toBeNull();
   });
 
@@ -546,12 +545,13 @@ describe('App presentation selection', () => {
 });
 
 // MOR-1341: `desktop-v2` (this file's `mountLayout()` default) now suppresses
-// `.bottom-dock` via its `meters` zone declaration. `sdr-test` declares none,
-// so it stays the layout that exercises the dock's OWN behaviour — same move
-// as `VfoHeader dual receiver` below, which tests the legacy deck the same way.
+// `.bottom-dock` via its `meters` zone declaration. MOR-1346 gave `sdr-test`
+// one too, so `UNDECLARED` is now the layout that exercises the dock's OWN
+// behaviour — same move as `VfoHeader dual receiver` below, which tests the
+// legacy deck the same way.
 describe('Bottom dock MetersDockPanel', () => {
   it('renders the unified meters dock panel inside .bottom-dock', () => {
-    const t = mountLayout('sdr-test');
+    const t = mountLayout(UNDECLARED);
     const dock = t.querySelector('.bottom-dock');
     expect(dock).not.toBeNull();
     expect(dock?.querySelector('[data-testid="meters-dock-panel"]')).not.toBeNull();
@@ -570,7 +570,7 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
   it('shows TX when the authority is keyed while radioState.ptt reads false', () => {
     rt.state = { active: 'MAIN', ptt: false, main: { sMeter: 120 } };
     txAuthority.current = { ...txAuthority.idle, radioTx: 'on', txRisk: 'confirmed-on' };
-    const t = mountLayout('sdr-test');
+    const t = mountLayout(UNDECLARED);
     expect(txTag(t)?.getAttribute('data-active')).toBe('true');
     expect(txTag(t)?.textContent).toBe('TX');
   });
@@ -578,7 +578,7 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
   it('shows RX when the authority is idle while radioState.ptt reads true', () => {
     rt.state = { active: 'MAIN', ptt: true, main: { sMeter: 120 } };
     txAuthority.current = { ...txAuthority.idle, radioTx: 'off', txRisk: 'none' };
-    const t = mountLayout('sdr-test');
+    const t = mountLayout(UNDECLARED);
     expect(txTag(t)?.getAttribute('data-active')).toBe('false');
     expect(txTag(t)?.textContent).toBe('RX');
   });
@@ -586,7 +586,7 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
   it('fails closed: an uncertain authority shows TX even with ptt false', () => {
     rt.state = { active: 'MAIN', ptt: false, main: { sMeter: 120 } };
     txAuthority.current = { ...txAuthority.idle, radioTx: 'off', txRisk: 'uncertain' };
-    const t = mountLayout('sdr-test');
+    const t = mountLayout(UNDECLARED);
     expect(txTag(t)?.getAttribute('data-active')).toBe('true');
   });
 });
@@ -658,7 +658,7 @@ describe('RadioLayout with radioState', () => {
 
   it('renders MetersDockPanel in the bottom dock for a layout with no meters zone', () => {
     radio.current = sampleState as any;
-    const t = mountLayout('sdr-test');
+    const t = mountLayout(UNDECLARED);
     expect(t.querySelector('.bottom-dock [data-testid="meters-dock-panel"]')).not.toBeNull();
   });
 });

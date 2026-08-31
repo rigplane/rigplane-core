@@ -70,10 +70,9 @@
   // legacy presentation untouched.
   //
   // Both resolving families declare the full pair, so both are fully semantic:
-  // `sdr-test` through one zone (`main: [vfo, rxTx]`) — its all-semantic
-  // behavior is the DEGENERATE case of this rule, byte-identical to MOR-1065 —
-  // and `desktop-v2` through two (`receiver-deck: [vfo]` + `rx-tx: [rxTx]`,
-  // MOR-1266), which is what puts desktop-v2 on the v3 path.
+  // `sdr-test` through one zone (`main: [vfo, rxTx]`) and `desktop-v2` through
+  // two (`receiver-deck: [vfo]` + `rx-tx: [rxTx]`, MOR-1266), which is what
+  // puts desktop-v2 on the v3 path.
   //
   // The MANIFEST is the authority, deliberately NOT the resolved surface plan
   // (`useSurfacePlan`, MOR-1082): the workspace may subtract a surface from a

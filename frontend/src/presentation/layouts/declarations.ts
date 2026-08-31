@@ -18,7 +18,20 @@ export const sdrTestLayout: LayoutManifest = {
   id: 'sdr-test',
   displayName: 'SDR Test',
   loader: () => import('../../skins/sdr-test/SdrTestSkin.svelte'),
-  zones: [{ id: 'main', surfaces: ['vfo', 'rxTx'] }],
+  // MOR-1346: `meters` joins as its own zone, the same shape every optional
+  // surface graduates through on `desktop-v2` (`desktop-declarations.ts`'s
+  // one-zone-per-surface pattern) — never merged into `main`, so a persisted
+  // `visibleSurfaces.main` preference recorded before this zone existed
+  // cannot silently hide it (`resolveZone`'s allow-list intersection would
+  // otherwise treat an unlisted new member as hidden). Declaring it is what
+  // lets RadioLayout.svelte's existing `semanticMeters` gate
+  // (`declared.has('meters')`) retire `<MetersDockPanel>` here too — the
+  // same S5/MOR-1341 mechanism `desktop-v2` already uses, not a second one.
+  // Not `required`: the semantic surface self-gates on `view.meters`.
+  zones: [
+    { id: 'main', surfaces: ['vfo', 'rxTx'] },
+    { id: 'meters', surfaces: ['meters'] },
+  ],
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
   stageSizing: { mode: 'fluid', responsiveBreakpoints: [] },
