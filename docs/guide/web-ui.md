@@ -614,14 +614,16 @@ delegation wrappers that mount the layout components with a fixed
    - `sdr-test` -> SDR Screen test skin
    - `auto` -> desktop-v2 unconditionally (MOR-1097 cutover); scope availability does not affect this resolution.
 
-`normalizeLayoutMode()` (`lib/stores/layout.svelte.ts`) normalizes legacy
-persisted values so old localStorage entries keep resolving:
-`amber-lcd`/`lcd` -> `lcd-cockpit`, `spectrum`/`desktop-v2` -> `standard`.
+`normalizeLayoutMode()` (`frontend/src/presentation/layout-mode.ts`, since
+MOR-2059; re-exported from `lib/stores/layout.svelte.ts` for existing
+callers) normalizes legacy persisted values so old localStorage entries
+keep resolving: `amber-lcd`/`lcd` -> `lcd-cockpit`, `spectrum`/`desktop-v2`
+-> `standard`.
 
 The status bar layout control (`StatusBar.svelte`) is a `<select>` dropdown
-listing all five values above, not a cycle button. `cycleLayoutMode()`
-(`lib/stores/layout.svelte.ts`) still exists but is not wired to any
-control in the current UI.
+listing all five values above, not a cycle button. `cycleLayoutMode()` — a
+vestigial cycle-through-values helper with no caller — was deleted
+(MOR-2059).
 
 !!! note "Current v2 skins vs. the planned v3 architecture"
     This is the current (v2 migration-era) skin system — skins are chosen

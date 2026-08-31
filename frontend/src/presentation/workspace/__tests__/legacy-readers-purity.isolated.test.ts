@@ -96,13 +96,16 @@ describe('legacy workspace readers are read-only (MOR-1078)', () => {
   });
 
   // ── Pin 3: structural, transitive over the enumerated closure ───────────
-  it('the closure is exactly the reader plus the two pure presentation contracts and the layout-compatibility guard', () => {
+  it('the closure is exactly the reader plus the two pure presentation contracts, the layout-compatibility guard and the layout-mode module', () => {
     expect(closure(ENTRY).sort()).toEqual([
       'src/presentation/languages/contract.ts',
       // MOR-2054: dev-only, pass-through guard `contract.ts` calls from
       // `registerDesignLanguage` — imports nothing but `contract.ts` itself
       // (type-only), so it is pure and belongs in this closure too.
       'src/presentation/languages/layout-compatibility-guard.ts',
+      // MOR-2059: the pure layout-mode vocabulary `workspace/contract.ts`
+      // now imports instead of hand-pinning its own copy. Imports nothing.
+      'src/presentation/layout-mode.ts',
       'src/presentation/layouts/contract.ts',
       'src/presentation/workspace/contract.ts',
       ENTRY,
