@@ -1,22 +1,31 @@
 <!--
-  SDR Test Skin — the sdr-test presentation entrypoint (MOR-1066). A pure
-  RadioLayout delegate; its import boundary (no transport, no audioManager)
-  is pinned by architecture-boundaries.test.ts, "the sdr-test entrypoint's
-  own import boundary" (MOR-1093).
+  SDR Test Skin — the v3 presentation entrypoint registered under the
+  `sdr-test` layout manifest (MOR-1066, `presentation/layouts/declarations.ts`:
+  `sdrTestLayout`). That manifest's registration, zones and
+  requiredSemanticSurfaces are pinned by
+  `presentation/layouts/__tests__/sdr-registration.test.ts`.
 
-  Which areas of that shell render as semantic surfaces and which keep their
-  legacy twin is decided inside RadioLayout, off the ACTIVE layout manifest's
-  zone declarations — NOT by this file, and no longer by a hardcoded skin-id
-  comparison. The per-zone rule is stated once, in RadioLayout.svelte's own
-  header comment (MOR-1313), and that comment is the authority. It is not
-  restated here on purpose: the description this one replaces kept describing
-  the pre-MOR-1313 `skinId === 'sdr-test'` boolean long after RadioLayout had
-  stopped deciding anything with it.
+  It stays a thin delegate to RadioLayout — the same shape DesktopSkin has —
+  because RadioLayout is where the v3 resolution happens: since MOR-1313 it
+  reads THIS entrypoint's manifest and suppresses, per declared zone, the
+  legacy twin of every semantic surface the manifest mounts. `sdr-test`
+  declares one zone (`main: [vfo, rxTx]`), so the semantic surfaces replace
+  `<VfoHeader>` and the sidebars' `<TxPanel>` does not render (MOR-1065). The
+  per-zone rule itself — and the R9 key/unkey reason the TX twin follows the
+  deck rather than its own zone declaration — is documented on RadioLayout's
+  `declared` / `semanticRxTx` derivations, and is not restated here.
 
-  This skin's manifest is `sdrTestLayout` (presentation/layouts/declarations.ts);
-  its registration, zones and requiredSemanticSurfaces are pinned by
-  presentation/layouts/__tests__/sdr-registration.test.ts. `SdrVfoScreen.svelte`
-  next door is a diagnostic renderer this entrypoint does not mount.
+  Nothing else is suppressed for this skin: the manifest declares no `meters`
+  zone, so the legacy meters dock still renders, and the sidebars, spectrum
+  and status bar are inherited from the standard desktop layout unchanged.
+
+  The skin's job is to name the entrypoint id; the manifest says what that id
+  composes. Skins may not import transport, audioManager or `$lib/stores/*`
+  (eslint `FORBIDDEN_SKINS_IMPORTS`, the last of those added by MOR-2039);
+  `__tests__/architecture-boundaries.test.ts` exercises that rule for this
+  path. `SdrVfoScreen.svelte` next door is not mounted — MOR-1065 replaced
+  this top slot, and it is kept as the pre-migration prototype reference
+  pending MOR-1099.
 -->
 <script lang="ts">
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';
