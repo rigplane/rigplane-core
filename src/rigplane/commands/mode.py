@@ -7,7 +7,7 @@ Zero divergence rows -- every declaring profile's tuple already matched the
 fallback's own bytes exactly (verified by grep across ``rigs/*.toml`` before
 deleting each fallback).
 
-Nine of the fourteen route through `_builders.py` shared templates
+Six of the fourteen route through `_builders.py` shared templates
 (``_build_function_get``/``_build_function_value_set``/
 ``_build_function_bool_set``), which stay -- `dsp.py` (not migrated in this
 batch) still calls them with ``cmd_map=None``, so their fallback branches

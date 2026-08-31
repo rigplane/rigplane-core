@@ -7,10 +7,11 @@ Zero divergence rows -- every declaring profile's tuple already matched the
 fallback's own bytes exactly (verified by grep across ``rigs/*.toml`` before
 deleting each fallback).
 
-Not a matcher-backed-getter candidate for `tests/test_response_shape_from_
-profile.py`'s keystone table, despite all four getters routing through
-``CoreRadio._get_bool_value``: the ANT1/ANT2 selector (0x00/0x01) is not a
-profile-declared sub-command at all -- ``rigs/*.toml``'s own ``get_antenna``
+Not a matcher-backed-getter candidate for
+`tests/test_response_shape_from_profile.py`'s keystone table, despite all
+four getters routing through ``CoreRadio._get_bool_value``: the ANT1/ANT2
+selector (0x00/0x01) is not a profile-declared sub-command at all --
+``rigs/*.toml``'s own ``get_antenna``
 key is a bare ``[0x12]`` tuple with no sub, and the selector is appended by
 the *caller* as data (``_build_from_map(cmd_map, "get_antenna", ...,
 data=bytes([_SUB_ANT1]))``). ``_frame.py: _COMMANDS_WITH_SUB`` still splits

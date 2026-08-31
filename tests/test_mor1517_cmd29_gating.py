@@ -681,13 +681,14 @@ class TestRepeaterToneGating:
     async def test_set_repeater_tone_refused_on_ic7610(self) -> None:
         """IC-7610 has no FM-repeater CTCSS tone feature and does not
         declare ``set_repeater_tone`` (MOR-660/661/682, re-checked and left
-        that way at D2 MOR-2017 -- see ``rigs/ic7610.toml``'s own comment
-        on the point, which records a live-bench readback that the old
-        hardcoded fallback's bytes decoded to garbage on this radio).
-        MOR-2008 batch 2 makes ``cmd_map`` required, so this now correctly
-        refuses (D1 state 3) instead of silently sending those bytes --
-        not a regression, the same shape as system.py's IC-7300 date/time
-        fix in batch 1: the old behaviour was wrong, not merely different.
+        that way at D2 MOR-2017 -- see ``rigs/ic7610.toml``'s own
+        ``{ absent = ... }`` row for this command, which cites a
+        live-bench readback that the old hardcoded fallback's bytes
+        decoded to garbage on this radio). MOR-2008 batch 2 makes
+        ``cmd_map`` required, so this now correctly refuses (D1 state 2,
+        declared absent) instead of silently sending those bytes -- not a
+        regression, the same shape as system.py's IC-7300 date/time fix
+        in batch 1: the old behaviour was wrong, not merely different.
         """
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
@@ -743,10 +744,11 @@ class TestToneFreqGating:
     @pytest.mark.asyncio
     async def test_set_tone_freq_refused_on_ic7610(self) -> None:
         """See ``TestRepeaterToneGating.test_set_repeater_tone_refused_on_
-        ic7610``: same feature family, same TOML comment, same D1 refusal
-        -- ``rigs/ic7610.toml`` cites a live-bench readback showing the old
-        hardcoded fallback's tone-freq bytes decoded to garbage on this
-        radio, so refusing here is the fix, not a regression."""
+        ic7610``: same feature family, same TOML ``{ absent = ... }`` row,
+        same D1 state 2 refusal -- ``rigs/ic7610.toml`` cites a live-bench
+        readback showing the old hardcoded fallback's tone-freq bytes
+        decoded to garbage on this radio, so refusing here is the fix,
+        not a regression."""
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         with pytest.raises(CommandError, match="not supported by this radio"):

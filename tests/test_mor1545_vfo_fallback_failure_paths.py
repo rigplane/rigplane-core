@@ -180,14 +180,23 @@ class TestSelectBackFailureSemantics:
 class TestVfoFallbackReadDedupeKeyReceiverScoped:
     """MOR-1545 F1: the receiver-scoped dedupe-key fix also covers the
     VFO-fallback read call sites (radio.py ~4341/4419), not just the direct
-    cmd29 path (test_radio.py::TestRepeaterToneDedupeKeyReceiverScoped). On
-    IC-9700 (no cmd29 route) a MAIN direct read and a SUB fallback read
-    build byte-identical request frames -- only the dedupe key can tell
-    them apart. ``_set_vfo_wire`` is stubbed to an instant no-op so the SUB
-    fallback path reaches its own dedupe check before the single-worker
-    commander finishes dispatching MAIN's read, reproducing the coalescing
-    race deterministically (pre-fix: SUB sends zero read frames of its own
-    and returns MAIN's stale answer)."""
+    cmd29 path. On IC-9700 (no cmd29 route) a MAIN direct read and a SUB
+    fallback read build byte-identical request frames -- only the dedupe
+    key can tell them apart. ``_set_vfo_wire`` is stubbed to an instant
+    no-op so the SUB fallback path reaches its own dedupe check before the
+    single-worker commander finishes dispatching MAIN's read, reproducing
+    the coalescing race deterministically (pre-fix: SUB sends zero read
+    frames of its own and returns MAIN's stale answer).
+
+    The direct-cmd29-path comparison this docstring used to point to,
+    ``test_radio.py::TestRepeaterToneDedupeKeyReceiverScoped::
+    test_concurrent_main_and_sub_reads_do_not_coalesce``, is currently
+    ``@pytest.mark.skip``'d (MOR-2008 batch 2: IC-7610, the only dual-RX
+    profile it ran against, does not declare the repeater-tone/TSQL
+    family at all, and redesigning it for IC-9700's own VFO-fallback
+    wire shape is tracked separately). Until that lands, this test here
+    is the one exercising the MAIN-direct-vs-SUB-fallback coalescing
+    scenario end to end, not merely a second example of it."""
 
     @pytest.mark.asyncio
     async def test_concurrent_main_direct_and_sub_fallback_reads_do_not_coalesce(

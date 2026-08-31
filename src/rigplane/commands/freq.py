@@ -7,11 +7,11 @@ divergence rows -- every declaring profile's tuple already matched the
 fallback's own bytes exactly (verified by grep across ``rigs/*.toml``
 before deleting the fallback). ``_CMD_FREQ_GET``/``_CMD_FREQ_SET`` survive
 in `_frame.py`, unaffected: ``parse_frequency_response`` below still reads
-``_CMD_FREQ_GET`` directly, and several tests
-(`tests/test_radio.py`, `tests/test_civ_command_profiling.py`,
-`tests/test_icom7610_serial_radio.py`, `tests/_helpers.py`, others) import
-both constants directly to build synthetic frames, unconnected to this
-module's own fallback.
+``_CMD_FREQ_GET`` directly, and several tests import ``_CMD_FREQ_GET``
+directly to build synthetic frames, unconnected to this module's own
+fallback (`tests/test_radio.py`, `tests/test_icom7610_serial_radio.py`,
+`tests/_helpers.py`, others) -- ``tests/test_civ_command_profiling.py``
+is the only one of these that also imports ``_CMD_FREQ_SET``.
 
 The rest of this module (``get_selected_freq``/``get_unselected_freq``/
 ``get_selected_mode``/``get_unselected_mode``/``set_selected_mode`` and

@@ -1,4 +1,4 @@
-"""Unit tests for IC-7610 tone/TSQL commands (#134).
+"""Unit tests for repeater tone/TSQL commands (#134).
 
 Commands tested:
   0x16 0x42 — Repeater Tone enable/disable
@@ -6,7 +6,15 @@ Commands tested:
   0x1B 0x00 — CTCSS Tone frequency (get/set + parse)
   0x1B 0x01 — TSQL frequency (get/set + parse)
 
-All four commands use cmd29 wrapping (dual-receiver).
+Builder-level, not IC-7610-specific despite the file's own historical
+name: the ``cmd_map`` fixture below is IC-7300 (MOR-2008 batch 2 --
+IC-7610 declares this whole family absent). ``command29`` is a
+caller-supplied builder argument (default ``True``), independent of
+which profile's map supplies the inner command/sub bytes, so every
+case in this file still builds a cmd29-wrapped frame regardless of the
+map -- that is a property of calling these builders with no explicit
+``command29=False``, not a claim that IC-7300 (single-receiver, no
+cmd29 routes) would ever really send one.
 """
 
 from __future__ import annotations
@@ -41,14 +49,17 @@ def cmd_map():
     divergence, so every profile that declares this family agrees with
     the fallback's own bytes exactly, and the expected frames throughout
     this file are unchanged. Uses IC-7300, not IC-7610 (despite this
-    file's own docstring/module name): IC-7610 has no FM-repeater CTCSS
-    tone feature and does not declare this family at all
-    (MOR-660/661/682, re-checked and left that way at D2 MOR-2017 -- see
-    ``rigs/ic7610.toml``'s own comment on the point), so building a
-    cmd_map from it would raise ``KeyError`` for every builder this file
-    exercises. ``to_addr`` still defaults to IC_7610_ADDR via
-    ``bind_default_addr_globals`` above -- unaffected, since a builder's
-    address arguments are independent of which profile's map supplies its
+    file's own historical name): IC-7610 has no FM-repeater CTCSS tone
+    feature and does not declare this family at all (MOR-660/661/682,
+    re-checked and left that way at D2 MOR-2017 -- see
+    ``rigs/ic7610.toml``'s own ``{ absent = ... }`` row for each of the
+    eight commands), so calling any of these builders directly with a
+    bare ``CommandMap`` built from it -- as this file does, not through
+    ``BoundCommands``, which is what turns a declared-absent lookup into
+    a ``CommandError`` -- still raises ``KeyError``. ``to_addr``
+    still defaults to IC_7610_ADDR via ``bind_default_addr_globals``
+    above -- unaffected, since a builder's address arguments are
+    independent of which profile's map supplies its
     wire bytes.
     """
     rig = load_rig(RIG_DIR / "ic7300.toml")

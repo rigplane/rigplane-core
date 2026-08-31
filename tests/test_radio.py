@@ -3295,9 +3295,15 @@ class TestToneTsqlDualRxCmd29Guard:
     now reaches SUB via the same VFO-switch fallback already used by
     ``set_freq``/``set_mode``/``set_data_mode`` (select SUB, run the plain
     non-cmd29 command, restore the previously active receiver) instead of
-    raising. ``receiver=0`` (MAIN) and IC-7610 (has cmd29 routes) behavior
-    stay byte-identical — see ``TestToneTsqlParity`` above, which exercises
-    the IC-7610 fixture on both receivers and stays green.
+    raising. ``receiver=0`` (MAIN) behavior is unaffected either way (this
+    class's own ``test_main_receiver_still_sends_direct_frame``/
+    ``test_main_receiver_get_repeater_tone_still_works`` below pin it
+    directly). The comparison this docstring used to make against
+    IC-7610's own cmd29-wrapped path no longer has anything to compare
+    against: MOR-2008 batch 2 found IC-7610 does not declare this family
+    at all (``rigs/ic7610.toml``) and moved ``TestToneTsqlParity`` above
+    onto IC-7300 (single-receiver, no cmd29 routes for this family
+    either) for the ``receiver=0``-only case it can still cover.
     """
 
     @pytest.fixture

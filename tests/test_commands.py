@@ -1778,9 +1778,11 @@ class TestToneTsqlCommands:
     unchanged. Uses IC-7300, not IC-7610: IC-7610 has no FM-repeater CTCSS
     tone feature and does not declare this family at all (MOR-660/661/682,
     re-checked and left that way at D2 MOR-2017 -- see
-    ``rigs/ic7610.toml``'s own comment on the point), so building a
-    cmd_map from it would raise ``KeyError`` for every builder in this
-    class.
+    ``rigs/ic7610.toml``'s own ``{ absent = ... }`` row for each of the
+    eight commands), so building a cmd_map from it and calling any of
+    these builders directly (bypassing ``BoundCommands``, the layer that
+    turns a declared-absent lookup into ``CommandError``) would still
+    raise ``KeyError`` for every builder in this class.
     """
 
     @pytest.fixture()

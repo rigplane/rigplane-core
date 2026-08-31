@@ -1215,11 +1215,14 @@ get_vd_meter = [0x15, 0x15]
 get_id_meter = [0x15, 0x16]
 
 # ── Tone / TSQL ──
-# Intentionally absent: the IC-7610 (HF/6m) has no FM-repeater CTCSS tone
-# feature, so the repeater-tone / TSQL family is NOT declared as a capability
-# (MOR-660/661). With no declared capability and no registry check referencing
-# them, the get/set_repeater_tone, get/set_repeater_tsql, get/set_tone_freq,
-# and get/set_tsql_freq command entries were dead/orphaned and were removed
+# Declared absent (MOR-2008 batch 2 -- promoted from a comment-only D1
+# state 3 (unknown, warn-and-refuse) to a formal state 2 row (declared
+# absent, refuse-silently) below): the IC-7610 (HF/6m) has no
+# FM-repeater CTCSS tone feature, so the repeater-tone / TSQL family is
+# NOT declared as a capability (MOR-660/661). With no declared
+# capability and no registry check referencing them, the
+# get/set_repeater_tone, get/set_repeater_tsql, get/set_tone_freq, and
+# get/set_tsql_freq command entries were dead/orphaned and were removed
 # (MOR-682). Do not re-add them without first declaring the capability.
 #
 # D2 documentary re-check (MOR-2017): the IC-7610 CI-V Reference Guide
@@ -1231,7 +1234,17 @@ get_id_meter = [0x15, 0x16]
 # that finding on IC-7610 (retired from the live bench 2026-08-04). A
 # guide printing a command-table address is not proof the radio's firmware
 # answers it meaningfully. Recorded as a conflict between this pass's
-# verdict and the prior bench finding; not resolved here.
+# verdict and the prior bench finding; not resolved here -- the `absent`
+# source below cites the bench finding as the grounds for the row, not
+# the guide, since the guide is the very thing the row overrides.
+get_repeater_tone = { absent = "live-bench readback (MOR-660/661/682): repeater-tone/TSQL/tone-freq/TSQL-freq replies decoded to garbage (16.5 Hz) on this radio, not the documented values -- D2 re-check MOR-2017 confirms the IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) prints these same addresses regardless" }
+set_repeater_tone = { absent = "live-bench readback (MOR-660/661/682): repeater-tone/TSQL/tone-freq/TSQL-freq replies decoded to garbage (16.5 Hz) on this radio, not the documented values -- D2 re-check MOR-2017 confirms the IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) prints these same addresses regardless" }
+get_repeater_tsql = { absent = "live-bench readback (MOR-660/661/682): repeater-tone/TSQL/tone-freq/TSQL-freq replies decoded to garbage (16.5 Hz) on this radio, not the documented values -- D2 re-check MOR-2017 confirms the IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) prints these same addresses regardless" }
+set_repeater_tsql = { absent = "live-bench readback (MOR-660/661/682): repeater-tone/TSQL/tone-freq/TSQL-freq replies decoded to garbage (16.5 Hz) on this radio, not the documented values -- D2 re-check MOR-2017 confirms the IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) prints these same addresses regardless" }
+get_tone_freq = { absent = "live-bench readback (MOR-660/661/682): repeater-tone/TSQL/tone-freq/TSQL-freq replies decoded to garbage (16.5 Hz) on this radio, not the documented values -- D2 re-check MOR-2017 confirms the IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) prints these same addresses regardless" }
+set_tone_freq = { absent = "live-bench readback (MOR-660/661/682): repeater-tone/TSQL/tone-freq/TSQL-freq replies decoded to garbage (16.5 Hz) on this radio, not the documented values -- D2 re-check MOR-2017 confirms the IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) prints these same addresses regardless" }
+get_tsql_freq = { absent = "live-bench readback (MOR-660/661/682): repeater-tone/TSQL/tone-freq/TSQL-freq replies decoded to garbage (16.5 Hz) on this radio, not the documented values -- D2 re-check MOR-2017 confirms the IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) prints these same addresses regardless" }
+set_tsql_freq = { absent = "live-bench readback (MOR-660/661/682): repeater-tone/TSQL/tone-freq/TSQL-freq replies decoded to garbage (16.5 Hz) on this radio, not the documented values -- D2 re-check MOR-2017 confirms the IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) prints these same addresses regardless" }
 
 # ── Data Mode ──
 get_data_mode = [0x1A, 0x06]
