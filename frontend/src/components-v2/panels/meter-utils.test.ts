@@ -118,6 +118,7 @@ import {
   peakHoldDisplay,
   type PeakHoldState,
 } from './meter-utils';
+import { isSmeterCalibrated } from '../meters/smeter-scale';
 
 beforeEach(() => {
   setCapabilities(makeCaps({
@@ -529,6 +530,45 @@ describe('formatSMeter / sLevel — uncalibrated fallback (MOR-1451)', () => {
   });
 });
 
+describe('formatSMeter / sLevel / isSmeterCalibrated — one-knot table cannot support interpolation (MOR-2024)', () => {
+  // A profile that declares exactly one s_meter knot cannot be
+  // interpolated -- a line needs two points. `isSmeterCalibrated()` must
+  // say "uncalibrated" for one knot, same as zero, instead of letting the
+  // calibrated branch through with a table that can only ever resolve to
+  // that single knot's value. Before this was enforced, `calibratedToRaw()`
+  // (smeter-scale.ts) clamped every input to the lone knot's `actual` and
+  // returned its `raw` unconditionally, so `formatSMeter` printed the same
+  // fabricated S-unit for every reading regardless of the true value --
+  // verified: against a lone `{ raw: 130, actual: 0, label: 'S9' }` knot,
+  // both -20 and 0 produced 'S9' -- while `sLevel`, which already gated on
+  // `getSmeterKnots().length >= 2`, correctly reported the neutral
+  // raw-proportional fallback on the very same tile. No shipped profile
+  // declares a one-knot table today (`rig_loader` enforces no minimum), so
+  // this was latent, not live -- but it must stay caught.
+  const ONE_KNOT_S_METER_CAL = [{ raw: 130, actual: 0, label: 'S9' }];
+
+  beforeEach(() => {
+    setCapabilities(makeCaps({
+      model: 'IC-7300',
+      meterCalibrations: { s_meter: ONE_KNOT_S_METER_CAL },
+    }));
+  });
+
+  it('isSmeterCalibrated is false for a single knot -- interpolation needs two points', () => {
+    expect(isSmeterCalibrated()).toBe(false);
+  });
+
+  it('formatSMeter renders the honest raw-tagged reading, never a fabricated S-unit, and is not constant across inputs', () => {
+    expect(formatSMeter(-20)).toBe('0 raw');
+    expect(formatSMeter(53)).toBe('53 raw');
+    expect(formatSMeter(150)).toBe('150 raw');
+  });
+
+  it('sLevel agrees with formatSMeter that this tile is uncalibrated', () => {
+    expect(sLevel(53)).toBeCloseTo(53 / 255);
+  });
+});
+
 describe('formatSMeter — IC-7300 profile conformance (MOR-1451)', () => {
   const IC7300_S_METER_CAL = [
     { raw: 0, actual: -54, label: 'S0' },
@@ -549,6 +589,72 @@ describe('formatSMeter — IC-7300 profile conformance (MOR-1451)', () => {
 
   it('the top anchor -> S9+60', () => {
     expect(formatSMeter(60)).toBe('S9+60');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FTX-1 profile anchors (MOR-2024) — `formatSMeter`'s old ladder assumed
+// every radio's sub-S9 curve is a uniform straight line (`floor((actual -
+// minActual) / 6)`, a hardcoded 6 dB/S-unit step). `IC7610_LIKE_S_METER_CAL`
+// above and `IC7300_S_METER_CAL` above are BOTH uniform 6 dB/unit curves —
+// neither fixture could have caught the ladder disagreeing with a radio's
+// own declared table. This one mirrors `rigs/ftx1.toml`'s real, non-uniform
+// S0..S9 step sequence (6/3/3/3/3/3/15/9/9 dB) so it can.
+// ---------------------------------------------------------------------------
+
+const FTX1_S_METER_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 13, actual: -51, label: 'S0.5' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 39, actual: -45, label: 'S2' },
+  { raw: 52, actual: -42, label: 'S3' },
+  { raw: 65, actual: -39, label: 'S4' },
+  { raw: 78, actual: -36, label: 'S5' },
+  { raw: 91, actual: -33, label: 'S6' },
+  { raw: 103, actual: -18, label: 'S7' },
+  { raw: 117, actual: -9, label: 'S8' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 165, actual: 10, label: 'S9+10' },
+  { raw: 200, actual: 20, label: 'S9+20' },
+  { raw: 240, actual: 40, label: 'S9+40' },
+];
+
+describe('formatSMeter — FTX-1 profile anchors (MOR-2024)', () => {
+  beforeEach(() => {
+    setCapabilities(makeCaps({
+      model: 'FTX-1',
+      meterCalibrations: { s_meter: FTX1_S_METER_CAL },
+    }));
+  });
+
+  it('renders the declared S6/S7/S8 labels at their own anchors, not the uniform-ladder guess', () => {
+    // The old hardcoded floor((actual-minActual)/6) ladder produced S3,
+    // S6, S7 at these three anchors respectively — one or more S-units
+    // short of the profile's own declared label, because FTX-1's real
+    // step past S5 is 3/15/9/9 dB, not a flat 6.
+    expect(formatSMeter(-33)).toBe('S6');
+    expect(formatSMeter(-18)).toBe('S7');
+    expect(formatSMeter(-9)).toBe('S8');
+  });
+
+  it('still renders the low and high ends correctly', () => {
+    expect(formatSMeter(-54)).toBe('S0');
+    expect(formatSMeter(0)).toBe('S9');
+    expect(formatSMeter(40)).toBe('S9+40');
+  });
+});
+
+describe('FTX1_S_METER_CAL sync guard (MOR-2024)', () => {
+  it('every mirrored s_meter knot matches its real rigs/ftx1.toml anchor exactly', () => {
+    const tomlSource = readFileSync('../rigs/ftx1.toml', 'utf8');
+    const realKnots = parseTomlCalibrationTable(tomlSource, 's_meter');
+    expect(realKnots.length).toBeGreaterThanOrEqual(FTX1_S_METER_CAL.length);
+
+    for (const mirrored of FTX1_S_METER_CAL) {
+      const real = realKnots.find((k) => k.raw === mirrored.raw);
+      expect(real, `no real anchor at raw=${mirrored.raw} in rigs/ftx1.toml`).toBeDefined();
+      expect(mirrored).toEqual(real);
+    }
   });
 });
 

@@ -36,12 +36,15 @@ function getCal(): CalPoint[] {
   return getSmeterCalibration() ?? [];
 }
 
-/** True when the active radio profile declared a real s_meter calibration
- *  table. False means the S-unit/dBm text below must fall back to an honest
- *  raw-scale label instead of fabricating a reading against a borrowed
- *  curve (MOR-1451). */
+/** True when the active radio profile declared an s_meter calibration table
+ *  with at least two knots. Interpolation needs two points to define a
+ *  line; a single knot cannot support a calibrated reading, so it counts
+ *  as uncalibrated the same as zero knots (MOR-2024) rather than resolving
+ *  every input to that one knot's value. False means the S-unit/dBm text
+ *  below must fall back to an honest raw-scale label instead of
+ *  fabricating a reading against a borrowed curve (MOR-1451). */
 export function isSmeterCalibrated(): boolean {
-  return getCal().length > 0;
+  return getCal().length >= 2;
 }
 
 /** Find S9 raw value from calibration; the raw-scale midpoint when
@@ -144,7 +147,6 @@ export function rawToSUnit(raw: number): string {
   const v = Math.max(0, Math.min(MAX_RAW, raw));
   if (!isSmeterCalibrated()) return String(Math.round(v));
 
-  const cal = getCal();
   const s9Raw = getS9Raw();
 
   if (v <= s9Raw) {
@@ -152,16 +154,16 @@ export function rawToSUnit(raw: number): string {
     return `S${Math.min(9, s)}`;
   }
 
-  // Over S9: find matching calibration label
-  const overPoints = cal.filter(p => p.raw > s9Raw);
-  let label = 'S9+';
-  for (let i = overPoints.length - 1; i >= 0; i--) {
-    if (v >= overPoints[i].raw) {
-      label = overPoints[i].label;
-      break;
-    }
-  }
-  return label;
+  // Over S9: an honest, continuous dB-over-S9 reading interpolated from
+  // the profile's own table (MOR-2024) — not a knot-snapped label. The
+  // previous version walked the declared over-S9 knots backwards and
+  // returned the first one at or below `v`, which silently under-reported
+  // any raw strictly between two knots, and fell through to the bare
+  // literal "S9+" with no number at all once `v` was short of every
+  // declared knot (e.g. a profile with a single over-point leaves a wide
+  // gap right above S9 where that used to happen).
+  const over = Math.round(interpolate(v, getCal(), 'actual'));
+  return over > 0 ? `S9+${over}` : 'S9';
 }
 
 /** Map raw 0-255 to dBm value (linear interpolation between calibration

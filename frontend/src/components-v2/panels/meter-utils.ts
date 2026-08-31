@@ -26,6 +26,17 @@ import {
   getMeterRedline,
 } from '$lib/runtime/adapters/capabilities-adapter';
 import type { MeterCalPoint } from '$lib/runtime/adapters/capabilities-adapter';
+// `formatSMeter`'s calibrated branch defers to the one table-driven S-unit
+// reader (MOR-2024) instead of keeping a second copy of that math here.
+// `isSmeterCalibrated` is reused from the same import instead of a second
+// local "is there a curve" check -- the two were never byte-for-byte
+// duplicates (this file's check went through `getSmeterKnots()`, gated at
+// `length >= 2`; the imported one tested `length > 0` directly), so the
+// swap silently loosened the gate to one knot until `smeter-scale.ts`'s
+// `isSmeterCalibrated` was fixed (MOR-2024) to also require `length >= 2`
+// -- interpolation needs two points to define a line, so a single knot
+// cannot support a calibrated reading.
+import { calibratedToSUnit, isSmeterCalibrated } from '../meters/smeter-scale';
 
 export type MeterSource = 'S' | 'SWR' | 'POWER' | 'po';
 
@@ -197,14 +208,6 @@ function getSmeterKnots(): [number, number][] {
   return cal.map((p) => [p.raw, p.actual] as [number, number]);
 }
 
-/** True when the active radio profile declared a real s_meter calibration
- *  table. False means `formatSMeter`/`sLevel` below must fall back to an
- *  honest raw-scale reading instead of fabricating one against a borrowed
- *  curve (MOR-1451) — mirrors `smeter-scale.ts`'s `isSmeterCalibrated`. */
-function isSmeterCalibrated(): boolean {
-  return getSmeterKnots().length > 0;
-}
-
 function getSmeterMaxRaw(): number {
   const knots = getSmeterKnots();
   return knots.length > 0 ? knots[knots.length - 1][0] : RAW_SCALE_MAX;
@@ -237,26 +240,20 @@ function calibratedSmeterToRaw(actual: number): number {
  * Falls back to the honest raw-tagged reading (`formatRaw`, e.g. "53 raw";
  * MOR-1527) when the radio has no s_meter calibration table — never a
  * reading borrowed from a different radio's curve (MOR-1451), and never a
- * naked number indistinguishable from a real S-unit claim (MOR-1535: this
- * was the last of the seven meter formatters still returning the naked
- * pre-MOR-1527 fallback).
+ * naked number indistinguishable from a real S-unit claim (MOR-1535).
+ *
+ * The calibrated branch defers entirely to `smeter-scale.ts`'s
+ * `calibratedToSUnit` (MOR-2024) — this file no longer runs its own S-unit
+ * math. It previously assumed every radio's sub-S9 curve was a uniform
+ * straight line (a hardcoded 6 dB/S-unit ladder), which disagreed with a
+ * profile's own declared table wherever that table was NOT uniform (e.g.
+ * FTX-1's real S0-S9 steps are 6/3/3/3/3/3/15/9/9 dB).
  */
 export function formatSMeter(actual: number): string {
   if (!isSmeterCalibrated()) {
     return formatRaw(actual);
   }
-  const knots = getSmeterKnots();
-  const minActual = knots[0][1];
-  const maxActual = knots[knots.length - 1][1];
-  const clamped = Math.max(minActual, Math.min(maxActual, actual));
-
-  if (clamped >= 0) {
-    const over = Math.round(clamped);
-    return over > 0 ? `S9+${over}` : 'S9';
-  }
-
-  const s = Math.max(0, Math.min(9, Math.floor((clamped - minActual) / 6)));
-  return `S${s}`;
+  return calibratedToSUnit(actual);
 }
 
 /** Bar level for calibrated S-meter values relative to the UI scale full-scale. */

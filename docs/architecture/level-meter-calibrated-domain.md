@@ -43,7 +43,8 @@ The current state is inconsistent across backends and consumers:
   swr, alc); IC-7300/IC-705/IC-9700 are swr-only; FTX-1 has s_meter + swr (no power,
   no alc); X6100/X6200/TX500 have none. The curves are genuinely per-rig and
   non-linear — e.g. IC-7610 s_meter steps 6/12/12 dB across raw 0/26/52/78 while
-  FTX-1 s_meter steps a uniform 3 dB across raw 0/13/26/39.
+  FTX-1 s_meter is non-uniform: 3 dB per step from raw 0 through 91 (S0-S6),
+  then a 15 dB jump to S7 and 9 dB steps through S9 (`rigs/ftx1.toml`).
 - **Consumers assume raw 0-255.** rigctld (`rigctld/handler.py`, ~L1660-1890)
   converts STRENGTH / RFPOWER / LEVEL inline with hand-rolled formulas — `/255.0` for
   RFPOWER and the float levels, a distinct `(raw / 241.0) * 114.0 - 54.0` for STRENGTH.
