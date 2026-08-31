@@ -284,6 +284,14 @@ test('trust, minimization, and PASS freshness are enforced', () => {
     evaluate([comment(directive('PASS'), {minimized: {reason: 'outdated'}})]).state,
     'failure',
   );
+  // `reason` is itself nullable in the schema, so a comment hidden without a
+  // recorded reason arrives as {reason: null}. This is the row that keeps the
+  // predicate at truthiness: narrowing it to `comment.minimized?.reason` counts
+  // this comment instead of skipping it, reinstating the original defect.
+  assert.equal(
+    evaluate([comment(directive('PASS'), {minimized: {reason: null}})]).state,
+    'failure',
+  );
   assert.equal(
     evaluate([
       comment(directive('BLOCKED') + '\n\nsuperseded', {
