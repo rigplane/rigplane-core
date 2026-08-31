@@ -96,7 +96,7 @@ const BLOCKED_KEY: Record<KeyBlockedReason, string> = {
  *  a live locale switch (MOR-1448 `reasonLabel` precedent). */
 export const blockedLabel = (code: KeyBlockedReason): string => t(BLOCKED_KEY[code]);
 
-type TxTargetUnknownReason = Extract<TxTargetViewModel, { status: 'unknown' }>['reason'];
+export type TxTargetUnknownReason = Extract<TxTargetViewModel, { status: 'unknown' }>['reason'];
 /** MOR-1474: `view.txTarget`'s four `status: 'unknown'` reasons
  *  (`radio-view-model.ts`), each backed by ITS OWN catalog key rather than
  *  interpolating the raw enum word into prose (no `{status}`/`{reason}`

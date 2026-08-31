@@ -64,12 +64,20 @@ export interface TxFeedbackState {
  * prototype chain instead, so `treatment` escapes as that member rather
  * than falling through. Unreachable in production: `RxTxSurface.svelte`
  * only ever supplies a real `TxSessionState`.
+ *
+ * MOR-2036: `satisfies Record<TxSessionState, TxKeyTreatment>` pins these
+ * keys to EXACTLY `TxSessionState`'s five members. Before this pin the
+ * `Record<string, TxKeyTreatment>` annotation alone let either drift through
+ * silently — a sixth, non-session key (excess property) or a missing one
+ * (required property) both now fail `npm run check`; `isTxSessionState`
+ * below reuses these keys rather than re-enumerating them, so the pin
+ * covers that reuse too.
  */
 const KEY_TREATMENT: Record<string, TxKeyTreatment> = {
   idle: 'idle', pending: 'pending', keyed: 'keyed', releasing: 'keyed', failed: 'fault',
-};
+} satisfies Record<TxSessionState, TxKeyTreatment>;
 
-/** True for exactly `TxSessionState`'s five members — reuses `KEY_TREATMENT`'s keys rather than re-enumerating them. */
+/** True for exactly `TxSessionState`'s five members — reuses `KEY_TREATMENT`'s keys, which the `satisfies` clause above keeps pinned to that exact set (MOR-2036). */
 const isTxSessionState = (value: string): value is TxSessionState =>
   Object.prototype.hasOwnProperty.call(KEY_TREATMENT, value);
 
