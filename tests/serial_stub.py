@@ -633,18 +633,6 @@ class SerialMockRadio:
     # Backward-compat alias
     select_vfo = set_vfo
 
-    async def vfo_swap(self) -> None:
-        return None
-
-    async def vfo_exchange(self) -> None:
-        return None
-
-    async def vfo_a_equals_b(self) -> None:
-        return None
-
-    async def vfo_equalize(self) -> None:
-        return None
-
     async def set_powerstat(self, on: bool) -> None:
         self._connected = on
 
