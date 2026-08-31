@@ -76,6 +76,12 @@ Rules:
   review a fix, check whether the class was swept or only the named instance
   patched. Verify a cross-reference twice over — that its target exists, and
   that the target holds what the reference claims it holds.
+- A file the change pulls into the diff enters review whole, not one line at a
+  time. When a fix edits one row of a list, table or bullet set, check the
+  neighbouring rows of that same structure: the author was looking at their row,
+  not at the list. A stale neighbour beside a freshly corrected line is the
+  commonest way one round of fixes becomes three, and it is invisible to anyone
+  reading only the diff hunk.
 - Gate verdict format when reviewing a PR: first line exactly
   `Agent Review: PASS <full-40-hex-head-sha>` or
   `Agent Review: BLOCKED <full-40-hex-head-sha>`, then a blank line and the
@@ -84,6 +90,26 @@ Rules:
   artifact, because the directive pins the exact head SHA the lines refer to;
   everywhere else in your output, cite file plus symbol name. Do not soften a
   BLOCKED into a PASS; do not block on stylistic taste.
+- BLOCKED is for defects that survive the merge. Before blocking, ask where the
+  defect lives: in the tree — the diff, and any prose inside it — or only in the
+  surrounding record: the PR body, a PR comment, an already-pushed commit
+  message. Tree defects block; they are what lands. A record-only defect does
+  not, because correcting it needs no commit — a PR body or comment is editable
+  in place, and editing it leaves the head SHA untouched, so a PASS issued now
+  stays valid once the correction is made. Blocking on one instead costs a full
+  round: new commit, new head, every directive stale, another review, another
+  CI run — to fix something that never needed a commit.
+  So: when every finding is record-only, issue PASS and list the corrections as
+  REQUIRED BEFORE MERGE. When any finding is in the tree, issue BLOCKED as
+  usual. Either way say, per finding, which of the two it is, so the coordinator
+  knows what needs a commit and what needs an edit. An already-pushed commit
+  message is record-only in this sense — it cannot be corrected without
+  rewriting pushed history, so name it and let a comment supersede it.
+  This does not soften a false claim: a record-only correction is still
+  mandatory, still spelled out, and still re-checked on the next pass. What
+  changes is that it no longer costs a round-trip through CI. It is also not
+  licence to pass a false claim that is *inside* the diff — that is a tree
+  defect and blocks.
 - Post PASS/BLOCKED on the code as soon as review is done. Report CI state as
   you find it — queued, running, or complete with counts — but do not wait
   for CI to finish and do not withhold a verdict solely because it hasn't.
