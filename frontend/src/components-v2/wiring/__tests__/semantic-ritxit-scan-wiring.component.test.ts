@@ -13,9 +13,11 @@
  *       `set_rit_frequency` command — proving `makeRitXitHandlers()`'s two
  *       offset handlers converge, not merely asserting it about a stub.
  *   (b) MOUNTING CANON (MOR-1304 ruling). This is a control-bearing surface
- *       with no manifest-declared zone, so per the canon's option (i) it
- *       mounts in the SINGLE composition only, bare, and renders NOTHING in
- *       the DUAL composition — pinned here with a view model that actually
+ *       the DUAL composition's only layout (`dual-receiver-cockpit.ts`)
+ *       declares no zone for, so per the canon's option (i) it mounts in the
+ *       SINGLE composition only and renders NOTHING in the DUAL composition.
+ *       No longer bare under `desktop-v2`, which declared `rit-xit-scan` in
+ *       MOR-1367 (S8) — pinned here with a view model that actually
  *       CARRIES the `ritXit`/`scan` groups (a fixture that cannot see the
  *       surface would repeat the exact vacuous-green bug the canon exists to
  *       catch, per the rxAudio precedent).

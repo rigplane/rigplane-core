@@ -12,9 +12,12 @@
  *   (a) every control category (choice, toggle, stepper) reaches the wire as
  *       the exact command `SpectrumToolbar.svelte`/`ScopeSettingsPopover.svelte`
  *       themselves dispatch — composed, not forked.
- *   (b) MOUNTING CANON (MOR-1304 ruling). Control-bearing, no manifest
- *       declares a `scopeControls` zone, so it mounts in the SINGLE
- *       composition only, bare, and renders NOTHING in the DUAL composition
+ *   (b) MOUNTING CANON (MOR-1304 ruling). Control-bearing, and the DUAL
+ *       composition's only layout (`dual-receiver-cockpit.ts`) declares no
+ *       `scopeControls` zone, so it mounts in the SINGLE composition only and
+ *       renders NOTHING in the DUAL composition. Not bare under `desktop-v2`
+ *       any more: MOR-1370 (S6b-2) declared that zone, the last surface in
+ *       the vocabulary to graduate
  *       — pinned with a view model that actually CARRIES the group (the
  *       rxAudio/ritXitScan/cwKeyer precedent), plus a control test mounting
  *       the same fixture in single to foreclose vacuity.
@@ -323,7 +326,7 @@ describe('the surface mounts only in the single composition, never in dual', () 
 /**
  * `desktopV2Layout` now carries a `scope-controls` zone
  * (`presentation/layouts/desktop-declarations.ts`). Unlike `scopeDisplay`
- * (pure readout, bare in both compositions), `scopeControls` is
+ * (pure readout, mounted in both compositions), `scopeControls` is
  * control-bearing and mounts SINGLE-COMPOSITION-ONLY under the MOR-1304
  * canon — so there is no dual-composition half of this claim to make; (b)
  * above already proves the dual composition mounts nothing regardless of the

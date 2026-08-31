@@ -50,8 +50,10 @@
   // `hideScopeControls` is forwarded the same way (MOR-1369, v3-rework
   // S6b-1): it hides the toolbar's fact-backed `scopeControls.*` half once a
   // layout's manifest declares a `scopeControls` zone (S6b-2). Landed INERT
-  // — no manifest declares that zone yet, so `RadioLayout` always passes
-  // `false` today and this prop is a pure pass-through, no logic of its own.
+  // with S6b-1 and LIVE since MOR-1370 (S6b-2) declared that zone on
+  // `desktop-v2`: `RadioLayout` forwards
+  // `hideScopeControls={declared.has('scopeControls')}`, which is `true`
+  // there. This prop stays a pure pass-through, no logic of its own.
   //
   // `hideAutoStepToggle` is forwarded the same way (MOR-1486 ruling B,
   // owner session 19): it hides the toolbar's AUTO (mode-follow) toggle on

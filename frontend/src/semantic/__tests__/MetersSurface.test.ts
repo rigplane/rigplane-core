@@ -202,10 +202,12 @@ describe('the meters surface is display-only and self-gates on group presence', 
     });
   });
 
-  // MUTATION KILLED: adding a `data-zone-id` here. `meters` is declarable as a
-  // semantic surface after this slice, but no manifest declares a meters zone
-  // — binding one would put a zone id in the DOM no layout asked for
-  // (the MOR-1069 lesson, carried forward from MOR-1265).
+  // MUTATION KILLED: adding a `data-zone-id` here. The PURE surface never
+  // binds a zone id of its own — that belongs to the `zoned()` wrapper in
+  // `components-v2/wiring/SemanticRadioSurfaces.svelte`, which reads the
+  // active layout's plan. Binding one here would put a zone id in the DOM no
+  // layout asked for (the MOR-1069 lesson, carried forward from MOR-1265),
+  // and would duplicate the one `desktop-v2` already declares (MOR-1341, S5).
   it('binds no zone id', () => {
     withSurface(base(), () => {
       expect(target.querySelectorAll('[data-zone-id]')).toHaveLength(0);

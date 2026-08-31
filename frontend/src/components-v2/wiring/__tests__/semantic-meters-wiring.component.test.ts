@@ -302,9 +302,14 @@ describe('the meters surface mounts only when the view model carries the group',
     expect(Object.keys(relevance())).toContain('power');
   });
 
-  // MUTATION KILLED: giving the meters surface a `data-zone-id`. `meters` is
-  // declarable after this slice, but no manifest declares a meters zone — and
-  // the zone schema stays config-free (risk R3).
+  // MUTATION KILLED: giving the meters surface a `data-zone-id` of its own.
+  // This mount is bare because a STANDALONE render resolves no surface plan
+  // (`useSurfacePlan()` falls back to `NO_PLAN`), so `zoneOwning()` answers
+  // `null` whatever any manifest declares — not because the zone is
+  // undeclared program-wide. `desktop-v2` has declared a `meters` zone since
+  // MOR-1341 (S5); the dual composition's own layout
+  // (`dual-receiver-cockpit.ts`) declares none. The zone schema stays
+  // config-free (risk R3) either way.
   it('binds no zone id to the meters surface in either composition', () => {
     render({ strips: 'dual' });
     const zones = [...target.querySelectorAll<HTMLElement>('[data-zone-id]')]

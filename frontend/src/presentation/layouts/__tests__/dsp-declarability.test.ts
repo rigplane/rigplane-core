@@ -1,8 +1,10 @@
 /**
- * MOR-1305 — `dsp` is DECLARABLE, and nothing declares it yet.
+ * MOR-1305 — `dsp` is DECLARABLE. MOR-1368 (S9) declares it for real.
  *
- * Slice 5B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest. Mirrors
+ * Slice 5B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
+ * the surface later; it deliberately did not touch any manifest. MOR-1368
+ * flips the second half, on `desktop-v2` ONLY; the inventory below is a
+ * LITERAL of who declares it. Mirrors
  * `tx-aux-declarability.test.ts`/`meters-declarability.test.ts`.
  */
 import { describe, it, expect } from 'vitest';

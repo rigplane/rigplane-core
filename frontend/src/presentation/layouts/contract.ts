@@ -19,10 +19,15 @@ import { isValidLanguageId as isValidProductId } from '../languages/contract';
  *  by MOR-1307, `antenna` by MOR-1309, `ritXitScan` by MOR-1308, `cwKeyer` by
  *  MOR-1310, `scopeDisplay` by MOR-1312, `scopeControls` by MOR-1311 — the
  *  LAST B-slice of the vocabulary program). Adding a name makes it
- *  DECLARABLE — it does not mount anything by itself, and no manifest
- *  declares a `meters`, `rxAudio`, `filter`, `dsp`, `rfFrontEnd`, `band`,
- *  `antenna`, `ritXitScan`, `cwKeyer`, `scopeDisplay` or `scopeControls`
- *  zone yet (the cockpit declares only `txAux`, as `tx-aux` — MOR-1336).
+ *  DECLARABLE — it does not mount anything by itself. Which layouts then
+ *  DECLARE a name is recorded in `__tests__/*-declarability.test.ts` for the
+ *  twelve names that have such a file (`vfo` and `rxTx` predate the pattern
+ *  and have none), each pinning its own `DECLARES_*` literal against the real
+ *  barrel: as of the rework tail `desktop-v2`
+ *  declares a zone for EVERY name in this list (`desktop-declarations.ts`'s
+ *  `DESKTOP_V2_ZONES`, with `__tests__/zone-ownership-coverage.test.ts`
+ *  holding the partition), while the dual cockpit declares only `vfo`,
+ *  `rxTx` and `txAux`.
  *  Distinct from the design-language renderer slot of the same name
  *  (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`): that one says how a
  *  language DRAWS a meter, this one says which layout zone may HOST the

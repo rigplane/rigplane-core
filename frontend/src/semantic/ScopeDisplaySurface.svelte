@@ -22,8 +22,9 @@
   `__tests__/ScopeDisplaySurface.test.ts` and re-pinned at the composed-tree
   level in `semantic-scope-display-wiring.component.test.ts`, so a future
   control addition trips both. That property is what lets `SemanticRadioSurfaces`
-  mount this surface bare in BOTH compositions (the `meters`/`txAux` shape,
-  not the control-bearing `rxAudio` single-only shape).
+  mount this surface in BOTH compositions (the `meters`/`txAux` shape, not the
+  control-bearing `rxAudio` single-only shape) — bare included, wherever
+  `zoneOwning()` finds no zone carrying `scopeDisplay`.
 
   `hardwareConnected` (MOR-1312 addition, MOR-1352 finding) is genuinely NOT
   redundant with `health` when `source === 'audio_fft'` — see

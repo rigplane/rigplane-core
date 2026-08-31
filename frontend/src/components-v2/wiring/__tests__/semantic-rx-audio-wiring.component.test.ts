@@ -415,13 +415,15 @@ describe('the surface mounts only when the view model carries the group', () => 
 
   /**
    * MUTATION KILLED: mounting this surface bare in the cockpit. It is the
-   * first semantic surface carrying interactive controls that no manifest
-   * declares a zone for, and MOR-1069's cockpit rule is that every focusable
+   * first semantic surface carrying interactive controls that the DUAL
+   * composition's only layout (`dual-receiver-cockpit.ts`) declares no zone
+   * for, and MOR-1069's cockpit rule is that every focusable
    * control lives inside a declared zone with rx-tx last in the tab order
    * (`skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts`
    * enforces it). Mounted bare it breaks both clauses; folded into the rx-tx
    * zone it would put an AF slider between the operator and the unkey button.
-   * It waits for a declared zone — which this slice made possible.
+   * It waited for a declared zone, which this slice made possible;
+   * `desktop-v2` supplied one in MOR-1368 (S9), and the cockpit still has not.
    */
   it('renders NO rx-audio surface in the dual composition, zoned or unzoned', () => {
     render({ strips: 'dual' });

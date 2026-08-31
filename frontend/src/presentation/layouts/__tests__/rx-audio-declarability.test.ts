@@ -1,10 +1,12 @@
 /**
- * MOR-1279 — `rxAudio` is DECLARABLE, and nothing declares it yet.
+ * MOR-1279 — `rxAudio` is DECLARABLE. MOR-1368 (S9) declares it for real.
  *
- * Slice 3B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
+ * Slice 3B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
+ * the surface later; it deliberately did not touch any manifest, and it added
  * no design-language renderer slot (that set was frozen by MOR-1072 — adding
- * one would be a language-contract change this slice must not make).
+ * one would be a language-contract change that slice must not make).
+ * MOR-1368 flips the second half, on `desktop-v2` ONLY. The inventory below
+ * is a LITERAL of who declares it, mirroring `filter-declarability.test.ts`.
  *
  * Same three pins as `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`:
  *   - drop the name and a future manifest's zone stops validating;

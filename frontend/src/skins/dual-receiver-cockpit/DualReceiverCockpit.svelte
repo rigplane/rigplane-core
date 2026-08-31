@@ -7,19 +7,23 @@
   components-v2/wiring/SemanticRadioSurfaces.svelte). No manufacturer
   conditionals, no runtime/store/command import here.
 
-  MOR-1068: the manifest's four declared zones — `primary-vfo`,
-  `secondary-vfo`, `global`, `rx-tx` — are realized by that one `strips="dual"`
-  composition, in declaration order, each tagged with its `data-zone-id`. They
+  MOR-1068: the manifest's five declared zones — `primary-vfo`,
+  `secondary-vfo`, `global`, `rx-tx` and `tx-aux` (added by MOR-1336, S4) —
+  are realized by that one `strips="dual"` composition, in declaration order,
+  each tagged with its `data-zone-id`. They
   cannot be split across separate mounts here: a second SemanticRadioSurfaces
   would be a second TX lease source, and single TX authority is the layout's
   hardest invariant.
 
-  Scope and controls remain inert structural zones. MOR-1062/1065 ship only
-  the vfo/rxTx semantic surfaces — nothing here may claim those regions are
-  live, and they declare no manifest zone for the same reason. Same two-level
-  gating as the surfaces themselves (MOR-977): present so the shell composes
-  every named region, disabled because no real surface backs them yet — never
-  falsely active. `global` left this list when the radio-wide row moved in:
+  Scope and controls remain inert structural placeholders: this manifest
+  declares no zone that would place a semantic surface in either region, so
+  nothing here may claim those regions are live. The reason is the ABSENCE OF
+  A DECLARED ZONE, not the absence of a surface — `scopeDisplay` is in fact
+  mounted by this very composition (`SemanticRadioSurfaces.svelte`'s
+  `strips === 'dual'` branch renders it, bare, since this manifest declares no
+  `scope-display` zone). Same two-level gating as the surfaces themselves
+  (MOR-977): present so the shell composes every named region, disabled
+  because no declared zone backs them — never falsely active. `global` left this list when the radio-wide row moved in:
   a zone holding live switches gates at the widget, not with a container
   marker (MOR-1067 verification F7).
 
