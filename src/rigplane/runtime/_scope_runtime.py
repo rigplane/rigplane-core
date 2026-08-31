@@ -18,6 +18,21 @@ else:
     _MixinBase = object
 
 from rigplane.commands import (
+    get_scope_center_type,
+    get_scope_data_output_enabled,
+    get_scope_during_tx,
+    get_scope_edge,
+    get_scope_enabled,
+    get_scope_fixed_edge,
+    get_scope_hold,
+    get_scope_main_sub,
+    get_scope_mode,
+    get_scope_rbw,
+    get_scope_ref,
+    get_scope_single_dual,
+    get_scope_span,
+    get_scope_speed,
+    get_scope_vbw,
     parse_ack_nak,
     parse_civ_frame,
     parse_scope_center_type_response,
@@ -147,9 +162,17 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_data_output_enabled(to_addr=self._radio_addr),
             label="get_scope_data_output_enabled",
         )
+        panel_command, panel_sub, _ = self._expect_shape(get_scope_enabled)
+        output_command, output_sub, _ = self._expect_shape(
+            get_scope_data_output_enabled
+        )
         return (
-            parse_scope_enabled_response(panel_response),
-            parse_scope_data_output_enabled_response(output_response),
+            parse_scope_enabled_response(
+                panel_response, command=panel_command, sub=panel_sub
+            ),
+            parse_scope_data_output_enabled_response(
+                output_response, command=output_command, sub=output_sub
+            ),
         )
 
     async def restore_scope_session_state(self, state: tuple[bool, bool]) -> None:
@@ -197,7 +220,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_main_sub(to_addr=self._radio_addr),
             label="get_scope_receiver",
         )
-        receiver = parse_scope_main_sub_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_main_sub)
+        receiver = parse_scope_main_sub_response(resp, command=command, sub=sub)
         self._scope_controls().receiver = receiver
         return receiver
 
@@ -219,7 +243,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_single_dual(to_addr=self._radio_addr),
             label="get_scope_dual",
         )
-        dual: bool = parse_scope_single_dual_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_single_dual)
+        dual: bool = parse_scope_single_dual_response(resp, command=command, sub=sub)
         self._scope_controls().dual = dual
         return dual
 
@@ -243,7 +268,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_mode(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_mode",
         )
-        rx_hint, mode = parse_scope_mode_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_mode)
+        rx_hint, mode = parse_scope_mode_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().mode = mode
         return mode
@@ -268,7 +294,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_span(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_span",
         )
-        rx_hint, span = parse_scope_span_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_span)
+        rx_hint, span = parse_scope_span_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().span = span
         return span
@@ -293,7 +320,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_edge(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_edge",
         )
-        rx_hint, edge = parse_scope_edge_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_edge)
+        rx_hint, edge = parse_scope_edge_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().edge = edge
         return edge
@@ -318,7 +346,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_hold(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_hold",
         )
-        rx_hint, hold = parse_scope_hold_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_hold)
+        rx_hint, hold = parse_scope_hold_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().hold = hold
         return hold
@@ -343,7 +372,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_ref(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_ref",
         )
-        rx_hint, ref_db = parse_scope_ref_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_ref)
+        rx_hint, ref_db = parse_scope_ref_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().ref_db = ref_db
         return ref_db
@@ -368,7 +398,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_speed(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_speed",
         )
-        rx_hint, speed = parse_scope_speed_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_speed)
+        rx_hint, speed = parse_scope_speed_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().speed = speed
         return speed
@@ -392,7 +423,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_during_tx(to_addr=self._radio_addr),
             label="get_scope_during_tx",
         )
-        during_tx = parse_scope_during_tx_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_during_tx)
+        during_tx = parse_scope_during_tx_response(resp, command=command, sub=sub)
         self._scope_controls().during_tx = during_tx
         return during_tx
 
@@ -412,7 +444,10 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_center_type(to_addr=self._radio_addr),
             label="get_scope_center_type",
         )
-        receiver, center_type = parse_scope_center_type_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_center_type)
+        receiver, center_type = parse_scope_center_type_response(
+            resp, command=command, sub=sub
+        )
         self._apply_scope_receiver_hint(receiver)
         self._scope_controls().center_type = center_type
         return center_type
@@ -434,7 +469,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_vbw(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_vbw",
         )
-        rx_hint, narrow = parse_scope_vbw_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_vbw)
+        rx_hint, narrow = parse_scope_vbw_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().vbw_narrow = narrow
         return narrow
@@ -483,7 +519,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             ),
             label="get_scope_fixed_edge",
         )
-        fixed_edge = parse_scope_fixed_edge_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_fixed_edge)
+        fixed_edge = parse_scope_fixed_edge_response(resp, command=command, sub=sub)
         self._scope_controls().fixed_edge = fixed_edge
         self._scope_controls().edge = fixed_edge.edge
         return fixed_edge
@@ -512,7 +549,10 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         # Re-parse the frame we just built to recover the resolved range_index
         # (computed inside commands/scope.py: scope_set_fixed_edge) without
         # duplicating logic.
-        fixed_edge = parse_scope_fixed_edge_response(parse_civ_frame(civ))
+        command, sub, _ = self._expect_shape(get_scope_fixed_edge)
+        fixed_edge = parse_scope_fixed_edge_response(
+            parse_civ_frame(civ), command=command, sub=sub
+        )
         self._scope_controls().fixed_edge = fixed_edge
         self._scope_controls().edge = fixed_edge.edge
 
@@ -524,7 +564,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._commands.get_scope_rbw(to_addr=self._radio_addr, receiver=receiver),
             label="get_scope_rbw",
         )
-        rx_hint, rbw = parse_scope_rbw_response(resp)
+        command, sub, _ = self._expect_shape(get_scope_rbw)
+        rx_hint, rbw = parse_scope_rbw_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().rbw = rbw
         return rbw
