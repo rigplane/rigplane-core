@@ -62,7 +62,6 @@ docs/plans/2026-07-25-ui-composition-discovery-and-parity.md	frontend/src/lib/au
 docs/plans/2026-07-25-ui-composition-discovery-and-parity.md	frontend/src/lib/runtime/__tests__/frontend-runtime.test.ts:128-201
 docs/plans/2026-07-25-ui-composition-discovery-and-parity.md	frontend/src/lib/transport/__tests__/ws-client.test.ts:317-469
 docs/plans/2026-07-25-ui-composition-discovery-and-parity.md	frontend/src/lib/transport/http-client.ts:113-117
-docs/plans/2026-08-20-transmit-authority.md	_dual_rx_runtime.py:575-582
 docs/plans/2026-08-20-transmit-authority.md	icom.c:922
 docs/plans/2026-08-20-transmit-authority.md	newcat.c:1948
 docs/plans/issue-drafts/05-profiles.md	profiles.py:266
