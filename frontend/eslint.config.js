@@ -323,10 +323,6 @@ export default [
 
   // ── Import boundary: presentation components ──
   // Panels, layouts, LCD, skins, and app entry — must NOT import runtime/transport directly.
-  // display/meters/vfo/controls gained `.ts` coverage under MOR-2075 — before that fix,
-  // these globs matched only `*.svelte`, so a `.ts` file in those four directories (e.g.
-  // a utils module) matched no boundary rule at all. panels/ and layout/ already covered
-  // both extensions; this brings the other four presentation-components zones in line.
   {
     files: [
       'src/App.svelte',

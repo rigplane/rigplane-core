@@ -562,6 +562,26 @@ describe('v3 package boundaries (MOR-1061)', () => {
     );
     expect(hits).toBe(0);
   });
+
+  // ── MOR-2075: display/meters/vfo/controls glob fix ──────────────────────
+  // Same shape as the skins .ts pin above (MOR-2039). Probe uses
+  // `$lib/audio/audio-manager`, not transport: `isTransport`
+  // (scripts/radio-authority-eslint-plugin.mjs) matches only
+  // `transport/{ws-client,http-client}`, so a transport probe would also
+  // fail pre-fix via `radio-authority/structural-boundary` for an unrelated
+  // reason.
+  it.each([
+    ['display', 'src/components-v2/display/frequency-format.ts'],
+    ['meters', 'src/components-v2/meters/bar-gauge-utils.ts'],
+    ['vfo', 'src/components-v2/vfo/vfo-utils.ts'],
+    ['controls', 'src/components-v2/controls/band-utils.ts'],
+  ])('rejects a %s .ts file importing $lib/audio/audio-manager directly (the glob fix — .ts had zero coverage before)', async (_zone, filePath) => {
+    const hits = await restrictedImportHits(
+      `import { audioManager } from '$lib/audio/audio-manager';`,
+      filePath,
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
 });
 
 describe('radio authority boundary (MOR-1406)', () => {
