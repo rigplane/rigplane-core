@@ -524,7 +524,7 @@ Each skin is a concrete Svelte component that:
 3. Composes them into a layout using typed props
 
 ```svelte
-<!-- skins/amber-lcd/LcdSkin.svelte -->
+<!-- skins/lcd-cockpit/LcdCockpitSkin.svelte -->
 <script lang="ts">
   import type { FrontendRuntime } from '../../runtime/types';
   import { toVfoProps, toRxAudioProps, toMeterProps } from '../../adapters';
@@ -584,7 +584,7 @@ export function resolveSkinId(ctx: SkinResolution): SkinId {
 // Lazy-load skin components to keep bundle size manageable
 const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component<{ runtime: FrontendRuntime }> }>> = {
   'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
-  'amber-lcd':  () => import('./amber-lcd/LcdSkin.svelte'),
+  'amber-lcd':  () => import('./lcd-cockpit/LcdCockpitSkin.svelte'),
   'mobile':     () => import('./mobile/MobileSkin.svelte'),
 };
 
