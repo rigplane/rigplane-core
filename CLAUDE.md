@@ -125,6 +125,16 @@ git history directly, so it holds even if the baseline file was hand-edited
 to match a new citation. To shrink the baseline after converting a citation,
 run `.github/scripts/check-doc-citations.sh --regenerate`.
 
+The same CI job also runs a sibling gate (`--check-links`) over every
+tracked `*.md` file repo-wide, not just `docs/`: a relative link from one
+document to another (`[text](target.md)`) must resolve to a real, tracked
+file. `#anchor` fragments are not verified, only file existence — the
+gate's own output says so on every run. Known-broken links are
+grandfathered the same way, in `.github/scripts/doc-link-baseline.txt`;
+unlike the citation baseline, a link entry that stops being broken does not
+need a same-PR `--regenerate` to keep CI green. See the DOC-LINK EXTENSION
+comment in `check-doc-citations.sh` for the full rationale.
+
 ### Multi-machine Git hygiene
 
 Development runs across a local laptop and a dev Mac mini, often with several

@@ -6,14 +6,27 @@ name: Doc citation gate
 # symbol name, never a line number — line numbers rot. See
 # .github/scripts/check-doc-citations.sh for the full rationale.
 #
-# Two independent checks run:
-#   1. docs/** vs the committed baseline (new citation / stale baseline entry).
-#   2. the committed baseline vs the baseline as it existed at the MERGE BASE
+# A second, independent gate in the same job (the two "Doc link gate" steps
+# below, MOR-2053) checks a different kind of doc rot with the same script
+# and the same shrink-only-baseline mechanism: that a relative markdown
+# link from one document to another resolves to a real, tracked file.
+# Scoped to every tracked *.md file repo-wide, not just docs/** -- see the
+# DOC-LINK EXTENSION comment in check-doc-citations.sh for why that scope
+# differs from the citation gate's, what counts as a checked link, and the
+# one deliberate behavioural difference from the citation baseline (a
+# link baseline entry disappearing is not itself a failure).
+#
+# Four independent checks run in this one job:
+#   1. docs/** vs the committed citation baseline (new citation / stale entry).
+#   2. the committed citation baseline vs the baseline at the MERGE BASE
 #      (baseline growth). This second check is the one that actually makes
 #      "the baseline may only shrink" true: it is derived from git history
 #      that this workflow controls, not from anything a contributor's local
 #      `--regenerate` did, so it cannot be defeated by hand-editing the
 #      baseline file to match a hand-added citation.
+#   3. every tracked *.md file vs the committed link baseline (new dead link).
+#   4. the committed link baseline vs the baseline at the MERGE BASE (growth
+#      only -- shrinkage is never required here, see point above).
 #
 # Growth is compared against the MERGE BASE, not the base branch's current
 # tip: comparing against the tip would make the first PR that legitimately
@@ -33,25 +46,34 @@ name: Doc citation gate
 # head.sha is the PR branch's real tip; merge-base against that is the
 # actual fork point.
 #
-# Path-filtered to docs/** (plus the gate's own files) so unrelated code-only
-# PRs don't pay for it. Grep + bash, no toolchain — mirrors the rebrand-gate
-# pattern. fetch-depth: 0 is needed so `git show <ref>:...` and `git merge-base`
-# can see history predating this push/PR.
+# Path-filtered to docs/** and every *.md file (plus the gate's own files)
+# so unrelated non-doc PRs don't pay for it -- docs/** is kept as its own
+# entry alongside **/*.md because the citation gate's grep is not
+# extension-restricted (a citation can in principle sit in a non-.md file
+# under docs/, e.g. docs/*.txt), so narrowing to **/*.md alone would lose
+# existing citation-gate trigger coverage. Grep + bash, no toolchain —
+# mirrors the rebrand-gate pattern. fetch-depth: 0 is needed so
+# `git show <ref>:...` and `git merge-base` can see history predating this
+# push/PR.
 
 on:
   push:
     branches: [main]
     paths:
+      - "**/*.md"
       - "docs/**"
       - ".github/scripts/check-doc-citations.sh"
       - ".github/scripts/doc-citation-baseline.txt"
+      - ".github/scripts/doc-link-baseline.txt"
       - ".github/workflows/doc-citation-gate.yml"
   pull_request:
     branches: [main]
     paths:
+      - "**/*.md"
       - "docs/**"
       - ".github/scripts/check-doc-citations.sh"
       - ".github/scripts/doc-citation-baseline.txt"
+      - ".github/scripts/doc-link-baseline.txt"
       - ".github/workflows/doc-citation-gate.yml"
 
 concurrency:
@@ -74,6 +96,9 @@ jobs:
       - name: Doc citation gate (docs vs baseline)
         run: .github/scripts/check-doc-citations.sh
 
+      - name: Doc link gate (repo-wide vs baseline)
+        run: .github/scripts/check-doc-citations.sh --check-links
+
       - name: Determine merge base for growth check
         id: mergebase
         env:
@@ -93,3 +118,9 @@ jobs:
         env:
           BASE_REF: ${{ steps.mergebase.outputs.base_ref }}
         run: .github/scripts/check-doc-citations.sh --check-growth "${BASE_REF}"
+
+      - name: Doc link gate (baseline may only shrink)
+        if: steps.mergebase.outputs.base_ref != ''
+        env:
+          BASE_REF: ${{ steps.mergebase.outputs.base_ref }}
+        run: .github/scripts/check-doc-citations.sh --check-links --check-growth "${BASE_REF}"
