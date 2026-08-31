@@ -3,9 +3,14 @@
  * but was never called outside a test: production got only the compile-time
  * return-type check on `toRadioViewModel`, which cannot catch a value that
  * type-checks yet breaks a runtime/cross-field invariant (an unsafe `as`, a
- * bad merge, …). `guardRadioViewModel` closes that gap at the one seam
- * (`components-v2/wiring/`) that may value-import `semantic/` without an
- * eslint boundary exception.
+ * bad merge, …). `guardRadioViewModel` closes that gap at
+ * `components-v2/wiring/` — a seam that may value-import `semantic/` without
+ * an eslint boundary exception, but not the only one (`lib/media/
+ * media-session.ts` is another, ruled out for a different reason — see
+ * `radio-view-model-guard.ts`'s module doc). This is the seam that hands the
+ * adapter's output to the semantic surfaces the rest of this file protects,
+ * and it covers one of `toRadioViewModel`'s five production call sites; the
+ * module doc named above records the other four and why each is unguarded.
  *
  * Kills two regressions: the guard silently degrading into a no-op
  * pass-through (a mangled view model would then reach

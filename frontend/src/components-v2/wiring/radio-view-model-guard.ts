@@ -21,11 +21,25 @@
  * the guard lives here instead, wrapping the adapter's output at the one
  * seam that hands it to those surfaces.
  *
- * `import.meta.env.DEV` is Vite's own dev/test-vs-production flag (see
- * `lib/i18n/runtime.ts`'s `isProd` / `lib/i18n/locale-contract.ts`'s
- * `isDevMode` for the existing precedent). Vitest defaults `DEV` to `true`,
- * so the check also runs under test — confirmed by this file's own test
- * throwing on a mangled fixture. The other direction (dev-only, not merely
+ * That makes this guard live at exactly one of `toRadioViewModel`'s five
+ * production call sites. The other four stay unguarded: the two in
+ * `lib/runtime/adapters/panel-adapters.ts` and the one in
+ * `lib/runtime/adapters/scope-adapter.ts` for the eslint-boundary reason just
+ * given, and the one in `lib/media/media-session.ts` for a different reason —
+ * its dedicated test suite (`lib/media/__tests__/media-session.isolated.test.ts`)
+ * mocks `toRadioViewModel` outright and drives it with minimal two-key
+ * doubles for that suite's own purposes. Those doubles are test scaffolding,
+ * not evidence that a partial view model is a legal production shape there;
+ * wiring the guard in would just break that suite instead of validating real
+ * output, so this PR leaves the site unguarded rather than rewriting those
+ * fixtures. `toRadioViewModel`'s return-type contract still applies at all
+ * five call sites — only this runtime cross-check is not yet live at four of
+ * them.
+ *
+ * `import.meta.env.DEV` is Vite's own dev/test-vs-production flag. Vitest
+ * defaults `DEV` to `true`, so the check also runs under test — confirmed by
+ * this file's own test throwing on a mangled fixture. The other direction
+ * (dev-only, not merely
  * dev-preferred) is a build property, not something a `vitest` run can
  * observe: a one-off `vite build` for this change (MOR-2040 PR) found
  * neither `guardRadioViewModel` nor the validator's "Invalid radio view
