@@ -64,4 +64,6 @@ interface MeterRegistration {
 export const METER_REGISTRY: readonly MeterRegistration[] = [
   { file: 'BarGauge.svelte', domain: 'preformatted' },
   { file: 'LinearSMeter.svelte', domain: 'calibrated-db-rel-s9' },
+  // accept-probe skin's own S-meter (MOR-2035/MOR-2034 acceptance probe).
+  { file: 'AcceptProbeMeter.svelte', domain: 'calibrated-db-rel-s9' },
 ];

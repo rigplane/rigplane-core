@@ -16,7 +16,7 @@ import {
 } from '$lib/runtime/adapters/layout-mode-adapter';
 
 export type SkinId =
-  | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'sdr-test';
+  | 'accept-probe' | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'sdr-test';
 
 export interface SkinResolutionContext {
   capabilities: Capabilities | null;
@@ -72,6 +72,11 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
  * `LEGACY_LAYOUT_ALIASES` table.
  */
 const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
+  // MOR-2035/MOR-2034 acceptance probe — see skins/accept-probe/AcceptProbeSkin.svelte.
+  // Not yet reachable from resolveSkinId/layout preference (see
+  // docs/architecture/building-a-skin.md's "Wiring a new skin into the app"
+  // step 5) — this entry is what makes the id addressable at all.
+  'accept-probe': () => import('./accept-probe/AcceptProbeSkin.svelte'),
   'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
   // MOR-1068 (F8): the cockpit's layout manifest registers under this exact
   // id, so it needs the matching loadable SkinId — it was the only registered
@@ -111,6 +116,11 @@ export async function loadSkin(id: SkinId): Promise<Component> {
  * manufacture a live service (v3 ADR invariant 12).
  */
 const SKIN_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
+  // Empty by construction, same reasoning as dual-receiver-cockpit below:
+  // this skin's own VFO readout and AcceptProbeMeter mount no SpectrumPanel,
+  // no AudioSpectrumPanel — naming a resource this tree cannot consume would
+  // be a presentation manufacturing a live service (v3 ADR invariant 12).
+  'accept-probe': [],
   'desktop-v2': ['hardware-scope', 'audio-fft'],
   // Empty by construction: the cockpit mounts the VFO/RX-TX surfaces only —
   // no SpectrumPanel, no AudioSpectrumPanel. Membership only permits

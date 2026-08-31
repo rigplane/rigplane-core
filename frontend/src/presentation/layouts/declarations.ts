@@ -29,6 +29,7 @@ registerLayout(sdrTestLayout);
 
 export { lcdCockpitLayout, lcdScopeLayout } from './lcd-declarations';
 export { mobileLayout } from './mobile-declarations';
+export { acceptProbeLayout } from './accept-probe-declarations';
 // MOR-1266 registration — see that file. Re-exported for the same reason as
 // dualReceiverCockpitLayout above: this barrel is the ONLY thing that wires
 // desktop-v2's manifest into the app, and a named re-export gives every test

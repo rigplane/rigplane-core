@@ -143,6 +143,7 @@ import type { AppTxController } from '../lib/runtime/tx-controller/app-host';
 
 /** Viewport width → skin id. Reuses App's own resize reactivity as the knob. */
 const WIDTH_FOR: Record<SkinId, number> = {
+  'accept-probe': 1100,
   'desktop-v2': 1200,
   'dual-receiver-cockpit': 1500,
   'lcd-cockpit': 1000,

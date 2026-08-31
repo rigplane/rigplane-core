@@ -51,8 +51,8 @@ import { getLayout, type LayoutManifest } from '../contract';
 // directly fires `registerLayout` from THIS file and, under the fast pool's
 // `isolate: false`, would leak the registration into sibling files.
 import {
-  desktopV2Layout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
-  sdrTestLayout,
+  acceptProbeLayout, desktopV2Layout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout,
+  mobileLayout, sdrTestLayout,
 } from '../declarations';
 // Namespace import of the SAME barrel, used ONLY to derive the completeness
 // set structurally (never to register anything — a namespace import has no
@@ -76,6 +76,7 @@ const ALL_MANIFESTS = {
   'lcd-scope': lcdScopeLayout,
   mobile: mobileLayout,
   'desktop-v2': desktopV2Layout,
+  'accept-probe': acceptProbeLayout,
 } as const;
 
 /**
@@ -94,6 +95,7 @@ const EXPECTED_LOADER_SPECIFIER: Readonly<Record<keyof typeof ALL_MANIFESTS, str
   'lcd-scope': '/src/skins/lcd-scope/LcdScopeSkin.svelte',
   mobile: '/src/skins/mobile/MobileSkin.svelte',
   'desktop-v2': '/src/skins/desktop-v2/DesktopSkin.svelte',
+  'accept-probe': '/src/skins/accept-probe/AcceptProbeSkin.svelte',
 };
 
 /** Pulls the quoted argument out of a stringified `() => import('...')`

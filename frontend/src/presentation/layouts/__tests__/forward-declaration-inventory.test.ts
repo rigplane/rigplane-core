@@ -64,6 +64,7 @@ const radioLayoutSource = readFileSync('src/components-v2/layout/RadioLayout.sve
 const lcdLayoutSource = readFileSync('src/components-v2/layout/LcdLayout.svelte', 'utf8');
 const mobileLayoutSource = readFileSync('src/components-v2/layout/MobileRadioLayout.svelte', 'utf8');
 const cockpitShellSource = readFileSync('src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte', 'utf8');
+const acceptProbeSkinSource = readFileSync('src/skins/accept-probe/AcceptProbeSkin.svelte', 'utf8');
 
 /**
  * MOR-1313. `sdr-test` and `desktop-v2` share the one shell whose semantic
@@ -97,6 +98,14 @@ const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'lcd-scope': () => /<SemanticRadioSurfaces\s*\/>/.test(lcdLayoutSource),
   'mobile': () => /<SemanticRadioSurfaces\s*\/>/.test(mobileLayoutSource),
   'dual-receiver-cockpit': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(cockpitShellSource),
+  // MOR-2035/MOR-2034 acceptance probe — its own dedicated layout (no
+  // SemanticRadioSurfaces mount at all), so the proof reads its own bespoke
+  // markup instead: the vfo-backing frequency readout and the meters-backing
+  // AcceptProbeMeter are both unconditional top-level children, never
+  // wrapped in an `{#if}`.
+  'accept-probe': () =>
+    /data-testid="accept-probe-frequency"/.test(acceptProbeSkinSource)
+    && /<AcceptProbeMeter/.test(acceptProbeSkinSource),
 };
 
 describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () => {

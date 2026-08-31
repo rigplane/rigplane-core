@@ -118,6 +118,7 @@ import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.sve
 import { calibratedToSUnit, calibratedToDbm, formatDbm } from '../smeter-scale';
 import BarGauge from '../BarGauge.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
+import AcceptProbeMeter from '../AcceptProbeMeter.svelte';
 import { METER_REGISTRY, type MeterValueDomain } from './meter-contract';
 
 const METERS_DIR = join(__dirname, '..');
@@ -128,6 +129,7 @@ const METERS_DIR = join(__dirname, '..');
 const COMPONENTS: Record<string, unknown> = {
   'BarGauge.svelte': BarGauge,
   'LinearSMeter.svelte': LinearSMeter,
+  'AcceptProbeMeter.svelte': AcceptProbeMeter,
 };
 
 /** Props broad enough to mount ANY registered component regardless of its

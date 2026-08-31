@@ -205,6 +205,9 @@ import { presentationResources, runtime } from '../lib/runtime/frontend-runtime'
  * the plan's own pin.
  */
 const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
+  // MOR-2035/MOR-2034 acceptance probe — mounts no SpectrumPanel/
+  // AudioSpectrumPanel, same reasoning as dual-receiver-cockpit below.
+  'accept-probe': [],
   'desktop-v2': ['hardware-scope', 'audio-fft'],
   // MOR-1068: the cockpit mounts the VFO/RX-TX surfaces only — no scope
   // panel of either kind — so it demands nothing and bridges nothing.
@@ -216,6 +219,7 @@ const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
 };
 
 const WIDTH_FOR: Record<SkinId, number> = {
+  'accept-probe': 1100,
   'desktop-v2': 1200,
   'dual-receiver-cockpit': 1500,
   'lcd-cockpit': 1000,

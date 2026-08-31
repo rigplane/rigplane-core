@@ -153,6 +153,9 @@ describe('presentation resource plan', () => {
     'lcd-scope': ['audio-fft'],
     // The mobile layout mounts SpectrumPanel but no audio-FFT surface.
     'mobile': ['hardware-scope'],
+    // MOR-2035/MOR-2034 acceptance probe — mounts no SpectrumPanel/
+    // AudioSpectrumPanel, same reasoning as dual-receiver-cockpit above.
+    'accept-probe': [],
   };
 
   const everySkin = Object.keys(EXPECTED_RESOURCE_PLAN) as SkinId[];

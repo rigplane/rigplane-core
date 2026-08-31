@@ -114,6 +114,14 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
     entryComponentFile: 'DualReceiverCockpit.svelte',
   },
   mobile: { kind: 'mobile-layout' },
+  // MOR-2035/MOR-2034 acceptance probe — a dedicated bespoke layout, same
+  // shape as dual-receiver-cockpit above (no RadioLayout/LcdLayout/
+  // MobileRadioLayout delegate to mock against).
+  'accept-probe': {
+    kind: 'covered-elsewhere',
+    testFile: 'src/skins/accept-probe/__tests__/AcceptProbeSkin.component.test.ts',
+    entryComponentFile: 'AcceptProbeSkin.svelte',
+  },
 };
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
