@@ -5,27 +5,28 @@
  * component. Persistence + settings UI are MOR-1079's boundary; adopting
  * this object as the layout source of truth is MOR-1081's.
  *
- * ID sources. `SEMANTIC_SURFACE_NAMES` is imported LIVE from the layout
- * contract — a pure module. The other id spaces are PINNED literals with a
- * registry-sync test (`__tests__/contract.test.ts`), because every module
- * that owns them is unusable from here: `lib/stores/layout.svelte.ts` reads
- * `localStorage` at module scope and is `$lib/stores/*` (lint-banned in this
- * zone), the two `declarations.ts` barrels fire `registerLayout`/
- * `registerDesignLanguage` as import side effects, and
+ * ID sources. `SEMANTIC_SURFACE_NAMES` and the canonical layout-mode set
+ * (MOR-2059) are imported LIVE — from the layout contract and
+ * `presentation/layout-mode.ts` respectively, both pure modules. The other
+ * id spaces are PINNED literals with a registry-sync test
+ * (`__tests__/contract.test.ts`), because every module that owns them is
+ * unusable from here: the two `declarations.ts` barrels fire
+ * `registerLayout`/`registerDesignLanguage` as import side effects, and
  * `components-v2/theme/theme-switcher.ts` is banned by the workspace zone
  * (v3 ADR invariant 6). The sync test imports all three and fails on drift.
  */
 import { SEMANTIC_SURFACE_NAMES, type SemanticSurfaceName } from '../layouts/contract';
 import type { DensityLevel } from '../languages/contract';
+import { CANONICAL_LAYOUT_MODES, LEGACY_LAYOUT_ALIASES } from '../layout-mode';
 
 export const WORKSPACE_SCHEMA_VERSION = 1;
 /** MOR-1076: an app up to 2 minors older must still READ a newer object. */
 export const WORKSPACE_FORWARD_READ_WINDOW = 2;
 
 /** Decision 1: `CanonicalLayoutMode` including `auto`, MOR-1042 aliases applied on read. */
-export const WORKSPACE_LAYOUT_IDS = ['auto', 'lcd-cockpit', 'lcd-scope', 'standard', 'sdr-test'] as const;
+export const WORKSPACE_LAYOUT_IDS = [...CANONICAL_LAYOUT_MODES] as const;
 export type WorkspaceLayoutId = (typeof WORKSPACE_LAYOUT_IDS)[number];
-const LAYOUT_ALIASES: Readonly<Record<string, WorkspaceLayoutId>> = { lcd: 'lcd-cockpit', 'amber-lcd': 'lcd-cockpit', spectrum: 'standard', 'desktop-v2': 'standard' };
+const LAYOUT_ALIASES: Readonly<Record<string, WorkspaceLayoutId>> = LEGACY_LAYOUT_ALIASES;
 /** Workspace id space → layout-manifest id space. `auto` is resolved by the existing
  *  `skins/registry.ts::resolveSkinId()` (it needs live scope facts this module must not
  *  see), so it maps to null — "defer", not "unknown". */

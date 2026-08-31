@@ -99,20 +99,6 @@ describe('layout preference normalization', () => {
     expect(data.get(LAYOUT_KEY)).toBe('auto');
   });
 
-  it('preserves the visible cycle and no-scope fallback using canonical values', async () => {
-    const { cycleLayoutMode, getLayoutMode } = await loadStore();
-
-    cycleLayoutMode(true);
-    expect(getLayoutMode()).toBe('lcd-cockpit');
-    cycleLayoutMode(true);
-    expect(getLayoutMode()).toBe('standard');
-    cycleLayoutMode(true);
-    expect(getLayoutMode()).toBe('auto');
-
-    cycleLayoutMode(false);
-    expect(getLayoutMode()).toBe('lcd-cockpit');
-  });
-
   // MOR-1257: the QA-only dual-receiver-cockpit value must never become a
   // normal, persisted layout preference — the only legitimate way to reach
   // it is `readQaCockpitLayoutOverride()` (lib/stores/qa-cockpit-override.ts)

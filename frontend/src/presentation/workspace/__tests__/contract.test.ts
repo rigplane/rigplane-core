@@ -9,7 +9,6 @@
  * exactly why they live here and not in `purity.isolated.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 import {
   DEFAULT_WORKSPACE, WORKSPACE_DENSITY_CLAMP, WORKSPACE_DESIGN_LANGUAGE_IDS, WORKSPACE_LAYOUT_IDS,
   WORKSPACE_SCHEMA_VERSION, WORKSPACE_THEME_IDS, WORKSPACE_ZONE_IDS, normalizeWorkspaceLayoutId,
@@ -22,23 +21,12 @@ import * as layoutDeclarations from '../../layouts/declarations';
 import type { LayoutManifest } from '../../layouts/contract';
 import { fieldline, studioline } from '../../languages/declarations';
 import { getAvailableThemes } from '../../../components-v2/theme/theme-switcher';
-
-/**
- * The layout id space is synced from SOURCE TEXT, not an import: `lib/stores/
- * layout.svelte.ts` reads `localStorage` at module scope and throws in a Node
- * env without one — the same reason `presentation/layouts/__tests__/
- * loader-identity-inventory.test.ts` reads specifiers as text rather than
- * importing the modules that hold them.
- */
-const LAYOUT_STORE_SOURCE = readFileSync('src/lib/stores/layout.svelte.ts', 'utf8');
-function block(marker: string, open: string, close: string): string {
-  const start = LAYOUT_STORE_SOURCE.indexOf(marker);
-  expect(start).toBeGreaterThan(-1);
-  const from = LAYOUT_STORE_SOURCE.indexOf(open, start);
-  return LAYOUT_STORE_SOURCE.slice(from, LAYOUT_STORE_SOURCE.indexOf(close, from));
-}
-const LIVE_CANONICAL_MODES = [...block('CANONICAL_LAYOUT_MODES', '[', ']').matchAll(/'([^']+)'/g)].map((m) => m[1]);
-const LIVE_ALIASES = [...block('LEGACY_LAYOUT_ALIASES', '{', '}').matchAll(/'?([\w-]+)'?:\s*'([^']+)'/g)].map((m) => [m[1], m[2]] as const);
+// MOR-2059: the layout id space is a LIVE import now — `../contract` derives
+// `WORKSPACE_LAYOUT_IDS`/its alias table from this same module, so there is
+// no separate copy left to scrape `lib/stores/layout.svelte.ts`'s source
+// text for. `LEGACY_LAYOUT_ALIASES` is imported here only for the one count
+// that isn't already covered by `../contract`'s own re-derivation.
+import { LEGACY_LAYOUT_ALIASES } from '../../layout-mode';
 
 const VALID: WorkspaceV1 = {
   version: 1,
@@ -52,18 +40,15 @@ const VALID: WorkspaceV1 = {
 };
 
 describe('registry sync — the pinned id spaces still match their live owners', () => {
-  it('layout ids are exactly the store\'s CanonicalLayoutMode set', () => {
-    // Kills: a new CanonicalLayoutMode landing in the store without a pin here.
-    expect([...WORKSPACE_LAYOUT_IDS].sort()).toEqual([...LIVE_CANONICAL_MODES].sort());
+  it('layout ids are exactly the canonical layout-mode set', () => {
+    // Kills: normalizeWorkspaceLayoutId failing to round-trip a canonical id unchanged.
     for (const id of WORKSPACE_LAYOUT_IDS) expect(normalizeWorkspaceLayoutId(id)).toBe(id);
     // The QA-only cockpit id must stay unpersistable (MOR-1257).
-    expect(LIVE_CANONICAL_MODES).not.toContain('dual-receiver-cockpit');
     expect(normalizeWorkspaceLayoutId('dual-receiver-cockpit')).toBe('auto');
   });
 
-  it('the MOR-1042 alias table is mirrored exactly', () => {
-    expect(LIVE_ALIASES.length).toBe(4);
-    for (const [alias, canonical] of LIVE_ALIASES) expect(normalizeWorkspaceLayoutId(alias)).toBe(canonical);
+  it('the MOR-1042 alias table has exactly the 4 known aliases', () => {
+    expect(Object.keys(LEGACY_LAYOUT_ALIASES).length).toBe(4);
   });
 
   it('design-language ids and their density clamps match the live manifests', () => {
