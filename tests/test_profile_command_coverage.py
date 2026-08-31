@@ -30,11 +30,15 @@ key comma-separated on the row, the same compact shape
 ``tests/command_map_parity_uncovered.txt``'s own ``gap`` rows use. The
 baseline started large by construction (D2, plan §8.1: at that point no rig
 TOML used the ``{ absent = "<source>" }`` spelling at all). Which profiles
-have since been filled with it is tracked by
-``tests/test_rig_loader.py::TestNoShippedProfileUsesAbsentSpellingYet``
-(narrowed, not deleted, as each profile's own D2 pass lands) rather than
-restated here; this file's baseline is meant to shrink only, never grow
-silently.
+have since been filled with it used to be tracked by
+``tests/test_rig_loader.py::TestNoShippedProfileUsesAbsentSpellingYet``,
+narrowed as each profile's own D2 pass landed; MOR-2008 batch 4's
+``ftx1.toml``/``tx500.toml`` pass was the last shipped profile to be
+filled, narrowing that pin's parametrize set to empty, so it was deleted
+per its own docstring's contingency rather than kept as a vacuous test.
+Each profile's per-model ``TestXDeclaresAbsentCommands`` class in that same
+file is the durable record now, not restated here; this file's baseline is
+meant to shrink only, never grow silently.
 
 Regenerate after an intentional change (a profile gains or loses a
 declaration, or a builder's key changes)::

@@ -471,6 +471,11 @@ set_tuner_status = [0x1C, 0x01]  # source: rigs/x6200.toml (sibling model, D2 MO
 
 # Selected / unselected VFO (0x25 / 0x26)
 get_selected_freq   = [0x25, 0x00]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.9
+# set_selected_freq/set_unselected_freq/set_unselected_mode: no Python
+# builder resolves any of these three keys yet (git grep, zero hits in
+# src/rigplane/ -- MOR-2008 batch 4 D2 audit). Kept, not deleted: each
+# documents a real, sourced capability the same 0x25/0x26 opcodes
+# above confirm, data completeness rather than a code orphan.
 set_selected_freq   = [0x25, 0x00]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same as get_selected_freq there
 get_unselected_freq = [0x25, 0x01]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same as get_selected_freq there
 set_unselected_freq = [0x25, 0x01]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same as get_selected_freq there
@@ -482,6 +487,23 @@ set_unselected_mode  = [0x26, 0x01]  # source: rigs/x6200.toml (sibling model, D
 # Protocol ack/nak echoes (used by transport-level matchers)
 get_command_error_fa = [0xFA]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Icom CI-V protocol convention, copied from the IC-705 profile at MOR-170, no X6200-specific (or X6100-specific) row
 get_command_ok_fb    = [0xFB]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same as get_command_error_fa there
+
+# Memory / TX band edge (D2, MOR-2008 batch 4): sibling copy of
+# rigs/x6200.toml's own absent declarations -- none of these 11 opcodes
+# appear anywhere in the X6200 V1.0.6 Table 1 (pp.5-9, the complete
+# documented opcode list), and no X6100 CI-V manual exists to check
+# independently (D2 MOR-2018's own sibling-copy ruling).
+get_memory_mode      = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x08/0x09/0x0A/0x0B row anywhere" }
+set_memory_mode      = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x08 row anywhere" }
+memory_write         = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x09 row anywhere" }
+memory_to_vfo        = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x0A row anywhere" }
+memory_clear         = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x0B row anywhere" }
+get_memory_contents  = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1A 0x00 row anywhere" }
+set_memory_contents  = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1A 0x00 row anywhere" }
+get_bsr              = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 p.8 -- [0x1A, 0x01] documented, but as a 2-byte get_band_spectrum_display command, not Icom's 9-byte get_bsr record" }
+set_bsr              = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 p.8 -- [0x1A, 0x01] SET row documented, but as a 2-byte band-select command, not Icom's 9-byte set_bsr record" }
+get_tx_band_count    = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1E row anywhere (table-exhaustiveness inference, not an explicit vendor statement)" }
+get_tx_band_edge     = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1E row anywhere (table-exhaustiveness inference, not an explicit vendor statement)" }
 
 [commands.overrides]
 

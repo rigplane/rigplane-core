@@ -324,6 +324,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining to repoint at — its four tests that used to assert "no
   exception, fallback bytes returned" now assert "the wrapper's warning
   still fires, then the builder's own `TypeError` propagates unchanged."
+- **`rigplane.commands.memory`/`tx_band` builders, and `freq.py`'s five
+  remaining selected-receiver builders, require `cmd_map`; none ever had a
+  hardcoded fallback to delete (MOR-2008, batch 4 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`, "Group B" —
+  the last 16 builders in `commands/` with no `cmd_map` parameter at
+  all).** Covers `memory.py`'s nine (`build_memory_mode_get`/`_set`,
+  `build_memory_write`, `build_memory_to_vfo`, `build_memory_clear`,
+  `build_memory_contents_get`/`_set`, `get_bsr`/`set_bsr`), `tx_band.py`'s
+  two (`get_tx_band_count`, `get_tx_band_edge`), and `freq.py`'s five
+  (`get_selected_freq`/`get_unselected_freq`/`get_selected_mode`/
+  `get_unselected_mode`/`set_selected_mode`). Python function names are
+  unchanged — the seven `memory.py` builders with the anomalous
+  `build_X_get`/`build_X_set`/`build_X` shape keep it; only the TOML key
+  spellings were reconciled. Canonical key naming (owner ruling): a
+  genuine get/set value pair keeps its `get_`/`set_` prefix; a
+  single-wire-form action command uses the bare name, matching
+  `power_on`/`ptt_on`/`scan_start` — so `build_memory_write`/
+  `build_memory_to_vfo`/`build_memory_clear` resolve `"memory_write"`/
+  `"memory_to_vfo"`/`"memory_clear"`, not a `get_`/`set_`-prefixed key.
+  IC-705 previously declared redundant `get_X`/`set_X` pairs for these
+  three one-shot actions; the orphan half of each pair is deleted, with a
+  fresh source citation on the single surviving bare-named row (neither
+  half carried one before). The four Icom profiles' 57 DECLARE cells are
+  byte-identical to what these builders sent before migration (verified
+  directly against the deleted hardcoded output, not merely asserted).
+  **Two commands are left deliberately undeclared (D1 state 3) rather
+  than guessed:** `get_memory_mode` on all four Icom profiles (the
+  manuals phrase 0x08 as "Select the Memory mode", imperative, not
+  "Send/read" like the package's other bidirectional rows, and no
+  live-bench probe has settled whether it answers a bare read), and
+  `set_selected_mode` on IC-7300/IC-7610/IC-9700 (the exact
+  (mode, data_mode, filter) SET payload convention was not independently
+  confirmed against those three manuals' own detail pages before this
+  batch — IC-705/X6200/X6100 already declare it and are unaffected).
+  Calling either now raises `CommandError` (undeclared-command refusal)
+  on the affected profiles instead of unconditionally sending the byte
+  the old hardcoded fallback always sent — the honest outcome until a
+  live probe or a manual detail-page read settles the open question.
+  **X6200/X6100 declare all 11 memory.py/tx_band.py keys formally
+  absent:** none of the nine memory-family opcodes nor the two TX-band
+  opcodes appear anywhere in the Radioddity X6200 CI-V V1.0.6 documented
+  opcode table (Table 1, pp.5-9); `get_bsr`/`set_bsr` specifically
+  because the one opcode the table does document at `[0x1A, 0x01]`
+  (already exposed as `get_band_spectrum_display`) is a different,
+  2-byte-payload command, not Icom's own 9-byte band-stacking-register
+  record — same opcode, structurally incompatible wire contract. This
+  migration also **corrects a pre-existing false claim** in
+  `rigs/x6200.toml`'s own "PROVENANCE OPEN" note, which said the
+  band-stacking WRITE side of `[0x1A, 0x01]` was undeclared/undocumented;
+  the same manual page the file already cited documents that SET row too
+  (just not as Icom's `set_bsr`). **`ftx1.toml`/`tx500.toml` (CAT-only,
+  no CI-V command table) declare all 16 canonical keys formally absent**,
+  citing the protocol mismatch rather than leaving them as a silent gap —
+  this removes both profiles from `tests/test_command_map_parity.py`'s
+  `cat_only_profiles` census/`cat-only` rows, since that classification
+  means literally "every `[commands]` entry is `CatCommandSpec`", which a
+  declared-absent row no longer satisfies even though both profiles
+  remain cat-only in every functional sense. The orphan TOML keys
+  `set_selected_freq`/`set_unselected_freq`/`set_unselected_mode` (no
+  Python builder resolves any of the three) are kept, not deleted, on
+  X6200/X6100 — each documents a real, sourced capability the same
+  0x25/0x26 opcodes above confirm — with a one-line comment added noting
+  the absent builder; IC-705's own copies of the same three keys, which
+  carry no source at all, are left untouched. **Hard boundary (MOR-2055,
+  explicitly not touched by this migration):** `build_memory_to_vfo`/
+  `build_memory_clear` still append a 2-byte BCD channel payload that all
+  four Icom manuals show 0x0A/0x0B accepting no data field for at all —
+  this migration re-plumbs the command-map lookup only and does not
+  change those wire bytes; the payload question is MOR-2055's to settle.
+  Three now-dead constants (`_CMD_MEMORY_WRITE`, `_CMD_MEMORY_TO_VFO`,
+  `_CMD_MEMORY_CLEAR`) are deleted from `commands/_frame.py` — an
+  AST-verified census found zero importers anywhere for any of the
+  three once `memory.py`'s own builders stopped reading them directly.
+  The production call sites, in `runtime/radio.py: CoreRadio` and
+  `runtime/_dual_rx_runtime.py: DualRxRuntimeMixin` (the selected/
+  unselected freq/mode readers and the X6200 selected-mode SET path),
+  moved onto `self._commands.<builder>(...)` in the same change.
+  `tests/test_command_fallback_audit.py`'s census is updated: 256 public
+  builders now require `cmd_map` (was 238), and the 33 that lack the
+  parameter entirely are, for the first time, exclusively `parse_*`
+  response decoders — no byte-emitting builder anywhere in `commands/`
+  lacks `cmd_map` any longer.
 
 ### Changed
 

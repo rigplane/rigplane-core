@@ -1,4 +1,16 @@
-"""Tests for CI-V 0x25/0x26 selected/unselected freq & mode commands."""
+"""Tests for CI-V 0x25/0x26 selected/unselected freq & mode commands.
+
+``get_selected_freq``/``get_unselected_freq``/``get_selected_mode``/
+``get_unselected_mode``/``set_selected_mode`` migrated onto the bound
+command map in MOR-2008 (batch 4, "Group B"): all five now require
+``cmd_map``, no hardcoded fallback ever having existed to delete. IC-7610
+declares the first four with byte-identical wire tuples to the deleted
+hardcoded frames; ``set_selected_mode`` is PROVENANCE OPEN on IC-7610 (and
+IC-7300/IC-9700), so its own builder test below uses X6200's map instead,
+matching the ``to_addr=0xA4`` (X6200's CI-V address) the test already used.
+"""
+
+import pathlib
 
 import pytest
 
@@ -17,9 +29,25 @@ from rigplane.commands import (
     set_selected_mode,
 )
 from rigplane.radio import IcomRadio
+from rigplane.rig_loader import load_rig
 from rigplane.types import CivFrame, Mode, bcd_encode
 
 from test_radio import MockTransport, _wrap_civ_in_udp
+
+RIG_DIR = pathlib.Path(__file__).resolve().parents[1] / "rigs"
+
+
+@pytest.fixture()
+def cmd_map():
+    rig = load_rig(RIG_DIR / "ic7610.toml")
+    return rig.to_command_map()
+
+
+@pytest.fixture()
+def x6200_cmd_map():
+    rig = load_rig(RIG_DIR / "x6200.toml")
+    return rig.to_command_map()
+
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -62,30 +90,42 @@ def _selected_mode_response(
 
 
 class TestCommandBuilders:
-    def test_get_selected_freq_frame(self) -> None:
-        frame = get_selected_freq(to_addr=0x98)
+    def test_get_selected_freq_frame(self, cmd_map) -> None:
+        frame = get_selected_freq(to_addr=0x98, cmd_map=cmd_map)
         assert b"\x25\x00" in frame
         assert frame.startswith(b"\xfe\xfe")
         assert frame.endswith(b"\xfd")
 
-    def test_get_unselected_freq_frame(self) -> None:
-        frame = get_unselected_freq(to_addr=0x98)
+    def test_get_unselected_freq_frame(self, cmd_map) -> None:
+        frame = get_unselected_freq(to_addr=0x98, cmd_map=cmd_map)
         assert b"\x25\x01" in frame
 
-    def test_get_selected_mode_frame(self) -> None:
-        frame = get_selected_mode(to_addr=0x98)
+    def test_get_selected_mode_frame(self, cmd_map) -> None:
+        frame = get_selected_mode(to_addr=0x98, cmd_map=cmd_map)
         assert b"\x26\x00" in frame
 
-    def test_get_unselected_mode_frame(self) -> None:
-        frame = get_unselected_mode(to_addr=0x98)
+    def test_get_unselected_mode_frame(self, cmd_map) -> None:
+        frame = get_unselected_mode(to_addr=0x98, cmd_map=cmd_map)
         assert b"\x26\x01" in frame
 
-    def test_set_selected_mode_frame(self) -> None:
+    def test_set_selected_mode_frame(self, x6200_cmd_map) -> None:
         # X6200 CI-V address is 0xA4; controller 0xE0; Mode.LSB == 0x00.
         # Frame: FE FE A4 E0 26 00 <receiver=00> <mode=LSB=00> <data_mode=00>
-        #        <filter=01> FD.
-        frame = set_selected_mode(Mode.LSB, 0, 1, to_addr=0xA4)
+        #        <filter=01> FD. set_selected_mode is PROVENANCE OPEN on
+        #        IC-7610 (and IC-7300/IC-9700), so this builder test uses
+        #        X6200's own declared map instead.
+        frame = set_selected_mode(Mode.LSB, 0, 1, to_addr=0xA4, cmd_map=x6200_cmd_map)
         assert frame == b"\xfe\xfe\xa4\xe0\x26\x00\x00\x00\x01\xfd"
+
+    def test_get_selected_freq_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_selected_freq(to_addr=0x98)  # type: ignore[call-arg]
+
+    def test_set_selected_mode_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_selected_mode(Mode.LSB, 0, 1, to_addr=0xA4)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------

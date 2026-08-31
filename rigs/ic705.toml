@@ -485,6 +485,13 @@ bsr_code = 0x0F
 # Every opcode from wfview IC-705.rig Commands\1–124 (excluding TRX placeholders 0x00/0x01).
 # NOTE lines: IC-7300.rig has the feature but IC-705.rig does not (or uses different bytes).
 
+# PROVENANCE OPEN (D2, MOR-2008 batch 4): left deliberately undeclared
+# rather than guessed. House pattern: rigs/ic9700.toml "PROVENANCE OPEN
+# (D2, MOR-2015)".
+# - get_memory_mode [0x08]: this guide's own 0x08 row reads "Select the
+#   Memory mode" (imperative), not "Send/read" like the table's other
+#   bidirectional rows -- no live-bench probe has settled whether it
+#   answers a bare read.
 [commands]
 
 # ── Frequency / Mode ──
@@ -511,15 +518,19 @@ get_main_sub_band = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.20
 quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 
 # ── Memory (wfview MemStart=0, Max=99; Memory Contents Max=101) ──
-get_memory_mode = [0x08]
-set_memory_mode = [0x08]
+# get_memory_mode -- PROVENANCE OPEN above, left undeclared (this guide's
+# own 0x08 row reads "Select the Memory mode", imperative, not "Send/read"
+# like the table's other bidirectional rows -- no live-bench probe has
+# settled whether it answers a bare read)
+set_memory_mode = [0x08]                  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 set_memory_group = [0x08, 0xA0]
-get_memory_write = [0x09]
-set_memory_write = [0x09]
-get_memory_to_vfo = [0x0A]
-set_memory_to_vfo = [0x0A]
-get_memory_clear = [0x0B]
-set_memory_clear = [0x0B]
+# memory_write/memory_to_vfo/memory_clear: single wire form, bare
+# canonical key (owner ruling, MOR-2008 batch 4) -- collapses the
+# redundant get_X/set_X pair this file used to declare for each (neither
+# half carried a source; the single surviving row below does).
+memory_write = [0x09]                     # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
+memory_to_vfo = [0x0A]                     # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_to_vfo
+memory_clear = [0x0B]                      # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
 
 # ── Offset / Scan / Split ──
 get_freq_offset = [0x0D]
@@ -674,10 +685,10 @@ get_transceiver_id = [0x19, 0x00]
 set_transceiver_id = [0x19, 0x00]
 
 # ── 0x1A ──
-get_memory_contents = [0x1A, 0x00]
-set_memory_contents = [0x1A, 0x00]
-get_bsr = [0x1A, 0x01]
-set_bsr = [0x1A, 0x01]
+get_memory_contents = [0x1A, 0x00]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (detail p.17)
+set_memory_contents = [0x1A, 0x00]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (detail p.17)
+get_bsr = [0x1A, 0x01]                    # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (detail p.18)
+set_bsr = [0x1A, 0x01]                    # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (detail p.18)
 get_filter_width = [0x1A, 0x03]
 set_filter_width = [0x1A, 0x03]
 # agc_time_constant (0x1A 0x04) exists on IC-705 -- refutes the earlier "NOT
@@ -718,14 +729,22 @@ get_rit_tx_status = [0x21, 0x02]
 set_rit_tx_status = [0x21, 0x02]
 
 # ── Selected / unselected VFO ──
-get_selected_freq = [0x25, 0x00]
+get_selected_freq = [0x25, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15
+# set_selected_freq: no Python builder exists yet -- orphan key, kept
+# undisturbed by MOR-2008 batch 4 (see that batch's PR body).
 set_selected_freq = [0x25, 0x00]
-get_unselected_freq = [0x25, 0x01]
+get_unselected_freq = [0x25, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15
 set_unselected_freq = [0x25, 0x01]
-get_selected_mode = [0x26, 0x00]
-set_selected_mode = [0x26, 0x00]
-get_unselected_mode = [0x26, 0x01]
+get_selected_mode = [0x26, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
+set_selected_mode = [0x26, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
+get_unselected_mode = [0x26, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
+# set_unselected_mode: no Python builder exists yet -- orphan key, kept
+# undisturbed by MOR-2008 batch 4 (see that batch's PR body).
 set_unselected_mode = [0x26, 0x01]
+
+# ── TX Band Edge ──
+get_tx_band_count = [0x1E, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14
+get_tx_band_edge = [0x1E, 0x01]           # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14 (detail p.16)
 
 # ── Scope ──
 get_scope_wave = [0x27, 0x00]

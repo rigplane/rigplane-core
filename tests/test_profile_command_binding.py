@@ -43,12 +43,14 @@ from typing import Any
 import pytest
 
 import rigplane.commands as commands
-from rigplane.commands import get_selected_freq, get_speech, ptt_on
+from rigplane.commands import get_speech, ptt_on
 from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
+from rigplane.commands.dsp import set_attenuator
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.runtime.radio import CoreRadio
+from rigplane.types import BandStackRegister, MemoryChannel
 
 # Reused rather than re-implemented, per the MOR-2006 drift-guard extension:
 # the same probe-ladder search test_command_map_parity.py uses to find a
@@ -171,13 +173,21 @@ class TestExpect:
     def test_expect_on_unexposed_builder_names_the_migration(self) -> None:
         # get_rf_power (commands/levels.py) is exposed as of MOR-2006 Steps
         # 5..N module 2; get_s_meter (commands/meters.py) was the "not
-        # exposed yet" stand-in through batch 1, but MOR-2008 batch 2
-        # migrated meters.py -- get_selected_freq (commands/freq.py) has no
-        # cmd_map parameter at all (Group B, deferred to a later batch per
-        # the owner ruling on the ticket) and stands in instead.
-        bound = BoundCommands(CommandMap({"get_selected_freq": (0x25, 0x00)}))
+        # exposed yet" stand-in through batch 1, and get_selected_freq
+        # (commands/freq.py) stood in from batch 2 through batch 3 (Group
+        # B, deferred at the time per the owner ruling on the ticket) --
+        # MOR-2008 batch 4 migrated freq.py's Group B builders too, so
+        # every builder in the package now either exposes a key or
+        # resolves one statically (tests/test_profile_command_coverage.py:
+        # test_every_builder_resolves_by_exactly_one_route). dsp.py:
+        # set_attenuator is a stable, permanent stand-in instead: it
+        # deliberately never exposes its own key (it delegates to
+        # set_attenuator_level, whose key is "set_attenuator") rather than
+        # being mid-migration, so this is not a "temporary until the next
+        # batch" choice.
+        bound = BoundCommands(CommandMap({"set_attenuator": (0x11,)}))
         with pytest.raises(AttributeError, match="Steps 5..N"):
-            bound.expect(get_selected_freq)
+            bound.expect(set_attenuator)
 
 
 # ── the drift guard ──
@@ -270,9 +280,32 @@ def _exposed_builders() -> list[tuple[str, Any]]:
 # other exposed builder's probe search; adding a value shifts which combo
 # each of them finds first). vfo.py: scan_set_df_span's 0xA1-0xA7 (MOR-2007)
 # is the one case so far: _INTS's largest members (100, 255) both fall
-# outside that range.
+# outside that range. MOR-2008 batch 4 adds two more, for a different
+# reason: memory.py: build_memory_contents_set/set_bsr each take a
+# required dataclass argument (MemoryChannel/BandStackRegister), which
+# _values_for cannot synthesise at all (not an enum/bool/str/float/int,
+# and each module imports its dataclass only under TYPE_CHECKING, so
+# _values_for's own `eval(annotation, fn.__globals__)` cannot even
+# resolve the name at runtime) -- _candidate_kwargs would yield nothing,
+# so a real instance is supplied directly instead.
 _EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
     "scan_set_df_span": {"df_span": 0xA1},
+    "build_memory_contents_set": {
+        "mem": MemoryChannel(
+            channel=1,
+            frequency_hz=14_074_000,
+            mode=1,
+            filter=1,
+            scan=0,
+            datamode=0,
+            tonemode=0,
+        )
+    },
+    "set_bsr": {
+        "bsr": BandStackRegister(
+            band=1, register=1, frequency_hz=14_074_000, mode=1, filter=1
+        )
+    },
 }
 
 

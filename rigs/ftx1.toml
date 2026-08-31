@@ -943,6 +943,34 @@ set_apf_freq   = { cat = { write = "CO03{val:04d};" } }
 # ── Clarifier Reset ──
 reset_clarifier = { cat = { write = "RC;" } }
 
+# ── Memory / TX band edge / selected-VFO (absent, D2 MOR-2008 batch 4) ──
+# Protocol mismatch, not a documentation gap: [protocol] type is
+# "yaesu_cat" above, every entry in this table is a { cat = ... } spec,
+# and profiles/rig_loader.py: RigConfig.to_command_map keeps only the
+# CI-V half of CommandSpec -- none of these 16 canonical CI-V key names
+# can be declared under the [opcode, sub]-array syntax at all on this
+# profile. The FTX-1 CAT manual documents an analogous memory-channel
+# family under different ASCII commands (MC/MR/MW/MA/MB) and this
+# profile's own get_freq_sub under a different name for the
+# selected/unselected-VFO idea -- both out of Group B's scope, noted only
+# so nobody double-declares them here.
+get_memory_mode      = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio (tests/command_map_parity_uncovered.txt: cat-only FTX-1)" }
+set_memory_mode      = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+memory_write         = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+memory_to_vfo        = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+memory_clear         = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+get_memory_contents  = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+set_memory_contents  = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+get_bsr              = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+set_bsr              = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+get_tx_band_count    = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+get_tx_band_edge     = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+get_selected_freq    = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+get_unselected_freq  = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+get_selected_mode    = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+get_unselected_mode  = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+set_selected_mode    = { absent = "protocol mismatch: [protocol] type = \"yaesu_cat\", no CI-V command table on this radio" }
+
 [tx_policy]
 # Measured on the bench (MOR-1912): a controlled write-during-transmit
 # battery sent to the FTX-1 while an operator held a front-panel key. Mode

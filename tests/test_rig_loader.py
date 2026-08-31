@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from rigplane.command_map import CommandMap
-from rigplane.command_spec import AbsentCommandSpec
 from rigplane.core.capabilities import CAP_SPEECH, KNOWN_CAPABILITIES
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
@@ -2665,47 +2664,33 @@ class TestFilterShapeDomainDeclaredOrCapabilityAbsent:
             assert rig.filter_shape_labels == {"0": "SHARP", "1": "SOFT"}, name
 
 
-class TestNoShippedProfileUsesAbsentSpellingYet:
-    """MOR-2005 step 4a landed only the ``{ absent = "<source>" }`` spelling
-    itself (plan `docs/plans/2026-08-29-profile-driven-command-bytes.md`
-    §8.1 D1/D2) — it did not fill any profile with it. D2's filling work is
-    separate, ticket-tracked, later work: MOR-2014 filled ``ic7300.toml``
-    (27 commands, D2 documentary + live-bench verdicts), MOR-2015 filled
-    ``ic9700.toml`` (26 commands, D2 documentary verdicts against the
-    IC-9700 CI-V Reference Guide), MOR-2016 filled ``ic705.toml`` (24
-    commands, D2 documentary verdicts against the IC-705 CI-V Reference
-    Guide), MOR-2008 batch 2 filled ``ic7610.toml`` (8 commands, the
-    repeater-tone/TSQL/tone-freq/TSQL-freq family, promoting a
-    comment-only D1 state 3 to a formal state 2 row grounded in a
-    live-bench readback rather than a documentary source), and MOR-2008
-    batch 3 filled ``x6100.toml``/``x6200.toml`` (6 commands each, the
-    vox/break-in/manual-notch family, promoting a comment-only D1 state 3
-    to a formal state 2 row grounded in the V1.0.6 documentary table
-    rather than a live capture -- see
-    ``TestX6200DeclaresAbsentCommands``/``TestX6100DeclaresAbsentCommands``
-    below). This pin is narrowed rather than deleted so every *other*
-    shipped profile stays proven empty until its own D2 pass fills it too
-    — narrow further (or delete) as each profile gets filled.
-    """
-
-    _NOT_YET_FILLED = tuple(
-        p
-        for p in _SHIPPED_RIG_TOMLS
-        if p.stem not in {"ic7300", "ic9700", "ic705", "ic7610", "x6100", "x6200"}
-    )
-
-    @pytest.mark.parametrize("toml_path", _NOT_YET_FILLED, ids=lambda p: p.stem)
-    def test_no_absent_commands_declared(self, toml_path):
-        rig = load_rig(toml_path)
-        absent = {
-            name
-            for name, spec in rig.commands.items()
-            if isinstance(spec, AbsentCommandSpec)
-        }
-        assert absent == set(), (
-            f"{toml_path.name}: declares absent commands {sorted(absent)} — "
-            f"update/delete this pin now that D2 filling has started"
-        )
+# MOR-2005 step 4a landed only the ``{ absent = "<source>" }`` spelling
+# itself (plan `docs/plans/2026-08-29-profile-driven-command-bytes.md`
+# §8.1 D1/D2) — it did not fill any profile with it. D2's filling work was
+# separate, ticket-tracked, later work: MOR-2014 filled ``ic7300.toml``
+# (27 commands, D2 documentary + live-bench verdicts), MOR-2015 filled
+# ``ic9700.toml`` (26 commands, D2 documentary verdicts against the
+# IC-9700 CI-V Reference Guide), MOR-2016 filled ``ic705.toml`` (24
+# commands, D2 documentary verdicts against the IC-705 CI-V Reference
+# Guide), MOR-2008 batch 2 filled ``ic7610.toml`` (8 commands, the
+# repeater-tone/TSQL/tone-freq/TSQL-freq family, promoting a comment-only
+# D1 state 3 to a formal state 2 row grounded in a live-bench readback
+# rather than a documentary source), MOR-2008 batch 3 filled
+# ``x6100.toml``/``x6200.toml`` (6 commands each, the vox/break-in/
+# manual-notch family, promoting a comment-only D1 state 3 to a formal
+# state 2 row grounded in the V1.0.6 documentary table rather than a live
+# capture), and MOR-2008 batch 4 added 11 more each to ``x6100.toml``/
+# ``x6200.toml`` (the memory.py/tx_band.py Group B family, same V1.0.6
+# documentary grounding) plus filled ``ftx1.toml``/``tx500.toml`` (16
+# commands each, all 16 Group B canonical keys, grounded in protocol
+# mismatch rather than a documentary or live source). This was the last
+# shipped profile to be filled: a
+# ``TestNoShippedProfileUsesAbsentSpellingYet`` pin used to sit here,
+# narrowed as each profile's own D2 pass landed and deleted, per its own
+# docstring's contingency, once MOR-2008 batch 4's pass narrowed its
+# parametrize set to empty rather than leave a vacuous test collecting
+# zero cases. Each profile's own ``TestXDeclaresAbsentCommands`` class
+# below is the durable per-model record now.
 
 
 class TestIc7300DeclaresAbsentCommands:
@@ -2917,8 +2902,8 @@ class TestIc7610DeclaresAbsentCommands:
             assert not cmd_map.has(name), f"{name} declared absent but still in map"
 
 
-class _X6DeclaresAbsentVoxBreakInManualNotch:
-    """Shared body for the X6100/X6200 absent-DSP-family pin below.
+class _X6DeclaresAbsentCommands:
+    """Shared body for the X6100/X6200 absent-command pin below.
 
     MOR-2008 batch 3: both profiles formally declare
     ``get_/set_vox``, ``get_/set_break_in`` and ``get_/set_manual_notch``
@@ -2932,6 +2917,20 @@ class _X6DeclaresAbsentVoxBreakInManualNotch:
     *present* instead, at opcodes the project's own cat-audit already
     confirmed correct (docs/validation/cat-audits/x6200.md) -- those
     three are not absent commands and must not appear here.
+
+    MOR-2008 batch 4 adds 11 more: the entire memory.py (9 keys) and
+    tx_band.py (2 keys) Group B family is absent on both profiles --
+    none of the nine memory-family opcodes (0x08/0x09/0x0A/0x0B/0x1A 0x00)
+    nor the two TX-band-edge opcodes (0x1E) appear anywhere in the
+    Radioddity X6200 CI-V V1.0.6 Table 1 (pp.5-9, the complete documented
+    opcode list); ``get_bsr``/``set_bsr`` specifically because the
+    opcode [0x1A, 0x01] the table *does* document is a different,
+    2-byte-payload command (exposed instead as
+    ``get_band_spectrum_display``), not Icom's own 9-byte band-stacking
+    record -- see each profile's own ``rigs/*.toml`` comments and the
+    class-name renaming this batch made necessary (was
+    ``_X6DeclaresAbsentVoxBreakInManualNotch``, no longer describes the
+    full set this shared body pins).
     """
 
     _EXPECTED_ABSENT = frozenset(
@@ -2942,6 +2941,17 @@ class _X6DeclaresAbsentVoxBreakInManualNotch:
             "set_break_in",
             "get_manual_notch",
             "set_manual_notch",
+            "get_memory_mode",
+            "set_memory_mode",
+            "memory_write",
+            "memory_to_vfo",
+            "memory_clear",
+            "get_memory_contents",
+            "set_memory_contents",
+            "get_bsr",
+            "set_bsr",
+            "get_tx_band_count",
+            "get_tx_band_edge",
         }
     )
     _TOML_NAME: str
@@ -2969,10 +2979,90 @@ class _X6DeclaresAbsentVoxBreakInManualNotch:
         assert declared_present <= profile.command_names
         assert not (declared_present & profile.absent_command_names)
 
+    def test_selected_freq_mode_family_stays_present_not_absent(self):
+        """The DECLARED-OK sibling fix (MOR-2008 batch 4): the five
+        canonical freq.py Group B keys are sourced and present on both
+        profiles, not absent -- only memory.py/tx_band.py are absent
+        here.
+        """
+        profile = load_rig(RIGS_DIR / self._TOML_NAME).to_profile()
+        declared_present = {
+            "get_selected_freq",
+            "get_unselected_freq",
+            "get_selected_mode",
+            "get_unselected_mode",
+            "set_selected_mode",
+        }
+        assert declared_present <= profile.command_names
+        assert not (declared_present & profile.absent_command_names)
 
-class TestX6200DeclaresAbsentCommands(_X6DeclaresAbsentVoxBreakInManualNotch):
+
+class TestX6200DeclaresAbsentCommands(_X6DeclaresAbsentCommands):
     _TOML_NAME = "x6200.toml"
 
 
-class TestX6100DeclaresAbsentCommands(_X6DeclaresAbsentVoxBreakInManualNotch):
+class TestX6100DeclaresAbsentCommands(_X6DeclaresAbsentCommands):
     _TOML_NAME = "x6100.toml"
+
+
+class _CatOnlyDeclaresAllGroupBAbsent:
+    """Shared body for the FTX-1/TX-500 absent-command pin (MOR-2008
+    batch 4): both cat-only profiles formally declare all 16 Group B
+    canonical keys (memory.py's 9, tx_band.py's 2, freq.py's 5) absent,
+    grounded in protocol mismatch rather than a documentary or live
+    source -- ``[protocol] type`` is not ``"civ"`` on either profile,
+    every ``[commands]`` entry is a ``{ cat = ... }`` spec, and
+    ``profiles/rig_loader.py: RigConfig.to_command_map`` keeps only the
+    CI-V half of ``CommandSpec``, so none of these 16 CI-V-array key names
+    could ever be declared present here regardless of what either radio's
+    own CAT dialect documents.
+
+    Adding these formal rows removes both profiles from
+    ``tests/test_command_map_parity.py``'s own ``cat_only_profiles``
+    census/``cat-only`` rows -- that classification means literally "every
+    ``[commands]`` entry is ``CatCommandSpec``", which a declared-absent
+    row (a third spec type) no longer satisfies, even though both profiles
+    remain cat-only in every functional sense (``[protocol] type``
+    unchanged, ``CommandMap`` still empty). See
+    ``tests/command_map_parity_uncovered.txt``'s regenerated diff in this
+    batch's PR body.
+    """
+
+    _EXPECTED_ABSENT = frozenset(
+        {
+            "get_memory_mode",
+            "set_memory_mode",
+            "memory_write",
+            "memory_to_vfo",
+            "memory_clear",
+            "get_memory_contents",
+            "set_memory_contents",
+            "get_bsr",
+            "set_bsr",
+            "get_tx_band_count",
+            "get_tx_band_edge",
+            "get_selected_freq",
+            "get_unselected_freq",
+            "get_selected_mode",
+            "get_unselected_mode",
+            "set_selected_mode",
+        }
+    )
+    _TOML_NAME: str
+
+    def test_absent_command_names_match(self):
+        profile = load_rig(RIGS_DIR / self._TOML_NAME).to_profile()
+        assert profile.absent_command_names == self._EXPECTED_ABSENT
+
+    def test_absent_commands_excluded_from_command_map(self):
+        cmd_map = load_rig(RIGS_DIR / self._TOML_NAME).to_command_map()
+        for name in self._EXPECTED_ABSENT:
+            assert not cmd_map.has(name), f"{name} declared absent but still in map"
+
+
+class TestFtx1DeclaresAbsentCommands(_CatOnlyDeclaresAllGroupBAbsent):
+    _TOML_NAME = "ftx1.toml"
+
+
+class TestTx500DeclaresAbsentCommands(_CatOnlyDeclaresAllGroupBAbsent):
+    _TOML_NAME = "tx500.toml"

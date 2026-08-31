@@ -909,6 +909,17 @@ bsr_code = 0x0A
 #
 # IC-7300 has NO Command29 support (single receiver).
 
+# PROVENANCE OPEN (D2, MOR-2008 batch 4): the following are left
+# deliberately undeclared rather than guessed. House pattern:
+# rigs/ic9700.toml "PROVENANCE OPEN (D2, MOR-2015)".
+# - get_memory_mode [0x08]: the IC-7300 Advanced Manual (11a) p.19-3
+#   phrases 0x08 as "Select the Memory mode" (imperative), not "Send/read"
+#   like this table's other bidirectional rows -- no live-bench probe has
+#   settled whether it answers a bare read.
+# - set_selected_mode [0x26, 0x00]: the opcode's GET direction is declared
+#   below (get_selected_mode), but this manual's own p.19-13 detail page
+#   for the SET direction's exact (mode, data_mode, filter) payload
+#   convention was not independently opened before this batch.
 [commands]
 
 # ── Frequency / Mode ──
@@ -917,10 +928,15 @@ set_freq = [0x05]
 get_mode = [0x04]
 set_mode = [0x06]
 get_band_edge_freq = [0x02]
-get_selected_freq = [0x25, 0x00]          # Selected VFO freq
-get_unselected_freq = [0x25, 0x01]        # Unselected VFO freq
-get_selected_mode = [0x26, 0x00]          # Selected VFO mode
-get_unselected_mode = [0x26, 0x01]        # Unselected VFO mode
+get_selected_freq = [0x25, 0x00]          # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
+get_unselected_freq = [0x25, 0x01]        # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
+get_selected_mode = [0x26, 0x00]          # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
+get_unselected_mode = [0x26, 0x01]        # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
+# set_selected_mode -- PROVENANCE OPEN above, left undeclared
+
+# ── TX Band Edge ──
+get_tx_band_count = [0x1E, 0x00]          # source: IC-7300 Advanced Manual (11a) p.19-7
+get_tx_band_edge = [0x1E, 0x01]           # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-9)
 
 # ── VFO ──
 get_vfo = [0x07]
@@ -1135,14 +1151,17 @@ get_dial_lock = [0x16, 0x50]
 set_dial_lock = [0x16, 0x50]
 
 # ── Band Stacking Register ──
-get_bsr = [0x1A, 0x01]
-set_bsr = [0x1A, 0x01]
+get_bsr = [0x1A, 0x01]                    # source: IC-7300 Advanced Manual (11a) p.19-4 (detail p.19-10)
+set_bsr = [0x1A, 0x01]                    # source: IC-7300 Advanced Manual (11a) p.19-4 (detail p.19-10)
 
-# ── Memory ── (NOT_IMPLEMENTED)
-# get_memory_contents = [0x1A, 0x00]
-# set_memory_contents = [0x1A, 0x00]
-# set_memory_mode = [0x08]
-# memory_clear = [0x0B]
+# ── Memory ──
+# get_memory_mode -- PROVENANCE OPEN above, left undeclared
+set_memory_mode = [0x08]                  # source: IC-7300 Advanced Manual (11a) p.19-3
+memory_write = [0x09]                     # source: IC-7300 Advanced Manual (11a) p.19-3
+memory_to_vfo = [0x0A]                    # source: IC-7300 Advanced Manual (11a) p.19-3 -- payload MOR-2055, see commands/memory.py: build_memory_to_vfo
+memory_clear = [0x0B]                     # source: IC-7300 Advanced Manual (11a) p.19-3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
+get_memory_contents = [0x1A, 0x00]        # source: IC-7300 Advanced Manual (11a) p.19-4 (detail p.19-11)
+set_memory_contents = [0x1A, 0x00]        # source: IC-7300 Advanced Manual (11a) p.19-4 (detail p.19-11)
 
 # Menu 0x1A 0x05 sub-addresses: see [commands.overrides] (wfview IC-7300.rig)
 

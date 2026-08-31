@@ -7,9 +7,9 @@
 # via { absent = "<source>" } (plan §8.1 D2) or a real command-byte
 # entry in the profile's own TOML. Regenerate, do not hand-edit.
 census	civ_profiles	6
-census	distinct_gap_keys	145
-census	profile_key_gaps	292
-census	public_builders	228
+census	distinct_gap_keys	147
+census	profile_key_gaps	299
+census	public_builders	244
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	X6100,X6200
 gap	get_agc_time_constant	X6100,X6200
@@ -40,6 +40,7 @@ gap	get_lan_mod_level	X6100,X6200
 gap	get_main_sub_band	X6100,X6200
 gap	get_main_sub_tracking	X6100,X6200
 gap	get_manual_notch_width	X6100,X6200
+gap	get_memory_mode	IC-705,IC-7300,IC-7610,IC-9700
 gap	get_monitor	X6100,X6200
 gap	get_nb_depth	X6100,X6200
 gap	get_nb_width	X6100,X6200
@@ -141,6 +142,7 @@ gap	set_rit_frequency	X6100,X6200
 gap	set_rit_status	X6100,X6200
 gap	set_rit_tx_status	X6100,X6200
 gap	set_rx_antenna_ant2	X6100,X6200
+gap	set_selected_mode	IC-7300,IC-7610,IC-9700
 gap	set_ssb_tx_bandwidth	X6100,X6200
 gap	set_system_date	X6100,X6200
 gap	set_system_time	X6100,X6200

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from rigplane.commands.command_spec import CatCommandSpec
+from rigplane.commands.command_spec import AbsentCommandSpec, CatCommandSpec
 from rigplane.profiles import RadioProfile
 from rigplane.rig_loader import (
     VALID_CONTROL_STYLES,
@@ -22,6 +22,7 @@ from rigplane.rig_loader import (
     discover_rigs,
     load_rig,
 )
+from test_rig_loader import TestTx500DeclaresAbsentCommands as _Tx500AbsentPin
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 
@@ -441,14 +442,46 @@ class TestMultiVendorProfiles:
     def test_tx500_commands_are_wired(self):
         """MOR-684: kenwood_cat CAT command strings are wired in [commands].
 
-        Previously [commands] was an empty stub; the loaded profile now carries
-        the rev.2 CAT command set as ``CatCommandSpec`` entries.
+        Previously [commands] was an empty stub; the loaded profile now
+        carries the rev.2 CAT command set as ``CatCommandSpec`` entries.
+
+        MOR-2008 batch 4 (D2) added 16 formal ``{ absent = "..." }`` rows
+        for the Group B canonical keys (protocol mismatch -- TX-500 has no
+        CI-V command table at all) -- renamed from a single-branch "every
+        command is CatCommandSpec" assertion, which that batch's own CI
+        run caught failing the moment the first absent row landed, to the
+        exact-split pattern
+        (``test_command_spec.py: test_ic7610_loads_civ_except_the_declared_absent_tone_tsql_family``'s
+        precedent): every command is ``CatCommandSpec`` except the pinned
+        absent set, discriminating both directions so a CAT row silently
+        becoming absent, or an absent row silently reverting to CAT, fails
+        regardless of which name moves. The expected-absent set is
+        imported from ``test_rig_loader.py: TestTx500DeclaresAbsentCommands``
+        rather than duplicated here.
         """
         rig = load_rig(RIGS_DIR / "tx500.toml")
         assert isinstance(rig.commands, dict)
         assert rig.commands  # no longer empty
-        for spec in rig.commands.values():
-            assert isinstance(spec, CatCommandSpec)
+
+        expected_absent = _Tx500AbsentPin._EXPECTED_ABSENT
+        for name, spec in rig.commands.items():
+            if name in expected_absent:
+                assert isinstance(spec, AbsentCommandSpec), (
+                    f"Command {name} is declared absent but not AbsentCommandSpec"
+                )
+            else:
+                assert isinstance(spec, CatCommandSpec), (
+                    f"Command {name} is not CatCommandSpec"
+                )
+        actually_absent = {
+            name
+            for name, spec in rig.commands.items()
+            if isinstance(spec, AbsentCommandSpec)
+        }
+        assert actually_absent == expected_absent, (
+            "tx500.toml's AbsentCommandSpec entries drifted from "
+            "TestTx500DeclaresAbsentCommands._EXPECTED_ABSENT"
+        )
 
     def test_tx500_mode_map_matches_rev2(self):
         """MOR-684: mode list matches Lab599 CAT Protocol rev.2 exactly.

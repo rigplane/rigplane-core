@@ -1042,6 +1042,17 @@ routes = [
 #   # NOT_IMPLEMENTED — command known from CI-V ref but not yet
 #                       handled by the rigplane backend
 
+# PROVENANCE OPEN (D2, MOR-2008 batch 4): the following are left
+# deliberately undeclared rather than guessed. House pattern:
+# rigs/ic9700.toml "PROVENANCE OPEN (D2, MOR-2015)".
+# - get_memory_mode [0x08]: this guide's own 0x08 row reads "Select the
+#   Memory mode" (imperative), not "Send/read" like the table's other
+#   bidirectional rows -- no live-bench probe has settled whether it
+#   answers a bare read.
+# - set_selected_mode [0x26, 0x00]: the opcode's GET direction is declared
+#   below (get_selected_mode), but this guide's own p.13 detail page for
+#   the SET direction's exact (mode, data_mode, filter) payload
+#   convention was not independently opened before this batch.
 [commands]
 
 # ── Frequency / Mode ──
@@ -1050,6 +1061,10 @@ set_freq = [0x05]
 get_mode = [0x04]
 set_mode = [0x06]
 get_band_edge_freq = [0x02]
+
+# ── TX Band Edge ──
+get_tx_band_count = [0x1E, 0x00]          # source: IC-7610 CI-V Reference Guide (Rev. 4) p.9
+get_tx_band_edge = [0x1E, 0x01]           # source: IC-7610 CI-V Reference Guide (Rev. 4) p.9 (detail p.10)
 
 # ── VFO / Dual Receiver ──
 get_vfo = [0x07]
@@ -1062,10 +1077,11 @@ set_dual_watch_off = [0x07, 0xC0]
 get_main_sub_band = [0x07, 0xD2]          # 0=MAIN, 1=SUB
 get_main_sub_tracking = [0x16, 0x5E]      # 0=OFF, 1=ON
 set_main_sub_tracking = [0x16, 0x5E]
-get_selected_freq = [0x25, 0x00]          # Read selected band freq
-get_unselected_freq = [0x25, 0x01]        # Read unselected band freq
-get_selected_mode = [0x26, 0x00]          # Read selected band mode
-get_unselected_mode = [0x26, 0x01]        # Read unselected band mode
+get_selected_freq = [0x25, 0x00]          # source: IC-7610 CI-V Reference Guide (Rev. 4) p.9 (detail p.13) -- documents 25/26 as "main or sub band" frequency, not "selected/unselected VFO"; same opcode structure
+get_unselected_freq = [0x25, 0x01]        # source: IC-7610 CI-V Reference Guide (Rev. 4) p.9 (detail p.13) -- "main or sub band" wording, see get_selected_freq
+get_selected_mode = [0x26, 0x00]          # source: IC-7610 CI-V Reference Guide (Rev. 4) p.9 (detail p.13) -- "main or sub band" wording, see get_selected_freq
+get_unselected_mode = [0x26, 0x01]        # source: IC-7610 CI-V Reference Guide (Rev. 4) p.9 (detail p.13) -- "main or sub band" wording, see get_selected_freq
+# set_selected_mode -- PROVENANCE OPEN above, left undeclared
 
 # ── Tuning ──
 get_tuning_step = [0x10]
@@ -1297,15 +1313,17 @@ get_ref_adjust = [0x1A, 0x05, 0x00, 0x70]
 set_ref_adjust = [0x1A, 0x05, 0x00, 0x70]
 
 # ── Band Stacking Register ──
-get_bsr = [0x1A, 0x01]                    # Read BSR contents
-set_bsr = [0x1A, 0x01]                    # Write BSR contents
+get_bsr = [0x1A, 0x01]                    # source: IC-7610 CI-V Reference Guide (Rev. 4) p.4 (detail p.10)
+set_bsr = [0x1A, 0x01]                    # source: IC-7610 CI-V Reference Guide (Rev. 4) p.4 (detail p.10)
 
 # ── Memory ──
-set_memory_mode = [0x08]
-memory_write = [0x09]
-memory_to_vfo = [0x0A]
-memory_clear = [0x0B]
-set_memory_contents = [0x1A, 0x00]
+# get_memory_mode -- PROVENANCE OPEN above, left undeclared
+set_memory_mode = [0x08]                  # source: IC-7610 CI-V Reference Guide (Rev. 4) p.3
+memory_write = [0x09]                     # source: IC-7610 CI-V Reference Guide (Rev. 4) p.3
+memory_to_vfo = [0x0A]                    # source: IC-7610 CI-V Reference Guide (Rev. 4) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_to_vfo
+memory_clear = [0x0B]                     # source: IC-7610 CI-V Reference Guide (Rev. 4) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
+get_memory_contents = [0x1A, 0x00]        # source: IC-7610 CI-V Reference Guide (Rev. 4) p.4 (detail p.11)
+set_memory_contents = [0x1A, 0x00]        # source: IC-7610 CI-V Reference Guide (Rev. 4) p.4 (detail p.11)
 
 # ── Menu Settings (0x1A 0x05 ...) ──
 # These are SET menu items with model-specific sub-addresses.

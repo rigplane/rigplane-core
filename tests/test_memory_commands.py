@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,8 +26,12 @@ from rigplane.commands import (
     build_memory_write,
     parse_memory_contents_response,
 )
+from rigplane.commands.bound import BoundCommands
 from rigplane.radio_protocol import MemoryCapable
+from rigplane.rig_loader import load_rig
 from rigplane.types import BandStackRegister, CivFrame, MemoryChannel
+
+RIG_DIR = pathlib.Path(__file__).resolve().parents[1] / "rigs"
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +39,18 @@ from rigplane.types import BandStackRegister, CivFrame, MemoryChannel
 # ---------------------------------------------------------------------------
 
 RADIO_ADDR = 0x98  # IC-7610 default CI-V address
+
+
+@pytest.fixture()
+def cmd_map():
+    """IC-7610's bound command map -- all nine memory.py builders migrated
+    onto it in MOR-2008 batch 4; every builder this file exercises directly
+    (all but ``build_memory_mode_get``, which is PROVENANCE OPEN
+    everywhere) is declared here with the exact bytes this file's literal
+    frame assertions already expect.
+    """
+    rig = load_rig(RIG_DIR / "ic7610.toml")
+    return rig.to_command_map()
 
 
 # ---------------------------------------------------------------------------
@@ -77,65 +94,75 @@ class TestMemoryCapableProtocol:
 class TestMemoryModeSetBuilder:
     """build_memory_mode_set produces correct CI-V frames."""
 
-    def test_channel_1(self) -> None:
-        frame = build_memory_mode_set(1, to_addr=RADIO_ADDR)
+    def test_channel_1(self, cmd_map) -> None:
+        frame = build_memory_mode_set(1, to_addr=RADIO_ADDR, cmd_map=cmd_map)
         # 0xFE 0xFE <to> <from> 0x08 <BCD channel 2 bytes> 0xFD
         assert frame[:4] == b"\xfe\xfe\x98\xe0"
         assert frame[4] == 0x08  # command
         # Channel 1 in 2-byte BCD
         assert frame[-1:] == b"\xfd"
 
-    def test_channel_101(self) -> None:
-        frame = build_memory_mode_set(101, to_addr=RADIO_ADDR)
+    def test_channel_101(self, cmd_map) -> None:
+        frame = build_memory_mode_set(101, to_addr=RADIO_ADDR, cmd_map=cmd_map)
         assert frame[4] == 0x08
 
-    def test_channel_0_raises(self) -> None:
+    def test_channel_0_raises(self, cmd_map) -> None:
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_mode_set(0, to_addr=RADIO_ADDR)
+            build_memory_mode_set(0, to_addr=RADIO_ADDR, cmd_map=cmd_map)
 
-    def test_channel_102_raises(self) -> None:
+    def test_channel_102_raises(self, cmd_map) -> None:
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_mode_set(102, to_addr=RADIO_ADDR)
+            build_memory_mode_set(102, to_addr=RADIO_ADDR, cmd_map=cmd_map)
+
+    def test_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_memory_mode_set(1, to_addr=RADIO_ADDR)  # type: ignore[call-arg]
 
 
 class TestMemoryWriteBuilder:
     """build_memory_write produces correct CI-V frames."""
 
-    def test_basic_frame(self) -> None:
-        frame = build_memory_write(to_addr=RADIO_ADDR)
+    def test_basic_frame(self, cmd_map) -> None:
+        frame = build_memory_write(to_addr=RADIO_ADDR, cmd_map=cmd_map)
         assert frame[:4] == b"\xfe\xfe\x98\xe0"
         assert frame[4] == 0x09  # command
         assert frame[-1:] == b"\xfd"
+
+    def test_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_memory_write(to_addr=RADIO_ADDR)  # type: ignore[call-arg]
 
 
 class TestMemoryToVfoBuilder:
     """build_memory_to_vfo produces correct CI-V frames."""
 
-    def test_channel_50(self) -> None:
-        frame = build_memory_to_vfo(50, to_addr=RADIO_ADDR)
+    def test_channel_50(self, cmd_map) -> None:
+        frame = build_memory_to_vfo(50, to_addr=RADIO_ADDR, cmd_map=cmd_map)
         assert frame[4] == 0x0A  # command
 
-    def test_channel_0_raises(self) -> None:
+    def test_channel_0_raises(self, cmd_map) -> None:
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_to_vfo(0, to_addr=RADIO_ADDR)
+            build_memory_to_vfo(0, to_addr=RADIO_ADDR, cmd_map=cmd_map)
 
 
 class TestMemoryClearBuilder:
     """build_memory_clear produces correct CI-V frames."""
 
-    def test_channel_10(self) -> None:
-        frame = build_memory_clear(10, to_addr=RADIO_ADDR)
+    def test_channel_10(self, cmd_map) -> None:
+        frame = build_memory_clear(10, to_addr=RADIO_ADDR, cmd_map=cmd_map)
         assert frame[4] == 0x0B  # command
 
-    def test_channel_0_raises(self) -> None:
+    def test_channel_0_raises(self, cmd_map) -> None:
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_clear(0, to_addr=RADIO_ADDR)
+            build_memory_clear(0, to_addr=RADIO_ADDR, cmd_map=cmd_map)
 
 
 class TestMemoryContentsSetBuilder:
     """build_memory_contents_set produces correct CI-V frames."""
 
-    def test_basic_channel(self) -> None:
+    def test_basic_channel(self, cmd_map) -> None:
         mem = MemoryChannel(
             channel=1,
             frequency_hz=14_074_000,
@@ -146,17 +173,19 @@ class TestMemoryContentsSetBuilder:
             tonemode=0,
             name="FT8",
         )
-        frame = build_memory_contents_set(mem, to_addr=RADIO_ADDR)
+        frame = build_memory_contents_set(mem, to_addr=RADIO_ADDR, cmd_map=cmd_map)
         assert frame[:4] == b"\xfe\xfe\x98\xe0"
         assert frame[4] == 0x1A  # command
         assert frame[5] == 0x00  # sub-command
         assert frame[-1:] == b"\xfd"
 
-    def test_invalid_type_raises(self) -> None:
+    def test_invalid_type_raises(self, cmd_map) -> None:
         with pytest.raises(TypeError, match="Expected MemoryChannel"):
-            build_memory_contents_set({"channel": 1}, to_addr=RADIO_ADDR)  # type: ignore[arg-type]
+            build_memory_contents_set(
+                {"channel": 1}, to_addr=RADIO_ADDR, cmd_map=cmd_map
+            )  # type: ignore[arg-type]
 
-    def test_invalid_channel_raises(self) -> None:
+    def test_invalid_channel_raises(self, cmd_map) -> None:
         mem = MemoryChannel(
             channel=0,
             frequency_hz=14_074_000,
@@ -167,7 +196,21 @@ class TestMemoryContentsSetBuilder:
             tonemode=0,
         )
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_contents_set(mem, to_addr=RADIO_ADDR)
+            build_memory_contents_set(mem, to_addr=RADIO_ADDR, cmd_map=cmd_map)
+
+    def test_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        mem = MemoryChannel(
+            channel=1,
+            frequency_hz=14_074_000,
+            mode=0x01,
+            filter=1,
+            scan=0,
+            datamode=0,
+            tonemode=0,
+        )
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_memory_contents_set(mem, to_addr=RADIO_ADDR)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------
@@ -250,12 +293,25 @@ class TestParseMemoryContentsResponse:
 
 
 class TestIcomRadioMemoryMethods:
-    """Verify IcomRadio memory methods call the correct builders."""
+    """Verify IcomRadio memory methods call the correct builders.
+
+    ``radio._commands`` is a real ``BoundCommands`` bound to IC-7610's own
+    map (MOR-2008 batch 4 moved these methods' internals onto
+    ``self._commands.<builder>``) -- a bare ``MagicMock`` here would
+    silently return another ``MagicMock`` in place of real frame bytes
+    (CLAUDE.md: "MagicMock hides signature bugs -- verify against real
+    dataclasses"), and this class's own assertions index into the frame
+    bytes each method sends, so a wrong wiring would surface as a
+    confusing ``TypeError``/comparison failure rather than a clean
+    assertion.
+    """
 
     def _make_radio(self) -> MagicMock:
+        rig = load_rig(RIG_DIR / "ic7610.toml")
         radio = MagicMock()
         radio._radio_addr = RADIO_ADDR
         radio._send_fire_and_forget = AsyncMock()
+        radio._commands = BoundCommands(rig.to_command_map())
         return radio
 
     @pytest.mark.asyncio
@@ -391,10 +447,23 @@ class TestIcomRadioGetBsr:
     IC7610_ADDR = 0x98
 
     def _make_radio(self, radio_addr: int) -> MagicMock:
+        """``radio._commands`` is a real ``BoundCommands`` over a synthetic
+        literal map (MOR-2008 batch 4 moved ``get_bsr`` onto
+        ``self._commands.get_bsr``) -- get_bsr's wire bytes are identical
+        on both radios this class exercises, so a synthetic single-key map
+        pins the shared byte-assembly behaviour without coupling this
+        generic test to either profile's own TOML file. A bare
+        ``MagicMock`` here would silently return another ``MagicMock`` in
+        place of the real request frame this class's own assertions index
+        into.
+        """
+        from rigplane.command_map import CommandMap
+
         radio = MagicMock()
         radio._radio_addr = radio_addr
         radio._check_connected = MagicMock()
         radio._send_civ_expect = AsyncMock()
+        radio._commands = BoundCommands(CommandMap({"get_bsr": (0x1A, 0x01)}))
         return radio
 
     def _band_stack_frame(self, radio_addr: int) -> CivFrame:
