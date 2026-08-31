@@ -100,12 +100,13 @@ function evaluateReviewGate({comments, headSha, committedAt}) {
     if (
       comment === null ||
       typeof comment !== 'object' ||
-      // Truthiness, deliberately. The REST payload types `minimized` as a
-      // nullable object whose own `reason` is nullable too, so `null`,
-      // `{reason: "outdated"}` and `{reason: null}` are all producible and the
-      // boolean `true` is not. Narrowing this to `comment.minimized?.reason`
-      // would stop skipping a comment hidden without a recorded reason, and
-      // narrowing it to `=== true` (the original) skipped nothing at all.
+      // Truthiness, deliberately. REST types `minimized` as a nullable object
+      // whose own `reason` is nullable, so `{reason: null}` is schema-legal
+      // (no public mutation produces one today -- `minimizeComment` requires a
+      // classifier -- but the schema permits it). Narrowing to
+      // `comment.minimized?.reason` would count such a comment instead of
+      // skipping it; `=== true`, the original, skipped nothing at all, since
+      // the schema admits object-or-null and never a boolean.
       Boolean(comment.minimized) ||
       !TRUSTED_ASSOCIATIONS.has(comment.author_association)
     ) {

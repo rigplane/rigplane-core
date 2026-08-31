@@ -284,10 +284,11 @@ test('trust, minimization, and PASS freshness are enforced', () => {
     evaluate([comment(directive('PASS'), {minimized: {reason: 'outdated'}})]).state,
     'failure',
   );
-  // `reason` is itself nullable in the schema, so a comment hidden without a
-  // recorded reason arrives as {reason: null}. This is the row that keeps the
-  // predicate at truthiness: narrowing it to `comment.minimized?.reason` counts
-  // this comment instead of skipping it, reinstating the original defect.
+  // `reason` is itself nullable in the schema, so {reason: null} is a legal
+  // hidden-comment payload even though no public mutation produces one today.
+  // This row and the {minimized: true} row above each independently catch a
+  // narrowing to `comment.minimized?.reason`; removing either one still leaves
+  // the narrowing caught, removing both lets it through silently.
   assert.equal(
     evaluate([comment(directive('PASS'), {minimized: {reason: null}})]).state,
     'failure',
