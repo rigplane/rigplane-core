@@ -33,17 +33,39 @@ import type { LayoutManifest } from '../contract';
 // Barrel-only — the M7 lesson, restated on every family in this directory:
 // importing a manifest module directly fires `registerLayout` from this file
 // and, under the fast pool's `isolate: false`, leaks the registration into
-// sibling files.
-import {
-  desktopV2Layout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
-  sdrTestLayout,
-} from '../declarations';
+// sibling files. Only `desktopV2Layout`/`sdrTestLayout` are referenced by
+// name below (`sharedShellMounts`, and the last test's spread); every other
+// manifest is reached only through the derived `ALL_MANIFESTS`.
+import { desktopV2Layout, sdrTestLayout } from '../declarations';
+// Namespace import of the SAME barrel, used ONLY to derive ALL_MANIFESTS
+// structurally — never to register anything (a namespace import has no side
+// effect beyond the module evaluation the named import above already
+// triggers). NOT `listLayoutIds()`: the fast pool's `isolate: false` (see
+// vite.config.ts) shares `contract.ts`'s module-scoped registry Map across
+// every test file in the run, and sibling suites (`registry.test.ts`,
+// `mobile-registration.test.ts`) register their own probe manifests into it
+// — `listLayoutIds()` would make this file's inventory depend on cross-file
+// execution order. The barrel's own export surface has no such cross-file
+// state. Same derivation as `loader-identity-inventory.test.ts`'s
+// `BARREL_MANIFESTS` (MOR-2060).
+import * as layoutDeclarationsBarrel from '../declarations';
 
-/** Every manifest currently registered by the barrel (mirrors F8's `REAL_LAYOUTS`). */
-const ALL_MANIFESTS: readonly LayoutManifest[] = [
-  sdrTestLayout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
-  desktopV2Layout,
-];
+/** Structural `LayoutManifest` guard for filtering the barrel's export
+ *  surface — copied from `loader-identity-inventory.test.ts` verbatim. */
+function isLayoutManifest(value: unknown): value is LayoutManifest {
+  return (
+    typeof value === 'object' && value !== null &&
+    (value as { schemaVersion?: unknown }).schemaVersion === 1 &&
+    typeof (value as { id?: unknown }).id === 'string' &&
+    typeof (value as { loader?: unknown }).loader === 'function'
+  );
+}
+
+/** Every manifest currently registered by the barrel (mirrors F8's
+ *  `REAL_LAYOUTS`), derived from the barrel's own export surface instead of
+ *  hand-listed (MOR-2060) — see the namespace-import comment above. */
+const ALL_MANIFESTS: readonly LayoutManifest[] =
+  Object.values(layoutDeclarationsBarrel).filter(isLayoutManifest);
 
 /** The set this whole file exists to keep honest — see the header comment. */
 const EXPECTED_FORWARD_DECLARED: readonly string[] = [];
