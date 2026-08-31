@@ -1751,13 +1751,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self,
         civ_frame: bytes,
         wait_response: bool = True,
-        deadline_monotonic: float | None = None,
     ) -> CivFrame | None:
         """Delegate to CI-V runtime (for tests and internal callers)."""
         return await self._civ_runtime.execute_civ_raw(
             civ_frame,
             wait_response=wait_response,
-            deadline_monotonic=deadline_monotonic,
         )
 
     def _update_state_cache_from_frame(self, frame: CivFrame) -> None:

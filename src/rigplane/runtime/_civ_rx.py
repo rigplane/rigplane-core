@@ -957,13 +957,11 @@ class CivRuntime:
         self,
         civ_frame: bytes,
         wait_response: bool = True,
-        deadline_monotonic: "float | None" = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (public API)."""
         return await self._execute_civ_raw(
             civ_frame,
             wait_response=wait_response,
-            deadline_monotonic=deadline_monotonic,
         )
 
     async def execute_civ_transaction(
@@ -1007,9 +1005,14 @@ class CivRuntime:
 
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
-        deadline_monotonic = time.monotonic() + (
-            timeout if timeout is not None else self._host._civ_get_timeout
-        )
+        # Bounds the *radio's* answer, so it is spent from the send onward
+        # rather than from here: the ``_civ_min_interval`` gap inside
+        # ``_send_civ_frame_now`` and the ACK-sink drain below are this
+        # side's own scheduling.  ``tests/test_raw_civ_transaction.py:
+        # test_pacing_gap_is_not_charged_to_the_answer_window`` fails when
+        # they are charged to this budget; ``_execute_civ_raw`` carried the
+        # same mis-charge.
+        answer_timeout = timeout if timeout is not None else self._host._civ_get_timeout
 
         self._cleanup_stale_civ_waiters()
 
@@ -1025,9 +1028,6 @@ class CivRuntime:
                 "Dropped %d orphan ACK/NAK backlog frame(s) before raw transaction",
                 dropped_backlog,
             )
-        remaining_total = deadline_monotonic - time.monotonic()
-        if remaining_total <= 0:
-            raise asyncio.TimeoutError("CI-V response timed out")
 
         pending_waiters: list[asyncio.Future[CivFrame]] = []
         data_transaction: _CivDataTransaction | None = None
@@ -1049,12 +1049,9 @@ class CivRuntime:
 
             self.start_pump()
             await self._send_civ_frame_now(civ_frame, owner=owner)
-            remaining = deadline_monotonic - time.monotonic()
-            if remaining <= 0:
-                raise asyncio.TimeoutError("CI-V response timed out")
             done, _ = await asyncio.wait(
                 pending_waiters,
-                timeout=remaining,
+                timeout=answer_timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
@@ -3464,7 +3461,6 @@ class CivRuntime:
         self,
         civ_frame: bytes,
         wait_response: bool = True,
-        deadline_monotonic: "float | None" = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (serialized by worker)."""
         assert self._host._civ_transport is not None
@@ -3473,8 +3469,6 @@ class CivRuntime:
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
         expects_response = self._civ_expects_response(parsed_frame)
-        if deadline_monotonic is None:
-            deadline_monotonic = time.monotonic() + self._host._civ_get_timeout
 
         self._cleanup_stale_civ_waiters()
 
@@ -3508,10 +3502,6 @@ class CivRuntime:
 
         await self._drain_ack_sinks_before_blocking()
 
-        remaining_total = deadline_monotonic - time.monotonic()
-        if remaining_total <= 0:
-            raise TimeoutError("CI-V response timed out")
-
         pending: "asyncio.Future[CivFrame] | None" = None
         try:
             if expects_response:
@@ -3542,11 +3532,19 @@ class CivRuntime:
             await self._host._civ_transport.send_tracked(pkt)
             self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
-            remaining = deadline_monotonic - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("CI-V response timed out")
+            # The answer window is spent from here, not from method entry:
+            # ``_civ_get_timeout`` bounds how long the *radio* may take,
+            # while the ``_civ_min_interval`` gap above and
+            # ``_drain_ack_sinks_before_blocking`` are this side's own
+            # scheduling.  Charging them to one budget cost a command sent
+            # inside the pacing gap that whole gap of answer window, and all
+            # of it whenever the pacing sleep overshot the remainder --
+            # ``tests/test_radio.py:
+            # TestResponseDeadlineOpensAtSend`` fails on that mis-charge.
             try:
-                return await asyncio.wait_for(pending, timeout=remaining)
+                return await asyncio.wait_for(
+                    pending, timeout=self._host._civ_get_timeout
+                )
             except asyncio.TimeoutError:
                 self._host._civ_request_tracker.note_timeout()
                 logger.debug(
