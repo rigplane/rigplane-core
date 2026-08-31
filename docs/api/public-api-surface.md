@@ -4,7 +4,7 @@ robots: noindex, follow
 
 # Public API Surface
 
-This page defines the **officially supported** public API of `rigplane`. Use these exports for stable, documented behavior. Other symbols re-exported from `rigplane` are available for advanced or legacy use but may have looser backward-compatibility guarantees.
+This page defines the **officially supported** public API of `rigplane`. Use these exports for stable, documented behavior. Other symbols re-exported from `rigplane` are available for advanced or legacy use; the Advanced / implementation detail families are Tier 2 (best-effort) — see Stability tiers below.
 
 ## Supported exports (recommended)
 
@@ -108,10 +108,21 @@ The following are re-exported for power users, scripts, or compatibility. Prefer
 - **Transport**: `IcomTransport`, `ConnectionState`, `RadioConnectionState` — connection lifecycle and state.
 - **Protocol**: `parse_header`, `serialize_header`, `identify_packet_type` — packet parsing.
 - **Auth**: `AuthResponse`, `StatusResponse`, `encode_credentials`, `build_login_packet`, `build_conninfo_packet`, `parse_auth_response`, `parse_status_response` — handshake building/parsing.
-- **Commands**: Individual CI-V helpers (`get_frequency`, `set_frequency`, `get_mode`, `set_mode`, scope get/set, etc.), `build_civ_frame`, `parse_civ_frame`, `IC_7610_ADDR`, `CONTROLLER_ADDR`, `RECEIVER_MAIN`, `RECEIVER_SUB` — use when you need direct CI-V encoding or custom command flows.
+- **Commands**: Individual CI-V helpers (`get_freq`, `set_freq`, `get_mode`, `set_mode`, scope get/set, etc.), `build_civ_frame`, `parse_civ_frame`, `IC_7610_ADDR`, `CONTROLLER_ADDR`, `RECEIVER_MAIN`, `RECEIVER_SUB` — use when you need direct CI-V encoding or custom command flows.
 - **Commander**: `IcomCommander`, `Priority` — command queue and priority (used internally by the radio).
 - **Audio**: `AudioPacket`, `AudioState`, `AudioStats`, `AudioStream`, `JitterBuffer`, `AUDIO_HEADER_SIZE` — audio pipeline types.
 - **Scope**: `ScopeAssembler`, `ScopeFrame` — scope assembly; scope rendering (`SCOPE_THEMES`, `amplitude_to_color`, `render_scope_image`, etc.) when Pillow is available.
+
+**Owner ruling (2026-08-31).** Every family in this section — Transport,
+Protocol, Auth, Commands, Commander, Audio, Scope — is **Tier 2
+(best-effort)**; see the Stability tiers section below, which repeats
+each family's symbols so a reader lands on the tier without visiting
+this section. "Advanced / implementation detail" is a plain-language
+grouping, not itself a tier. The ruling closes the gap the archived VFO
+mechanism audit named as its weakest link
+(`.claude/audits/2026-08-30-mechanism-audit-vfo-swap-equalize.md`): this
+doc's own claim that "every public symbol in the package belongs to
+exactly one tier" left this section's families assigned to none.
 
 When extending the library or writing integration code, prefer importing from the modules that define these symbols (e.g. `rigplane.commands`, `rigplane.transport`) rather than relying on `rigplane` re-exports, so that future narrowing of the top-level `__all__` does not break your code.
 
@@ -235,6 +246,18 @@ minor version bump**. No semver guarantee — these may be reshaped or moved
 without a major version.
 
 - `IcomRadio`, `IcomCommander`, `Priority`
+- Transport: `IcomTransport`, `ConnectionState`, `RadioConnectionState`
+- Protocol: `parse_header`, `serialize_header`, `identify_packet_type`
+- Auth: `AuthResponse`, `StatusResponse`, `encode_credentials`,
+  `build_login_packet`, `build_conninfo_packet`, `parse_auth_response`,
+  `parse_status_response`
+- Commands: individual CI-V helpers (`get_freq`, `set_freq`,
+  `get_mode`, `set_mode`, scope get/set, etc.), `build_civ_frame`,
+  `parse_civ_frame`, `IC_7610_ADDR`, `CONTROLLER_ADDR`, `RECEIVER_MAIN`,
+  `RECEIVER_SUB`
+- Scope: `ScopeAssembler`, `ScopeFrame`; scope rendering (`SCOPE_THEMES`,
+  `amplitude_to_color`, `render_scope_image`, etc.) when Pillow is
+  available
 - Hamlib discovery: `build_hamlib_discovery_payload` (canonical:
   `rigplane.backends.discovery`; also via `from rigplane import
   build_hamlib_discovery_payload`; promoted from internal CLI in MOR-911)
@@ -244,6 +267,8 @@ without a major version.
   `audio.dsp.Limiter`, `audio.dsp.DspPipeline`
 - Audio configuration and devices: `audio.config.AudioConfig`,
   `audio.usb_driver.UsbAudioDriver` (and similar audio-stream primitives)
+- Audio pipeline types: `AudioPacket`, `AudioState`, `AudioStats`,
+  `AudioStream`, `JitterBuffer`, `AUDIO_HEADER_SIZE`
 
 Example (valid, lazy-loaded):
 
