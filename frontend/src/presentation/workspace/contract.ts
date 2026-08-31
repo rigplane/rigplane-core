@@ -12,8 +12,9 @@
  * `$lib/stores/*` (lint-banned in this zone), the two `declarations.ts`
  * barrels fire `registerLayout`/`registerDesignLanguage` as import side
  * effects, and `components-v2/theme/theme-switcher.ts` is banned by the
- * workspace zone (v3 ADR invariant 6). The sync test imports all three and
- * fails on drift.
+ * workspace zone (v3 ADR invariant 6). The sync test imports the two
+ * barrels and the theme switcher, and reads the store's source as text;
+ * all four id spaces fail on drift.
  */
 import { SEMANTIC_SURFACE_NAMES, type SemanticSurfaceName } from '../layouts/contract';
 import type { DensityLevel } from '../languages/contract';
