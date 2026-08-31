@@ -379,18 +379,43 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
             with pytest.raises(AudioCaptureOpenTimeoutError):
                 await driver.start_rx(lambda _frame: None)
 
-        loop = asyncio.get_event_loop()
-        start = loop.time()
+        wedged = list(backend.rx_streams)
+
         with pytest.raises(AudioCaptureOpenTimeoutError) as exc_info:
             await driver.start_rx(lambda _frame: None)
-        elapsed = loop.time() - start
 
-        assert elapsed < _TEST_TIMEOUT_S / 2, (
-            "saturated pool must fail IMMEDIATELY, not queue for the full "
-            f"capture-open timeout (elapsed={elapsed:.3f}s)"
-        )
         assert "saturated" in str(exc_info.value).lower(), (
             f"expected an honest pool-saturation message, got: {exc_info.value!r}"
+        )
+
+        # "Fails fast" is asserted as behaviour, not as a stopwatch reading.
+        # The fail-fast path never reaches the pool: it closes the open
+        # coroutine instead of submitting it, so the probe's handle is never
+        # started -- whereas an open that QUEUED behind the wedged workers is
+        # started as soon as one of them frees.
+        #
+        # Release the pool and wait for it to DRAIN -- every wedged open
+        # completes and its abandoned handle is closed -- before reading the
+        # probe. Draining is what gives the read its meaning: a queued probe
+        # sits ahead of those closes in the same FIFO pool, so once all eight
+        # closes have landed, a queued probe would necessarily have started.
+        probe = backend.rx_streams[len(wedged)]
+        gate.set()
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + 10.0
+        while loop.time() < deadline:
+            if all(s.stopped_count for s in wedged):
+                break
+            await asyncio.sleep(0.005)
+
+        assert all(s.stopped_count for s in wedged), (
+            "pool never drained -- the wedged opens' handles were not closed, "
+            "so nothing can be concluded about the probe open"
+        )
+        assert probe.started_count == 0, (
+            "saturated pool must fail WITHOUT handing the open to a worker; "
+            "this handle was started, so the open queued behind the wedged "
+            "workers instead of failing fast"
         )
     finally:
         gate.set()  # release every stuck worker so the pool can drain
