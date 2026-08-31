@@ -108,7 +108,7 @@ The following are re-exported for power users, scripts, or compatibility. Prefer
 - **Transport**: `IcomTransport`, `ConnectionState`, `RadioConnectionState` — connection lifecycle and state.
 - **Protocol**: `parse_header`, `serialize_header`, `identify_packet_type` — packet parsing.
 - **Auth**: `AuthResponse`, `StatusResponse`, `encode_credentials`, `build_login_packet`, `build_conninfo_packet`, `parse_auth_response`, `parse_status_response` — handshake building/parsing.
-- **Commands**: Individual CI-V helpers (`get_frequency`, `set_frequency`, `get_mode`, `set_mode`, scope get/set, etc.), `build_civ_frame`, `parse_civ_frame`, `IC_7610_ADDR`, `CONTROLLER_ADDR`, `RECEIVER_MAIN`, `RECEIVER_SUB` — use when you need direct CI-V encoding or custom command flows.
+- **Commands**: Individual CI-V helpers (`get_freq`, `set_freq`, `get_mode`, `set_mode`, scope get/set, etc.), `build_civ_frame`, `parse_civ_frame`, `IC_7610_ADDR`, `CONTROLLER_ADDR`, `RECEIVER_MAIN`, `RECEIVER_SUB` — use when you need direct CI-V encoding or custom command flows.
 - **Commander**: `IcomCommander`, `Priority` — command queue and priority (used internally by the radio).
 - **Audio**: `AudioPacket`, `AudioState`, `AudioStats`, `AudioStream`, `JitterBuffer`, `AUDIO_HEADER_SIZE` — audio pipeline types.
 - **Scope**: `ScopeAssembler`, `ScopeFrame` — scope assembly; scope rendering (`SCOPE_THEMES`, `amplitude_to_color`, `render_scope_image`, etc.) when Pillow is available.
@@ -251,7 +251,7 @@ without a major version.
 - Auth: `AuthResponse`, `StatusResponse`, `encode_credentials`,
   `build_login_packet`, `build_conninfo_packet`, `parse_auth_response`,
   `parse_status_response`
-- Commands: individual CI-V helpers (`get_frequency`, `set_frequency`,
+- Commands: individual CI-V helpers (`get_freq`, `set_freq`,
   `get_mode`, `set_mode`, scope get/set, etc.), `build_civ_frame`,
   `parse_civ_frame`, `IC_7610_ADDR`, `CONTROLLER_ADDR`, `RECEIVER_MAIN`,
   `RECEIVER_SUB`
