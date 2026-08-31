@@ -367,8 +367,12 @@ class TestBackwardCompatibility:
 
         The expected-absent set is imported from
         ``test_rig_loader.py: TestIc7610DeclaresAbsentCommands`` rather
-        than duplicated here, so there is exactly one hardcoded pin of
-        "these eight names" in the test suite; this test then checks a
+        than duplicated here, so this file adds no fourth copy of the
+        eight names
+        (``test_rig_loader.py: test_ic7610_drops_dead_tone_commands`` and
+        ``test_rig_ic7610.py: test_no_repeater_tone_family`` enumerate
+        them too, but pin a different property -- absence from the
+        command map, not the parsed spec type); this test then checks a
         different layer against that same external pin (the raw
         ``rig.commands`` dict this file's own ``CommandSpec`` types come
         from, rather than the derived ``RadioProfile.absent_command_names``
