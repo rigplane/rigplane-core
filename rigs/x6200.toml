@@ -516,21 +516,17 @@ end_hz = 136000000
 # - front-panel LOCK, [0x1A, 0x05, 0x00, 0x62] -- distinct from
 #   get_dial_lock/set_dial_lock [0x16, 0x50] below.
 #
-# Correction (D2, MOR-2008 batch 4): the sentence this note used to carry
-# here -- "the write/recall direction [of [0x1A, 0x01]] is undeclared" --
-# was factually wrong against the source it cited. p.8 documents BOTH
-# directions in the same table cell group: the GET row
-# get_band_spectrum_display declares below, and a SET row right beneath it
-# ("Set Band stacking register D1-Band Number(01-0C), D2 irrelevant").
-# That SET row is real and documented, but it is not the same command as
-# Icom's own set_bsr: its payload is 2 bytes (a filler byte + a 1-byte
-# band number 01-0C), where memory.py: set_bsr builds a 9-byte
-# band+register+frequency+mode+filter record -- same opcode, structurally
-# incompatible wire contract. Canonical set_bsr/get_bsr are therefore
-# declared ABSENT below (not DECLARE), and the X6200-specific 2-byte
-# command stays exposed only as get_band_spectrum_display, with no
-# set_band_spectrum_display key added for the SET row -- that would need
-# its own Python builder, out of this batch's scope.
+# D2, MOR-2008 batch 4: this note used to also claim the band-stacking
+# WRITE side of [0x1A, 0x01] was undeclared. That was false against the
+# source it cited: p.8 of the same V1.0.6 PDF documents a SET row too
+# ("Set Band stacking register D1-Band Number(01-0C), D2 irrelevant"),
+# three lines under the GET row get_band_spectrum_display already cites
+# below -- established by the MOR-2008 batch 4 D2 audit report (§6.2),
+# which re-derived the page against the local PDF with pdftotext rather
+# than trusting the prior claim. The SET row is real but is not the same
+# command as Icom's own set_bsr (2-byte payload vs. set_bsr's 9-byte
+# band+register+frequency+mode+filter record) -- see get_bsr/set_bsr's
+# own { absent = ... } rows below for the narrower, correct claim.
 
 # Frequency / mode (compatible Icom CI-V subset — see PROVENANCE OPEN above)
 get_freq         = [0x03]  # source: Radioddity X6200 CI-V V1.0.6 p.4, narrative example only (via docs/validation/cat-audits/x6200.md) -- PROVENANCE OPEN above
