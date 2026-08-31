@@ -839,10 +839,7 @@ export function toMeterProps(
   const rx = state ? activeRx(state) : null;
   // MOR-1409 A12: no fabricated zero-meter reading for an unobserved
   // receiver — a real S0/zero-power/zero-SWR reading is indistinguishable
-  // from "never read" without this fix. `MetersDockPanel.svelte`, the
-  // desktop dock's meter component, reads raw `radioState` fields directly
-  // and bypasses this function; `AmberCockpit.svelte` and
-  // `MobileRadioLayout.svelte` call it via `$derived` instead.
+  // from "never read" without this fix.
   return {
     sValue: rx?.sMeter ?? Number.NaN,
     signal: rx?.sMeter ?? Number.NaN,

@@ -490,8 +490,8 @@ The frontend keeps one behavior path and splits responsibilities by module:
 | Responsibility | Current implementation path | Notes |
 |---|---|---|
 | Runtime read/write entry point | `frontend/src/lib/runtime/frontend-runtime.ts` | Exposes state, capabilities, connection snapshot, audio actions, and command send helpers. |
-| UI view-model mapping | `frontend/src/lib/runtime/adapters/` (`radio-view-model-adapter.ts`, `panel-adapters.ts`) | Converts raw runtime state into panel props. |
-| WS command dispatch | `frontend/src/lib/runtime/commands/panel-commands.ts` | Maps UI callbacks to `sendCommand(...)` calls and optimistic state patches. |
+| UI view-model mapping | `frontend/src/lib/runtime/adapters/` (`radio-view-model-adapter.ts`, `panel-adapters.ts`) | |
+| WS command dispatch | `frontend/src/lib/runtime/commands/panel-commands.ts` | |
 | HTTP system actions | `frontend/src/lib/runtime/system-controller.ts` via `runtime.system.*` | Owns radio connect/disconnect, power on/off, and EiBi identify calls. |
 
 Current skin files in `frontend/src/skins/*` delegate to `components-v2/layout/*`;

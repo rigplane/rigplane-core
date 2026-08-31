@@ -965,11 +965,6 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
   });
 
   describe('toMeterProps', () => {
-    // The desktop `MetersDockPanel.svelte` reads raw `radioState` fields
-    // directly and bypasses this function; the LCD/mobile skins call it
-    // directly instead, via `AmberCockpit.svelte` and
-    // `MobileRadioLayout.svelte`. This is a direct unit-level pin, per the
-    // A12 re-anchor plan §5's row (a) resolution.
     it('does not invent zero meter readings when state is absent', () => {
       const props = toMeterProps(null, null);
       expect(props.sValue).toBeNaN();
