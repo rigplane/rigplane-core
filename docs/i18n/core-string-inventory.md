@@ -420,8 +420,6 @@ Files:
   `formatAttDb()` / `formatPreamp()` returning `OFF`/`P1`/`P2`/`{n}dB`/`MORE`.
 - `frontend/src/components-v2/panels/RitXitPanel.svelte` — label `Offset`;
   uses `RIT`/`XIT` from glossary.
-- `frontend/src/components-v2/panels/MeterPanel.svelte` — labels `Po`, `SWR`,
-  `ALC`.
 - `frontend/src/components-v2/panels/AntennaPanel.svelte:20,43` — `TX`, `RX`
   labels.
 - `frontend/src/components-v2/panels/AudioRoutingControl.svelte:46–93` —
@@ -591,10 +589,8 @@ Files:
 - `frontend/src/components-v2/controls/ControlButtonDemo.svelte` — internal
   control showcase; gated on `?demo=control-buttons`. Plenty of headings
   (`Modern`, `Hardware`, `…`).
-- `frontend/src/components-v2/meters/SMeterDemo.svelte:52–56` — `Full`,
-  `Compact` variant labels.
 
-Estimated string count: ~40 in `ControlButtonDemo.svelte` alone.
+Estimated string count: ~40 in `ControlButtonDemo.svelte`.
 
 Notes: developer-only routes. Either skip entirely from translation, or
 extract on a "best-effort English-only" basis once the i18n runtime exists.

@@ -32,7 +32,7 @@ export function extractVfoState(radioState: any, receiver: 'main' | 'sub'): VfoS
 }
 
 /**
- * Extract meter props from radioState for MeterPanel.
+ * Extract meter props (S-meter, power, SWR, ALC, TX-active) from radioState.
  */
 export function extractMeterState(radioState: any) {
   return {

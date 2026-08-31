@@ -14,7 +14,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const EXACT_DEMO_FILES = new Set([
   'src/components-v2/controls/ControlButtonDemo.svelte',
   'src/components-v2/controls/ValueControlLab.svelte',
-  'src/components-v2/meters/SMeterDemo.svelte',
 ]);
 const RELEVANT = ['type', 'feedback-policy', 'aria-label', 'label', 'value'];
 const VALUE_CONTROL_DIR = 'src/components-v2/controls/value-control';
