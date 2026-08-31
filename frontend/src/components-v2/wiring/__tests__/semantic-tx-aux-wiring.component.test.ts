@@ -724,7 +724,7 @@ describe('MOR-1336 — a declared zone renders nothing for a radio without the g
  */
 describe('MOR-1304 fix round — filter never mounts bare in the dual composition', () => {
   const withFilterCaps = (caps: Capabilities): Capabilities => ({
-    ...caps, modes: ['USB', 'CW', 'FM'], filters: [1, 2, 3],
+    ...caps, modes: ['USB', 'CW', 'FM'], filters: ['FIL1', 'FIL2', 'FIL3'],
   } as unknown as Capabilities);
 
   it('renders NO filter surface in the dual composition, zoned or unzoned', () => {
