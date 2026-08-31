@@ -13,15 +13,18 @@
  *    must NEVER do is derive that text with its own formula — it must call
  *    `smeter-scale.ts`'s functions (`calibratedToSUnit` / `calibratedToDbm`
  *    / `formatDbm`), the correct, table-driven derivation for this
- *    directory. The risk this guards against is not hypothetical:
- *    `components-v2/panels/meter-utils.ts`'s `formatSMeter` (a sibling
- *    directory, out of this contract's scope, with its own in-flight fix)
- *    independently reimplemented the same mapping as a hardcoded 6
- *    dB/S-unit ladder, which agrees with the table-driven interpolation
- *    only on a uniform-step curve — FTX-1's real, currently-live S0-S9
- *    steps are 6/3/3/3/3/3/15/9/9 dB, not a flat 6 (re-derived from
- *    `rigs/ftx1.toml`'s own `[[meters.s_meter.calibration]]` table as of
- *    this PR), so the two derivations disagree at FTX-1's own S6-S9 range.
+ *    directory. The risk this guards against is not hypothetical: MOR-2024
+ *    found `components-v2/panels/meter-utils.ts`'s `formatSMeter` (a
+ *    sibling directory, out of this contract's scope) independently
+ *    reimplementing the same mapping as a hardcoded 6 dB/S-unit ladder — a
+ *    fixed per-S-unit step over what is actually a table-driven,
+ *    non-uniform domain. A fixed step agrees with the table-driven
+ *    interpolation only when the curve happens to be uniform — FTX-1's
+ *    real, currently-live S0-S9 steps are 6/3/3/3/3/3/15/9/9 dB, not a
+ *    flat 6 (re-derived from `rigs/ftx1.toml`'s own
+ *    `[[meters.s_meter.calibration]]` table as of this PR), so a
+ *    fixed-step derivation disagrees with the table at FTX-1's own S6-S9
+ *    range.
  *  - 'preformatted': the component receives an ALREADY-FORMATTED display
  *    string (`BarGauge`'s `displayValue`) plus a domain-FREE normalized
  *    0-1 `value` that drives only the bar-fill and peak-marker geometry,
@@ -48,7 +51,11 @@
 
 export type MeterValueDomain = 'calibrated-db-rel-s9' | 'preformatted';
 
-export interface MeterRegistration {
+// Not exported: nothing outside this file needs the element type by name —
+// `METER_REGISTRY`'s own declared type below is enough for consumers that
+// destructure its entries (MOR-2037 fix round: this used to be exported
+// with no importer anywhere in the repo).
+interface MeterRegistration {
   /** Filename directly under `components-v2/meters/`, e.g. 'BarGauge.svelte'. */
   readonly file: string;
   readonly domain: MeterValueDomain;

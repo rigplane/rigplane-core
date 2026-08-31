@@ -6,10 +6,12 @@
  * independent guarantees:
  *
  *  1. CENSUS — every `.svelte` file directly under `components-v2/meters/`
- *     is registered, every registration still names a real file, and every
- *     registered file has a mount mapping in this suite. A new meter added
- *     without registering (or without a mount mapping) fails here, not
- *     silently.
+ *     is registered, every registration still names a real file, every
+ *     registered file has a mount mapping in this suite, AND every
+ *     registered file actually mounts here regardless of its declared
+ *     domain. A new meter added without registering (or without a mount
+ *     mapping), or registered under a domain with no conformance suite
+ *     below, fails here, not silently.
  *  2. DOMAIN CONFORMANCE — a 'calibrated-db-rel-s9' meter's rendered
  *     S-unit/dBm text must come from `smeter-scale.ts`'s own functions,
  *     never a local reimplementation; a 'preformatted' meter must render
@@ -18,37 +20,51 @@
  *
  * HOW THE CALIBRATED CHECK DISCRIMINATES — read this before adding a case,
  * or before "fixing" a failure by loosening it. `NON_UNIFORM_CAL` below
- * seeds a deliberately non-uniform calibration curve (an 18 dB jump from
- * S5 to S6, versus 3-6 dB everywhere else) and reads the mounted
- * component's text back for `CALIBRATED_PROBE_VALUE`, which lands inside
- * that jump. This shape is not arbitrary: it mirrors a real defect pattern
- * (MOR-2024) found elsewhere in this codebase — `components-v2/panels/
- * meter-utils.ts`'s `formatSMeter` (a sibling directory, out of this
- * contract's scope, with its own separately-tracked fix in flight)
- * independently derives S-unit labels via a hardcoded 6 dB/S-unit ladder,
- * which agrees with the table-driven `calibratedToSUnit` only when the
- * curve happens to be uniform — FTX-1's real, currently-live curve is not
- * (re-derived from `rigs/ftx1.toml` as of this PR: 6/3/3/3/3/3/15/9/9 dB
- * steps), and the two derivations disagree there. A component INSIDE this
- * directory that re-derives its S-unit from `value` with any formula
- * assuming even steps disagrees with `calibratedToSUnit` at this probe and
- * fails here.
+ * seeds a deliberately non-uniform calibration curve — nine S0-S9 steps of
+ * 6/3/3/6/6/18/6/3/3 dB, one stretched to 18 dB on purpose — and
+ * `CALIBRATED_PROBES` reads the mounted component's text back at three
+ * values along it, not one. This shape mirrors a real defect pattern
+ * (MOR-2024): `components-v2/panels/meter-utils.ts`'s `formatSMeter` (a
+ * sibling directory, out of this contract's scope) independently derived
+ * S-unit labels via a hardcoded 6 dB/S-unit ladder — a fixed per-S-unit
+ * step over what is actually a table-driven, non-uniform domain. A fixed
+ * step agrees with `calibratedToSUnit` only when the curve happens to be
+ * uniform; FTX-1's real, currently-live curve is not (re-derived from
+ * `rigs/ftx1.toml` as of this PR: 6/3/3/3/3/3/15/9/9 dB steps).
  *
- * Two honest limits on that check:
- *   - A component that reimplements an EQUIVALENT, byte-identical
- *     piecewise interpolation over the same table would still pass. That
- *     is a DRY concern, not a correctness one, and this check cannot see
- *     it — it only catches actual numeric disagreement.
- *   - The probe is chosen to land on an EVEN S-unit (S6) on purpose:
- *     `LinearSMeter`'s own scale ruler permanently renders the ODD anchors
- *     S1/S3/S5/S7/S9 as axis labels regardless of `value`
- *     (`smeter-scale.ts: getScaleMarks`). Asserting an odd result with a
- *     plain substring match would risk a false pass, because the ruler
- *     would already contain that digit even if the live readout were
- *     wrong. An even S-unit never appears in the ruler, so its presence in
- *     the rendered text can only come from the live readout. The
- *     "guards the guard" case below fails loudly if this property is ever
- *     broken by an edit to the fixture or the probe value.
+ * Why three probes and not one: a single probe only catches a fixed step
+ * that disagrees AT THAT ONE POINT. This file used to probe only -11 (dB
+ * relative to S9); the true answer there is S6, and the real MOR-2024
+ * shape (a fixed 6 dB step counted from S0's -54) answers S7 there
+ * (floor(43/6) = 7) — a real disagreement. But a fixed 7 dB step answers
+ * floor(43/7) = 6 at that same point, matching S6 by coincidence and
+ * passing unnoticed. Worked out generally: at a probe whose distance from
+ * S0 is d and whose true S-unit is k, a fixed step N reproduces k there
+ * exactly when N falls in (d/(k+1), d/k]. For the three probes below
+ * (-43, -33, -11; d = 11, 21, 43; k = 2, 4, 6) those intervals are
+ * (11/3, 11/2], (21/5, 21/4], and (43/7, 43/6] — and no single N lies in
+ * all three, because the third interval (~6.14 to ~7.17) is entirely
+ * above the other two (both end at or below 5.5). So no fixed step of any
+ * size reproduces the true S-unit at all three probes at once, including
+ * both N=6 (the real MOR-2024 shape, which lands in none of the three)
+ * and N=7 (the near-miss this file used to let through, which lands only
+ * in the third). The same three probes also rule out any constant output:
+ * their true S-units (S2, S4, S6) are three different labels, and a
+ * constant can match at most one.
+ *
+ * Probe selection is constrained to EVEN sub-S9 S-units (S2, S4, S6, not
+ * S1/S3/S5/S7/S9): `LinearSMeter`'s own scale ruler permanently renders
+ * the odd anchors S1/S3/S5/S7/S9 as axis labels regardless of `value`
+ * (`smeter-scale.ts: getScaleMarks`), so asserting an odd result with a
+ * plain substring match would risk a false pass — the ruler would already
+ * contain that digit even if the live readout were wrong. This is why the
+ * third probe (-11) sits in the 6 dB S6-S7 step right after the
+ * deliberate 18 dB S5-S6 jump rather than inside the jump itself: every
+ * point strictly inside that segment floors to the odd "S5". An even
+ * S-unit never appears in the ruler, so its presence in the rendered text
+ * can only come from the live readout. The "guards the guard" case below
+ * fails loudly if this property is ever broken by an edit to the fixture
+ * or a probe value.
  *
  * HOW THE PREFORMATTED CHECK DISCRIMINATES — it feeds a marker string no
  * calibration formula could ever produce as `displayValue`, across several
@@ -57,15 +73,35 @@
  * derivation that is computed but never rendered (a dead-code question,
  * not a conformance one) — only text that actually reaches the DOM.
  *
- * PROVEN BOTH WAYS DURING DEVELOPMENT (not committed; see the MOR-2037 PR
- * body for the actual failure message):
- *   - A throwaway component reimplementing the MOR-2024 hardcoded ladder
- *     was mounted through this exact calibrated-domain assertion and
- *     failed it: `expected 'S7' to contain 'S6'` — the ladder's
- *     uniform-step guess (S7) against the real table's answer (S6) at the
- *     same probe value used below.
- *   - The real `LinearSMeter` and `BarGauge` were confirmed to pass both
- *     checks below before this file was finalized.
+ * LIMIT (calibrated check) — sampling finitely many points can never rule
+ * out a wrong derivation that happens to agree with `calibratedToSUnit` at
+ * every point sampled but diverges only somewhere this file doesn't probe.
+ * The concrete case that matters here: a byte-identical reimplementation
+ * of the same table-driven interpolation would pass every probe below and
+ * is indistinguishable from the real thing by this check — that is a DRY
+ * concern, not a correctness one. The three probes above are chosen to
+ * catch the two wrong shapes this codebase has actually produced (a
+ * constant output, a fixed per-S-unit dB step of any size — see the
+ * worked-out reasoning above); they do not, and cannot, rule out every
+ * conceivable formula.
+ *
+ * PROVEN BOTH WAYS DURING DEVELOPMENT (not committed — see this fix
+ * round's PR thread for the full failure output):
+ *   - A throwaway component whose entire S-unit derivation was the
+ *     constant `'S6'` (dBm still correctly derived via
+ *     `calibratedToDbm`/`formatDbm`, to isolate the S-unit bug) was
+ *     mounted through this exact calibrated-domain assertion in place of
+ *     the real `LinearSMeter` and failed it: `expected 'S6−116 dBm' to
+ *     contain 'S2'` at the -43 probe, `expected 'S6−106 dBm' to contain
+ *     'S4'` at the -33 probe — a constant can match at most one of three
+ *     probes with three different true answers, and did, at -11.
+ *   - A throwaway component reimplementing a fixed 7 dB step (the shape
+ *     this file's single old probe let through) was mounted the same way
+ *     and failed it too: `expected 'S1−116 dBm' to contain 'S2'` at -43,
+ *     `expected 'S3−106 dBm' to contain 'S4'` at -33 — matching only at
+ *     -11, per the interval reasoning above.
+ *   - The real `LinearSMeter` and `BarGauge` were confirmed to pass every
+ *     check below before this file was finalized.
  */
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -86,6 +122,20 @@ const METERS_DIR = join(__dirname, '..');
 const COMPONENTS: Record<string, unknown> = {
   'BarGauge.svelte': BarGauge,
   'LinearSMeter.svelte': LinearSMeter,
+};
+
+/** Props broad enough to mount ANY registered component regardless of its
+ *  declared domain: a superset of what 'preformatted' components require
+ *  (value/label/displayValue — see BarGauge's Props) and what
+ *  'calibrated-db-rel-s9' components accept (value, optional label — see
+ *  LinearSMeter's Props). Extra props a component doesn't declare are
+ *  simply ignored by Svelte's `$props()` destructuring. Used only by the
+ *  domain-agnostic mount census check below — the domain-conformance
+ *  suites each pass their own domain-appropriate props instead. */
+const GENERIC_MOUNT_PROPS: Record<string, unknown> = {
+  value: 0,
+  label: 'MOUNT-CHECK',
+  displayValue: 'MOUNT-CHECK',
 };
 
 function byDomain(domain: MeterValueDomain) {
@@ -148,6 +198,17 @@ describe('METER_REGISTRY census (MOR-2037)', () => {
         'checks below can actually mount it.',
     ).toEqual([]);
   });
+
+  it('every METER_REGISTRY entry mounts successfully here, independent of its declared domain (a registration under a domain with no conformance suite below cannot silently skip being exercised)', () => {
+    for (const { file, domain } of METER_REGISTRY) {
+      const text = renderMeter(file, GENERIC_MOUNT_PROPS).textContent;
+      expect(
+        text,
+        `${file} (domain '${domain}') rendered no text when mounted with generic smoke props — ` +
+          'confirm it actually accepts value/label/displayValue before registering it.',
+      ).toBeTruthy();
+    }
+  });
 });
 
 // ── 'calibrated-db-rel-s9' domain ───────────────────────────────────────────
@@ -171,10 +232,15 @@ const NON_UNIFORM_CAL: MeterCalPoint[] = [
   { raw: 255, actual: 20, label: 'S9+20' },
 ];
 
-// -11 dB-rel-S9 lands inside NON_UNIFORM_CAL's deliberate S5->S6 jump and
-// interpolates to a fractional S-unit whose floor is the EVEN "S6" — see
-// file header for why the probe must land on an even S-unit specifically.
-const CALIBRATED_PROBE_VALUE = -11;
+// Three probes, dB relative to S9 (matching the `value` prop) — see the
+// file header's "HOW THE CALIBRATED CHECK DISCRIMINATES" section for the
+// full worked-out reasoning behind these specific values:
+//   -43 — the 3 dB S2-S3 step (true S2)
+//   -33 — a 6 dB step, S4-S5 (true S4)
+//   -11 — the 6 dB S6-S7 step right after the deliberate 18 dB S5-S6 jump
+//         (true S6) — not inside the jump itself, because every point
+//         strictly inside it floors to the odd "S5"
+const CALIBRATED_PROBES: readonly number[] = [-43, -33, -11];
 
 function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
   return {
@@ -207,28 +273,34 @@ describe.each(byDomain('calibrated-db-rel-s9'))(
       clearCapabilities();
     });
 
-    it('guards the guard: the probe fixture actually lands on an EVEN sub-S9 S-unit', () => {
-      // Re-checks the INVARIANT the collision-safety argument in the file
-      // header depends on (a bare "S<even digit>" reading never appears in
-      // LinearSMeter's own ruler), not just today's specific value — so
-      // editing NON_UNIFORM_CAL and CALIBRATED_PROBE_VALUE together, and
-      // landing back on an odd or over-S9 reading by mistake, still fails
-      // here instead of the real check below silently losing its
-      // ruler-collision-safety property.
-      const sUnit = calibratedToSUnit(CALIBRATED_PROBE_VALUE);
-      const match = sUnit.match(/^S(\d)$/);
-      expect(match, `expected a bare "S<digit>" reading (0-9, no "+"), got "${sUnit}"`).not.toBeNull();
-      expect(
-        Number(match![1]) % 2,
-        `${sUnit} is ODD — it collides with the ruler's own S1/S3/S5/S7/S9 labels`,
-      ).toBe(0);
-    });
+    it.each(CALIBRATED_PROBES)(
+      'guards the guard: probe %d actually lands on an EVEN sub-S9 S-unit',
+      (actual) => {
+        // Re-checks the INVARIANT the collision-safety argument in the file
+        // header depends on (a bare "S<even digit>" reading never appears in
+        // LinearSMeter's own ruler), not just today's specific values — so
+        // editing NON_UNIFORM_CAL and CALIBRATED_PROBES together, and
+        // landing back on an odd or over-S9 reading by mistake, still fails
+        // here instead of the real check below silently losing its
+        // ruler-collision-safety property.
+        const sUnit = calibratedToSUnit(actual);
+        const match = sUnit.match(/^S(\d)$/);
+        expect(match, `expected a bare "S<digit>" reading (0-9, no "+"), got "${sUnit}"`).not.toBeNull();
+        expect(
+          Number(match![1]) % 2,
+          `${sUnit} is ODD — it collides with the ruler's own S1/S3/S5/S7/S9 labels`,
+        ).toBe(0);
+      },
+    );
 
-    it('renders the exact S-unit and dBm text calibratedToSUnit/formatDbm(calibratedToDbm) compute, not a local approximation', () => {
-      const text = renderMeter(file, { value: CALIBRATED_PROBE_VALUE }).textContent ?? '';
-      expect(text).toContain(calibratedToSUnit(CALIBRATED_PROBE_VALUE));
-      expect(text).toContain(formatDbm(calibratedToDbm(CALIBRATED_PROBE_VALUE)));
-    });
+    it.each(CALIBRATED_PROBES)(
+      'renders the exact S-unit and dBm text calibratedToSUnit/formatDbm(calibratedToDbm) compute at probe %d, not a local approximation',
+      (actual) => {
+        const text = renderMeter(file, { value: actual }).textContent ?? '';
+        expect(text).toContain(calibratedToSUnit(actual));
+        expect(text).toContain(formatDbm(calibratedToDbm(actual)));
+      },
+    );
   },
 );
 
