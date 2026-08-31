@@ -138,6 +138,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the `Radio` protocol method never took a receiver for this reading —
   so this closes a footgun rather than changing observed behaviour; a caller
   that did pass `receiver=` now gets a `TypeError` instead of a silent SET.
+- **`RadioProfile.vfo_swap_code` and `RadioProfile.vfo_equal_code` are
+  removed** (mechanism-audit D2; both were self-documented deprecated since
+  issue #710). Read `swap_ab_code`/`swap_main_sub_code` (or
+  `equal_ab_code`/`equal_main_sub_code`) directly; the alias resolution the
+  properties performed was `swap_main_sub_code or swap_ab_code` (and the
+  `equal_` equivalent), so a caller that needs the old ordering inlines that
+  expression. No production code in this repository read either property —
+  consumers were tests only.
 
 ### Changed
 
