@@ -208,66 +208,101 @@ class TestDigiselShift:
 
 
 class TestAGCTimeConstant:
-    """Tests for get_agc_time_constant / set_agc_time_constant."""
+    """Tests for get_agc_time_constant / set_agc_time_constant.
+
+    commands/mode.py migrated onto the bound command map in MOR-2008
+    (batch 2): both builders now require cmd_map -- zero divergence, so
+    IC-7610's own map declares the identical bytes the fallback used to
+    build, and the expected frames below are unchanged.
+    """
 
     def test_get_agc_time_constant_main_receiver(self) -> None:
-        assert commands.get_agc_time_constant(receiver=RECEIVER_MAIN) == _cmd29_get(
-            _CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, RECEIVER_MAIN
-        )
+        assert commands.get_agc_time_constant(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_get(_CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, RECEIVER_MAIN)
 
     def test_get_agc_time_constant_sub_receiver(self) -> None:
-        assert commands.get_agc_time_constant(receiver=RECEIVER_SUB) == _cmd29_get(
-            _CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, RECEIVER_SUB
-        )
+        assert commands.get_agc_time_constant(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_get(_CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, RECEIVER_SUB)
 
     def test_get_agc_time_constant_default_is_main(self) -> None:
-        assert commands.get_agc_time_constant() == commands.get_agc_time_constant(
-            receiver=RECEIVER_MAIN
+        assert commands.get_agc_time_constant(
+            cmd_map=_IC7610_CMD_MAP
+        ) == commands.get_agc_time_constant(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
         )
+
+    def test_get_agc_time_constant_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.get_agc_time_constant()  # type: ignore[call-arg]
 
     def test_set_agc_time_constant_zero_main(self) -> None:
         # 0 -> BCD byte 0x00
-        assert commands.set_agc_time_constant(0, receiver=RECEIVER_MAIN) == _cmd29_set(
+        assert commands.set_agc_time_constant(
+            0, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(
             _CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, 0x00, receiver=RECEIVER_MAIN
         )
 
     def test_set_agc_time_constant_bcd_encoding_twelve(self) -> None:
         # 12 -> BCD byte 0x12 (NOT 0x0C)
-        frame = commands.set_agc_time_constant(12, receiver=RECEIVER_MAIN)
+        frame = commands.set_agc_time_constant(
+            12, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame == _cmd29_set(
             _CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, 0x12, receiver=RECEIVER_MAIN
         )
 
     def test_set_agc_time_constant_bcd_encoding_nine(self) -> None:
         # 9 -> BCD byte 0x09
-        frame = commands.set_agc_time_constant(9, receiver=RECEIVER_MAIN)
+        frame = commands.set_agc_time_constant(
+            9, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame == _cmd29_set(
             _CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, 0x09, receiver=RECEIVER_MAIN
         )
 
     def test_set_agc_time_constant_max_value(self) -> None:
         # 13 -> BCD byte 0x13
-        assert commands.set_agc_time_constant(13, receiver=RECEIVER_MAIN) == _cmd29_set(
+        assert commands.set_agc_time_constant(
+            13, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(
             _CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, 0x13, receiver=RECEIVER_MAIN
         )
 
     def test_set_agc_time_constant_sub_receiver(self) -> None:
-        assert commands.set_agc_time_constant(5, receiver=RECEIVER_SUB) == _cmd29_set(
+        assert commands.set_agc_time_constant(
+            5, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(
             _CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, 0x05, receiver=RECEIVER_SUB
         )
 
     def test_set_agc_time_constant_default_receiver_is_main(self) -> None:
-        assert commands.set_agc_time_constant(7) == commands.set_agc_time_constant(
-            7, receiver=RECEIVER_MAIN
+        assert commands.set_agc_time_constant(
+            7, cmd_map=_IC7610_CMD_MAP
+        ) == commands.set_agc_time_constant(
+            7, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
         )
 
     def test_set_agc_time_constant_rejects_over_13(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_agc_time_constant(14, receiver=RECEIVER_MAIN)
+            commands.set_agc_time_constant(
+                14, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+            )
 
     def test_set_agc_time_constant_rejects_negative(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_agc_time_constant(-1, receiver=RECEIVER_MAIN)
+            commands.set_agc_time_constant(
+                -1, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+            )
+
+    def test_set_agc_time_constant_rejects_explicit_none_the_same_way(self) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.set_agc_time_constant(7, cmd_map=None)
 
     def test_parse_agc_time_constant_zero(self) -> None:
         frame = _response_frame(_CMD_CTL_MEM, _SUB_AGC_TIME_CONSTANT, b"\x00")
@@ -304,61 +339,82 @@ class TestAGCTimeConstant:
 
 
 class TestFilterShape:
-    """Tests for get_filter_shape / set_filter_shape."""
+    """Tests for get_filter_shape / set_filter_shape.
+
+    commands/mode.py migrated onto the bound command map in MOR-2008
+    (batch 2): both builders now require cmd_map -- zero divergence, so
+    IC-7610's own map declares the identical bytes the fallback used to
+    build, and the expected frames below are unchanged.
+    """
 
     def test_get_filter_shape_main_receiver(self) -> None:
-        assert commands.get_filter_shape(receiver=RECEIVER_MAIN) == _cmd29_get(
-            _CMD_PREAMP, _SUB_FILTER_SHAPE, RECEIVER_MAIN
-        )
+        assert commands.get_filter_shape(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_get(_CMD_PREAMP, _SUB_FILTER_SHAPE, RECEIVER_MAIN)
 
     def test_get_filter_shape_sub_receiver(self) -> None:
-        assert commands.get_filter_shape(receiver=RECEIVER_SUB) == _cmd29_get(
-            _CMD_PREAMP, _SUB_FILTER_SHAPE, RECEIVER_SUB
-        )
+        assert commands.get_filter_shape(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_get(_CMD_PREAMP, _SUB_FILTER_SHAPE, RECEIVER_SUB)
 
     def test_get_filter_shape_default_is_main(self) -> None:
-        assert commands.get_filter_shape() == commands.get_filter_shape(
-            receiver=RECEIVER_MAIN
-        )
+        assert commands.get_filter_shape(
+            cmd_map=_IC7610_CMD_MAP
+        ) == commands.get_filter_shape(receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP)
+
+    def test_get_filter_shape_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.get_filter_shape()  # type: ignore[call-arg]
 
     def test_set_filter_shape_sharp_main(self) -> None:
         assert commands.set_filter_shape(
-            FilterShape.SHARP, receiver=RECEIVER_MAIN
+            FilterShape.SHARP, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
         ) == _cmd29_set(_CMD_PREAMP, _SUB_FILTER_SHAPE, 0x00, receiver=RECEIVER_MAIN)
 
     def test_set_filter_shape_soft_main(self) -> None:
         assert commands.set_filter_shape(
-            FilterShape.SOFT, receiver=RECEIVER_MAIN
+            FilterShape.SOFT, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
         ) == _cmd29_set(_CMD_PREAMP, _SUB_FILTER_SHAPE, 0x01, receiver=RECEIVER_MAIN)
 
     def test_set_filter_shape_sharp_sub_receiver(self) -> None:
         assert commands.set_filter_shape(
-            FilterShape.SHARP, receiver=RECEIVER_SUB
+            FilterShape.SHARP, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
         ) == _cmd29_set(_CMD_PREAMP, _SUB_FILTER_SHAPE, 0x00, receiver=RECEIVER_SUB)
 
     def test_set_filter_shape_soft_sub_receiver(self) -> None:
         assert commands.set_filter_shape(
-            FilterShape.SOFT, receiver=RECEIVER_SUB
+            FilterShape.SOFT, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
         ) == _cmd29_set(_CMD_PREAMP, _SUB_FILTER_SHAPE, 0x01, receiver=RECEIVER_SUB)
 
     def test_set_filter_shape_accepts_int(self) -> None:
-        assert commands.set_filter_shape(0) == commands.set_filter_shape(
-            FilterShape.SHARP
-        )
+        assert commands.set_filter_shape(
+            0, cmd_map=_IC7610_CMD_MAP
+        ) == commands.set_filter_shape(FilterShape.SHARP, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_filter_shape_accepts_int_one(self) -> None:
-        assert commands.set_filter_shape(1) == commands.set_filter_shape(
-            FilterShape.SOFT
-        )
+        assert commands.set_filter_shape(
+            1, cmd_map=_IC7610_CMD_MAP
+        ) == commands.set_filter_shape(FilterShape.SOFT, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_filter_shape_default_receiver_is_main(self) -> None:
         assert commands.set_filter_shape(
-            FilterShape.SHARP
-        ) == commands.set_filter_shape(FilterShape.SHARP, receiver=RECEIVER_MAIN)
+            FilterShape.SHARP, cmd_map=_IC7610_CMD_MAP
+        ) == commands.set_filter_shape(
+            FilterShape.SHARP, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        )
 
     def test_set_filter_shape_rejects_invalid_enum(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_filter_shape(999, receiver=RECEIVER_MAIN)
+            commands.set_filter_shape(
+                999, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+            )
+
+    def test_set_filter_shape_rejects_explicit_none_the_same_way(self) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.set_filter_shape(FilterShape.SHARP, cmd_map=None)
 
     def test_set_filter_shape_builder_accepts_values_outside_the_sharp_soft_enum(
         self,
@@ -370,9 +426,9 @@ class TestFilterShape:
         ``TestFilterShapeDomainValidation`` in ``tests/test_radio.py``).
         This builder only encodes the raw single-BCD-byte value.
         """
-        assert commands.set_filter_shape(2, receiver=RECEIVER_MAIN) == _cmd29_set(
-            _CMD_PREAMP, _SUB_FILTER_SHAPE, 0x02, receiver=RECEIVER_MAIN
-        )
+        assert commands.set_filter_shape(
+            2, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(_CMD_PREAMP, _SUB_FILTER_SHAPE, 0x02, receiver=RECEIVER_MAIN)
 
     def test_parse_filter_shape_sharp(self) -> None:
         frame = _response_frame(_CMD_PREAMP, _SUB_FILTER_SHAPE, b"\x00")
@@ -395,46 +451,63 @@ class TestFilterShape:
 
 
 class TestSsbTxBandwidth:
-    """Tests for get_ssb_tx_bandwidth / set_ssb_tx_bandwidth."""
+    """Tests for get_ssb_tx_bandwidth / set_ssb_tx_bandwidth.
+
+    commands/mode.py migrated onto the bound command map in MOR-2008
+    (batch 2): both builders now require cmd_map -- zero divergence, so
+    IC-7610's own map declares the identical bytes the fallback used to
+    build, and the expected frames below are unchanged.
+    """
 
     def test_get_ssb_tx_bandwidth_builds_simple_frame(self) -> None:
-        assert commands.get_ssb_tx_bandwidth() == _simple_get(
+        assert commands.get_ssb_tx_bandwidth(cmd_map=_IC7610_CMD_MAP) == _simple_get(
             _CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH
         )
 
     def test_get_ssb_tx_bandwidth_no_cmd29(self) -> None:
         # Frame must not contain the 0x29 receiver-prefix byte
-        frame = commands.get_ssb_tx_bandwidth()
+        frame = commands.get_ssb_tx_bandwidth(cmd_map=_IC7610_CMD_MAP)
         assert _CMD_CMD29 not in frame[4:]  # after preamble+addresses, no 0x29
 
+    def test_get_ssb_tx_bandwidth_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.get_ssb_tx_bandwidth()  # type: ignore[call-arg]
+
     def test_set_ssb_tx_bandwidth_wide(self) -> None:
-        assert commands.set_ssb_tx_bandwidth(SsbTxBandwidth.WIDE) == _simple_set(
-            _CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, 0x00
-        )
+        assert commands.set_ssb_tx_bandwidth(
+            SsbTxBandwidth.WIDE, cmd_map=_IC7610_CMD_MAP
+        ) == _simple_set(_CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, 0x00)
 
     def test_set_ssb_tx_bandwidth_mid(self) -> None:
-        assert commands.set_ssb_tx_bandwidth(SsbTxBandwidth.MID) == _simple_set(
-            _CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, 0x01
-        )
+        assert commands.set_ssb_tx_bandwidth(
+            SsbTxBandwidth.MID, cmd_map=_IC7610_CMD_MAP
+        ) == _simple_set(_CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, 0x01)
 
     def test_set_ssb_tx_bandwidth_nar(self) -> None:
-        assert commands.set_ssb_tx_bandwidth(SsbTxBandwidth.NAR) == _simple_set(
-            _CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, 0x02
-        )
+        assert commands.set_ssb_tx_bandwidth(
+            SsbTxBandwidth.NAR, cmd_map=_IC7610_CMD_MAP
+        ) == _simple_set(_CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, 0x02)
 
     def test_set_ssb_tx_bandwidth_accepts_int_zero(self) -> None:
-        assert commands.set_ssb_tx_bandwidth(0) == commands.set_ssb_tx_bandwidth(
-            SsbTxBandwidth.WIDE
-        )
+        assert commands.set_ssb_tx_bandwidth(
+            0, cmd_map=_IC7610_CMD_MAP
+        ) == commands.set_ssb_tx_bandwidth(SsbTxBandwidth.WIDE, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_ssb_tx_bandwidth_accepts_int_two(self) -> None:
-        assert commands.set_ssb_tx_bandwidth(2) == commands.set_ssb_tx_bandwidth(
-            SsbTxBandwidth.NAR
-        )
+        assert commands.set_ssb_tx_bandwidth(
+            2, cmd_map=_IC7610_CMD_MAP
+        ) == commands.set_ssb_tx_bandwidth(SsbTxBandwidth.NAR, cmd_map=_IC7610_CMD_MAP)
 
     def test_set_ssb_tx_bandwidth_rejects_invalid_enum(self) -> None:
         with pytest.raises(ValueError):
-            commands.set_ssb_tx_bandwidth(999)
+            commands.set_ssb_tx_bandwidth(999, cmd_map=_IC7610_CMD_MAP)
+
+    def test_set_ssb_tx_bandwidth_rejects_explicit_none_the_same_way(self) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            commands.set_ssb_tx_bandwidth(SsbTxBandwidth.WIDE, cmd_map=None)
 
     def test_set_ssb_tx_bandwidth_builder_accepts_values_outside_the_wide_mid_nar_enum(
         self,
@@ -446,7 +519,7 @@ class TestSsbTxBandwidth:
         ``TestSsbTxBandwidthDomainValidation`` in ``tests/test_radio.py``).
         This builder only encodes the raw single-BCD-byte value.
         """
-        assert commands.set_ssb_tx_bandwidth(3) == _simple_set(
+        assert commands.set_ssb_tx_bandwidth(3, cmd_map=_IC7610_CMD_MAP) == _simple_set(
             _CMD_PREAMP, _SUB_SSB_TX_BANDWIDTH, 0x03
         )
 
@@ -465,10 +538,14 @@ class TestSsbTxBandwidth:
         assert SsbTxBandwidth(value) == SsbTxBandwidth.NAR
 
     def test_ssb_tx_bandwidth_distinct_from_filter_shape(self) -> None:
-        assert commands.get_ssb_tx_bandwidth() != commands.get_filter_shape()
+        assert commands.get_ssb_tx_bandwidth(
+            cmd_map=_IC7610_CMD_MAP
+        ) != commands.get_filter_shape(cmd_map=_IC7610_CMD_MAP)
 
     def test_get_ssb_tx_bandwidth_custom_addresses(self) -> None:
-        frame = commands.get_ssb_tx_bandwidth(to_addr=0xA4, from_addr=0xE1)
+        frame = commands.get_ssb_tx_bandwidth(
+            to_addr=0xA4, from_addr=0xE1, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
@@ -537,4 +614,6 @@ class TestAfMute:
         assert frame[3] == 0xE1
 
     def test_af_mute_distinct_from_agc_time_constant(self) -> None:
-        assert commands.get_af_mute() != commands.get_agc_time_constant()
+        assert commands.get_af_mute() != commands.get_agc_time_constant(
+            cmd_map=_IC7610_CMD_MAP
+        )

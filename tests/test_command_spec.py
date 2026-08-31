@@ -9,6 +9,7 @@ import pytest
 
 from rigplane.command_spec import AbsentCommandSpec, CatCommandSpec, CivCommandSpec
 from rigplane.rig_loader import RigLoadError, load_rig
+from test_rig_loader import TestIc7610DeclaresAbsentCommands as _Ic7610AbsentPin
 
 
 def _write_toml(tmp_path: Path, content: str, name: str = "test.toml") -> Path:
@@ -354,8 +355,34 @@ class TestAbsentCommandSpec:
 class TestBackwardCompatibility:
     """Ensure existing CI-V rigs load unchanged."""
 
-    def test_ic7610_loads_unchanged(self):
-        """IC-7610 rig loads with CI-V commands as before."""
+    def test_ic7610_loads_civ_except_the_declared_absent_tone_tsql_family(self):
+        """IC-7610 rig loads with CI-V commands as before -- except the
+        eight repeater-tone/TSQL/tone-freq/TSQL-freq keys, which MOR-2008
+        batch 2 promoted from a comment-only exclusion to a formal
+        ``{ absent = "<source>" }`` row (``AbsentCommandSpec``, not
+        ``CivCommandSpec``): see ``rigs/ic7610.toml``'s own rows for the
+        citation. Renamed from ``test_ic7610_loads_unchanged``, which this
+        promotion made false -- that version asserted every single command
+        was ``CivCommandSpec`` with no exception.
+
+        The expected-absent set is imported from
+        ``test_rig_loader.py: TestIc7610DeclaresAbsentCommands`` rather
+        than duplicated here, so this file adds no fourth copy of the
+        eight names
+        (``test_rig_loader.py: test_ic7610_drops_dead_tone_commands`` and
+        ``test_rig_ic7610.py: test_no_repeater_tone_family`` enumerate
+        them too, but pin a different property -- absence from the
+        command map, not the parsed spec type); this test then checks a
+        different layer against that same external pin (the raw
+        ``rig.commands`` dict this file's own ``CommandSpec`` types come
+        from, rather than the derived ``RadioProfile.absent_command_names``
+        property `test_rig_loader.py` checks) -- not merely re-deriving
+        one from the other, which would never catch a break in the
+        conversion between them. Still discriminating either way: a CI-V
+        row silently becoming absent, or an absent row silently reverting
+        to CI-V, fails this test regardless of which of the two names
+        moves.
+        """
         rigs_dir = Path(__file__).resolve().parent.parent / "rigs"
         p = rigs_dir / "ic7610.toml"
 
@@ -364,11 +391,25 @@ class TestBackwardCompatibility:
 
         rig = load_rig(p)
 
-        # All commands should be CivCommandSpec
+        expected_absent = _Ic7610AbsentPin._EXPECTED_ABSENT
         for name, spec in rig.commands.items():
-            assert isinstance(spec, CivCommandSpec), (
-                f"Command {name} is not CivCommandSpec"
-            )
+            if name in expected_absent:
+                assert isinstance(spec, AbsentCommandSpec), (
+                    f"Command {name} is declared absent but not AbsentCommandSpec"
+                )
+            else:
+                assert isinstance(spec, CivCommandSpec), (
+                    f"Command {name} is not CivCommandSpec"
+                )
+        actually_absent = {
+            name
+            for name, spec in rig.commands.items()
+            if isinstance(spec, AbsentCommandSpec)
+        }
+        assert actually_absent == expected_absent, (
+            "rig.commands' AbsentCommandSpec entries drifted from "
+            "TestIc7610DeclaresAbsentCommands._EXPECTED_ABSENT"
+        )
 
         # CommandMap should work as before
         cmd_map = rig.to_command_map()

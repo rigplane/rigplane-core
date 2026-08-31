@@ -1,4 +1,4 @@
-"""Mock-based integration tests for IC-7610 tone/TSQL commands (issue #134).
+"""Mock-based integration tests for IC-7300 tone/TSQL commands (issue #134).
 
 Tests the full request/response cycle for all 4 tone/TSQL command groups using a
 local mock radio server.  No real hardware required — runs in CI without env vars.
@@ -8,6 +8,18 @@ Commands under test:
   2. Repeater TSQL enable/disable (0x16 sub 0x43)
   3. Tone Frequency set/get (0x1B sub 0x00)
   4. TSQL Frequency set/get (0x1B sub 0x01)
+
+Uses IC-7300, not IC-7610 as originally written: MOR-2008 batch 2
+(`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps 5..N)
+migrated this family onto the bound command map, and `rigs/ic7610.toml`
+declares the whole family absent (a live-bench readback found the old
+hardcoded fallback's bytes decoded to garbage on this radio) -- so an
+`IcomRadio` defaulting to IC-7610 now correctly raises `CommandError`
+for every command this file exercises, instead of building a frame.
+IC-7300 declares byte-identical `[0x16/0x1B, sub]` tuples for the family
+and has no cmd29 routes at all (`rigs/ic7300.toml`: "single receiver, no
+cmd29"), so every request here is plain, never cmd29-wrapped -- see
+`ToneMockRadio`'s own docstring below for what that changed in the mock.
 
 Run with::
 
@@ -109,6 +121,25 @@ class ToneMockRadio(MockIcomRadio):
       - 0x1B / sub 0x01: TSQL frequency get/set (3-byte BCD)
 
     All other commands are forwarded to the parent MockIcomRadio.
+
+    Plain dispatch only, never cmd29: this file's radio is IC-7300
+    (module docstring), which has no cmd29 routes at all, so every
+    request the client builds is a bare ``FE FE <to> <from> <cmd> <sub>
+    [data] FD`` frame -- there is no cmd29 envelope, and therefore no
+    receiver-selector byte anywhere in the payload (that byte only
+    exists inside a cmd29 wrapper, which the base class's own
+    ``_dispatch_civ``/``_dispatch_cmd29`` split already strips before a
+    subclass ever sees it -- see ``_dispatch_cmd29``'s ``receiver``
+    parameter, passed in separately, never embedded in ``inner``).
+    Earlier revisions of this mock (written against IC-7610, which does
+    use cmd29 for this whole family) had a ``_strip_receiver_prefix``
+    step in the plain-path handlers below that assumed a receiver byte
+    was there to strip; it was never exercised while every real request
+    on IC-7610 went through ``_dispatch_cmd29`` instead, and would have
+    corrupted the BCD frequency payload the day it was (the hundreds
+    digit of any frequency under 200 Hz is legitimately ``0x00`` or
+    ``0x01``, indistinguishable from a receiver-selector byte). Removed
+    rather than fixed forward, since a plain frame never carries one.
     """
 
     def __init__(self, **kwargs: object) -> None:
@@ -119,105 +150,37 @@ class ToneMockRadio(MockIcomRadio):
         self._tsql_freq_hz: float = _FREQ_DEFAULT
 
     # ------------------------------------------------------------------
-    # Helper: strip receiver prefix (command29)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _strip_receiver_prefix(data: bytes) -> tuple[int | None, bytes]:
-        """Strip receiver prefix (0x00=MAIN, 0x01=SUB) from command29 data."""
-        if not data:
-            return (None, data)
-        if data[0] in (0x00, 0x01):
-            return (data[0], data[1:])
-        return (None, data)
-
-    # ------------------------------------------------------------------
     # CI-V dispatch override
     # ------------------------------------------------------------------
 
     def _dispatch_civ(self, cmd: int, payload: bytes, from_addr: int) -> bytes | None:
-        """Intercept tone (0x1B) commands (non-command29)."""
+        """Intercept repeater tone/TSQL (0x16) and tone frequency (0x1B)
+        commands -- both always plain here (IC-7300 has no cmd29 route for
+        either), so there is no separate cmd29 dispatch override in this
+        class any more (see the class docstring)."""
+        if cmd == _CMD_FUNC:
+            return self._dispatch_func(payload, from_addr)
         if cmd == _CMD_TONE:
             return self._dispatch_tone(payload, from_addr)
         return super()._dispatch_civ(cmd, payload, from_addr)
 
-    def _dispatch_cmd29(
-        self, real_cmd: int, inner: bytes, from_addr: int, receiver: int
-    ) -> bytes | None:
-        """Handle Command29-wrapped tone/TSQL commands."""
-        to = from_addr
-        frm = self._radio_addr
+    # ------------------------------------------------------------------
+    # Repeater tone/TSQL dispatch (0x16)
+    # ------------------------------------------------------------------
 
-        # Handle 0x16 (PREAMP/functions) with tone/TSQL sub-commands
-        if real_cmd == _CMD_FUNC:
-            if not inner:
-                return self._civ_nak(to, frm)
-            sub = inner[0]
-            rest = inner[1:]
-
-            if sub == _SUB_REPEATER_TONE:
-                if rest:  # SET
-                    self._repeater_tone = rest[0]
-                    return self._civ_ack(to, frm)
-                # GET — wrap in Command29
-                return self._civ_frame(
-                    to,
-                    frm,
-                    0x29,
-                    data=bytes(
-                        [receiver, _CMD_FUNC, _SUB_REPEATER_TONE, self._repeater_tone]
-                    ),
-                )
-
-            if sub == _SUB_REPEATER_TSQL:
-                if rest:  # SET
-                    self._repeater_tsql = rest[0]
-                    return self._civ_ack(to, frm)
-                # GET — wrap in Command29
-                return self._civ_frame(
-                    to,
-                    frm,
-                    0x29,
-                    data=bytes(
-                        [receiver, _CMD_FUNC, _SUB_REPEATER_TSQL, self._repeater_tsql]
-                    ),
-                )
-
-        # Handle 0x1B (tone frequency) sub-commands
-        if real_cmd == _CMD_TONE:
-            if not inner:
-                return self._civ_nak(to, frm)
-            sub = inner[0]
-            rest = inner[1:]
-
-            if sub == _SUB_TONE_FREQ:
-                if len(rest) >= 3:  # SET (3-byte BCD)
-                    self._tone_freq_hz = _decode_tone_freq(rest[:3])
-                    return self._civ_ack(to, frm)
-                # GET — wrap in Command29
-                return self._civ_frame(
-                    to,
-                    frm,
-                    0x29,
-                    data=bytes([receiver, _CMD_TONE, _SUB_TONE_FREQ])
-                    + _encode_tone_freq(self._tone_freq_hz),
-                )
-
-            if sub == _SUB_TSQL_FREQ:
-                if len(rest) >= 3:  # SET (3-byte BCD)
-                    self._tsql_freq_hz = _decode_tone_freq(rest[:3])
-                    return self._civ_ack(to, frm)
-                # GET — wrap in Command29
-                return self._civ_frame(
-                    to,
-                    frm,
-                    0x29,
-                    data=bytes([receiver, _CMD_TONE, _SUB_TSQL_FREQ])
-                    + _encode_tone_freq(self._tsql_freq_hz),
-                )
-
-        # Fall through to parent for other commands (ATT, preamp status, etc.)
-        return super()._dispatch_cmd29(real_cmd, inner, from_addr, receiver)
+    def _dispatch_func(self, payload: bytes, from_addr: int) -> bytes | None:
+        """Dispatch repeater tone/TSQL commands (cmd 0x16)."""
+        if not payload:
+            return self._civ_nak(from_addr, self._radio_addr)
+        sub = payload[0]
+        rest = payload[1:]
+        if sub == _SUB_REPEATER_TONE:
+            return self._handle_repeater_tone(rest, from_addr)
+        if sub == _SUB_REPEATER_TSQL:
+            return self._handle_repeater_tsql(rest, from_addr)
+        # Not a tone/TSQL sub-command: let the parent handle other 0x16
+        # sub-commands (ATT, preamp status, etc.)
+        return super()._dispatch_civ(_CMD_FUNC, payload, from_addr)
 
     # ------------------------------------------------------------------
     # Tone frequency dispatch (0x1B)
@@ -237,90 +200,72 @@ class ToneMockRadio(MockIcomRadio):
 
     # ------------------------------------------------------------------
     # Individual command handlers
+    #
+    # A plain frame (no cmd29 wrapper) never carries a receiver-selector
+    # byte -- that byte lives only in the cmd29 envelope itself, which
+    # this mock never receives for this radio (class docstring). `rest`
+    # below is exactly the on/off byte (repeater tone/TSQL) or the 3-byte
+    # BCD payload (tone/TSQL frequency), with nothing to strip first.
     # ------------------------------------------------------------------
 
     def _handle_repeater_tone(self, rest: bytes, from_addr: int) -> bytes:
         """Handle repeater tone enable/disable (0x16 sub 0x42)."""
         to = from_addr
         frm = self._radio_addr
-        # Strip receiver prefix (command29)
-        receiver, data = self._strip_receiver_prefix(rest)
-        if data:  # SET
-            self._repeater_tone = data[0]
+        if rest:  # SET
+            self._repeater_tone = rest[0]
             return self._civ_ack(to, frm)
-        # GET: include receiver prefix in response if present
-        response_data = (bytes([receiver]) if receiver is not None else b"") + bytes(
-            [self._repeater_tone]
-        )
         return self._civ_frame(
             to,
             frm,
             _CMD_FUNC,
             sub=_SUB_REPEATER_TONE,
-            data=response_data,
+            data=bytes([self._repeater_tone]),
         )
 
     def _handle_repeater_tsql(self, rest: bytes, from_addr: int) -> bytes:
         """Handle repeater TSQL enable/disable (0x16 sub 0x43)."""
         to = from_addr
         frm = self._radio_addr
-        # Strip receiver prefix (command29)
-        receiver, data = self._strip_receiver_prefix(rest)
-        if data:  # SET
-            self._repeater_tsql = data[0]
+        if rest:  # SET
+            self._repeater_tsql = rest[0]
             return self._civ_ack(to, frm)
-        # GET: include receiver prefix in response if present
-        response_data = (bytes([receiver]) if receiver is not None else b"") + bytes(
-            [self._repeater_tsql]
-        )
         return self._civ_frame(
             to,
             frm,
             _CMD_FUNC,
             sub=_SUB_REPEATER_TSQL,
-            data=response_data,
+            data=bytes([self._repeater_tsql]),
         )
 
     def _handle_tone_freq(self, rest: bytes, from_addr: int) -> bytes:
         """Handle tone frequency get/set (0x1B sub 0x00)."""
         to = from_addr
         frm = self._radio_addr
-        # Strip receiver prefix (command29)
-        receiver, data = self._strip_receiver_prefix(rest)
-        if len(data) >= 3:  # SET (3-byte BCD payload)
-            self._tone_freq_hz = _decode_tone_freq(data[:3])
+        if len(rest) >= 3:  # SET (3-byte BCD payload)
+            self._tone_freq_hz = _decode_tone_freq(rest[:3])
             return self._civ_ack(to, frm)
-        # GET: include receiver prefix in response if present
-        response_data = (
-            bytes([receiver]) if receiver is not None else b""
-        ) + _encode_tone_freq(self._tone_freq_hz)
         return self._civ_frame(
             to,
             frm,
             _CMD_TONE,
             sub=_SUB_TONE_FREQ,
-            data=response_data,
+            data=_encode_tone_freq(self._tone_freq_hz),
         )
 
     def _handle_tsql_freq(self, rest: bytes, from_addr: int) -> bytes:
         """Handle TSQL frequency get/set (0x1B sub 0x01)."""
         to = from_addr
         frm = self._radio_addr
-        # Strip receiver prefix (command29)
-        receiver, data = self._strip_receiver_prefix(rest)
-        if len(data) >= 3:  # SET (3-byte BCD payload)
-            self._tsql_freq_hz = _decode_tone_freq(data[:3])
+        if len(rest) >= 3:  # SET (3-byte BCD payload)
+            self._tsql_freq_hz = _decode_tone_freq(rest[:3])
             return self._civ_ack(to, frm)
-        # GET: include receiver prefix in response if present
-        response_data = (
-            bytes([receiver]) if receiver is not None else b""
-        ) + _encode_tone_freq(self._tsql_freq_hz)
         return self._civ_frame(
             to,
             frm,
             _CMD_TONE,
             sub=_SUB_TSQL_FREQ,
-            data=response_data,
+            data=_encode_tone_freq(self._tsql_freq_hz),
         )
 
 
@@ -329,10 +274,16 @@ class ToneMockRadio(MockIcomRadio):
 # ---------------------------------------------------------------------------
 
 
+# IC-7300's CI-V address (RadioModel(name="IC-7300", civ_addr=148)) --
+# module docstring explains why this file uses IC-7300, not the mock's
+# own IC-7610 default (MockIcomRadio's own radio_addr default, 0x98).
+_IC_7300_ADDR = 0x94
+
+
 @pytest.fixture
 async def tone_mock() -> AsyncGenerator[ToneMockRadio, None]:
     """Start a ToneMockRadio server for each test, stop it after."""
-    server = ToneMockRadio()
+    server = ToneMockRadio(radio_addr=_IC_7300_ADDR)
     await server.start()
     yield server
     await server.stop()
@@ -347,6 +298,7 @@ async def tone_radio(tone_mock: ToneMockRadio) -> AsyncGenerator[IcomRadio, None
         username="testuser",
         password="testpass",
         timeout=5.0,
+        model="IC-7300",
     )
     with fast_connect():
         await radio.connect()

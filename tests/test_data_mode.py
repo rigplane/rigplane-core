@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,11 +21,21 @@ from rigplane.commands import (
     parse_data_mode_response,
     set_data_mode,
 )
+from rigplane.rig_loader import load_rig
 from rigplane.rigctld.contract import RigctldCommand, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.poller import RadioPoller
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.types import CivFrame, Mode
+
+RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+
+@pytest.fixture()
+def cmd_map():
+    rig = load_rig(RIG_DIR / "ic7610.toml")
+    return rig.to_command_map()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,35 +60,52 @@ def get_cmd(long_cmd: str, *args: str) -> RigctldCommand:
 
 
 class TestGetDataModeCommand:
-    def test_frame_bytes(self) -> None:
-        frame = get_data_mode(to_addr=0x98)
+    """commands/mode.py migrated onto the bound command map in MOR-2008
+    (batch 2): get_data_mode/set_data_mode now require cmd_map -- zero
+    divergence, so IC-7610's own map declares the identical bytes the
+    fallback used to build, and the expected frames below are unchanged.
+    """
+
+    def test_frame_bytes(self, cmd_map) -> None:
+        frame = get_data_mode(to_addr=0x98, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\xfd"
 
-    def test_custom_addresses(self) -> None:
-        frame = get_data_mode(to_addr=0x94, from_addr=0xE1)
+    def test_custom_addresses(self, cmd_map) -> None:
+        frame = get_data_mode(to_addr=0x94, from_addr=0xE1, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x94\xe1\x1a\x06\xfd"
+
+    def test_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_data_mode(to_addr=0x98)  # type: ignore[call-arg]
 
 
 class TestSetDataModeCommand:
-    def test_on(self) -> None:
-        frame = set_data_mode(True, to_addr=0x98)
+    def test_on(self, cmd_map) -> None:
+        frame = set_data_mode(True, to_addr=0x98, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\x01\xfd"
 
-    def test_off(self) -> None:
-        frame = set_data_mode(False, to_addr=0x98)
+    def test_off(self, cmd_map) -> None:
+        frame = set_data_mode(False, to_addr=0x98, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\x00\xfd"
 
-    def test_data2(self) -> None:
-        frame = set_data_mode(2, to_addr=0x98)
+    def test_data2(self, cmd_map) -> None:
+        frame = set_data_mode(2, to_addr=0x98, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\x02\xfd"
 
-    def test_data3(self) -> None:
-        frame = set_data_mode(3, to_addr=0x98)
+    def test_data3(self, cmd_map) -> None:
+        frame = set_data_mode(3, to_addr=0x98, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x06\x03\xfd"
 
-    def test_data3_sub_receiver_uses_cmd29(self) -> None:
-        frame = set_data_mode(3, to_addr=0x98, receiver=1)
+    def test_data3_sub_receiver_uses_cmd29(self, cmd_map) -> None:
+        frame = set_data_mode(3, to_addr=0x98, receiver=1, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x29\x01\x1a\x06\x03\xfd"
+
+    def test_rejects_explicit_none_the_same_way(self, cmd_map) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_data_mode(True, to_addr=0x98, cmd_map=None)
 
 
 class TestParseDataModeResponse:

@@ -1,4 +1,27 @@
-"""Frequency commands (0x03/0x05/0x25/0x26)."""
+"""Frequency commands (0x03/0x05/0x25/0x26).
+
+``get_freq``/``set_freq`` migrated onto the bound command map in MOR-2008
+(batch 2, `docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps
+5..N): both now require ``cmd_map``, with no hardcoded fallback left. Zero
+divergence rows -- every declaring profile's tuple already matched the
+fallback's own bytes exactly (verified by grep across ``rigs/*.toml``
+before deleting the fallback). ``_CMD_FREQ_GET``/``_CMD_FREQ_SET`` survive
+in `_frame.py`, unaffected: ``parse_frequency_response`` below still reads
+``_CMD_FREQ_GET`` directly, and several tests import ``_CMD_FREQ_GET``
+directly to build synthetic frames, unconnected to this module's own
+fallback (`tests/test_radio.py`, `tests/test_icom7610_serial_radio.py`,
+`tests/_helpers.py`, others) -- ``tests/test_civ_command_profiling.py``
+is the only one of these that also imports ``_CMD_FREQ_SET``.
+
+The rest of this module (``get_selected_freq``/``get_unselected_freq``/
+``get_selected_mode``/``get_unselected_mode``/``set_selected_mode`` and
+their parsers) is out of this batch's scope: none of the five has a
+``cmd_map`` parameter at all today -- no dual implementation exists to
+delete a fallback from. MOR-2008's Group B (`memory.py`, `tx_band.py`,
+these five) is a separate, later piece of work (owner ruling on the
+ticket): fill the missing/inconsistent TOML declarations from the
+manuals first, then migrate under this same contract.
+"""
 
 from __future__ import annotations
 
@@ -10,12 +33,12 @@ from ._frame import (
     RECEIVER_MAIN,
     _CMD_BAND_EDGE,
     _CMD_FREQ_GET,
-    _CMD_FREQ_SET,
     _CMD_SELECTED_FREQ,
     _CMD_SELECTED_MODE,
     _build_from_map,
     build_civ_frame,
-    build_cmd29_frame,
+    expose_command_key,
+    require_cmd_map,
 )
 
 if TYPE_CHECKING:
@@ -23,25 +46,24 @@ if TYPE_CHECKING:
     from ..types import CivFrame
 
 
+@expose_command_key(lambda cmd_map: "get_freq")
+@require_cmd_map
 def get_freq(
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    cmd_map: CommandMap | None = None,
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build a 'get frequency' CI-V command."""
-    if cmd_map is not None:
-        return _build_from_map(
-            cmd_map, "get_freq", to_addr=to_addr, from_addr=from_addr
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_FREQ_GET)
+    return _build_from_map(cmd_map, "get_freq", to_addr=to_addr, from_addr=from_addr)
 
 
+@expose_command_key(lambda cmd_map: "set_freq")
+@require_cmd_map
 def set_freq(
     freq_hz: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
-    cmd_map: CommandMap | None = None,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'set frequency' CI-V command.
 
@@ -59,22 +81,15 @@ def set_freq(
     Returns:
         CI-V frame bytes.
     """
-    if cmd_map is not None:
-        return _build_from_map(
-            cmd_map,
-            "set_freq",
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=bcd_encode(freq_hz),
-            receiver=receiver,
-            command29=(receiver != RECEIVER_MAIN),
-        )
-    bcd = bcd_encode(freq_hz)
-    if receiver != RECEIVER_MAIN:
-        return build_cmd29_frame(
-            to_addr, from_addr, _CMD_FREQ_SET, data=bcd, receiver=receiver
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_FREQ_SET, data=bcd)
+    return _build_from_map(
+        cmd_map,
+        "set_freq",
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=bcd_encode(freq_hz),
+        receiver=receiver,
+        command29=(receiver != RECEIVER_MAIN),
+    )
 
 
 def parse_frequency_response(frame: CivFrame) -> int:

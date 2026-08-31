@@ -38,6 +38,7 @@ from rigplane.commands import (
 )
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.rig_loader import load_rig
+from rigplane.types import bcd_encode
 from _command_test_helpers import bind_default_addr_globals
 
 RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
@@ -68,10 +69,18 @@ class TestGetterParity:
     """
 
     def test_get_frequency(self, cmd_map):
-        assert commands.get_freq(cmd_map=cmd_map) == commands.get_freq()
+        # commands/freq.py migrated onto the bound command map in MOR-2008
+        # (batch 2): get_freq/set_freq now require cmd_map -- pinned
+        # against the frame the deleted fallback used to build.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+        assert commands.get_freq(cmd_map=cmd_map) == expected
 
     def test_get_mode(self, cmd_map):
-        assert commands.get_mode(cmd_map=cmd_map) == commands.get_mode()
+        # commands/mode.py migrated onto the bound command map in MOR-2008
+        # (batch 2): get_mode/set_mode now require cmd_map -- pinned
+        # against the frame the deleted fallback used to build.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x04)
+        assert commands.get_mode(cmd_map=cmd_map) == expected
 
     def test_get_af_level(self, cmd_map):
         # IC-7610 declares a cmd29 route for 0x14/0x01, so command29=True
@@ -92,13 +101,19 @@ class TestGetterParity:
         assert commands.get_rf_power(cmd_map=cmd_map) == expected
 
     def test_get_s_meter(self, cmd_map):
-        assert commands.get_s_meter(cmd_map=cmd_map) == commands.get_s_meter()
+        # commands/meters.py migrated onto the bound command map in
+        # MOR-2008 (batch 2): pinned against the frame the deleted
+        # fallback used to build.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x15, sub=0x02)
+        assert commands.get_s_meter(cmd_map=cmd_map) == expected
 
     def test_get_swr(self, cmd_map):
-        assert commands.get_swr(cmd_map=cmd_map) == commands.get_swr()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x15, sub=0x12)
+        assert commands.get_swr(cmd_map=cmd_map) == expected
 
     def test_get_alc(self, cmd_map):
-        assert commands.get_alc(cmd_map=cmd_map) == commands.get_alc()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x15, sub=0x13)
+        assert commands.get_alc(cmd_map=cmd_map) == expected
 
     def test_get_tuning_step(self, cmd_map):
         # commands/vfo.py migrated onto the bound command map in MOR-2007
@@ -118,7 +133,8 @@ class TestGetterParity:
         assert commands.get_ip_plus(cmd_map=cmd_map) == commands.get_ip_plus()
 
     def test_get_power_meter(self, cmd_map):
-        assert commands.get_power_meter(cmd_map=cmd_map) == commands.get_power_meter()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x15, sub=0x11)
+        assert commands.get_power_meter(cmd_map=cmd_map) == expected
 
     def test_get_transceiver_id(self, cmd_map):
         # commands/system.py migrated onto the bound command map in
@@ -160,9 +176,13 @@ class TestSetterParity:
     """
 
     def test_set_frequency(self, cmd_map):
-        assert commands.set_freq(14_200_000, cmd_map=cmd_map) == commands.set_freq(
-            14_200_000
+        # commands/freq.py migrated onto the bound command map in MOR-2008
+        # (batch 2): pinned against the frame the deleted fallback used to
+        # build.
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x05, data=bcd_encode(14_200_000)
         )
+        assert commands.set_freq(14_200_000, cmd_map=cmd_map) == expected
 
     def test_set_power(self, cmd_map):
         expected = build_civ_frame(
@@ -442,7 +462,13 @@ class TestHelperCallerParity:
         assert commands.get_dial_lock(cmd_map=cmd_map) == commands.get_dial_lock()
 
     def test_get_filter_shape(self, cmd_map):
-        assert commands.get_filter_shape(cmd_map=cmd_map) == commands.get_filter_shape()
+        # commands/mode.py migrated onto the bound command map in MOR-2008
+        # (batch 2): pinned against the frame the deleted fallback used to
+        # build (command29 defaults True, same as the deleted fallback).
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x56, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_filter_shape(cmd_map=cmd_map) == expected
 
     def test_get_ref_adjust(self, cmd_map):
         expected = build_civ_frame(
@@ -451,16 +477,22 @@ class TestHelperCallerParity:
         assert commands.get_ref_adjust(cmd_map=cmd_map) == expected
 
     def test_get_s_meter_sql_status(self, cmd_map):
-        assert (
-            commands.get_s_meter_sql_status(cmd_map=cmd_map)
-            == commands.get_s_meter_sql_status()
+        # commands/meters.py migrated onto the bound command map in
+        # MOR-2008 (batch 2): pinned against the frame the deleted
+        # fallback used to build (command29 defaults True).
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x15, sub=0x01, receiver=RECEIVER_MAIN
         )
+        assert commands.get_s_meter_sql_status(cmd_map=cmd_map) == expected
 
     def test_get_agc_time_constant(self, cmd_map):
-        assert (
-            commands.get_agc_time_constant(cmd_map=cmd_map)
-            == commands.get_agc_time_constant()
+        # commands/mode.py migrated onto the bound command map in MOR-2008
+        # (batch 2): pinned against the frame the deleted fallback used to
+        # build (command29 defaults True).
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x04, receiver=RECEIVER_MAIN
         )
+        assert commands.get_agc_time_constant(cmd_map=cmd_map) == expected
 
 
 # ── cmd29-aware functions ───────────────────────────────────────
@@ -532,10 +564,13 @@ class TestCmd29Parity:
         )
 
     def test_get_various_squelch(self, cmd_map):
-        assert (
-            commands.get_various_squelch(cmd_map=cmd_map)
-            == commands.get_various_squelch()
+        # commands/meters.py migrated onto the bound command map in
+        # MOR-2008 (batch 2): pinned against the frame the deleted
+        # fallback used to build (command29 defaults True).
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x15, sub=0x05, receiver=RECEIVER_MAIN
         )
+        assert commands.get_various_squelch(cmd_map=cmd_map) == expected
 
 
 # ── Custom CommandMap (different wire bytes) ────────────────────
@@ -554,11 +589,15 @@ class TestCommandMapOverride:
         assert result != known_good
         assert b"\x16\x43" in result
 
-    def test_custom_single_byte_command(self):
+    def test_custom_single_byte_command(self, cmd_map):
+        # commands/freq.py migrated onto the bound command map in MOR-2008
+        # (batch 2): get_freq now requires cmd_map, so "different wire
+        # bytes" is shown against the real IC-7610 map rather than the
+        # deleted fallback.
         custom = CommandMap({"get_freq": (0xFF,)})
         result = commands.get_freq(cmd_map=custom)
         assert b"\xff" in result
-        assert result != commands.get_freq()
+        assert result != commands.get_freq(cmd_map=cmd_map)
 
     def test_custom_setter(self, cmd_map):
         # MOR-2006 Steps 5..N (module 2): set_rf_power now requires

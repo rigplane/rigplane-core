@@ -59,13 +59,9 @@ _SUB_RF_POWER = 0x0A
 
 # Sub-commands for 0x15 (Meters)
 _SUB_S_METER = 0x02
-_SUB_VARIOUS_SQUELCH = 0x05
 _SUB_POWER_METER = 0x11
 _SUB_SWR_METER = 0x12
 _SUB_ALC_METER = 0x13
-_SUB_COMP_METER = 0x14
-_SUB_VD_METER = 0x15
-_SUB_ID_METER = 0x16
 
 # Sub-commands for 0x1C (PTT / Transceiver status)
 _SUB_PTT = 0x00
@@ -77,7 +73,6 @@ _SUB_AF_MUTE = 0x09
 _SUB_MEMORY_CONTENTS = 0x00
 _SUB_BAND_STACK = 0x01
 _SUB_AGC_TIME_CONSTANT = 0x04
-_SUB_FILTER_WIDTH = 0x03
 
 # CTL_MEM prefixes (0x1A 0x05 ...). `commands/levels.py`'s own five
 # (ref_adjust, dash_ratio, nb_depth, nb_width, vox_delay) are gone as of
@@ -88,7 +83,6 @@ _CTL_MEM_SYSTEM_TIME = b"\x01\x59"
 _CTL_MEM_UTC_OFFSET = b"\x01\x62"
 
 # Antenna command (0x12)
-_CMD_ANTENNA = 0x12
 _SUB_ANT1 = 0x00
 _SUB_ANT2 = 0x01
 _SUB_RX_ANT_ANT1 = 0x12
@@ -97,8 +91,6 @@ _SUB_RX_ANT_ANT2 = 0x13
 # ATT / Preamp / DSP function sub-commands (0x11 / 0x16)
 _CMD_ATT = 0x11
 _CMD_PREAMP = 0x16
-_SUB_S_METER_SQL_STATUS = 0x01
-_SUB_OVERFLOW_STATUS = 0x07
 _SUB_PREAMP_STATUS = 0x02
 _SUB_AGC = 0x12
 _SUB_AUDIO_PEAK_FILTER = 0x32
@@ -161,7 +153,8 @@ _COMMANDS_WITH_SUB: set[int] = {
     0x27,
     0x16,
     _CMD_TONE,
-    _CMD_ANTENNA,
+    0x12,  # Antenna -- named _CMD_ANTENNA until antenna.py's own reader
+    # (MOR-2008 batch 2) was its last, same as 0x27/0x16/0x19 below
     0x19,
 }
 
