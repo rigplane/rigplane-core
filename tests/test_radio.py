@@ -3049,19 +3049,37 @@ class TestManualNotchWidthDomainValidation:
         radio._connected = False
 
     @pytest.mark.asyncio
-    async def test_x6200_permissive_when_no_width_domain_declared(
+    async def test_x6200_refuses_undeclared_manual_notch_width(
         self, mock_transport: MockTransport
     ) -> None:
-        """X6200 declares 'notch' (auto-notch) but no manual notch WIDTH
-        domain — unlike break_in, this is permissive-pass-through, matching
-        the set_agc/set_preamp precedent (the 'notch' capability legitimately
-        covers auto-notch-only radios, not just manual-width ones)."""
+        """Superseded by MOR-2008 batch 3's dsp.py migration.
+
+        Before batch 3, ``set_manual_notch_width`` had a hardcoded
+        fallback that ignored ``rigs/*.toml`` declarations entirely, so
+        this test pinned "permissive pass-through" as the value-domain
+        story: X6200 declares no ``[notch] width_values`` domain, so the
+        *value* 1 was never rejected, and the builder still sent
+        whatever opcode (``0x16 0x57``) the fallback hardcoded --
+        confirmed-correct on no evidence either way
+        (docs/validation/cat-audits/x6200.md's own "Closing evidence"
+        note: a live ``0x16 0x57`` GET/SET capture would settle it, and
+        the X6200 unit was destroyed 2026-08-11 before one could be
+        taken). Once the bound command map (MOR-2006) makes the
+        fallback dead, sending an opcode nobody has confirmed is exactly
+        what D1's state 3 exists to stop: ``rigs/x6200.toml`` declares
+        ``get_/set_manual_notch_width`` neither present nor absent, so
+        the call now refuses with ``CommandError`` instead of guessing
+        -- a correction, not a regression, same principle as this
+        module's own ``TestFilterShapeDomainValidation``-adjacent D1
+        refusals elsewhere in this migration series.
+        """
         radio = IcomRadio("192.168.1.100", model="X6200")
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
-        await radio.set_manual_notch_width(1)
-        assert mock_transport.sent_packets
+        with pytest.raises(CommandError, match="not declared"):
+            await radio.set_manual_notch_width(1)
+        assert mock_transport.sent_packets == []
         radio._connected = False
 
 

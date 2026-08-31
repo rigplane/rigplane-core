@@ -147,6 +147,26 @@ MATCHER_BACKED_GETTERS: tuple[_GetterSpec, ...] = (
     _GetterSpec("get_s_meter_sql_status", "_get_bool_value"),
     _GetterSpec("get_overflow_status", "_get_bool_value"),
     _GetterSpec("get_various_squelch", "_get_bool_value"),
+    # commands/dsp.py's matcher-backed getters (MOR-2008 Steps 5..N, batch
+    # 3). get_attenuator/get_preamp/get_digisel/get_nb/get_nr/get_ip_plus
+    # are NOT included: each reaches its reply through
+    # `runtime/radio.py: CoreRadio._send_civ_expect`, a transaction-
+    # correlated wait with no command/sub matching at all -- never through
+    # _get_bcd_level/_get_bool_value with a map-derived shape, the same
+    # exclusion reason as commands/levels.py's get_rf_power/get_rf_gain/
+    # get_af_level above.
+    _GetterSpec("get_agc", "_get_bcd_level"),
+    _GetterSpec("get_audio_peak_filter", "_get_bcd_level"),
+    _GetterSpec("get_break_in", "_get_bcd_level"),
+    _GetterSpec("get_manual_notch_width", "_get_bcd_level"),
+    _GetterSpec("get_auto_notch", "_get_bool_value"),
+    _GetterSpec("get_compressor", "_get_bool_value"),
+    _GetterSpec("get_monitor", "_get_bool_value"),
+    _GetterSpec("get_vox", "_get_bool_value"),
+    _GetterSpec("get_manual_notch", "_get_bool_value"),
+    _GetterSpec("get_twin_peak_filter", "_get_bool_value"),
+    _GetterSpec("get_dial_lock", "_get_bool_value"),
+    _GetterSpec("get_af_mute", "_get_bool_value"),
 )
 
 
@@ -201,7 +221,21 @@ async def test_reply_shape_matches_request_shape(
     # not connection state, for every entry regardless of that difference.
     monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
     radio = CoreRadio("198.51.100.1", profile=profile)
-    await getattr(radio, spec.method)()
+    try:
+        await getattr(radio, spec.method)()
+    except ValueError:
+        # dsp.py's get_agc (MOR-2008 batch 3) validates its parsed value
+        # against the profile's own declared `[agc] modes` domain AFTER
+        # the mocked parser returns -- the fixed dummy value `0` this
+        # fake parser always returns is legitimately outside that domain
+        # for profiles that don't declare AGC OFF (IC-705/7300/7610/9700
+        # all declare (1, 2, 3), no 0). `captured["shape"]` is already
+        # set by the time that domain check runs (inside the mocked
+        # parser, which returns before get_agc's own post-check), so the
+        # shape assertion below still holds; only get_agc's business-rule
+        # validation, irrelevant to this file's one job, is tolerated
+        # here. No other registered getter raises for this dummy value.
+        pass
 
     assert "shape" in captured, (
         f"{model}:{spec.method} never reached CoreRadio.{spec.parser}"

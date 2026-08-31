@@ -30,6 +30,15 @@ IC7610_PROFILE_ID = "icom_ic7610"
 IC7610_ADDR = 0x98
 X6200_ADDR = 0xA4  # arbitrary radio addr for builder byte assertions
 
+# commands/dsp.py migrated onto the bound command map in MOR-2008 (batch
+# 3): get_attenuator/set_attenuator/get_preamp/set_preamp now require
+# cmd_map. Both profiles declare the same [0x11]/[0x16, 0x02] wire tuples
+# the deleted fallback used to build (zero divergence, confirmed by
+# tests/command_map_parity_divergences.txt being empty), so passing each
+# profile's own map changes no expected byte below.
+_X6200_CMD_MAP = get_radio_profile(X6200_PROFILE_ID).command_map
+_IC7610_CMD_MAP = get_radio_profile(IC7610_PROFILE_ID).command_map
+
 
 # ---------------------------------------------------------------------------
 # (a) Builder byte assertions
@@ -40,24 +49,30 @@ class TestBuildersPlain:
     """Single-RX plain form (command29=False) — no 0x29 wrapper."""
 
     def test_get_attenuator_plain(self) -> None:
-        frame = get_attenuator(to_addr=X6200_ADDR, command29=False)
+        frame = get_attenuator(
+            to_addr=X6200_ADDR, command29=False, cmd_map=_X6200_CMD_MAP
+        )
         assert frame == bytes([0xFE, 0xFE, X6200_ADDR, 0xE0, _CMD_ATT, 0xFD])
         assert frame[4] == _CMD_ATT
         assert 0x29 not in (frame[4],)
 
     def test_set_attenuator_plain(self) -> None:
-        frame = set_attenuator(True, to_addr=X6200_ADDR, command29=False)
+        frame = set_attenuator(
+            True, to_addr=X6200_ADDR, command29=False, cmd_map=_X6200_CMD_MAP
+        )
         assert frame[4] == _CMD_ATT
         assert frame[4] != 0x29
         # True -> 18 dB, BCD 0x18
         assert frame == bytes([0xFE, 0xFE, X6200_ADDR, 0xE0, _CMD_ATT, 0x18, 0xFD])
 
     def test_set_attenuator_off_plain(self) -> None:
-        frame = set_attenuator(False, to_addr=X6200_ADDR, command29=False)
+        frame = set_attenuator(
+            False, to_addr=X6200_ADDR, command29=False, cmd_map=_X6200_CMD_MAP
+        )
         assert frame == bytes([0xFE, 0xFE, X6200_ADDR, 0xE0, _CMD_ATT, 0x00, 0xFD])
 
     def test_get_preamp_plain(self) -> None:
-        frame = get_preamp(to_addr=X6200_ADDR, command29=False)
+        frame = get_preamp(to_addr=X6200_ADDR, command29=False, cmd_map=_X6200_CMD_MAP)
         assert frame[4] == _CMD_PREAMP
         assert frame[5] == _SUB_PREAMP_STATUS
         assert frame == bytes(
@@ -65,7 +80,9 @@ class TestBuildersPlain:
         )
 
     def test_set_preamp_plain(self) -> None:
-        frame = set_preamp(1, to_addr=X6200_ADDR, command29=False)
+        frame = set_preamp(
+            1, to_addr=X6200_ADDR, command29=False, cmd_map=_X6200_CMD_MAP
+        )
         assert frame[4] == _CMD_PREAMP
         assert frame[5] == _SUB_PREAMP_STATUS
         assert frame == bytes(
@@ -86,26 +103,26 @@ class TestBuildersCmd29Regression:
     """Dual-RX regression lock: default (command29=True) == cmd29 frame, byte-identical."""
 
     def test_get_attenuator_cmd29_default(self) -> None:
-        frame = get_attenuator(to_addr=IC7610_ADDR)
+        frame = get_attenuator(to_addr=IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame[4] == 0x29
         assert frame == build_cmd29_frame(IC7610_ADDR, 0xE0, _CMD_ATT)
 
     def test_set_attenuator_cmd29_default(self) -> None:
-        frame = set_attenuator(True, to_addr=IC7610_ADDR)
+        frame = set_attenuator(True, to_addr=IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame[4] == 0x29
         assert frame == build_cmd29_frame(
             IC7610_ADDR, 0xE0, _CMD_ATT, data=bytes([0x18])
         )
 
     def test_get_preamp_cmd29_default(self) -> None:
-        frame = get_preamp(to_addr=IC7610_ADDR)
+        frame = get_preamp(to_addr=IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame[4] == 0x29
         assert frame == build_cmd29_frame(
             IC7610_ADDR, 0xE0, _CMD_PREAMP, sub=_SUB_PREAMP_STATUS
         )
 
     def test_set_preamp_cmd29_default(self) -> None:
-        frame = set_preamp(1, to_addr=IC7610_ADDR)
+        frame = set_preamp(1, to_addr=IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame[4] == 0x29
         assert frame == build_cmd29_frame(
             IC7610_ADDR, 0xE0, _CMD_PREAMP, sub=_SUB_PREAMP_STATUS, data=bytes([0x01])

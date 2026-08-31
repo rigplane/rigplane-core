@@ -7,8 +7,8 @@
 # via { absent = "<source>" } (plan §8.1 D2) or a real command-byte
 # entry in the profile's own TOML. Regenerate, do not hand-edit.
 census	civ_profiles	6
-census	distinct_gap_keys	157
-census	profile_key_gaps	316
+census	distinct_gap_keys	145
+census	profile_key_gaps	292
 census	public_builders	228
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	X6100,X6200
@@ -18,13 +18,10 @@ gap	get_antenna	X6100,X6200
 gap	get_anti_vox_gain	X6100,X6200
 gap	get_apf_type_level	X6100,X6200
 gap	get_audio_peak_filter	X6100,X6200
-gap	get_auto_notch	X6100,X6200
-gap	get_break_in	X6100,X6200
 gap	get_break_in_delay	X6100,X6200
 gap	get_civ_output_ant	X6100,X6200
 gap	get_civ_transceive	X6100,X6200
 gap	get_comp_meter	X6100,X6200
-gap	get_compressor	X6100,X6200
 gap	get_compressor_level	X6100,X6200
 gap	get_dash_ratio	X6100,X6200
 gap	get_data1_mod_input	X6100,X6200
@@ -42,13 +39,11 @@ gap	get_ip_plus	X6100,X6200
 gap	get_lan_mod_level	X6100,X6200
 gap	get_main_sub_band	X6100,X6200
 gap	get_main_sub_tracking	X6100,X6200
-gap	get_manual_notch	X6100,X6200
 gap	get_manual_notch_width	X6100,X6200
 gap	get_monitor	X6100,X6200
 gap	get_nb_depth	X6100,X6200
 gap	get_nb_width	X6100,X6200
 gap	get_notch_filter	X6100,X6200
-gap	get_nr	X6100,X6200
 gap	get_overflow_status	X6100,X6200
 gap	get_pbt_inner	X6100,X6200
 gap	get_pbt_outer	X6100,X6200
@@ -89,7 +84,6 @@ gap	get_tx_freq_monitor	X6100,X6200
 gap	get_usb_mod_level	X6100,X6200
 gap	get_utc_offset	X6100,X6200
 gap	get_various_squelch	X6100,X6200
-gap	get_vox	X6100,X6200
 gap	get_vox_delay	X6100,X6200
 gap	get_vox_gain	X6100,X6200
 gap	get_xfc_status	X6100,X6200
@@ -111,12 +105,9 @@ gap	set_antenna	X6100,X6200
 gap	set_anti_vox_gain	X6100,X6200
 gap	set_apf_type_level	X6100,X6200
 gap	set_audio_peak_filter	X6100,X6200
-gap	set_auto_notch	X6100,X6200
-gap	set_break_in	X6100,X6200
 gap	set_break_in_delay	X6100,X6200
 gap	set_civ_output_ant	X6100,X6200
 gap	set_civ_transceive	X6100,X6200
-gap	set_compressor	X6100,X6200
 gap	set_compressor_level	X6100,X6200
 gap	set_dash_ratio	X6100,X6200
 gap	set_data1_mod_input	X6100,X6200
@@ -134,13 +125,11 @@ gap	set_filter_width	X6100,X6200
 gap	set_ip_plus	X6100,X6200
 gap	set_lan_mod_level	X6100,X6200
 gap	set_main_sub_tracking	X6100,X6200
-gap	set_manual_notch	X6100,X6200
 gap	set_manual_notch_width	X6100,X6200
 gap	set_monitor	X6100,X6200
 gap	set_nb_depth	X6100,X6200
 gap	set_nb_width	X6100,X6200
 gap	set_notch_filter	X6100,X6200
-gap	set_nr	X6100,X6200
 gap	set_pbt_inner	X6100,X6200
 gap	set_pbt_outer	X6100,X6200
 gap	set_quick_dual_watch	X6100,X6200
@@ -162,7 +151,6 @@ gap	set_twin_peak_filter	X6100,X6200
 gap	set_tx_freq_monitor	X6100,X6200
 gap	set_usb_mod_level	X6100,X6200
 gap	set_utc_offset	X6100,X6200
-gap	set_vox	X6100,X6200
 gap	set_vox_delay	X6100,X6200
 gap	set_vox_gain	X6100,X6200
 gap	set_xfc_status	X6100,X6200

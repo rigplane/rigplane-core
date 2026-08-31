@@ -271,6 +271,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runtime/_dual_rx_runtime.py: DualRxRuntimeMixin` (the real callers of
   `get_freq`/`set_freq`/`get_mode`/`set_mode`), moved onto
   `self._commands.<builder>(...)` in the same change.
+- **`rigplane.commands.dsp` builders require `cmd_map`; there is no
+  hardcoded fallback (MOR-2008, batch 3 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** All 37
+  builders — attenuator, preamp, DIGI-SEL, NB, NR, IP+, AF mute, AGC,
+  audio peak filter, auto-notch, compressor, monitor, VOX, break-in,
+  manual notch, manual notch width, twin peak filter, dial lock — now
+  require `cmd_map` as a required keyword-only argument, the same
+  contract as batches 1/2. `set_attenuator` is a compatibility wrapper
+  with no command-map key of its own (it delegates to
+  `set_attenuator_level`, whose key is `"set_attenuator"`) and carries
+  `@require_cmd_map` without `@expose_command_key`, the same shape
+  `commands/vfo.py: set_dual_watch` already uses. Zero divergence: every
+  declaring CI-V profile already held the identical wire tuple the
+  deleted fallback built. Twelve getters (`get_agc`,
+  `get_audio_peak_filter`, `get_break_in`, `get_manual_notch_width`,
+  `get_auto_notch`, `get_compressor`, `get_monitor`, `get_vox`,
+  `get_manual_notch`, `get_twin_peak_filter`, `get_dial_lock`,
+  `get_af_mute`) also moved their reply matcher onto
+  `runtime/radio.py: CoreRadio._expect_shape`, registered in
+  `tests/test_response_shape_from_profile.py`'s
+  `MATCHER_BACKED_GETTERS` keystone table; `get_attenuator`/`get_preamp`/
+  `get_digisel`/`get_nb`/`get_nr`/`get_ip_plus` are excluded because each
+  reaches its reply through a transaction-correlated wait with no
+  command/sub matching at all, never through the two matcher functions.
+  **X6100/X6200 gain three controls, lose three others, both corrections
+  discovered by this migration, not created by it:** `get_/set_nr`,
+  `get_/set_compressor` and `get_/set_auto_notch` are newly declared
+  present at `[0x16, 0x40]`/`[0x16, 0x44]`/`[0x16, 0x41]` — the project's
+  own cat-audit (`docs/validation/cat-audits/x6200.md`) already confirmed
+  these opcodes correct and in use by the deleted fallback; left
+  undeclared, the migration would have turned three already-working
+  controls into a refusal, a regression rather than a correction.
+  `get_/set_vox`, `get_/set_break_in` and `get_/set_manual_notch` are
+  newly declared absent, promoted from a comment-only note already on
+  both profiles: the V1.0.6 documentation has no VOX row at all, no
+  BK-IN-mode register (only QSK hang time), and no manual-notch register
+  (the real notch mechanism is the DNF toggle this same migration
+  declares present as `get_/set_auto_notch`) — calling these three pairs
+  now raises `CommandError` instead of silently sending an opcode the
+  manufacturer's own table never documented. `get_/set_manual_notch_width`
+  stays an undeclared gap on both profiles (neither present nor absent):
+  the opcode's own table-presence, unlike the three above, was never
+  confirmed either way, and the X6200 unit that could have settled it
+  with a live capture was destroyed 2026-08-11. The production call
+  sites, in `runtime/radio.py: CoreRadio` (dsp.py has none in
+  `runtime/_dual_rx_runtime.py`), moved onto `self._commands.<builder>(...)`
+  in the same change.
+  `tests/test_command_fallback_audit.py`'s representative builder
+  (`get_attenuator`) has no fallback left either, and a repo-wide census
+  found no builder anywhere in `commands/*.py` with an optional `cmd_map`
+  remaining to repoint at — its four tests that used to assert "no
+  exception, fallback bytes returned" now assert "the wrapper's warning
+  still fires, then the builder's own `TypeError` propagates unchanged."
 
 ### Changed
 

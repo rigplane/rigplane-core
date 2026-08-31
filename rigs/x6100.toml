@@ -102,6 +102,18 @@ address = 0x70
 #     it and Hamlib gives both models the same AGC family -- see
 #     [commands] PROVENANCE OPEN below (D2, MOR-2018): recorded as an open
 #     question for a future ticket, not silently added.
+#   - MOR-2008 batch 3: this file's [commands] table below now formally
+#     declares ``get_/set_vox``, ``get_/set_break_in`` and
+#     ``get_/set_manual_notch`` absent (promoted from the bare capability-
+#     tag notes above, inherited from rigs/x6200.toml's own promotion),
+#     and declares ``get_/set_nr``, ``get_/set_compressor`` and
+#     ``get_/set_auto_notch`` present at their cat-audit-confirmed-correct
+#     opcodes -- both changes exist so the bound-command-map migration
+#     (MOR-2006) enforces the same facts this comment block already
+#     stated, rather than leaving three working controls to regress into
+#     a refusal purely because nobody had transcribed their opcode into
+#     [commands] yet. See the [commands] table entries themselves for the
+#     full citations.
 features = [
     "audio",
     "af_level",
@@ -422,8 +434,26 @@ get_agc  = [0x16, 0x12]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) 
 set_agc  = [0x16, 0x12]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.8
 get_nb   = [0x16, 0x22]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7
 set_nb   = [0x16, 0x22]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.8
+get_nr   = [0x16, 0x40]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 p.7, cat-audit-confirmed correct; dsp.py: get_nr/set_nr already built this opcode via their hardcoded fallback for this profile too, only the [commands] declaration was missing
+set_nr   = [0x16, 0x40]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 p.8; same fix as get_nr
+get_compressor = [0x16, 0x44]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: docs/validation/cat-audits/x6200.md § "A. UNDER-DECLARED", opcode confirmed correct; same fix as get_nr
+set_compressor = [0x16, 0x44]  # source: same as get_compressor
+get_auto_notch = [0x16, 0x41]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: docs/validation/cat-audits/x6200.md § "C. MISSING BACKEND", DNF row (the real notch mechanism, distinct from get_manual_notch below); same fix as get_nr
+set_auto_notch = [0x16, 0x41]  # source: same as get_auto_notch
 get_dial_lock = [0x16, 0x50]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7
 set_dial_lock = [0x16, 0x50]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.8
+
+# Confirmed-absent DSP controls (MOR-2008 batch 3), inherited from
+# rigs/x6200.toml (sibling model) per this profile's own D2 MOR-2018
+# sourcing rule -- documented-absent per the V1.0.6 table, not
+# live-confirmed on X6100 hardware (no X6100 unit has ever existed to
+# capture from; see the file header above).
+get_vox          = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 has no CI-V VOX row of any kind (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', VOX row) -- documented-absent, not live-confirmed on either model" }
+set_vox          = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 has no CI-V VOX row of any kind (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', VOX row) -- documented-absent, not live-confirmed on either model" }
+get_manual_notch = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: the Icom manual-notch opcode [0x16, 0x48] is not in the V1.0.6 table; the real notch mechanism is the DNF toggle at [0x16, 0x41] (see get_auto_notch above) (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', manual notch row) -- documented-absent, not live-confirmed on either model" }
+set_manual_notch = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: the Icom manual-notch opcode [0x16, 0x48] is not in the V1.0.6 table; the real notch mechanism is the DNF toggle at [0x16, 0x41] (see set_auto_notch above) (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', manual notch row) -- documented-absent, not live-confirmed on either model" }
+get_break_in     = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: the Icom CW BK-IN opcode [0x16, 0x47] is not in the V1.0.6 table, which documents only QSK hang time at [0x14, 0x0F] (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', break-in row) -- documented-absent, not live-confirmed on either model" }
+set_break_in     = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: the Icom CW BK-IN opcode [0x16, 0x47] is not in the V1.0.6 table, which documents only QSK hang time at [0x14, 0x0F] (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', break-in row) -- documented-absent, not live-confirmed on either model" }
 
 # Identification
 get_transceiver_id = [0x19, 0x00]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.8

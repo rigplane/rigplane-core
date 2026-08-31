@@ -444,26 +444,43 @@ end_hz = 136000000
 #   matrix is more granular and disagrees for mode: 0x04 is absent from
 #   the V1.0.6 table entirely (no narrative mention either) -- the prior
 #   comment overstated the sourcing; corrected here (D2, MOR-2019).
-# - vox -> hardcoded [0x16, 0x46] in CoreRadio's vox path, no [commands]
-#   key: the V1.0.6 table has no CI-V VOX row of any kind.
-# - notch -> hardcoded [0x16, 0x48] (Icom manual-notch) in CoreRadio's
-#   notch path, no [commands] key: the V1.0.6 table's real notch
-#   mechanism is the digital notch filter (DNF) toggle at [0x16, 0x41], a
-#   different register (MOR-1551, docs/validation/cat-audits/x6200.md
-#   § "C. MISSING BACKEND" / § "D. MISMATCH / WRONG", manual notch row).
-# - break_in -> hardcoded [0x16, 0x47] in CoreRadio's break-in path, no
-#   [commands] key: the V1.0.6 table documents only QSK hang time at
-#   [0x14, 0x0F], not a BK-IN-mode register (MOR-1534,
-#   docs/validation/cat-audits/x6200.md § "D. MISMATCH / WRONG",
-#   break-in row). This profile declares no break_in_delay key either
-#   (unlike its four IC-7300/7610/9700/705 siblings). [0x14, 0x0F] is
-#   reached today by exactly one path: the unconditional poll in
-#   runtime/_state_queries.py: build_state_queries's
+# - vox -> formally { absent = ... } below (MOR-2008 batch 3, promoted
+#   from this comment-only note): CoreRadio's dsp.py: get_vox/set_vox
+#   built [0x16, 0x46] via a hardcoded fallback with no [commands] key at
+#   all -- the V1.0.6 table has no CI-V VOX row of any kind, so the
+#   fallback was sending an unconfirmed opcode on every call. The bound-
+#   command-map migration (MOR-2006) deletes that fallback; without a
+#   formal absent row this would land in D1 state 3 (unknown, refuse AND
+#   warn) rather than state 2 (confirmed absent, refuse silently) for a
+#   fact this comment already recorded.
+# - notch -> get_manual_notch/set_manual_notch formally { absent = ... }
+#   below (MOR-2008 batch 3, same promotion): the "notch" capability's
+#   registry check (validation/registry/_dsp.py: notch.set) routes
+#   through get_manual_notch/set_manual_notch, which built the Icom
+#   manual-notch opcode [0x16, 0x48] via a hardcoded fallback -- not a
+#   V1.0.6-documented register at all. The table's real notch mechanism
+#   is the digital notch filter (DNF) toggle at [0x16, 0x41] (MOR-1551,
+#   docs/validation/cat-audits/x6200.md § "C. MISSING BACKEND" /
+#   § "D. MISMATCH / WRONG", manual notch row) -- that DNF register is
+#   what `dsp.py: get_auto_notch`/`set_auto_notch` (a separate, uncapped
+#   builder pair, not routed through the "notch" capability at all) build,
+#   and is declared present below as `get_auto_notch`/`set_auto_notch`,
+#   correcting the cat-audit's own "no method binds it" line (§ "C.
+#   MISSING BACKEND", DNF row), which predates those two builders.
+# - break_in -> get_break_in/set_break_in formally { absent = ... } below
+#   (MOR-2008 batch 3, same promotion): built the Icom CW BK-IN opcode
+#   [0x16, 0x47] via a hardcoded fallback with no [commands] key -- the
+#   V1.0.6 table documents only QSK hang time at [0x14, 0x0F], not a
+#   BK-IN-mode register (MOR-1534, docs/validation/cat-audits/x6200.md
+#   § "D. MISMATCH / WRONG", break-in row). This profile declares no
+#   break_in_delay key either (unlike its four IC-7300/7610/9700/705
+#   siblings). [0x14, 0x0F] is reached today by exactly one path: the
+#   unconditional poll in runtime/_state_queries.py: build_state_queries's
 #   _COMMON_FEATURE_QUERIES list, sent regardless of declared capability
-#   or this profile's [commands] table -- the same undeclared-hardcode
-#   class this bullet is about, not an exception to it. CoreRadio.
+#   or this profile's [commands] table -- a separate undeclared-hardcode
+#   path, not one this bullet's promotion touches. CoreRadio.
 #   get_break_in_delay / CoreRadio.set_break_in_delay (commands/levels.py)
-#   do NOT reach it: both route through the bound command map
+#   do NOT reach it either: both route through the bound command map
 #   (commands/bound.py: BoundCommands, MOR-2006), and since this profile
 #   declares neither key present nor declared-absent, both refuse with
 #   CommandError instead (the undeclared-command policy, D1, MOR-2005) --
@@ -471,6 +488,20 @@ end_hz = 136000000
 #   (correction, #2834/#2836 review: an earlier fix here undercounted by
 #   naming only get_break_in_delay's hardcode, which the bound-command-map
 #   migration had already replaced with this refusal).
+# - nr / compressor / auto_notch -> declared present below (MOR-2008
+#   batch 3, a correctness fix, not a promotion): dsp.py: get_nr/set_nr
+#   ([0x16, 0x40]), get_compressor/set_compressor ([0x16, 0x44]), and
+#   get_auto_notch/set_auto_notch ([0x16, 0x41], see the notch bullet
+#   above) already built the V1.0.6-documented, cat-audit-confirmed-
+#   correct opcode for each (docs/validation/cat-audits/x6200.md §
+#   "Correctly handled" for NR; § "A. UNDER-DECLARED" for NR/compressor;
+#   § "C. MISSING BACKEND" for the DNF/auto_notch opcode) via their
+#   hardcoded fallback, with no [commands] key at all. Left undeclared,
+#   the bound-command-map migration (MOR-2006) would have turned three
+#   already-working controls into a refusal -- a regression, not a
+#   correction, caught before it shipped by cross-checking every gap this
+#   migration would newly enforce against this profile's own cat-audit
+#   rather than assuming every gap is a genuine absence.
 # - rit / xit -> hardcoded [0x21] in the RIT/XIT command builders
 #   (commands/_frame.py: _CMD_RIT, consumed by commands/system.py), no
 #   [commands] key: [0x21] itself is absent from the V1.0.6 table, but
@@ -552,8 +583,25 @@ get_agc          = [0x16, 0x12]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (via
 set_agc          = [0x16, 0x12]  # source: Radioddity X6200 CI-V V1.0.6 p.8
 get_nb           = [0x16, 0x22]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (via docs/validation/cat-audits/x6200.md)
 set_nb           = [0x16, 0x22]  # source: Radioddity X6200 CI-V V1.0.6 p.8
+get_nr           = [0x16, 0x40]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (docs/validation/cat-audits/x6200.md § "Correctly handled" lists NR alongside NB/AGC in this same table); MOR-2008 batch 3 -- dsp.py: get_nr/set_nr already built this opcode via their hardcoded fallback, only the [commands] declaration was missing (see the "nr / compressor / auto_notch" bullet above)
+set_nr           = [0x16, 0x40]  # source: Radioddity X6200 CI-V V1.0.6 p.8; same fix as get_nr
+get_compressor   = [0x16, 0x44]  # source: docs/validation/cat-audits/x6200.md § "A. UNDER-DECLARED" (opcode confirmed correct for X6200, presence-only in the registry); MOR-2008 batch 3, same fix as get_nr
+set_compressor   = [0x16, 0x44]  # source: same as get_compressor
+get_auto_notch   = [0x16, 0x41]  # source: docs/validation/cat-audits/x6200.md § "C. MISSING BACKEND", DNF row (the X6200's real notch mechanism, distinct from get_manual_notch below); MOR-2008 batch 3, same fix as get_nr
+set_auto_notch   = [0x16, 0x41]  # source: same as get_auto_notch
 get_dial_lock    = [0x16, 0x50]  # source: Radioddity X6200 CI-V V1.0.6 p.7 (via docs/validation/cat-audits/x6200.md); distinct from the undeclared front-panel LOCK register, see PROVENANCE OPEN above
 set_dial_lock    = [0x16, 0x50]  # source: Radioddity X6200 CI-V V1.0.6 p.8
+
+# Confirmed-absent DSP controls (MOR-2008 batch 3, promoted from the
+# "vox"/"notch"/"break_in" bullets above -- documented-absent per the
+# V1.0.6 table, not live-confirmed on hardware, since the X6200 unit was
+# destroyed 2026-08-11 before a live NAK capture could close that gap).
+get_vox          = { absent = "Radioddity X6200 CI-V V1.0.6 has no CI-V VOX row of any kind (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', VOX row) -- documented-absent, not live-confirmed" }
+set_vox          = { absent = "Radioddity X6200 CI-V V1.0.6 has no CI-V VOX row of any kind (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', VOX row) -- documented-absent, not live-confirmed" }
+get_manual_notch = { absent = "the Icom manual-notch opcode [0x16, 0x48] is not in the V1.0.6 table; this radio's real notch mechanism is the DNF toggle at [0x16, 0x41] (see get_auto_notch above) (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', manual notch row) -- documented-absent, not live-confirmed" }
+set_manual_notch = { absent = "the Icom manual-notch opcode [0x16, 0x48] is not in the V1.0.6 table; this radio's real notch mechanism is the DNF toggle at [0x16, 0x41] (see set_auto_notch above) (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', manual notch row) -- documented-absent, not live-confirmed" }
+get_break_in     = { absent = "the Icom CW BK-IN opcode [0x16, 0x47] is not in the V1.0.6 table, which documents only QSK hang time at [0x14, 0x0F] (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', break-in row) -- documented-absent, not live-confirmed" }
+set_break_in     = { absent = "the Icom CW BK-IN opcode [0x16, 0x47] is not in the V1.0.6 table, which documents only QSK hang time at [0x14, 0x0F] (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', break-in row) -- documented-absent, not live-confirmed" }
 
 # Identification
 get_transceiver_id = [0x19, 0x00]  # source: Radioddity X6200 CI-V V1.0.6 p.8 (via docs/validation/cat-audits/x6200.md)
