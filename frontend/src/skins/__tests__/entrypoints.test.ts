@@ -1,15 +1,18 @@
 /**
- * MOR-2038 — a behavioral entry-point pin for every `SkinId` registered in
- * `skins/registry.ts`, generalized over that registry instead of a
- * hardcoded pair list (the previous version of this file covered only
- * `desktop-v2`/`sdr-test`).
+ * MOR-2038 — every `SkinId` registered in `skins/registry.ts` has a
+ * behavioral entry-point pin: five directly in this file, the sixth
+ * (`dual-receiver-cockpit`) in its own dedicated suite, referenced and
+ * guarded here (point 2 below) rather than duplicated. Generalized over the
+ * registry instead of a hardcoded pair list (the previous version of this
+ * file covered only `desktop-v2`/`sdr-test`).
  *
  * `SKIN_LOADERS` — the registry's `Record<SkinId, () => Promise<...>>` of
- * lazy dynamic imports — is not exported; only `loadSkin(id)` is. So every
- * case below fetches its component through `loadSkin`, the same function
- * `App.svelte` calls, instead of importing a skin's `.svelte` file directly.
- * A loader repointed at the wrong module is visible here exactly as it
- * would be to the app.
+ * lazy dynamic imports — is not exported; only `loadSkin(id)` is. Every case
+ * below that mounts a component fetches it through `loadSkin`, the same
+ * function `App.svelte` calls, instead of importing a skin's `.svelte` file
+ * directly — a loader repointed at the wrong module is visible here exactly
+ * as it would be to the app. The one exception is the `dual-receiver-cockpit`
+ * coverage guard (point 2 below), which mounts nothing itself.
  *
  * Completeness has two layers, because there is no runtime-enumerable list
  * of `SkinId` values to iterate — the union has no runtime representation,
@@ -23,11 +26,17 @@
  *    `vitest run` would NOT catch it: Vite/esbuild transpile this file by
  *    stripping types, so a table that silently fell out of sync would still
  *    run, just without the new id.
- * 2. For the two ids whose coverage lives in another file
- *    (`dual-receiver-cockpit`, `mobile`), the 'skin entrypoint coverage
- *    completeness' suite asserts the named file still exists and still
- *    mentions the skin's own entry component, so a rename or deletion over
- *    there turns this file red instead of the exemption rotting silently.
+ * 2. For the one id whose coverage lives in another file
+ *    (`dual-receiver-cockpit`), a dedicated suite below checks that the
+ *    named file still exists and its source text still contains the skin's
+ *    entry-component filename. That is a substring check, not a behavioral
+ *    one — it cannot confirm a test in that file actually mounts the
+ *    component, only that a prior manual confirmation of that hasn't
+ *    visibly rotted (the file deleted, renamed, or edited to drop the
+ *    reference). `mobile` used to live in this same bucket, on a file that,
+ *    on closer reading, never mounted `MobileSkin` at all — it only
+ *    `?raw`-imported it as a text fixture — so it now gets a real mount pin
+ *    instead (below), the same way `lcd-cockpit`/`lcd-scope` do.
  *
  * `lcd-cockpit`/`lcd-scope` get a real mount pin for the first time here.
  * Both wrappers are zero-prop and hardcode a `variant` literal into
@@ -37,6 +46,12 @@
  * and `...autostep-lifecycle.isolated.test.ts` — nothing here duplicates
  * that. This file pins only the two wrappers' half: that each forwards its
  * own literal down, not LcdLayout's behavior for either value.
+ *
+ * `mobile` gets a real mount pin the same way: `MobileSkin.svelte` is a
+ * zero-prop delegate straight to `MobileRadioLayout`, so its pin mocks
+ * `MobileRadioLayout.svelte` (the same technique as the `RadioLayout`/
+ * `LcdLayout` mocks above) and asserts that loading `mobile` actually
+ * mounts it.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { mount, unmount } from 'svelte';
@@ -45,6 +60,7 @@ import type { SkinId } from '../registry';
 
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
 const mountedLcdVariants = vi.hoisted(() => [] as Array<'cockpit' | 'scope'>);
+const mobileLayoutMounts = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
   default: (_anchor: unknown, props: { skinId?: SkinId }) => {
@@ -58,6 +74,14 @@ vi.mock('../../components-v2/layout/LcdLayout.svelte', () => ({
   },
 }));
 
+// MobileSkin takes no props at all (`<MobileRadioLayout />`), so there is no
+// value to pin here beyond "loading `mobile` actually mounts this component".
+vi.mock('../../components-v2/layout/MobileRadioLayout.svelte', () => ({
+  default: () => {
+    mobileLayoutMounts.count += 1;
+  },
+}));
+
 import { loadSkin } from '../registry';
 
 const components: Record<string, unknown>[] = [];
@@ -66,11 +90,13 @@ afterEach(() => {
   while (components.length) unmount(components.pop()!);
   mountedSkinIds.length = 0;
   mountedLcdVariants.length = 0;
+  mobileLayoutMounts.count = 0;
 });
 
 type EntrypointCoverage =
   | { readonly kind: 'radio-layout' }
   | { readonly kind: 'lcd-layout'; readonly variant: 'cockpit' | 'scope' }
+  | { readonly kind: 'mobile-layout' }
   | { readonly kind: 'covered-elsewhere'; readonly testFile: string; readonly entryComponentFile: string };
 
 /**
@@ -87,11 +113,7 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
     testFile: 'src/skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts',
     entryComponentFile: 'DualReceiverCockpit.svelte',
   },
-  mobile: {
-    kind: 'covered-elsewhere',
-    testFile: 'src/components-v2/layout/__tests__/semantic-mobile-migration.component.test.ts',
-    entryComponentFile: 'MobileSkin.svelte',
-  },
+  mobile: { kind: 'mobile-layout' },
 };
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
@@ -102,6 +124,8 @@ const lcdLayoutCases = allSkinIds.flatMap((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
   return coverage.kind === 'lcd-layout' ? [[id, coverage.variant] as const] : [];
 });
+
+const mobileLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout');
 
 const coveredElsewhereCases = allSkinIds.flatMap((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
@@ -133,10 +157,26 @@ describe('LCD skin entrypoints', () => {
   });
 });
 
-describe('skin entrypoint coverage completeness', () => {
-  // Kills: a `covered-elsewhere` entry surviving after its named test file
-  // is deleted or renamed, or one that never named a file that actually
-  // exercises this skin's entry component to begin with.
+describe('mobile skin entrypoint', () => {
+  // Kills: MobileSkin resolving to anything other than MobileRadioLayout —
+  // a stub, another skin's layout, or nothing mounted at all.
+  it.each(mobileLayoutSkinIds)('mounts MobileRadioLayout (%s)', async (skinId) => {
+    const Component = await loadSkin(skinId);
+    const target = document.createElement('div');
+    components.push(mount(Component, { target }));
+    expect(mobileLayoutMounts.count).toBe(1);
+  });
+});
+
+describe('externally-covered skin entrypoints', () => {
+  // Kills: the named file being deleted or renamed, or edited so its source
+  // no longer mentions the entry component's filename. This is a substring
+  // match on source text, not a proof of behavior: it cannot tell a suite
+  // that genuinely mounts the component apart from one that only imports it
+  // as a `?raw` text fixture, or one whose tests are all `describe.skip`-ed.
+  // Treat a pass here as "the reference hasn't visibly rotted", not as "this
+  // skin is covered" — the latter has to be confirmed by hand when the entry
+  // is written or changed (see the file header for the case that wasn't).
   it.each(coveredElsewhereCases)('%s names a real test file that still mentions its entrypoint', (skinId, coverage) => {
     expect(existsSync(coverage.testFile), `${skinId}: ${coverage.testFile} does not exist`).toBe(true);
     const source = readFileSync(coverage.testFile, 'utf8');
