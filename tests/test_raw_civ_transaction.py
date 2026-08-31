@@ -482,6 +482,35 @@ async def test_authoritative_ptt_read_waits_out_its_own_refusal(
     assert observations == []
 
 
+async def test_pacing_gap_is_not_charged_to_the_answer_window(
+    radio: IcomRadio, transport: MockTransport
+) -> None:
+    """``timeout`` bounds the radio's answer, not this side's send pacing.
+
+    ``execute_civ_transaction`` stamped its deadline on entry, so the
+    outbound ``_civ_min_interval`` gap inside ``_send_civ_frame_now`` came
+    out of the same budget as the response.  The response here is queued
+    before the call, so a timeout can only mean the window was spent before
+    the frame was sent.  ``_execute_civ_raw`` carried the same mis-charge --
+    see ``test_radio.py: TestResponseDeadlineOpensAtSend``.
+    """
+    radio._civ_min_interval = 0.08
+    radio._last_civ_send_monotonic = time.monotonic()
+    response = build_civ_frame(
+        CONTROLLER_ADDR,
+        IC_7610_ADDR,
+        0x03,
+        data=bcd_encode(14_074_000),
+    )
+    transport.queue_response_on_send(1, _wrap(response))
+
+    result = await radio.send_civ_transaction(0x03, expect="data", timeout=0.05)
+
+    assert result.status == "response"
+    assert result.frame is not None
+    assert result.frame.command == 0x03
+
+
 def _wrap(civ_frame: bytes) -> bytes:
     pkt = bytearray(0x16 + len(civ_frame))
     pkt[0x10] = 0xC1

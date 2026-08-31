@@ -1,6 +1,7 @@
 """Tests for IcomRadio high-level API."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -740,11 +741,29 @@ class TestSquelch:
 class TestPtt:
     """Test PTT toggle."""
 
-    @pytest.mark.timeout(2)
+    # ``func_only``: this bound guards the body, which measured 0.00-0.16 s
+    # on a loaded machine.  Charging setup to it as well made whichever
+    # parametrisation ran first carry the process's first ``IcomRadio``
+    # construction -- 158 ms against 0.1 ms for the next one when timed
+    # bare, and 1.5-2.0 s of setup on that same loaded run, against 0.00 s
+    # for the other two -- so the marker expired on machine speed rather
+    # than on anything this test drives.
+    @pytest.mark.timeout(2, func_only=True)
     @pytest.mark.parametrize("invalidation", ["rebind", "poison", "reconnect"])
     async def test_managed_ptt_port_token_safety(
         self, radio: IcomRadio, invalidation: str
     ) -> None:
+        # The ``rebind``/``poison`` paths hold the authoritative read open
+        # across a whole second command -- including that command's own
+        # ``_civ_min_interval`` pacing gap -- and only then feed the read its
+        # answer.  Against the fixture's 50 ms window that choreography
+        # measured 36-38 ms idle and 134 ms on a loaded machine, so the
+        # read's own window, not the behaviour under test, decided the
+        # verdict.  The shipped default (``CoreRadio.__init__``:
+        # ``min(timeout, 2.0)``) takes it out of the race without hiding a
+        # hang: the body bound above starts before the read is even sent, so
+        # it expires first either way.
+        radio._civ_get_timeout = 2.0
         sent: list[bytes] = []
         responses: asyncio.Queue[bytes] = asyncio.Queue()
         send_release, disconnect_release = asyncio.Event(), asyncio.Event()
@@ -1308,6 +1327,42 @@ class TestAckSinkRobustness:
             assert radio._civ_request_tracker.timeout_count == 0
         finally:
             await radio._civ_runtime.stop_pump()
+
+
+class TestResponseDeadlineOpensAtSend:
+    """The answer window opens when the frame is on the wire, not at entry.
+
+    ``_civ_get_timeout`` bounds how long the *radio* may take to answer.
+    The outbound gap ``_civ_min_interval`` and the ACK-sink drain both run
+    before the send and are this process's own scheduling, not radio
+    latency.  ``_civ_rx.py: CivRuntime._execute_civ_raw`` used to stamp its
+    deadline on entry and charge them to the same budget, so a command sent
+    within ``_civ_min_interval`` of the previous one lost that whole gap
+    from its answer window -- and lost the window entirely whenever the
+    pacing sleep overshot the remainder, raising ``TimeoutError`` without
+    ever waiting for a response.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pacing_gap_is_not_charged_to_the_answer_window(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        # A frame went out just now, so this one is held back a full
+        # ``_civ_min_interval``.  Making that gap outlast the whole answer
+        # budget is what lets this fail on the mis-charge alone: the
+        # response is queued before the call, so the only way to time out
+        # is to have spent the window before sending.
+        radio._civ_get_timeout = 0.05
+        radio._civ_min_interval = 0.08
+        radio._last_civ_send_monotonic = time.monotonic()
+
+        mock_transport.queue_response_on_send(1, _freq_response(14_074_000))
+        cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+
+        frame = await radio._execute_civ_raw(cmd)
+
+        assert frame is not None
+        assert frame.command == 0x03
 
 
 class TestScopeCallbackSafety:
