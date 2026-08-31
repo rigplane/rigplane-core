@@ -20,13 +20,9 @@ from rigplane.commands import (
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
     build_civ_frame,
-    get_freq,
-    get_mode,
     parse_frequency_response,
     parse_ack_nak,
     parse_mode_response,
-    set_freq,
-    set_mode,
 )
 from rigplane.commands import get_selected_freq as _get_selected_freq_cmd
 from rigplane.commands import get_selected_mode as _get_selected_mode_cmd
@@ -150,7 +146,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self, *, bypass_cache: bool = False, update_cache: bool = True
     ) -> int:
         """Read MAIN receiver frequency with optional cache updates."""
-        civ = get_freq(to_addr=self._radio_addr)
+        civ = self._commands.get_freq(to_addr=self._radio_addr)
         try:
             resp = await self._send_civ_expect(
                 civ,
@@ -178,7 +174,9 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self, freq_hz: int, *, update_cache: bool = True
     ) -> None:
         """Set MAIN receiver frequency with optional cache updates."""
-        civ = set_freq(freq_hz, to_addr=self._radio_addr, receiver=RECEIVER_MAIN)
+        civ = self._commands.set_freq(
+            freq_hz, to_addr=self._radio_addr, receiver=RECEIVER_MAIN
+        )
         await self._send_civ_raw(civ, wait_response=False)
         if update_cache:
             self._last_freq_hz = freq_hz
@@ -188,7 +186,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self, *, update_cache: bool = True
     ) -> tuple[Mode, int | None]:
         """Read MAIN receiver mode/filter with optional cache updates."""
-        civ = get_mode(to_addr=self._radio_addr)
+        civ = self._commands.get_mode(to_addr=self._radio_addr)
         try:
             resp = await self._send_civ_expect(civ, label="get_mode_info_main")
             mode, filt = parse_mode_response(resp)
@@ -233,7 +231,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 mode, data_mode, resolved_filter, to_addr=self._radio_addr
             )
         else:
-            civ = set_mode(
+            civ = self._commands.set_mode(
                 mode,
                 filter_width=filter_width,
                 to_addr=self._radio_addr,

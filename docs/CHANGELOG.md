@@ -230,6 +230,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `equal_` equivalent), so a caller that needs the old ordering inlines that
   expression. No production code in this repository read either property —
   consumers were tests only.
+- **`rigplane.commands.mode`/`tone`/`antenna`/`meters` builders require
+  `cmd_map`; there is no hardcoded fallback (MOR-2008, batch 2 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** All 40
+  builders across the four modules — operating mode, DATA mode, filter
+  shape/width, SSB TX bandwidth, Main/Sub tracking, AGC time constant
+  (mode.py); repeater tone/TSQL and tone/TSQL frequency (tone.py); ANT1/
+  ANT2 select/read and RX-ANT-state select/read for both antennas
+  (antenna.py); S/SWR/ALC/power/comp/Vd/Id meters, S-meter-squelch/
+  overflow/various-squelch status (meters.py) — plus
+  `rigplane.commands.freq`'s `get_freq`/`set_freq` (2
+  more, 42 in total this batch) now require `cmd_map` as a required
+  keyword-only argument. `freq.py`'s other five builders
+  (`get_selected_freq`/`get_unselected_freq`/`get_selected_mode`/
+  `get_unselected_mode`/`set_selected_mode`) have no `cmd_map` parameter at
+  all and stay out of scope — MOR-2008's Group B (these five plus
+  `memory.py` and `tx_band.py`), ruled by the owner to migrate later, after
+  the missing/inconsistent TOML declarations are filled in from the
+  manuals. Most of these 42 carry no behaviour change: every declaring CI-V
+  profile already held the identical wire tuple the deleted fallback
+  built. **`set_repeater_tone`/`set_repeater_tsql`/`set_tone_freq`/
+  `set_tsql_freq` (and their `get_` twins) are the exception on IC-7610:**
+  `rigs/ic7610.toml` documents that this whole family is intentionally
+  *not* declared, following a live-bench readback (recorded in the TOML,
+  citing MOR-660/661/682) that found the old hardcoded fallback's bytes
+  decoded to garbage (16.5 Hz) on this radio. Before this migration the
+  fallback still built and sent those bytes regardless; now, on IC-7610,
+  the same call raises `CommandError` (undeclared-command refusal) instead
+  — a correction, not a regression: trusting what the profile actually
+  declares over a blind fallback, the same principle behind batch 1's
+  `system.py` IC-7300 date/time fix (there the profile's own bytes replace
+  the fallback's; here the profile's declared *absence* does).
+  `antenna.py`'s `get_antenna`/
+  `set_antenna` ANT1/ANT2 selector is documented in the module's own
+  docstring as deliberately *not* wired through `runtime/radio.py:
+  CoreRadio._expect_shape`: the selector is a CI-V protocol invariant
+  supplied as caller data, not a value the command map declares as a
+  `sub` byte (the TOML's `get_antenna = [0x12]` tuple carries no `sub` at
+  all). The production call sites, in `runtime/radio.py: CoreRadio` and
+  `runtime/_dual_rx_runtime.py: DualRxRuntimeMixin` (the real callers of
+  `get_freq`/`set_freq`/`get_mode`/`set_mode`), moved onto
+  `self._commands.<builder>(...)` in the same change.
 
 ### Changed
 

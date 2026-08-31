@@ -61,6 +61,7 @@ from rigplane.commands import (
     set_tsql_freq,
     set_twin_peak_filter,
 )
+from rigplane.core.exceptions import CommandError
 from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.types import AudioPeakFilter, CivFrame, FilterShape
@@ -258,7 +259,11 @@ class TestFilterShapeGating:
         mock = _mock_raw(radio)
         await radio.set_filter_shape(FilterShape.SOFT, receiver=0)
         expected = set_filter_shape(
-            FilterShape.SOFT, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            FilterShape.SOFT,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -268,7 +273,11 @@ class TestFilterShapeGating:
         mock = _mock_raw(radio)
         await radio.set_filter_shape(FilterShape.SOFT, receiver=0)
         expected = set_filter_shape(
-            FilterShape.SOFT, to_addr=_IC7610_ADDR, receiver=0, command29=True
+            FilterShape.SOFT,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -280,7 +289,9 @@ class TestFilterShapeGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_filter_shape(receiver=0)
-        expected = get_filter_shape(to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = get_filter_shape(
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == FilterShape.SOFT
 
@@ -292,7 +303,9 @@ class TestFilterShapeGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_filter_shape(receiver=0)
-        expected = get_filter_shape(to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = get_filter_shape(
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == FilterShape.SOFT
 
@@ -538,7 +551,11 @@ class TestAgcTimeConstantGating:
         mock = _mock_raw(radio)
         await radio.set_agc_time_constant(5, receiver=0)
         expected = set_agc_time_constant(
-            5, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            5,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -548,7 +565,7 @@ class TestAgcTimeConstantGating:
         mock = _mock_raw(radio)
         await radio.set_agc_time_constant(5, receiver=0)
         expected = set_agc_time_constant(
-            5, to_addr=_IC7610_ADDR, receiver=0, command29=True
+            5, to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
         )
         assert _sent_civ(mock) == expected
 
@@ -561,7 +578,7 @@ class TestAgcTimeConstantGating:
         mock = _mock_expect(radio, response)
         value = await radio.get_agc_time_constant(receiver=0)
         expected = get_agc_time_constant(
-            to_addr=_IC7300_ADDR, receiver=0, command29=False
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
         )
         assert _sent_civ(mock) == expected
         assert value == 5
@@ -575,7 +592,7 @@ class TestAgcTimeConstantGating:
         mock = _mock_expect(radio, response)
         value = await radio.get_agc_time_constant(receiver=0)
         expected = get_agc_time_constant(
-            to_addr=_IC7610_ADDR, receiver=0, command29=True
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
         )
         assert _sent_civ(mock) == expected
         assert value == 5
@@ -593,7 +610,7 @@ class TestSMeterSqlStatusGating:
         mock = _mock_expect(radio, response)
         value = await radio.get_s_meter_sql_status(receiver=0)
         expected = get_s_meter_sql_status(
-            to_addr=_IC7300_ADDR, receiver=0, command29=False
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
         )
         assert _sent_civ(mock) == expected
         assert value is True
@@ -607,7 +624,7 @@ class TestSMeterSqlStatusGating:
         mock = _mock_expect(radio, response)
         value = await radio.get_s_meter_sql_status(receiver=0)
         expected = get_s_meter_sql_status(
-            to_addr=_IC7610_ADDR, receiver=0, command29=True
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
         )
         assert _sent_civ(mock) == expected
         assert value is True
@@ -625,7 +642,7 @@ class TestVariousSquelchGating:
         mock = _mock_expect(radio, response)
         value = await radio.get_various_squelch(receiver=0)
         expected = get_various_squelch(
-            to_addr=_IC7300_ADDR, receiver=0, command29=False
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
         )
         assert _sent_civ(mock) == expected
         assert value is True
@@ -638,7 +655,9 @@ class TestVariousSquelchGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_various_squelch(receiver=0)
-        expected = get_various_squelch(to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = get_various_squelch(
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value is True
 
@@ -650,19 +669,31 @@ class TestRepeaterToneGating:
         mock = _mock_raw(radio)
         await radio.set_repeater_tone(True, receiver=0)
         expected = set_repeater_tone(
-            True, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            True,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
-    async def test_set_repeater_tone_wrapped_on_ic7610(self) -> None:
+    async def test_set_repeater_tone_refused_on_ic7610(self) -> None:
+        """IC-7610 has no FM-repeater CTCSS tone feature and does not
+        declare ``set_repeater_tone`` (MOR-660/661/682, re-checked and left
+        that way at D2 MOR-2017 -- see ``rigs/ic7610.toml``'s own comment
+        on the point, which records a live-bench readback that the old
+        hardcoded fallback's bytes decoded to garbage on this radio).
+        MOR-2008 batch 2 makes ``cmd_map`` required, so this now correctly
+        refuses (D1 state 3) instead of silently sending those bytes --
+        not a regression, the same shape as system.py's IC-7300 date/time
+        fix in batch 1: the old behaviour was wrong, not merely different.
+        """
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
-        await radio.set_repeater_tone(True, receiver=0)
-        expected = set_repeater_tone(
-            True, to_addr=_IC7610_ADDR, receiver=0, command29=True
-        )
-        assert _sent_civ(mock) == expected
+        with pytest.raises(CommandError, match="not supported by this radio"):
+            await radio.set_repeater_tone(True, receiver=0)
+        mock.assert_not_called()
 
 
 class TestRepeaterTsqlGating:
@@ -672,19 +703,23 @@ class TestRepeaterTsqlGating:
         mock = _mock_raw(radio)
         await radio.set_repeater_tsql(True, receiver=0)
         expected = set_repeater_tsql(
-            True, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            True,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
-    async def test_set_repeater_tsql_wrapped_on_ic7610(self) -> None:
+    async def test_set_repeater_tsql_refused_on_ic7610(self) -> None:
+        """See ``test_set_repeater_tone_refused_on_ic7610``: same feature,
+        same TOML comment, same D1 refusal."""
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
-        await radio.set_repeater_tsql(True, receiver=0)
-        expected = set_repeater_tsql(
-            True, to_addr=_IC7610_ADDR, receiver=0, command29=True
-        )
-        assert _sent_civ(mock) == expected
+        with pytest.raises(CommandError, match="not supported by this radio"):
+            await radio.set_repeater_tsql(True, receiver=0)
+        mock.assert_not_called()
 
 
 class TestToneFreqGating:
@@ -697,19 +732,26 @@ class TestToneFreqGating:
         mock = _mock_raw(radio)
         await radio.set_tone_freq(100.0, receiver=0)
         expected = set_tone_freq(
-            100.0, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            100.0,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
-    async def test_set_tone_freq_wrapped_on_ic7610(self) -> None:
+    async def test_set_tone_freq_refused_on_ic7610(self) -> None:
+        """See ``TestRepeaterToneGating.test_set_repeater_tone_refused_on_
+        ic7610``: same feature family, same TOML comment, same D1 refusal
+        -- ``rigs/ic7610.toml`` cites a live-bench readback showing the old
+        hardcoded fallback's tone-freq bytes decoded to garbage on this
+        radio, so refusing here is the fix, not a regression."""
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
-        await radio.set_tone_freq(100.0, receiver=0)
-        expected = set_tone_freq(
-            100.0, to_addr=_IC7610_ADDR, receiver=0, command29=True
-        )
-        assert _sent_civ(mock) == expected
+        with pytest.raises(CommandError, match="not supported by this radio"):
+            await radio.set_tone_freq(100.0, receiver=0)
+        mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_tone_freq_unwrapped_on_ic7300(self) -> None:
@@ -723,12 +765,15 @@ class TestToneFreqGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_tone_freq(receiver=0)
-        expected = get_tone_freq(to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = get_tone_freq(
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == 100.0
 
     @pytest.mark.asyncio
-    async def test_get_tone_freq_wrapped_on_ic7610(self) -> None:
+    async def test_get_tone_freq_refused_on_ic7610(self) -> None:
+        """See ``test_set_tone_freq_refused_on_ic7610``."""
         radio = _connected_icom(model="IC-7610")
         response = CivFrame(
             to_addr=0xE0,
@@ -738,10 +783,9 @@ class TestToneFreqGating:
             data=b"\x01\x00\x00",
         )
         mock = _mock_expect(radio, response)
-        value = await radio.get_tone_freq(receiver=0)
-        expected = get_tone_freq(to_addr=_IC7610_ADDR, receiver=0, command29=True)
-        assert _sent_civ(mock) == expected
-        assert value == 100.0
+        with pytest.raises(CommandError, match="not supported by this radio"):
+            await radio.get_tone_freq(receiver=0)
+        mock.assert_not_called()
 
 
 class TestTsqlFreqGating:
@@ -751,19 +795,23 @@ class TestTsqlFreqGating:
         mock = _mock_raw(radio)
         await radio.set_tsql_freq(100.0, receiver=0)
         expected = set_tsql_freq(
-            100.0, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            100.0,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
-    async def test_set_tsql_freq_wrapped_on_ic7610(self) -> None:
+    async def test_set_tsql_freq_refused_on_ic7610(self) -> None:
+        """See ``TestToneFreqGating.test_set_tone_freq_refused_on_ic7610``:
+        same feature family, same TOML comment, same D1 refusal."""
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
-        await radio.set_tsql_freq(100.0, receiver=0)
-        expected = set_tsql_freq(
-            100.0, to_addr=_IC7610_ADDR, receiver=0, command29=True
-        )
-        assert _sent_civ(mock) == expected
+        with pytest.raises(CommandError, match="not supported by this radio"):
+            await radio.set_tsql_freq(100.0, receiver=0)
+        mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_tsql_freq_unwrapped_on_ic7300(self) -> None:
@@ -777,12 +825,15 @@ class TestTsqlFreqGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_tsql_freq(receiver=0)
-        expected = get_tsql_freq(to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = get_tsql_freq(
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == 100.0
 
     @pytest.mark.asyncio
-    async def test_get_tsql_freq_wrapped_on_ic7610(self) -> None:
+    async def test_get_tsql_freq_refused_on_ic7610(self) -> None:
+        """See ``TestToneFreqGating.test_get_tone_freq_refused_on_ic7610``."""
         radio = _connected_icom(model="IC-7610")
         response = CivFrame(
             to_addr=0xE0,
@@ -792,10 +843,9 @@ class TestTsqlFreqGating:
             data=b"\x01\x00\x00",
         )
         mock = _mock_expect(radio, response)
-        value = await radio.get_tsql_freq(receiver=0)
-        expected = get_tsql_freq(to_addr=_IC7610_ADDR, receiver=0, command29=True)
-        assert _sent_civ(mock) == expected
-        assert value == 100.0
+        with pytest.raises(CommandError, match="not supported by this radio"):
+            await radio.get_tsql_freq(receiver=0)
+        mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

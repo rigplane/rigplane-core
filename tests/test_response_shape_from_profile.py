@@ -120,6 +120,33 @@ MATCHER_BACKED_GETTERS: tuple[_GetterSpec, ...] = (
     # getter to register for them either.
     _GetterSpec("get_quick_split", "_get_bool_value"),
     _GetterSpec("get_quick_dual_watch", "_get_bool_value"),
+    # commands/mode.py's, commands/tone.py's and commands/meters.py's
+    # matcher-backed getters (MOR-2008 Steps 5..N, batch 2). get_mode,
+    # get_data_mode and get_filter_width (mode.py) are NOT included: each
+    # parses its reply through its own module-level parse_*_response
+    # function (a hardcoded command/sub check) or, for get_filter_width,
+    # bespoke per-profile BCD/raw-byte handling -- never through
+    # _get_bcd_level/_get_bool_value with a map-derived shape (mirrors
+    # commands/levels.py's get_rf_power/get_rf_gain/get_af_level exclusion
+    # above). meters.py's get_s_meter/get_swr/get_alc/get_power_meter/
+    # get_comp_meter/get_vd_meter/get_id_meter are excluded the same way,
+    # via parse_meter_response; CoreRadio's own getter for get_alc is
+    # additionally named get_alc_meter, not get_alc, which would violate
+    # this dataclass's own method-equals-key invariant besides. antenna.py's
+    # four getters are excluded for the reason documented in antenna.py's
+    # own module docstring: the ANT1/ANT2 selector is a CI-V protocol
+    # invariant supplied as caller data, not a map-declared ``sub`` --
+    # registering them here would derive ``sub=None`` off the map's own
+    # bare ``[0x12]`` tuple and fail every case.
+    _GetterSpec("get_filter_shape", "_get_bcd_level"),
+    _GetterSpec("get_ssb_tx_bandwidth", "_get_bcd_level"),
+    _GetterSpec("get_main_sub_tracking", "_get_bool_value"),
+    _GetterSpec("get_agc_time_constant", "_get_bcd_level"),
+    _GetterSpec("get_repeater_tone", "_get_bool_value"),
+    _GetterSpec("get_repeater_tsql", "_get_bool_value"),
+    _GetterSpec("get_s_meter_sql_status", "_get_bool_value"),
+    _GetterSpec("get_overflow_status", "_get_bool_value"),
+    _GetterSpec("get_various_squelch", "_get_bool_value"),
 )
 
 

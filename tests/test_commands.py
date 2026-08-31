@@ -142,26 +142,48 @@ class TestParseCivFrame:
 
 
 class TestFrequencyCommands:
-    """Test frequency get/set commands."""
+    """Test frequency get/set commands.
 
-    def test_get_frequency(self) -> None:
-        frame = get_freq()
+    commands/freq.py migrated onto the bound command map in MOR-2008
+    (batch 2): get_freq/set_freq now require cmd_map -- zero divergence,
+    so IC-7610's own map declares the identical bytes the fallback used
+    to build, and the expected frames below are unchanged.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_get_frequency(self, cmd_map) -> None:
+        frame = get_freq(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x03\xfd"
 
-    def test_set_frequency_14mhz(self) -> None:
-        frame = set_freq(14_074_000)
+    def test_get_frequency_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_freq()  # type: ignore[call-arg]
+
+    def test_set_frequency_14mhz(self, cmd_map) -> None:
+        frame = set_freq(14_074_000, cmd_map=cmd_map)
         expected_bcd = b"\x00\x40\x07\x14\x00"
         assert frame == b"\xfe\xfe\x98\xe0\x05" + expected_bcd + b"\xfd"
 
-    def test_set_frequency_7mhz(self) -> None:
-        frame = set_freq(7_074_000)
+    def test_set_frequency_7mhz(self, cmd_map) -> None:
+        frame = set_freq(7_074_000, cmd_map=cmd_map)
         expected_bcd = b"\x00\x40\x07\x07\x00"
         assert frame == b"\xfe\xfe\x98\xe0\x05" + expected_bcd + b"\xfd"
 
-    def test_set_frequency_custom_addr(self) -> None:
-        frame = set_freq(14_074_000, to_addr=0xA4, from_addr=0xE1)
+    def test_set_frequency_custom_addr(self, cmd_map) -> None:
+        frame = set_freq(14_074_000, to_addr=0xA4, from_addr=0xE1, cmd_map=cmd_map)
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
+
+    def test_set_frequency_rejects_explicit_none_the_same_way(self, cmd_map) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_freq(14_074_000, cmd_map=None)
 
     def test_parse_frequency_response(self) -> None:
         # Radio responds with cmd 0x03 + 5 bytes BCD
@@ -183,19 +205,35 @@ class TestFrequencyCommands:
 
 
 class TestModeCommands:
-    """Test mode get/set commands."""
+    """Test mode get/set commands.
 
-    def test_get_mode(self) -> None:
-        frame = get_mode()
+    commands/mode.py migrated onto the bound command map in MOR-2008
+    (batch 2): get_mode/set_mode now require cmd_map -- zero divergence,
+    so IC-7610's own map declares the identical bytes the fallback used
+    to build, and the expected frames below are unchanged.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_get_mode(self, cmd_map) -> None:
+        frame = get_mode(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x04\xfd"
 
-    def test_set_mode_usb(self) -> None:
-        frame = set_mode(Mode.USB)
+    def test_set_mode_usb(self, cmd_map) -> None:
+        frame = set_mode(Mode.USB, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x06\x01\xfd"
 
-    def test_set_mode_with_filter(self) -> None:
-        frame = set_mode(Mode.CW, filter_width=2)
+    def test_set_mode_with_filter(self, cmd_map) -> None:
+        frame = set_mode(Mode.CW, filter_width=2, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x06\x03\x02\xfd"
+
+    def test_set_mode_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_mode(Mode.USB)  # type: ignore[call-arg]
 
     def test_parse_mode_response(self) -> None:
         resp = CivFrame(
@@ -266,19 +304,35 @@ class TestPowerCommands:
 
 
 class TestMeterCommands:
-    """Test meter reading commands."""
+    """Test meter reading commands.
 
-    def test_get_s_meter(self) -> None:
-        frame = get_s_meter()
+    commands/meters.py migrated onto the bound command map in MOR-2008
+    (batch 2): all ten builders now require cmd_map -- zero divergence,
+    so IC-7610's own map declares the identical bytes the fallback used
+    to build, and the expected frames below are unchanged.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_get_s_meter(self, cmd_map) -> None:
+        frame = get_s_meter(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x15\x02\xfd"
 
-    def test_get_swr(self) -> None:
-        frame = get_swr()
+    def test_get_swr(self, cmd_map) -> None:
+        frame = get_swr(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x15\x12\xfd"
 
-    def test_get_alc(self) -> None:
-        frame = get_alc()
+    def test_get_alc(self, cmd_map) -> None:
+        frame = get_alc(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x15\x13\xfd"
+
+    def test_get_s_meter_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_s_meter()  # type: ignore[call-arg]
 
     def test_parse_meter_response(self) -> None:
         # Meter values are 2-byte BCD: 0x01 0x20 = 120
@@ -304,7 +358,18 @@ class TestMeterCommands:
 
 
 class TestFilterWidthCommands:
-    """Test DSP IF filter width command encoding."""
+    """Test DSP IF filter width command encoding.
+
+    commands/mode.py migrated onto the bound command map in MOR-2008
+    (batch 2): set_filter_width now requires cmd_map -- zero divergence,
+    so IC-7610's own map declares the identical bytes the fallback used
+    to build, and the expected frames below are unchanged.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
 
     def test_filter_hz_to_index_uses_segmented_ssb_ranges(self) -> None:
         segments = (
@@ -328,13 +393,18 @@ class TestFilterWidthCommands:
         assert filter_index_to_hz(19, segments=segments) == 1500
         assert filter_index_to_hz(40, segments=segments) == 3600
 
-    def test_set_filter_width_cmd29_frame(self) -> None:
-        frame = set_filter_width(19)
+    def test_set_filter_width_cmd29_frame(self, cmd_map) -> None:
+        frame = set_filter_width(19, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x29\x00\x1a\x03\x00\x19\xfd"
 
-    def test_set_filter_width_sub_receiver_cmd29_frame(self) -> None:
-        frame = set_filter_width(19, receiver=1)
+    def test_set_filter_width_sub_receiver_cmd29_frame(self, cmd_map) -> None:
+        frame = set_filter_width(19, receiver=1, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x29\x01\x1a\x03\x00\x19\xfd"
+
+    def test_set_filter_width_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_filter_width(19)  # type: ignore[call-arg]
 
     def test_parse_meter_response_short_payload_raises(self) -> None:
         resp = CivFrame(
@@ -535,32 +605,32 @@ class TestCmd29ReceiverRouting:
         rig = load_rig(RIG_DIR / "ic7610.toml")
         return rig.to_command_map()
 
-    def test_set_frequency_main_no_cmd29(self) -> None:
+    def test_set_frequency_main_no_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_freq
 
-        frame = set_freq(14_074_000, receiver=RECEIVER_MAIN)
+        frame = set_freq(14_074_000, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x05  # Direct freq set, no cmd29 prefix
 
-    def test_set_frequency_sub_uses_cmd29(self) -> None:
+    def test_set_frequency_sub_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, set_freq
 
-        frame = set_freq(14_074_000, receiver=RECEIVER_SUB)
+        frame = set_freq(14_074_000, receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x01  # SUB receiver
         assert frame[6] == 0x05  # Freq set command
 
-    def test_set_mode_main_no_cmd29(self) -> None:
+    def test_set_mode_main_no_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_mode
         from rigplane.types import Mode
 
-        frame = set_mode(Mode.USB, receiver=RECEIVER_MAIN)
+        frame = set_mode(Mode.USB, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x06  # Direct mode set, no cmd29 prefix
 
-    def test_set_mode_sub_uses_cmd29(self) -> None:
+    def test_set_mode_sub_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, set_mode
         from rigplane.types import Mode
 
-        frame = set_mode(Mode.USB, receiver=RECEIVER_SUB)
+        frame = set_mode(Mode.USB, receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x01  # SUB receiver
         assert frame[6] == 0x06  # Mode set command
@@ -824,8 +894,8 @@ class TestCmd29ReceiverRouting:
         from rigplane.types import Mode
 
         # freq/mode never use cmd29 (hard exclusion, IC-7610 CI-V quirk).
-        assert set_frequency(14_000_000)[4] == 0x05
-        assert set_mode(Mode.USB)[4] == 0x06
+        assert set_frequency(14_000_000, cmd_map=cmd_map)[4] == 0x05
+        assert set_mode(Mode.USB, cmd_map=cmd_map)[4] == 0x06
         # MOR-1537 follow-up: nb/nr/ip_plus builders now default
         # command29=True; no receiver arg still targets MAIN (0x00).
         assert set_nb(True)[4:6] == b"\x29\x00"
@@ -1037,7 +1107,25 @@ class TestDspLevelParityCommands:
 
 
 class TestOperatorToggleParityCommands:
-    """Test IC-7610 operator toggle/status parity command builders."""
+    """Test IC-7610 operator toggle/status parity command builders.
+
+    MOR-2008 batch 2 migrated three of the getters/setters this class
+    parametrizes over (get_s_meter_sql_status/get_filter_shape/
+    get_agc_time_constant/set_filter_shape/set_agc_time_constant/
+    get_overflow_status/get_ssb_tx_bandwidth/set_ssb_tx_bandwidth) onto
+    the bound command map; the rest are dsp.py/config.py builders still
+    unmigrated at this head. ``cmd_map`` is passed to every parametrized
+    call below rather than splitting the table: IC-7610's own map declares
+    every name in it byte-identically to its fallback (zero divergence,
+    confirmed by ``tests/command_map_parity_divergences.txt`` being empty),
+    so passing it to an unmigrated builder here is a no-op on the frame it
+    builds, not a behaviour change.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
 
     @pytest.mark.parametrize(
         ("getter_name", "sub", "receiver"),
@@ -1060,13 +1148,14 @@ class TestOperatorToggleParityCommands:
         getter_name: str,
         sub: int,
         receiver: int,
+        cmd_map,
     ) -> None:
         import rigplane.commands as commands
 
         getter = getattr(commands, getter_name)
         command = 0x15 if sub == 0x01 else 0x1A if sub == 0x04 else 0x16
 
-        assert getter(receiver=receiver) == bytes(
+        assert getter(receiver=receiver, cmd_map=cmd_map) == bytes(
             [0xFE, 0xFE, 0x98, 0xE0, 0x29, receiver, command, sub, 0xFD]
         )
 
@@ -1089,11 +1178,12 @@ class TestOperatorToggleParityCommands:
         setter_name: str,
         value: object,
         expected_tail: bytes,
+        cmd_map,
     ) -> None:
         import rigplane.commands as commands
 
         setter = getattr(commands, setter_name)
-        assert setter(value, receiver=1).endswith(expected_tail)
+        assert setter(value, receiver=1, cmd_map=cmd_map).endswith(expected_tail)
 
     @pytest.mark.parametrize(
         ("getter_name", "sub"),
@@ -1107,12 +1197,14 @@ class TestOperatorToggleParityCommands:
             ("get_ssb_tx_bandwidth", 0x58),
         ],
     )
-    def test_direct_operator_getters(self, getter_name: str, sub: int) -> None:
+    def test_direct_operator_getters(self, getter_name: str, sub: int, cmd_map) -> None:
         import rigplane.commands as commands
 
         getter = getattr(commands, getter_name)
         command = 0x15 if sub == 0x07 else 0x16
-        assert getter() == bytes([0xFE, 0xFE, 0x98, 0xE0, command, sub, 0xFD])
+        assert getter(cmd_map=cmd_map) == bytes(
+            [0xFE, 0xFE, 0x98, 0xE0, command, sub, 0xFD]
+        )
 
     @pytest.mark.parametrize(
         ("setter_name", "value", "expected_tail"),
@@ -1130,11 +1222,12 @@ class TestOperatorToggleParityCommands:
         setter_name: str,
         value: object,
         expected_tail: bytes,
+        cmd_map,
     ) -> None:
         import rigplane.commands as commands
 
         setter = getattr(commands, setter_name)
-        assert setter(value).endswith(expected_tail)
+        assert setter(value, cmd_map=cmd_map).endswith(expected_tail)
 
     @pytest.mark.parametrize(
         ("frame", "kwargs", "expected"),
@@ -1186,11 +1279,14 @@ class TestOperatorToggleParityCommands:
 class TestTransceiverStatusBuilders:
     """Test CI-V builders for transceiver_status commands.
 
-    Migrated onto the bound command map in MOR-2008 (batch 1,
-    `docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps 5..N):
-    every builder here now requires ``cmd_map`` -- zero divergence rows,
-    so IC-7610's own map declares the identical bytes the fallback used to
-    build, and the expected frames below are unchanged.
+    Migrated onto the bound command map in MOR-2008
+    (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps 5..N):
+    batch 1 for the system.py builders here -- band edge, tuner/XFC/
+    TX-freq-monitor status, RIT/XIT; batch 2 for the meters.py builders --
+    various-squelch and the power/comp/Vd/Id meters. Every builder here now
+    requires ``cmd_map`` -- zero divergence rows, so IC-7610's own map
+    declares the identical bytes the fallback used to build, and the
+    expected frames below are unchanged.
     """
 
     @pytest.fixture()
@@ -1211,43 +1307,43 @@ class TestTransceiverStatusBuilders:
         with pytest.raises(TypeError, match="MOR-2006"):
             get_band_edge_freq()  # type: ignore[call-arg]
 
-    def test_get_various_squelch_main(self) -> None:
+    def test_get_various_squelch_main(self, cmd_map) -> None:
         from rigplane.commands import get_various_squelch
 
-        frame = get_various_squelch(receiver=0x00)
+        frame = get_various_squelch(receiver=0x00, cmd_map=cmd_map)
         # Command29 frame: FE FE to from 29 00 15 05 FD
         assert frame[4] == 0x29  # cmd29 prefix
         assert b"\x15\x05" in frame
 
-    def test_get_various_squelch_sub(self) -> None:
+    def test_get_various_squelch_sub(self, cmd_map) -> None:
         from rigplane.commands import get_various_squelch
 
-        frame = get_various_squelch(receiver=0x01)
+        frame = get_various_squelch(receiver=0x01, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == 0x01  # SUB receiver
 
-    def test_get_power_meter(self) -> None:
+    def test_get_power_meter(self, cmd_map) -> None:
         from rigplane.commands import get_power_meter
 
-        frame = get_power_meter()
+        frame = get_power_meter(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x15\x11\xfd" == frame
 
-    def test_get_comp_meter(self) -> None:
+    def test_get_comp_meter(self, cmd_map) -> None:
         from rigplane.commands import get_comp_meter
 
-        frame = get_comp_meter()
+        frame = get_comp_meter(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x15\x14\xfd" == frame
 
-    def test_get_vd_meter(self) -> None:
+    def test_get_vd_meter(self, cmd_map) -> None:
         from rigplane.commands import get_vd_meter
 
-        frame = get_vd_meter()
+        frame = get_vd_meter(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x15\x15\xfd" == frame
 
-    def test_get_id_meter(self) -> None:
+    def test_get_id_meter(self, cmd_map) -> None:
         from rigplane.commands import get_id_meter
 
-        frame = get_id_meter()
+        frame = get_id_meter(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x15\x16\xfd" == frame
 
     def test_get_tuner_status(self, cmd_map) -> None:
@@ -1673,62 +1769,96 @@ class TestAdvancedScopeValidation:
 
 
 class TestToneTsqlCommands:
-    """Tests for tone/TSQL command builders and parsers (#134)."""
+    """Tests for tone/TSQL command builders and parsers (#134).
+
+    commands/tone.py migrated onto the bound command map in MOR-2008
+    (batch 2): all eight builders now require cmd_map -- zero divergence,
+    so every profile that declares these commands agrees with the
+    fallback's own bytes exactly, and the expected frames below are
+    unchanged. Uses IC-7300, not IC-7610: IC-7610 has no FM-repeater CTCSS
+    tone feature and does not declare this family at all (MOR-660/661/682,
+    re-checked and left that way at D2 MOR-2017 -- see
+    ``rigs/ic7610.toml``'s own comment on the point), so building a
+    cmd_map from it would raise ``KeyError`` for every builder in this
+    class.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7300.toml")
+        return rig.to_command_map()
 
     # --- Repeater Tone (0x16 0x42) ---
 
-    def test_get_repeater_tone_main_uses_cmd29(self) -> None:
+    def test_get_repeater_tone_main_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_repeater_tone
 
-        frame = get_repeater_tone(receiver=RECEIVER_MAIN)
+        frame = get_repeater_tone(receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_MAIN
         assert frame[6] == 0x16
         assert frame[7] == 0x42
 
-    def test_get_repeater_tone_sub_uses_cmd29(self) -> None:
+    def test_get_repeater_tone_sub_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, get_repeater_tone
 
-        frame = get_repeater_tone(receiver=RECEIVER_SUB)
+        frame = get_repeater_tone(receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_SUB
         assert frame[6] == 0x16
         assert frame[7] == 0x42
 
-    def test_set_repeater_tone_on(self) -> None:
+    def test_set_repeater_tone_on(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_repeater_tone
 
-        frame = set_repeater_tone(True, receiver=RECEIVER_MAIN)
+        frame = set_repeater_tone(True, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[6] == 0x16
         assert frame[7] == 0x42
         assert frame[8] == 0x01
 
-    def test_set_repeater_tone_off(self) -> None:
+    def test_set_repeater_tone_off(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_repeater_tone
 
-        frame = set_repeater_tone(False, receiver=RECEIVER_MAIN)
+        frame = set_repeater_tone(False, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[8] == 0x00
+
+    def test_get_repeater_tone_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import get_repeater_tone
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_repeater_tone()  # type: ignore[call-arg]
 
     # --- Repeater TSQL (0x16 0x43) ---
 
-    def test_get_repeater_tsql_uses_cmd29(self) -> None:
+    def test_get_repeater_tsql_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_repeater_tsql
 
-        frame = get_repeater_tsql(receiver=RECEIVER_MAIN)
+        frame = get_repeater_tsql(receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[6] == 0x16
         assert frame[7] == 0x43
 
-    def test_set_repeater_tsql_on_sub(self) -> None:
+    def test_set_repeater_tsql_on_sub(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, set_repeater_tsql
 
-        frame = set_repeater_tsql(True, receiver=RECEIVER_SUB)
+        frame = set_repeater_tsql(True, receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_SUB
         assert frame[6] == 0x16
         assert frame[7] == 0x43
         assert frame[8] == 0x01
+
+    def test_set_repeater_tsql_rejects_explicit_none_the_same_way(
+        self, cmd_map
+    ) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        from rigplane.commands import set_repeater_tsql
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_repeater_tsql(True, cmd_map=None)
 
     # --- Tone frequency encoding/decoding ---
 
@@ -1784,45 +1914,45 @@ class TestToneTsqlCommands:
 
     # --- Tone Frequency command (0x1B 0x00) ---
 
-    def test_get_tone_freq_uses_cmd29(self) -> None:
+    def test_get_tone_freq_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_tone_freq
 
-        frame = get_tone_freq(receiver=RECEIVER_MAIN)
+        frame = get_tone_freq(receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_MAIN
         assert frame[6] == 0x1B
         assert frame[7] == 0x00
 
-    def test_set_tone_freq_encodes_bcd(self) -> None:
+    def test_set_tone_freq_encodes_bcd(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_tone_freq
 
-        frame = set_tone_freq(88.5, receiver=RECEIVER_MAIN)
+        frame = set_tone_freq(88.5, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[6] == 0x1B
         assert frame[7] == 0x00
         assert frame[8:11] == bytes([0x00, 0x88, 0x05])
 
-    def test_set_tone_freq_rejects_out_of_range(self) -> None:
+    def test_set_tone_freq_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_tone_freq
 
         with pytest.raises(ValueError, match="67.0-254.1"):
-            set_tone_freq(50.0)
+            set_tone_freq(50.0, cmd_map=cmd_map)
 
     # --- TSQL Frequency command (0x1B 0x01) ---
 
-    def test_get_tsql_freq_uses_cmd29(self) -> None:
+    def test_get_tsql_freq_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, get_tsql_freq
 
-        frame = get_tsql_freq(receiver=RECEIVER_SUB)
+        frame = get_tsql_freq(receiver=RECEIVER_SUB, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_SUB
         assert frame[6] == 0x1B
         assert frame[7] == 0x01
 
-    def test_set_tsql_freq_encodes_bcd(self) -> None:
+    def test_set_tsql_freq_encodes_bcd(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_tsql_freq
 
-        frame = set_tsql_freq(110.9, receiver=RECEIVER_MAIN)
+        frame = set_tsql_freq(110.9, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
         assert frame[4] == 0x29
         assert frame[6] == 0x1B
         assert frame[7] == 0x01
@@ -2183,63 +2313,83 @@ class TestSystemConfigCommands:
             )
 
     # --- Antenna Selection (0x12) ---
+    #
+    # commands/antenna.py migrated onto the bound command map in MOR-2008
+    # (batch 2): all eight builders now require cmd_map -- zero
+    # divergence, so IC-7610's own map declares the identical bytes the
+    # fallback used to build, and the expected frames below are unchanged.
 
-    def test_get_antenna_1_frame(self) -> None:
+    def test_get_antenna_1_frame(self, cmd_map) -> None:
         from rigplane.commands import get_antenna_1
 
-        frame = get_antenna_1()
+        frame = get_antenna_1(cmd_map=cmd_map)
         # FE FE 98 E0 12 00 FD
         assert frame == b"\xfe\xfe\x98\xe0\x12\x00\xfd"
 
-    def test_set_antenna_1_on(self) -> None:
+    def test_get_antenna_1_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import get_antenna_1
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_antenna_1()  # type: ignore[call-arg]
+
+    def test_set_antenna_1_on(self, cmd_map) -> None:
         from rigplane.commands import set_antenna_1
 
-        frame = set_antenna_1(True)
+        frame = set_antenna_1(True, cmd_map=cmd_map)
         # FE FE 98 E0 12 00 01 FD
         assert frame == b"\xfe\xfe\x98\xe0\x12\x00\x01\xfd"
 
-    def test_set_antenna_1_off(self) -> None:
+    def test_set_antenna_1_off(self, cmd_map) -> None:
         from rigplane.commands import set_antenna_1
 
-        frame = set_antenna_1(False)
+        frame = set_antenna_1(False, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x12\x00\x00\xfd"
 
-    def test_get_antenna_2_frame(self) -> None:
+    def test_set_antenna_1_rejects_explicit_none_the_same_way(self, cmd_map) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        from rigplane.commands import set_antenna_1
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_antenna_1(True, cmd_map=None)
+
+    def test_get_antenna_2_frame(self, cmd_map) -> None:
         from rigplane.commands import get_antenna_2
 
-        frame = get_antenna_2()
+        frame = get_antenna_2(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x12\x01\xfd"
 
-    def test_set_antenna_2_on(self) -> None:
+    def test_set_antenna_2_on(self, cmd_map) -> None:
         from rigplane.commands import set_antenna_2
 
-        frame = set_antenna_2(True)
+        frame = set_antenna_2(True, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x12\x01\x01\xfd"
 
-    def test_get_rx_antenna_ant1_frame(self) -> None:
+    def test_get_rx_antenna_ant1_frame(self, cmd_map) -> None:
         from rigplane.commands import get_rx_antenna_ant1
 
-        frame = get_rx_antenna_ant1()
+        frame = get_rx_antenna_ant1(cmd_map=cmd_map)
         # IC-7610 CI-V: RX-ANT is encoded as data byte on 0x12 0x00 (ANT1)
         assert frame == b"\xfe\xfe\x98\xe0\x12\x00\xfd"
 
-    def test_set_rx_antenna_ant1_on(self) -> None:
+    def test_set_rx_antenna_ant1_on(self, cmd_map) -> None:
         from rigplane.commands import set_rx_antenna_ant1
 
-        frame = set_rx_antenna_ant1(True)
+        frame = set_rx_antenna_ant1(True, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x12\x00\x01\xfd"
 
-    def test_get_rx_antenna_ant2_frame(self) -> None:
+    def test_get_rx_antenna_ant2_frame(self, cmd_map) -> None:
         from rigplane.commands import get_rx_antenna_ant2
 
-        frame = get_rx_antenna_ant2()
+        frame = get_rx_antenna_ant2(cmd_map=cmd_map)
         # IC-7610 CI-V: RX-ANT is encoded as data byte on 0x12 0x01 (ANT2)
         assert frame == b"\xfe\xfe\x98\xe0\x12\x01\xfd"
 
-    def test_set_rx_antenna_ant2_off(self) -> None:
+    def test_set_rx_antenna_ant2_off(self, cmd_map) -> None:
         from rigplane.commands import set_rx_antenna_ant2
 
-        frame = set_rx_antenna_ant2(False)
+        frame = set_rx_antenna_ant2(False, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x12\x01\x00\xfd"
 
     def test_parse_antenna_bool_response(self) -> None:

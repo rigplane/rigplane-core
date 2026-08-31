@@ -11,9 +11,7 @@ from ._codec import _bcd_byte, _bcd_decode_value
 from ._frame import (
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
-    _CMD_CTL_MEM,
     _CMD_LEVEL,
-    _CMD_METER,
     _CMD_PREAMP,
     _build_from_map,
     build_civ_frame,
@@ -23,36 +21,6 @@ from ._frame import (
 if TYPE_CHECKING:
     from ..command_map import CommandMap
     from ..types import CivFrame
-
-
-def _build_meter_bool_get(
-    sub: int,
-    *,
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    receiver: int = RECEIVER_MAIN,
-    command29: bool = False,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
-) -> bytes:
-    if cmd_map is not None and cmd_name is not None:
-        return _build_from_map(
-            cmd_map,
-            cmd_name,
-            to_addr=to_addr,
-            from_addr=from_addr,
-            receiver=receiver,
-            command29=command29,
-        )
-    if command29:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_METER,
-            sub=sub,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_METER, sub=sub)
 
 
 def _build_function_get(
@@ -155,74 +123,6 @@ def _build_function_value_set(
             receiver=receiver,
         )
     return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=sub, data=payload)
-
-
-def _build_ctl_mem_single_bcd_get(
-    sub: int,
-    *,
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    receiver: int = RECEIVER_MAIN,
-    command29: bool = False,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
-) -> bytes:
-    if cmd_map is not None and cmd_name is not None:
-        return _build_from_map(
-            cmd_map,
-            cmd_name,
-            to_addr=to_addr,
-            from_addr=from_addr,
-            receiver=receiver,
-            command29=command29,
-        )
-    if command29:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_CTL_MEM,
-            sub=sub,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_CTL_MEM, sub=sub)
-
-
-def _build_ctl_mem_single_bcd_set(
-    sub: int,
-    value: int,
-    *,
-    minimum: int,
-    maximum: int,
-    to_addr: int,
-    from_addr: int = CONTROLLER_ADDR,
-    receiver: int = RECEIVER_MAIN,
-    command29: bool = False,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
-) -> bytes:
-    if not minimum <= value <= maximum:
-        raise ValueError(f"Value must be {minimum}-{maximum}, got {value}")
-    payload = bytes([_bcd_byte(value)])
-    if cmd_map is not None and cmd_name is not None:
-        return _build_from_map(
-            cmd_map,
-            cmd_name,
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=payload,
-            receiver=receiver,
-            command29=command29,
-        )
-    if command29:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_CTL_MEM,
-            sub=sub,
-            data=payload,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_CTL_MEM, sub=sub, data=payload)
 
 
 def parse_level_response(

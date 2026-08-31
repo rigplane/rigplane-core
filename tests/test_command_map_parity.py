@@ -252,14 +252,16 @@ def _hardcode_only_builders() -> frozenset[Key]:
     the kernel gaining a public helper, or a module gaining a response
     parser. :func:`_builders` needs no module-level rule because its own
     ``__name__.startswith("_")`` filter already excludes every underscore
-    module: the seven kernel helpers that do take a ``cmd_map``
-    (``_builders.py: _build_meter_bool_get`` and its five siblings,
+    module: the four kernel helpers that do take a ``cmd_map``
+    (``_builders.py: _build_function_get`` and its two siblings,
     ``_frame.py: _build_from_map``) are all underscore-named -- down from
     eleven at MOR-2006 module 1 (config.py): module 2 (levels.py) deleted
     ``_build_level_get``, ``_build_level_set`` and ``_build_ctl_mem_set``,
-    each left with zero callers once levels.py de-delegated from them, and
+    each left with zero callers once levels.py de-delegated from them,
     MOR-2008 batch 1 (system.py) deleted ``_build_ctl_mem_get`` the same
-    way.
+    way, and MOR-2008 batch 2 (mode.py/meters.py) deleted
+    ``_build_meter_bool_get``/``_build_ctl_mem_single_bcd_get``/
+    ``_build_ctl_mem_single_bcd_set`` the same way.
     A public
     ``cmd_map``-taking helper added to one of those modules would move
     ``public_builders`` -- this rule is what keeps it out of this count.

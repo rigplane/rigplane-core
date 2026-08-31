@@ -17,6 +17,15 @@ to this one in the same worker process. ``_reloaded_with_flag`` below
 snapshots ``vars(rigplane.commands)`` before reloading and restores that
 exact snapshot in a ``finally``, so a reload done inside one test here
 never leaks into the next test -- in this file or any other.
+
+Representative builder: ``dsp.py``'s ``get_attenuator``/``set_attenuator``,
+not ``freq.py``'s ``get_freq``/``set_freq`` as originally written -- MOR-2008
+batch 2 migrated ``get_freq``/``set_freq`` onto the required-``cmd_map``
+contract, so calling either with ``cmd_map=None`` (this file's whole point:
+proving the audit wrapper logs when the old fallback engages) now raises
+``TypeError`` before the wrapper's own logic ever runs. ``dsp.py`` is not
+migrated by any batch so far, so its builders still carry a real
+``cmd_map is None`` fallback branch to audit.
 """
 
 from __future__ import annotations
@@ -30,7 +39,7 @@ import pytest
 
 import rigplane.commands as commands
 import rigplane.commands._frame as frame_module
-import rigplane.commands.freq as freq_module
+import rigplane.commands.dsp as dsp_module
 from rigplane.commands import _fallback_audit
 from rigplane.commands.command_map import CommandMap
 from rigplane.commands.speech import get_speech as raw_get_speech
@@ -106,8 +115,8 @@ class TestFlagOff:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         with _reloaded_with_flag(monkeypatch, None) as reloaded:
-            assert reloaded.get_freq is freq_module.get_freq
-            assert reloaded.set_freq is freq_module.set_freq
+            assert reloaded.get_attenuator is dsp_module.get_attenuator
+            assert reloaded.set_attenuator is dsp_module.set_attenuator
             # Backward-compat alias: same object as its canonical name.
             assert reloaded.speech is raw_get_speech
             assert reloaded.get_speech is raw_get_speech
@@ -117,7 +126,7 @@ class TestFlagOff:
     ) -> None:
         with _reloaded_with_flag(monkeypatch, None) as reloaded:
             with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
-                reloaded.get_freq(to_addr=0x94, cmd_map=None)
+                reloaded.get_attenuator(to_addr=0x94, cmd_map=None)
             assert caplog.records == []
 
 
@@ -128,10 +137,10 @@ class TestFlagOn:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         with _reloaded_with_flag(monkeypatch, "1") as reloaded:
-            assert reloaded.get_freq is not freq_module.get_freq
-            assert inspect.unwrap(reloaded.get_freq) is freq_module.get_freq
-            assert reloaded.get_freq.__name__ == "get_freq"
-            assert reloaded.get_freq.__doc__ == freq_module.get_freq.__doc__
+            assert reloaded.get_attenuator is not dsp_module.get_attenuator
+            assert inspect.unwrap(reloaded.get_attenuator) is dsp_module.get_attenuator
+            assert reloaded.get_attenuator.__name__ == "get_attenuator"
+            assert reloaded.get_attenuator.__doc__ == dsp_module.get_attenuator.__doc__
 
     def test_alias_identity_is_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with _reloaded_with_flag(monkeypatch, "1") as reloaded:
@@ -152,45 +161,46 @@ class TestFlagOn:
     ) -> None:
         with _reloaded_with_flag(monkeypatch, "1") as reloaded:
             with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
-                result = reloaded.get_freq(to_addr=0x94, cmd_map=None)
-            assert result == freq_module.get_freq(to_addr=0x94, cmd_map=None)
+                result = reloaded.get_attenuator(to_addr=0x94, cmd_map=None)
+            assert result == dsp_module.get_attenuator(to_addr=0x94, cmd_map=None)
             assert len(caplog.records) == 1
-            assert "get_freq" in caplog.text
+            assert "get_attenuator" in caplog.text
 
     def test_call_with_a_map_logs_nothing(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        cmd_map = CommandMap({"get_freq": (0x03,)})
+        cmd_map = CommandMap({"get_attenuator": (0x11,)})
         with _reloaded_with_flag(monkeypatch, "1") as reloaded:
             with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
-                reloaded.get_freq(to_addr=0x94, cmd_map=cmd_map)
+                reloaded.get_attenuator(to_addr=0x94, cmd_map=cmd_map)
             assert caplog.records == []
 
     def test_return_value_and_exceptions_are_preserved(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         with _reloaded_with_flag(monkeypatch, "1") as reloaded:
-            assert reloaded.get_freq(
+            assert reloaded.get_attenuator(
                 to_addr=0x94, cmd_map=None
-            ) == freq_module.get_freq(to_addr=0x94, cmd_map=None)
+            ) == dsp_module.get_attenuator(to_addr=0x94, cmd_map=None)
             with pytest.raises(TypeError):
-                reloaded.get_freq()  # missing required to_addr, both wrapped and raw
+                reloaded.get_attenuator()  # missing required to_addr, both wrapped and raw
 
     def test_reload_does_not_leak_into_the_ambient_module(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The context manager's restore must actually run.
 
-        Compares against whatever ``commands.get_freq`` was *before* the
-        ``with`` block, not against the raw ``freq_module.get_freq``: another
-        collected test file's ``bind_default_addr_module`` (see module
-        docstring) may already have rebound it to a partial before this test
-        runs, and that is exactly the state the restore must put back.
+        Compares against whatever ``commands.get_attenuator`` was *before*
+        the ``with`` block, not against the raw ``dsp_module.get_attenuator``:
+        another collected test file's ``bind_default_addr_module`` (see
+        module docstring) may already have rebound it to a partial before
+        this test runs, and that is exactly the state the restore must put
+        back.
         """
-        before = commands.get_freq
+        before = commands.get_attenuator
         with _reloaded_with_flag(monkeypatch, "1"):
             pass
-        assert commands.get_freq is before
+        assert commands.get_attenuator is before
 
 
 def test_module_docstring_cites_the_plan_and_step_z() -> None:

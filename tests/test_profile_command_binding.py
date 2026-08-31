@@ -43,7 +43,7 @@ from typing import Any
 import pytest
 
 import rigplane.commands as commands
-from rigplane.commands import get_s_meter, get_speech, ptt_on
+from rigplane.commands import get_selected_freq, get_speech, ptt_on
 from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
@@ -170,11 +170,14 @@ class TestExpect:
 
     def test_expect_on_unexposed_builder_names_the_migration(self) -> None:
         # get_rf_power (commands/levels.py) is exposed as of MOR-2006 Steps
-        # 5..N module 2 -- get_s_meter (commands/meters.py) is still
-        # unmigrated and stands in as the "not exposed yet" example.
-        bound = BoundCommands(CommandMap({"get_s_meter": (0x15, 0x02)}))
+        # 5..N module 2; get_s_meter (commands/meters.py) was the "not
+        # exposed yet" stand-in through batch 1, but MOR-2008 batch 2
+        # migrated meters.py -- get_selected_freq (commands/freq.py) has no
+        # cmd_map parameter at all (Group B, deferred to a later batch per
+        # the owner ruling on the ticket) and stands in instead.
+        bound = BoundCommands(CommandMap({"get_selected_freq": (0x25, 0x00)}))
         with pytest.raises(AttributeError, match="Steps 5..N"):
-            bound.expect(get_s_meter)
+            bound.expect(get_selected_freq)
 
 
 # ── the drift guard ──
@@ -372,6 +375,24 @@ class TestExposedKeyDriftGuard:
         # dotted-string lookup would otherwise walk through.
         defining_module = sys.modules[builder.__module__]
         monkeypatch.setattr(defining_module, "_build_from_map", _fake_build_from_map)
+        # Some builders (mode.py's get_filter_shape/set_filter_shape/
+        # get_ssb_tx_bandwidth/set_ssb_tx_bandwidth/get_main_sub_tracking/
+        # set_main_sub_tracking; tone.py's get_repeater_tone/
+        # set_repeater_tone/get_repeater_tsql/set_repeater_tsql) don't call
+        # ``_build_from_map`` themselves -- they delegate to `_builders.py`'s
+        # shared ``_build_function_get``/``_build_function_bool_set``/
+        # ``_build_function_value_set`` templates, which call *their own*
+        # module-local ``_build_from_map`` binding, not the leaf module's.
+        # Patching only ``defining_module`` leaves that binding live, so the
+        # real lookup runs during probing and raises ``CommandError`` for
+        # every candidate against an empty/unrelated map -- surfacing as
+        # "no synthesized argument combination was accepted" below rather
+        # than as a drift mismatch (MOR-2008 batch 2). ``_builders.py`` is
+        # the one stable shared-template module (its own docstring: "never
+        # from leaf modules"), so patching it too covers every builder that
+        # routes through it, not just this batch's five.
+        builders_module = sys.modules["rigplane.commands._builders"]
+        monkeypatch.setattr(builders_module, "_build_from_map", _fake_build_from_map)
         case_kwargs = self._synthesize_case(builder, cmd_map)
         builder(to_addr=0x94, cmd_map=cmd_map, **case_kwargs)
         assert "key" in captured, (

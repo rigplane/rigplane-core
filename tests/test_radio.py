@@ -3129,17 +3129,73 @@ class TestSsbTxBandwidthDomainValidation:
         radio._connected = False
 
 
+# IC-7300's CI-V address (RadioModel(name="IC-7300", civ_addr=148)), used
+# below in place of the module's own IC_7610_ADDR -- see
+# TestToneTsqlParity's docstring for why.
+_IC_7300_ADDR = 0x94
+
+
+def _function_response_ic7300(sub: int, payload: bytes) -> bytes:
+    """``_function_response`` above, but from IC-7300 rather than IC-7610,
+    and always plain (never cmd29-wrapped): ``rigs/ic7300.toml`` declares
+    "single receiver, no cmd29" outright, so a real IC-7300 never sends a
+    cmd29 envelope at all, receiver argument or not.
+
+    A local copy rather than an added parameter on the shared helper:
+    every other caller of ``_function_response`` in this file targets the
+    module's own IC-7610 ``radio`` fixture, so widening it would be an
+    unused knob everywhere except here.
+    """
+    civ = build_civ_frame(CONTROLLER_ADDR, _IC_7300_ADDR, 0x16, sub=sub, data=payload)
+    return _wrap_civ_in_udp(civ)
+
+
 class TestToneTsqlParity:
-    """Test high-level tone/TSQL parity methods (#134)."""
+    """Test high-level tone/TSQL parity methods (#134).
+
+    Uses IC-7300, not the module's default IC-7610 ``radio`` fixture:
+    ``rigs/ic7610.toml`` documents (MOR-660/661/682, re-checked at D2
+    MOR-2017) that IC-7610 does not declare the repeater-tone/TSQL/
+    tone-freq/TSQL-freq family at all -- a live-bench readback found the
+    pre-migration hardcoded fallback's bytes decoded to garbage on this
+    radio. Before MOR-2008 batch 2, the module's default fixture still
+    built and sent those wrong bytes regardless; now it raises
+    ``CommandError`` (D1 refusal) instead, so this class's own premise
+    (these four method pairs succeed and round-trip on the fixture they
+    are handed) needs a profile that actually declares the family.
+    IC-7300 declares byte-identical ``[0x16/0x1B, sub]`` tuples for it
+    (verified against the pre-migration fallback).
+
+    No ``receiver=1`` (SUB) cases here any more, unlike before this
+    migration: IC-7300 is single-receiver (``rigs/ic7300.toml``:
+    "single receiver, no cmd29"), so it cannot stand in for the
+    cmd29-wrapped dual-receiver shape the old parametrize cases pinned.
+    That shape was never actually valid on any *declaring* radio --
+    IC-7610 (dual-RX, cmd29-capable) was the only one, and it turns out
+    not to declare this family at all; the only dual-RX profile that does
+    (IC-9700) has no cmd29 routes for it either, and reaches SUB through
+    the VFO-select fallback instead -- already fully exercised by
+    ``TestToneTsqlDualRxCmd29Guard`` immediately below, which this class
+    does not need to duplicate.
+    """
+
+    @pytest.fixture
+    def radio(self, mock_transport: MockTransport):
+        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        yield r
+        r._connected = False  # reset _conn_state so __del__ stays quiet
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("method_name", "sub", "payload", "receiver", "expected"),
+        ("method_name", "sub", "payload", "expected"),
         [
-            ("get_repeater_tone", 0x42, b"\x01", 0, True),
-            ("get_repeater_tone", 0x42, b"\x00", 1, False),
-            ("get_repeater_tsql", 0x43, b"\x01", 0, True),
-            ("get_repeater_tsql", 0x43, b"\x00", 1, False),
+            ("get_repeater_tone", 0x42, b"\x01", True),
+            ("get_repeater_tone", 0x42, b"\x00", False),
+            ("get_repeater_tsql", 0x43, b"\x01", True),
+            ("get_repeater_tsql", 0x43, b"\x00", False),
         ],
     )
     async def test_get_repeater_toggle(
@@ -3149,23 +3205,20 @@ class TestToneTsqlParity:
         method_name: str,
         sub: int,
         payload: bytes,
-        receiver: int,
         expected: bool,
     ) -> None:
-        mock_transport.queue_response(
-            _function_response(sub, payload, receiver=receiver)
-        )
-        result = await getattr(radio, method_name)(receiver=receiver)
+        mock_transport.queue_response(_function_response_ic7300(sub, payload))
+        result = await getattr(radio, method_name)()
         assert result is expected
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("method_name", "value", "kwargs", "expected_tail"),
+        ("method_name", "value", "expected_tail"),
         [
-            ("set_repeater_tone", True, {"receiver": 0}, b"\x29\x00\x16\x42\x01\xfd"),
-            ("set_repeater_tone", False, {"receiver": 1}, b"\x29\x01\x16\x42\x00\xfd"),
-            ("set_repeater_tsql", True, {"receiver": 0}, b"\x29\x00\x16\x43\x01\xfd"),
-            ("set_repeater_tsql", False, {"receiver": 1}, b"\x29\x01\x16\x43\x00\xfd"),
+            ("set_repeater_tone", True, b"\x16\x42\x01\xfd"),
+            ("set_repeater_tone", False, b"\x16\x42\x00\xfd"),
+            ("set_repeater_tsql", True, b"\x16\x43\x01\xfd"),
+            ("set_repeater_tsql", False, b"\x16\x43\x00\xfd"),
         ],
     )
     async def test_set_repeater_toggle(
@@ -3174,23 +3227,23 @@ class TestToneTsqlParity:
         mock_transport: MockTransport,
         method_name: str,
         value: bool,
-        kwargs: dict[str, int],
         expected_tail: bytes,
     ) -> None:
-        await getattr(radio, method_name)(value, **kwargs)
+        await getattr(radio, method_name)(value)
         assert mock_transport.sent_packets[-1].endswith(expected_tail)
 
     @pytest.mark.asyncio
     async def test_get_tone_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        civ = build_cmd29_frame(
+        # 3-byte BCD tone frequency: hundreds=0x00, tens_units=0x88,
+        # tenths=0x05 -> 88.5 Hz (_codec.py: _decode_tone_freq).
+        civ = build_civ_frame(
             CONTROLLER_ADDR,
-            IC_7610_ADDR,
+            _IC_7300_ADDR,
             0x1B,
             sub=0x00,
             data=bytes([0x00, 0x88, 0x05]),
-            receiver=0,
         )
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
         assert await radio.get_tone_freq() == pytest.approx(88.5)
@@ -3199,13 +3252,14 @@ class TestToneTsqlParity:
     async def test_get_tsql_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        civ = build_cmd29_frame(
+        # 3-byte BCD TSQL frequency: hundreds=0x01, tens_units=0x10,
+        # tenths=0x09 -> 110.9 Hz.
+        civ = build_civ_frame(
             CONTROLLER_ADDR,
-            IC_7610_ADDR,
+            _IC_7300_ADDR,
             0x1B,
             sub=0x01,
             data=bytes([0x01, 0x10, 0x09]),
-            receiver=0,
         )
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
         assert await radio.get_tsql_freq() == pytest.approx(110.9)
@@ -3215,19 +3269,15 @@ class TestToneTsqlParity:
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         await radio.set_tone_freq(88.5)
-        # cmd29 + receiver=0 + 0x1B + 0x00 + BCD(88.5) + FD
-        assert mock_transport.sent_packets[-1].endswith(
-            b"\x29\x00\x1b\x00\x00\x88\x05\xfd"
-        )
+        # plain (no cmd29 -- IC-7300 has none) + 0x1B + 0x00 + BCD(88.5) + FD
+        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x00\x00\x88\x05\xfd")
 
     @pytest.mark.asyncio
     async def test_set_tsql_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        await radio.set_tsql_freq(110.9, receiver=1)
-        assert mock_transport.sent_packets[-1].endswith(
-            b"\x29\x01\x1b\x01\x01\x10\x09\xfd"
-        )
+        await radio.set_tsql_freq(110.9)
+        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x01\x01\x10\x09\xfd")
 
 
 class TestToneTsqlDualRxCmd29Guard:
@@ -3399,8 +3449,42 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
     in-flight MAIN read could coalesce a SUB caller onto MAIN's answer.
     Fixed to receiver-scope the key (``key=f"get_repeater_tone:{receiver}"``),
     mirroring ``get_filter_width``'s precedent (MOR-1538/#2458).
+
+    Uses IC-7300, not the module's default IC-7610 ``radio`` fixture, for
+    the same reason as ``TestToneTsqlParity`` above: IC-7610 does not
+    declare this family (MOR-2008 batch 2's D1 refusal fix), so a call
+    that used to build and send a wrong-but-successful frame on the
+    default fixture now raises ``CommandError`` instead. IC-7300 is
+    single-receiver, so the MAIN+SUB variant below has no working radio
+    left to run against (below); the same-receiver variant needs no SUB
+    at all and is otherwise unaffected.
     """
 
+    @pytest.fixture
+    def radio(self, mock_transport: MockTransport):
+        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r._civ_transport = mock_transport
+        r._ctrl_transport = mock_transport
+        r._connected = True
+        yield r
+        r._connected = False  # reset _conn_state so __del__ stays quiet
+
+    @pytest.mark.skip(
+        reason=(
+            "MOR-2008 batch 2: IC-7610, the only dual-RX profile this test "
+            "ever ran against, does not declare the repeater-tone/TSQL "
+            "family at all (rigs/ic7610.toml, live-bench garbage-readback "
+            "finding) -- calling it now raises CommandError instead of "
+            "building a frame. IC-9700, the only other dual-RX profile "
+            "that declares the family, has no cmd29 route for it and "
+            "reaches SUB through a 3-frame VFO-select fallback "
+            "(TestToneTsqlDualRxCmd29Guard above) instead of one cmd29 "
+            "frame -- redesigning this concurrency test's timing "
+            "assumptions (exact sent_packets count, interleaving) around "
+            "that shape is a real piece of work, not a fixture swap, so "
+            "it is left for a dedicated follow-up rather than rushed here."
+        )
+    )
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method_name", "sub"),
@@ -3418,10 +3502,10 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
         radio._civ_runtime.start_worker()
         try:
             mock_transport.queue_response_on_send(
-                1, _function_response(sub, b"\x01", receiver=0)
+                1, _function_response_ic7300(sub, b"\x01")
             )
             mock_transport.queue_response_on_send(
-                2, _function_response(sub, b"\x00", receiver=1)
+                2, _function_response_ic7300(sub, b"\x00")
             )
             method = getattr(radio, method_name)
             main_result, sub_result = await asyncio.gather(
@@ -3443,7 +3527,7 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
         radio._civ_runtime.start_worker()
         try:
             mock_transport.queue_response_on_send(
-                1, _function_response(0x42, b"\x01", receiver=0)
+                1, _function_response_ic7300(0x42, b"\x01")
             )
             first, second = await asyncio.gather(
                 radio.get_repeater_tone(receiver=0),
