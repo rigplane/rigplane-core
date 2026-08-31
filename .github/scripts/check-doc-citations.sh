@@ -143,6 +143,113 @@
 # citation. `--regenerate` refuses to write if doing so would add a pair not
 # already present in the baseline on disk; that refusal is a local courtesy,
 # not the enforcement mechanism (see above).
+#
+# ===========================================================================
+# DOC-LINK EXTENSION (MOR-2053)
+# ===========================================================================
+#
+# A second, independent gate lives in this same script and shares its
+# mechanism: fails CI if a relative markdown link from one document to
+# another (`[text](target.md)`, optionally `[text](target.md#anchor)`)
+# resolves to a path that is not a git-tracked file. Same shrink-only
+# baseline shape as the citation gate above, selected with --check-links
+# (see usage at the bottom of this block) — extending the existing
+# mechanism rather than standing up a parallel one.
+#
+# WHY THIS EXISTS: the citation gate above verifies that docs/** cites CODE
+# correctly. Nothing verified that a relative link from one DOCUMENT to
+# another actually resolves. Found by hand while writing an unrelated guide:
+# frontend/README.md linked to docs/component-architecture.md and
+# docs/css-design-tokens.md, and neither file exists. Same shape of rot as
+# the citation gate prevents, one surface over, and cheaper to catch — no
+# symbol resolution needed, only "does this path exist".
+#
+# SCOPE — REPO-WIDE *.md, NOT DOCS/**, AND WHY THAT DIFFERS FROM THE
+# CITATION GATE ABOVE: the citation gate is scoped to docs/** because its
+# rule is specifically about how docs/** prose cites the codebase. A dead
+# link carries no such restriction — the frontend/README.md links that
+# motivated this gate are themselves outside docs/**, so scoping this check
+# to docs/** would never have caught them, or any future recurrence of the
+# same shape. Verified empirically (2026-08-31), not assumed: a repo-wide
+# scan of every git-tracked `*.md` file (222 at the time of writing) finds
+# 155 relative links whose target path ends in `.md`, of which exactly 2 are
+# broken — the two frontend/README.md links above. No other breakage turned
+# up. `git ls-files '*.md'` is used as both the file set to scan and the
+# existence oracle, rather than a filesystem walk plus `[ -f ... ]`: a naive
+# `find . -name '*.md'` from the repo root turns up 4036 files, almost all
+# vendored (frontend/node_modules, .venv, mkdocs' site/ build output) —
+# scanning those would be slow, noisy, and beside the point. Resolving
+# against the tracked-file set instead of the raw filesystem also keeps
+# behaviour identical between a case-insensitive dev filesystem (macOS'
+# default APFS mode) and the case-sensitive Linux CI runner: verified by
+# cross-checking the same scan both ways (a filesystem `-f` test vs. exact
+# membership in `git ls-files`) and getting the same 2 broken links either
+# way, on the corpus as it stands today.
+#
+# WHAT COUNTS AS A CHECKED LINK: an inline markdown link `[text](target)`,
+# not an image embed (`![alt](target)` is skipped). `target` is skipped
+# entirely — not a document-to-document link, nothing to resolve — when it
+# is a same-document anchor only (`#foo`) or starts with a URI scheme
+# (`scheme:`, e.g. `https:`, `mailto:`); every non-relative link in the
+# current corpus uses `https:`, verified by scanning for the schemes
+# actually present, same evidence standard as the extension allowlist
+# above. Of what remains, only targets whose path portion (before any
+# `#anchor`) ends in `.md` are checked — a link to an image, a source file,
+# or any other non-document asset is out of scope, because the gap being
+# closed is specifically "a link from one document to another", not general
+# asset existence. No leading-slash (repo-root-absolute) relative link
+# exists anywhere in the current corpus (verified by grep); this script
+# gives that shape no special handling, so one written today would be
+# resolved as relative to the citing file's own directory like any other
+# target, not the repo root — a known gap, left alone because there is
+# nothing in the corpus to get right or wrong yet.
+#
+# ANCHORS ARE NOT VERIFIED. This script checks only that the file half of a
+# `target.md#anchor` link resolves; it does not confirm the anchor names an
+# actual heading in that file (doing so would mean parsing Markdown headings
+# and reproducing GitHub's slugging rules, which this does not attempt). The
+# `#anchor` fragment, when present, is kept verbatim in the stored baseline
+# key (so two links to the same missing file with different anchors are two
+# separate pairs — the same pair-level-granularity limitation the citation
+# baseline documents above) but is stripped before the existence check.
+# Both the "clean" pass message and the new-breakage error message printed
+# by this script say "file existence only, #anchor fragments not verified"
+# in those words, so a clean run cannot be misread as "links verified" when
+# only "link TARGETS verified to exist" is true.
+#
+# PATH RESOLUTION: a relative target is resolved against the directory of
+# the file containing the link — the same rule a browser or GitHub's own
+# renderer applies — via pure string normalization of `.`/`..` path
+# segments (normalize_relative_path, below); no filesystem access, so it
+# cannot be fooled by a symlink, and behaves the same on every OS.
+#
+# BASELINE: same (docfile, target-as-written) pair format as the citation
+# baseline, in the sibling file doc-link-baseline.txt, generated and
+# checked through the same --regenerate / --check-growth flags (prefixed
+# with --check-links to select this baseline instead of the citation one).
+# The FORMAT is reused wholesale. One piece of the citation gate's
+# check-mode BEHAVIOUR is deliberately not reused: there, a baseline entry
+# that no longer appears in the current scan fails the check ("baseline is
+# stale and must shrink") until someone runs --regenerate. The link
+# baseline does not fail on that condition — a disappearing entry is
+# reported as a courtesy notice, never a failure. Why: at the time this gate
+# was written, both grandfathered links were already being fixed by an
+# independently authored, already-open pull request with no knowledge that
+# this baseline would come to exist. Requiring that PR to also regenerate a
+# baseline it cannot know about would either block it or turn `main` red
+# the moment it merges — exactly what a shrink-only gate must not do to a
+# fix landing in good faith. Growth is still fully blocked, both live (the
+# NEW-pairs comparison below) and historically (--check-growth against the
+# merge base, unchanged mechanism) — only shrinkage is allowed to happen
+# quietly. `--check-links --regenerate` is offered to tidy the baseline
+# file when convenient; it is never required for this check to pass.
+#
+# Usage (run from the repository root; --check-links, if given, must be the
+# first argument):
+#   check-doc-citations.sh --check-links                   # check mode (CI)
+#   check-doc-citations.sh --check-links --regenerate            # shrink-only rewrite
+#   check-doc-citations.sh --check-links --regenerate --allow-growth
+#   check-doc-citations.sh --check-links --check-growth <git-ref>  # CI-only
 
 set -euo pipefail
 export LC_ALL=C  # pin collation: sort/comm must be byte-order-stable across
@@ -152,9 +259,25 @@ export LC_ALL=C  # pin collation: sort/comm must be byte-order-stable across
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASELINE_FILE="${SCRIPT_DIR}/doc-citation-baseline.txt"
+LINK_BASELINE_FILE="${SCRIPT_DIR}/doc-link-baseline.txt"
 
 EXT='py|ts|svelte|toml|md|c|h|cpp|mjs|yml|ui'
 PATTERN="[A-Za-z0-9_/.-]+\\.(${EXT})(:[0-9]+(-[0-9]+)?|#L[0-9]+(-L?[0-9]+)?)"
+
+CITATION_HEADER='# Baseline of grandfathered docs/** (docfile, citation) pairs.
+# Format: <doc file path><TAB><citation string>. Generated by:
+#   .github/scripts/check-doc-citations.sh --regenerate
+# This list may only shrink -- see check-doc-citations.sh for the
+# full rationale, including why regeneration alone does not
+# enforce that. Do not hand-edit additions.'
+
+LINK_HEADER='# Baseline of grandfathered (docfile, dead-link-target) pairs -- relative
+# markdown links whose target does not resolve to a tracked file.
+# Format: <doc file path><TAB><link target as written>. Generated by:
+#   .github/scripts/check-doc-citations.sh --check-links --regenerate
+# Growth is blocked (see check-doc-citations.sh, DOC-LINK EXTENSION); a
+# fixed link disappearing from this file is fine and not required before
+# CI passes. Do not hand-edit additions.'
 
 strip_comments() {
     grep -vE '^[[:space:]]*#' | grep -vE '^[[:space:]]*$' || true
@@ -171,17 +294,162 @@ load_baseline_pairs() {
 }
 
 write_baseline() {
-    # $1 = sorted-unique "docfile<TAB>citation" pairs (already newline-joined)
+    # $1 = target baseline file path
+    # $2 = header comment block (newline-joined, each line already "# ...")
+    # $3 = sorted-unique "docfile<TAB>citation" pairs (newline-joined)
     {
-        echo "# Baseline of grandfathered docs/** (docfile, citation) pairs."
-        echo "# Format: <doc file path><TAB><citation string>. Generated by:"
-        echo "#   .github/scripts/check-doc-citations.sh --regenerate"
-        echo "# This list may only shrink -- see check-doc-citations.sh for the"
-        echo "# full rationale, including why regeneration alone does not"
-        echo "# enforce that. Do not hand-edit additions."
-        printf '%s\n' "$1"
-    } > "$BASELINE_FILE"
+        printf '%s\n' "$2"
+        printf '%s\n' "$3"
+    } > "$1"
 }
+
+# Resolves $2 (a relative path, possibly containing "." and ".." segments)
+# against base directory $1, by pure string normalization -- no filesystem
+# access, so this cannot be fooled by a symlink or a case-insensitive
+# filesystem, and it behaves identically on every OS. A ".." that would
+# escape above the topmost given segment is kept literally as "..", which
+# never matches a tracked file and therefore correctly reads as "missing".
+normalize_relative_path() {
+    local base_dir="$1" rel_path="$2"
+    local combined="${base_dir:+$base_dir/}$rel_path"
+    local IFS='/'
+    local -a segs=() out=()
+    read -ra segs <<< "$combined"
+    for seg in "${segs[@]}"; do
+        case "$seg" in
+            '' | '.') continue ;;
+            '..')
+                if [ "${#out[@]}" -gt 0 ] && [ "${out[-1]}" != '..' ]; then
+                    unset 'out[-1]'
+                else
+                    out+=('..')
+                fi
+                ;;
+            *) out+=("$seg") ;;
+        esac
+    done
+    local IFS='/'
+    echo "${out[*]}"
+}
+
+# Code context is stripped before link-matching (used by
+# scan_broken_link_occurrences below), unlike the citation gate above
+# (which deliberately checks fenced/indented code and table cells too,
+# because a stale citation still misleads a reader there regardless of
+# where it sits). A link is different: CommonMark parses code spans and
+# fenced code blocks BEFORE link syntax, so `[text](url)` written inside
+# backticks or a fenced block is never rendered as a clickable link by any
+# Markdown renderer -- it is inert example text by construction, not a
+# reference that can rot. Found by dogfooding: this script's own first
+# attempt at documenting this feature in CLAUDE.md used exactly that shape
+# as a syntax example and immediately false-positived against itself.
+#
+# Blanks fenced code blocks and strips inline code spans from a file,
+# preserving line COUNT and ORDER (blanked lines become empty, never
+# removed) so line numbers taken from the result still match the original
+# file. A fence marker (``` or ~~~) may be indented a few spaces (seen in
+# this corpus, e.g. AGENTS.md), so leading whitespace is trimmed before
+# checking for one; nested fences are not handled, because CommonMark
+# fences do not nest and none do in this corpus (verified 2026-08-31).
+# Inline code spans are stripped per line, so a code span is not
+# recognised if it spans multiple lines, and an escaped backtick is not
+# recognised as escaped -- neither shape occurs in this corpus today, same
+# evidence bar as the rest of this gate's scope decisions.
+#
+# One `awk` process per file, not one process per line: an earlier version
+# of this function forked `sed` per LINE (inside a bash while-read loop)
+# and was slow enough to time out scanning this corpus.
+strip_code_context() {
+    awk '
+        {
+            line = $0
+            trimmed = line
+            sub(/^[ \t]+/, "", trimmed)
+            if (trimmed ~ /^(```|~~~)/) {
+                infence = !infence
+                print ""
+                next
+            }
+            if (infence) { print ""; next }
+            gsub(/`[^`]*`/, "", line)
+            print line
+        }
+    ' "$1"
+}
+
+# Scans every git-tracked *.md file for relative links to another *.md file
+# and prints one "docfile<TAB>lineno<TAB>target" line per OCCURRENCE that
+# does NOT resolve to a tracked file (not deduplicated -- the caller dedups
+# while building FIRST_LOCATION, exactly like the citation scan below does
+# for ALL_OCCURRENCES). See the DOC-LINK EXTENSION comment block above for
+# exactly what counts as a checked link and what is deliberately out of
+# scope (anchors, non-.md targets, absolute URLs).
+#
+# Deliberately prints rather than populating FIRST_LOCATION directly: this
+# function's result is always captured via "$(...)" command substitution,
+# which runs it in a subshell -- any associative-array writes made in here
+# would be invisible to the caller once the subshell exits. Passing the raw
+# occurrences back as text and doing the stateful dedup in the foreground
+# (in the caller) is what makes FIRST_LOCATION visible afterward.
+scan_broken_link_occurrences() {
+    local link_re='!?\[[^]]*\]\([^)]+\)'
+
+    declare -A tracked_md=()
+    local f
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        tracked_md["$f"]=1
+    done < <(git ls-files '*.md')
+
+    local docfile base_dir lineno match target path_part resolved
+    while IFS= read -r docfile; do
+        [ -z "$docfile" ] && continue
+        base_dir="$(dirname "$docfile")"
+        [ "$base_dir" = "." ] && base_dir=""
+        while IFS=: read -r lineno match; do
+            [ -z "${match:-}" ] && continue
+            case "$match" in
+                '!'*) continue ;;                 # image embed, not a doc link
+            esac
+            target="${match#*](}"
+            target="${target%)}"
+            case "$target" in
+                '#'*) continue ;;                 # same-document anchor only
+                [A-Za-z]*:*) continue ;;           # URI scheme (https:, mailto:, ...)
+            esac
+            path_part="${target%%#*}"
+            [ -z "$path_part" ] && continue
+            case "$path_part" in
+                *.md) ;;
+                *) continue ;;                    # not a link to a document
+            esac
+            resolved="$(normalize_relative_path "$base_dir" "$path_part")"
+            if [ -z "${tracked_md[$resolved]+x}" ]; then
+                printf '%s\t%s\t%s\n' "$docfile" "$lineno" "$target"
+            fi
+        done < <(strip_code_context "$docfile" | grep -noE "$link_re" || true)
+    done < <(git ls-files '*.md')
+}
+
+MODE="citation"
+if [ "${1:-}" = "--check-links" ]; then
+    MODE="link"
+    shift
+fi
+
+if [ "$MODE" = "link" ]; then
+    ACTIVE_BASELINE_FILE="$LINK_BASELINE_FILE"
+    ACTIVE_BASELINE_REL_PATH=".github/scripts/doc-link-baseline.txt"
+    ACTIVE_HEADER="$LINK_HEADER"
+    ACTIVE_RENAME_PATHSPEC='*.md'
+    ACTIVE_LABEL="Doc-link gate"
+else
+    ACTIVE_BASELINE_FILE="$BASELINE_FILE"
+    ACTIVE_BASELINE_REL_PATH=".github/scripts/doc-citation-baseline.txt"
+    ACTIVE_HEADER="$CITATION_HEADER"
+    ACTIVE_RENAME_PATHSPEC='docs/'
+    ACTIVE_LABEL="Doc-citation gate"
+fi
 
 if [ "${1:-}" = "--check-growth" ]; then
     BASE_REF="${2:?--check-growth requires a git ref argument}"
@@ -196,25 +464,27 @@ if [ "${1:-}" = "--check-growth" ]; then
         exit 2
     fi
 
-    if ! BASE_BLOB="$(git show "${RESOLVED_BASE_REF}:.github/scripts/doc-citation-baseline.txt" 2>/dev/null)"; then
-        echo "Doc-citation gate: ${RESOLVED_BASE_REF} resolves, but no baseline exists there (gate not introduced yet at that commit) -- skipping growth check."
+    if ! BASE_BLOB="$(git show "${RESOLVED_BASE_REF}:${ACTIVE_BASELINE_REL_PATH}" 2>/dev/null)"; then
+        echo "${ACTIVE_LABEL}: ${RESOLVED_BASE_REF} resolves, but no baseline exists there (gate not introduced yet at that commit) -- skipping growth check."
         exit 0
     fi
     BASE_PAIRS_RAW="$(printf '%s\n' "$BASE_BLOB" | load_baseline_pairs)"
 
     # F3: rename-aware. Translate the base baseline's docfile through any
-    # docs/** rename git itself detects between RESOLVED_BASE_REF and the
-    # current tree, so moving a cited document does not read as bulk
-    # growth (old path's pairs "disappearing") plus bulk shrinkage (new
-    # path's pairs "appearing"). See the header for the full rationale and
-    # the fallback when a rename is edited too heavily for git to detect.
+    # rename git itself detects between RESOLVED_BASE_REF and the current
+    # tree (scoped to docs/ for the citation baseline, to every tracked
+    # *.md file for the link baseline), so moving a cited/linking document
+    # does not read as bulk growth (old path's pairs "disappearing") plus
+    # bulk shrinkage (new path's pairs "appearing"). See the header for the
+    # full rationale and the fallback when a rename is edited too heavily
+    # for git to detect.
     declare -A RENAME_TO=()
     while IFS=$'\t' read -r status oldpath newpath; do
         [ -z "$oldpath" ] && continue
         case "$status" in
             R*) RENAME_TO["$oldpath"]="$newpath" ;;
         esac
-    done < <(git diff --name-status -M "${RESOLVED_BASE_REF}" -- docs/ 2>/dev/null || true)
+    done < <(git diff --name-status -M "${RESOLVED_BASE_REF}" -- "${ACTIVE_RENAME_PATHSPEC}" 2>/dev/null || true)
 
     BASE_PAIRS="$(
         printf '%s\n' "$BASE_PAIRS_RAW" | while IFS=$'\t' read -r docfile citation; do
@@ -224,18 +494,20 @@ if [ "${1:-}" = "--check-growth" ]; then
         done | sort -u
     )"
 
-    CURRENT_PAIRS="$(load_baseline_pairs "$BASELINE_FILE")"
+    CURRENT_PAIRS="$(load_baseline_pairs "$ACTIVE_BASELINE_FILE")"
     ADDED="$(comm -13 <(printf '%s\n' "$BASE_PAIRS") <(printf '%s\n' "$CURRENT_PAIRS") || true)"
     if [ -n "$(printf '%s' "$ADDED" | tr -d '[:space:]')" ]; then
-        echo "::error::the committed baseline grew relative to ${RESOLVED_BASE_REF} (docs/** renames already accounted for) -- the baseline may only shrink, and this check is not bypassable by any local command:" >&2
+        echo "::error::the committed baseline grew relative to ${RESOLVED_BASE_REF} (renames already accounted for) -- the baseline may only shrink, and this check is not bypassable by any local command:" >&2
         printf '%s\n' "$ADDED" | while IFS=$'\t' read -r docfile citation; do
             [ -z "$docfile" ] && continue
             echo "  ${docfile}: ${citation}" >&2
         done
-        echo "If this includes a legitimate document rename that git's detector missed (heavily edited in the same change), see the RENAMING section in this script's header." >&2
+        if [ "$MODE" = "citation" ]; then
+            echo "If this includes a legitimate document rename that git's detector missed (heavily edited in the same change), see the RENAMING section in this script's header." >&2
+        fi
         exit 1
     fi
-    echo "Doc-citation gate: baseline did not grow relative to ${RESOLVED_BASE_REF}."
+    echo "${ACTIVE_LABEL}: baseline did not grow relative to ${RESOLVED_BASE_REF}."
     exit 0
 fi
 
@@ -244,34 +516,55 @@ if [ ! -d docs ]; then
     exit 2
 fi
 
-# One pass over docs/**: every matched occurrence as "docfile:docline:citation".
-ALL_OCCURRENCES="$(grep -rnoE "$PATTERN" docs/ || true)"
-
 declare -A FIRST_LOCATION=()
-CURRENT_PAIR_LIST=()
-while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    docfile="${line%%:*}"
-    rest="${line#*:}"
-    docline="${rest%%:*}"
-    citation="${rest#*:}"
-    key="${docfile}"$'\t'"${citation}"
-    if [ -z "${FIRST_LOCATION[$key]+x}" ]; then
-        FIRST_LOCATION[$key]="$docline"
-        CURRENT_PAIR_LIST+=("$key")
-    fi
-done <<EOF
+
+if [ "$MODE" = "link" ]; then
+    # One pass over every tracked *.md file: every broken-link occurrence as
+    # "docfile<TAB>lineno<TAB>target" (see scan_broken_link_occurrences).
+    ALL_BROKEN_LINKS="$(scan_broken_link_occurrences)"
+
+    CURRENT_PAIR_LIST=()
+    while IFS=$'\t' read -r docfile lineno target; do
+        [ -z "$docfile" ] && continue
+        key="${docfile}"$'\t'"${target}"
+        if [ -z "${FIRST_LOCATION[$key]+x}" ]; then
+            FIRST_LOCATION[$key]="$lineno"
+            CURRENT_PAIR_LIST+=("$key")
+        fi
+    done <<EOF
+$ALL_BROKEN_LINKS
+EOF
+
+    CURRENT_PAIRS="$(printf '%s\n' "${CURRENT_PAIR_LIST[@]:-}" | grep -v '^$' | sort -u || true)"
+else
+    # One pass over docs/**: every matched occurrence as "docfile:docline:citation".
+    ALL_OCCURRENCES="$(grep -rnoE "$PATTERN" docs/ || true)"
+
+    CURRENT_PAIR_LIST=()
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        docfile="${line%%:*}"
+        rest="${line#*:}"
+        docline="${rest%%:*}"
+        citation="${rest#*:}"
+        key="${docfile}"$'\t'"${citation}"
+        if [ -z "${FIRST_LOCATION[$key]+x}" ]; then
+            FIRST_LOCATION[$key]="$docline"
+            CURRENT_PAIR_LIST+=("$key")
+        fi
+    done <<EOF
 $ALL_OCCURRENCES
 EOF
 
-CURRENT_PAIRS="$(printf '%s\n' "${CURRENT_PAIR_LIST[@]:-}" | grep -v '^$' | sort -u || true)"
+    CURRENT_PAIRS="$(printf '%s\n' "${CURRENT_PAIR_LIST[@]:-}" | grep -v '^$' | sort -u || true)"
+fi
 
 if [ "${1:-}" = "--regenerate" ]; then
     ALLOW_GROWTH=0
     [ "${2:-}" = "--allow-growth" ] && ALLOW_GROWTH=1
 
-    if [ -f "$BASELINE_FILE" ]; then
-        OLD_PAIRS="$(load_baseline_pairs "$BASELINE_FILE")"
+    if [ -f "$ACTIVE_BASELINE_FILE" ]; then
+        OLD_PAIRS="$(load_baseline_pairs "$ACTIVE_BASELINE_FILE")"
     else
         OLD_PAIRS=""
     fi
@@ -283,7 +576,11 @@ if [ "${1:-}" = "--regenerate" ]; then
 
     if [ "$ADDED_COUNT" -gt 0 ] && [ "$ALLOW_GROWTH" -ne 1 ]; then
         echo "::error::--regenerate would ADD ${ADDED_COUNT} pair(s) not already in the baseline; refused by default because the baseline may only shrink." >&2
-        echo "Added pairs (one of these is probably a new citation you meant to write as file+symbol instead):" >&2
+        if [ "$MODE" = "citation" ]; then
+            echo "Added pairs (one of these is probably a new citation you meant to write as file+symbol instead):" >&2
+        else
+            echo "Added pairs (one of these is probably a new dead link you meant to fix instead of grandfathering):" >&2
+        fi
         printf '%s\n' "$ADDED" | while IFS=$'\t' read -r docfile citation; do
             [ -z "$docfile" ] && continue
             echo "  ${docfile}: ${citation}" >&2
@@ -293,8 +590,8 @@ if [ "${1:-}" = "--regenerate" ]; then
         exit 1
     fi
 
-    write_baseline "$CURRENT_PAIRS"
-    echo "Regenerated ${BASELINE_FILE}: removed ${REMOVED_COUNT}, added ${ADDED_COUNT}."
+    write_baseline "$ACTIVE_BASELINE_FILE" "$ACTIVE_HEADER" "$CURRENT_PAIRS"
+    echo "Regenerated ${ACTIVE_BASELINE_FILE}: removed ${REMOVED_COUNT}, added ${ADDED_COUNT}."
     if [ "$ADDED_COUNT" -gt 0 ]; then
         echo "Added (via --allow-growth):"
         printf '%s\n' "$ADDED" | while IFS=$'\t' read -r docfile citation; do
@@ -305,12 +602,12 @@ if [ "${1:-}" = "--regenerate" ]; then
     exit 0
 fi
 
-if [ ! -f "$BASELINE_FILE" ]; then
-    echo "::error::baseline file not found at ${BASELINE_FILE}" >&2
+if [ ! -f "$ACTIVE_BASELINE_FILE" ]; then
+    echo "::error::baseline file not found at ${ACTIVE_BASELINE_FILE}" >&2
     exit 2
 fi
 
-BASELINE_PAIRS="$(load_baseline_pairs "$BASELINE_FILE")"
+BASELINE_PAIRS="$(load_baseline_pairs "$ACTIVE_BASELINE_FILE")"
 
 NEW="$(comm -23 <(printf '%s\n' "$CURRENT_PAIRS") <(printf '%s\n' "$BASELINE_PAIRS") || true)"
 DEAD="$(comm -13 <(printf '%s\n' "$CURRENT_PAIRS") <(printf '%s\n' "$BASELINE_PAIRS") || true)"
@@ -319,16 +616,26 @@ FAIL=0
 
 if [ -n "$(printf '%s' "$NEW" | tr -d '[:space:]')" ]; then
     FAIL=1
-    echo "::error::new docs/** citations found that are not in the baseline:" >&2
-    printf '%s\n' "$NEW" | while IFS=$'\t' read -r docfile citation; do
-        [ -z "$docfile" ] && continue
-        key="${docfile}"$'\t'"${citation}"
-        docline="${FIRST_LOCATION[$key]:-?}"
-        echo "  ${docfile}:${docline}: new citation '${citation}' -- cite file plus symbol name instead (e.g. \`radio.py: IcomRadio.set_frequency\`), never a line number; line numbers rot." >&2
-    done
+    if [ "$MODE" = "link" ]; then
+        echo "::error::new dead relative links found that are not in the baseline (file existence only -- #anchor fragments, if any, are not verified):" >&2
+        printf '%s\n' "$NEW" | while IFS=$'\t' read -r docfile citation; do
+            [ -z "$docfile" ] && continue
+            key="${docfile}"$'\t'"${citation}"
+            docline="${FIRST_LOCATION[$key]:-?}"
+            echo "  ${docfile}:${docline}: link to '${citation}' does not resolve to a tracked file -- fix it, or if intentionally tracked separately, grandfather it via '.github/scripts/check-doc-citations.sh --check-links --regenerate'." >&2
+        done
+    else
+        echo "::error::new docs/** citations found that are not in the baseline:" >&2
+        printf '%s\n' "$NEW" | while IFS=$'\t' read -r docfile citation; do
+            [ -z "$docfile" ] && continue
+            key="${docfile}"$'\t'"${citation}"
+            docline="${FIRST_LOCATION[$key]:-?}"
+            echo "  ${docfile}:${docline}: new citation '${citation}' -- cite file plus symbol name instead (e.g. \`radio.py: IcomRadio.set_frequency\`), never a line number; line numbers rot." >&2
+        done
+    fi
 fi
 
-if [ -n "$(printf '%s' "$DEAD" | tr -d '[:space:]')" ]; then
+if [ "$MODE" = "citation" ] && [ -n "$(printf '%s' "$DEAD" | tr -d '[:space:]')" ]; then
     FAIL=1
     echo "::error::baseline entries no longer found in the doc file they name -- the baseline is stale and must shrink:" >&2
     printf '%s\n' "$DEAD" | while IFS=$'\t' read -r docfile citation; do
@@ -336,6 +643,11 @@ if [ -n "$(printf '%s' "$DEAD" | tr -d '[:space:]')" ]; then
         echo "  ${docfile}: ${citation}" >&2
     done
     echo "Regenerate it: .github/scripts/check-doc-citations.sh --regenerate (then commit the updated baseline file)." >&2
+elif [ "$MODE" = "link" ] && [ -n "$(printf '%s' "$DEAD" | tr -d '[:space:]')" ]; then
+    # Deliberately not a failure -- see the DOC-LINK EXTENSION / BASELINE
+    # note above for why a link baseline is allowed to shrink quietly.
+    DEAD_COUNT=$(printf '%s\n' "$DEAD" | grep -c . || true)
+    echo "${ACTIVE_LABEL}: ${DEAD_COUNT} grandfathered link(s) no longer appear broken -- run '.github/scripts/check-doc-citations.sh --check-links --regenerate' to shrink the baseline (not required for this check to pass)."
 fi
 
 if [ "$FAIL" -ne 0 ]; then
@@ -343,4 +655,8 @@ if [ "$FAIL" -ne 0 ]; then
 fi
 
 TOTAL=$(printf '%s\n' "$BASELINE_PAIRS" | grep -c . || true)
-echo "Doc-citation gate: clean (${TOTAL} grandfathered citations)."
+if [ "$MODE" = "link" ]; then
+    echo "${ACTIVE_LABEL}: clean (${TOTAL} grandfathered dead link(s), repo-wide *.md scope). Checked: the linked file exists among tracked *.md files. NOT checked: #anchor fragments, links to non-.md targets, and links with a URI scheme (https:, mailto:, ...)."
+else
+    echo "${ACTIVE_LABEL}: clean (${TOTAL} grandfathered citations)."
+fi
