@@ -10,8 +10,6 @@
 
 Single authoritative reference for the unified frontend architecture. All implementation issues (`#647`–`#653`) should be judged against this document.
 
-This ADR is executable: it contains concrete TypeScript interfaces, Svelte 5 patterns, file layout, and enforcement rules. It is not a vision doc — it is a build spec.
-
 ---
 
 ## Architecture overview
@@ -21,7 +19,7 @@ Four layers, strict one-way dependency:
 ```
 ┌────────────────────────────────────────────────────┐
 │  SKIN + LAYOUT + THEME                              │  ← visual shell
-│  (amber-lcd, desktop-v2, mobile, future skins)      │
+│  (one Svelte component per SkinId — see Layer 4)   │
 ├──────────────────────────────────────────────────────┤
 │  SEMANTIC COMPONENTS                                │  ← behavior contracts
 │  (VfoSurface, MetersSurface, RxAudioSurface, ...)   │
@@ -94,7 +92,9 @@ and its producer, `frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts
 
 ### Adapter location
 
-`frontend/src/lib/runtime/adapters/`.
+`frontend/src/lib/runtime/adapters/`, plus `frontend/src/lib/runtime/props/panel-props.ts`
+— `toVfoProps`, `toMeterProps`, and `toRxAudioProps` (the diagram's own
+examples above) are exported from the latter, not the former.
 
 ---
 
@@ -223,10 +223,7 @@ Swapping layouts or mounting/unmounting visual components must not start or stop
 Presentation components (semantic, skins, primitives) must not import from
 `runtime/`, `$lib/transport/`, or `$lib/audio/audio-manager`. Enforced by
 eslint; see `docs/internals/skins-presentation-boundary-gate.md` (MOR-2034)
-for what is actually checked. Currently violated by
-`frontend/src/components-v2/layout/RadioLayout.svelte`, `LcdLayout.svelte`,
-and `MobileRadioLayout.svelte`, which import `runtime` from `$lib/runtime`
-directly.
+for what is actually checked.
 
 ---
 
@@ -261,7 +258,7 @@ See `frontend/eslint.config.js` and
 
 ### 1. Skin imports runtime directly
 
-Turns skins into hidden behavior forks. Skin receives `FrontendRuntime` as a prop from `App.svelte` — it never imports the singleton. Not upheld today by the legacy layout components named in INV-6 above.
+Turns skins into hidden behavior forks. Skin receives `FrontendRuntime` as a prop from `App.svelte` — it never imports the singleton.
 
 ### 2. Theme contains behavior flags
 
