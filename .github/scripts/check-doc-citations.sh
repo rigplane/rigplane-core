@@ -268,13 +268,20 @@
 # grandfathered, stays green forever under that check alone -- it only
 # catches a citation being added to or removed from a DOCUMENT, not a
 # citation going stale because the CODE it points at changed length or
-# disappeared while the document was untouched. This closes that gap for
-# path/line existence only. It does NOT verify that a symbol name still
+# disappeared while the document was untouched. This script closes that gap
+# for path/line existence only. It does NOT verify that a symbol name still
 # exists at that position -- resolving a stale citation to "whatever symbol
 # sits at that line today" would fabricate a symbol name exactly where the
 # citation is already wrong, the same failure mode the citation gate above
 # exists to prevent, so symbol verification is a separate, still-open half
 # of MOR-2065, not attempted here.
+#
+# WHEN THIS RUNS: doc-citation-gate.yml path-filters on **/*.md, docs/**,
+# and this gate's own files -- a PR that only touches src/** or frontend/**
+# (the only kind of PR that can create this exact rot, by moving or
+# shrinking cited code) does not trigger the workflow at all. The rot is
+# invisible at the moment it is created and surfaces later, on whatever
+# next PR happens to touch a doc file and trips the workflow's path filter.
 #
 # RESOLUTION RULE (see parse_citation, find_candidates, classify_citation
 # below): split a citation's path from its cited line number(s) -- the same
@@ -556,18 +563,25 @@ parse_citation() {
 # lookup; the suffix half narrows with a fixed-string `grep -F` pass first
 # (one process over the whole file list, not one per tracked file) and
 # confirms the path-boundary per surviving candidate in bash, because a
-# plain substring match on "/$1" would also match a longer trailing
-# segment that merely contains it (e.g. "/radio.py" inside
-# "/old_radio.py") -- that grep pass alone is a superset, not the answer.
+# plain substring match on "/$1" also matches a path whose final segment
+# only starts with the cited name and continues past it (e.g. "/radio.py"
+# also matching "/radio.pyi"; verified by `grep -cF -- "/radio.py"` against
+# "src/rigplane/radio.pyi" -> 1 match, "src/rigplane/old_radio.py" -> 0
+# matches, since the slash in the needle anchors the match to a path
+# boundary) -- that grep pass alone is a superset, not the answer.
 find_candidates() {
     local p="$1" exact prefiltered f
     exact="$(printf '%s\n' "$ALL_TRACKED_FILES" | grep -F -x -- "$p" || true)"
     prefiltered="$(printf '%s\n' "$ALL_TRACKED_FILES" | grep -F -- "/$p" || true)"
     {
-        [ -n "$exact" ] && printf '%s\n' "$exact"
+        if [ -n "$exact" ]; then
+            printf '%s\n' "$exact"
+        fi
         while IFS= read -r f; do
             [ -z "$f" ] && continue
-            [[ "$f" == */"$p" ]] && printf '%s\n' "$f"
+            if [[ "$f" == */"$p" ]]; then
+                printf '%s\n' "$f"
+            fi
         done <<< "$prefiltered"
     } | sort -u
 }
@@ -575,9 +589,10 @@ find_candidates() {
 # Classifies citation string $1 against the current tree, setting
 # CLASSIFY_VERDICT to one of OK / MISSING / PAST_EOF (globals, same
 # constraint as parse_citation) and, for the two dangling verdicts,
-# CLASSIFY_DETAIL to a human-readable reason naming the closest-covering
-# candidate (the one with the most lines, so the message shows the file
-# that came nearest to covering the citation, not an arbitrary one).
+# CLASSIFY_DETAIL to a human-readable reason. For PAST_EOF specifically,
+# CLASSIFY_DETAIL names the closest-covering candidate (the one with the
+# most lines, so the message shows the file that came nearest to covering
+# the citation, not an arbitrary one); MISSING has no candidate to name.
 # ALL_TRACKED_FILES must already be populated (see find_candidates).
 # "Current line count" is `awk 'END{print NR}'` -- see the
 # DANGLING-CITATION FLOOR header comment for why that, not `wc -l`, is the
