@@ -140,3 +140,22 @@ def test_internal_symbols_still_importable() -> None:
             f"{name} should still be importable from rigplane"
         )
         assert name not in rigplane.__all__, f"{name} should NOT be in __all__"
+
+
+def test_component_state_types_not_top_level() -> None:
+    """Pin the docs/api/public-api-surface.md claim about component state types.
+
+    ReceiverState and ScopeControlsState are components of RadioState and
+    importable from rigplane.core.radio_state. They are not re-exported from
+    the top-level package: the Form F tier-1 sealing (#1200) promoted
+    RadioState/VfoSlotState/YaesuStateExtension from this module and not
+    these two, and no commit has ever exported them.
+    """
+    from rigplane.core.radio_state import ReceiverState, ScopeControlsState
+
+    assert not hasattr(rigplane, "ReceiverState")
+    assert not hasattr(rigplane, "ScopeControlsState")
+    state = rigplane.RadioState()
+    assert isinstance(state.main, ReceiverState)
+    assert isinstance(state.sub, ReceiverState)
+    assert isinstance(state.scope_controls, ScopeControlsState)
