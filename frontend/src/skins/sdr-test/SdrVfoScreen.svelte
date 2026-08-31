@@ -22,7 +22,7 @@
   import { formatFrequency } from '../../components-v2/display/frequency-format';
   import type { VfoStateProps } from '../../components-v2/layout/layout-utils';
   import { calibratedToRaw, calibratedToSUnit, getScaleMaxRaw, getS9Raw } from '../../components-v2/meters/smeter-scale';
-  import { getAgcLabels, getAttValues } from '$lib/stores/capabilities.svelte';
+  import { getAgcLabels, getAttValues } from '$lib/runtime/adapters/capabilities-adapter';
   import { HardwareButton } from '$lib/Button';
 
   /**

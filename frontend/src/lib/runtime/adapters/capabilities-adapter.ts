@@ -2,14 +2,16 @@
  * Capabilities adapter — exposes capability-derived helpers that don't fit
  * a single panel's typed view-model.
  *
- * Tier 2 batch 2 of the panel→adapter migration (audit doc:
- * `docs/plans/2026-04-29-panel-adapter-migration.md`). The four exports
- * below cover exactly the capability surface that the in-scope helpers
+ * Started as Tier 2 batch 2 of the panel→adapter migration (audit doc:
+ * `docs/plans/2026-04-29-panel-adapter-migration.md`) with four exports
+ * covering the capability surface that the in-scope helpers
  * (`meter-utils.ts`, `filter-controls.ts`) and panels
- * (`AudioRoutingControl.svelte`) currently read from
- * `$lib/stores/capabilities.svelte` directly. Per-panel capability flags
- * already live on `derive*Props()` (see `panel-adapters.ts`); this adapter
- * is intentionally thin, not a parallel hierarchy.
+ * (`AudioRoutingControl.svelte`) read from `$lib/stores/capabilities.svelte`
+ * directly. `getAgcLabels`/`getAttValues` were added under MOR-2039 for the
+ * equivalent skins-tier migration (`skins/sdr-test/SdrVfoScreen.svelte`).
+ * Per-panel capability flags already live on `derive*Props()` (see
+ * `panel-adapters.ts`); this adapter is intentionally thin, not a parallel
+ * hierarchy.
  *
  * Reads delegate directly to the capabilities store (the same pattern
  * other adapters use, e.g. `qsy-history-adapter.ts`, `lcd-chrome-adapter.ts`)
@@ -21,6 +23,8 @@ import {
   getControlRange as _getControlRange,
   getMeterCalibration as _getMeterCalibration,
   getMeterRedline as _getMeterRedline,
+  getAgcLabels as _getAgcLabels,
+  getAttValues as _getAttValues,
 } from '$lib/stores/capabilities.svelte';
 import type { ControlRange } from '$lib/types/capabilities';
 
@@ -68,4 +72,23 @@ export function getControlRange(name: string): ControlRange | null {
  */
 export function getReceiverLabel(id: 'MAIN' | 'SUB'): string {
   return id;
+}
+
+/**
+ * AGC mode → display label map for the active profile (e.g.
+ * `{ '1': 'FAST', '2': 'MID' }`). Routed through capabilities so callers
+ * (e.g. `skins/sdr-test/SdrVfoScreen.svelte`) don't carry their own
+ * per-manufacturer guess (MOR-1093).
+ */
+export function getAgcLabels(): Record<string, string> {
+  return _getAgcLabels();
+}
+
+/**
+ * Attenuator dB steps for the active profile (e.g. `[0, 6, 12, 18]`).
+ * Routed through capabilities for the same reason as `getAgcLabels`
+ * (MOR-1093).
+ */
+export function getAttValues(): number[] {
+  return _getAttValues();
 }

@@ -481,15 +481,13 @@ describe('v3 package boundaries (MOR-1061)', () => {
   });
 
   // ── MOR-1093: the sdr-test entrypoint's own import boundary ────────────
-  // `src/skins/**/*.svelte` (and components-v2/layout/**) carry the looser
+  // `src/skins/**/*.svelte` (and components-v2/layout/**) carried the looser
   // FORBIDDEN_RUNTIME_IMPORTS ban (transport + audioManager only — unlike
-  // the presentation/ zone above, capabilities and commands are legal here)
-  // since MOR-1061, but nothing in this file had ever run that rule through
+  // the presentation/ zone above, capabilities were legal here) since
+  // MOR-1061, but nothing in this file had ever run that rule through
   // the real config for the sdr-test path. SdrTestSkin.svelte is a pure
   // RadioLayout delegate with no other import; these pin the rule that keeps
-  // it that way, and confirm the capabilities import SdrVfoScreen.svelte
-  // gained under MOR-1093 (replacing a hardcoded manufacturer-specific
-  // fallback table) stays inside the boundary this zone actually enforces.
+  // it that way.
 
   // .svelte fixtures need a <script> block (see the workspace .svelte test
   // above) — svelte-eslint-parser only treats code inside it as a Program
@@ -521,10 +519,46 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBe(0);
   });
 
-  it('allows the sdr-test diagnostic renderer to import capabilities (unlike the presentation/ zone)', async () => {
+  // ── MOR-2039: skins tightened to the panels tier ───────────────────────
+  // Skins no longer get the "capabilities are legal here" exception the
+  // MOR-1093 comment above used to describe: `$lib/stores/*` is now banned
+  // here too (matching FORBIDDEN_PANEL_IMPORTS), and the zone now also
+  // covers `src/skins/**/*.ts` — before this, a `.ts` file under
+  // skins/ (e.g. registry.ts) matched no skins-specific rule at all, because
+  // the file glob this zone used was `src/skins/**/*.svelte` only.
+  // SdrVfoScreen.svelte and registry.ts migrated their store reads to
+  // `lib/runtime/adapters/` (capabilities-adapter.ts, layout-mode-adapter.ts
+  // respectively); these pin both the new ban and that the migrated call
+  // sites stay inside the boundary.
+
+  it('rejects the sdr-test diagnostic renderer importing capabilities from the store directly (was allowed pre-MOR-2039)', async () => {
     const hits = await restrictedImportHits(
       `<script lang="ts">\n  import { getAgcLabels, getAttValues } from '$lib/stores/capabilities.svelte';\n</script>`,
       'src/skins/sdr-test/SdrVfoScreen.svelte',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('allows the sdr-test diagnostic renderer to import capabilities through the adapter (its actual migrated import)', async () => {
+    const hits = await restrictedImportHits(
+      `<script lang="ts">\n  import { getAgcLabels, getAttValues } from '$lib/runtime/adapters/capabilities-adapter';\n</script>`,
+      'src/skins/sdr-test/SdrVfoScreen.svelte',
+    );
+    expect(hits).toBe(0);
+  });
+
+  it('rejects a skins .ts file importing $lib/stores/* directly (the glob fix — .ts under skins/ had zero coverage before)', async () => {
+    const hits = await restrictedImportHits(
+      `import { normalizeLayoutMode } from '$lib/stores/layout.svelte';`,
+      'src/skins/registry.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('allows skins/registry.ts to import layout-mode normalization through the adapter (its actual migrated import)', async () => {
+    const hits = await restrictedImportHits(
+      `import { normalizeLayoutMode } from '$lib/runtime/adapters/layout-mode-adapter';`,
+      'src/skins/registry.ts',
     );
     expect(hits).toBe(0);
   });
