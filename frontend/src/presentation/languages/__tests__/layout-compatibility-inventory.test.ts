@@ -57,7 +57,7 @@ import type { LayoutManifest } from '../../layouts/contract';
 // The shared structural `LayoutManifest` guard every `*-declarability.test.ts`
 // suite in `../../layouts/__tests__/` already derives its own inventory with
 // (e.g. `antenna-declarability.test.ts`'s `ALL`) — reused here rather than
-// reimplemented, per MOR-2070's instruction not to duplicate it.
+// reimplemented.
 import { isLayoutManifest } from '../../layouts/__tests__/manifest-guard';
 
 /** Structural `DesignLanguageManifest` guard for filtering the barrel's
@@ -122,7 +122,7 @@ describe('every shipped design-language manifest declares at least one compatibl
  * `layoutCompatibility` names it — a `compatible: true` entry and a
  * `compatible: false` entry both count equally as evidence a decision was
  * made, even though only `true` lets `designLanguageActivation` actually
- * activate for it (`fieldline`'s `dual-receiver-cockpit: false` entry above
+ * activate for it (`fieldline`'s `dual-receiver-cockpit: false` entry
  * is exactly this: a decision, not a silent gap).
  *
  * This is enforced as a vitest assertion, not a runtime warning like
@@ -130,11 +130,9 @@ describe('every shipped design-language manifest declares at least one compatibl
  * manifest only ever enters this repository through a PR, and this suite
  * runs on every such PR through `quick.yml`'s frontend path filter (any
  * change under `frontend/**` runs `npx vitest run` in that workflow's
- * frontend block) — so a layout that reached production without first
- * passing this file's own assertions below does not happen here, and a
- * runtime-only check would fire no earlier than a test already does.
+ * frontend block).
  */
-describe('every layout is design-language-listed or explicitly exempt (MOR-2070)', () => {
+describe('every barrel-exported layout is design-language-listed or explicitly exempt (MOR-2070)', () => {
   // [id, manifest] pairs, derived structurally from the layouts barrel's
   // export surface — never hand-listed, the same discipline `SHIPPED_MANIFESTS`
   // above follows on the language side, and the same guard (`isLayoutManifest`)
