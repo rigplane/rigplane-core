@@ -420,6 +420,5 @@ change these dependencies or reopen accepted architecture.
   `frontend/src/lib/transport/__tests__/ws-client.test.ts:317-469`;
   `frontend/tests/e2e/i18n/i18n-visual.spec.ts:260-318`.
 - Prior intent: `docs/plans/2026-04-12-target-frontend-architecture.md:1-52`;
-  `docs/plans/2026-04-12-target-frontend-architecture.md:483-515`;
   `docs/plans/2026-04-11-parity-matrix.md:20-120`;
   `docs/plans/2026-07-25-ui-composition-architecture-v3.md:88-139`.
