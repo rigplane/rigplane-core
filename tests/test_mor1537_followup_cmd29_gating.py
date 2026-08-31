@@ -32,6 +32,8 @@ import pytest
 from rigplane.types import CivFrame
 
 from test_mor1517_cmd29_gating import (
+    _IC7300_CMD_MAP,
+    _IC7610_CMD_MAP,
     _connected_icom,
     _mock_expect,
     _mock_raw,
@@ -68,76 +70,105 @@ class TestRouteTableSanity:
 
 
 class TestBuilderOverride:
+    """commands/dsp.py migrated onto the bound command map in MOR-2008
+    (batch 3): every builder here now requires cmd_map -- both profiles
+    declare the same wire tuples the deleted fallback used to build for
+    all three subs (no divergence row names either), so the expected hex
+    below is unchanged.
+    """
+
     def test_set_nb_wrapped_by_default_for_main(self) -> None:
         from rigplane.commands import set_nb
 
-        frame = set_nb(True, to_addr=_IC7610_ADDR, receiver=0)
+        frame = set_nb(True, to_addr=_IC7610_ADDR, receiver=0, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e02900162201fd")
 
     def test_set_nb_unwrapped_with_override(self) -> None:
         from rigplane.commands import set_nb
 
-        frame = set_nb(True, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        frame = set_nb(
+            True,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert frame == bytes.fromhex("fefe94e0162201fd")
 
     def test_set_nr_wrapped_by_default_for_main(self) -> None:
         from rigplane.commands import set_nr
 
-        frame = set_nr(False, to_addr=_IC7610_ADDR, receiver=0)
+        frame = set_nr(False, to_addr=_IC7610_ADDR, receiver=0, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e02900164000fd")
 
     def test_set_nr_unwrapped_with_override(self) -> None:
         from rigplane.commands import set_nr
 
-        frame = set_nr(False, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        frame = set_nr(
+            False,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert frame == bytes.fromhex("fefe94e0164000fd")
 
     def test_set_ip_plus_wrapped_by_default_for_main(self) -> None:
         from rigplane.commands import set_ip_plus
 
-        frame = set_ip_plus(True, to_addr=_IC7610_ADDR, receiver=0)
+        frame = set_ip_plus(
+            True, to_addr=_IC7610_ADDR, receiver=0, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe98e02900166501fd")
 
     def test_set_ip_plus_unwrapped_with_override(self) -> None:
         from rigplane.commands import set_ip_plus
 
-        frame = set_ip_plus(True, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        frame = set_ip_plus(
+            True,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert frame == bytes.fromhex("fefe94e0166501fd")
 
     def test_get_nb_wrapped_by_default(self) -> None:
         from rigplane.commands import get_nb
 
-        frame = get_nb(to_addr=_IC7610_ADDR)
+        frame = get_nb(to_addr=_IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e029001622fd")
 
     def test_get_nb_unwrapped_with_override(self) -> None:
         from rigplane.commands import get_nb
 
-        frame = get_nb(to_addr=_IC7300_ADDR, command29=False)
+        frame = get_nb(to_addr=_IC7300_ADDR, command29=False, cmd_map=_IC7300_CMD_MAP)
         assert frame == bytes.fromhex("fefe94e01622fd")
 
     def test_get_nr_wrapped_by_default(self) -> None:
         from rigplane.commands import get_nr
 
-        frame = get_nr(to_addr=_IC7610_ADDR)
+        frame = get_nr(to_addr=_IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e029001640fd")
 
     def test_get_nr_unwrapped_with_override(self) -> None:
         from rigplane.commands import get_nr
 
-        frame = get_nr(to_addr=_IC7300_ADDR, command29=False)
+        frame = get_nr(to_addr=_IC7300_ADDR, command29=False, cmd_map=_IC7300_CMD_MAP)
         assert frame == bytes.fromhex("fefe94e01640fd")
 
     def test_get_ip_plus_wrapped_by_default(self) -> None:
         from rigplane.commands import get_ip_plus
 
-        frame = get_ip_plus(to_addr=_IC7610_ADDR)
+        frame = get_ip_plus(to_addr=_IC7610_ADDR, cmd_map=_IC7610_CMD_MAP)
         assert frame == bytes.fromhex("fefe98e029001665fd")
 
     def test_get_ip_plus_unwrapped_with_override(self) -> None:
         from rigplane.commands import get_ip_plus
 
-        frame = get_ip_plus(to_addr=_IC7300_ADDR, command29=False)
+        frame = get_ip_plus(
+            to_addr=_IC7300_ADDR, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert frame == bytes.fromhex("fefe94e01665fd")
 
 

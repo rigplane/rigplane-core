@@ -556,45 +556,54 @@ class TestSsbTxBandwidth:
 
 
 class TestAfMute:
-    """Tests for get_af_mute / set_af_mute."""
+    """Tests for get_af_mute / set_af_mute.
+
+    commands/dsp.py migrated onto the bound command map in MOR-2008
+    (batch 3): get_af_mute/set_af_mute now require cmd_map -- every case
+    below passes ``_IC7610_CMD_MAP``, whose declared wire tuple for both
+    keys matches the deleted fallback's bytes exactly (no divergence row
+    names either).
+    """
 
     def test_get_af_mute_main_receiver(self) -> None:
-        assert commands.get_af_mute(receiver=RECEIVER_MAIN) == _cmd29_get(
-            _CMD_CTL_MEM, _SUB_AF_MUTE, RECEIVER_MAIN
-        )
+        assert commands.get_af_mute(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_get(_CMD_CTL_MEM, _SUB_AF_MUTE, RECEIVER_MAIN)
 
     def test_get_af_mute_sub_receiver(self) -> None:
-        assert commands.get_af_mute(receiver=RECEIVER_SUB) == _cmd29_get(
-            _CMD_CTL_MEM, _SUB_AF_MUTE, RECEIVER_SUB
-        )
+        assert commands.get_af_mute(
+            receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_get(_CMD_CTL_MEM, _SUB_AF_MUTE, RECEIVER_SUB)
 
     def test_get_af_mute_default_is_main(self) -> None:
-        assert commands.get_af_mute() == commands.get_af_mute(receiver=RECEIVER_MAIN)
+        assert commands.get_af_mute(cmd_map=_IC7610_CMD_MAP) == commands.get_af_mute(
+            receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        )
 
     def test_set_af_mute_on_main_receiver(self) -> None:
-        assert commands.set_af_mute(True, receiver=RECEIVER_MAIN) == _cmd29_set(
-            _CMD_CTL_MEM, _SUB_AF_MUTE, 0x01, receiver=RECEIVER_MAIN
-        )
+        assert commands.set_af_mute(
+            True, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(_CMD_CTL_MEM, _SUB_AF_MUTE, 0x01, receiver=RECEIVER_MAIN)
 
     def test_set_af_mute_off_main_receiver(self) -> None:
-        assert commands.set_af_mute(False, receiver=RECEIVER_MAIN) == _cmd29_set(
-            _CMD_CTL_MEM, _SUB_AF_MUTE, 0x00, receiver=RECEIVER_MAIN
-        )
+        assert commands.set_af_mute(
+            False, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(_CMD_CTL_MEM, _SUB_AF_MUTE, 0x00, receiver=RECEIVER_MAIN)
 
     def test_set_af_mute_on_sub_receiver(self) -> None:
-        assert commands.set_af_mute(True, receiver=RECEIVER_SUB) == _cmd29_set(
-            _CMD_CTL_MEM, _SUB_AF_MUTE, 0x01, receiver=RECEIVER_SUB
-        )
+        assert commands.set_af_mute(
+            True, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(_CMD_CTL_MEM, _SUB_AF_MUTE, 0x01, receiver=RECEIVER_SUB)
 
     def test_set_af_mute_off_sub_receiver(self) -> None:
-        assert commands.set_af_mute(False, receiver=RECEIVER_SUB) == _cmd29_set(
-            _CMD_CTL_MEM, _SUB_AF_MUTE, 0x00, receiver=RECEIVER_SUB
-        )
+        assert commands.set_af_mute(
+            False, receiver=RECEIVER_SUB, cmd_map=_IC7610_CMD_MAP
+        ) == _cmd29_set(_CMD_CTL_MEM, _SUB_AF_MUTE, 0x00, receiver=RECEIVER_SUB)
 
     def test_set_af_mute_default_receiver_is_main(self) -> None:
-        assert commands.set_af_mute(True) == commands.set_af_mute(
-            True, receiver=RECEIVER_MAIN
-        )
+        assert commands.set_af_mute(
+            True, cmd_map=_IC7610_CMD_MAP
+        ) == commands.set_af_mute(True, receiver=RECEIVER_MAIN, cmd_map=_IC7610_CMD_MAP)
 
     def test_parse_af_mute_on(self) -> None:
         frame = _response_frame(_CMD_CTL_MEM, _SUB_AF_MUTE, b"\x01")
@@ -609,11 +618,13 @@ class TestAfMute:
         )
 
     def test_get_af_mute_custom_addresses(self) -> None:
-        frame = commands.get_af_mute(to_addr=0xA4, from_addr=0xE1)
+        frame = commands.get_af_mute(
+            to_addr=0xA4, from_addr=0xE1, cmd_map=_IC7610_CMD_MAP
+        )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1
 
     def test_af_mute_distinct_from_agc_time_constant(self) -> None:
-        assert commands.get_af_mute() != commands.get_agc_time_constant(
+        assert commands.get_af_mute(
             cmd_map=_IC7610_CMD_MAP
-        )
+        ) != commands.get_agc_time_constant(cmd_map=_IC7610_CMD_MAP)

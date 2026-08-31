@@ -1,6 +1,22 @@
 """Shared builder templates used by multiple leaf modules.
 
 Imports from ``_frame`` and ``_codec`` only -- never from leaf modules.
+
+``_build_function_get``/``_build_function_bool_set``/``_build_function_value_set``
+lost their hardcoded fallback branches in MOR-2008 batch 3
+(`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps 5..N),
+when `dsp.py` -- their last caller still invoking them with ``cmd_map=None``
+-- migrated onto the required-``cmd_map`` contract (`mode.py`/`tone.py`'s own
+batch 2 migration left them alone for exactly this reason: see cc632498's
+`mode.py` docstring). ``cmd_map``/``cmd_name`` are required now, matching
+every builder that calls through them.
+
+Each still takes a leading ``sub`` parameter its body no longer reads --
+`_build_from_map` resolves the real command/sub pair from the profile map,
+not from this argument. Left in place rather than removed, since removing
+it would require touching every call site in `mode.py`/`tone.py` too (not
+just `dsp.py`, this batch's scope); reported to the PR reviewer as a found,
+not-fixed nit rather than swept in silently.
 """
 
 from __future__ import annotations
@@ -12,10 +28,7 @@ from ._frame import (
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
     _CMD_LEVEL,
-    _CMD_PREAMP,
     _build_from_map,
-    build_civ_frame,
-    build_cmd29_frame,
 )
 
 if TYPE_CHECKING:
@@ -30,27 +43,17 @@ def _build_function_get(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     command29: bool = False,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
+    cmd_map: CommandMap,
+    cmd_name: str,
 ) -> bytes:
-    if cmd_map is not None and cmd_name is not None:
-        return _build_from_map(
-            cmd_map,
-            cmd_name,
-            to_addr=to_addr,
-            from_addr=from_addr,
-            receiver=receiver,
-            command29=command29,
-        )
-    if command29:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_PREAMP,
-            sub=sub,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=sub)
+    return _build_from_map(
+        cmd_map,
+        cmd_name,
+        to_addr=to_addr,
+        from_addr=from_addr,
+        receiver=receiver,
+        command29=command29,
+    )
 
 
 def _build_function_bool_set(
@@ -61,30 +64,19 @@ def _build_function_bool_set(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     command29: bool = False,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
+    cmd_map: CommandMap,
+    cmd_name: str,
 ) -> bytes:
     payload = b"\x01" if on else b"\x00"
-    if cmd_map is not None and cmd_name is not None:
-        return _build_from_map(
-            cmd_map,
-            cmd_name,
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=payload,
-            receiver=receiver,
-            command29=command29,
-        )
-    if command29:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_PREAMP,
-            sub=sub,
-            data=payload,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=sub, data=payload)
+    return _build_from_map(
+        cmd_map,
+        cmd_name,
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=payload,
+        receiver=receiver,
+        command29=command29,
+    )
 
 
 def _build_function_value_set(
@@ -97,32 +89,21 @@ def _build_function_value_set(
     from_addr: int = CONTROLLER_ADDR,
     receiver: int = RECEIVER_MAIN,
     command29: bool = False,
-    cmd_map: CommandMap | None = None,
-    cmd_name: str | None = None,
+    cmd_map: CommandMap,
+    cmd_name: str,
 ) -> bytes:
     if not minimum <= value <= maximum:
         raise ValueError(f"Value must be {minimum}-{maximum}, got {value}")
     payload = bytes([_bcd_byte(value)])
-    if cmd_map is not None and cmd_name is not None:
-        return _build_from_map(
-            cmd_map,
-            cmd_name,
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=payload,
-            receiver=receiver,
-            command29=command29,
-        )
-    if command29:
-        return build_cmd29_frame(
-            to_addr,
-            from_addr,
-            _CMD_PREAMP,
-            sub=sub,
-            data=payload,
-            receiver=receiver,
-        )
-    return build_civ_frame(to_addr, from_addr, _CMD_PREAMP, sub=sub, data=payload)
+    return _build_from_map(
+        cmd_map,
+        cmd_name,
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=payload,
+        receiver=receiver,
+        command29=command29,
+    )
 
 
 def parse_level_response(

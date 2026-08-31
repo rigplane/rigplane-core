@@ -18,14 +18,33 @@ snapshots ``vars(rigplane.commands)`` before reloading and restores that
 exact snapshot in a ``finally``, so a reload done inside one test here
 never leaks into the next test -- in this file or any other.
 
-Representative builder: ``dsp.py``'s ``get_attenuator``/``set_attenuator``,
-not ``freq.py``'s ``get_freq``/``set_freq`` as originally written -- MOR-2008
-batch 2 migrated ``get_freq``/``set_freq`` onto the required-``cmd_map``
-contract, so calling either with ``cmd_map=None`` (this file's whole point:
-proving the audit wrapper logs when the old fallback engages) now raises
-``TypeError`` before the wrapper's own logic ever runs. ``dsp.py`` is not
-migrated by any batch so far, so its builders still carry a real
-``cmd_map is None`` fallback branch to audit.
+Representative builder: ``dsp.py``'s ``get_attenuator``/``set_attenuator``.
+This file previously pointed at ``freq.py``'s ``get_freq``/``set_freq``,
+repointed to ``dsp.py`` when MOR-2008 batch 2 migrated ``get_freq``/
+``set_freq`` onto the required-``cmd_map`` contract and left the two
+``freq.py`` builders' ``cmd_map is None`` fallback dead to audit against.
+
+MOR-2008 batch 3 migrated ``dsp.py`` too, so ``get_attenuator`` no longer has
+a fallback branch either: calling it with ``cmd_map=None`` now raises
+``TypeError`` (`_frame.py: require_cmd_map`) instead of returning fallback
+bytes. **No repoint is possible this time** -- a census of every public
+builder across ``commands/*.py`` at this head (``inspect.signature(fn).
+parameters["cmd_map"].default``) found zero builders with an *optional*
+``cmd_map`` left: 238 now require it, and the 51 that lack the parameter
+entirely (``memory.py``, ``tx_band.py``, ``freq.py``'s five selected-
+receiver builders -- Group B, deferred per an owner ruling recorded in
+MOR-2008 batch 2's PR body) never had it in the first place, so
+``_fallback_audit.install`` would not even wrap them (its own gate is
+``"cmd_map" in inspect.signature(value).parameters``). The tests below that
+used to assert "no exception, fallback bytes returned, one warning logged"
+now assert "warning still logged, then the builder's own ``TypeError``
+propagates unchanged" -- the wrapper's log-then-delegate contract holds even
+though delegating no longer has a soft landing. This is exactly the
+precondition ``docs/plans/2026-08-29-profile-driven-command-bytes.md``'s
+Step Z names for deleting this file and ``_fallback_audit.py`` outright;
+Step Z is a separate, larger step (it also touches
+``commands/_frame.py``'s dead-constant census and ``docs/api/commands.md``)
+and is not done here.
 """
 
 from __future__ import annotations
@@ -124,9 +143,16 @@ class TestFlagOff:
     def test_calling_without_a_map_logs_nothing(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """Flag off means the raw function is exported unwrapped -- its own
+        ``@require_cmd_map`` (MOR-2006) raises for ``cmd_map=None`` (dsp.py
+        has no fallback left as of MOR-2008 batch 3), but that ``TypeError``
+        comes from the builder itself, never from this module's logger,
+        which must stay silent because nothing wrapped the call.
+        """
         with _reloaded_with_flag(monkeypatch, None) as reloaded:
             with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
-                reloaded.get_attenuator(to_addr=0x94, cmd_map=None)
+                with pytest.raises(TypeError, match="cmd_map is None"):
+                    reloaded.get_attenuator(to_addr=0x94, cmd_map=None)
             assert caplog.records == []
 
 
@@ -136,9 +162,18 @@ class TestFlagOn:
     def test_exports_are_wrapped_but_unwrap_to_the_raw_function(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """``dsp_module.get_attenuator`` is itself one layer of wrapping now
+        (``@require_cmd_map``, MOR-2006) rather than the bare function this
+        test compared against before MOR-2008 batch 3 -- both sides are
+        unwrapped the same way so the comparison lands on the same
+        underlying callable regardless of how many layers either side
+        carries.
+        """
         with _reloaded_with_flag(monkeypatch, "1") as reloaded:
             assert reloaded.get_attenuator is not dsp_module.get_attenuator
-            assert inspect.unwrap(reloaded.get_attenuator) is dsp_module.get_attenuator
+            assert inspect.unwrap(reloaded.get_attenuator) is inspect.unwrap(
+                dsp_module.get_attenuator
+            )
             assert reloaded.get_attenuator.__name__ == "get_attenuator"
             assert reloaded.get_attenuator.__doc__ == dsp_module.get_attenuator.__doc__
 
@@ -159,10 +194,17 @@ class TestFlagOn:
     def test_call_without_a_map_logs_exactly_one_warning_naming_the_builder(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """The wrapper logs before delegating, never after. dsp.py (MOR-2008
+        batch 3) deleted the last hardcoded fallback anywhere in commands/,
+        so the delegated call now raises instead of returning fallback
+        bytes -- the warning still fires first, pinning log-then-delegate
+        ordering rather than a return value ``_wrap`` can no longer produce
+        for any builder.
+        """
         with _reloaded_with_flag(monkeypatch, "1") as reloaded:
             with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
-                result = reloaded.get_attenuator(to_addr=0x94, cmd_map=None)
-            assert result == dsp_module.get_attenuator(to_addr=0x94, cmd_map=None)
+                with pytest.raises(TypeError, match="cmd_map is None"):
+                    reloaded.get_attenuator(to_addr=0x94, cmd_map=None)
             assert len(caplog.records) == 1
             assert "get_attenuator" in caplog.text
 
@@ -178,10 +220,22 @@ class TestFlagOn:
     def test_return_value_and_exceptions_are_preserved(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The wrapper substitutes no error and no return value of its own.
+
+        dsp.py (MOR-2008 batch 3) left no builder anywhere in commands/
+        that still returns fallback bytes for ``cmd_map=None`` (see the
+        module docstring's census), so this now pins exception
+        preservation only: the wrapped call raises the identical
+        ``TypeError`` the raw call does, not one ``_wrap`` manufactures
+        itself. ``test_call_with_a_map_logs_nothing`` below still covers
+        return-value preservation for the real, successful path.
+        """
         with _reloaded_with_flag(monkeypatch, "1") as reloaded:
-            assert reloaded.get_attenuator(
-                to_addr=0x94, cmd_map=None
-            ) == dsp_module.get_attenuator(to_addr=0x94, cmd_map=None)
+            with pytest.raises(TypeError, match="cmd_map is None") as wrapped_exc:
+                reloaded.get_attenuator(to_addr=0x94, cmd_map=None)
+            with pytest.raises(TypeError, match="cmd_map is None") as raw_exc:
+                dsp_module.get_attenuator(to_addr=0x94, cmd_map=None)
+            assert str(wrapped_exc.value) == str(raw_exc.value)
             with pytest.raises(TypeError):
                 reloaded.get_attenuator()  # missing required to_addr, both wrapped and raw
 

@@ -38,6 +38,7 @@ flagged but did not fix:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -55,12 +56,15 @@ from rigplane.commands import (
 from rigplane.exceptions import CommandError
 from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.rig_loader import load_rig
 from rigplane.types import AgcMode, CivFrame
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
 from test_mor1517_cmd29_gating import (
     _IC7300_ADDR,
+    _IC7300_CMD_MAP,
     _IC7610_ADDR,
+    _IC7610_CMD_MAP,
     _connected_icom,
     _mock_expect,
     _mock_raw,
@@ -68,6 +72,13 @@ from test_mor1517_cmd29_gating import (
 )
 
 _IC9700_ADDR = 0xA2
+_RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+# commands/dsp.py migrated onto the bound command map in MOR-2008 (batch
+# 3): get_agc/set_agc/get_af_mute/set_af_mute/get_digisel/set_digisel now
+# require cmd_map. IC-9700 declares the same [0x16, 0x12] wire tuple for
+# get_agc/set_agc the deleted fallback used to build (no divergence row
+# names it), so passing it changes no expected frame in TestAgcGating.
+_IC9700_CMD_MAP = load_rig(_RIG_DIR / "ic9700.toml").to_command_map()
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +93,13 @@ class TestAgcGating:
         radio = _connected_icom(model="IC-7300")
         mock = _mock_raw(radio)
         await radio.set_agc(AgcMode.FAST, receiver=0)
-        expected = set_agc(1, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = set_agc(
+            1,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
         assert b"\x29" not in expected
 
@@ -94,7 +111,9 @@ class TestAgcGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         await radio.set_agc(AgcMode.FAST, receiver=0)
-        expected = set_agc(1, to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = set_agc(
+            1, to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert expected[4] == 0x29
 
@@ -103,7 +122,9 @@ class TestAgcGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         await radio.set_agc(AgcMode.FAST, receiver=1)
-        expected = set_agc(1, to_addr=_IC7610_ADDR, receiver=1, command29=True)
+        expected = set_agc(
+            1, to_addr=_IC7610_ADDR, receiver=1, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -113,7 +134,13 @@ class TestAgcGating:
         radio = _connected_icom(model="IC-9700")
         mock = _mock_raw(radio)
         await radio.set_agc(AgcMode.FAST, receiver=0)
-        expected = set_agc(1, to_addr=_IC9700_ADDR, receiver=0, command29=False)
+        expected = set_agc(
+            1,
+            to_addr=_IC9700_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC9700_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -133,7 +160,9 @@ class TestAgcGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_agc(receiver=0)
-        expected = get_agc(to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        expected = get_agc(
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == AgcMode.FAST
 
@@ -146,7 +175,9 @@ class TestAgcGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_agc(receiver=0)
-        expected = get_agc(to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = get_agc(
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert expected[4] == 0x29
         assert value == AgcMode.FAST
@@ -159,7 +190,9 @@ class TestAgcGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_agc(receiver=1)
-        expected = get_agc(to_addr=_IC7610_ADDR, receiver=1, command29=True)
+        expected = get_agc(
+            to_addr=_IC7610_ADDR, receiver=1, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == AgcMode.MID
 
@@ -171,7 +204,9 @@ class TestAgcGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_agc(receiver=0)
-        expected = get_agc(to_addr=_IC9700_ADDR, receiver=0, command29=False)
+        expected = get_agc(
+            to_addr=_IC9700_ADDR, receiver=0, command29=False, cmd_map=_IC9700_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value == AgcMode.FAST
 
@@ -191,14 +226,28 @@ class TestAgcGating:
 class TestAfMuteGating:
     def test_builder_command29_false_produces_plain_frame(self) -> None:
         """The builder previously had no override at all -- calling with
-        command29=False used to raise TypeError. Locks in the new param."""
-        got = get_af_mute(to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        command29=False used to raise TypeError. Locks in the new param.
+
+        IC-7300 declares af_mute absent (docs/plans/...batch 1's own D2
+        pass), so this builder-level shape check uses IC-7610's map --
+        the same [0x1A, 0x09] wire tuple, unrelated to the arbitrary
+        to_addr this test passes.
+        """
+        got = get_af_mute(
+            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7610_CMD_MAP
+        )
         expected = build_civ_frame(_IC7300_ADDR, 0xE0, 0x1A, sub=0x09)
         assert got == expected
         assert b"\x29" not in got
 
     def test_builder_set_command29_false_produces_plain_frame(self) -> None:
-        got = set_af_mute(True, to_addr=_IC7300_ADDR, receiver=0, command29=False)
+        got = set_af_mute(
+            True,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7610_CMD_MAP,
+        )
         expected = build_civ_frame(_IC7300_ADDR, 0xE0, 0x1A, sub=0x09, data=b"\x01")
         assert got == expected
 
@@ -210,7 +259,9 @@ class TestAfMuteGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_af_mute(receiver=0)
-        expected = get_af_mute(to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = get_af_mute(
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value is True
 
@@ -219,7 +270,13 @@ class TestAfMuteGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         await radio.set_af_mute(True, receiver=1)
-        expected = set_af_mute(True, to_addr=_IC7610_ADDR, receiver=1, command29=True)
+        expected = set_af_mute(
+            True,
+            to_addr=_IC7610_ADDR,
+            receiver=1,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -240,7 +297,9 @@ class TestAfMuteGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_af_mute(receiver=0)
-        expected = get_af_mute(to_addr=_IC7610_ADDR, receiver=0, command29=False)
+        expected = get_af_mute(
+            to_addr=_IC7610_ADDR, receiver=0, command29=False, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value is False
 
@@ -267,13 +326,21 @@ class TestAfMuteGating:
 
 class TestDigiselGating:
     def test_builder_command29_false_produces_plain_frame(self) -> None:
-        got = get_digisel(to_addr=_IC7610_ADDR, receiver=0, command29=False)
+        got = get_digisel(
+            to_addr=_IC7610_ADDR, receiver=0, command29=False, cmd_map=_IC7610_CMD_MAP
+        )
         expected = build_civ_frame(_IC7610_ADDR, 0xE0, 0x16, sub=0x4E)
         assert got == expected
         assert b"\x29" not in got
 
     def test_builder_set_command29_false_produces_plain_frame(self) -> None:
-        got = set_digisel(True, to_addr=_IC7610_ADDR, receiver=0, command29=False)
+        got = set_digisel(
+            True,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7610_CMD_MAP,
+        )
         expected = build_civ_frame(_IC7610_ADDR, 0xE0, 0x16, sub=0x4E, data=b"\x01")
         assert got == expected
 
@@ -285,7 +352,9 @@ class TestDigiselGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_digisel(receiver=0)
-        expected = get_digisel(to_addr=_IC7610_ADDR, receiver=0, command29=True)
+        expected = get_digisel(
+            to_addr=_IC7610_ADDR, receiver=0, command29=True, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value is True
 
@@ -297,7 +366,13 @@ class TestDigiselGating:
         )
         mock = _mock_expect(radio, response)
         await radio.set_digisel(False, receiver=1)
-        expected = set_digisel(False, to_addr=_IC7610_ADDR, receiver=1, command29=True)
+        expected = set_digisel(
+            False,
+            to_addr=_IC7610_ADDR,
+            receiver=1,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
+        )
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
@@ -317,7 +392,9 @@ class TestDigiselGating:
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_digisel(receiver=0)
-        expected = get_digisel(to_addr=_IC7610_ADDR, receiver=0, command29=False)
+        expected = get_digisel(
+            to_addr=_IC7610_ADDR, receiver=0, command29=False, cmd_map=_IC7610_CMD_MAP
+        )
         assert _sent_civ(mock) == expected
         assert value is False
 

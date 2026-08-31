@@ -2171,7 +2171,7 @@ class TestAgcDomainDeclaredOrCapabilityAbsent:
         if rig.agc_modes is None:
             pytest.skip(f"{toml_path.name}: no agc capability")
         for mode in rig.agc_modes:
-            civ = set_agc(mode, to_addr=rig.civ_addr)
+            civ = set_agc(mode, to_addr=rig.civ_addr, cmd_map=rig.to_command_map())
             # All shipped AGC domains are single-digit (0-9), so the BCD
             # byte equals the raw mode value — this is both the
             # "encodes without raising" check and a byte-shape pin.
@@ -2284,7 +2284,7 @@ class TestPreampDomainDeclaredOrCapabilityAbsent:
         if rig.pre_values is None:
             pytest.skip(f"{toml_path.name}: no preamp capability")
         for level in rig.pre_values:
-            civ = set_preamp(level, to_addr=rig.civ_addr)
+            civ = set_preamp(level, to_addr=rig.civ_addr, cmd_map=rig.to_command_map())
             # All shipped preamp domains are single-digit (0-9), so the BCD
             # byte equals the raw level value.
             assert civ.endswith(bytes([0x16, 0x02, level, 0xFD])), (
@@ -2674,19 +2674,24 @@ class TestNoShippedProfileUsesAbsentSpellingYet:
     ``ic9700.toml`` (26 commands, D2 documentary verdicts against the
     IC-9700 CI-V Reference Guide), MOR-2016 filled ``ic705.toml`` (24
     commands, D2 documentary verdicts against the IC-705 CI-V Reference
-    Guide), and MOR-2008 batch 2 filled ``ic7610.toml`` (8 commands, the
+    Guide), MOR-2008 batch 2 filled ``ic7610.toml`` (8 commands, the
     repeater-tone/TSQL/tone-freq/TSQL-freq family, promoting a
     comment-only D1 state 3 to a formal state 2 row grounded in a
-    live-bench readback rather than a documentary source). This pin is
-    narrowed rather than deleted so every *other* shipped profile stays
-    proven empty until its own D2 pass fills it too — narrow further (or
-    delete) as each profile gets filled.
+    live-bench readback rather than a documentary source), and MOR-2008
+    batch 3 filled ``x6100.toml``/``x6200.toml`` (6 commands each, the
+    vox/break-in/manual-notch family, promoting a comment-only D1 state 3
+    to a formal state 2 row grounded in the V1.0.6 documentary table
+    rather than a live capture -- see
+    ``TestX6200DeclaresAbsentCommands``/``TestX6100DeclaresAbsentCommands``
+    below). This pin is narrowed rather than deleted so every *other*
+    shipped profile stays proven empty until its own D2 pass fills it too
+    — narrow further (or delete) as each profile gets filled.
     """
 
     _NOT_YET_FILLED = tuple(
         p
         for p in _SHIPPED_RIG_TOMLS
-        if p.stem not in {"ic7300", "ic9700", "ic705", "ic7610"}
+        if p.stem not in {"ic7300", "ic9700", "ic705", "ic7610", "x6100", "x6200"}
     )
 
     @pytest.mark.parametrize("toml_path", _NOT_YET_FILLED, ids=lambda p: p.stem)
@@ -2910,3 +2915,64 @@ class TestIc7610DeclaresAbsentCommands:
         cmd_map = load_rig(RIGS_DIR / "ic7610.toml").to_command_map()
         for name in self._EXPECTED_ABSENT:
             assert not cmd_map.has(name), f"{name} declared absent but still in map"
+
+
+class _X6DeclaresAbsentVoxBreakInManualNotch:
+    """Shared body for the X6100/X6200 absent-DSP-family pin below.
+
+    MOR-2008 batch 3: both profiles formally declare
+    ``get_/set_vox``, ``get_/set_break_in`` and ``get_/set_manual_notch``
+    absent, promoted from a comment-only note (``rigs/x6200.toml``'s own
+    "vox"/"notch"/"break_in" bullets, inherited into ``rigs/x6100.toml``
+    per its D2 MOR-2018 sourcing rule) once the bound-command-map
+    migration (MOR-2006) made the fallback that used to silently send
+    each control's hardcoded, undocumented opcode dead code. Distinct
+    from ``get_/set_nr``, ``get_/set_compressor`` and
+    ``get_/set_auto_notch``, which the same migration round declares
+    *present* instead, at opcodes the project's own cat-audit already
+    confirmed correct (docs/validation/cat-audits/x6200.md) -- those
+    three are not absent commands and must not appear here.
+    """
+
+    _EXPECTED_ABSENT = frozenset(
+        {
+            "get_vox",
+            "set_vox",
+            "get_break_in",
+            "set_break_in",
+            "get_manual_notch",
+            "set_manual_notch",
+        }
+    )
+    _TOML_NAME: str
+
+    def test_absent_command_names_match(self):
+        profile = load_rig(RIGS_DIR / self._TOML_NAME).to_profile()
+        assert profile.absent_command_names == self._EXPECTED_ABSENT
+
+    def test_absent_commands_excluded_from_command_map(self):
+        cmd_map = load_rig(RIGS_DIR / self._TOML_NAME).to_command_map()
+        for name in self._EXPECTED_ABSENT:
+            assert not cmd_map.has(name), f"{name} declared absent but still in map"
+
+    def test_nr_compressor_auto_notch_stay_present_not_absent(self):
+        """The under-declared-not-absent sibling fix (same migration round)."""
+        profile = load_rig(RIGS_DIR / self._TOML_NAME).to_profile()
+        declared_present = {
+            "get_nr",
+            "set_nr",
+            "get_compressor",
+            "set_compressor",
+            "get_auto_notch",
+            "set_auto_notch",
+        }
+        assert declared_present <= profile.command_names
+        assert not (declared_present & profile.absent_command_names)
+
+
+class TestX6200DeclaresAbsentCommands(_X6DeclaresAbsentVoxBreakInManualNotch):
+    _TOML_NAME = "x6200.toml"
+
+
+class TestX6100DeclaresAbsentCommands(_X6DeclaresAbsentVoxBreakInManualNotch):
+    _TOML_NAME = "x6100.toml"

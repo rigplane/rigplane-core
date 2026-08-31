@@ -26,54 +26,18 @@
 # reachable from a builder that was compared, not sites observed to
 # execute. Every number here is re-measured and asserted by that
 # test. Regenerate, do not edit.
-census	builders_compared	37
+census	builders_compared	0
 census	cat_only_profiles	2
-census	dual_implementation_sites	17
+census	dual_implementation_sites	0
 census	frames_diverged	0
-census	frames_identical	373
+census	frames_identical	0
 census	hardcode_only_builders	16
-census	profile_builder_map_gaps	140
+census	profile_builder_map_gaps	0
 census	profiles	8
 census	public_builders	228
-census	sites_compared	17
+census	sites_compared	0
 cat-only	FTX-1	108
 cat-only	TX-500	50
-gap	get_af_mute	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
-gap	get_agc	FTX-1,TX-500
-gap	get_attenuator	FTX-1,TX-500
-gap	get_audio_peak_filter	FTX-1,TX-500,X6100,X6200
-gap	get_auto_notch	FTX-1,TX-500,X6100,X6200
-gap	get_break_in	FTX-1,TX-500,X6100,X6200
-gap	get_compressor	FTX-1,TX-500,X6100,X6200
-gap	get_dial_lock	FTX-1,TX-500
-gap	get_digisel	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
-gap	get_ip_plus	FTX-1,IC-705,TX-500,X6100,X6200
-gap	get_manual_notch	FTX-1,TX-500,X6100,X6200
-gap	get_manual_notch_width	FTX-1,TX-500,X6100,X6200
-gap	get_monitor	FTX-1,TX-500,X6100,X6200
-gap	get_nb	FTX-1,TX-500
-gap	get_nr	FTX-1,TX-500,X6100,X6200
-gap	get_preamp	FTX-1,TX-500
-gap	get_twin_peak_filter	FTX-1,TX-500,X6100,X6200
-gap	get_vox	FTX-1,TX-500,X6100,X6200
-gap	set_af_mute	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
-gap	set_agc	FTX-1,TX-500
-gap	set_attenuator	FTX-1,TX-500
-gap	set_audio_peak_filter	FTX-1,TX-500,X6100,X6200
-gap	set_auto_notch	FTX-1,TX-500,X6100,X6200
-gap	set_break_in	FTX-1,TX-500,X6100,X6200
-gap	set_compressor	FTX-1,TX-500,X6100,X6200
-gap	set_dial_lock	FTX-1,TX-500
-gap	set_digisel	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
-gap	set_ip_plus	FTX-1,IC-705,TX-500,X6100,X6200
-gap	set_manual_notch	FTX-1,TX-500,X6100,X6200
-gap	set_manual_notch_width	FTX-1,TX-500,X6100,X6200
-gap	set_monitor	FTX-1,TX-500,X6100,X6200
-gap	set_nb	FTX-1,TX-500
-gap	set_nr	FTX-1,TX-500,X6100,X6200
-gap	set_preamp	FTX-1,TX-500
-gap	set_twin_peak_filter	FTX-1,TX-500,X6100,X6200
-gap	set_vox	FTX-1,TX-500,X6100,X6200
 requires-map	antenna.py:get_antenna_1
 requires-map	antenna.py:get_antenna_2
 requires-map	antenna.py:get_rx_antenna_ant1
@@ -102,6 +66,43 @@ requires-map	config.py:set_lan_mod_level
 requires-map	config.py:set_usb_mod_level
 requires-map	cw.py:send_cw
 requires-map	cw.py:stop_cw
+requires-map	dsp.py:get_af_mute
+requires-map	dsp.py:get_agc
+requires-map	dsp.py:get_attenuator
+requires-map	dsp.py:get_audio_peak_filter
+requires-map	dsp.py:get_auto_notch
+requires-map	dsp.py:get_break_in
+requires-map	dsp.py:get_compressor
+requires-map	dsp.py:get_dial_lock
+requires-map	dsp.py:get_digisel
+requires-map	dsp.py:get_ip_plus
+requires-map	dsp.py:get_manual_notch
+requires-map	dsp.py:get_manual_notch_width
+requires-map	dsp.py:get_monitor
+requires-map	dsp.py:get_nb
+requires-map	dsp.py:get_nr
+requires-map	dsp.py:get_preamp
+requires-map	dsp.py:get_twin_peak_filter
+requires-map	dsp.py:get_vox
+requires-map	dsp.py:set_af_mute
+requires-map	dsp.py:set_agc
+requires-map	dsp.py:set_attenuator
+requires-map	dsp.py:set_attenuator_level
+requires-map	dsp.py:set_audio_peak_filter
+requires-map	dsp.py:set_auto_notch
+requires-map	dsp.py:set_break_in
+requires-map	dsp.py:set_compressor
+requires-map	dsp.py:set_dial_lock
+requires-map	dsp.py:set_digisel
+requires-map	dsp.py:set_ip_plus
+requires-map	dsp.py:set_manual_notch
+requires-map	dsp.py:set_manual_notch_width
+requires-map	dsp.py:set_monitor
+requires-map	dsp.py:set_nb
+requires-map	dsp.py:set_nr
+requires-map	dsp.py:set_preamp
+requires-map	dsp.py:set_twin_peak_filter
+requires-map	dsp.py:set_vox
 requires-map	freq.py:get_freq
 requires-map	freq.py:set_freq
 requires-map	levels.py:get_af_level

@@ -436,7 +436,11 @@ class TestAudioPeakFilterGating:
         mock = _mock_raw(radio)
         await radio.set_audio_peak_filter(AudioPeakFilter.WIDE, receiver=0)
         expected = set_audio_peak_filter(
-            AudioPeakFilter.WIDE, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            AudioPeakFilter.WIDE,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -446,7 +450,11 @@ class TestAudioPeakFilterGating:
         mock = _mock_raw(radio)
         await radio.set_audio_peak_filter(AudioPeakFilter.WIDE, receiver=0)
         expected = set_audio_peak_filter(
-            AudioPeakFilter.WIDE, to_addr=_IC7610_ADDR, receiver=0, command29=True
+            AudioPeakFilter.WIDE,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -458,7 +466,11 @@ class TestAutoNotchGating:
         mock = _mock_raw(radio)
         await radio.set_auto_notch(True, receiver=0)
         expected = set_auto_notch(
-            True, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            True,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -468,7 +480,11 @@ class TestAutoNotchGating:
         mock = _mock_raw(radio)
         await radio.set_auto_notch(True, receiver=0)
         expected = set_auto_notch(
-            True, to_addr=_IC7610_ADDR, receiver=0, command29=True
+            True,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -480,7 +496,11 @@ class TestManualNotchGating:
         mock = _mock_raw(radio)
         await radio.set_manual_notch(True, receiver=0)
         expected = set_manual_notch(
-            True, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            True,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -490,7 +510,11 @@ class TestManualNotchGating:
         mock = _mock_raw(radio)
         await radio.set_manual_notch(True, receiver=0)
         expected = set_manual_notch(
-            True, to_addr=_IC7610_ADDR, receiver=0, command29=True
+            True,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -506,7 +530,11 @@ class TestManualNotchWidthGating:
         mock = _mock_raw(radio)
         await radio.set_manual_notch_width(2, receiver=0)
         expected = set_manual_notch_width(
-            2, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            2,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -516,7 +544,11 @@ class TestManualNotchWidthGating:
         mock = _mock_raw(radio)
         await radio.set_manual_notch_width(2, receiver=0)
         expected = set_manual_notch_width(
-            2, to_addr=_IC7610_ADDR, receiver=0, command29=False
+            2,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7610_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
         assert radio._profile.supports_cmd29(0x16, 0x57) is False
@@ -529,7 +561,11 @@ class TestTwinPeakFilterGating:
         mock = _mock_raw(radio)
         await radio.set_twin_peak_filter(True, receiver=0)
         expected = set_twin_peak_filter(
-            True, to_addr=_IC7300_ADDR, receiver=0, command29=False
+            True,
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 
@@ -539,7 +575,11 @@ class TestTwinPeakFilterGating:
         mock = _mock_raw(radio)
         await radio.set_twin_peak_filter(True, receiver=0)
         expected = set_twin_peak_filter(
-            True, to_addr=_IC7610_ADDR, receiver=0, command29=True
+            True,
+            to_addr=_IC7610_ADDR,
+            receiver=0,
+            command29=True,
+            cmd_map=_IC7610_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
 

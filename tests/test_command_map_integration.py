@@ -124,13 +124,26 @@ class TestGetterParity:
         assert commands.get_tuning_step(cmd_map=cmd_map) == expected
 
     def test_get_nb(self, cmd_map):
-        assert commands.get_nb(cmd_map=cmd_map) == commands.get_nb()
+        # commands/dsp.py migrated onto the bound command map in MOR-2008
+        # (batch 3): get_nb now requires cmd_map -- pinned against the
+        # frame the deleted fallback used to build (command29 defaults
+        # True, receiver defaults MAIN).
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x22, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_nb(cmd_map=cmd_map) == expected
 
     def test_get_nr(self, cmd_map):
-        assert commands.get_nr(cmd_map=cmd_map) == commands.get_nr()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x40, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_nr(cmd_map=cmd_map) == expected
 
     def test_get_ip_plus(self, cmd_map):
-        assert commands.get_ip_plus(cmd_map=cmd_map) == commands.get_ip_plus()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x65, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_ip_plus(cmd_map=cmd_map) == expected
 
     def test_get_power_meter(self, cmd_map):
         expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x15, sub=0x11)
@@ -444,22 +457,37 @@ class TestHelperCallerParity:
         assert commands.get_nb_level(cmd_map=cmd_map) == expected
 
     def test_get_agc(self, cmd_map):
-        assert commands.get_agc(cmd_map=cmd_map) == commands.get_agc()
+        # commands/dsp.py migrated onto the bound command map in MOR-2008
+        # (batch 3): pinned against the frame the deleted fallback used to
+        # build (command29 defaults True, same as the deleted fallback).
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x12, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_agc(cmd_map=cmd_map) == expected
 
     def test_get_compressor(self, cmd_map):
-        assert commands.get_compressor(cmd_map=cmd_map) == commands.get_compressor()
+        # get_compressor exposes no receiver/command29 of its own, and the
+        # shared _build_function_get template it delegates through
+        # defaults command29=False -- the deleted fallback built a plain,
+        # unwrapped frame.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x44)
+        assert commands.get_compressor(cmd_map=cmd_map) == expected
 
     def test_get_monitor(self, cmd_map):
-        assert commands.get_monitor(cmd_map=cmd_map) == commands.get_monitor()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x45)
+        assert commands.get_monitor(cmd_map=cmd_map) == expected
 
     def test_get_vox(self, cmd_map):
-        assert commands.get_vox(cmd_map=cmd_map) == commands.get_vox()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x46)
+        assert commands.get_vox(cmd_map=cmd_map) == expected
 
     def test_get_break_in(self, cmd_map):
-        assert commands.get_break_in(cmd_map=cmd_map) == commands.get_break_in()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x47)
+        assert commands.get_break_in(cmd_map=cmd_map) == expected
 
     def test_get_dial_lock(self, cmd_map):
-        assert commands.get_dial_lock(cmd_map=cmd_map) == commands.get_dial_lock()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x50)
+        assert commands.get_dial_lock(cmd_map=cmd_map) == expected
 
     def test_get_filter_shape(self, cmd_map):
         # commands/mode.py migrated onto the bound command map in MOR-2008
@@ -504,64 +532,86 @@ class TestCmd29Parity:
     ``get_attenuator``, ``get_preamp``, ``get_digisel`` and ``get_af_mute``
     used to match only at that default, because the cmd_map branch passed a
     hardcoded ``command29=True`` while the fallback honoured the argument.
-    MOR-1986 made the branch forward it, so they now match at
-    ``command29=False`` too. The ``_without_cmd29`` tests below name that
-    property at the point of use; they are not its only guard.
-    ``test_command_map_parity.py`` probes every optional argument at a
-    non-default value, so it reaches ``command29=False`` on every profile --
-    regressing this fails those four tests and both of that file's baseline
-    tests, six in all.
+    MOR-1986 made the branch forward it, so they matched at
+    ``command29=False`` too.
+
+    commands/dsp.py migrated onto the bound command map in MOR-2008 (batch
+    3): every builder in this class now requires ``cmd_map``, so there is
+    no more "without cmd_map" to compare against -- each case below pins
+    the map path against the frame the deleted fallback used to build
+    instead (``rigs/ic7610.toml`` declares the same wire tuples the
+    fallback did, per ``tests/command_map_parity_divergences.txt`` naming
+    no IC-7610 row for any of them). The ``_without_cmd29`` tests still
+    name the ``command29=False`` property at the point of use, now against
+    a pinned frame rather than a second live call; they are not its only
+    guard. ``test_command_map_parity.py`` probes every optional argument at
+    a non-default value, so it reaches ``command29=False`` on every
+    profile too.
     """
 
     def test_get_attenuator(self, cmd_map):
-        assert commands.get_attenuator(cmd_map=cmd_map) == commands.get_attenuator()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x11, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_attenuator(cmd_map=cmd_map) == expected
 
     def test_get_preamp(self, cmd_map):
-        assert commands.get_preamp(cmd_map=cmd_map) == commands.get_preamp()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x02, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_preamp(cmd_map=cmd_map) == expected
 
     def test_get_digisel(self, cmd_map):
-        assert commands.get_digisel(cmd_map=cmd_map) == commands.get_digisel()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x4E, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_digisel(cmd_map=cmd_map) == expected
 
     def test_get_af_mute(self, cmd_map):
-        assert commands.get_af_mute(cmd_map=cmd_map) == commands.get_af_mute()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x09, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_af_mute(cmd_map=cmd_map) == expected
 
     def test_get_attenuator_without_cmd29(self, cmd_map):
-        assert commands.get_attenuator(
-            cmd_map=cmd_map, command29=False
-        ) == commands.get_attenuator(command29=False)
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x11)
+        assert commands.get_attenuator(cmd_map=cmd_map, command29=False) == expected
 
     def test_get_preamp_without_cmd29(self, cmd_map):
-        assert commands.get_preamp(
-            cmd_map=cmd_map, command29=False
-        ) == commands.get_preamp(command29=False)
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x02)
+        assert commands.get_preamp(cmd_map=cmd_map, command29=False) == expected
 
     def test_get_digisel_without_cmd29(self, cmd_map):
-        assert commands.get_digisel(
-            cmd_map=cmd_map, command29=False
-        ) == commands.get_digisel(command29=False)
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x4E)
+        assert commands.get_digisel(cmd_map=cmd_map, command29=False) == expected
 
     def test_get_af_mute_without_cmd29(self, cmd_map):
-        assert commands.get_af_mute(
-            cmd_map=cmd_map, command29=False
-        ) == commands.get_af_mute(command29=False)
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x09)
+        assert commands.get_af_mute(cmd_map=cmd_map, command29=False) == expected
 
     def test_get_audio_peak_filter(self, cmd_map):
-        assert (
-            commands.get_audio_peak_filter(cmd_map=cmd_map)
-            == commands.get_audio_peak_filter()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x32, receiver=RECEIVER_MAIN
         )
+        assert commands.get_audio_peak_filter(cmd_map=cmd_map) == expected
 
     def test_get_auto_notch(self, cmd_map):
-        assert commands.get_auto_notch(cmd_map=cmd_map) == commands.get_auto_notch()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x41, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_auto_notch(cmd_map=cmd_map) == expected
 
     def test_get_manual_notch(self, cmd_map):
-        assert commands.get_manual_notch(cmd_map=cmd_map) == commands.get_manual_notch()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x48, receiver=RECEIVER_MAIN
+        )
+        assert commands.get_manual_notch(cmd_map=cmd_map) == expected
 
     def test_get_twin_peak_filter(self, cmd_map):
-        assert (
-            commands.get_twin_peak_filter(cmd_map=cmd_map)
-            == commands.get_twin_peak_filter()
+        expected = build_cmd29_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x16, sub=0x4F, receiver=RECEIVER_MAIN
         )
+        assert commands.get_twin_peak_filter(cmd_map=cmd_map) == expected
 
     def test_get_various_squelch(self, cmd_map):
         # commands/meters.py migrated onto the bound command map in
