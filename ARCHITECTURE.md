@@ -259,7 +259,7 @@ ws.send(JSON.stringify({
 - `vfo/` — dual-receiver VFO UI with bridge controls
 - `display/` — meters, indicators, DX cluster
 - `controls/` — buttons, switches, mode/filter selectors
-- `wiring/` — state-adapter + command-bus (adapter layer per CLAUDE.md)
+- `wiring/` — where the pure surfaces meet live state (per CLAUDE.md)
 - `theme/` — skin registry, visual system
 
 **State management:**
