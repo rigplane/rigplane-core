@@ -100,7 +100,7 @@ function evaluateReviewGate({comments, headSha, committedAt}) {
     if (
       comment === null ||
       typeof comment !== 'object' ||
-      comment.minimized === true ||
+      Boolean(comment.minimized) ||
       !TRUSTED_ASSOCIATIONS.has(comment.author_association)
     ) {
       continue;

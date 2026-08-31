@@ -275,6 +275,24 @@ test('trust, minimization, and PASS freshness are enforced', () => {
   }
 
   assert.equal(evaluate([comment(directive('PASS'), {minimized: true})]).state, 'failure');
+
+  // The REST payload (issues.listComments) reports a minimized comment as an
+  // OBJECT -- {"reason": "outdated"} -- never as the boolean `true`. A strict
+  // `=== true` check therefore never matches a real hidden comment, so hiding
+  // a superseded directive had no effect on the gate. Both shapes must skip.
+  assert.equal(
+    evaluate([comment(directive('PASS'), {minimized: {reason: 'outdated'}})]).state,
+    'failure',
+  );
+  assert.equal(
+    evaluate([
+      comment(directive('BLOCKED') + '\n\nsuperseded', {
+        minimized: {reason: 'outdated'},
+      }),
+      comment(directive('PASS')),
+    ]).state,
+    'success',
+  );
   assert.equal(
     evaluate([comment(directive('PASS'), {updated_at: '2026-08-08T04:49:59Z'})]).state,
     'failure',
