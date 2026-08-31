@@ -27,10 +27,15 @@ import {
 } from '$lib/runtime/adapters/capabilities-adapter';
 import type { MeterCalPoint } from '$lib/runtime/adapters/capabilities-adapter';
 // `formatSMeter`'s calibrated branch defers to the one table-driven S-unit
-// reader (MOR-2024) instead of keeping a second copy of that math here;
-// `isSmeterCalibrated` was a byte-for-byte duplicate of the same import
-// over the same underlying capabilities data, so it is reused too rather
-// than kept as a second "is there a curve" check.
+// reader (MOR-2024) instead of keeping a second copy of that math here.
+// `isSmeterCalibrated` is reused from the same import instead of a second
+// local "is there a curve" check -- the two were never byte-for-byte
+// duplicates (this file's check went through `getSmeterKnots()`, gated at
+// `length >= 2`; the imported one tested `length > 0` directly), so the
+// swap silently loosened the gate to one knot until `smeter-scale.ts`'s
+// `isSmeterCalibrated` was fixed (MOR-2024) to also require `length >= 2`
+// -- interpolation needs two points to define a line, so a single knot
+// cannot support a calibrated reading.
 import { calibratedToSUnit, isSmeterCalibrated } from '../meters/smeter-scale';
 
 export type MeterSource = 'S' | 'SWR' | 'POWER' | 'po';
