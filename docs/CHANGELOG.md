@@ -207,6 +207,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module and it was never a documented public API; external code that imported
   the old path should vendor the double from the repo's test tree instead.
 
+### Fixed
+
+- **WS `set_quick_split`/`set_quick_dual_watch` now write instead of
+  re-reading (MOR-2007 ruling 2 follow-up, MOR-2045).** Both intents parse
+  `on` from `params` and enqueue new `SetQuickSplit`/`SetQuickDualWatch`
+  poller commands, which write through `CoreRadio.set_quick_split`/
+  `set_quick_dual_watch`. Previously they enqueued the same bare read
+  marker as their `get_` twins and silently re-read the current toggle
+  state instead of changing it.
+
 ## [2.11.1] — 2026-06-22
 
 ### Fixed

@@ -142,6 +142,8 @@ from ..radio_poller import (  # noqa: TID251
     SetXfcStatus,
     SetTxFreqMonitor,
     SetUtcOffset,
+    SetQuickSplit,
+    SetQuickDualWatch,
     QuickSplit,
     QuickDualWatch,
     QuickDwTrigger,
@@ -469,9 +471,9 @@ class ControlHandler:
             "set_quick_dual_watch",
             # Epic #774 — Quick-DW / Quick-Split composite triggers
             # (emulate the IC-7610 front-panel long-press: equalize M→S
-            # then enable DW/Split).  Distinct from the broken
-            # get_/set_quick_* aliases above, which send the config-flag
-            # read frame 0x1A 05 00 32/33.  See follow-up in epic #774.
+            # then enable DW/Split).  Distinct from the get_/set_quick_*
+            # menu-toggle pair above, which reads/writes the persistent
+            # Quick Split / Quick Dual Watch toggles (MOR-2007, MOR-2045).
             "quick_dualwatch",
             "quick_split",
             # Issue #677 — CW auto-tune via FFT peak detection
@@ -2867,12 +2869,20 @@ class ControlHandler:
                 on = bool(params["on"])
                 q.put(SetTxFreqMonitor(on))
                 return {"on": on}
-            case "get_quick_split" | "set_quick_split":
+            case "get_quick_split":
                 q.put(QuickSplit())
                 return {}
-            case "get_quick_dual_watch" | "set_quick_dual_watch":
+            case "set_quick_split":
+                on = bool(params["on"])
+                q.put(SetQuickSplit(on))
+                return {"on": on}
+            case "get_quick_dual_watch":
                 q.put(QuickDualWatch())
                 return {}
+            case "set_quick_dual_watch":
+                on = bool(params["on"])
+                q.put(SetQuickDualWatch(on))
+                return {"on": on}
             case "quick_dualwatch":
                 self._ensure_capability("dual_rx", "quick_dualwatch")
                 q.put(QuickDwTrigger())
