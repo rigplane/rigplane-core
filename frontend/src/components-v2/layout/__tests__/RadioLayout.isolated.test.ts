@@ -455,11 +455,7 @@ describe('RadioLayout structure', () => {
 
   // MOR-1341: `desktop-v2` (the default here) now declares a `meters` zone
   // and retires `.bottom-dock` — see the suppression matrix in
-  // `semantic-desktop-migration.component.test.ts`. MOR-1346 gave `sdr-test`
-  // a `meters` zone too, so `UNDECLARED` (no registered manifest at all,
-  // hence an empty `declared` set) is now the layout that proves the dock
-  // still exists for the "no meters zone" quadrant — same idiom the
-  // `VfoHeader dual receiver` describe below uses for the legacy deck.
+  // `semantic-desktop-migration.component.test.ts`.
   it('renders .bottom-dock for a layout that declares no meters zone', () => {
     const t = mountLayout(UNDECLARED);
     expect(t.querySelector('.bottom-dock')).not.toBeNull();
@@ -660,9 +656,6 @@ describe('RadioLayout with radioState', () => {
     expect(t.querySelector('.radio-layout')).not.toBeNull();
   });
 
-  // MOR-1346 gave `sdr-test` a `meters` zone too, so `UNDECLARED` is now the
-  // layout that stands in for "no meters zone" here (see the two describes
-  // above this file's `mountLayout(UNDECLARED)` switch already made).
   it('renders MetersDockPanel in the bottom dock for a layout with no meters zone', () => {
     radio.current = sampleState as any;
     const t = mountLayout(UNDECLARED);

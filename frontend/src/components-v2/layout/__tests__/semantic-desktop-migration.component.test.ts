@@ -8,14 +8,14 @@
  *   1. the semantic surfaces render IN PLACE of the legacy twin-VFO block and
  *      the sidebar TX panel — a layout carrying both would ship two PTT
  *      affordances and two VFO truths;
- *   2. everything else in that layout (status bar, sidebars, spectrum, meters
- *      dock) is untouched.
+ *   2. everything else in that layout (status bar, sidebars, spectrum)
+ *      is untouched.
  *
  * What decides (1) is no longer a skin id but the ACTIVE layout manifest's zone
  * declarations, so the last two describes below render the matrix itself: a
  * declared surface is semantic and its legacy twin is gone; a surface no zone
  * declares keeps its legacy presentation. `sdr-test` — one zone declaring both
- * — is the degenerate all-semantic case, and its behavior is unchanged.
+ * — is the degenerate all-semantic case.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -319,16 +319,11 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
   );
 
   // MOR-1346 — the bottom dock joins the matrix for `sdr-test` too, the same
-  // move MOR-1341 (S5) made for `desktop-v2` below. `sdr-test`'s manifest does
-  // not yet declare a `meters` zone, so `<MetersDockPanel>` stays mounted
-  // ALONGSIDE the bare semantic meters surface that `SemanticRadioSurfaces`
-  // already mounts unconditionally via its `zoned('meters', ...)` fallback
-  // (MOR-1273) whenever the view model carries a `meters` group — a double
-  // presentation of the same readout. Proven with a state that reports a
-  // real meter reading, not the bare `liveState()` fixture every other test
-  // in this describe uses — see the MOR-1341 comment on the `desktop-v2`
-  // block below for why a bare fixture (no meter fields at all) would prove
-  // nothing about suppression.
+  // move MOR-1341 (S5) made for `desktop-v2` below. Proven with a state that
+  // reports a real meter reading, not the bare `liveState()` fixture every
+  // other test in this describe uses — see the MOR-1341 comment on the
+  // `desktop-v2` block below for why a bare fixture (no meter fields at all)
+  // would prove nothing about suppression.
   it('drops the legacy meters dock in favour of the semantic meters surface', () => {
     const state = liveState() as { main: Record<string, unknown> };
     h.state = { ...state, main: { ...state.main, sMeter: 120 } };
@@ -336,6 +331,16 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
     expect(t.querySelector('.bottom-dock')).toBeNull();
     expect(t.querySelector('[data-testid="meters-dock-panel"]')).toBeNull();
     expect(t.querySelector('[data-testid="meters-surface"]')).not.toBeNull();
+  });
+
+  // MOR-1346 F1 — `VFO_ONLY` declares `vfo` but not `meters`, so it answers
+  // `declared.has('meters')` and `declared.has('vfo')` DIFFERENTLY. `declared.
+  // has('vfo')` in `semanticMeters`'s place would wrongly suppress the dock
+  // here; `UNDECLARED` (declares nothing) cannot catch that mutation, because
+  // an empty set answers both predicates the same way (false).
+  it('keeps the dock for a layout that declares vfo but not meters', () => {
+    const t = render(VFO_ONLY);
+    expect(t.querySelector('.bottom-dock')).not.toBeNull();
   });
 
   it('renders the chrome but no surfaces when capabilities have not loaded', () => {
