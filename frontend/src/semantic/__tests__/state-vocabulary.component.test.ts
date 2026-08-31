@@ -1,19 +1,22 @@
 /**
- * MOR-2036 — the data-* visual-state vocabulary contract
- * (`presentation/languages/contract.ts`) pinned against the real semantic
- * vertical.
+ * MOR-2036 — the data-* visual-state vocabulary
+ * (`presentation/languages/state-vocabulary.ts`) pinned against the real
+ * semantic vertical.
  *
- * The contract module cannot value-import from `semantic/` (the v3 ADR's
- * one-way dependency — `presentation/` reads `semantic/` types only, never
- * runtime values), so its `RF_STATES`/`TX_SESSION_STATES`/`TX_ORIGINS` value
- * arrays are member-for-member COPIES of `rx-tx-surface.ts`'s own
- * `RF_LABEL`/`SESSION_LABEL` keys and `TxOrigin`'s members, not imports of
- * them — the same layering reason `radio-view-model.ts` re-declares
- * `MeterRfState` instead of importing `RfState` (see that file's doc
- * comment, and `meters.test.ts`'s "not a fork" pin, which this file mirrors
- * for the contract module).
+ * `state-vocabulary.ts` lives outside `presentation/languages/contract.ts`
+ * because that module is a member of the MOR-1077/1078/1079 workspace-
+ * purity closures and may not name `semantic/` in any import, type-only or
+ * not (see that module's own header). `state-vocabulary.ts` sits outside
+ * those closures, so it reads `semantic/` types (`import type`) the same
+ * one-way way `projection.ts` already does — nothing forbids it a value
+ * import either (no eslint rule bans one, and it is outside the purity
+ * closures), but its `RF_STATES`/`TX_SESSION_STATES`/`TX_ORIGINS` are
+ * written as literal arrays rather than derived from `rx-tx-surface.ts`'s
+ * `RF_LABEL`/`SESSION_LABEL` keys. Agreement with the real unions is pinned
+ * below by set-equality against those keys (and a `TxOrigin` self-map,
+ * which has no label record to diff against).
  *
- * The second half proves the two name collisions the contract documents
+ * The second half proves the two name collisions the vocabulary documents
  * (`data-fault`: an open-ended fault CODE on RxTxSurface vs. a plain
  * boolean on MetersSurface; `data-reason`: three unrelated unions on
  * RxTxSurface alone) are real, by mounting the actual components — a type
@@ -32,7 +35,7 @@ import {
   RF_STATES, TX_ORIGINS, TX_SESSION_STATES, TX_TARGET_STATUSES,
   type DisabledReasonCode, type KeyBlockedReason, type MetersFaultValue, type RxTxFaultValue,
   type TxOrigin, type TxTargetStatus, type TxTargetUnknownReason,
-} from '../../presentation/languages/contract';
+} from '../../presentation/languages/state-vocabulary';
 
 /** Mounts `component`, runs `fn` over its DOM, always unmounts (mirrors `design-language-wiring.component.test.ts`). */
 function withMounted<P extends Record<string, unknown>>(
@@ -46,7 +49,7 @@ function withMounted<P extends Record<string, unknown>>(
   try { fn(target); } finally { unmount(instance); target.remove(); }
 }
 
-describe('contract.ts vocabulary arrays are not a fork of the real unions (MOR-2036)', () => {
+describe('state-vocabulary.ts arrays are not a fork of the real unions (MOR-2036)', () => {
   it('RF_STATES is exactly RfState — RF_LABEL\'s own exhaustive keys', () => {
     expect(new Set(RF_STATES)).toEqual(new Set(Object.keys(RF_LABEL)));
   });

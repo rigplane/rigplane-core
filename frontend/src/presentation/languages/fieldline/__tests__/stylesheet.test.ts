@@ -20,7 +20,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { FIELDLINE_PALETTE } from '../tokens';
-import type { RfState, TxSessionState } from '../../contract';
+import type { RfState, TxSessionState } from '../../state-vocabulary';
 
 const source = readFileSync('src/presentation/languages/fieldline/fieldline.css', 'utf8');
 // Comments name the very constructs several tests below forbid, so they are

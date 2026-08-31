@@ -21,7 +21,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { STUDIOLINE_PALETTE } from '../tokens';
-import type { RfState, TxSessionState } from '../../contract';
+import type { RfState, TxSessionState } from '../../state-vocabulary';
 
 const source = readFileSync('src/presentation/languages/studioline/studioline.css', 'utf8');
 // Comments name the very constructs several tests below forbid, so they are
