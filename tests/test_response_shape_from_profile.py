@@ -270,3 +270,84 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
         to_addr=0xE0, from_addr=0xA2, command=command9700, sub=0x12, data=b"\x01"
     )
     assert await _get_dual_watch_answering(radio_9700, wrong_sub_9700) is False
+
+
+# system.py's date/time/UTC-offset getters (MOR-2008 batch 1) are this
+# file's second keystone case: like get_dual_watch above, they cannot
+# register in MATCHER_BACKED_GETTERS, since they parse through their own
+# module-level parse_system_date_response/parse_system_time_response/
+# parse_utc_offset_response rather than _get_bcd_level/_get_bool_value.
+# Each parser takes the map-derived prefix as a keyword (default: the
+# shared IC-7610-shaped constant, kept only so pre-migration tests that
+# never passed one still work) -- CoreRadio.get_system_date/time/utc_offset
+# must pass their own profile's prefix through via _expect_shape, not rely
+# on that default.
+_DATE_TIME_UTC_CASES: tuple[tuple[str, str, bytes], ...] = (
+    ("get_system_date", "get_system_date", b"\x00\x94"),
+    ("get_system_time", "get_system_time", b"\x00\x95"),
+    ("get_utc_offset", "get_utc_offset", b"\x00\x96"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "radio_method,map_key,ic7300_prefix",
+    _DATE_TIME_UTC_CASES,
+    ids=[case[0] for case in _DATE_TIME_UTC_CASES],
+)
+async def test_date_time_utc_reply_prefix_comes_from_the_map(
+    radio_method: str,
+    map_key: str,
+    ic7300_prefix: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IC-7300's own extended-address prefix must reach the reply parser.
+
+    Manually confirmed red for the half-done shape: pinning the parser's
+    ``prefix`` default (IC-7610-shaped ``0x01 0x58``/``0x01 0x59``/
+    ``0x01 0x62``) instead of ``_expect_shape``'s map-derived one makes the
+    IC-7300 case below raise ``ValueError`` (prefix mismatch) on a reply
+    that correctly echoes IC-7300's real ``0x00 0x94``/``0x95``/``0x96`` --
+    exactly the "requests moved, replies not" failure mode this file
+    exists to make impossible (plan §7): the request would already be
+    right (``self._commands.<method>`` uses the map), only the reply
+    parse would still expect IC-7610's bytes.
+    """
+    ic7300 = _civ_rig_configs()["IC-7300"].to_profile()
+    command, sub, prefix = decode_wire_tuple(ic7300.command_map.get(map_key))
+    assert (command, sub, prefix) == (0x1A, 0x05, ic7300_prefix)
+    radio = CoreRadio("198.51.100.1", profile=ic7300)
+
+    async def _fake_expect(civ: bytes, **kwargs: Any) -> Any:
+        return CivFrame(
+            to_addr=0xE0,
+            from_addr=0x94,
+            command=command,
+            sub=sub,
+            data=prefix + b"\x00" * 4,
+        )
+
+    monkeypatch.setattr(radio, "_send_civ_expect", _fake_expect)
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+
+    # A real reply carrying IC-7300's own prefix must parse without error.
+    await getattr(radio, radio_method)()
+
+    # A reply carrying the WRONG (IC-7610-shaped) prefix must not parse as
+    # if it were IC-7300's -- proves the prefix used is this profile's own,
+    # not the parser's hardcoded default.
+    wrong_prefix = b"\x01" + ic7300_prefix[1:]
+    assert wrong_prefix != prefix
+
+    async def _fake_expect_wrong(civ: bytes, **kwargs: Any) -> Any:
+        return CivFrame(
+            to_addr=0xE0,
+            from_addr=0x94,
+            command=command,
+            sub=sub,
+            data=wrong_prefix + b"\x00" * 4,
+        )
+
+    monkeypatch.setattr(radio, "_send_civ_expect", _fake_expect_wrong)
+    with pytest.raises(ValueError, match="prefix mismatch"):
+        await getattr(radio, radio_method)()

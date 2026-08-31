@@ -12,10 +12,13 @@ apply_profile` writes with no user action.
 
 Every builder calls `_frame.py: _build_from_map` directly rather than the
 shared `_builders.py: _build_ctl_mem_get` / `_build_ctl_mem_set` templates
-used before migrating: those still carry their own ``cmd_map is None``
-fallback for `levels.py` / `system.py`, unmigrated, so routing through them
-would leave an explicit ``cmd_map=None`` call silently reaching old,
-sometimes-wrong bytes instead of failing loudly.
+used before migrating: at the time, those still carried their own
+``cmd_map is None`` fallback for `levels.py` / `system.py`, unmigrated, so
+routing through them would have left an explicit ``cmd_map=None`` call
+silently reaching old, sometimes-wrong bytes instead of failing loudly.
+Both templates are gone now -- ``_build_ctl_mem_set`` when `levels.py`
+migrated (MOR-2006 module 2), ``_build_ctl_mem_get`` when `system.py`
+migrated (MOR-2008 batch 1) removed the last caller either one had left.
 """
 
 from __future__ import annotations

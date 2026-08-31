@@ -269,15 +269,12 @@ class TestCommandOverrides:
     def test_get_quick_split(self, cmdmap):
         assert cmdmap.get("get_quick_split") == (0x1A, 0x05, 0x00, 0x30)
 
-    def test_quick_split(self, cmdmap):
-        """Bare ``quick_split`` key (D2, MOR-2014) -- same bytes as the
-        get_/set_ aliases; the deleted fallback used to send 0x33 (split
-        lock, not quick split, on this radio -- a recorded divergence, not
-        a bug). No builder resolves this bare key any more since MOR-2007
-        ruling 2 deleted the one-shot quick_split()/quick_dual_watch()
-        triggers it was written for; left declared regardless (see
-        rigs/ic7300.toml's own comment on this row)."""
-        assert cmdmap.get("quick_split") == (0x1A, 0x05, 0x00, 0x30)
+    # The bare ``quick_split``/``quick_dual_watch`` keys this class used to
+    # pin here are deleted (MOR-2008 batch 1): no builder has resolved
+    # either since MOR-2007 ruling 2 replaced the one-shot
+    # quick_split()/quick_dual_watch() triggers they were written for with
+    # real get_/set_ pairs, so they had no reader left -- see
+    # rigs/ic7300.toml's own comment on this section.
 
     def test_get_dash_ratio(self, cmdmap):
         """D2, MOR-2014: control 0161, IC-7300 Advanced Manual (11a) p.19-6;
@@ -338,12 +335,23 @@ class TestCommandOverrides:
         assert cmdmap.get("get_scope_wave") == (0x27, 0x00)
 
     def test_get_speech_cmd_map_uses_set_speech(self, cmdmap):
-        """Profile exposes set_speech; get_speech() must resolve the same opcode."""
+        """Profile exposes set_speech; get_speech() must resolve the same opcode.
+
+        commands/speech.py migrated onto the bound command map in MOR-2008
+        (batch 1): there is no more bare, cmd_map-less call to compare
+        against, so this pins IC-7300's real map (which declares
+        ``set_speech``, not ``get_speech``) against a hand-built
+        ``get_speech``-only map instead -- both must resolve to the
+        identical ``0x13`` opcode.
+        """
+        from rigplane.command_map import CommandMap
         from rigplane.commands import get_speech
 
-        with_map = get_speech(2, to_addr=0x94, cmd_map=cmdmap)
-        bare = get_speech(2, to_addr=0x94)
-        assert with_map == bare
+        via_set_speech = get_speech(2, to_addr=0x94, cmd_map=cmdmap)
+        via_get_speech = get_speech(
+            2, to_addr=0x94, cmd_map=CommandMap({"get_speech": (0x13,)})
+        )
+        assert via_set_speech == via_get_speech
 
     def test_scope_edge3_6mhz_is_0x20_not_sequential(self, cmdmap):
         """wfview uses 0x18, 0x19, 0x20 for 6 MHz edges (skip 0x1A-0x1F)."""

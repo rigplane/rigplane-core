@@ -601,8 +601,6 @@ get_tx_freq_monitor = [0x1C, 0x03]
 set_tx_freq_monitor = [0x1C, 0x03]
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
-quick_split = [0x1A, 0x05, 0x00, 0x43]    # source: IC-9700 CI-V Reference Guide p.6. No builder resolves this bare key any more -- vfo.py's one-shot quick_split() trigger was deleted (MOR-2007 ruling 2); get_quick_split/set_quick_split below (same 0043 address) replaced it. Left declared rather than removed here -- MOR-2007's scope was the builders, not a TOML sweep for orphaned bare keys. Base [commands], not overrides: bare (non-get_/set_) keys fail test_naming_parity.py::test_overrides_have_prefix there (D2, MOR-2015).
-quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
 
 # ── CW ──
 send_cw = [0x17]
@@ -821,18 +819,18 @@ get_utc_offset = [0x1A, 0x05, 0x01, 0x84]   # source: IC-9700 CI-V Reference Gui
 set_utc_offset = [0x1A, 0x05, 0x01, 0x84]   # source: IC-9700 CI-V Reference Guide p.8
 get_quick_split = [0x1A, 0x05, 0x00, 0x43]  # source: IC-9700 CI-V Reference Guide p.6
 set_quick_split = [0x1A, 0x05, 0x00, 0x43]  # source: IC-9700 CI-V Reference Guide p.6
-# bare quick_split: moved to base [commands] (── Split ── section) -- a
-# bare (non-get_/set_) key here fails
-# test_naming_parity.py::test_overrides_have_prefix (D2, MOR-2015)
+# The bare quick_split/quick_dual_watch keys that used to live in base
+# [commands] (── Split ── section) are deleted outright (MOR-2008 batch 1):
+# no builder has resolved either since vfo.py's one-shot quick_split()/
+# quick_dual_watch() triggers were replaced by real get_/set_ pairs
+# (MOR-2007 ruling 2), so they had no reader left, only a dead D2 source
+# to preserve -- carried forward onto these get_/set_ rows instead of a
+# now-pointless bare row (D2, MOR-2015).
 # quick_dual_watch: guide's 0032 = "Beep Sound(SUB)"; a doc-wide "quick"
 # search returns exactly one hit -- "Quick SPLIT" (0043); no "Quick Dual
 # Watch" concept exists in this document at all (D2, MOR-2015)
 get_quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
 set_quick_dual_watch = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.6: 0032 = Beep Sound(SUB); doc-wide 'quick' search returns only Quick SPLIT (0043); no Quick Dual Watch concept exists" }
-# bare quick_dual_watch: also moved to base [commands] -- a dict-valued
-# { absent = ... } entry here escapes test_overrides_have_prefix only via
-# its isinstance(list) short-circuit (the rule only checks list-valued
-# entries); moved rather than relying on that blind spot (D2, MOR-2015)
 # dash_ratio: control 0224, CW-KEY SET>Dot/Dash Ratio; real gap-list
 # address (D2, MOR-2015). The hardcoded fallback that used to send 0228 for
 # this command was itself wrong for this radio (0228 = CW-KEY SET>MIC

@@ -138,6 +138,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runtime/_scope_runtime.py: ScopeRuntimeMixin` and
   `backends/_icom_serial_base.py`, moved onto `self._commands.<builder>`
   in the same change.
+- **`rigplane.commands.system`/`cw`/`speech`/`power` builders require
+  `cmd_map`; there is no hardcoded fallback (MOR-2008, batch 1 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** All 26
+  builders across the four modules — transceiver ID, band-edge frequency,
+  tuner/XFC/TX-freq-monitor status, RIT/XIT (system.py); CW keying (cw.py);
+  voice announcement (speech.py); power on/off/status (power.py) — now
+  require `cmd_map` as a required keyword-only argument. 20 of the 26 carry
+  no behaviour change at all: every declaring CI-V profile already held
+  the identical wire tuple the deleted fallback built. **The other
+  six — `get_system_date`/`set_system_date`, `get_system_time`/
+  `set_system_time`, `get_utc_offset`/`set_utc_offset` — carry an intended
+  byte-level behaviour change on IC-7300.** Their pre-migration `cmd_map`
+  branches resolved the bare keys `"system_date"`/`"system_time"`/
+  `"utc_offset"`, which no profile TOML has ever declared (every one
+  spells the direction-prefixed `get_/set_system_date` etc.), so those
+  branches raised `KeyError` for every profile a real `CommandMap` ever
+  reached — dead code, invisible to the divergence sweep, since it never
+  produced a frame to compare. The builders now resolve the
+  direction-prefixed keys the TOML files actually declare. IC-7610's own
+  tuple (`0x01 0x58`/`0x59`/`0x62`) is byte-identical to the deleted
+  fallback's, so nothing changes there; **IC-7300 declares its own family
+  numbers (`0x00 0x94`/`0x95`/`0x96`) and now sends them for the first
+  time**, instead of IC-7610's. `parse_system_date_response`/
+  `parse_system_time_response`/`parse_utc_offset_response` moved with the
+  request: each now takes the map-derived `prefix` the reply must start
+  with (`runtime/radio.py: CoreRadio._expect_shape`), rather than checking
+  a hardcoded constant unconditionally. The only production callers,
+  `runtime/radio.py: CoreRadio`'s own methods, moved onto
+  `self._commands.<builder>(...)` in the same change. Also deleted: the
+  orphaned bare `quick_split`/`quick_dual_watch` rows in `rigs/ic7300.toml`
+  and `rigs/ic9700.toml` — no builder has resolved either since MOR-2007
+  ruling 2 replaced their one-shot triggers with real `get_/set_` pairs;
+  the prefixed rows already carry the recorded D2 sources.
 - **CLI: `rigplane ptt on` no longer returns while the rig is keyed.** The
   command now holds the key for as long as the process runs and unkeys on the
   way out, so the process that keyed the rig is the one that releases it. A

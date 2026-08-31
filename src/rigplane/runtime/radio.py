@@ -108,7 +108,6 @@ from rigplane.commands import (
     get_apf_type_level,
     get_audio_peak_filter,
     get_auto_notch,
-    get_band_edge_freq,
     get_break_in,
     get_break_in_delay,
     get_civ_output_ant,
@@ -152,23 +151,16 @@ from rigplane.commands import (
     get_quick_dual_watch,
     get_quick_split,
     get_ref_adjust,
-    get_rit_frequency,
-    get_rit_status,
-    get_rit_tx_status,
     get_rx_antenna_ant1,
     get_rx_antenna_ant2,
     get_s_meter,
     get_s_meter_sql_status,
-    get_speech,
     get_squelch,
     get_ssb_tx_bandwidth,
     get_swr,
     get_system_date,
     get_system_time,
-    get_transceiver_id,
-    get_tuner_status,
     get_twin_peak_filter,
-    get_tx_freq_monitor,
     get_usb_mod_level,
     get_utc_offset,
     get_various_squelch,
@@ -176,7 +168,6 @@ from rigplane.commands import (
     get_vox,
     get_vox_delay,
     get_vox_gain,
-    get_xfc_status,
     parse_ack_nak,
     parse_band_stack_response,
     parse_bool_response,
@@ -190,11 +181,7 @@ from rigplane.commands import (
     parse_tone_freq_response,
     parse_tsql_freq_response,
     parse_utc_offset_response,
-    get_powerstat,
     parse_powerstat,
-    power_off,
-    power_on,
-    send_cw,
     set_af_mute,
     set_agc,
     set_agc_time_constant,
@@ -219,21 +206,11 @@ from rigplane.commands import (
     set_nb,
     set_nr,
     set_preamp,
-    set_rit_frequency,
-    set_rit_status,
-    set_rit_tx_status,
     set_rx_antenna_ant1,
     set_rx_antenna_ant2,
     set_ssb_tx_bandwidth,
-    set_system_date,
-    set_system_time,
-    set_tuner_status,
     set_twin_peak_filter,
-    set_tx_freq_monitor,
-    set_utc_offset,
     set_vox,
-    set_xfc_status,
-    stop_cw,
 )
 from rigplane.commands import (
     get_attenuator as get_attenuator_cmd,  # Transceiver status family (#136); VFO / Dual Watch / Scanning (#132); Tone/TSQL (#134); System/Config commands (#135); Memory and band-stacking (#133)
@@ -3880,7 +3857,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_band_edge_freq(self) -> int:
         """Read the current band-edge frequency in Hz."""
         self._check_connected()
-        civ = get_band_edge_freq(to_addr=self._radio_addr)
+        civ = self._commands.get_band_edge_freq(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(
             civ, key="get_band_edge_freq", dedupe=True, label="get_band_edge_freq"
         )
@@ -3942,13 +3919,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                   2 = mode.
         """
         self._check_connected()
-        civ = get_speech(what, to_addr=self._radio_addr)
+        civ = self._commands.get_speech(what, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_transceiver_id(self) -> int:
         """Read the transceiver model ID (IC-7610 = 0x98)."""
         self._check_connected()
-        civ = get_transceiver_id(to_addr=self._radio_addr)
+        civ = self._commands.get_transceiver_id(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_transceiver_id")
         if resp.data:
             return resp.data[0]
@@ -3957,7 +3934,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_tuner_status(self) -> int:
         """Read the tuner/ATU status (0=off, 1=on, 2=tuning)."""
         self._check_connected()
-        civ = get_tuner_status(to_addr=self._radio_addr)
+        civ = self._commands.get_tuner_status(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_tuner_status")
         if resp.data:
             return resp.data[0]
@@ -3969,72 +3946,72 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Fire-and-forget SET command.
         """
         self._check_connected()
-        civ = set_tuner_status(value, to_addr=self._radio_addr)
+        civ = self._commands.set_tuner_status(value, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_xfc_status(self) -> bool:
         """Read XFC (transmit frequency correction) status."""
         self._check_connected()
-        civ = get_xfc_status(to_addr=self._radio_addr)
+        civ = self._commands.get_xfc_status(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_xfc_status")
         return bool(resp.data[0]) if resp.data else False
 
     async def set_xfc_status(self, on: bool) -> None:
         """Set XFC status on/off. Fire-and-forget."""
         self._check_connected()
-        civ = set_xfc_status(on, to_addr=self._radio_addr)
+        civ = self._commands.set_xfc_status(on, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_tx_freq_monitor(self) -> bool:
         """Read TX frequency monitor status."""
         self._check_connected()
-        civ = get_tx_freq_monitor(to_addr=self._radio_addr)
+        civ = self._commands.get_tx_freq_monitor(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_tx_freq_monitor")
         return bool(resp.data[0]) if resp.data else False
 
     async def set_tx_freq_monitor(self, on: bool) -> None:
         """Set TX frequency monitor on/off. Fire-and-forget."""
         self._check_connected()
-        civ = set_tx_freq_monitor(on, to_addr=self._radio_addr)
+        civ = self._commands.set_tx_freq_monitor(on, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_rit_frequency(self) -> int:
         """Read the RIT frequency offset in Hz (±9999)."""
         self._check_connected()
-        civ = get_rit_frequency(to_addr=self._radio_addr)
+        civ = self._commands.get_rit_frequency(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_rit_frequency")
         return parse_rit_frequency_response(resp.data)
 
     async def set_rit_frequency(self, offset_hz: int) -> None:
         """Set the RIT frequency offset in Hz (±9999). Fire-and-forget."""
         self._check_connected()
-        civ = set_rit_frequency(offset_hz, to_addr=self._radio_addr)
+        civ = self._commands.set_rit_frequency(offset_hz, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_rit_status(self) -> bool:
         """Read RIT on/off status."""
         self._check_connected()
-        civ = get_rit_status(to_addr=self._radio_addr)
+        civ = self._commands.get_rit_status(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_rit_status")
         return bool(resp.data[0]) if resp.data else False
 
     async def set_rit_status(self, on: bool) -> None:
         """Set RIT on/off. Fire-and-forget."""
         self._check_connected()
-        civ = set_rit_status(on, to_addr=self._radio_addr)
+        civ = self._commands.set_rit_status(on, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     async def get_rit_tx_status(self) -> bool:
         """Read RIT TX status."""
         self._check_connected()
-        civ = get_rit_tx_status(to_addr=self._radio_addr)
+        civ = self._commands.get_rit_tx_status(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_rit_tx_status")
         return bool(resp.data[0]) if resp.data else False
 
     async def set_rit_tx_status(self, on: bool) -> None:
         """Set RIT TX status on/off. Fire-and-forget."""
         self._check_connected()
-        civ = set_rit_tx_status(on, to_addr=self._radio_addr)
+        civ = self._commands.set_rit_tx_status(on, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
     # ------------------------------------------------------------------
@@ -5118,11 +5095,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_system_date(self) -> tuple[int, int, int]:
         """Read system date as (year, month, day)."""
         self._check_connected()
-        civ = get_system_date(to_addr=self._radio_addr)
+        civ = self._commands.get_system_date(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(
             civ, key="get_system_date", dedupe=True, label="get_system_date"
         )
-        return parse_system_date_response(resp)
+        _, _, prefix = self._expect_shape(get_system_date)
+        return parse_system_date_response(resp, prefix=prefix)
 
     async def set_system_date(self, year: int, month: int, day: int) -> None:
         """Set system date.
@@ -5133,17 +5111,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             day: Day 1-31.
         """
         await self._send_fire_and_forget(
-            set_system_date(year, month, day, to_addr=self._radio_addr)
+            self._commands.set_system_date(year, month, day, to_addr=self._radio_addr)
         )
 
     async def get_system_time(self) -> tuple[int, int]:
         """Read system time as (hour, minute)."""
         self._check_connected()
-        civ = get_system_time(to_addr=self._radio_addr)
+        civ = self._commands.get_system_time(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(
             civ, key="get_system_time", dedupe=True, label="get_system_time"
         )
-        return parse_system_time_response(resp)
+        _, _, prefix = self._expect_shape(get_system_time)
+        return parse_system_time_response(resp, prefix=prefix)
 
     async def set_system_time(self, hour: int, minute: int) -> None:
         """Set system time.
@@ -5153,17 +5132,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             minute: Minute 0-59.
         """
         await self._send_fire_and_forget(
-            set_system_time(hour, minute, to_addr=self._radio_addr)
+            self._commands.set_system_time(hour, minute, to_addr=self._radio_addr)
         )
 
     async def get_utc_offset(self) -> tuple[int, int, bool]:
         """Read UTC offset as (hours, minutes, is_negative)."""
         self._check_connected()
-        civ = get_utc_offset(to_addr=self._radio_addr)
+        civ = self._commands.get_utc_offset(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(
             civ, key="get_utc_offset", dedupe=True, label="get_utc_offset"
         )
-        return parse_utc_offset_response(resp)
+        _, _, prefix = self._expect_shape(get_utc_offset)
+        return parse_utc_offset_response(resp, prefix=prefix)
 
     async def set_utc_offset(self, hours: int, minutes: int, is_negative: bool) -> None:
         """Set UTC offset.
@@ -5174,7 +5154,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             is_negative: True for negative (west) offset.
         """
         await self._send_fire_and_forget(
-            set_utc_offset(hours, minutes, is_negative, to_addr=self._radio_addr)
+            self._commands.set_utc_offset(
+                hours, minutes, is_negative, to_addr=self._radio_addr
+            )
         )
 
     async def snapshot_state(self) -> dict[str, object]:
@@ -5229,7 +5211,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             text: CW text (A-Z, 0-9, prosigns).
         """
         self._check_connected()
-        frames = send_cw(text, to_addr=self._radio_addr)
+        frames = self._commands.send_cw(text, to_addr=self._radio_addr)
         for frame in frames:
             resp = await self._send_civ_expect(frame, label="send_cw_text")
             ack = parse_ack_nak(resp)
@@ -5239,7 +5221,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def stop_cw_text(self) -> None:
         """Stop CW sending."""
         self._check_connected()
-        civ = stop_cw(to_addr=self._radio_addr)
+        civ = self._commands.stop_cw(to_addr=self._radio_addr)
         await self._send_civ_raw(civ, priority=Priority.IMMEDIATE)
         # Stop CW may not return ACK, just ignore
 
@@ -5254,7 +5236,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_powerstat(self) -> bool:
         """Get the current radio power state (PowerControlCapable protocol)."""
         self._check_connected()
-        civ = get_powerstat(to_addr=self._radio_addr)
+        civ = self._commands.get_powerstat(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_powerstat")
         return parse_powerstat(resp)
 
@@ -5267,9 +5249,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         civ = (
-            power_on(to_addr=self._radio_addr)
+            self._commands.power_on(to_addr=self._radio_addr)
             if on
-            else power_off(to_addr=self._radio_addr)
+            else self._commands.power_off(to_addr=self._radio_addr)
         )
         resp = await self._send_civ_expect(civ, label="set_powerstat")
         ack = parse_ack_nak(resp)

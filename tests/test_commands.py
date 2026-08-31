@@ -1184,13 +1184,32 @@ class TestOperatorToggleParityCommands:
 
 
 class TestTransceiverStatusBuilders:
-    """Test CI-V builders for transceiver_status commands."""
+    """Test CI-V builders for transceiver_status commands.
 
-    def test_get_band_edge_freq(self) -> None:
+    Migrated onto the bound command map in MOR-2008 (batch 1,
+    `docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps 5..N):
+    every builder here now requires ``cmd_map`` -- zero divergence rows,
+    so IC-7610's own map declares the identical bytes the fallback used to
+    build, and the expected frames below are unchanged.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_get_band_edge_freq(self, cmd_map) -> None:
         from rigplane.commands import get_band_edge_freq
 
-        frame = get_band_edge_freq()
+        frame = get_band_edge_freq(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x02\xfd" == frame
+
+    def test_get_band_edge_freq_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import get_band_edge_freq
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_band_edge_freq()  # type: ignore[call-arg]
 
     def test_get_various_squelch_main(self) -> None:
         from rigplane.commands import get_various_squelch
@@ -1231,116 +1250,124 @@ class TestTransceiverStatusBuilders:
         frame = get_id_meter()
         assert b"\xfe\xfe\x98\xe0\x15\x16\xfd" == frame
 
-    def test_get_tuner_status(self) -> None:
+    def test_get_tuner_status(self, cmd_map) -> None:
         from rigplane.commands import get_tuner_status
 
-        frame = get_tuner_status()
+        frame = get_tuner_status(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x1c\x01\xfd" == frame
 
-    def test_set_tuner_status_on(self) -> None:
+    def test_set_tuner_status_on(self, cmd_map) -> None:
         from rigplane.commands import set_tuner_status
 
-        frame = set_tuner_status(1)
+        frame = set_tuner_status(1, cmd_map=cmd_map)
         assert b"\x1c\x01\x01" in frame
 
-    def test_set_tuner_status_tune(self) -> None:
+    def test_set_tuner_status_tune(self, cmd_map) -> None:
         from rigplane.commands import set_tuner_status
 
-        frame = set_tuner_status(2)
+        frame = set_tuner_status(2, cmd_map=cmd_map)
         assert b"\x1c\x01\x02" in frame
 
-    def test_set_tuner_status_off(self) -> None:
+    def test_set_tuner_status_off(self, cmd_map) -> None:
         from rigplane.commands import set_tuner_status
 
-        frame = set_tuner_status(0)
+        frame = set_tuner_status(0, cmd_map=cmd_map)
         assert b"\x1c\x01\x00" in frame
 
-    def test_set_tuner_status_invalid(self) -> None:
+    def test_set_tuner_status_invalid(self, cmd_map) -> None:
         from rigplane.commands import set_tuner_status
 
         with pytest.raises(ValueError, match="0, 1, or 2"):
-            set_tuner_status(3)
+            set_tuner_status(3, cmd_map=cmd_map)
 
-    def test_get_tx_freq_monitor(self) -> None:
+    def test_set_tuner_status_rejects_explicit_none_the_same_way(self) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        from rigplane.commands import set_tuner_status
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_tuner_status(1, cmd_map=None)
+
+    def test_get_tx_freq_monitor(self, cmd_map) -> None:
         from rigplane.commands import get_tx_freq_monitor
 
-        frame = get_tx_freq_monitor()
+        frame = get_tx_freq_monitor(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x1c\x03\xfd" == frame
 
-    def test_set_tx_freq_monitor_on(self) -> None:
+    def test_set_tx_freq_monitor_on(self, cmd_map) -> None:
         from rigplane.commands import set_tx_freq_monitor
 
-        frame = set_tx_freq_monitor(True)
+        frame = set_tx_freq_monitor(True, cmd_map=cmd_map)
         assert b"\x1c\x03\x01" in frame
 
-    def test_set_tx_freq_monitor_off(self) -> None:
+    def test_set_tx_freq_monitor_off(self, cmd_map) -> None:
         from rigplane.commands import set_tx_freq_monitor
 
-        frame = set_tx_freq_monitor(False)
+        frame = set_tx_freq_monitor(False, cmd_map=cmd_map)
         assert b"\x1c\x03\x00" in frame
 
-    def test_get_rit_frequency(self) -> None:
+    def test_get_rit_frequency(self, cmd_map) -> None:
         from rigplane.commands import get_rit_frequency
 
-        frame = get_rit_frequency()
+        frame = get_rit_frequency(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x21\x00\xfd" == frame
 
-    def test_set_rit_frequency_positive(self) -> None:
+    def test_set_rit_frequency_positive(self, cmd_map) -> None:
         from rigplane.commands import set_rit_frequency
 
-        frame = set_rit_frequency(150)
+        frame = set_rit_frequency(150, cmd_map=cmd_map)
         # 150 Hz → BCD: d0=0x50 (50), d1=0x01 (01), sign=0x00 (positive)
         assert b"\x21\x00\x50\x01\x00" in frame
 
-    def test_set_rit_frequency_negative(self) -> None:
+    def test_set_rit_frequency_negative(self, cmd_map) -> None:
         from rigplane.commands import set_rit_frequency
 
-        frame = set_rit_frequency(-200)
+        frame = set_rit_frequency(-200, cmd_map=cmd_map)
         # 200 Hz → BCD: d0=0x00, d1=0x02, sign=0x01 (negative)
         assert b"\x21\x00\x00\x02\x01" in frame
 
-    def test_set_rit_frequency_zero(self) -> None:
+    def test_set_rit_frequency_zero(self, cmd_map) -> None:
         from rigplane.commands import set_rit_frequency
 
-        frame = set_rit_frequency(0)
+        frame = set_rit_frequency(0, cmd_map=cmd_map)
         assert b"\x21\x00\x00\x00\x00" in frame
 
-    def test_set_rit_frequency_out_of_range(self) -> None:
+    def test_set_rit_frequency_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_rit_frequency
 
         with pytest.raises(ValueError, match="±9999"):
-            set_rit_frequency(10000)
+            set_rit_frequency(10000, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="±9999"):
-            set_rit_frequency(-10000)
+            set_rit_frequency(-10000, cmd_map=cmd_map)
 
-    def test_get_rit_status(self) -> None:
+    def test_get_rit_status(self, cmd_map) -> None:
         from rigplane.commands import get_rit_status
 
-        frame = get_rit_status()
+        frame = get_rit_status(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x21\x01\xfd" == frame
 
-    def test_set_rit_status_on(self) -> None:
+    def test_set_rit_status_on(self, cmd_map) -> None:
         from rigplane.commands import set_rit_status
 
-        frame = set_rit_status(True)
+        frame = set_rit_status(True, cmd_map=cmd_map)
         assert b"\x21\x01\x01" in frame
 
-    def test_set_rit_status_off(self) -> None:
+    def test_set_rit_status_off(self, cmd_map) -> None:
         from rigplane.commands import set_rit_status
 
-        frame = set_rit_status(False)
+        frame = set_rit_status(False, cmd_map=cmd_map)
         assert b"\x21\x01\x00" in frame
 
-    def test_get_rit_tx_status(self) -> None:
+    def test_get_rit_tx_status(self, cmd_map) -> None:
         from rigplane.commands import get_rit_tx_status
 
-        frame = get_rit_tx_status()
+        frame = get_rit_tx_status(cmd_map=cmd_map)
         assert b"\xfe\xfe\x98\xe0\x21\x02\xfd" == frame
 
-    def test_set_rit_tx_status_on(self) -> None:
+    def test_set_rit_tx_status_on(self, cmd_map) -> None:
         from rigplane.commands import set_rit_tx_status
 
-        frame = set_rit_tx_status(True)
+        frame = set_rit_tx_status(True, cmd_map=cmd_map)
         assert b"\x21\x02\x01" in frame
 
 
@@ -2291,8 +2318,8 @@ class TestSystemConfigCommands:
         omitting it entirely -- not a bare ``AttributeError`` from
         ``_build_from_map``'s ``None.get(name)``, the exact path
         de-delegating from the shared ``_build_ctl_mem_get``/
-        ``_build_ctl_mem_set`` templates (this migration's rationale)
-        would otherwise reopen."""
+        ``_build_ctl_mem_set`` templates (both deleted now, this
+        migration's rationale for deleting them) would otherwise reopen."""
         from rigplane.commands import get_acc1_mod_level
 
         with pytest.raises(TypeError, match="MOR-2006"):
@@ -2474,62 +2501,85 @@ class TestSystemConfigCommands:
         assert result is False
 
     # --- System Date (0x1A 0x05 0x01 0x58) ---
+    #
+    # commands/system.py migrated onto the bound command map in MOR-2008
+    # (batch 1): ``get_system_date``/``set_system_date`` now resolve the
+    # direction-prefixed keys ``rigs/ic7610.toml`` actually declares (the
+    # owner ruling: the bare ``"system_date"`` key the pre-migration
+    # ``cmd_map`` branch resolved was dead on arrival, present on no
+    # profile). IC-7610's own tuple is byte-identical to the deleted
+    # fallback's ``0x01 0x58``, so the expected frames below are unchanged.
 
-    def test_get_system_date_frame(self) -> None:
+    def test_get_system_date_frame(self, cmd_map) -> None:
         from rigplane.commands import get_system_date
 
-        frame = get_system_date()
+        frame = get_system_date(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x58\xfd"
 
-    def test_set_system_date_2026_03_07(self) -> None:
+    def test_get_system_date_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import get_system_date
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_system_date()  # type: ignore[call-arg]
+
+    def test_set_system_date_rejects_explicit_none_the_same_way(self, cmd_map) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
         from rigplane.commands import set_system_date
 
-        frame = set_system_date(2026, 3, 7)
+        with pytest.raises(TypeError, match="MOR-2006"):
+            set_system_date(2026, 3, 7, cmd_map=None)
+
+    def test_set_system_date_2026_03_07(self, cmd_map) -> None:
+        from rigplane.commands import set_system_date
+
+        frame = set_system_date(2026, 3, 7, cmd_map=cmd_map)
         # FE FE 98 E0 1A 05 01 58 20 26 03 07 FD
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x58\x20\x26\x03\x07\xfd"
 
-    def test_set_system_date_2000_01_01(self) -> None:
+    def test_set_system_date_2000_01_01(self, cmd_map) -> None:
         from rigplane.commands import set_system_date
 
-        frame = set_system_date(2000, 1, 1)
+        frame = set_system_date(2000, 1, 1, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x58\x20\x00\x01\x01\xfd"
 
-    def test_set_system_date_rejects_invalid_month(self) -> None:
+    def test_set_system_date_rejects_invalid_month(self, cmd_map) -> None:
         from rigplane.commands import set_system_date
 
         with pytest.raises(ValueError, match="Month must be 1-12"):
-            set_system_date(2026, 0, 1)
+            set_system_date(2026, 0, 1, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Month must be 1-12"):
-            set_system_date(2026, 13, 1)
+            set_system_date(2026, 13, 1, cmd_map=cmd_map)
 
-    def test_set_system_date_rejects_invalid_day(self) -> None:
+    def test_set_system_date_rejects_invalid_day(self, cmd_map) -> None:
         from rigplane.commands import set_system_date
 
         with pytest.raises(ValueError, match="Day must be 1-31"):
-            set_system_date(2026, 3, 0)
+            set_system_date(2026, 3, 0, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Day must be 1-31"):
-            set_system_date(2026, 3, 32)
+            set_system_date(2026, 3, 32, cmd_map=cmd_map)
 
-    def test_set_system_date_rejects_year_too_low(self) -> None:
+    def test_set_system_date_rejects_year_too_low(self, cmd_map) -> None:
         from rigplane.commands import set_system_date
 
         with pytest.raises(ValueError, match="Year must be 2000-2099"):
-            set_system_date(1999, 1, 1)
+            set_system_date(1999, 1, 1, cmd_map=cmd_map)
 
-    def test_set_system_date_rejects_year_too_high(self) -> None:
+    def test_set_system_date_rejects_year_too_high(self, cmd_map) -> None:
         from rigplane.commands import set_system_date
 
         with pytest.raises(ValueError, match="Year must be 2000-2099"):
-            set_system_date(2100, 1, 1)
+            set_system_date(2100, 1, 1, cmd_map=cmd_map)
 
-    def test_set_system_date_accepts_year_boundaries(self) -> None:
+    def test_set_system_date_accepts_year_boundaries(self, cmd_map) -> None:
         from rigplane.commands import set_system_date
 
         # Should accept 2000 and 2099
-        frame_2000 = set_system_date(2000, 1, 1)
+        frame_2000 = set_system_date(2000, 1, 1, cmd_map=cmd_map)
         assert frame_2000 == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x58\x20\x00\x01\x01\xfd"
 
-        frame_2099 = set_system_date(2099, 12, 31)
+        frame_2099 = set_system_date(2099, 12, 31, cmd_map=cmd_map)
         assert frame_2099 == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x58\x20\x99\x12\x31\xfd"
 
     def test_parse_system_date_response(self) -> None:
@@ -2553,14 +2603,14 @@ class TestSystemConfigCommands:
         assert month == 12
         assert day == 31
 
-    def test_system_date_roundtrip(self) -> None:
+    def test_system_date_roundtrip(self, cmd_map) -> None:
         from rigplane.commands import (
             parse_civ_frame,
             parse_system_date_response,
             set_system_date,
         )
 
-        frame = set_system_date(2025, 6, 15)
+        frame = set_system_date(2025, 6, 15, cmd_map=cmd_map)
         # Simulate radio echoing back the frame (swap addresses)
         response = b"\xfe\xfe" + bytes([frame[3], frame[2]]) + frame[4:]
         parsed = parse_civ_frame(response)
@@ -2569,42 +2619,42 @@ class TestSystemConfigCommands:
 
     # --- System Time (0x1A 0x05 0x01 0x59) ---
 
-    def test_get_system_time_frame(self) -> None:
+    def test_get_system_time_frame(self, cmd_map) -> None:
         from rigplane.commands import get_system_time
 
-        frame = get_system_time()
+        frame = get_system_time(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x59\xfd"
 
-    def test_set_system_time_16_45(self) -> None:
+    def test_set_system_time_16_45(self, cmd_map) -> None:
         from rigplane.commands import set_system_time
 
-        frame = set_system_time(16, 45)
+        frame = set_system_time(16, 45, cmd_map=cmd_map)
         # FE FE 98 E0 1A 05 01 59 16 45 FD
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x59\x16\x45\xfd"
 
-    def test_set_system_time_00_00(self) -> None:
+    def test_set_system_time_00_00(self, cmd_map) -> None:
         from rigplane.commands import set_system_time
 
-        frame = set_system_time(0, 0)
+        frame = set_system_time(0, 0, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x59\x00\x00\xfd"
 
-    def test_set_system_time_23_59(self) -> None:
+    def test_set_system_time_23_59(self, cmd_map) -> None:
         from rigplane.commands import set_system_time
 
-        frame = set_system_time(23, 59)
+        frame = set_system_time(23, 59, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x59\x23\x59\xfd"
 
-    def test_set_system_time_rejects_invalid_hour(self) -> None:
+    def test_set_system_time_rejects_invalid_hour(self, cmd_map) -> None:
         from rigplane.commands import set_system_time
 
         with pytest.raises(ValueError, match="Hour must be 0-23"):
-            set_system_time(24, 0)
+            set_system_time(24, 0, cmd_map=cmd_map)
 
-    def test_set_system_time_rejects_invalid_minute(self) -> None:
+    def test_set_system_time_rejects_invalid_minute(self, cmd_map) -> None:
         from rigplane.commands import set_system_time
 
         with pytest.raises(ValueError, match="Minute must be 0-59"):
-            set_system_time(12, 60)
+            set_system_time(12, 60, cmd_map=cmd_map)
 
     def test_parse_system_time_response(self) -> None:
         from rigplane.commands import parse_civ_frame, parse_system_time_response
@@ -2616,14 +2666,14 @@ class TestSystemConfigCommands:
         assert hour == 16
         assert minute == 45
 
-    def test_system_time_roundtrip(self) -> None:
+    def test_system_time_roundtrip(self, cmd_map) -> None:
         from rigplane.commands import (
             parse_civ_frame,
             parse_system_time_response,
             set_system_time,
         )
 
-        frame = set_system_time(9, 5)
+        frame = set_system_time(9, 5, cmd_map=cmd_map)
         response = b"\xfe\xfe" + bytes([frame[3], frame[2]]) + frame[4:]
         parsed = parse_civ_frame(response)
         hour, minute = parse_system_time_response(parsed)
@@ -2631,51 +2681,51 @@ class TestSystemConfigCommands:
 
     # --- UTC Offset (0x1A 0x05 0x01 0x62) ---
 
-    def test_get_utc_offset_frame(self) -> None:
+    def test_get_utc_offset_frame(self, cmd_map) -> None:
         from rigplane.commands import get_utc_offset
 
-        frame = get_utc_offset()
+        frame = get_utc_offset(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x62\xfd"
 
-    def test_set_utc_offset_plus_05_30(self) -> None:
+    def test_set_utc_offset_plus_05_30(self, cmd_map) -> None:
         from rigplane.commands import set_utc_offset
 
-        frame = set_utc_offset(5, 30, False)
+        frame = set_utc_offset(5, 30, False, cmd_map=cmd_map)
         # FE FE 98 E0 1A 05 01 62 05 30 00 FD
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x62\x05\x30\x00\xfd"
 
-    def test_set_utc_offset_minus_08_00(self) -> None:
+    def test_set_utc_offset_minus_08_00(self, cmd_map) -> None:
         from rigplane.commands import set_utc_offset
 
-        frame = set_utc_offset(8, 0, True)
+        frame = set_utc_offset(8, 0, True, cmd_map=cmd_map)
         # FE FE 98 E0 1A 05 01 62 08 00 01 FD
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x62\x08\x00\x01\xfd"
 
-    def test_set_utc_offset_zero(self) -> None:
+    def test_set_utc_offset_zero(self, cmd_map) -> None:
         from rigplane.commands import set_utc_offset
 
-        frame = set_utc_offset(0, 0, False)
+        frame = set_utc_offset(0, 0, False, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x62\x00\x00\x00\xfd"
 
-    def test_set_utc_offset_max_positive(self) -> None:
+    def test_set_utc_offset_max_positive(self, cmd_map) -> None:
         from rigplane.commands import set_utc_offset
 
-        frame = set_utc_offset(14, 0, False)
+        frame = set_utc_offset(14, 0, False, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1a\x05\x01\x62\x14\x00\x00\xfd"
 
-    def test_set_utc_offset_rejects_invalid_hours(self) -> None:
+    def test_set_utc_offset_rejects_invalid_hours(self, cmd_map) -> None:
         from rigplane.commands import set_utc_offset
 
         with pytest.raises(ValueError, match="hours must be 0-14"):
-            set_utc_offset(15, 0, False)
+            set_utc_offset(15, 0, False, cmd_map=cmd_map)
 
-    def test_set_utc_offset_rejects_invalid_minutes(self) -> None:
+    def test_set_utc_offset_rejects_invalid_minutes(self, cmd_map) -> None:
         from rigplane.commands import set_utc_offset
 
         with pytest.raises(ValueError, match="minutes must be 0/15/30/45"):
-            set_utc_offset(5, 10, False)
+            set_utc_offset(5, 10, False, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="minutes must be 0/15/30/45"):
-            set_utc_offset(5, 60, False)
+            set_utc_offset(5, 60, False, cmd_map=cmd_map)
 
     def test_parse_utc_offset_response_positive(self) -> None:
         from rigplane.commands import parse_civ_frame, parse_utc_offset_response
@@ -2699,44 +2749,65 @@ class TestSystemConfigCommands:
         assert minutes == 0
         assert is_negative is True
 
-    def test_utc_offset_roundtrip(self) -> None:
+    def test_utc_offset_roundtrip(self, cmd_map) -> None:
         from rigplane.commands import (
             parse_civ_frame,
             parse_utc_offset_response,
             set_utc_offset,
         )
 
-        frame = set_utc_offset(9, 45, True)
+        frame = set_utc_offset(9, 45, True, cmd_map=cmd_map)
         response = b"\xfe\xfe" + bytes([frame[3], frame[2]]) + frame[4:]
         parsed = parse_civ_frame(response)
         hours, minutes, is_negative = parse_utc_offset_response(parsed)
         assert (hours, minutes, is_negative) == (9, 45, True)
 
     # --- Speech (0x13) ---
+    #
+    # commands/speech.py migrated onto the bound command map in MOR-2008
+    # (batch 1): ``get_speech`` now requires ``cmd_map``. IC-7610's own
+    # ``get_speech`` tuple is byte-identical to the deleted fallback's
+    # ``0x13``, so the expected frames below are unchanged.
 
-    def test_speech_all(self) -> None:
+    def test_speech_all(self, cmd_map) -> None:
         from rigplane.commands import get_speech
 
-        frame = get_speech(0)
+        frame = get_speech(0, cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x13\x00\xfd"
 
-    def test_speech_freq(self) -> None:
+    def test_speech_freq(self, cmd_map) -> None:
         from rigplane.commands import get_speech
 
-        frame = get_speech(1)
+        frame = get_speech(1, cmd_map=cmd_map)
         assert b"\x13\x01" in frame
 
-    def test_speech_mode(self) -> None:
+    def test_speech_mode(self, cmd_map) -> None:
         from rigplane.commands import get_speech
 
-        frame = get_speech(2)
+        frame = get_speech(2, cmd_map=cmd_map)
         assert b"\x13\x02" in frame
 
-    def test_speech_invalid(self) -> None:
+    def test_speech_invalid(self, cmd_map) -> None:
         from rigplane.commands import get_speech
 
         with pytest.raises(ValueError, match="0, 1, or 2"):
-            get_speech(3)
+            get_speech(3, cmd_map=cmd_map)
+
+    def test_speech_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import get_speech
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_speech()  # type: ignore[call-arg]
+
+    def test_speech_rejects_explicit_none_the_same_way(self, cmd_map) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        from rigplane import IC_7610_ADDR
+        from rigplane.commands import get_speech
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_speech(0, to_addr=IC_7610_ADDR, cmd_map=None)
 
     def test_speech_cmd_map_prefers_set_speech_key(self) -> None:
         """Rig profiles may expose set_speech (wfview Set-only) instead of get_speech."""
@@ -2744,35 +2815,36 @@ class TestSystemConfigCommands:
         from rigplane.command_map import CommandMap
         from rigplane.commands import get_speech
 
-        cm = CommandMap({"set_speech": (0x13,)})
-        assert get_speech(0, to_addr=IC_7610_ADDR, cmd_map=cm) == get_speech(
-            0, to_addr=IC_7610_ADDR
+        cm_get = CommandMap({"get_speech": (0x13,)})
+        cm_set = CommandMap({"set_speech": (0x13,)})
+        assert get_speech(0, to_addr=IC_7610_ADDR, cmd_map=cm_set) == get_speech(
+            0, to_addr=IC_7610_ADDR, cmd_map=cm_get
         )
 
     # --- Transceiver ID (0x19 0x00) ---
 
-    def test_get_transceiver_id(self) -> None:
+    def test_get_transceiver_id(self, cmd_map) -> None:
         from rigplane.commands import get_transceiver_id
 
-        frame = get_transceiver_id()
+        frame = get_transceiver_id(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x19\x00\xfd"
 
     # --- XFC Status (0x1C 0x02) ---
 
-    def test_get_xfc_status(self) -> None:
+    def test_get_xfc_status(self, cmd_map) -> None:
         from rigplane.commands import get_xfc_status
 
-        frame = get_xfc_status()
+        frame = get_xfc_status(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1c\x02\xfd"
 
-    def test_set_xfc_status_on(self) -> None:
+    def test_set_xfc_status_on(self, cmd_map) -> None:
         from rigplane.commands import set_xfc_status
 
-        frame = set_xfc_status(True)
+        frame = set_xfc_status(True, cmd_map=cmd_map)
         assert b"\x1c\x02\x01" in frame
 
-    def test_set_xfc_status_off(self) -> None:
+    def test_set_xfc_status_off(self, cmd_map) -> None:
         from rigplane.commands import set_xfc_status
 
-        frame = set_xfc_status(False)
+        frame = set_xfc_status(False, cmd_map=cmd_map)
         assert b"\x1c\x02\x00" in frame

@@ -2699,13 +2699,16 @@ class TestNoShippedProfileUsesAbsentSpellingYet:
 
 class TestIc7300DeclaresAbsentCommands:
     """MOR-2014 (D2): IC-7300 is the first shipped profile to use the
-    ``{ absent = "<source>" }`` spelling, for 28 commands the IC-7300
+    ``{ absent = "<source>" }`` spelling, for the commands the IC-7300
     Advanced Manual (11a) command table (pp.19-2..19-8) confirms have no
-    row on this radio (27 at D2 time; MOR-2007 ruling 1 later split
-    ``set_dual_watch`` into ``set_dual_watch_off``/``set_dual_watch_on``,
-    +1 net). Pinned by name, not just count, so a future D2 pass on
-    another command can't silently swap one of these for a different one
-    and still pass a bare-count check.
+    row on this radio -- 27 at D2 time; MOR-2007 ruling 1 later split
+    ``set_dual_watch`` into ``set_dual_watch_off``/``set_dual_watch_on``
+    (+1, to 28), then MOR-2008 batch 1 deleted the dead bare
+    ``quick_dual_watch`` entry alongside the bare ``quick_split`` row it
+    was declared next to (-1, back to 27 -- a different 27 than D2's, not
+    the same set reverted). Pinned by name, not just count, so a future D2
+    pass on another command can't silently swap one of these for a
+    different one and still pass a bare-count check.
     """
 
     _EXPECTED_ABSENT = frozenset(
@@ -2738,7 +2741,8 @@ class TestIc7300DeclaresAbsentCommands:
             "get_powerstat",
             "get_quick_dual_watch",
             "set_quick_dual_watch",
-            "quick_dual_watch",
+            # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
+            # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
         }
@@ -2756,15 +2760,18 @@ class TestIc7300DeclaresAbsentCommands:
 
 class TestIc9700DeclaresAbsentCommands:
     """MOR-2015 (D2): IC-9700 is filled with the ``{ absent = "<source>" }``
-    spelling for 26 commands the IC-9700 CI-V Reference Guide (Icom, 2019)
-    confirms have no row on this radio -- 10 unique gap-list base names
-    (af_mute, data2/3_mod_input, digisel, digisel_shift, drive_gain,
-    main_sub_tracking, powerstat, quick_dual_watch, rx_antenna_ant2), plus
-    civ_output_ant (a copied-but-wrong 1A05 address with no real
-    replacement) and the nb_depth/nb_width pair (no single global control,
-    per-band only). Pinned by name, not just count, so a future D2 pass on
-    another command can't silently swap one of these for a different one
-    and still pass a bare-count check.
+    spelling for 25 commands the IC-9700 CI-V Reference Guide (Icom, 2019)
+    confirms have no row on this radio (26 at D2 time; MOR-2008 batch 1
+    later deleted the dead bare ``quick_dual_watch`` entry, -1 net -- see
+    ``rigs/ic9700.toml``'s own comment on that section) -- 10 unique
+    gap-list base names (af_mute, data2/3_mod_input, digisel,
+    digisel_shift, drive_gain, main_sub_tracking, powerstat,
+    quick_dual_watch, rx_antenna_ant2), plus civ_output_ant (a
+    copied-but-wrong 1A05 address with no real replacement) and the
+    nb_depth/nb_width pair (no single global control, per-band only).
+    Pinned by name, not just count, so a future D2 pass on another
+    command can't silently swap one of these for a different one and
+    still pass a bare-count check.
     """
 
     _EXPECTED_ABSENT = frozenset(
@@ -2792,7 +2799,8 @@ class TestIc9700DeclaresAbsentCommands:
             "get_powerstat",
             "get_quick_dual_watch",
             "set_quick_dual_watch",
-            "quick_dual_watch",
+            # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
+            # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
         }

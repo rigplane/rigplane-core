@@ -26,16 +26,16 @@
 # reachable from a builder that was compared, not sites observed to
 # execute. Every number here is re-measured and asserted by that
 # test. Regenerate, do not edit.
-census	builders_compared	105
+census	builders_compared	79
 census	cat_only_profiles	2
-census	dual_implementation_sites	70
+census	dual_implementation_sites	46
 census	frames_diverged	0
-census	frames_identical	755
+census	frames_identical	667
 census	hardcode_only_builders	16
-census	profile_builder_map_gaps	434
+census	profile_builder_map_gaps	310
 census	profiles	8
 census	public_builders	228
-census	sites_compared	65
+census	sites_compared	46
 cat-only	FTX-1	108
 cat-only	TX-500	50
 gap	get_af_mute	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
@@ -46,7 +46,6 @@ gap	get_antenna	FTX-1,TX-500,X6100,X6200
 gap	get_attenuator	FTX-1,TX-500
 gap	get_audio_peak_filter	FTX-1,TX-500,X6100,X6200
 gap	get_auto_notch	FTX-1,TX-500,X6100,X6200
-gap	get_band_edge_freq	FTX-1,TX-500
 gap	get_break_in	FTX-1,TX-500,X6100,X6200
 gap	get_comp_meter	FTX-1,TX-500,X6100,X6200
 gap	get_compressor	FTX-1,TX-500,X6100,X6200
@@ -67,32 +66,20 @@ gap	get_nb	FTX-1,TX-500
 gap	get_nr	FTX-1,TX-500,X6100,X6200
 gap	get_overflow_status	FTX-1,TX-500,X6100,X6200
 gap	get_power_meter	FTX-1,TX-500
-gap	get_powerstat	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
 gap	get_preamp	FTX-1,TX-500
 gap	get_repeater_tone	FTX-1,IC-7610,TX-500,X6100,X6200
 gap	get_repeater_tsql	FTX-1,IC-7610,TX-500,X6100,X6200
-gap	get_rit_frequency	FTX-1,TX-500,X6100,X6200
-gap	get_rit_status	FTX-1,TX-500,X6100,X6200
-gap	get_rit_tx_status	FTX-1,TX-500,X6100,X6200
 gap	get_rx_antenna_ant2	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	get_s_meter	FTX-1,TX-500
 gap	get_s_meter_sql_status	FTX-1,TX-500,X6100,X6200
-gap	get_speech	FTX-1,TX-500,X6100,X6200
 gap	get_ssb_tx_bandwidth	FTX-1,TX-500,X6100,X6200
 gap	get_swr	FTX-1,TX-500
 gap	get_tone_freq	FTX-1,IC-7610,TX-500,X6100,X6200
-gap	get_transceiver_id	FTX-1,TX-500
 gap	get_tsql_freq	FTX-1,IC-7610,TX-500,X6100,X6200
-gap	get_tuner_status	FTX-1,TX-500
 gap	get_twin_peak_filter	FTX-1,TX-500,X6100,X6200
-gap	get_tx_freq_monitor	FTX-1,TX-500,X6100,X6200
 gap	get_various_squelch	FTX-1,TX-500,X6100,X6200
 gap	get_vd_meter	FTX-1,TX-500
 gap	get_vox	FTX-1,TX-500,X6100,X6200
-gap	get_xfc_status	FTX-1,TX-500,X6100,X6200
-gap	power_off	FTX-1,TX-500,X6100,X6200
-gap	power_on	FTX-1,TX-500,X6100,X6200
-gap	send_cw	FTX-1,TX-500,X6100,X6200
 gap	set_af_mute	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	set_agc	FTX-1,TX-500
 gap	set_agc_time_constant	FTX-1,TX-500,X6100,X6200
@@ -119,22 +106,12 @@ gap	set_nr	FTX-1,TX-500,X6100,X6200
 gap	set_preamp	FTX-1,TX-500
 gap	set_repeater_tone	FTX-1,IC-7610,TX-500,X6100,X6200
 gap	set_repeater_tsql	FTX-1,IC-7610,TX-500,X6100,X6200
-gap	set_rit_frequency	FTX-1,TX-500,X6100,X6200
-gap	set_rit_status	FTX-1,TX-500,X6100,X6200
-gap	set_rit_tx_status	FTX-1,TX-500,X6100,X6200
 gap	set_rx_antenna_ant2	FTX-1,IC-705,IC-7300,IC-9700,TX-500,X6100,X6200
 gap	set_ssb_tx_bandwidth	FTX-1,TX-500,X6100,X6200
 gap	set_tone_freq	FTX-1,IC-7610,TX-500,X6100,X6200
 gap	set_tsql_freq	FTX-1,IC-7610,TX-500,X6100,X6200
-gap	set_tuner_status	FTX-1,TX-500
 gap	set_twin_peak_filter	FTX-1,TX-500,X6100,X6200
-gap	set_tx_freq_monitor	FTX-1,TX-500,X6100,X6200
 gap	set_vox	FTX-1,TX-500,X6100,X6200
-gap	set_xfc_status	FTX-1,TX-500,X6100,X6200
-gap	stop_cw	FTX-1,TX-500,X6100,X6200
-gap	system_date	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
-gap	system_time	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
-gap	utc_offset	FTX-1,IC-705,IC-7300,IC-7610,IC-9700,TX-500,X6100,X6200
 requires-map	config.py:get_acc1_mod_level
 requires-map	config.py:get_civ_output_ant
 requires-map	config.py:get_civ_transceive
@@ -153,6 +130,8 @@ requires-map	config.py:set_data3_mod_input
 requires-map	config.py:set_data_off_mod_input
 requires-map	config.py:set_lan_mod_level
 requires-map	config.py:set_usb_mod_level
+requires-map	cw.py:send_cw
+requires-map	cw.py:stop_cw
 requires-map	levels.py:get_af_level
 requires-map	levels.py:get_anti_vox_gain
 requires-map	levels.py:get_apf_type_level
@@ -203,6 +182,9 @@ requires-map	levels.py:set_rf_power
 requires-map	levels.py:set_squelch
 requires-map	levels.py:set_vox_delay
 requires-map	levels.py:set_vox_gain
+requires-map	power.py:get_powerstat
+requires-map	power.py:power_off
+requires-map	power.py:power_on
 requires-map	ptt.py:ptt_off
 requires-map	ptt.py:ptt_on
 requires-map	scope.py:get_scope_center_type
@@ -238,6 +220,27 @@ requires-map	scope.py:scope_set_span
 requires-map	scope.py:scope_set_speed
 requires-map	scope.py:scope_set_vbw
 requires-map	scope.py:scope_single_dual
+requires-map	speech.py:get_speech
+requires-map	system.py:get_band_edge_freq
+requires-map	system.py:get_rit_frequency
+requires-map	system.py:get_rit_status
+requires-map	system.py:get_rit_tx_status
+requires-map	system.py:get_system_date
+requires-map	system.py:get_system_time
+requires-map	system.py:get_transceiver_id
+requires-map	system.py:get_tuner_status
+requires-map	system.py:get_tx_freq_monitor
+requires-map	system.py:get_utc_offset
+requires-map	system.py:get_xfc_status
+requires-map	system.py:set_rit_frequency
+requires-map	system.py:set_rit_status
+requires-map	system.py:set_rit_tx_status
+requires-map	system.py:set_system_date
+requires-map	system.py:set_system_time
+requires-map	system.py:set_tuner_status
+requires-map	system.py:set_tx_freq_monitor
+requires-map	system.py:set_utc_offset
+requires-map	system.py:set_xfc_status
 requires-map	vfo.py:get_dual_watch
 requires-map	vfo.py:get_main_sub_band
 requires-map	vfo.py:get_quick_dual_watch
@@ -258,8 +261,3 @@ requires-map	vfo.py:set_quick_split
 requires-map	vfo.py:set_split
 requires-map	vfo.py:set_tuning_step
 requires-map	vfo.py:set_vfo
-unpinned	_builders.py:_build_ctl_mem_get
-unpinned	power.py:get_powerstat
-unpinned	system.py:set_system_date
-unpinned	system.py:set_system_time
-unpinned	system.py:set_utc_offset

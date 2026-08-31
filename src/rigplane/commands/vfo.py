@@ -56,9 +56,13 @@ never had a shared per-builder template to de-delegate from (its
 `_CMD_*`/`_SUB_*`/`_CTL_MEM_*`/`_VFO_*` constants were only ever read
 inline, by this module's own fallback branches, now deleted along with the
 branches -- verified by grep against the whole repo before removal from
-`_frame.py`; ``_CMD_CTL_MEM``/``_SUB_CTL_MEM`` survive there, since
-`system.py`'s date/time/UTC-offset getters still route through
-`_builders.py: _build_ctl_mem_get`, unmigrated).
+`_frame.py`; ``_CMD_CTL_MEM``/``_SUB_CTL_MEM`` survive there, read directly
+by several other modules' own builders/parsers (`mode.py`, `memory.py`,
+`dsp.py`, and, since MOR-2008 batch 1, `system.py`'s own
+``parse_system_date_response``/``parse_system_time_response``/
+``parse_utc_offset_response``) -- `_builders.py: _build_ctl_mem_get`,
+the shared template `system.py` used to route through instead, is gone
+now that migration removed its last caller).
 """
 
 from __future__ import annotations

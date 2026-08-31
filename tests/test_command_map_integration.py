@@ -121,16 +121,15 @@ class TestGetterParity:
         assert commands.get_power_meter(cmd_map=cmd_map) == commands.get_power_meter()
 
     def test_get_transceiver_id(self, cmd_map):
-        assert (
-            commands.get_transceiver_id(cmd_map=cmd_map)
-            == commands.get_transceiver_id()
-        )
+        # commands/system.py migrated onto the bound command map in
+        # MOR-2008 (batch 1): get_transceiver_id now requires cmd_map --
+        # pinned against the frame the deleted fallback used to build.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x19, sub=0x00)
+        assert commands.get_transceiver_id(cmd_map=cmd_map) == expected
 
     def test_get_band_edge_freq(self, cmd_map):
-        assert (
-            commands.get_band_edge_freq(cmd_map=cmd_map)
-            == commands.get_band_edge_freq()
-        )
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x02)
+        assert commands.get_band_edge_freq(cmd_map=cmd_map) == expected
 
     def test_scope_on(self, cmd_map):
         # commands/scope.py migrated onto the bound command map in MOR-2007
@@ -230,13 +229,22 @@ class TestSetterParity:
         assert commands.ptt_off(cmd_map=cmd_map) == expected
 
     def test_power_on(self, cmd_map):
-        assert commands.power_on(cmd_map=cmd_map) == commands.power_on()
+        # commands/power.py migrated onto the bound command map in
+        # MOR-2008 (batch 1): power_on/power_off now require cmd_map --
+        # pinned against the frame the deleted fallback used to build.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x18, data=b"\x01")
+        assert commands.power_on(cmd_map=cmd_map) == expected
 
     def test_power_off(self, cmd_map):
-        assert commands.power_off(cmd_map=cmd_map) == commands.power_off()
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x18, data=b"\x00")
+        assert commands.power_off(cmd_map=cmd_map) == expected
 
     def test_stop_cw(self, cmd_map):
-        assert commands.stop_cw(cmd_map=cmd_map) == commands.stop_cw()
+        # commands/cw.py migrated onto the bound command map in MOR-2008
+        # (batch 1): stop_cw now requires cmd_map -- pinned against the
+        # frame the deleted fallback used to build.
+        expected = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x17, data=b"\xff")
+        assert commands.stop_cw(cmd_map=cmd_map) == expected
 
     def test_start_scan(self, cmd_map):
         # commands/vfo.py migrated onto the bound command map in MOR-2007
