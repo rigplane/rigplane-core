@@ -17,7 +17,10 @@ describe('the sdr-test real registration proof', () => {
   // Kills: declarations.ts never actually calling registerLayout.
   it('registers sdr-test, mounting the live vfo + rxTx zones, with no change to SdrTestSkin.svelte behavior', () => {
     expect(getLayout('sdr-test')).toBe(sdrTestLayout);
-    expect(sdrTestLayout.zones).toEqual([{ id: 'main', surfaces: ['vfo', 'rxTx'] }]);
+    // Exact zone CONTENT (including the MOR-1346 `meters` zone) is
+    // `sdr-registration.test.ts`'s job; this proof only needs the vfo/rxTx
+    // pair this describe's own title names.
+    expect(sdrTestLayout.zones).toContainEqual({ id: 'main', surfaces: ['vfo', 'rxTx'] });
     expect(typeof sdrTestLayout.loader).toBe('function');
   });
 });

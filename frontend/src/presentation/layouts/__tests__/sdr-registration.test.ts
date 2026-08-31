@@ -62,8 +62,18 @@ describe('declared semantic zones (what the migrated entrypoint actually mounts)
   // (which would let sdr-test keep the legacy sidebar TX panel as its only
   // TX owner).
   it('mounts vfo + rxTx in one zone', () => {
-    expect(sdrTestLayout.zones).toEqual([{ id: 'main', surfaces: ['vfo', 'rxTx'] }]);
+    expect(sdrTestLayout.zones).toContainEqual({ id: 'main', surfaces: ['vfo', 'rxTx'] });
     expect([...sdrTestLayout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
+  });
+
+  // MOR-1346: `meters` joins as its own zone (the desktop-v2/MOR-1341 shape),
+  // which is what lets RadioLayout's existing `semanticMeters` gate retire
+  // the legacy `<MetersDockPanel>` here too. Kills: folding `meters` into
+  // `main` instead (a persisted `main` visibility preference predating this
+  // zone could then silently hide it) or leaving it undeclared again.
+  it('mounts meters in its own zone, not required', () => {
+    expect(sdrTestLayout.zones).toContainEqual({ id: 'meters', surfaces: ['meters'] });
+    expect(sdrTestLayout.requiredSemanticSurfaces).not.toContain('meters');
   });
 });
 

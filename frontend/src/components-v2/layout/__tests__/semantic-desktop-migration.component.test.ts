@@ -281,6 +281,10 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
     expect(t.querySelector('[data-panel-id="tx"]')).toBeNull();
   });
 
+  // MOR-1346: `.bottom-dock` dropped out of this list — sdr-test now
+  // declares a `meters` zone too, so the legacy dock retires unconditionally
+  // (see the dedicated meters-suppression test below, which is what actually
+  // proves the dock/semantic-surface swap with real meter data).
   it('leaves the rest of the layout intact', () => {
     const t = render('sdr-test');
     expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
@@ -288,7 +292,6 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
     expect(t.querySelector('.content-right .right-sidebar')).not.toBeNull();
     expect(t.querySelector('.center-column .spectrum-slot')).not.toBeNull();
     expect(t.querySelector('.spectrum-panel-stub')).not.toBeNull();
-    expect(t.querySelector('.bottom-dock')).not.toBeNull();
     // Non-TX sidebar panels are untouched by the TX suppression.
     expect(t.querySelector('[data-panel-id="rx-audio"]')).not.toBeNull();
     expect(t.querySelector('[data-panel-id="memory"]')).not.toBeNull();
