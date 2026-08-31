@@ -589,10 +589,8 @@ Files:
 - `frontend/src/components-v2/controls/ControlButtonDemo.svelte` — internal
   control showcase; gated on `?demo=control-buttons`. Plenty of headings
   (`Modern`, `Hardware`, `…`).
-- `frontend/src/components-v2/meters/SMeterDemo.svelte:52–56` — `Full`,
-  `Compact` variant labels.
 
-Estimated string count: ~40 in `ControlButtonDemo.svelte` alone.
+Estimated string count: ~40 in `ControlButtonDemo.svelte`.
 
 Notes: developer-only routes. Either skip entirely from translation, or
 extract on a "best-effort English-only" basis once the i18n runtime exists.

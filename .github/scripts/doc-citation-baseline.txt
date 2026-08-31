@@ -126,7 +126,6 @@ docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/RightSideba
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/VfoHeader.svelte:172
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/mobile-chip-bar.svelte:17
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/mobile-nav-utils.ts:10
-docs/i18n/core-string-inventory.md	frontend/src/components-v2/meters/SMeterDemo.svelte:52
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/panels/AntennaPanel.svelte:20
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/panels/AudioRoutingControl.svelte:46
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/panels/DockMeterPanel.svelte:98
