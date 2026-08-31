@@ -16,7 +16,7 @@ name: Doc citation gate
 # one deliberate behavioural difference from the citation baseline (a
 # link baseline entry disappearing is not itself a failure).
 #
-# Four independent checks run in this one job:
+# Six independent checks run in this one job:
 #   1. docs/** vs the committed citation baseline (new citation / stale entry).
 #   2. the committed citation baseline vs the baseline at the MERGE BASE
 #      (baseline growth). This second check is the one that actually makes
@@ -27,6 +27,19 @@ name: Doc citation gate
 #   3. every tracked *.md file vs the committed link baseline (new dead link).
 #   4. the committed link baseline vs the baseline at the MERGE BASE (growth
 #      only -- shrinkage is never required here, see point above).
+#   5. every pair already in the committed citation baseline vs the
+#      committed dangling-citation baseline (MOR-2065 floor): a citation
+#      whose file is missing or whose line is past that file's current
+#      end, and that is not yet grandfathered in the dangling baseline, is
+#      new rot and fails. An entry in the dangling baseline that is no
+#      longer dangling, or no longer a citation-baseline pair at all, fails
+#      too (self-liquidation) -- see DANGLING-CITATION FLOOR in
+#      check-doc-citations.sh. This step checks path/line existence only,
+#      not whether a symbol name still exists at that position; symbol
+#      verification is a separate, still-open half of MOR-2065.
+#   6. the committed dangling-citation baseline vs the baseline at the
+#      MERGE BASE (growth only, same mechanism and rename handling as
+#      point 2).
 #
 # Growth is compared against the MERGE BASE, not the base branch's current
 # tip: comparing against the tip would make the first PR that legitimately
@@ -65,6 +78,7 @@ on:
       - ".github/scripts/check-doc-citations.sh"
       - ".github/scripts/doc-citation-baseline.txt"
       - ".github/scripts/doc-link-baseline.txt"
+      - ".github/scripts/doc-citation-dangling-baseline.txt"
       - ".github/workflows/doc-citation-gate.yml"
   pull_request:
     branches: [main]
@@ -74,6 +88,7 @@ on:
       - ".github/scripts/check-doc-citations.sh"
       - ".github/scripts/doc-citation-baseline.txt"
       - ".github/scripts/doc-link-baseline.txt"
+      - ".github/scripts/doc-citation-dangling-baseline.txt"
       - ".github/workflows/doc-citation-gate.yml"
 
 concurrency:
@@ -98,6 +113,9 @@ jobs:
 
       - name: Doc link gate (repo-wide vs baseline)
         run: .github/scripts/check-doc-citations.sh --check-links
+
+      - name: Doc-citation dangling-floor gate (new dangling rot)
+        run: .github/scripts/check-doc-citations.sh --check-dangling
 
       - name: Determine merge base for growth check
         id: mergebase
@@ -124,3 +142,9 @@ jobs:
         env:
           BASE_REF: ${{ steps.mergebase.outputs.base_ref }}
         run: .github/scripts/check-doc-citations.sh --check-links --check-growth "${BASE_REF}"
+
+      - name: Doc-citation dangling-floor gate (baseline may only shrink)
+        if: steps.mergebase.outputs.base_ref != ''
+        env:
+          BASE_REF: ${{ steps.mergebase.outputs.base_ref }}
+        run: .github/scripts/check-doc-citations.sh --check-dangling --check-growth "${BASE_REF}"

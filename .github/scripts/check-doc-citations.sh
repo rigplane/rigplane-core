@@ -250,6 +250,86 @@
 #   check-doc-citations.sh --check-links --regenerate            # shrink-only rewrite
 #   check-doc-citations.sh --check-links --regenerate --allow-growth
 #   check-doc-citations.sh --check-links --check-growth <git-ref>  # CI-only
+#
+# ===========================================================================
+# DANGLING-CITATION FLOOR (MOR-2065, first step)
+# ===========================================================================
+#
+# A third, independent gate lives in this same script and reuses the same
+# MODE-selector / --regenerate / --check-growth mechanism as the doc-link
+# gate above, selected with --check-dangling: for every (docfile, citation)
+# pair already grandfathered in doc-citation-baseline.txt, verify that the
+# cited FILE still exists in the tree and that the cited LINE is still
+# within that file's current length.
+#
+# WHY THIS EXISTS: the citation gate above enforces baseline MEMBERSHIP (is
+# this exact citation string grandfathered) but never opens the cited file.
+# A citation pointing past end-of-file, or at a file deleted since it was
+# grandfathered, stays green forever under that check alone -- it only
+# catches a citation being added to or removed from a DOCUMENT, not a
+# citation going stale because the CODE it points at changed length or
+# disappeared while the document was untouched. This script closes that gap
+# for path/line existence only. It does NOT verify that a symbol name still
+# exists at that position -- resolving a stale citation to "whatever symbol
+# sits at that line today" would fabricate a symbol name exactly where the
+# citation is already wrong, the same failure mode the citation gate above
+# exists to prevent, so symbol verification is a separate, still-open half
+# of MOR-2065, not attempted here.
+#
+# WHEN THIS RUNS: doc-citation-gate.yml path-filters on **/*.md, docs/**,
+# and this gate's own files -- a PR that only touches src/** or frontend/**
+# does not trigger the workflow at all. The rot is invisible at the moment
+# it is created and surfaces later, on whatever next PR happens to touch a
+# doc file and trips the workflow's path filter.
+#
+# RESOLUTION RULE (see parse_citation, find_candidates, classify_citation
+# below): split a citation's path from its cited line number(s) -- the same
+# two forms (`path:N[-M]`, `path#LN[-LM]`) the PATTERN regex above already
+# accepts. Find candidate files for that path in `git ls-files` (the
+# current tree, not the commit that grandfathered the citation) by exact
+# match OR by "/"-suffix match -- a bare-filename citation such as
+# `radio.py:400` can match more than one tracked file sharing that
+# basename, and any one candidate covering the line is enough. Verdict per
+# citation: OK if ANY candidate file's current line count is >= the
+# citation's max cited line; MISSING if zero candidate files exist;
+# PAST_EOF if candidate files exist but none of them covers the line.
+# "Current line count" is `awk 'END{print NR}'`, which -- unlike `wc -l` --
+# counts a final line that has no trailing newline, so a citation naming
+# exactly a file's last line is not misclassified as PAST_EOF depending on
+# whether that line happens to end in a newline.
+#
+# BASELINE: doc-citation-dangling-baseline.txt, same (docfile, citation)
+# pair format as doc-citation-baseline.txt, generated with
+# `--check-dangling --regenerate` and enforced shrink-only with
+# `--check-dangling --check-growth <ref>` -- the exact same --regenerate /
+# --check-growth code paths --check-links already uses, parameterized onto
+# this baseline via the ACTIVE_* variables below; nothing below this point
+# duplicates that logic.
+#
+# CHECK-MODE, REUSING THE CITATION GATE'S OWN NEW/DEAD LOGIC: plain
+# `--check-dangling` computes CURRENT_PAIRS not by scanning docs/** but by
+# classifying every pair already in doc-citation-baseline.txt and keeping
+# only the ones that do not classify OK (see the MODE="dangling" branch
+# below). Comparing that against the committed dangling baseline through
+# the same `comm` logic the citation gate uses gives two outcomes for free:
+# a NEW pair is a citation that is dangling now but not yet grandfathered
+# here -- this is the floor itself, the case that must fail loudly. A DEAD
+# pair is a dangling-baseline entry that is no longer dangling, whether
+# because its (docfile, citation) pair was dropped from the main citation
+# baseline entirely (the citation was fixed) or because the cited file grew
+# back past the line -- self-liquidation: unlike the link baseline's DEAD
+# handling, a DEAD entry here IS a failure, never a quiet note, because a
+# stale exemption must not keep passing unnoticed. Both outcomes share one
+# fix: `--check-dangling --regenerate`, run and committed in the SAME PR
+# that changed the citation's state, so the citation baseline and this
+# baseline move together atomically.
+#
+# Usage (run from the repository root; --check-dangling, if given, must be
+# the first argument):
+#   check-doc-citations.sh --check-dangling                        # check mode (CI)
+#   check-doc-citations.sh --check-dangling --regenerate                 # shrink-only rewrite
+#   check-doc-citations.sh --check-dangling --regenerate --allow-growth
+#   check-doc-citations.sh --check-dangling --check-growth <git-ref>     # CI-only
 
 set -euo pipefail
 export LC_ALL=C  # pin collation: sort/comm must be byte-order-stable across
@@ -260,6 +340,7 @@ export LC_ALL=C  # pin collation: sort/comm must be byte-order-stable across
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASELINE_FILE="${SCRIPT_DIR}/doc-citation-baseline.txt"
 LINK_BASELINE_FILE="${SCRIPT_DIR}/doc-link-baseline.txt"
+DANGLING_BASELINE_FILE="${SCRIPT_DIR}/doc-citation-dangling-baseline.txt"
 
 EXT='py|ts|svelte|toml|md|c|h|cpp|mjs|yml|ui'
 PATTERN="[A-Za-z0-9_/.-]+\\.(${EXT})(:[0-9]+(-[0-9]+)?|#L[0-9]+(-L?[0-9]+)?)"
@@ -278,6 +359,18 @@ LINK_HEADER='# Baseline of grandfathered (docfile, dead-link-target) pairs -- re
 # Growth is blocked (see check-doc-citations.sh, DOC-LINK EXTENSION); a
 # fixed link disappearing from this file is fine and not required before
 # CI passes. Do not hand-edit additions.'
+
+DANGLING_HEADER='# Baseline of grandfathered (docfile, citation) pairs from
+# doc-citation-baseline.txt whose citation is currently dangling: the cited
+# file does not exist, or the cited line is past that file'"'"'s current
+# length. Format: <doc file path><TAB><citation string>, identical to
+# doc-citation-baseline.txt. Generated by:
+#   .github/scripts/check-doc-citations.sh --check-dangling --regenerate
+# Shrink-only, enforced the same way as the citation baseline (see
+# check-doc-citations.sh, DANGLING-CITATION FLOOR); an entry that is no
+# longer dangling, or no longer a pair in doc-citation-baseline.txt, is a
+# self-liquidation FAILURE, not a quiet removal -- regenerate this file in
+# the same PR that changed the citation. Do not hand-edit additions.'
 
 strip_comments() {
     grep -vE '^[[:space:]]*#' | grep -vE '^[[:space:]]*$' || true
@@ -431,9 +524,112 @@ scan_broken_link_occurrences() {
     done < <(git ls-files '*.md')
 }
 
+# Splits one docs/** citation string ("path.ext:N", "path.ext:N-M",
+# "path.ext#LN", "path.ext#LN-LM") into PARSE_PATH and PARSE_MAXLINE
+# (globals -- bash functions cannot return a struct). Every string passed
+# here already matched the PATTERN regex above when it was scanned, so
+# these two forms are exhaustive; this function does not re-validate that.
+parse_citation() {
+    local citation="$1" path rest a b
+    if [[ "$citation" == *'#L'* ]]; then
+        path="${citation%%#L*}"
+        rest="${citation##*#L}"
+    else
+        path="${citation%%:*}"
+        rest="${citation#*:}"
+    fi
+    if [[ "$rest" == *-* ]]; then
+        a="${rest%%-*}"
+        b="${rest##*-}"
+        b="${b#L}"   # a "#Lx-Ly" range's second bound may repeat the "L"
+    else
+        a="$rest"
+        b=""
+    fi
+    PARSE_PATH="$path"
+    if [ -n "$b" ] && [ "$b" -gt "$a" ]; then
+        PARSE_MAXLINE="$b"
+    else
+        PARSE_MAXLINE="$a"
+    fi
+}
+
+# Prints every candidate file for citation path $1, one per line, matching
+# it against ALL_TRACKED_FILES (must already be populated by the caller --
+# `git ls-files` output for the whole tree, not just docs/**) by exact
+# match or by "/"-suffix match -- a bare filename like `radio.py` can match
+# more than one tracked path. The exact-match half is a single `grep -F -x`
+# lookup; the suffix half narrows with a fixed-string `grep -F` pass first
+# (one process over the whole file list, not one per tracked file) and
+# confirms the path-boundary per surviving candidate in bash, because a
+# plain substring match on "/$1" also matches a path whose final segment
+# only starts with the cited name and continues past it (e.g. "/radio.py"
+# also matching "/radio.pyi"; verified by `grep -cF -- "/radio.py"` against
+# "src/rigplane/radio.pyi" -> 1 match, "src/rigplane/old_radio.py" -> 0
+# matches, since the slash in the needle anchors the match to a path
+# boundary) -- that grep pass alone is a superset, not the answer.
+find_candidates() {
+    local p="$1" exact prefiltered f
+    exact="$(printf '%s\n' "$ALL_TRACKED_FILES" | grep -F -x -- "$p" || true)"
+    prefiltered="$(printf '%s\n' "$ALL_TRACKED_FILES" | grep -F -- "/$p" || true)"
+    {
+        if [ -n "$exact" ]; then
+            printf '%s\n' "$exact"
+        fi
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if [[ "$f" == */"$p" ]]; then
+                printf '%s\n' "$f"
+            fi
+        done <<< "$prefiltered"
+    } | sort -u
+}
+
+# Classifies citation string $1 against the current tree, setting
+# CLASSIFY_VERDICT to one of OK / MISSING / PAST_EOF (globals, same
+# constraint as parse_citation) and, for the two dangling verdicts,
+# CLASSIFY_DETAIL to a human-readable reason. For PAST_EOF specifically,
+# CLASSIFY_DETAIL names the closest-covering candidate (the one with the
+# most lines, so the message shows the file that came nearest to covering
+# the citation, not an arbitrary one); MISSING has no candidate to name.
+# ALL_TRACKED_FILES must already be populated (see find_candidates).
+# "Current line count" is `awk 'END{print NR}'` -- see the
+# DANGLING-CITATION FLOOR header comment for why that, not `wc -l`, is the
+# right measure of a file's length here.
+classify_citation() {
+    local citation="$1" candidates f linecount best_path="" best_count=-1
+    CLASSIFY_DETAIL=""  # cleared unconditionally so a stale value from a
+                        # prior OK-verdict call is never mistaken for this
+                        # citation's reason
+    parse_citation "$citation"
+    candidates="$(find_candidates "$PARSE_PATH")"
+    if [ -z "$(printf '%s' "$candidates" | tr -d '[:space:]')" ]; then
+        CLASSIFY_VERDICT="MISSING"
+        CLASSIFY_DETAIL="file missing: no tracked file matches '${PARSE_PATH}' (exact or path-suffix)"
+        return
+    fi
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        linecount=$(awk 'END{print NR+0}' "$f" 2>/dev/null || echo 0)
+        if [ "$linecount" -gt "$best_count" ]; then
+            best_path="$f"
+            best_count="$linecount"
+        fi
+        if [ "$linecount" -ge "$PARSE_MAXLINE" ]; then
+            CLASSIFY_VERDICT="OK"
+            return
+        fi
+    done <<< "$candidates"
+    CLASSIFY_VERDICT="PAST_EOF"
+    CLASSIFY_DETAIL="line ${PARSE_MAXLINE} past EOF of '${best_path}' with ${best_count} lines"
+}
+
 MODE="citation"
 if [ "${1:-}" = "--check-links" ]; then
     MODE="link"
+    shift
+elif [ "${1:-}" = "--check-dangling" ]; then
+    MODE="dangling"
     shift
 fi
 
@@ -443,6 +639,13 @@ if [ "$MODE" = "link" ]; then
     ACTIVE_HEADER="$LINK_HEADER"
     ACTIVE_RENAME_PATHSPEC='*.md'
     ACTIVE_LABEL="Doc-link gate"
+elif [ "$MODE" = "dangling" ]; then
+    ACTIVE_BASELINE_FILE="$DANGLING_BASELINE_FILE"
+    ACTIVE_BASELINE_REL_PATH=".github/scripts/doc-citation-dangling-baseline.txt"
+    ACTIVE_HEADER="$DANGLING_HEADER"
+    ACTIVE_RENAME_PATHSPEC='docs/'  # dangling-baseline docfiles are citation
+                                    # docfiles, same rename scope as citation mode
+    ACTIVE_LABEL="Doc-citation dangling-floor gate"
 else
     ACTIVE_BASELINE_FILE="$BASELINE_FILE"
     ACTIVE_BASELINE_REL_PATH=".github/scripts/doc-citation-baseline.txt"
@@ -536,6 +739,39 @@ $ALL_BROKEN_LINKS
 EOF
 
     CURRENT_PAIRS="$(printf '%s\n' "${CURRENT_PAIR_LIST[@]:-}" | grep -v '^$' | sort -u || true)"
+elif [ "$MODE" = "dangling" ]; then
+    # CURRENT_PAIRS is not scanned from docs/** here -- it is DERIVED by
+    # classifying every (docfile, citation) pair already committed in
+    # doc-citation-baseline.txt (the CITATION baseline, not this one)
+    # against the current tree, keeping only the pairs whose citation does
+    # not classify OK. See classify_citation above and the
+    # DANGLING-CITATION FLOOR header comment for the resolution rule.
+    if [ ! -f "$BASELINE_FILE" ]; then
+        echo "::error::baseline file not found at ${BASELINE_FILE}" >&2
+        exit 2
+    fi
+    CITATION_BASELINE_PAIRS="$(load_baseline_pairs "$BASELINE_FILE")"
+    ALL_TRACKED_FILES="$(git ls-files)"
+
+    declare -A CITATION_VERDICT=()  # citation string -> OK | MISSING | PAST_EOF
+    declare -A CITATION_DETAIL=()   # citation string -> reason (dangling verdicts only)
+
+    CURRENT_PAIR_LIST=()
+    while IFS=$'\t' read -r docfile citation; do
+        [ -z "$docfile" ] && continue
+        if [ -z "${CITATION_VERDICT[$citation]+x}" ]; then
+            classify_citation "$citation"
+            CITATION_VERDICT["$citation"]="$CLASSIFY_VERDICT"
+            CITATION_DETAIL["$citation"]="$CLASSIFY_DETAIL"
+        fi
+        if [ "${CITATION_VERDICT[$citation]}" != "OK" ]; then
+            CURRENT_PAIR_LIST+=("${docfile}"$'\t'"${citation}")
+        fi
+    done <<EOF
+$CITATION_BASELINE_PAIRS
+EOF
+
+    CURRENT_PAIRS="$(printf '%s\n' "${CURRENT_PAIR_LIST[@]:-}" | grep -v '^$' | sort -u || true)"
 else
     # One pass over docs/**: every matched occurrence as "docfile:docline:citation".
     ALL_OCCURRENCES="$(grep -rnoE "$PATTERN" docs/ || true)"
@@ -578,6 +814,8 @@ if [ "${1:-}" = "--regenerate" ]; then
         echo "::error::--regenerate would ADD ${ADDED_COUNT} pair(s) not already in the baseline; refused by default because the baseline may only shrink." >&2
         if [ "$MODE" = "citation" ]; then
             echo "Added pairs (one of these is probably a new citation you meant to write as file+symbol instead):" >&2
+        elif [ "$MODE" = "dangling" ]; then
+            echo "Added pairs (one of these citations just became dangling -- file missing or line past EOF; fix the citation or the doc instead of grandfathering it, if possible):" >&2
         else
             echo "Added pairs (one of these is probably a new dead link you meant to fix instead of grandfathering):" >&2
         fi
@@ -624,6 +862,13 @@ if [ -n "$(printf '%s' "$NEW" | tr -d '[:space:]')" ]; then
             docline="${FIRST_LOCATION[$key]:-?}"
             echo "  ${docfile}:${docline}: link to '${citation}' does not resolve to a tracked file -- fix it, or if intentionally tracked separately, grandfather it via '.github/scripts/check-doc-citations.sh --check-links --regenerate'." >&2
         done
+    elif [ "$MODE" = "dangling" ]; then
+        echo "::error::doc-citation-baseline.txt entries are dangling (cited file/line does not resolve, see DANGLING-CITATION FLOOR above) and not yet grandfathered in the dangling-floor baseline:" >&2
+        printf '%s\n' "$NEW" | while IFS=$'\t' read -r docfile citation; do
+            [ -z "$docfile" ] && continue
+            detail="${CITATION_DETAIL[$citation]:-(reason unavailable)}"
+            echo "  ${docfile}: '${citation}' -- ${detail}. Two legal responses: (1) delete the citation from ${docfile} per the 2026-08-31 ruling (cite file plus symbol name instead) and regenerate both baselines ('.github/scripts/check-doc-citations.sh --regenerate' then '--check-dangling --regenerate'); or (2) if the cited file was legitimately edited and the citation should point elsewhere, fix the citation in the doc and regenerate both baselines the same way." >&2
+        done
     else
         echo "::error::new docs/** citations found that are not in the baseline:" >&2
         printf '%s\n' "$NEW" | while IFS=$'\t' read -r docfile citation; do
@@ -643,6 +888,30 @@ if [ "$MODE" = "citation" ] && [ -n "$(printf '%s' "$DEAD" | tr -d '[:space:]')"
         echo "  ${docfile}: ${citation}" >&2
     done
     echo "Regenerate it: .github/scripts/check-doc-citations.sh --regenerate (then commit the updated baseline file)." >&2
+elif [ "$MODE" = "dangling" ] && [ -n "$(printf '%s' "$DEAD" | tr -d '[:space:]')" ]; then
+    # Self-liquidation is a FAILURE here, never a quiet note (unlike the
+    # link baseline's DEAD handling below): a stale exemption in this
+    # baseline must not keep passing silently. STRICT orphan semantics: a
+    # dangling-baseline entry whose (docfile, citation) pair no longer
+    # appears in doc-citation-baseline.txt at all is just as much a
+    # failure as one that is still a baseline pair but no longer dangling.
+    FAIL=1
+    echo "::error::doc-citation-dangling-baseline.txt entries are stale -- each must be regenerated in the SAME PR that changed the underlying citation, so the citation baseline and this baseline move together atomically:" >&2
+    declare -A CITATION_BASELINE_PAIR_SET=()
+    while IFS=$'\t' read -r df ci; do
+        [ -z "$df" ] && continue
+        CITATION_BASELINE_PAIR_SET["${df}"$'\t'"${ci}"]=1
+    done <<< "$CITATION_BASELINE_PAIRS"
+    printf '%s\n' "$DEAD" | while IFS=$'\t' read -r docfile citation; do
+        [ -z "$docfile" ] && continue
+        key="${docfile}"$'\t'"${citation}"
+        if [ -z "${CITATION_BASELINE_PAIR_SET[$key]+x}" ]; then
+            reason="orphan: this pair is no longer present in doc-citation-baseline.txt"
+        else
+            reason="resolved: this citation now classifies as OK against the current tree"
+        fi
+        echo "  ${docfile}: ${citation} -- stale dangling entry (${reason}). Fix: run '.github/scripts/check-doc-citations.sh --check-dangling --regenerate' in the same PR that changed the citation, and commit both updated baselines together." >&2
+    done
 elif [ "$MODE" = "link" ] && [ -n "$(printf '%s' "$DEAD" | tr -d '[:space:]')" ]; then
     # Deliberately not a failure -- see the DOC-LINK EXTENSION / BASELINE
     # note above for why a link baseline is allowed to shrink quietly.
@@ -657,6 +926,8 @@ fi
 TOTAL=$(printf '%s\n' "$BASELINE_PAIRS" | grep -c . || true)
 if [ "$MODE" = "link" ]; then
     echo "${ACTIVE_LABEL}: clean (${TOTAL} grandfathered dead link(s), repo-wide *.md scope). Checked: the linked file exists among tracked *.md files. NOT checked: #anchor fragments, links to non-.md targets, and links with a URI scheme (https:, mailto:, ...)."
+elif [ "$MODE" = "dangling" ]; then
+    echo "${ACTIVE_LABEL}: clean (${TOTAL} grandfathered dangling citation(s)). Checked: the cited file exists and the cited line is within its current length. NOT checked: whether a symbol name still exists at that position (see DANGLING-CITATION FLOOR in this script)."
 else
     echo "${ACTIVE_LABEL}: clean (${TOTAL} grandfathered citations)."
 fi
