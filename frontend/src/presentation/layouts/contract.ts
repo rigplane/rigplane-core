@@ -1,7 +1,8 @@
 /**
  * Layout manifest v1 schema, runtime validator, and compiled registry
  * (MOR-1066) — the other side of the design-language handshake in
- * `../languages/contract.ts` (`./compatibility.ts` composes the two).
+ * `../languages/contract.ts` (matched against a layout id by
+ * `../workspace/activation.ts: designLanguageActivation`).
  * Declares identity, zones mounting semantic surfaces, compatible radio
  * topologies, the MOR-1160 stage-sizing axis, and a safe fallback — never
  * executable radio behavior, capability objects, or component module paths
