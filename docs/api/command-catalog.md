@@ -40,7 +40,7 @@ A command is batch-eligible when all of the following are true:
 2. It is **not** in `ControlHandler._READ_ONLY_HANDLERS` (i.e., it goes through the ordered command queue).
 3. It produces exactly one queued command.
 
-Commands marked `Batch: No` in the table return error `unsupported_in_batch` when used in a batch. Send those via `POST /api/v1/commands` instead. Note: `get_quick_split` and `get_quick_dual_watch` have `Batch: Yes` despite the `get_` prefix — they enqueue write operations and are queue-backed.
+Commands marked `Batch: No` in the table return error `unsupported_in_batch` when used in a batch. Send those via `POST /api/v1/commands` instead. Note: `get_quick_split` and `get_quick_dual_watch` have `Batch: Yes` despite the `get_` prefix — they are queue-backed, dispatched through the command queue rather than answered directly like other `get_*` commands.
 
 Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 
@@ -244,9 +244,9 @@ the memory protocol reject these commands.
 | `set_xfc_status` | `on: bool` | — | Yes | XFC on/off. `on` is required. |
 | `set_tx_freq_monitor` | `on: bool` | — | Yes | TX frequency monitor. `on` is required. |
 | `get_quick_split` | — | — | Yes | Enqueues `QuickSplit`, which reads the IC-7300 `1A 05 0030`-style persistent Quick Split menu toggle (`CoreRadio.get_quick_split`, MOR-2007). |
-| `set_quick_split` | — | — | Yes | Enqueues the same `QuickSplit` as `get_quick_split` above and only reads — this WS command does not yet parse an `on` value from `params` to write it (`CoreRadio.set_quick_split` exists and works when called directly; the WS handler just doesn't reach it yet). Not an alias in the underlying command layer any more (MOR-2007 gave `get_`/`set_` real, distinct behavior), only in this WS intent's current wiring. |
+| `set_quick_split` | `on: bool` | — | Yes | Enqueues `SetQuickSplit`, which writes the persistent Quick Split menu toggle via `CoreRadio.set_quick_split` (MOR-2007 ruling 2; wired MOR-2045). `on` is required. |
 | `get_quick_dual_watch` | — | — | Yes | Enqueues `QuickDualWatch`, which reads the equivalent persistent Quick Dual Watch menu toggle (`CoreRadio.get_quick_dual_watch`, MOR-2007). |
-| `set_quick_dual_watch` | — | — | Yes | Same gap as `set_quick_split` above: reads via `QuickDualWatch` rather than writing through `CoreRadio.set_quick_dual_watch`. |
+| `set_quick_dual_watch` | `on: bool` | — | Yes | Enqueues `SetQuickDualWatch`, which writes the persistent Quick Dual Watch menu toggle via `CoreRadio.set_quick_dual_watch` (MOR-2007 ruling 2; wired MOR-2045). `on` is required. |
 | `quick_dualwatch` | — | `dual_rx` | Yes | Composite trigger: equalize MAIN→SUB then enable dual watch (emulates front-panel long-press). |
 | `quick_split` | — | `dual_rx` | Yes | Composite trigger: equalize MAIN→SUB then enable split (emulates front-panel long-press). |
 
@@ -355,7 +355,7 @@ Check `GET /api/v1/capabilities` before building model-specific batches. The
 ## Stability notes
 
 - **Stable:** all commands not listed as experimental below.
-- **Experimental:** `cw_auto_tune` (requires audio relay; FFT peak detection; fails if RX audio is inactive). `get_quick_split`, `set_quick_split`, `get_quick_dual_watch`, `set_quick_dual_watch` — the underlying command/runtime layer now reads and writes the real persistent menu toggle (MOR-2007), but this WS intent's `set_` half still only reads (see the table above); prefer `quick_split` / `quick_dualwatch` for the composite front-panel-emulating trigger, which is unaffected.
+- **Experimental:** `cw_auto_tune` (requires audio relay; FFT peak detection; fails if RX audio is inactive). `get_quick_split`, `set_quick_split`, `get_quick_dual_watch`, `set_quick_dual_watch` — the underlying command/runtime layer reads and writes the real persistent menu toggle (MOR-2007; WS wiring MOR-2045); prefer `quick_split` / `quick_dualwatch` for the composite front-panel-emulating trigger, which is unaffected.
 - **Deprecated aliases (kept for backwards compatibility):** `select_vfo`, `set_power`, `set_squelch`, `set_ipplus`, `set_attenuator`, `set_comp`, `set_compressor`. Use the canonical names listed above in new code.
 
 ---

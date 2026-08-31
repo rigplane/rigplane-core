@@ -55,7 +55,9 @@ from rigplane.web.radio_poller import (
     EnableScope,
     PttOff,
     PttOn,
+    QuickDualWatch,
     QuickDwTrigger,
+    QuickSplit,
     QuickSplitTrigger,
     RadioPoller,
     ScanSetResume,
@@ -85,6 +87,8 @@ from rigplane.web.radio_poller import (
     SetPbtOuter,
     SetPower,
     SetPreamp,
+    SetQuickDualWatch,
+    SetQuickSplit,
     SetRfGain,
     SetScopeCenterType,
     SetScopeDual,
@@ -275,6 +279,10 @@ def _make_radio(active: str = "MAIN", *, model: str = "IC-7610") -> MagicMock:
     radio.set_dual_watch = AsyncMock()
     radio.set_split = AsyncMock()
     radio.equalize_main_sub = AsyncMock()
+    radio.get_quick_split = AsyncMock(return_value=False)
+    radio.set_quick_split = AsyncMock()
+    radio.get_quick_dual_watch = AsyncMock(return_value=False)
+    radio.set_quick_dual_watch = AsyncMock()
     radio.scan_start = AsyncMock()
     radio.scan_stop = AsyncMock()
     radio.scan_set_resume = AsyncMock()
@@ -2740,6 +2748,50 @@ async def test_execute_quick_split_trigger_equalizes_then_enables_split() -> Non
     radio.set_split.assert_awaited_once_with(True)
     assert state.split is True
     assert ("split_changed", {"on": True}) in events
+
+
+@pytest.mark.asyncio
+async def test_execute_quick_split_reads_persistent_toggle() -> None:
+    """QuickSplit: real read of CoreRadio.get_quick_split (MOR-2007/MOR-2045)."""
+    radio = _make_radio()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(QuickSplit())  # noqa: SLF001
+
+    radio.get_quick_split.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_quick_dual_watch_reads_persistent_toggle() -> None:
+    """QuickDualWatch: real read of CoreRadio.get_quick_dual_watch (MOR-2007/MOR-2045)."""
+    radio = _make_radio()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(QuickDualWatch())  # noqa: SLF001
+
+    radio.get_quick_dual_watch.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_set_quick_split_writes_persistent_toggle() -> None:
+    """SetQuickSplit: writes through CoreRadio.set_quick_split (MOR-2045)."""
+    radio = _make_radio()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(SetQuickSplit(on=True))  # noqa: SLF001
+
+    radio.set_quick_split.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_execute_set_quick_dual_watch_writes_persistent_toggle() -> None:
+    """SetQuickDualWatch: writes through CoreRadio.set_quick_dual_watch (MOR-2045)."""
+    radio = _make_radio()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(SetQuickDualWatch(on=False))  # noqa: SLF001
+
+    radio.set_quick_dual_watch.assert_awaited_once_with(False)
 
 
 @pytest.mark.asyncio

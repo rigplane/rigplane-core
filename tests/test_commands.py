@@ -345,15 +345,39 @@ class TestFilterWidthCommands:
 
 
 class TestPttCommands:
-    """Test PTT on/off commands."""
+    """Test PTT on/off commands.
 
-    def test_ptt_on(self) -> None:
-        frame = ptt_on()
+    commands/ptt.py migrated onto the bound command map in MOR-2007
+    Steps 5..N (module 4): both builders now require cmd_map. IC-7610's
+    declared ptt_on/ptt_off bytes are unchanged from the deleted
+    fallback's (every CI-V profile already agreed, per the empty
+    tests/command_map_parity_divergences.txt), so the expected literals
+    below are unchanged too -- only the cmd_map= wiring is new.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        return rig.to_command_map()
+
+    def test_ptt_on(self, cmd_map) -> None:
+        frame = ptt_on(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1c\x00\x01\xfd"
 
-    def test_ptt_off(self) -> None:
-        frame = ptt_off()
+    def test_ptt_off(self, cmd_map) -> None:
+        frame = ptt_off(cmd_map=cmd_map)
         assert frame == b"\xfe\xfe\x98\xe0\x1c\x00\x00\xfd"
+
+    def test_ptt_on_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            ptt_on()  # type: ignore[call-arg]
+
+    def test_ptt_off_rejects_explicit_none_the_same_way(self, cmd_map) -> None:
+        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
+        omitting it entirely."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            ptt_off(cmd_map=None)
 
 
 class TestAckNak:

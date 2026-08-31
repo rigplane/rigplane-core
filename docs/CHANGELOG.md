@@ -102,6 +102,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `vfo_a_equals_b`'s hardcoded `0xA0` equalize byte matched no shipped
   dual-RX profile: IC-7610 and IC-9700, the only two `main_sub`-scheme
   profiles, both declare `equal_main_sub = [0xB1]`.
+- **`rigplane.commands.ptt` builders require `cmd_map`; there is no
+  hardcoded fallback (MOR-2007, Steps 5..N module 4 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** `ptt_on`/
+  `ptt_off` now require `cmd_map` as a required keyword-only argument, the
+  same way as `rigplane.commands.config`/`levels`/`vfo` above. No wire
+  bytes changed: every CI-V profile already declared the identical
+  `[0x1C, 0x00, 0x01]`/`[0x1C, 0x00, 0x00]` tuple the deleted fallback
+  built (the one profile that used to disagree, X6100, was already fixed
+  before this migration). The two production call sites, both in
+  `runtime/radio.py: CoreRadio` — `set_ptt` and the managed-TX
+  `_write_managed_ptt` — moved onto `self._commands.ptt_on`/`.ptt_off` in
+  the same change, touching only the frame-building expression and
+  nothing else in either method (the latter sits in the managed-TX
+  transmit-interlock path).
 - **CLI: `rigplane ptt on` no longer returns while the rig is keyed.** The
   command now holds the key for as long as the process runs and unkeys on the
   way out, so the process that keyed the rig is the one that releases it. A
@@ -221,6 +235,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test-double false positives. Nothing in the shipping package imported the
   module and it was never a documented public API; external code that imported
   the old path should vendor the double from the repo's test tree instead.
+
+### Fixed
+
+- **WS `set_quick_split`/`set_quick_dual_watch` now write instead of
+  re-reading (MOR-2007 ruling 2 follow-up, MOR-2045).** Both intents parse
+  `on` from `params` and enqueue new `SetQuickSplit`/`SetQuickDualWatch`
+  poller commands, which write through `CoreRadio.set_quick_split`/
+  `set_quick_dual_watch`. Previously they enqueued the same bare read
+  marker as their `get_` twins and silently re-read the current toggle
+  state instead of changing it.
 
 ## [2.11.1] — 2026-06-22
 

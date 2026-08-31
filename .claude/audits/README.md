@@ -65,3 +65,27 @@ where they differ):
 Ticket disposition for every actionable finding is tracked in Linear (the
 2026-08-30 pre-release epic and the documents mirroring these reports); the
 reports themselves are the evidence record, not the work queue.
+
+## 2026-08-30 — VFO equalize/swap tract (tree `7479ebd5`)
+
+Commissioned out of MOR-2007 (the vfo.py bound-command-map migration), which
+surfaced but could not scope the question. The audited commit `7479ebd5` is a
+main commit (#2838), so the pin resolves in a plain clone.
+
+- [2026-08-30-mechanism-audit-vfo-swap-equalize.md](2026-08-30-mechanism-audit-vfo-swap-equalize.md)
+  — every mechanism reaching "equalize or swap the VFOs" (CI-V `0x07` + one
+  operation byte). Headline findings: `commands/vfo.py: vfo_a_equals_b` /
+  `vfo_swap` are a vestigial fork — zero production call sites by AST census,
+  byte-for-byte reducible to the live `set_vfo(code)`, hardcoding an equalize
+  byte (`0xA0`) that no shipped dual-RX profile declares (D1); dead
+  `RadioProfile.vfo_swap_code`/`.vfo_equal_code` legacy aliases (D2); stale
+  test stubs for a pre-#1114 radio API (D3); the "does this rig support
+  swap/equalize" decision inlined seven times across two incompatible
+  discriminators, with an observable WS-vs-HTTP capability disagreement
+  between `ControlHandler._capabilities` and
+  `WebServer._projected_runtime_capabilities` (F1); the dual-RX mixin's
+  `0x07` command byte still outside the MOR-2007 binder contract, in a file
+  the plan's Steps 5..N explicitly name (F2). Cleared: the runtime mixin
+  itself (the live side, correctly located), `set_vfo` post-MOR-1986, the
+  Yaesu backend arms, `BoundCommands`, and the identically-named-but-unrelated
+  WebSocket intent `"vfo_swap"`.
