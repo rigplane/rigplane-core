@@ -7,7 +7,22 @@
 > evidence — is frozen at `7479ebd5`; resolve against that revision, not HEAD.
 > This file is an archived report, not maintained documentation. Paths were
 > normalized to repo-relative form at archival time; content is otherwise the
-> auditor's verbatim report.
+> auditor's verbatim report, except for the archival corrections declared
+> below.
+>
+> **Archival corrections (2026-08-30, from the independent review of this
+> archive).** The verifier re-measured the call-site census and the
+> coordinator reproduced the re-measurement (AST census over
+> `git archive 7479ebd5 src tests`, Python 3.13, zero parse failures).
+> Five claims were corrected in place; no verdict changes: the census rows
+> for `equalize_vfo_ab` (5 src / 4 tests, was 4/5) and `equalize_main_sub`
+> (6 src / 3 tests, was 4/5); the Cleared section's mixin call-site total
+> (16, was 13); F1's implementation count in its heading (seven, was five)
+> and its Falsifier's web-site count (four, was five); and D3's totality
+> claim, narrowed because `runtime/sync.py: IcomRadio.vfo_equalize` /
+> `.vfo_exchange` are live public API on the blocking wrapper and out of
+> D3's scope. The uncorrected body text survives in git history at the
+> branch's first commit (`e754a2e2`).
 
 # Mechanism audit — VFO equalize/swap over CI-V `0x07`
 
@@ -39,9 +54,9 @@
 | `commands/vfo.py: vfo_a_equals_b` | **0** | 1 — `tests/test_commands_extended.py: TestVfoCommands.test_vfo_a_equals_b` |
 | `commands/vfo.py: vfo_swap` | **0** | 1 — `tests/test_commands_extended.py: TestVfoCommands.test_vfo_swap` |
 | `_dual_rx_runtime.py: DualRxRuntimeMixin.swap_vfo_ab` | 3 | 6 |
-| `…equalize_vfo_ab` | 4 | 5 |
+| `…equalize_vfo_ab` | 5 | 4 |
 | `…swap_main_sub` | 2 | 6 |
-| `…equalize_main_sub` | 4 | 5 |
+| `…equalize_main_sub` | 6 | 3 |
 
 This is the discriminator the method demands, and it is unambiguous.
 
@@ -104,11 +119,11 @@ The steelman does not win. It does establish that the deletion costs a CHANGELOG
 
 ---
 
-### D3 — `tests/serial_stub.py` and `tests/test_web_server.py`: stubs for a radio API that no longer exists
+### D3 — `tests/serial_stub.py` and `tests/test_web_server.py`: stubs for methods the async Radio surface no longer has
 
 **Verdict:** dead
 **Elements:** `tests/serial_stub.py: SerialMockRadio.vfo_swap`, `.vfo_exchange`, `.vfo_a_equals_b`, `.vfo_equalize` (four `async def … : return None` bodies); and `tests/test_web_server.py:477` `radio.vfo_swap = AsyncMock()` and `:482` `radio.vfo_a_equals_b = AsyncMock()`.
-**Consumers:** none. No `Radio` capability protocol declares any of these four method names (`core/radio_protocol.py` declares `swap_main_sub`/`equalize_main_sub` on `DualReceiverCapable` and `swap_vfo_ab`/`equalize_vfo_ab` on `VfoSlotCapable` — checked by AST). No implementation in `src/` defines them. The AST call census found zero `radio.vfo_swap()` / `.vfo_a_equals_b()` calls anywhere. The two `AsyncMock` attributes are never asserted (`grep` of `test_web_server.py` returns only the assignment lines and the unrelated WS-intent test at :1005-1018). *Observation.*
+**Consumers:** none. No `Radio` capability protocol declares any of these four method names (`core/radio_protocol.py` declares `swap_main_sub`/`equalize_main_sub` on `DualReceiverCapable` and `swap_vfo_ab`/`equalize_vfo_ab` on `VfoSlotCapable` — checked by AST). No implementation of the async `Radio` surface in `src/` defines them — but note (archival correction) that `runtime/sync.py: IcomRadio.vfo_equalize` and `.vfo_exchange` ARE live, documented public API on the blocking wrapper (`docs/api/radio.md`; exercised by `tests/test_sync_coverage.py`); they dispatch to `swap_main_sub`/`swap_vfo_ab`/`equalize_*`, never to these stubs, and are OUT of D3's scope. Deletable here are only the four stub bodies and the two mock attributes. The AST call census found zero `radio.vfo_swap()` / `.vfo_a_equals_b()` calls anywhere. The two `AsyncMock` attributes are never asserted (`grep` of `test_web_server.py` returns only the assignment lines and the unrelated WS-intent test at :1005-1018). *Observation.*
 **Written / read:** written 6 times (4 defs + 2 mock assignments), read 0 times.
 **Guards checked:** dynamic access — `isinstance` checks against `runtime_checkable` protocols could in principle consult attribute presence, but none of the four names appears in any protocol, so no `isinstance` gate can depend on them (the adjacent comment at `test_web_server.py:478-479` correctly names `swap_main_sub`/`equalize_main_sub` as "the canonical dual-RX VFO methods … post-#1114"). Out-of-repo — n/a, test-tree only. Public API — n/a. Tests-only — by construction.
 **Collateral:** none beyond the lines themselves.
@@ -121,7 +136,7 @@ The steelman does not win. It does establish that the deletion costs a CHANGELOG
 
 # Consolidations
 
-### F1 — "which VFO primitive does this rig support, and which method implements it": one decision, five implementations, two incompatible discriminators
+### F1 — "which VFO primitive does this rig support, and which method implements it": one decision, seven implementations, two incompatible discriminators
 
 **Verdict:** A — Displaced
 **Rank:** diverged
@@ -169,7 +184,7 @@ The steelman does not win. It does establish that the deletion costs a CHANGELOG
 **Required surface:** for F1, one profile-driven resolver — given a `RadioProfile`, return the declared VFO-op primitive (or `None`) — owned by `profiles/` or `runtime/`, consumed by all seven sites. `RadioProfile` already carries the four fields; what is missing is a single accessor that encodes *"scheme + declared code ⇒ which primitive"*, so that the advertise / admit / route decisions cannot disagree. Note `RadioProfile.vfo_swap_code` / `.vfo_equal_code` (D2) were an earlier, wrong attempt at exactly this — they collapse the scheme distinction rather than expressing it, which is presumably why nothing reads them. Do **not** revive them.
 **Depends on:** D1 must land first, or at least not be merged into this work — the builders are the abandoned side and must not become the eighth call site of a new resolver. D2 is independent but should not be "fixed" by making the dead aliases the new shared accessor.
 **Confidence:** high for the enumeration and for the #1/#2 divergence; medium for the practical severity, since the sharpest divergence (#6/#7) is unreachable on the shipped fleet.
-**Falsifier:** a shared helper I missed that all seven sites already funnel through — I searched for one (`git grep "_runtime_capabilities\|_projected_runtime_capabilities\|_VFO_CAPABILITY_TAGS"` over `src/ tests/`; the only shared thing is `_runtime_capabilities`, which produces the *unfiltered* tag set that all five web sites then post-process independently). Also falsified if a profile is added where `vfo_scheme` and `receiver_count` disagree *and* reaches `sync.IcomRadio` — that would flip the latent divergence to observable and raise the rank.
+**Falsifier:** a shared helper I missed that all seven sites already funnel through — I searched for one (`git grep "_runtime_capabilities\|_projected_runtime_capabilities\|_VFO_CAPABILITY_TAGS"` over `src/ tests/`; the only shared thing is `_runtime_capabilities`, which produces the *unfiltered* tag set that the four web sites then post-process independently). Also falsified if a profile is added where `vfo_scheme` and `receiver_count` disagree *and* reaches `sync.IcomRadio` — that would flip the latent divergence to observable and raise the rank.
 **Fix class:** consolidate.
 **Actionable:** yes for #1↔#2 (two web sites, one observable disagreement, no design decision). No, not yet, for the full seven-way merge: it needs the accessor's shape decided first, and `#5` (Yaesu) is legitimately different — a per-protocol backend, which the method's own allowlist guidance treats as sanctioned.
 
@@ -208,7 +223,7 @@ Second-weakest: the `#1`/`#2` divergence in F1 is read off two function bodies a
 
 Named plainly, because a report that clears nothing is confirming its brief:
 
-- **`runtime/_dual_rx_runtime.py: DualRxRuntimeMixin.swap_vfo_ab`, `.equalize_vfo_ab`, `.swap_main_sub`, `.equalize_main_sub` — healthy, and correctly located.** Profile-driven bytes, explicit refusal when a profile declares nothing, an explicit and correct refusal to substitute `swap_main_sub_code` for `swap_ab_code`, receiver pre-selection on dual-RX, and 13 production call sites across `web/`, `runtime/` and `backends/`. These implement the capability, they satisfy the data-driven doctrine, and they sit on `DualReceiverCapable` / `VfoSlotCapable` — Tier-1 protocols inside the Pro boundary. This is the live side; nothing here should move.
+- **`runtime/_dual_rx_runtime.py: DualRxRuntimeMixin.swap_vfo_ab`, `.equalize_vfo_ab`, `.swap_main_sub`, `.equalize_main_sub` — healthy, and correctly located.** Profile-driven bytes, explicit refusal when a profile declares nothing, an explicit and correct refusal to substitute `swap_main_sub_code` for `swap_ab_code`, receiver pre-selection on dual-RX, and 16 production call sites across `web/`, `runtime/` and `backends/`. These implement the capability, they satisfy the data-driven doctrine, and they sit on `DualReceiverCapable` / `VfoSlotCapable` — Tier-1 protocols inside the Pro boundary. This is the live side; nothing here should move.
 - **`commands/vfo.py: set_vfo`** — the MOR-1986 fix landed correctly. It takes a byte, holds no table, and resolves through the map. It is already the general form of D1's two special cases.
 - **`backends/yaesu_cat/radio.py: YaesuCatRadio.swap_vfo_ab` / `.equalize_vfo_ab` and `backends/yaesu_cat/poller.py: YaesuCatPoller._execute_command`'s VFO arms** — legitimately local (verdict C). A second implementation for a different wire protocol is what the backend layer is for, and the `NotImplementedError` bodies are honest: they document that Yaesu CAT's `AB;`/`BA;` are one-way MAIN↔SUB copies, not a symmetric A↔B swap. The guard shape differs from the Icom poller's, correctly — there is no `main_sub` scheme in that backend to discriminate against.
 - **`commands/bound.py: BoundCommands`** — the dynamic-access surface, examined closely because it is exactly what a literal grep would miss. It resolves only names a caller writes explicitly, rejects non-`cmd_map` builders by signature inspection (`_takes_cmd_map`), and classifies misses through one policy (`_refusal_for`). It is not a registry and creates no hidden consumers.
