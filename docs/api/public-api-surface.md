@@ -16,7 +16,7 @@ This page defines the **officially supported** public API of `rigplane`. Use the
 | `Radio` | Protocol for radio control; use with `create_radio()` for type-safe, backend-agnostic code. |
 | `IcomRadio` | Legacy LAN-specific class; use for direct IC-7610 LAN control or when migrating from older code. |
 | `LanBackendConfig`, `SerialBackendConfig`, `BackendConfig` | Backend configuration for `create_radio()`. |
-| `RadioState`, `ReceiverState`, `ScopeControlsState` | State types exposed by the radio. |
+| `RadioState` | Radio state snapshot. Its component types `ReceiverState` and `ScopeControlsState` are not re-exported from `rigplane`; import them from `rigplane.core.radio_state`. |
 | `RadioProfile`, `get_radio_profile`, `resolve_radio_profile` | Model/profile resolution. |
 | `RADIOS`, `RadioModel`, `get_civ_addr` | Radio model registry and CI-V address lookup. |
 
