@@ -221,10 +221,10 @@ export function invokeRenderer(renderer: Renderer, viewModel: unknown, tokens: D
 // `RxTxSurface.svelte` and `MetersSurface.svelte` are the two semantic-
 // vertical files whose `data-*` attributes a SHIPPED design-language
 // stylesheet actually branches on: `fieldline.css` and `studioline.css`
-// each key well over ten rules off `[data-session=...]`/`[data-rf=...]`.
-// This section exists so a THIRD stylesheet author reads these exports
-// instead of reverse-engineering the value sets from those two files, the
-// way the first two families' authors had to.
+// both key repeated rules off `[data-session=...]`/`[data-rf=...]`. This
+// section exists so a THIRD stylesheet author reads these exports instead
+// of reverse-engineering the value sets from those two files, the way the
+// first two families' authors had to.
 //
 // `VfoSurface.svelte` is the third file the MOR-2036 owner ruling scopes
 // this contract to, but neither shipped stylesheet selects on any
