@@ -2,6 +2,107 @@
 
 This is the kernel of the commands package -- every other module imports
 from here, but this module imports nothing from siblings.
+
+Reader census of the private module-level constants below (Step Z, cmd-map
+epic, docs/plans/2026-08-29-profile-driven-command-bytes.md): an AST-based
+reference sweep over every .py file in src/ and tests/ (including
+tests/integration/), counting a bare Name-load only where the same file
+also carries a real import binding for that name from this module or from
+the commands/__init__.py re-export -- several test files (mock_server.py,
+test_dsp_levels_part1.py/part2.py, test_dsp_levels_integration.py,
+test_civ_command_profiling.py, test_single_rx_plain_routing.py and others)
+define their own same-named module-level literal to build synthetic CI-V
+frames independently of this module, and a bare use of that name does not
+count as reading this module's constant. Attribute .attr-loads
+(module.NAME) are trusted directly. Not text grep -- text grep cannot tell
+a same-named local literal from an import of this module's own constant.
+
+Three constants had zero readers, neither internal to this file nor
+external, and are deleted (see the comment at each deletion site):
+_SUB_RX_ANT_ANT1/_SUB_RX_ANT_ANT2 (0x12/0x13, flagged dead but left out of
+scope at cmd-map batch 2) and _SUB_AGC_TIME_CONSTANT (0x04, superseded by
+mode.py reading the byte from the profile's CommandMap by name). Every
+other constant below has at least one real reader -- "internal only" means
+a function in this same file reads it; otherwise the name is the first
+production module (commands/*.py) that imports it, or, absent one, the
+first test file, with "[re-exported]" marking a name commands/__init__.py
+also re-exports:
+
+_BuilderT: internal only (used within this file)
+_CMD_RECEIVER_PREFIX: internal only (used within this file)
+_CMD_FREQ_GET: freq.py [re-exported]
+_CMD_MODE_GET: mode.py [re-exported]
+_CMD_FREQ_SET: test_civ_command_profiling.py [re-exported]
+_CMD_MODE_SET: test_civ_command_profiling.py [re-exported]
+_CMD_LEVEL: _builders.py [re-exported]
+_CMD_METER: meters.py [re-exported]
+_CMD_PTT: test_radio.py [re-exported]
+_CMD_CTL_MEM: memory.py (+2 more)
+_CMD_BAND_EDGE: freq.py
+_CMD_TONE: tone.py
+_CMD_MEMORY_MODE: memory.py
+_CMD_TX_BAND_EDGE: test_tx_band_edge.py
+_CMD_SELECTED_FREQ: freq.py [re-exported]
+_CMD_SELECTED_MODE: freq.py [re-exported]
+_CMD_ACK: _helpers.py (+1 more test files) [re-exported]
+_CMD_NAK: internal only (used within this file)
+_SUB_RF_POWER: test_backend_contract_matrix.py (+3 more test files) [re-exported]
+_SUB_S_METER: test_radio.py [re-exported]
+_SUB_POWER_METER: test_radio.py [re-exported]
+_SUB_SWR_METER: test_radio.py [re-exported]
+_SUB_ALC_METER: test_radio.py [re-exported]
+_SUB_PTT: test_radio.py [re-exported]
+_SUB_CTL_MEM: system.py
+_SUB_DATA_MODE: mode.py
+_SUB_MEMORY_CONTENTS: memory.py
+_SUB_BAND_STACK: memory.py
+_CTL_MEM_SYSTEM_DATE: system.py
+_CTL_MEM_SYSTEM_TIME: system.py
+_CTL_MEM_UTC_OFFSET: system.py
+_SUB_ANT1: antenna.py
+_SUB_ANT2: antenna.py
+_CMD_ATT: test_single_rx_plain_routing.py
+_CMD_PREAMP: test_single_rx_plain_routing.py [re-exported]
+_SUB_PREAMP_STATUS: test_single_rx_plain_routing.py
+_SUB_AGC: dsp.py
+_SUB_AUDIO_PEAK_FILTER: dsp.py
+_SUB_AUTO_NOTCH: dsp.py
+_SUB_COMPRESSOR: dsp.py
+_SUB_MONITOR: dsp.py
+_SUB_VOX: dsp.py
+_SUB_BREAK_IN: dsp.py
+_SUB_MANUAL_NOTCH: dsp.py
+_SUB_MANUAL_NOTCH_WIDTH: dsp.py
+_SUB_TWIN_PEAK_FILTER: dsp.py
+_SUB_DIAL_LOCK: dsp.py
+_SUB_FILTER_SHAPE: mode.py
+_SUB_SSB_TX_BANDWIDTH: mode.py
+_SUB_MAIN_SUB_TRACKING: mode.py
+_SUB_REPEATER_TONE: tone.py
+_SUB_REPEATER_TSQL: tone.py
+_SUB_TONE_FREQ: tone.py
+_SUB_TSQL_FREQ: tone.py
+_CMD_POWER_CTRL: power.py
+_CMD_SCOPE: scope.py
+_SUB_SCOPE_ON: scope.py
+_SUB_SCOPE_DATA_OUTPUT: scope.py
+_SUB_SCOPE_MAIN_SUB: scope.py
+_SUB_SCOPE_SINGLE_DUAL: scope.py
+_SUB_SCOPE_MODE: scope.py
+_SUB_SCOPE_SPAN: scope.py
+_SUB_SCOPE_EDGE: scope.py
+_SUB_SCOPE_HOLD: scope.py
+_SUB_SCOPE_REF: scope.py
+_SUB_SCOPE_SPEED: scope.py
+_SUB_SCOPE_DURING_TX: scope.py
+_SUB_SCOPE_CENTER_TYPE: scope.py
+_SUB_SCOPE_VBW: scope.py
+_SUB_SCOPE_FIXED_EDGE: scope.py
+_SUB_SCOPE_RBW: scope.py
+_PREAMBLE: internal only (used within this file)
+_TERMINATOR: internal only (used within this file)
+_COMMANDS_WITH_SUB: internal only (used within this file)
+_CMD_MAP_EXPLANATION: internal only (used within this file)
 """
 
 from __future__ import annotations
@@ -69,12 +170,19 @@ _SUB_ALC_METER = 0x13
 # Sub-commands for 0x1C (PTT / Transceiver status)
 _SUB_PTT = 0x00
 
-# Sub-commands for 0x1A (CTL_MEM)
+# Sub-commands for 0x1A (CTL_MEM). _SUB_AGC_TIME_CONSTANT (0x04) has no
+# surviving constant here as of Step Z (cmd-map epic): mode.py's
+# get_agc_time_constant/set_agc_time_constant now read the byte from the
+# profile's CommandMap by name through _build_from_map, and no importer
+# anywhere else in src/tests reads a `_frame`-sourced `_SUB_AGC_TIME_CONSTANT`
+# directly (AST-verified census gated on the actual import binding, not text
+# grep -- test_dsp_levels_part2.py and test_dsp_levels_integration.py each
+# define their own same-named module-level literal instead) -- deleted
+# rather than left with zero readers.
 _SUB_CTL_MEM = 0x05
 _SUB_DATA_MODE = 0x06
 _SUB_MEMORY_CONTENTS = 0x00
 _SUB_BAND_STACK = 0x01
-_SUB_AGC_TIME_CONSTANT = 0x04
 
 # CTL_MEM prefixes (0x1A 0x05 ...). `commands/levels.py`'s own five
 # (ref_adjust, dash_ratio, nb_depth, nb_width, vox_delay) are gone as of
@@ -84,11 +192,12 @@ _CTL_MEM_SYSTEM_DATE = b"\x01\x58"
 _CTL_MEM_SYSTEM_TIME = b"\x01\x59"
 _CTL_MEM_UTC_OFFSET = b"\x01\x62"
 
-# Antenna command (0x12)
+# Antenna command (0x12). `_SUB_RX_ANT_ANT1`/`_SUB_RX_ANT_ANT2` (0x12/0x13),
+# flagged dead but left out of scope at cmd-map batch 2, have zero readers
+# anywhere in src/tests as of Step Z (AST-verified census, not text grep) --
+# deleted rather than left with zero readers.
 _SUB_ANT1 = 0x00
 _SUB_ANT2 = 0x01
-_SUB_RX_ANT_ANT1 = 0x12
-_SUB_RX_ANT_ANT2 = 0x13
 
 # ATT / Preamp / DSP function sub-commands (0x11 / 0x16)
 _CMD_ATT = 0x11
@@ -295,10 +404,7 @@ def expose_command_key(
     with the bound map to learn which entry a builder's reply must be
     matched against, decoded by the same :func:`decode_wire_tuple` the
     request used. Attaches the callable as *fn*'s ``cmd_map_key`` attribute
-    and returns *fn* unchanged -- it does not wrap the call, so the
-    Step 1 fallback-audit wrapper (`commands/_fallback_audit.py`), which
-    copies a wrapped function's ``__dict__`` via `functools.wraps`, carries
-    the attribute through unaffected either way.
+    and returns *fn* unchanged.
     """
 
     def decorator(fn: _BuilderT) -> _BuilderT:

@@ -3047,3 +3047,30 @@ class TestSystemConfigCommands:
 
         frame = set_xfc_status(False, cmd_map=cmd_map)
         assert b"\x1c\x02\x00" in frame
+
+
+class TestFallbackAuditRemoved:
+    """Step Z (cmd-map epic) deletes the Step 1 fallback-audit scaffolding.
+
+    Guards against the three pieces `commands/LAYER.md` named for deletion
+    coming back: the module, its env-config knob, and the charter-exception
+    section that documented it.
+    """
+
+    def test_fallback_audit_module_is_gone(self) -> None:
+        with pytest.raises(ModuleNotFoundError):
+            import rigplane.commands._fallback_audit  # noqa: F401
+
+    def test_env_config_knob_is_gone(self) -> None:
+        import rigplane.core.env_config as env_config
+
+        assert not hasattr(env_config, "get_command_fallback_audit_enabled")
+        assert "get_command_fallback_audit_enabled" not in env_config.__all__
+
+    def test_layer_md_charter_exception_is_gone(self) -> None:
+        layer_md = (
+            Path(__file__).resolve().parents[1] / "src/rigplane/commands/LAYER.md"
+        )
+        text = layer_md.read_text()
+        assert "_fallback_audit" not in text
+        assert "Charter exception: Step 1 measurement hook" not in text

@@ -15,7 +15,6 @@ __all__ = [
     "get_audio_rx_jitter_floor_ms",
     "get_audio_rx_jitter_ceiling_ms",
     "get_managed_tx_enabled",
-    "get_command_fallback_audit_enabled",
 ]
 
 logger = logging.getLogger(__name__)
@@ -23,7 +22,6 @@ logger = logging.getLogger(__name__)
 _SUPPORTED_SAMPLE_RATES = (8000, 16000, 24000, 48000)
 
 _MANAGED_TX_VAR = "RIGPLANE_MANAGED_TX"
-_COMMAND_FALLBACK_AUDIT_VAR = "RIGPLANE_COMMAND_FALLBACK_AUDIT"
 # The spellings the rest of the codebase already accepts: the truthy set of
 # ``backends._icom_serial_base._env_bool`` and the falsy set the CLI reads
 # ``ICOM_DEBUG`` against. Neither is extended here — a boolean knob that
@@ -233,37 +231,3 @@ def get_managed_tx_enabled() -> bool:
     logger.warning(msg)
     print(f"Warning: {msg}", file=sys.stderr)
     return True
-
-
-def get_command_fallback_audit_enabled() -> bool:
-    """Return whether the command fallback measurement audit is enabled.
-
-    Default: ``False``. Reads ``RIGPLANE_COMMAND_FALLBACK_AUDIT``. Absent,
-    empty, or any falsy spelling (``0``/``false``/``off``/``no``) leaves
-    the audit off; only an explicit truthy spelling
-    (``1``/``true``/``on``/``yes``) turns it on. Unrecognised values keep
-    the default (off) and warn, like the other knobs in this module.
-
-    This function and its only production caller
-    (``commands/_fallback_audit.py``) are Step 1 scaffolding for
-    ``docs/plans/2026-08-29-profile-driven-command-bytes.md``; that plan's
-    Step Z deletes both, along with this env var. On, ``rigplane.commands``
-    wraps every exported ``cmd_map``-taking builder at import so a call
-    made without a map logs one WARNING naming the builder; off, the
-    exported names are the raw functions with no wrapper installed.
-    """
-    raw = os.environ.get(_COMMAND_FALLBACK_AUDIT_VAR)
-    if raw is None:
-        return False
-    value = raw.strip().lower()
-    if value in _TRUTHY:
-        return True
-    if not value or value in _FALSY:
-        return False
-    msg = (
-        f"env_config: {_COMMAND_FALLBACK_AUDIT_VAR}={raw!r} is not a recognised "
-        "boolean, keeping the command fallback audit off"
-    )
-    logger.warning(msg)
-    print(f"Warning: {msg}", file=sys.stderr)
-    return False

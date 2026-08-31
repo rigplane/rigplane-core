@@ -430,6 +430,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameter entirely are, for the first time, exclusively `parse_*`
   response decoders — no byte-emitting builder anywhere in `commands/`
   lacks `cmd_map` any longer.
+- **The command-builder fallback machinery is deleted (Step Z, cmd-map
+  epic).** With every builder's `cmd_map` required and keyword-only, the
+  Step 1 measurement scaffolding that logged a call reaching the
+  hardcoded fallback path has nothing left to catch:
+  `commands/_fallback_audit.py`, its install call in
+  `commands/__init__.py`, the `RIGPLANE_COMMAND_FALLBACK_AUDIT` env var
+  and `core/env_config.py: get_command_fallback_audit_enabled`, and the
+  charter exception recording it in `commands/LAYER.md` are all deleted,
+  along with `tests/test_command_fallback_audit.py` (its tests pinned
+  "wrapper logs then `TypeError` propagates", a behaviour that dies with
+  the wrapper). A regression test
+  (`tests/test_commands.py: TestFallbackAuditRemoved`) pins all three
+  staying gone.
+  Re-running an AST-based reference census over `commands/_frame.py`'s
+  78 private module-level constants — gated on an actual import binding
+  from this module, so a same-named local literal in a test file (several
+  build synthetic CI-V frames independently of `_frame.py`, e.g.
+  `tests/mock_server.py`'s own `_CMD_ATT`) does not count as a reader —
+  found three with zero readers anywhere, internal or external:
+  `_SUB_RX_ANT_ANT1`/`_SUB_RX_ANT_ANT2` (flagged dead but left out of
+  scope at cmd-map batch 2) and `_SUB_AGC_TIME_CONSTANT` (superseded by
+  `mode.py`'s `get_agc_time_constant`/`set_agc_time_constant` reading the
+  byte from the profile's `CommandMap` by name). All three are deleted;
+  the other 75 survive, and the module docstring now names each
+  survivor's actual reader. `docs/api/commands.md` is rewritten: it
+  claimed every builder's `cmd_map` was optional, false since batch 1 —
+  it now documents the required keyword-only contract, the `TypeError`
+  raised for a call that omits it or passes `None`, `commands/bound.py:
+  BoundCommands` as the recommended calling path, and D1's three-state
+  undeclared-command policy (declared / declared-absent-with-source /
+  unknown-refusal). `tests/command_map_parity_divergences.txt` is kept,
+  not retired, despite reading all-zero: reintroducing a builder with a
+  `cmd_map is not None` branch was tested against this file's own
+  machinery (a temporary, reverted mutation) and it still goes red, with
+  the per-row hex frames the bare census in
+  `tests/command_map_parity_uncovered.txt` does not carry; the file is
+  also cited as evidence in ten docstring passages across five other
+  test files, which a deletion would have left dangling.
 
 ### Changed
 
