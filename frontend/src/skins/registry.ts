@@ -33,6 +33,7 @@ export interface SkinResolutionContext {
  * - QA-only: layoutPreference === 'dual-receiver-cockpit' → dual-receiver-cockpit
  *   (MOR-1257 — only reachable via the exact `?layout=dual-receiver-cockpit`
  *   query param; see `lib/stores/qa-cockpit-override.ts`)
+ * - User forced 'sdr-test' → sdr-test
  * - User forced 'lcd' or 'lcd-cockpit' → lcd-cockpit
  * - User forced 'lcd-scope' → lcd-scope
  * - User forced 'standard' → desktop-v2
