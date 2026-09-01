@@ -131,7 +131,7 @@ def _server_with_conflicting_legacy_state() -> tuple[WebServer, StateSnapshot]:
     legacy_state.ptt = True
     server = WebServer(
         _StateStoreRadio(store, legacy_state),
-        WebConfig(state_diagnostics=True),
+        WebConfig(state_diagnostics=True, radio_model="IC-7610"),
     )
     server._radio_state = legacy_state  # noqa: SLF001
     server._radio_poller = _LegacyRevisionPoller()  # noqa: SLF001

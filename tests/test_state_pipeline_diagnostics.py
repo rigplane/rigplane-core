@@ -96,7 +96,7 @@ def test_civ_meter_write_records_diagnostic_without_notify_or_revision() -> None
 def test_web_meter_write_delivers_state_store_revision_without_unrelated_trigger() -> (
     None
 ):
-    server = WebServer(config=WebConfig(state_diagnostics=True))
+    server = WebServer(config=WebConfig(state_diagnostics=True, radio_model="IC-7610"))
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
     registration_full = server.register_control_event_queue(queue)
     assert registration_full["type"] == "full"
