@@ -14,7 +14,12 @@ Design principles (learned from production):
    lines that don't match the expected command prefix.
 
 3. **``?;`` = hard error.**  Radio returns ``?;`` for unrecognized commands.
-   Detected immediately in both ``write()`` and ``query()``.
+   Detected in ``query()``. In ``write()`` (MOR-2103), detected only for a
+   ``?;`` that arrives among the first ``_DRAIN_MAX_LINES`` post-write
+   lines and within ``_DRAIN_TIMEOUT`` of the read that would see it — one
+   that arrives after the drain has already gone quiet, or as the line
+   behind ``_DRAIN_MAX_LINES`` or more auto-info lines, drains unread and
+   is not detected.
 
 4. **Health tracking.**  Consecutive errors trigger automatic reconnect.
    Stats (queries, writes, errors, reconnects) available for diagnostics.
@@ -301,25 +306,37 @@ class YaesuCatTransport:
 
     async def _drain_responses(
         self,
+        command: str,
         drain_timeout: float = _DRAIN_TIMEOUT,
         max_lines: int = _DRAIN_MAX_LINES,
     ) -> int:
         """Read and discard echo / auto-info lines until silence.
 
         Returns the number of lines drained.
+
+        Raises:
+            CatCommandRejected: If a drained line is ``?;`` (MOR-2103) — the
+                radio rejected *command*. Silence within *drain_timeout* is
+                the normal, healthy case (the ``CatTimeoutError`` branch
+                below) and must never raise.
         """
         drained = 0
         for _ in range(max_lines):
             try:
                 line = await self.readline(timeout=drain_timeout)
-                drained += 1
-                self._stats.stale_lines_skipped += 1
-                if self._debug_logging:
-                    logger.debug("CAT: drained post-write line: %r", line)
             except CatTimeoutError:
                 break  # Silence — buffer is clean
             except CatTransportError:
                 break  # Port error — bail out
+            drained += 1
+            if line == "?":
+                self._stats.record_error(f"rejected: {command}")
+                raise CatCommandRejected(
+                    f"Radio rejected command {command!r} (returned '?;')"
+                )
+            self._stats.stale_lines_skipped += 1
+            if self._debug_logging:
+                logger.debug("CAT: drained post-write line: %r", line)
         # Flush any partial bytes that didn't form a complete line
         await self.flush_rx()
         return drained
@@ -341,13 +358,14 @@ class YaesuCatTransport:
             command: CAT command string (e.g. ``"MD0E;"``).
 
         Raises:
+            CatCommandRejected: If the radio returns ``?;`` (MOR-2103).
             CatTransportError: On serial I/O failure.
         """
         async with self._lock:
             await self.flush_rx()
             await self._raw_write(command)
             self._stats.writes += 1
-            drained = await self._drain_responses()
+            drained = await self._drain_responses(command)
             self._stats.record_success()
             if drained and self._debug_logging:
                 logger.debug("CAT: drained %d line(s) after write %r", drained, command)

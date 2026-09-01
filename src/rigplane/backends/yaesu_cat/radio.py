@@ -17,7 +17,7 @@ from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.tx_authority import TxStateReading
 from ...types import AudioCodec, BreakInMode
-from ...exceptions import AudioFormatError, CommandError
+from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
 from .parser import CatCommandParser, CatParseError, format_command
@@ -788,14 +788,32 @@ class YaesuCatRadio:
         return parser.parse(raw + ";")
 
     async def _write(self, cmd_name: str, **kwargs: Any) -> None:
-        """Format and send a write command (no response expected)."""
+        """Format and send a write command (no response expected).
+
+        Raises:
+            CommandRejectedError: If the radio rejects the command with
+                ``?;`` (MOR-2103), translated from the transport's
+                :class:`~.transport.CatCommandRejected` — a plain
+                ``Exception`` subclass, not :class:`~...exceptions.RigplaneError`,
+                so it would otherwise escape ``validation/hardware.py``'s
+                ``_guard`` uncaught. A dedicated subclass of
+                :class:`~...exceptions.CommandError` (not a plain
+                ``CommandError``) so a caller that needs to know the radio
+                positively refused the command — as opposed to, say, a local
+                encoder rejecting an out-of-range value before anything was
+                sent — can identify it structurally, by type, instead of
+                re-deriving it from the exception's message text.
+        """
         self._require_connected()
         spec = self._get_spec(cmd_name)
         if spec.write is None:
             raise CommandError(f"Command {cmd_name!r} has no write template")
 
         cmd = format_command(spec.write, **kwargs)
-        await self._transport.write(cmd)
+        try:
+            await self._transport.write(cmd)
+        except CatCommandRejected as exc:
+            raise CommandRejectedError(str(exc)) from exc
 
     # -- IF Bulk Query ------------------------------------------------------
 
