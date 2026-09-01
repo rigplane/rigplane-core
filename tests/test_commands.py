@@ -1883,31 +1883,39 @@ class TestToneTsqlCommands:
             set_repeater_tsql(True, cmd_map=None)
 
     # --- Tone frequency encoding/decoding ---
+    #
+    # MOR-2091: this class duplicated test_tone_tsql.py's _BCD_TABLE bug --
+    # byte values pinned from the buggy encoder's own output, not from the
+    # radio or the manuals (both landed in the same commit as the codec
+    # itself, d21d2d66, #134). Corrected here the same way; see
+    # tests/test_tone_tsql.py's _BCD_TABLE header comment for the
+    # documented layout, the four manuals checked against it, and the live
+    # IC-7300 capture for 88.5 Hz (00 08 85).
 
     def test_encode_tone_freq_88_5(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(88.5) == bytes([0x00, 0x88, 0x05])
+        assert _encode_tone_freq(88.5) == bytes([0x00, 0x08, 0x85])
 
     def test_encode_tone_freq_110_9(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(110.9) == bytes([0x01, 0x10, 0x09])
+        assert _encode_tone_freq(110.9) == bytes([0x00, 0x11, 0x09])
 
     def test_encode_tone_freq_100_0(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(100.0) == bytes([0x01, 0x00, 0x00])
+        assert _encode_tone_freq(100.0) == bytes([0x00, 0x10, 0x00])
 
     def test_encode_tone_freq_67_0(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(67.0) == bytes([0x00, 0x67, 0x00])
+        assert _encode_tone_freq(67.0) == bytes([0x00, 0x06, 0x70])
 
     def test_encode_tone_freq_254_1(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(254.1) == bytes([0x02, 0x54, 0x01])
+        assert _encode_tone_freq(254.1) == bytes([0x00, 0x25, 0x41])
 
     def test_encode_tone_freq_rejects_out_of_range(self) -> None:
         from rigplane.commands import _encode_tone_freq
@@ -1920,12 +1928,12 @@ class TestToneTsqlCommands:
     def test_decode_tone_freq_88_5(self) -> None:
         from rigplane.commands import _decode_tone_freq
 
-        assert _decode_tone_freq(bytes([0x00, 0x88, 0x05])) == pytest.approx(88.5)
+        assert _decode_tone_freq(bytes([0x00, 0x08, 0x85])) == pytest.approx(88.5)
 
     def test_decode_tone_freq_110_9(self) -> None:
         from rigplane.commands import _decode_tone_freq
 
-        assert _decode_tone_freq(bytes([0x01, 0x10, 0x09])) == pytest.approx(110.9)
+        assert _decode_tone_freq(bytes([0x00, 0x11, 0x09])) == pytest.approx(110.9)
 
     def test_decode_tone_freq_roundtrip(self) -> None:
         from rigplane.commands import _decode_tone_freq, _encode_tone_freq
@@ -1952,7 +1960,7 @@ class TestToneTsqlCommands:
         assert frame[4] == 0x29
         assert frame[6] == 0x1B
         assert frame[7] == 0x00
-        assert frame[8:11] == bytes([0x00, 0x88, 0x05])
+        assert frame[8:11] == bytes([0x00, 0x08, 0x85])
 
     def test_set_tone_freq_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_tone_freq
@@ -1978,7 +1986,7 @@ class TestToneTsqlCommands:
         assert frame[4] == 0x29
         assert frame[6] == 0x1B
         assert frame[7] == 0x01
-        assert frame[8:11] == bytes([0x01, 0x10, 0x09])
+        assert frame[8:11] == bytes([0x00, 0x11, 0x09])
 
     # --- Response parsers ---
 
@@ -1997,7 +2005,7 @@ class TestToneTsqlCommands:
             IC_7610_ADDR,
             0x1B,
             sub=0x00,
-            data=bytes([0x00, 0x88, 0x05]),
+            data=bytes([0x00, 0x08, 0x85]),
             receiver=RECEIVER_MAIN,
         )
         frame = parse_civ_frame(civ)
@@ -2020,7 +2028,7 @@ class TestToneTsqlCommands:
             IC_7610_ADDR,
             0x1B,
             sub=0x01,
-            data=bytes([0x01, 0x10, 0x09]),
+            data=bytes([0x00, 0x11, 0x09]),
             receiver=RECEIVER_SUB,
         )
         frame = parse_civ_frame(civ)

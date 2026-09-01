@@ -29,6 +29,7 @@ from rigplane.commands import (
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
     RECEIVER_SUB,
+    _decode_tone_freq,
     parse_bool_response,
     parse_tone_freq_response,
     parse_tsql_freq_response,
@@ -175,15 +176,46 @@ def _tsql_freq_response(bcd: bytes, receiver: int | None = None) -> CivFrame:
 # BCD encoding reference values
 # ---------------------------------------------------------------------------
 
-# freq_hz → expected 3-byte BCD encoding
+# freq_hz → expected 3-byte BCD encoding.
+#
+# Layout: 3 bytes hold six packed BCD digits, read as a decimal integer of
+# tenths of a Hz -- [0][0][100Hz digit 0-2][10Hz digit][1Hz digit]
+# [0.1Hz digit]. Confirmed identical, 2026-08-31, in all four local CI-V
+# references (command 1B 00/1B 01, "Repeater tone/tone squelch frequency
+# settings"): IC-705 CI-V Reference Guide 2020 p.21, IC-7300 Advanced
+# Manual (rev. 11a) p.19-13, IC-9700 CI-V Reference Guide p.19, IC-7610
+# CI-V Reference Guide 2021 p.13.
+#
+# 88.5 Hz (00 08 85) is a live capture, not computed: bench IC-7300,
+# 2026-09-01, 115200 CI-V (owner-reported), bypassing RigPlane --
+#   request fe fe 94 e0 1b 00 fd -> reply fe fe e0 94 1b 00 00 08 85 fd
+# (see test_decode_matches_bench_ic7300_capture below). The other five are
+# computed from the layout above for standard CTCSS chart frequencies.
+#
+# MOR-2091: this table previously held the output of the buggy encoder
+# itself (e.g. 88.5 Hz paired with 00 88 05), so it round-tripped against
+# the bug instead of catching it.
 _BCD_TABLE: list[tuple[float, bytes]] = [
-    (67.0, b"\x00\x67\x00"),
-    (88.5, b"\x00\x88\x05"),
-    (110.9, b"\x01\x10\x09"),
-    (136.5, b"\x01\x36\x05"),
-    (167.9, b"\x01\x67\x09"),
-    (254.1, b"\x02\x54\x01"),
+    (67.0, b"\x00\x06\x70"),
+    (88.5, b"\x00\x08\x85"),  # live capture -- see comment above
+    (110.9, b"\x00\x11\x09"),
+    (136.5, b"\x00\x13\x65"),
+    (167.9, b"\x00\x16\x79"),
+    (254.1, b"\x00\x25\x41"),
 ]
+
+
+def test_decode_matches_bench_ic7300_capture() -> None:
+    """Anchor for _BCD_TABLE's 88.5 Hz row: a captured value, not a value
+    derived from (and therefore blind to bugs in) the codec under test.
+
+    Bench IC-7300, 2026-09-01, 115200 CI-V (owner-reported), bypassing
+    RigPlane. The radio's tone was 88.5 Hz (confirmed in its own menu by
+    the owner):
+      request fe fe 94 e0 1b 00 fd
+      reply   fe fe e0 94 1b 00 00 08 85 fd   (data = 00 08 85)
+    """
+    assert _decode_tone_freq(bytes([0x00, 0x08, 0x85])) == 88.5
 
 
 # ===========================================================================
@@ -358,11 +390,14 @@ class TestToneFreqBCDEncoding:
 
     def test_accepts_boundary_low(self, cmd_map) -> None:
         frame = commands.set_tone_freq(67.0, cmd_map=cmd_map)
-        assert b"\x00\x67\x00" in frame
+        # 67.0 Hz -> 000670; see _BCD_TABLE's header comment for the layout
+        # and manual sourcing.
+        assert b"\x00\x06\x70" in frame
 
     def test_accepts_boundary_high(self, cmd_map) -> None:
         frame = commands.set_tone_freq(254.1, cmd_map=cmd_map)
-        assert b"\x02\x54\x01" in frame
+        # 254.1 Hz -> 002541; see _BCD_TABLE's header comment.
+        assert b"\x00\x25\x41" in frame
 
     def test_requires_cmd_map(self) -> None:
         """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
@@ -414,7 +449,9 @@ class TestSetToneFreq:
     def test_set_sub_receiver(self, cmd_map) -> None:
         assert commands.set_tone_freq(
             88.5, receiver=RECEIVER_SUB, cmd_map=cmd_map
-        ) == _cmd29_tone_set(_SUB_TONE_FREQ, b"\x00\x88\x05", RECEIVER_SUB)
+        ) == _cmd29_tone_set(
+            _SUB_TONE_FREQ, b"\x00\x08\x85", RECEIVER_SUB
+        )  # 88.5 Hz, see _BCD_TABLE
 
     def test_set_custom_addresses(self, cmd_map) -> None:
         frame = commands.set_tone_freq(
@@ -442,7 +479,8 @@ class TestParseToneFreqResponse:
         assert decoded == pytest.approx(freq, abs=0.05)
 
     def test_decode_no_receiver(self) -> None:
-        frame = _tone_freq_response(b"\x00\x88\x05", receiver=None)
+        # 88.5 Hz, see _BCD_TABLE.
+        frame = _tone_freq_response(b"\x00\x08\x85", receiver=None)
         rx, freq = parse_tone_freq_response(frame)
         assert rx is None
         assert freq == pytest.approx(88.5)
@@ -542,7 +580,9 @@ class TestSetTSQLFreq:
     def test_set_sub_receiver(self, cmd_map) -> None:
         assert commands.set_tsql_freq(
             88.5, receiver=RECEIVER_SUB, cmd_map=cmd_map
-        ) == _cmd29_tone_set(_SUB_TSQL_FREQ, b"\x00\x88\x05", RECEIVER_SUB)
+        ) == _cmd29_tone_set(
+            _SUB_TSQL_FREQ, b"\x00\x08\x85", RECEIVER_SUB
+        )  # 88.5 Hz, see _BCD_TABLE
 
 
 class TestParseTSQLFreqResponse:
@@ -556,7 +596,8 @@ class TestParseTSQLFreqResponse:
         assert decoded == pytest.approx(freq, abs=0.05)
 
     def test_decode_no_receiver(self) -> None:
-        frame = _tsql_freq_response(b"\x00\x88\x05", receiver=None)
+        # 88.5 Hz, see _BCD_TABLE.
+        frame = _tsql_freq_response(b"\x00\x08\x85", receiver=None)
         rx, freq = parse_tsql_freq_response(frame)
         assert rx is None
         assert freq == pytest.approx(88.5)
