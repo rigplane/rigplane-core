@@ -598,6 +598,13 @@ granularity `_civ_rx.py` actually matches on:
 | X6200 | 62 | 38 | 22 | 4 | 38 | 22 |
 | X6100 | 12 | 9 | 3 | 2 | 8 | 4 |
 
+**Counting method for the `(cmd, sub)` columns:** "sub" is taken
+*positionally* — the declared tuple's second byte whenever the tuple has two or
+more bytes — not by whether `commands/_frame.py: parse_civ_frame` would assign
+that command a sub at all (`_COMMANDS_WITH_SUB`). The numbers above stand under
+that definition; the parser-grounded definition, which differs and is the one
+used from here on, is in `docs/plans/2026-09-01-reverse-command-index.md` §1.
+
 The worst cases are not exotic. On IC-705 and X6200, `1C 00` resolves to
 `{get_transceiver_status, ptt_off, ptt_on, set_transceiver_status}` — four
 names on one tuple. On IC-705, `0E` resolves to
