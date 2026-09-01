@@ -8,12 +8,18 @@
  * here.
  *
  * Unlike `studioline`/`fieldline`, this file has no `.rx-tx-surface`/
- * `.rx-tx-key`/`.rx-tx-state` cascade to rank: those rules style the
- * stateFeedback renderer's output, and segmentline ships no renderers yet
- * (MOR-2149). What exists today is the glass, the cell, the seven-segment
- * readout cell, the segmented meter track and the DIM contrast preset —
- * pinned below directly, by parsing declarations rather than by ranking a
- * cascade collision (there is none yet to rank).
+ * `.rx-tx-key`/`.rx-tx-state` cascade to rank: `segmentline.css` declares no
+ * selector in that family at all, where both sibling sheets do. Nor can a
+ * rule here rank against the stateFeedback renderer's own state carriers:
+ * `perimeter` and `cell` are nested objects, and `renderSlot`'s annotation
+ * step (`semantic/design-language-renderers.ts: annotate`) emits `data-dl-*`
+ * for top-level primitives only — pinned by "never serialises a nested
+ * object or array into a data-dl-* attribute" in
+ * `semantic/__tests__/design-language-wiring.component.test.ts` — so neither
+ * reaches the DOM as anything a selector could match. The glass, the cell,
+ * the seven-segment readout cell, the segmented meter track and the DIM
+ * contrast preset are pinned below directly, by parsing declarations rather
+ * than by ranking a cascade collision.
  */
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
