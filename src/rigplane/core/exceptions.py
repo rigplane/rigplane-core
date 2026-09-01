@@ -5,6 +5,7 @@ __all__ = [
     "ConnectionError",
     "AuthenticationError",
     "CommandError",
+    "CommandRejectedError",
     "TimeoutError",
     "AudioError",
     "AudioCodecBackendError",
@@ -27,6 +28,13 @@ class AuthenticationError(RigplaneError):
 
 class CommandError(RigplaneError):
     """Raised when a CI-V command fails or returns an error."""
+
+
+class CommandRejectedError(CommandError):
+    """Raised when the radio positively refused a command (e.g. a Yaesu
+    ``?;`` response), as opposed to a locally-detected encoding error, a
+    missing command template, or any other :class:`CommandError` that never
+    reached the radio at all."""
 
 
 class TimeoutError(RigplaneError):

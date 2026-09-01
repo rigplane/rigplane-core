@@ -34,6 +34,7 @@ from typing import Any, TypeVar, cast
 from rigplane.core.exceptions import (
     AuthenticationError,
     CommandError,
+    CommandRejectedError,
     ConnectionError as RigConnectionError,
     RigplaneError,
     TimeoutError as RigTimeoutError,
@@ -65,6 +66,7 @@ from rigplane.validation.schema import (
     LevelResult,
     MatrixTemplate,
     OperatorSafetyBlock,
+    RmvrOutcome,
     ValidationLevel,
 )
 
@@ -321,8 +323,14 @@ def _base_result(
     failure_domain: FailureDomain | None = None,
     evidence: dict[str, object] | None = None,
     error: str | None = None,
+    outcome: RmvrOutcome | None = None,
 ) -> CheckResult:
-    """Build a :class:`CheckResult` carrying ``entry``'s static fields."""
+    """Build a :class:`CheckResult` carrying ``entry``'s static fields.
+
+    ``outcome`` is the internal-only ``CheckResult.outcome`` carrier
+    (MOR-2103) -- every existing caller omits it and gets ``None``, exactly
+    as before this parameter existed.
+    """
     return CheckResult(
         check_id=entry.check_id,
         capability=entry.capability,
@@ -333,6 +341,7 @@ def _base_result(
         failure_domain=failure_domain,
         evidence=evidence or {},
         error=error,
+        outcome=outcome,
     )
 
 
@@ -1015,6 +1024,14 @@ async def _guard(
 
     Returns ``(value, None)`` on success or ``(None, failure_result)`` on any
     handled error. Never swallows ``KeyboardInterrupt``/``SystemExit``.
+
+    The returned ``CheckResult.outcome`` (MOR-2103) is set structurally, at
+    the point each exception is caught, for the two cases an RMVR write or
+    verify-read leg can positively identify: a per-check timeout, or a
+    :class:`CommandRejectedError`. Every other except clause below leaves it
+    at its default ``None`` -- ``_guard`` does not guess; a caller that
+    wants a label for those must not invent one either (see
+    ``_rmvr_failure_outcome`` in this module).
     """
     try:
         value = await asyncio.wait_for(coro, timeout=per_check_timeout)
@@ -1025,6 +1042,7 @@ async def _guard(
             CheckStatus.FAIL,
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             error=f"timeout after {per_check_timeout}s",
+            outcome=RmvrOutcome.TIMED_OUT,
         )
     except (RigConnectionError, AuthenticationError) as exc:
         return None, _base_result(
@@ -1032,6 +1050,19 @@ async def _guard(
             CheckStatus.FAIL,
             failure_domain=FailureDomain.TRANSPORT,
             error=str(exc),
+        )
+    except CommandRejectedError as exc:
+        # MOR-2103: a positively-identified command rejection (a Yaesu "?;",
+        # translated by YaesuCatRadio._write) is structurally distinct from
+        # every other CommandError below it in this except chain — those
+        # never reached the radio at all (no write template, a local
+        # encoder ValueError, any other RigplaneError).
+        return None, _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.COMMAND_EXECUTION,
+            error=str(exc),
+            outcome=RmvrOutcome.REJECTED,
         )
     except CommandError as exc:
         return None, _base_result(
@@ -1070,6 +1101,28 @@ async def _guard(
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             error=str(exc),
         )
+
+
+def _rmvr_failure_outcome(fail: CheckResult, *, leg: str) -> RmvrOutcome | None:
+    """Read ``_guard``'s own RMVR classification for the write or
+    verify-read leg, applying the one constraint ``_guard`` itself cannot
+    know (MOR-2103).
+
+    ``leg`` is ``"write"`` for the changed-value write, or ``"read"`` for
+    the post-write verify read (the write already succeeded by the time
+    this leg runs). ``fail.outcome`` was set structurally by ``_guard`` --
+    at the point it caught the underlying exception, from the exception's
+    type -- not re-derived here from ``failure_domain``, ``error`` text, or
+    ``evidence``.
+
+    The read leg can never report REJECTED: a read-leg failure happens
+    after the write already succeeded, so a rejection there could never
+    mean the write was refused -- a category error regardless of what
+    ``_guard``'s classification says. TIMED_OUT is valid on either leg.
+    """
+    if leg == "read" and fail.outcome is RmvrOutcome.REJECTED:
+        return None
+    return fail.outcome
 
 
 def _default_equal(a: T, b: T) -> bool:
@@ -1315,6 +1368,9 @@ async def _read_modify_verify_restore(
         if w_fail is not None:
             evidence["write_error"] = w_fail.error
             outcome = w_fail
+            write_outcome = _rmvr_failure_outcome(w_fail, leg="write")
+            if write_outcome is not None:
+                evidence["outcome"] = write_outcome.value
         else:
             readback, r_fail = await _guard(
                 read(), entry, per_check_timeout=per_check_timeout
@@ -1322,6 +1378,9 @@ async def _read_modify_verify_restore(
             if r_fail is not None:
                 evidence["readback_error"] = r_fail.error
                 outcome = r_fail
+                read_outcome = _rmvr_failure_outcome(r_fail, leg="read")
+                if read_outcome is not None:
+                    evidence["outcome"] = read_outcome.value
             else:
                 evidence["readback"] = readback
                 reacted = equal(cast(T, readback), changed)
@@ -1357,6 +1416,7 @@ async def _read_modify_verify_restore(
     if reacted and restored:
         return _base_result(entry, CheckStatus.PASS, evidence=evidence)
     if not reacted:
+        evidence["outcome"] = RmvrOutcome.IGNORED.value
         return _base_result(
             entry,
             CheckStatus.FAIL,
@@ -1557,6 +1617,9 @@ async def _check_mode_set(
         if w_fail is not None:
             evidence["write_error"] = w_fail.error
             outcome = w_fail
+            write_outcome = _rmvr_failure_outcome(w_fail, leg="write")
+            if write_outcome is not None:
+                evidence["outcome"] = write_outcome.value
         else:
             readback, r_fail = await _guard(
                 radio.get_mode(0), entry, per_check_timeout=per_check_timeout
@@ -1564,6 +1627,9 @@ async def _check_mode_set(
             if r_fail is not None:
                 evidence["readback_error"] = r_fail.error
                 outcome = r_fail
+                read_outcome = _rmvr_failure_outcome(r_fail, leg="read")
+                if read_outcome is not None:
+                    evidence["outcome"] = read_outcome.value
             else:
                 assert readback is not None
                 evidence["readback_mode"] = readback[0]
@@ -1601,6 +1667,7 @@ async def _check_mode_set(
     if reacted and restored:
         return _base_result(entry, CheckStatus.PASS, evidence=evidence)
     if not reacted:
+        evidence["outcome"] = RmvrOutcome.IGNORED.value
         return _base_result(
             entry,
             CheckStatus.FAIL,

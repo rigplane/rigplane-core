@@ -14,6 +14,7 @@ from rigplane.backends.yaesu_cat import (
     CatTransportError,
     YaesuCatTransport,
 )
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected
 
 
 class FakeStreamReader:
@@ -155,6 +156,26 @@ class TestYaesuCatTransport:
 
         with pytest.raises(CatTransportError, match="not connected"):
             await transport.write("FA;")
+
+    async def test_write_rejected_raises_and_names_frame(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """write() raises CatCommandRejected when the radio answers '?;'
+        instead of silently discarding it as a drained stale line
+        (MOR-2103)."""
+        reader = FakeStreamReader([b"?;"])
+        writer = FakeStreamWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+
+        with pytest.raises(CatCommandRejected, match=r"CT002;"):
+            await transport.write("CT002;")
+
+        assert writer.written == [b"CT002;"]
 
     async def test_readline_returns_response_without_terminator(
         self, mock_serial_connection: Any
