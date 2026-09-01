@@ -1,6 +1,6 @@
 /**
  * MOR-2038 — every `SkinId` registered in `skins/registry.ts` has a
- * behavioral entry-point pin: five directly in this file, the sixth
+ * behavioral entry-point pin: six directly in this file, one
  * (`dual-receiver-cockpit`) in its own dedicated suite, referenced and
  * guarded here (point 2 below) rather than duplicated. Generalized over the
  * registry instead of a hardcoded pair list (the previous version of this
@@ -52,6 +52,13 @@
  * `MobileRadioLayout.svelte` (the same technique as the `RadioLayout`/
  * `LcdLayout` mocks above) and asserts that loading `mobile` actually
  * mounts it.
+ *
+ * `peer-split` (MOR-2155) gets the same real-mount treatment: its entry
+ * component (`skins/segmentline/PeerSplitLayout.svelte`) is a zero-prop
+ * delegate straight to `SemanticRadioSurfaces` with `strips="dual"`, so its
+ * pin mocks `SemanticRadioSurfaces.svelte` and asserts the `strips` value
+ * actually forwarded — the same `variant`-forwarding shape the LCD wrappers
+ * pin above, one prop earlier in the chain.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { mount, unmount } from 'svelte';
@@ -61,6 +68,7 @@ import type { SkinId } from '../registry';
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
 const mountedLcdVariants = vi.hoisted(() => [] as Array<'cockpit' | 'scope'>);
 const mobileLayoutMounts = vi.hoisted(() => ({ count: 0 }));
+const mountedStrips = vi.hoisted(() => [] as Array<'single' | 'dual'>);
 
 vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
   default: (_anchor: unknown, props: { skinId?: SkinId }) => {
@@ -82,6 +90,14 @@ vi.mock('../../components-v2/layout/MobileRadioLayout.svelte', () => ({
   },
 }));
 
+// PeerSplitLayout takes no props (`<SemanticRadioSurfaces strips="dual" />`);
+// what is worth pinning is the `strips` literal it forwards.
+vi.mock('../../components-v2/wiring/SemanticRadioSurfaces.svelte', () => ({
+  default: (_anchor: unknown, props: { strips?: 'single' | 'dual' }) => {
+    mountedStrips.push(props.strips ?? 'single');
+  },
+}));
+
 import { loadSkin } from '../registry';
 
 const components: Record<string, unknown>[] = [];
@@ -91,12 +107,14 @@ afterEach(() => {
   mountedSkinIds.length = 0;
   mountedLcdVariants.length = 0;
   mobileLayoutMounts.count = 0;
+  mountedStrips.length = 0;
 });
 
 type EntrypointCoverage =
   | { readonly kind: 'radio-layout' }
   | { readonly kind: 'lcd-layout'; readonly variant: 'cockpit' | 'scope' }
   | { readonly kind: 'mobile-layout' }
+  | { readonly kind: 'semantic-radio-surfaces'; readonly strips: 'single' | 'dual' }
   | { readonly kind: 'covered-elsewhere'; readonly testFile: string; readonly entryComponentFile: string };
 
 /**
@@ -114,6 +132,7 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
     entryComponentFile: 'DualReceiverCockpit.svelte',
   },
   mobile: { kind: 'mobile-layout' },
+  'peer-split': { kind: 'semantic-radio-surfaces', strips: 'dual' },
 };
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
@@ -126,6 +145,11 @@ const lcdLayoutCases = allSkinIds.flatMap((id) => {
 });
 
 const mobileLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout');
+
+const semanticRadioSurfacesCases = allSkinIds.flatMap((id) => {
+  const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
+  return coverage.kind === 'semantic-radio-surfaces' ? [[id, coverage.strips] as const] : [];
+});
 
 const coveredElsewhereCases = allSkinIds.flatMap((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
@@ -165,6 +189,21 @@ describe('mobile skin entrypoint', () => {
     const target = document.createElement('div');
     components.push(mount(Component, { target }));
     expect(mobileLayoutMounts.count).toBe(1);
+  });
+});
+
+describe('semantic-radio-surfaces skin entrypoint', () => {
+  // Kills: PeerSplitLayout mounting SemanticRadioSurfaces with the wrong
+  // `strips` literal, forwarding a different skin's value, or dropping the
+  // prop (the mock's `?? 'single'` fallback then makes the equality fail for
+  // this table's `'dual'` case).
+  it.each(semanticRadioSurfacesCases)('mounts SemanticRadioSurfaces with its own strips value (%s -> %s)', async (
+    skinId, strips,
+  ) => {
+    const Component = await loadSkin(skinId);
+    const target = document.createElement('div');
+    components.push(mount(Component, { target }));
+    expect(mountedStrips).toEqual([strips]);
   });
 });
 
