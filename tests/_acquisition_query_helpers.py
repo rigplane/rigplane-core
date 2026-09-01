@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 
 
 AcquisitionQueryCase = tuple[int, int | bytes | None, int | None]
+_DATA_ONLY_COMMAND = 0x07
+_SELECTOR_COMMANDS = frozenset((0x25, 0x26))
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,15 @@ def _require_legacy_query(query: AcquisitionQueryCase) -> AcquisitionQueryCase:
     return query
 
 
+def _require_byte(name: str, value: int | None) -> None:
+    if value is None:
+        return
+    if type(value) is not int:
+        raise TypeError(f"{name} must be int or None")
+    if not 0 <= value <= 0xFF:
+        raise ValueError(f"{name} must fit in one byte")
+
+
 def acquisition_query(
     command: int,
     *,
@@ -48,20 +59,38 @@ def acquisition_query(
     selector: int | None = None,
 ) -> AcquisitionQueryCase:
     """Build the legacy tuple while keeping test intent explicit."""
+    _require_byte("command", command)
+    _require_byte("sub", sub)
+    _require_byte("receiver", receiver)
+    _require_byte("selector", selector)
+    if type(data) is not bytes:
+        raise TypeError("data must be exact bytes")
+
     if selector is not None:
         if (
-            command not in (0x25, 0x26)
+            command not in _SELECTOR_COMMANDS
             or sub is not None
             or data
             or receiver is not None
         ):
             raise ValueError("selector is exclusive to 0x25/0x26 queries")
         return command, None, selector
+
+    if command in _SELECTOR_COMMANDS:
+        if sub is not None or receiver is not None or len(data) != 1:
+            raise ValueError("0x25/0x26 require exactly one selector encoding")
+        return command, data[0], None
+
+    if command == _DATA_ONLY_COMMAND:
+        if sub is not None or receiver is not None or len(data) not in (0, 1):
+            raise ValueError("0x07 accepts only one semantic data byte")
+        return (command, None, None) if not data else (command, data[0], None)
+
     if data:
         if sub is None:
-            if len(data) != 1:
-                raise ValueError("legacy data-only queries require exactly one byte")
-            return command, data[0], receiver
+            raise ValueError("data-only queries are ambiguous for this command")
+        if receiver is not None:
+            raise ValueError("prefixed data cannot be combined with a receiver route")
         return command, bytes([sub]) + data, receiver
     return command, sub, receiver
 
@@ -71,7 +100,9 @@ def civ_frame_parts(
 ) -> CivFrameParts:
     """Expose semantic CI-V frame parts from the legacy tuple."""
     command, packed_sub, route = _require_legacy_query(query)
-    if command in (0x25, 0x26):
+    _require_byte("command", command)
+    _require_byte("receiver or selector", route)
+    if command in _SELECTOR_COMMANDS:
         if packed_sub is None and route is not None:
             selector = route
         elif type(packed_sub) is int and route is None:
@@ -83,17 +114,25 @@ def civ_frame_parts(
             data=bytes([selector]),
             selector=selector,
         )
+    if command == _DATA_ONLY_COMMAND:
+        if isinstance(packed_sub, bytes) or route is not None:
+            raise ValueError("0x07 legacy query must be bare or carry one data byte")
+        _require_byte("0x07 data", packed_sub)
+        if packed_sub is None:
+            return CivFrameParts(command=command)
+        return CivFrameParts(command=command, data=bytes([packed_sub]))
     if isinstance(packed_sub, bytes):
-        if not packed_sub:
-            raise ValueError("packed legacy sub must not be empty")
+        if len(packed_sub) < 2:
+            raise ValueError("packed legacy prefix must include semantic data")
+        if route is not None:
+            raise ValueError("packed legacy prefix cannot carry a receiver route")
         return CivFrameParts(
             command=command,
             sub=packed_sub[0],
             data=packed_sub[1:],
             receiver=route,
         )
-    if command == 0x07 and packed_sub is not None:
-        return CivFrameParts(command=command, data=bytes([packed_sub]), receiver=route)
+    _require_byte("sub", packed_sub)
     return CivFrameParts(command=command, sub=packed_sub, receiver=route)
 
 
@@ -161,10 +200,30 @@ def assert_acquisition_query_representation_contract() -> None:
         assert selector_parts.receiver is None
         assert selector_parts.selector == 1
 
-    for invalid in ([0x18, None, None], CivFrameParts(command=0x18)):
+    rejected_construction = (
+        lambda: acquisition_query(0x07, sub=0xC2),
+        lambda: acquisition_query(0x07, data=b"\xc2", receiver=0),
+        lambda: acquisition_query(0x25, sub=1),
+        lambda: acquisition_query(0x25, receiver=1),
+        lambda: acquisition_query(0x25, data=b"\x01", selector=1),
+        lambda: acquisition_query(0x16, data=b"\x59"),
+        lambda: acquisition_query(0x1A, sub=0x05, data=b"\x01", receiver=0),
+        lambda: acquisition_query(0x16, selector=1),
+    )
+    rejected_projection = (
+        lambda: civ_frame_parts([0x18, None, None]),  # type: ignore[arg-type]
+        lambda: civ_frame_parts(CivFrameParts(command=0x18)),  # type: ignore[arg-type]
+        lambda: civ_frame_parts((0x07, b"\xc2", None)),
+        lambda: civ_frame_parts((0x07, 0xC2, 0)),
+        lambda: civ_frame_parts((0x25, 1, 0)),
+        lambda: civ_frame_parts((0x25, None, None)),
+        lambda: civ_frame_parts((0x16, b"\x59", None)),
+        lambda: civ_frame_parts((0x1A, b"\x05\x01", 0)),
+    )
+    for rejected in rejected_construction + rejected_projection:
         try:
-            civ_frame_parts(invalid)  # type: ignore[arg-type]
-        except TypeError:
+            rejected()
+        except (TypeError, ValueError):
             pass
         else:
-            raise AssertionError("helper accepted a non-tuple acquisition query")
+            raise AssertionError("helper accepted an ambiguous acquisition query")

@@ -4024,8 +4024,8 @@ def test_state_queries_include_scope_vbw_rbw_edge_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
 
     queries = set(poller._STATE_QUERIES)  # noqa: SLF001
-    # The eight selector-carrying reads arrive as a two-byte ``sub``
-    # (sub-command + Main/Sub selector); the rest stay bare (MOR-1981).
+    # Eight reads carry a sub-command plus one-byte Main/Sub selector data;
+    # the rest carry only the bare sub-command (MOR-1981).
     assert acquisition_query(0x27, sub=0x16, data=b"\x00") in queries  # edge
     assert acquisition_query(0x27, sub=0x19, data=b"\x00") in queries  # REF
     assert acquisition_query(0x27, sub=0x1B) in queries  # during TX
