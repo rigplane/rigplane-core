@@ -174,7 +174,7 @@ IOREG_FTX1_REAL_AND_ICOM = textwrap.dedent("""\
 
 # Two DIFFERENT radios (A, B) on sibling ports of one EXTERNAL USB hub
 # (0x14100000) — unlike the FTX-1's internal-hub siblings above, A and B
-# are separate physical radios. Pins why an adaptive longest-shared-nibble
+# are separate physical radios. Pins why an adaptive longest-shared-component
 # match is needed instead of any fixed-width shift: resolving radio B's
 # CAT port (0x14121000), a >>20 mask also matches radio A's audio device
 # (0x14114000) — a silent mis-route — while >>16 and the longest-prefix
@@ -527,8 +527,8 @@ class TestResolveFtx1RealTopology:
     """MOR-2107: the FTX-1's real IORegistry shape does not share an upper-16-bit
     hub prefix between its CAT bridge (0x0011) and its audio device (0x0012) —
     see IOREG_FTX1_REAL_TOPOLOGY. A fixed hub-prefix mask fails to resolve this;
-    the longest-shared-nibble-prefix match must still find the CAT port's own
-    audio device.
+    the longest-shared-component-prefix match must still find the CAT port's
+    own audio device.
     """
 
     def test_ftx1_alone_resolves_to_its_own_audio(self) -> None:
@@ -573,7 +573,7 @@ class TestResolveExternalHubDisambiguation:
     avoid mis-routing, as opposed to the FTX-1's own internal-hub CAT/audio
     pair. Resolving radio B's CAT port under a >>20 fixed mask also matches
     radio A's audio device (see IOREG_EXTERNAL_HUB_TWO_RADIOS); the
-    longest-shared-nibble-prefix scorer must not.
+    longest-shared-component-prefix scorer must not.
     """
 
     def test_radio_b_resolves_to_its_own_audio_not_radio_as(self) -> None:

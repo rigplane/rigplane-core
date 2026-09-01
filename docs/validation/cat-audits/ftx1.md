@@ -74,7 +74,7 @@ material:
 | B — validation coverage | BI break-in and PR/PL compressor on/off still lack the requested RMVR rows. The `sql_type.set` RMVR now exists, so its remaining failure is routed separately rather than counted as a missing row. | MOR-673 — Backlog; MOR-696 — Backlog |
 | C — operator commands | `MX` MOX, `OS` repeater shift, and `TS` TX watch remain absent from the backend/profile surface. Documentation of `MX` or `TS` is not TX-test authorization. | MOR-675 — Backlog |
 | C — memory/keyer feature | The memory bank plus CW/voice message-keyer surface remains unimplemented. For `MC`, implementation must use the 2508-C receiver-qualified read `MCP1;` (`MC0;`/`MC1;`), not the 2507-B `MC;`. | MOR-676 — Backlog epic; decompose before implementation |
-| D — CAT mismatch | `sql_type.set` exists, but the profile retains an unconfirmed two-digit CT write while 2508-C documents one receiver digit plus one SQL-type digit. The recorded non-round-trip evidence is historical; current hardware acceptance is still required. | MOR-696 — Backlog |
+| D — CAT mismatch | `sql_type.set` exists, and `rigs/ftx1.toml`'s `set_sql_type` now writes the single SQL-type digit 2508-C documents (`CT0{type};`), corrected from a two-digit write by MOR-2104. The recorded non-round-trip evidence is historical; current hardware acceptance is still required. | MOR-696 — Backlog |
 | A — unsupported power | CAT power control must not imply a uniformly supported browser power control. | MOR-1673 |
 | A — capability-derived bands | Exposed bands must follow actual profile capability rather than a static front-end list. | MOR-1674 |
 | A — AF presentation | CAT AF-scale values require the agreed percent formatting. | MOR-1675 |
