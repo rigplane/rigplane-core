@@ -33,9 +33,11 @@ re-derived rather than inherited from this ticket's 2026-08-29 numbers):
   (addressed to `0x01`) die today — a documented would-be customer of this
   index (bench observation, draft, 2026-08).
 
-Reverse lookup is not an inversion: at `(command, sub)` granularity the IC-7300
-profile has 103 keys with 61 collisions (measured at `bce3be1e`); on IC-705 and
-X6200 the tuple `1C 00` resolves to four names.
+Reverse lookup is not an inversion: at `(command, sub)` granularity — grouping
+by what `commands/_frame.py: parse_civ_frame` actually assigns to
+`frame.command`/`frame.sub` for each declared tuple, not a positional split of
+the tuple — the IC-7300 profile has 100 keys with 64 collisions (measured at
+`bce3be1e`); on IC-705 and X6200 the tuple `1C 00` resolves to four names.
 
 ## 2. What the collision census actually showed
 
@@ -86,14 +88,20 @@ not of individual radios. There are no per-radio rule exceptions today.
 Built by the rig loader beside `command_map`, exposed as a sibling field on the
 profile (the layer precedent: `RadioProfile.command_map`; `core/` is
 layer-illegal for profile-specific structures per `.importlinter`). Resolution
-order for an incoming frame, all steps data-driven:
+order for an incoming frame, all steps data-driven. An annotation is a fact
+attached to its declared row, consulted at whichever step below examines that
+row — never a separate later step that a derivable rule can preempt with a
+confident wrong answer:
 
 1. **Full-tuple match** — the frame's `(command, sub, leading payload)` against
-   declared tuples (resolves class (b) pairs exactly as declared).
-2. **Prefix + payload-length rule** — no payload beyond the declared prefix =
-   the read name (class (a)); payload present = the write name.
-3. **Annotations** — consulted for what cannot be derived (class (c)/(d)).
-4. **No match** — an explicit "unrecognized frame" outcome (never a silent
+   declared tuples; a matching row's own annotation, if any, decides the
+   outcome directly (resolves class (b) pairs exactly as declared).
+2. **Prefix match** — for a `(command, sub)` prefix with no full-tuple match:
+   if the row(s) declared at that prefix carry an annotation (class (c)/(d)),
+   the annotation decides; otherwise the payload-length rule applies — no
+   payload beyond the declared prefix = the read name, payload present = the
+   write name (class (a)).
+3. **No match** — an explicit "unrecognized frame" outcome (never a silent
    guess; mirrors the D1 unknown-command refusal philosophy).
 
 The index is constructed once per profile load; collision counts per profile
@@ -106,8 +114,13 @@ Inline-table form on the command row, e.g.
 `send_cw = { bytes = [0x17], reply = "none" }`. Initial vocabulary — exactly
 what class (c)/(d) needs and nothing speculative:
 
-- `reply = "none"` — write-only; the radio never answers with this tuple
-  (scan family, CW keying; today hardcoded in `_civ_expects_response`).
+- `reply = "none"` — write-only; the radio never answers with this tuple. CW
+  keying (`0x17`) is already hardcoded this way in `_civ_expects_response`;
+  scan (`0x0E`) is not — it falls through to that function's default
+  `len(frame.data) == 0` heuristic, which returns `True` (expects a reply) for
+  an empty-data scan frame. Migrating scan onto `reply = "none"` is therefore
+  a **behavior change** (heuristic expect-reply → none), not a pure refactor,
+  and Z3 must validate it separately from the CW case.
 - `reply = "echo"` — the radio echoes the set frame (the on/off pairs where
   ingress can legitimately see the write tuple).
 
@@ -132,15 +145,18 @@ Each step is one reviewed PR unless noted; the standard pipeline applies
 (builder → independent verifier → CI quick at head → merge; baselines recorded
 before EXECUTE).
 
-- **Z1 — mirror deletion.** Delete `_RADIO_STATE_HANDLERS` and the `_handle_XX`
-  mirror; evidence that the canonical path already produces every observation
-  the mirror produced (AST inventory of both paths' outputs + targeted tests).
-  Expected to be deletion-heavy: the legacy mirror shim accounts for 42 of
-  the 105 comparisons.
+- **Z1 — mirror deletion.** Delete `_RADIO_STATE_HANDLERS` and the 18
+  `_handle_XX` functions; evidence that the canonical path already produces
+  every observation the mirror produced (AST inventory of both paths' outputs
+  + targeted tests). Expected to be deletion-heavy: counting
+  `frame.command`/`frame.sub` `==`/`!=` comparisons against a literal (the
+  same method behind the 105 total), the 18 `_handle_XX` functions carry 23
+  of them.
 - **Z2 — reverse index + census pins.** Loader builds the index; per-profile
-  collision censuses pinned; resolution order 1–2 implemented (derivable rules
-  only, no annotations yet). Unit contract: every declared name round-trips
-  (build → decode) on every profile.
+  collision censuses pinned; the full-tuple match and prefix + payload-length
+  rule implemented, with no annotation lookups yet (added in Z3). Unit
+  contract: every declared name round-trips (build → decode) on every
+  profile.
 - **Z3 — annotation vocabulary.** Loader + validation (unknown = load error);
   `reply = "none"`/`"echo"` rows added to the profiles from the class (c)/(d)
   census (D2 discipline: each row's source is the recon classification, cited);
