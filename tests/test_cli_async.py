@@ -1484,7 +1484,6 @@ class TestRunErrorHandling:
             command="status",
             json=False,
         )
-        # Mock create_radio to raise immediately instead of attempting real network connect
         mock_radio = MagicMock()
         mock_radio.__aenter__ = AsyncMock(
             side_effect=ConnectionError("test connection failed")
