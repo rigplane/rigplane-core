@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ._builders import _build_function_bool_set, _build_function_get
-from ._codec import _bcd_byte, _bcd_decode_value
+from ._codec import _bcd_decode_value, bcd_encode_value
 from ._frame import (
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
@@ -39,25 +39,28 @@ if TYPE_CHECKING:
 
 
 def _encode_tone_freq(freq_hz: float) -> bytes:
-    """Encode tone frequency (Hz) to 3-byte BCD."""
+    """Encode tone frequency (Hz) to 3-byte BCD.
+
+    Three bytes hold six packed BCD digits, read as a decimal integer of
+    tenths of a Hz: ``[0][0][100Hz digit][10Hz digit][1Hz digit]
+    [0.1Hz digit]`` (IC-705 CI-V Reference Guide 2020 p.21, "Repeater
+    tone/tone squelch frequency settings", command 1B 00/1B 01 -- the same
+    layout as the IC-7300 Advanced Manual, IC-9700 and IC-7610 CI-V
+    references). MOR-2091 fixed a prior layout mismatch here; see
+    ``tests/test_tone_tsql.py``'s ``_BCD_TABLE`` for the full manual and
+    hardware-capture sourcing.
+    """
     if not 67.0 <= freq_hz <= 254.1:
         raise ValueError(f"Tone frequency must be 67.0-254.1 Hz, got {freq_hz}")
     total_tenths = round(freq_hz * 10)
-    integer_hz = total_tenths // 10
-    hundreds = integer_hz // 100
-    tens_units = integer_hz % 100
-    tenths_digit = total_tenths % 10
-    return bytes([_bcd_byte(hundreds), _bcd_byte(tens_units), _bcd_byte(tenths_digit)])
+    return bcd_encode_value(total_tenths, byte_count=3)
 
 
 def _decode_tone_freq(data: bytes) -> float:
-    """Decode 3-byte BCD to tone frequency (Hz)."""
+    """Decode 3-byte BCD to tone frequency (Hz). Inverse of `_encode_tone_freq`."""
     if len(data) < 3:
         raise ValueError(f"Expected 3 bytes for tone freq, got {len(data)}")
-    hundreds = _bcd_decode_value(data[0:1])
-    tens_units = _bcd_decode_value(data[1:2])
-    tenths_digit = _bcd_decode_value(data[2:3])
-    return float(hundreds * 100 + tens_units) + tenths_digit / 10.0
+    return _bcd_decode_value(data[:3]) / 10.0
 
 
 @expose_command_key(lambda cmd_map: "get_repeater_tone")

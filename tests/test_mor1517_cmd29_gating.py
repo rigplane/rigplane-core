@@ -803,7 +803,7 @@ class TestToneFreqGating:
             from_addr=_IC7300_ADDR,
             command=0x1B,
             sub=0x00,
-            data=b"\x01\x00\x00",
+            data=b"\x00\x10\x00",  # 100.0 Hz -- MOR-2091, see _BCD_TABLE
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_tone_freq(receiver=0)
@@ -863,7 +863,7 @@ class TestTsqlFreqGating:
             from_addr=_IC7300_ADDR,
             command=0x1B,
             sub=0x01,
-            data=b"\x01\x00\x00",
+            data=b"\x00\x10\x00",  # 100.0 Hz -- MOR-2091, see _BCD_TABLE
         )
         mock = _mock_expect(radio, response)
         value = await radio.get_tsql_freq(receiver=0)

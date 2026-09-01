@@ -566,6 +566,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set_quick_dual_watch`. Previously they enqueued the same bare read
   marker as their `get_` twins and silently re-read the current toggle
   state instead of changing it.
+- **`get_tone_freq`/`set_tone_freq`/`get_tsql_freq`/`set_tsql_freq` used
+  the wrong CI-V byte layout, on every profile that declares the family
+  (IC-705, IC-7300, IC-9700; IC-7610 declares it `absent`) (MOR-2091).**
+  `commands/tone.py`'s codec packed/read the 3-byte BCD payload as
+  `[hundreds][tens+units][tenths]`; the documented layout (identical in
+  the IC-705, IC-7300, IC-9700 and IC-7610 CI-V references) is six packed
+  BCD digits read as tenths of a Hz: `[0][0][100Hz][10Hz][1Hz][0.1Hz]`.
+  `get_tone_freq`/`get_tsql_freq` returned wrong values -- a live IC-7300
+  capture of an 88.5 Hz tone decoded as 16.5 Hz. `set_tone_freq`/
+  `set_tsql_freq` encoded a 100 Hz BCD digit outside its documented 0-2
+  range for most tones (88.5 Hz encoded as `00 88 05`, digit 8). The
+  released 2.11.1 carries this bug.
 
 ## [2.11.1] — 2026-06-22
 

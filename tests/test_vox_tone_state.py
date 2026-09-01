@@ -201,11 +201,17 @@ def test_civ_rx_0x16_0x43_notify_event(tmp_path: object) -> None:
 
 
 def _bcd_tone_freq(hundreds: int, tens_units: int, tenths: int) -> bytes:
-    """3-byte BCD encoding: [hundreds, tens+units, tenths digit]."""
-    h = ((hundreds // 10) << 4) | (hundreds % 10)
-    tu = ((tens_units // 10) << 4) | (tens_units % 10)
-    t = ((tenths // 10) << 4) | (tenths % 10)
-    return bytes([h, tu, t])
+    """3-byte BCD encoding for a tone frequency split into its
+    hundreds-of-Hz / tens-and-units-of-Hz / tenths-of-Hz components.
+
+    MOR-2091: the wire layout packs six BCD digits as
+    [0][0][100Hz digit][10Hz digit][1Hz digit][0.1Hz digit] (see
+    tests/test_tone_tsql.py's ``_BCD_TABLE`` header comment for the
+    manual sourcing) -- one byte per *component* (as this helper
+    originally, incorrectly, assumed) is not the same split.
+    """
+    tens_digit, units_digit = divmod(tens_units, 10)
+    return bytes([0x00, (hundreds << 4) | tens_digit, (units_digit << 4) | tenths])
 
 
 def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
@@ -216,7 +222,7 @@ def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
     """
     r = _make_radio_with_state()
     rs = r._radio_state
-    # 88.5 Hz → [0x00, 0x88, 0x05]
+    # 88.5 Hz → [0x00, 0x08, 0x85]
     data = _bcd_tone_freq(0, 88, 5)
     frame = _make_frame(cmd=0x1B, sub=0x00, data=data, receiver=0x00)
     r._civ_runtime._update_state_cache_from_frame(frame)
@@ -229,7 +235,7 @@ def test_civ_rx_0x1b_0x01_sets_tsql_freq_sub(tmp_path: object) -> None:
     """0x1B 0x01 with receiver=1 observes sub tsql_freq in centihz (MOR-451)."""
     r = _make_radio_with_state()
     rs = r._radio_state
-    # 100.0 Hz → [0x01, 0x00, 0x00]
+    # 100.0 Hz → [0x00, 0x10, 0x00]
     data = _bcd_tone_freq(1, 0, 0)
     frame = _make_frame(cmd=0x1B, sub=0x01, data=data, receiver=0x01)
     r._civ_runtime._update_state_cache_from_frame(frame)

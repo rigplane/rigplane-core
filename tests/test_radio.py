@@ -3338,14 +3338,13 @@ class TestToneTsqlParity:
     async def test_get_tone_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # 3-byte BCD tone frequency: hundreds=0x00, tens_units=0x88,
-        # tenths=0x05 -> 88.5 Hz (_codec.py: _decode_tone_freq).
+        # 88.5 Hz -- MOR-2091, see tests/test_tone_tsql.py's _BCD_TABLE.
         civ = build_civ_frame(
             CONTROLLER_ADDR,
             _IC_7300_ADDR,
             0x1B,
             sub=0x00,
-            data=bytes([0x00, 0x88, 0x05]),
+            data=bytes([0x00, 0x08, 0x85]),
         )
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
         assert await radio.get_tone_freq() == pytest.approx(88.5)
@@ -3354,14 +3353,13 @@ class TestToneTsqlParity:
     async def test_get_tsql_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # 3-byte BCD TSQL frequency: hundreds=0x01, tens_units=0x10,
-        # tenths=0x09 -> 110.9 Hz.
+        # 110.9 Hz -- MOR-2091, see tests/test_tone_tsql.py's _BCD_TABLE.
         civ = build_civ_frame(
             CONTROLLER_ADDR,
             _IC_7300_ADDR,
             0x1B,
             sub=0x01,
-            data=bytes([0x01, 0x10, 0x09]),
+            data=bytes([0x00, 0x11, 0x09]),
         )
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
         assert await radio.get_tsql_freq() == pytest.approx(110.9)
@@ -3372,14 +3370,14 @@ class TestToneTsqlParity:
     ) -> None:
         await radio.set_tone_freq(88.5)
         # plain (no cmd29 -- IC-7300 has none) + 0x1B + 0x00 + BCD(88.5) + FD
-        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x00\x00\x88\x05\xfd")
+        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x00\x00\x08\x85\xfd")
 
     @pytest.mark.asyncio
     async def test_set_tsql_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         await radio.set_tsql_freq(110.9)
-        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x01\x01\x10\x09\xfd")
+        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x01\x00\x11\x09\xfd")
 
 
 class TestToneTsqlDualRxCmd29Guard:
@@ -3437,7 +3435,7 @@ class TestToneTsqlDualRxCmd29Guard:
                 "get_tone_freq",
                 b"\x1b\x00\xfd",
                 build_civ_frame(
-                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x00, data=b"\x00\x88\x05"
+                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x00, data=b"\x00\x08\x85"
                 ),
                 88.5,
             ),
@@ -3445,7 +3443,7 @@ class TestToneTsqlDualRxCmd29Guard:
                 "get_tsql_freq",
                 b"\x1b\x01\xfd",
                 build_civ_frame(
-                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x01, data=b"\x01\x10\x09"
+                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x01, data=b"\x00\x11\x09"
                 ),
                 110.9,
             ),
@@ -3485,8 +3483,8 @@ class TestToneTsqlDualRxCmd29Guard:
         [
             ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
             ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
-            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x88\x05\xfd"),
-            ("set_tsql_freq", (110.9,), b"\x1b\x01\x01\x10\x09\xfd"),
+            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", (110.9,), b"\x1b\x01\x00\x11\x09\xfd"),
         ],
     )
     async def test_sub_receiver_set_uses_vfo_select_fallback(
@@ -3523,8 +3521,8 @@ class TestToneTsqlDualRxCmd29Guard:
         [
             ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
             ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
-            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x88\x05\xfd"),
-            ("set_tsql_freq", (110.9,), b"\x1b\x01\x01\x10\x09\xfd"),
+            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", (110.9,), b"\x1b\x01\x00\x11\x09\xfd"),
         ],
     )
     async def test_main_receiver_still_sends_direct_frame(

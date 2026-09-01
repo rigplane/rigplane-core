@@ -86,24 +86,23 @@ def _bcd_byte_decode(b: int) -> int:
 def _encode_tone_freq(freq_hz: float) -> bytes:
     """Encode a CTCSS tone frequency to 3-byte BCD.
 
-    The radio stores frequency in three BCD bytes:
-      byte[0] = hundreds of Hz  (e.g. 110.9 Hz → _bcd_byte(1)  = 0x01)
-      byte[1] = tens+units of Hz (e.g. 110.9 Hz → _bcd_byte(10) = 0x10)
-      byte[2] = tenths of Hz    (e.g. 110.9 Hz → _bcd_byte(9)  = 0x09)
+    MOR-2091: the radio packs six BCD digits as
+    [0][0][100Hz digit][10Hz digit][1Hz digit][0.1Hz digit] -- not
+    [hundreds][tens+units][tenths] (one byte per component) as this mock
+    originally, incorrectly, assumed. See tests/test_tone_tsql.py's
+    ``_BCD_TABLE`` header comment for the manual sourcing. E.g. 110.9 Hz:
+    tenths=1109 -> byte[0]=0x00, byte[1]=_bcd_byte(11)=0x11,
+    byte[2]=_bcd_byte(9)=0x09.
     """
-    int_part = int(freq_hz)
-    hundreds = int_part // 100
-    tens_units = int_part % 100
-    tenths_digit = int(round(freq_hz * 10)) % 10
-    return bytes([_bcd_byte(hundreds), _bcd_byte(tens_units), _bcd_byte(tenths_digit)])
+    total_tenths = int(round(freq_hz * 10))
+    return bytes([0x00, _bcd_byte(total_tenths // 100), _bcd_byte(total_tenths % 100)])
 
 
 def _decode_tone_freq(data: bytes) -> float:
-    """Decode 3-byte BCD to a CTCSS tone frequency in Hz."""
-    hundreds = _bcd_byte_decode(data[0])
-    tens_units = _bcd_byte_decode(data[1])
-    tenths = _bcd_byte_decode(data[2])
-    return round(hundreds * 100 + tens_units + tenths / 10.0, 1)
+    """Decode 3-byte BCD to a CTCSS tone frequency in Hz. Inverse of
+    `_encode_tone_freq` above."""
+    total_tenths = _bcd_byte_decode(data[1]) * 100 + _bcd_byte_decode(data[2])
+    return round(total_tenths / 10.0, 1)
 
 
 # ---------------------------------------------------------------------------
