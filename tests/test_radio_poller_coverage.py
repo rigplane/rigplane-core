@@ -108,6 +108,7 @@ from rigplane.web.radio_poller import (
     VfoEqualize,
     VfoSwap,
 )
+from _acquisition_query_helpers import acquisition_query, send_state_query
 from rigplane.core.tx_safety import (
     BACKEND_MAX_KEY_DOWN_SECONDS,
     TxOutcome,
@@ -2542,20 +2543,22 @@ async def test_send_query_even_and_odd_branch_variants() -> None:
     await poller._send_query()  # noqa: SLF001
     assert radio.send_civ.await_args.args[0] == 0x15
 
-    poller._STATE_QUERIES = [
-        (0x25, None, 0x01)
-    ]  # receiver in data payload  # noqa: SLF001
+    poller._STATE_QUERIES = [  # noqa: SLF001
+        acquisition_query(0x25, selector=0x01)
+    ]
     poller._poll_index = 1  # odd  # noqa: SLF001
     await poller._send_query()  # noqa: SLF001
     assert radio.send_civ.await_args.args[0] == 0x25
     assert radio.send_civ.await_args.kwargs["data"] == bytes([0x01])
 
-    poller._STATE_QUERIES = [(0x16, 0x22, 0x01)]  # cmd29 wrapper path  # noqa: SLF001
+    poller._STATE_QUERIES = [  # noqa: SLF001
+        acquisition_query(0x16, sub=0x22, receiver=0x01)
+    ]
     poller._poll_index = 1  # noqa: SLF001
     await poller._send_query()  # noqa: SLF001
     assert radio.send_civ.await_args.args[0] == 0x29
 
-    poller._STATE_QUERIES = [(0x0F, None, None)]  # global query  # noqa: SLF001
+    poller._STATE_QUERIES = [acquisition_query(0x0F)]  # noqa: SLF001
     poller._poll_index = 1  # noqa: SLF001
     await poller._send_query()  # noqa: SLF001
     assert radio.send_civ.await_args.args[0] == 0x0F
@@ -2657,29 +2660,29 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
 
     assert {
-        (0x15, 0x01, 0x00),
-        (0x15, 0x01, 0x01),
-        (0x15, 0x07, None),
-        (0x16, 0x12, 0x00),
-        (0x16, 0x12, 0x01),
-        (0x16, 0x32, 0x00),
-        (0x16, 0x32, 0x01),
-        (0x16, 0x41, 0x00),
-        (0x16, 0x41, 0x01),
-        (0x16, 0x44, None),
-        (0x16, 0x45, None),
-        (0x16, 0x46, None),
-        (0x16, 0x47, None),
-        (0x16, 0x48, 0x00),
-        (0x16, 0x48, 0x01),
-        (0x16, 0x4F, 0x00),
-        (0x16, 0x4F, 0x01),
-        (0x16, 0x50, None),
-        (0x16, 0x56, 0x00),
-        (0x16, 0x56, 0x01),
-        (0x16, 0x58, None),
-        (0x1A, 0x04, 0x00),
-        (0x1A, 0x04, 0x01),
+        acquisition_query(0x15, sub=0x01, receiver=0x00),
+        acquisition_query(0x15, sub=0x01, receiver=0x01),
+        acquisition_query(0x15, sub=0x07),
+        acquisition_query(0x16, sub=0x12, receiver=0x00),
+        acquisition_query(0x16, sub=0x12, receiver=0x01),
+        acquisition_query(0x16, sub=0x32, receiver=0x00),
+        acquisition_query(0x16, sub=0x32, receiver=0x01),
+        acquisition_query(0x16, sub=0x41, receiver=0x00),
+        acquisition_query(0x16, sub=0x41, receiver=0x01),
+        acquisition_query(0x16, sub=0x44),
+        acquisition_query(0x16, sub=0x45),
+        acquisition_query(0x16, sub=0x46),
+        acquisition_query(0x16, sub=0x47),
+        acquisition_query(0x16, sub=0x48, receiver=0x00),
+        acquisition_query(0x16, sub=0x48, receiver=0x01),
+        acquisition_query(0x16, sub=0x4F, receiver=0x00),
+        acquisition_query(0x16, sub=0x4F, receiver=0x01),
+        acquisition_query(0x16, sub=0x50),
+        acquisition_query(0x16, sub=0x56, receiver=0x00),
+        acquisition_query(0x16, sub=0x56, receiver=0x01),
+        acquisition_query(0x16, sub=0x58),
+        acquisition_query(0x1A, sub=0x04, receiver=0x00),
+        acquisition_query(0x1A, sub=0x04, receiver=0x01),
     }.issubset(set(poller._STATE_QUERIES))  # noqa: SLF001
 
 
@@ -2687,11 +2690,11 @@ def test_state_queries_include_transceiver_status_reads_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
 
     assert {
-        (0x1C, 0x01, None),
-        (0x1C, 0x03, None),
-        (0x21, 0x00, None),
-        (0x21, 0x01, None),
-        (0x21, 0x02, None),
+        acquisition_query(0x1C, sub=0x01),
+        acquisition_query(0x1C, sub=0x03),
+        acquisition_query(0x21, sub=0x00),
+        acquisition_query(0x21, sub=0x01),
+        acquisition_query(0x21, sub=0x02),
     }.issubset(set(poller._STATE_QUERIES))  # noqa: SLF001
 
 
@@ -4023,12 +4026,12 @@ def test_state_queries_include_scope_vbw_rbw_edge_for_ic7610() -> None:
     queries = set(poller._STATE_QUERIES)  # noqa: SLF001
     # The eight selector-carrying reads arrive as a two-byte ``sub``
     # (sub-command + Main/Sub selector); the rest stay bare (MOR-1981).
-    assert (0x27, b"\x16\x00", None) in queries  # edge number
-    assert (0x27, b"\x19\x00", None) in queries  # REF level
-    assert (0x27, 0x1B, None) in queries  # during TX
-    assert (0x27, 0x1C, None) in queries  # center type
-    assert (0x27, b"\x1d\x00", None) in queries  # VBW
-    assert (0x27, b"\x1f\x00", None) in queries  # RBW
+    assert acquisition_query(0x27, sub=0x16, data=b"\x00") in queries  # edge
+    assert acquisition_query(0x27, sub=0x19, data=b"\x00") in queries  # REF
+    assert acquisition_query(0x27, sub=0x1B) in queries  # during TX
+    assert acquisition_query(0x27, sub=0x1C) in queries  # center type
+    assert acquisition_query(0x27, sub=0x1D, data=b"\x00") in queries  # VBW
+    assert acquisition_query(0x27, sub=0x1F, data=b"\x00") in queries  # RBW
 
 
 @pytest.mark.asyncio
@@ -4045,7 +4048,7 @@ async def test_scope_state_query_uses_the_live_scope_receiver() -> None:
     state.scope_controls.receiver = 1
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
 
-    await poller._send_one_state_query(0x27, b"\x14\x00", None)  # noqa: SLF001
+    await send_state_query(poller, acquisition_query(0x27, sub=0x14, data=b"\x00"))
 
     radio.send_civ.assert_awaited_once()
     assert radio.send_civ.await_args.args[0] == 0x27
@@ -4067,7 +4070,7 @@ async def test_scope_fixed_edge_query_carries_no_selector_byte() -> None:
     radio = _make_radio()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
 
-    await poller._send_one_state_query(0x27, 0x1E, None)  # noqa: SLF001
+    await send_state_query(poller, acquisition_query(0x27, sub=0x1E))
 
     radio.send_civ.assert_awaited_once()
     assert radio.send_civ.await_args.kwargs["data"] == b""
