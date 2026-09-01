@@ -112,23 +112,3 @@ describe('no fallback family', () => {
     expect(sdrTestLayout.fallbackLayoutId).toBeNull();
   });
 });
-
-describe('IC-specific fallback policy is out of the layout (MOR-1093)', () => {
-  // Kills: reintroducing a hardcoded manufacturer-specific label/value table
-  // (e.g. an IC-7610 attenuator-dB or AGC-label array) into the sdr-test
-  // folder instead of sourcing it from capabilities. This scans the actual
-  // files rather than asserting behavior, because the component this policy
-  // lived in (SdrVfoScreen.svelte) is not currently mounted by any test —
-  // see semantic-desktop-migration.component.test.ts for the proof that it
-  // does not render at all.
-  it('SdrVfoScreen carries no local manufacturer-specific value table', () => {
-    const source = readFileSync('src/skins/sdr-test/SdrVfoScreen.svelte', 'utf8');
-    expect(source).not.toMatch(/const ATT_DB/);
-    expect(source).not.toMatch(/const AGC_LABELS/);
-    expect(source).not.toMatch(/IC-7610 ATT levels/);
-    expect(source).not.toMatch(/IC-7610 AGC:/);
-    // The two labels it used to hardcode are now capability-sourced.
-    expect(source).toMatch(/getAttValues\(\)/);
-    expect(source).toMatch(/getAgcLabels\(\)/);
-  });
-});

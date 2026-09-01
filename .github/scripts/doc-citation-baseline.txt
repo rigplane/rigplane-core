@@ -144,7 +144,6 @@ docs/i18n/core-string-inventory.md	frontend/src/components/spectrum/SpectrumPane
 docs/i18n/core-string-inventory.md	frontend/src/components/spectrum/SpectrumToolbar.svelte:138
 docs/i18n/core-string-inventory.md	frontend/src/components/spectrum/spectrum-toolbar-logic.ts:12
 docs/i18n/core-string-inventory.md	frontend/src/lib/local-extensions/LocalExtensionsHost.svelte:189
-docs/i18n/core-string-inventory.md	frontend/src/skins/sdr-test/SdrVfoScreen.svelte:198
 docs/i18n/core-string-inventory.md	src/rigplane/web/server.py:788
 docs/internals/legacy-state-writer-inventory.md	observations.py:142-162
 docs/internals/legacy-state-writer-inventory.md	observations.py:90-99

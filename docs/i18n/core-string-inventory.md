@@ -559,19 +559,6 @@ Files:
 
 Estimated string count: ~8.
 
-### P1.9 — SDR test skin
-
-File: `frontend/src/skins/sdr-test/SdrVfoScreen.svelte:198,336–361`.
-
-Estimated string count: ~4.
-
-Strings: aria-label `VFO display`; button titles `Swap VFOs`, `Copy A to B`,
-`Speak frequency aloud`; visible `🔈 SPEAK`.
-
-Notes: `SDR Screen (test)` is currently exposed in the skin switcher and is
-clearly an internal/experimental surface. May be deferred to P2 if pilot QA
-finds it not relevant for non-English release.
-
 **P1 subtotal: ~200 strings across ~25 files. Most are glossary-stable
 tokens that still need catalog keys for QA but no translation work; the
 genuinely translatable subset is ~80 strings.**
@@ -839,8 +826,7 @@ translation work. It also excludes CLI help text where the boundary
   need catalog keys for QA, but only the second is meaningfully
   translatable.
 - **`SDR Screen (test)`** is an experimental skin exposed in production via
-  the skin switcher (`StatusBar.svelte:41`). It is listed in P1.9 with a
-  recommendation to defer if pilot QA needs to drop scope.
+  the skin switcher (`StatusBar.svelte:41`).
 - **CLI surface is large** (~470 strings) and contains a mix of true
   end-user copy and developer/support output. A subsequent ticket should
   split the CLI module into "end-user prose" vs "support correlation"
