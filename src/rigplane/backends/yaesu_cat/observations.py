@@ -137,15 +137,17 @@ _CW_PITCH = FieldPath.global_("operator_controls", "cw_pitch")
 _BREAK_IN = FieldPath.global_("operator_controls", "break_in")
 _BREAK_IN_DELAY = FieldPath.global_("operator_controls", "break_in_delay")
 _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
-# Tone / CTCSS squelch-type (MOR-457). The FTX-1 CAT ``CT`` "SQL TYPE" command
-# (FTX-1_CAT_OM_ENG_2507) is a single MAIN-only read (CT0); its P2 code is
-# mapped onto the neutral, mutually-exclusive CTCSS booleans, matching the
-# Hamlib/Icom convention where ``repeater_tone`` = CTCSS tone ENCODE ("TONE")
-# and ``repeater_tsql`` = CTCSS tone SQUELCH (decode):
-#   P2 code 1 (ENC ON / DEC OFF, "TONE")  -> repeater_tone=True,  repeater_tsql=False
-#   P2 code 2 (ENC ON / DEC ON,  "TSQL")  -> repeater_tone=False, repeater_tsql=True
-#   P2 codes 0/3/4/5 (OFF / DCS / PR-FREQ / REV-TONE) -> both False (these have no
-#       neutral CTCSS-boolean representation, so they collapse to "neither on").
+# Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130). The FTX-1 CAT ``CT``
+# "SQL TYPE" command (FTX-1_CAT_OM_ENG_2508-C) is a single MAIN-only read
+# (CT0); its P2 code is mapped onto ``RepeaterControlCapable``'s two
+# independent axes: ``repeater_tone`` = CTCSS tone TX ENCODE, ``repeater_tsql``
+# = CTCSS tone RX SQUELCH (decode):
+#   P2 code 0 (OFF)                      -> repeater_tone=False, repeater_tsql=False
+#   P2 code 1 (ENC ON / DEC OFF, "TONE") -> repeater_tone=True,  repeater_tsql=False
+#   P2 code 2 (ENC ON / DEC ON,  "TSQL") -> repeater_tone=True,  repeater_tsql=True
+#   P2 codes 3/4/5 (DCS / PR-FREQ / REV-TONE) -> both False (the two-boolean
+#       vocabulary has no representation for them — a limit of the
+#       representation, not of this derivation).
 # Both paths are emitted every cycle (including the False derivations) so the
 # store always reflects current state. Per-receiver ``operator_toggles`` like
 # nb/nr/auto_notch, emitted in the slow-control lane. MAIN only (CT0): the SUB
@@ -156,7 +158,7 @@ _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 _MAIN_REPEATER_TONE = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
 _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
 # CTCSS tone FREQUENCY (MOR-458). The FTX-1 CAT ``CN`` "CTCSS TONE FREQUENCY"
-# command (FTX-1_CAT_OM_ENG_2507) reports the MAIN tone as a 0-49 INDEX into
+# command (FTX-1_CAT_OM_ENG_2508-C) reports the MAIN tone as a 0-49 INDEX into
 # the standard 50-tone EIA chart (NOT an absolute frequency; cf. Icom 0x1B
 # BCD-Hz). The radio maps that index → Hz → centiHz (the index→Hz Tone Chart
 # is verbatim from the manual; see ``radio._CTCSS_TONE_CENTIHZ``). The neutral
@@ -772,13 +774,14 @@ class YaesuObservationAdapter:
                         native_id="read_manual_notch_freq",
                     )
                 )
-        # Tone / CTCSS squelch-type (MOR-457) — MAIN-only per-receiver
-        # ``operator_toggles``, grouped with the other receiver toggles
-        # (nb/nr/auto_notch/manual_notch) above. A SINGLE ``read_sql_type(0)``
-        # CAT ``CT`` read (FTX-1_CAT_OM_ENG_2507) yields the P2 "SQL TYPE" code,
-        # from which the two mutually-exclusive neutral CTCSS booleans are
-        # DERIVED (Hamlib/Icom convention; see the module-level mapping comment):
-        # code 1 → tone only, code 2 → tsql only, codes 0/3/4/5 → both False.
+        # Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130) — MAIN-only
+        # per-receiver ``operator_toggles``, grouped with the other receiver
+        # toggles (nb/nr/auto_notch/manual_notch) above. A SINGLE
+        # ``read_sql_type(0)`` CAT ``CT`` read (FTX-1_CAT_OM_ENG_2508-C) yields
+        # the P2 "SQL TYPE" code, from which the two independent neutral CTCSS
+        # booleans are DERIVED per ``RepeaterControlCapable``'s own docstrings
+        # (see the module-level mapping comment): code 1 -> encode only, code 2
+        # -> encode AND decode (both True), codes 0/3/4/5 -> both False.
         # Both paths are emitted every cycle (incl. the False derivations) so
         # the store always reflects current state. Gated on the ``sql_type``
         # runtime capability (``CAP_SQL_TYPE``), a dedicated readback capability:
@@ -798,7 +801,7 @@ class YaesuObservationAdapter:
                     observations.append(
                         adapter.observation(
                             _MAIN_REPEATER_TONE,
-                            sql_type == 1,
+                            sql_type in (1, 2),
                             native_id="read_sql_type",
                         )
                     )
@@ -813,7 +816,7 @@ class YaesuObservationAdapter:
         # CTCSS tone FREQUENCY (MOR-458) — MAIN-only per-receiver
         # ``operator_controls``, grouped with the CTCSS squelch-type toggles
         # above. A SINGLE ``read_ctcss_tone_index(0)`` CAT ``CN`` read
-        # (FTX-1_CAT_OM_ENG_2507) yields the 0-49 standard-EIA tone-chart index,
+        # (FTX-1_CAT_OM_ENG_2508-C) yields the 0-49 standard-EIA tone-chart index,
         # which ``_ctcss_index_to_centihz`` maps index → Hz → centiHz (the
         # index→Hz Tone Chart is verbatim from the manual). The neutral unit is
         # centiHz = round(Hz * 100), matching the Icom MOR-451 convention so

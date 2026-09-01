@@ -134,10 +134,10 @@ _CW_SPOT_CASES = (("global.slow_state.cw_spot", "cwSpot", True),)
 # (store path, public fieldStatus key, expected value) for the tone / CTCSS
 # squelch-type booleans (MOR-457). MAIN-only per-receiver operator toggles
 # (public ``main.repeaterTone``/``main.repeaterTsql``) derived from a single CAT
-# ``CT`` read on the slow-control lane. The fixture returns P2 code 2 ("TSQL"),
-# so repeater_tone=False and repeater_tsql=True.
+# ``CT`` read on the slow-control lane. The fixture returns P2 code 2 ("TSQL":
+# ENC ON / DEC ON), so both repeater_tone and repeater_tsql are True (MOR-2130).
 _CTCSS_CASES = (
-    ("receiver.main.operator_toggles.repeater_tone", "main.repeaterTone", False),
+    ("receiver.main.operator_toggles.repeater_tone", "main.repeaterTone", True),
     ("receiver.main.operator_toggles.repeater_tsql", "main.repeaterTsql", True),
 )
 
@@ -250,8 +250,9 @@ def _make_radio() -> MagicMock:
     radio.read_break_in_delay = AsyncMock(return_value=300)
     radio.read_cw_spot = AsyncMock(return_value=True)
     # Tone / CTCSS squelch-type observation read (MOR-457). ``read_sql_type``
-    # returns the CAT ``CT`` P2 code; code 2 ("TSQL": ENC+DEC) derives
-    # repeater_tone=False, repeater_tsql=True. MAIN-only, slow-control lane.
+    # returns the CAT ``CT`` P2 code; code 2 ("TSQL": ENC ON / DEC ON) derives
+    # repeater_tone=True, repeater_tsql=True (MOR-2130). MAIN-only, slow-control
+    # lane.
     radio.read_sql_type = AsyncMock(return_value=2)
     # CTCSS tone frequency observation read (MOR-458). ``read_ctcss_tone_index``
     # returns the CAT ``CN`` P3 tone-chart index; index 8 (88.5 Hz) maps to 8850
