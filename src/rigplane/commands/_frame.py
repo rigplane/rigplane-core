@@ -271,10 +271,9 @@ def command_carries_sub(command: int) -> bool:
 
     The one place this question is answered: :func:`decode_wire_tuple`
     (splitting a declared ``[commands]`` tuple) and :func:`parse_civ_frame`
-    (splitting a received frame's payload) both call this instead of each
-    keeping its own copy of :data:`_COMMANDS_WITH_SUB`, so a tuple split
-    for a request and a frame split for its reply agree on where the
-    sub-command byte is.
+    (splitting a received frame's payload) both call this, so a tuple
+    split for a request and a frame split for its reply agree on where
+    the sub-command byte is.
     """
     return command in _COMMANDS_WITH_SUB
 

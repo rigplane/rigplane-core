@@ -9,9 +9,7 @@ in ``.data`` otherwise. The two disagreed for every declared row with two
 or more elements whose first byte is outside that set -- measured here
 (at ``df7b1788``) as 51 of 1161 declared rows across the six CI-V
 profiles (16 distinct names). This count moves as ``rigs/*.toml`` gains
-or loses rows; what stays fixed is which 16 names disagree, since that
-depends only on each name's first wire byte, not on how many other rows
-exist.
+or loses rows.
 
 Both functions now go through the single predicate
 ``command_carries_sub``, this file pins two properties of that fix:
@@ -64,9 +62,11 @@ def _build_frame_via(
     decoder: Callable[[tuple[int, ...]], tuple[int, int | None, bytes]],
     wire: tuple[int, ...],
 ) -> bytes:
-    """Mirror ``_build_from_map``'s use of a decoder: prepend ``prefix`` to
-    (absent) caller data, then build the frame -- with no additional
-    caller-supplied data, matching every declared row's own GET/bare shape.
+    """Mirror ``_build_from_map``'s use of a decoder, with no caller-supplied
+    ``data``: builds a frame from just the decoded ``command``, ``sub`` and
+    ``prefix``. Many declared rows are SET commands never sent bare, so
+    this exercises each row's own constant bytes but not a caller-supplied
+    payload (e.g. a SET command's value).
     """
     command, sub, prefix = decoder(wire)
     data = prefix if prefix else None

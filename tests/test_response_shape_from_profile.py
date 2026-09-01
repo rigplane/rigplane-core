@@ -108,7 +108,7 @@ MATCHER_BACKED_GETTERS: tuple[_GetterSpec, ...] = (
     _GetterSpec("get_vox_delay", "_get_bcd_level"),
     # commands/vfo.py's matcher-backed getters (MOR-2007 Steps 5..N,
     # module 3). get_dual_watch is NOT included: 0x07 carries no CI-V
-    # sub-command (_frame.py: _COMMANDS_WITH_SUB excludes it, unlike
+    # sub-command (_frame.py: command_carries_sub excludes it, unlike
     # 0x1A here), so its reply marker lands in data[0] rather than
     # .sub -- it cannot route through _get_bcd_level/_get_bool_value at
     # all, and is instead pinned directly by
