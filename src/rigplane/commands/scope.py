@@ -430,7 +430,7 @@ def get_scope_main_sub(
     )
 
 
-@expose_command_key(lambda cmd_map: "get_scope_main_sub")
+@expose_command_key(lambda cmd_map: "set_scope_main_sub")
 @require_cmd_map
 def scope_main_sub(
     receiver: int,
@@ -441,7 +441,7 @@ def scope_main_sub(
 ) -> bytes:
     return _build_from_map(
         cmd_map,
-        "get_scope_main_sub",
+        "set_scope_main_sub",
         to_addr=to_addr,
         from_addr=from_addr,
         data=bytes([_validate_scope_receiver(receiver)]),

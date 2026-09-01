@@ -3125,6 +3125,36 @@ async def test_execute_switch_scope_receiver_mirrors_state_and_reconfirms() -> N
 
 
 @pytest.mark.asyncio
+async def test_execute_switch_scope_receiver_undeclared_command_sends_no_frame() -> (
+    None
+):
+    """MOR-2106: before the fix, ``SwitchScopeReceiver`` built its CI-V frame
+    from hardcoded literals (``self._civ(0x27, sub=0x12, ...)``), bypassing
+    the command map entirely -- a profile could not refuse the write. Routed
+    through ``_send_cmd("set_scope_main_sub", ...)`` instead, the same
+    fail-closed path ``test_execute_set_agc_undeclared_command_refuses_
+    without_firing_event`` above pins for MOR-2004's ``set_agc``: with
+    ``set_scope_main_sub`` removed from the bound map, no CI-V frame goes
+    out and neither the state mirror nor the reconfirm read-back fire.
+    """
+    radio = _make_radio(model="IC-7610")
+    stripped = {
+        name: radio.profile.command_map.get(name)
+        for name in radio.profile.command_map
+        if name != "set_scope_main_sub"
+    }
+    radio.profile = dataclasses.replace(radio.profile, command_map=CommandMap(stripped))
+    state = RadioState()
+    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
+
+    await poller._execute(SwitchScopeReceiver(1))  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    radio.get_scope_receiver.assert_not_awaited()
+    assert state.scope_controls.receiver == 0  # untouched default, not mirrored to 1
+
+
+@pytest.mark.asyncio
 async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise_for_other_leaves() -> (
     None
 ):
