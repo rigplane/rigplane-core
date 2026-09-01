@@ -964,7 +964,8 @@
   <!--
     MOR-1336 — the ONE zone-aware mount path, applied uniformly to every
     optional surface that used to render bare. Declared → a real zone element
-    the layout's arrangement can place; undeclared → bare, exactly as before.
+    the layout's arrangement can place; undeclared → bare by default, exactly
+    as before — unless the caller passes `allowBare={false}` (MOR-2150 below).
 
     Deliberately NOT applied to `vfo`/`rxTx`: those carry per-receiver slicing,
     the `showVfoList`/`showRadioWideFacts` split and the R6 TX-adjacent alerts,
@@ -978,14 +979,25 @@
     exactly what MOR-1069 forbids. The snippet bodies keep their own `{#if}`
     as well: one decides whether the zone exists, the other whether the surface
     does, and they must agree.
+
+    MOR-2150 — `allowBare` (default `true`, unchanged for every call site that
+    existed before this ticket). The DUAL composition's MOR-1069 rule is
+    stricter than the single composition's: no focusable control may sit
+    outside a declared zone, with `rx-tx` last in tab order, so "no zone →
+    bare" is not a safe fallback there for a control-bearing surface the way
+    it is in `single`. Passing `false` turns "no zone → bare" into "no zone →
+    nothing", still through this one path and the same `zoneOwning()` lookup —
+    not a second mount mechanism, a different answer to "and if nobody owns
+    it?".
   -->
-  {#snippet zoned(surface: SemanticSurfaceName, present: boolean, body: Snippet)}
+  {#snippet zoned(
+    surface: SemanticSurfaceName, present: boolean, body: Snippet, allowBare = true,
+  )}
     {#if present}
       {@const zoneId = zoneOwning(surface)}
-      {#if zoneId === null}{@render body()}
-      {:else}
+      {#if zoneId !== null}
         <div class="surface-zone" data-zone-id={zoneId}>{@render body()}</div>
-      {/if}
+      {:else if allowBare}{@render body()}{/if}
     {/if}
   {/snippet}
 
@@ -1032,22 +1044,24 @@
     model actually carries the MOR-1274 `rxAudio` group, so a radio with no
     audio chain renders the pre-1279 element shape exactly.
 
-    UNLIKE those two it is rendered in the SINGLE composition ONLY. This is the
-    first semantic surface carrying interactive controls that the DUAL
-    composition's only layout (`dual-receiver-cockpit.ts`) declares no zone
-    for, and the cockpit has a hard MOR-1069 rule: every
-    focusable control lives inside a declared zone, and the rx-tx zone is LAST
-    in the tab order. A control-bearing surface mounted bare would break both
-    clauses at once, and the two alternatives are worse — binding a zone id no
-    layout asked for is the MOR-1069 lesson itself, and folding the controls
-    into the rx-tx zone would put an AF slider between the operator and the
-    unkey button. `'rxAudio'` became DECLARABLE with this slice, so the cockpit
-    gains the surface the moment its manifest declares a zone for it — a layout
-    decision, separately reviewed, exactly as txAux and meters left it.
-    `desktop-v2` HAS since made that decision (MOR-1368, S9), which is why the
-    single composition mounts this surface zoned UNDER THAT LAYOUT — not under
-    `sdr-test`/`mobile`/`lcd-*`, which declare no such zone. The cockpit has
-    made no such decision either.
+    UNLIKE those two, it is control-bearing — the first semantic surface with
+    interactive controls the DUAL composition's only layout
+    (`dual-receiver-cockpit.ts`) declares no zone for — and the cockpit has a
+    hard MOR-1069 rule: every focusable control lives inside a declared zone,
+    and the rx-tx zone is LAST in the tab order. A control-bearing surface
+    mounted bare would break both clauses at once, and the two alternatives
+    are worse — binding a zone id no layout asked for is the MOR-1069 lesson
+    itself, and folding the controls into the rx-tx zone would put an AF
+    slider between the operator and the unkey button. MOR-2150 closes the
+    third option — `allowBare={false}` below — so it mounts through `zoned()`
+    in BOTH compositions, same as `txAux`/`meters`, and dual just never falls
+    back to bare. `'rxAudio'` became DECLARABLE with this slice, so the
+    cockpit gains the surface the moment its manifest declares a zone for it —
+    a layout decision, separately reviewed, exactly as txAux and meters left
+    it. `desktop-v2` HAS since made that decision (MOR-1368, S9), which is why
+    the single composition mounts this surface zoned UNDER THAT LAYOUT — not
+    under `sdr-test`/`mobile`/`lcd-*`, which declare no such zone. The cockpit
+    has made no such decision either, so it still renders nothing there.
 
     It takes NO authority snapshot: nothing here is TX truth. The intents are
     the shipped command bus, wired above.
@@ -1072,17 +1086,18 @@
     filterPassband` from MOR-1284) — a radio the evidence gate declined on
     both renders the pre-1304 element shape exactly.
 
-    UNLIKE `txAuxSurface`/`metersSurface` (and like `rxAudioSurface` above) it
-    is rendered in the SINGLE composition ONLY (fix round, verify-MOR-1304 F1).
-    `FilterSurface` renders up to 14 focusable controls (mode/filter/shape
-    buttons, width and passband-level sliders) and the DUAL COCKPIT manifest
-    (`dual-receiver-cockpit.ts`) declares no `filter` zone, so mounting it
-    bare there would put every one of those controls outside every declared
-    zone and after the `rx-tx` zone that MOR-1069 requires to end the tab
-    order — exactly the shape the MOR-1279/MOR-1336 zone-mount ruling forbids
-    for any control-bearing surface. `'filter'` became DECLARABLE with this
-    slice, for whichever layout's manifest chooses to declare a zone for it —
-    a layout decision, separately reviewed, exactly as rxAudio left it.
+    UNLIKE `txAuxSurface`/`metersSurface` it is control-bearing (fix round,
+    verify-MOR-1304 F1). `FilterSurface` renders up to 14 focusable controls
+    (mode/filter/shape buttons, width and passband-level sliders), and the
+    DUAL COCKPIT manifest (`dual-receiver-cockpit.ts`) declares no `filter`
+    zone, so a bare mount there would put every one of those controls outside
+    every declared zone and after the `rx-tx` zone that MOR-1069 requires to
+    end the tab order — exactly the shape the MOR-1279/MOR-1336 zone-mount
+    ruling forbids for any control-bearing surface. MOR-2150 (`allowBare=
+    false` below) closes that off structurally rather than by convention:
+    dual never falls back to bare, so `'filter'` mounts there the moment
+    whichever layout's manifest declares a zone for it — a layout decision,
+    separately reviewed, exactly as rxAudio left it.
 
     CORRECTION (MOR-1494 review round): the SINGLE composition (`desktop-v2`)
     already made that layout decision — `desktop-declarations.ts:71` declares
@@ -1093,11 +1108,9 @@
     if no manifest anywhere had declared the zone yet; it hadn't been updated
     after S7 landed, and that staleness led a later review round to
     misdiagnose which component renders the IF-shift control on desktop-v2.
-    The dual cockpit remains the one COMPOSITION still undeclared for this
-    zone (`sdr-test`, `mobile` and the two `lcd-*` layouts declare no `filter`
-    zone either, but they are single-composition, so the dual-mount reasoning
-    never reached them) — the rest of this comment's reasoning about the
-    cockpit stands.
+    The dual cockpit remains the one manifest still undeclared for this zone
+    (`sdr-test`, `mobile` and the two `lcd-*` layouts declare no `filter` zone
+    either), so it still renders nothing there.
   -->
   {#snippet filterSurface()}
     {#if view?.modeFilter || view?.filterPassband}
@@ -1117,19 +1130,19 @@
 
   <!--
     MOR-1309 (vocabulary slice 8C, SAFETY-ADJACENT). Same structural gate as
-    the surfaces above, and the SAME single-composition-only rule `rxAudio`
-    carries: this surface renders focusable controls and the DUAL
-    composition's only layout (`dual-receiver-cockpit.ts`) declares no
-    `antenna` zone, so mounting it there would put controls outside every
-    declared zone — the MOR-1069 invariant the cockpit enforces, and `zoned()`
-    does NOT grant that permission on its own (`zoneOwning()` returns null for
-    a surface the ACTIVE layout has not declared, and renders bare, which IS
-    the violating shape). Its absence from the dual composition is pinned by
-    name in `__tests__/semantic-antenna-wiring.component.test.ts`.
+    the surfaces above, and the SAME control-bearing status `rxAudio` carries:
+    this surface renders focusable controls and the DUAL composition's only
+    layout (`dual-receiver-cockpit.ts`) declares no `antenna` zone. MOR-2150
+    passes `allowBare={false}` below for exactly this reason: a plain
+    `zoned()` call would grant nothing (`zoneOwning()` returns null for a
+    surface the ACTIVE layout has not declared, and the default renders
+    bare — the violating shape MOR-1069 forbids); `allowBare={false}` makes
+    the mount render nothing instead. Its absence from the dual composition
+    is pinned by name in `__tests__/semantic-antenna-wiring.component.test.ts`.
     `'antenna'` became DECLARABLE with this slice, and `desktop-v2` declared
     it in MOR-1367 (S8) — which is why the SINGLE composition mounts it zoned
     under THAT layout (not under `sdr-test`/`mobile`/`lcd-*`). The cockpit has
-    made no such decision, so the rule above still binds there.
+    made no such decision, so it still renders nothing there.
 
     It DOES take the App-owned TX authority snapshot: unlike `rxAudio`,
     switching a TX antenna under power is a hazard, and the surface gates on
@@ -1154,16 +1167,17 @@
     declined renders the pre-1305 element shape exactly.
 
     Like `rxAudioSurface` and UNLIKE `txAuxSurface`/`metersSurface`, it is
-    rendered in the SINGLE composition ONLY (MOR-1304/MOR-1305 zone-mount
-    ruling). `DspSurface` renders up to 8 range inputs and 7 buttons — it is
-    control-bearing, and `desktop-v2` declared a `dsp` zone in MOR-1368 (S9)
-    while the cockpit still declares none; the cockpit's MOR-1069 rule
-    forbids mounting any
-    control-bearing surface bare in the dual composition: every focusable
-    control must live inside a declared zone, with rx-tx last in the tab
-    order. `'dsp'` became DECLARABLE with this slice, so the cockpit gains the
-    surface the moment its manifest declares a zone for it — a layout
-    decision, separately reviewed, exactly as rxAudio left it.
+    control-bearing (MOR-1304/MOR-1305 zone-mount ruling). `DspSurface`
+    renders up to 8 range inputs and 7 buttons, and `desktop-v2` declared a
+    `dsp` zone in MOR-1368 (S9) while the cockpit still declares none; the
+    cockpit's MOR-1069 rule forbids mounting any control-bearing surface bare
+    in the dual composition: every focusable control must live inside a
+    declared zone, with rx-tx last in the tab order — which is exactly why
+    MOR-2150 mounts it there with `allowBare={false}` below rather than the
+    default. `'dsp'` became DECLARABLE with this slice, so the cockpit gains
+    the surface the moment its manifest declares a zone for it — a layout
+    decision, separately reviewed, exactly as rxAudio left it. It still
+    renders nothing there today.
 
     `agcLabels`/`nbLevelMax`/`nbLevelPercent` are the caps-echo metadata
     carry-forward (1) requires stay OUT of the view model — read at this seam,
@@ -1188,16 +1202,17 @@
     no preamp/attenuator/RF-gain/squelch/DIGI-SEL/IP+ capability renders the
     pre-1306 element shape exactly.
 
-    SINGLE COMPOSITION ONLY — the MOR-1304 mounting canon (`RfFrontEndSurface.
-    svelte`'s file header): this surface carries focusable controls (preamp
-    and attenuator choice buttons, RF-gain/squelch sliders, DIGI-SEL/IP+
-    toggles) and the DUAL composition's only layout
-    (`dual-receiver-cockpit.ts`) declares no `rfFrontEnd` zone, so a bare dual
-    mount would put controls outside every declared zone — exactly the defect
-    the MOR-1279 rxAudio precedent avoided. `'rfFrontEnd'` became DECLARABLE
-    with this slice, and `desktop-v2` declared it in MOR-1366 (S7); the
-    cockpit gains the surface the moment a rework slice declares a zone for it
-    there, same as `rxAudio` left it.
+    CONTROL-BEARING — the MOR-1304 mounting canon (`RfFrontEndSurface.svelte`'s
+    file header): this surface carries focusable controls (preamp and
+    attenuator choice buttons, RF-gain/squelch sliders, DIGI-SEL/IP+ toggles)
+    and the DUAL composition's only layout (`dual-receiver-cockpit.ts`)
+    declares no `rfFrontEnd` zone, so a bare dual mount would put controls
+    outside every declared zone — exactly the defect the MOR-1279 rxAudio
+    precedent avoided, and exactly why MOR-2150 mounts it with
+    `allowBare={false}` below. `'rfFrontEnd'` became DECLARABLE with this
+    slice, and `desktop-v2` declared it in MOR-1366 (S7); the cockpit gains
+    the surface the moment a rework slice declares a zone for it there, same
+    as `rxAudio` left it — it still renders nothing there today.
   -->
   {#snippet rfFrontEndSurface()}
     {#if view?.rfFrontEnd}
@@ -1215,19 +1230,20 @@
 
   <!--
     MOR-1307 (vocabulary slice 7B). Same structural gate as the surfaces above,
-    and the SAME single-composition-only mounting as `rxAudioSurface`, for the
-    same MOR-1069 reason: this surface is control-bearing (band buttons, a
+    and the SAME control-bearing status as `rxAudioSurface`, for the same
+    MOR-1069 reason: this surface is control-bearing (band buttons, a
     frequency entry field and its Set button) and the DUAL composition's only
-    layout (`dual-receiver-cockpit.ts`) declares no `band` zone, so a dual
-    mount would put focusable controls outside every declared zone and break
-    the cockpit's "tab order ends in rx-tx" invariant. `zoned()` does not
-    grant that permission by itself — `zoneOwning()` answers `null` for a
-    surface the ACTIVE layout has not declared, and the mount renders BARE,
-    which is the violating shape. `'band'` becomes DECLARABLE with this slice,
-    and `desktop-v2` declared it in MOR-1367 (S8) — retiring `BandSelector`'s
-    HAM half only, through `hamBands={!declared.has('band')}`. The cockpit
-    gains the surface the moment a rework slice declares a zone for it there,
-    and the dual absence is pinned by name in
+    layout (`dual-receiver-cockpit.ts`) declares no `band` zone, so a bare
+    dual mount would put focusable controls outside every declared zone and
+    break the cockpit's "tab order ends in rx-tx" invariant. A plain `zoned()`
+    call does not prevent that by itself — `zoneOwning()` answers `null` for a
+    surface the ACTIVE layout has not declared, and the default renders BARE,
+    which is the violating shape — so MOR-2150 passes `allowBare={false}`
+    below instead. `'band'` becomes DECLARABLE with this slice, and
+    `desktop-v2` declared it in MOR-1367 (S8) — retiring `BandSelector`'s HAM
+    half only, through `hamBands={!declared.has('band')}`. The cockpit gains
+    the surface the moment a rework slice declares a zone for it there, and
+    the dual absence is pinned by name in
     `__tests__/semantic-band-wiring.component.test.ts`.
 
     It takes NO authority snapshot: the TX permit it renders is already decided
@@ -1244,8 +1260,9 @@
     MOR-1308 (vocabulary slice 8B). Same reasoning as `rxAudioSurface` above:
     the second semantic surface carrying interactive controls the DUAL
     composition's only layout (`dual-receiver-cockpit.ts`) declares no zone
-    for, so — per the MOR-1304 mounting canon — it mounts in
-    the SINGLE composition only, and its dual-composition absence is pinned in
+    for, so — per the MOR-1304 mounting canon — MOR-2150 mounts it with
+    `allowBare={false}` below rather than the bare default, and its
+    dual-composition absence today is pinned in
     `__tests__/semantic-ritxit-scan-wiring.component.test.ts` with a view
     model that actually carries the `ritXit`/`scan` groups (a fixture that
     cannot see the surface would repeat the bug that canon exists to catch).
@@ -1270,12 +1287,13 @@
 
   <!--
     MOR-1310 (vocabulary slice 9B) — SAFETY-CRITICAL. Same structural gate as
-    the surfaces above, and the SAME single-composition-only mounting as
+    the surfaces above, and the SAME control-bearing status as
     `rxAudioSurface`: this surface is control-bearing, the DUAL composition's
     only layout (`dual-receiver-cockpit.ts`) declares no `cwKeyer` zone, and
     the MOR-1069 cockpit rule is that every focusable
     control lives inside a declared zone with rx-tx last in the tab order.
-    Mounted bare in the dual composition it would break both clauses; folded
+    Mounted bare in the dual composition it would break both clauses — which
+    is why MOR-2150 mounts it with `allowBare={false}` below instead; folded
     into the rx-tx zone it would put a keyer slider between the operator and
     the unkey button. `'cwKeyer'` became DECLARABLE with this slice, and
     `desktop-v2` declared it in MOR-1368 (S9) — which, per that manifest's own
@@ -1311,9 +1329,10 @@
     as `txAuxSurface`/`metersSurface` above: the surface mounts only when the
     view model actually carries the MOR-1301 `scopeDisplay` group, so a radio
     with neither a hardware scope nor an audio-FFT source renders the
-    pre-1312 element shape exactly. Mounted in BOTH compositions — the
-    `meters`/`txAux` shape, NOT `rxAudio`'s single-only shape — and zoned
-    wherever `zoneOwning()` finds a zone carrying `scopeDisplay`, which
+    pre-1312 element shape exactly. Mounted in BOTH compositions with the
+    DEFAULT `allowBare` (unlike `rxAudio`'s MOR-2150 `allowBare={false}`) —
+    the `meters`/`txAux` shape — and zoned wherever `zoneOwning()` finds a
+    zone carrying `scopeDisplay`, which
     `desktop-v2` has declared as `scope-display` since MOR-1365 (S6a); bare
     otherwise, including the dual composition, whose only layout
     (`dual-receiver-cockpit.ts`) declares none:
@@ -1339,12 +1358,15 @@
     program). Same mounting canon as `ritXitScanSurface`/`cwKeyerSurface`
     above: control-bearing, and the DUAL composition's only layout
     (`dual-receiver-cockpit.ts`) declares no `scopeControls` zone, so per the
-    MOR-1304 ruling's option (i) it mounts in the SINGLE composition only and
-    must render NOTHING in the DUAL composition — pinned by name in
-    `__tests__/semantic-scope-controls-wiring.component.test.ts`. No longer
-    bare under `desktop-v2`, which declared this zone in MOR-1370 (S6b-2) as
-    the last surface in the vocabulary to graduate; still bare under the
-    single-composition layouts that declare none (`sdr-test`/`mobile`/`lcd-*`).
+    MOR-1304 ruling's option (i) MOR-2150 mounts it with `allowBare={false}`
+    below — never bare in the dual composition — and it currently renders
+    NOTHING there, pinned by name in
+    `__tests__/semantic-scope-controls-wiring.component.test.ts` and in
+    `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component
+    .test.ts`'s MOR-2150 describe block. No longer bare under `desktop-v2`,
+    which declared this zone in MOR-1370 (S6b-2) as the last surface in the
+    vocabulary to graduate; still bare under the single-composition layouts
+    that declare none (`sdr-test`/`mobile`/`lcd-*`).
   -->
   {#snippet scopeControlsSurface()}
     {#if view?.scopeControls}
@@ -1387,7 +1409,32 @@
     </div>
     {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
     {@render zoned('meters', view?.meters !== undefined, metersSurface)}
+    <!--
+      MOR-2150. The nine remaining optional surfaces, mounted zone-only
+      (`allowBare=false`): a control-bearing surface must never render bare
+      here (MOR-1069 above `zoned()`), so each renders only where a layout's
+      manifest declares a zone for it. `dual-receiver-cockpit.ts` declares
+      none of the nine, so every one of these currently renders nothing —
+      pinned in `skins/dual-receiver-cockpit/__tests__/
+      DualReceiverCockpit.component.test.ts`'s MOR-2150 describe block, which
+      also proves the positive case (a zone that DOES declare one) against a
+      synthetic plan, since no shipped manifest does yet.
+    -->
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, false)}
+    {@render zoned(
+      'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
+      false,
+    )}
+    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, false)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, false)}
+    {@render zoned('band', view?.band !== undefined, bandSurface, false)}
+    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, false)}
+    {@render zoned(
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface, false,
+    )}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, false)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, false)}
   {:else}
     <!--
       Single/default path (sdr-test / LCD / mobile): no bound zone exists

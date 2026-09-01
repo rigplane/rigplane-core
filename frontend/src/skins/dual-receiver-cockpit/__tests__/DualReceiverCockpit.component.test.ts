@@ -162,6 +162,7 @@ import DualReceiverCockpit from '../DualReceiverCockpit.svelte';
 // dual-receiver-cockpit' directly), so the DOM assertions below are checked
 // against what the app actually registers rather than a local copy.
 import { dualReceiverCockpitLayout } from '../../../presentation/layouts/declarations';
+import type { SemanticSurfaceName } from '../../../presentation/layouts/contract';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
@@ -710,6 +711,70 @@ describe('F6 — manifest zone ids are bound to the rendered structure', () => {
   });
 });
 
+/**
+ * MOR-2150 — `SemanticRadioSurfaces.svelte`'s `strips="dual"` branch used to
+ * render only three of the twelve optional surfaces (`txAux`/`meters`/
+ * `scopeDisplay`); the other nine (`rxAudio`/`filter`/`dsp`/`rfFrontEnd`/
+ * `band`/`antenna`/`ritXitScan`/`cwKeyer`/`scopeControls`) were not rendered
+ * in that branch at all. They now mount through the SAME `zoned()` path as
+ * the first three, but with the dual composition's bare-mount fallback
+ * disabled (`allowBare=false`): a zone must own the surface or it renders
+ * NOTHING — never bare, because a control-bearing surface mounted bare would
+ * break the cockpit's MOR-1069 rule (every focusable control inside a
+ * declared zone, `rx-tx` last in tab order).
+ *
+ * `dual-receiver-cockpit.ts`'s manifest is untouched by this ticket — still
+ * only `primary-vfo`/`secondary-vfo`/`global`/`rx-tx`/`tx-aux` — so this
+ * cockpit's own DOM stays byte-identical to before MOR-2150. Both tests below
+ * share ONE fixture (`mainSubCaps()`/`mainSubState()`) so the zero count in
+ * the second is not vacuous: the first proves the same view model actually
+ * carries all nine groups (MOR-1304 §1 discipline).
+ */
+describe('MOR-2150 — the nine remaining optional surfaces mount only when a zone declares them', () => {
+  const NINE: readonly [SemanticSurfaceName, string, string][] = [
+    ['rxAudio', 'rx-audio-surface', 'rx-audio-rail'],
+    ['filter', 'filter-surface', 'filter-rail'],
+    ['dsp', 'dsp-surface', 'dsp-rail'],
+    ['rfFrontEnd', 'rf-front-end-surface', 'front-end-rail'],
+    ['band', 'band-surface', 'band-rail'],
+    ['antenna', 'antenna-surface', 'antenna-rail'],
+    ['ritXitScan', 'ritxit-scan-surface', 'offsets'],
+    ['cwKeyer', 'cw-keyer-surface', 'cw-keyer-rail'],
+    ['scopeControls', 'scope-controls-surface', 'scope-controls-rail'],
+  ];
+
+  /** No shipped manifest declares these nine zones yet — MOR-2150 only builds
+   *  the mount path — so proving it actually works needs a plan that
+   *  exercises it. Starts from the real declared zones (`defaultPlan()`) and
+   *  adds one synthetic zone per surface. */
+  function nineZonesPlan(): SurfacePlan {
+    return new Map([
+      ...defaultPlan(),
+      ...NINE.map(([surface, , zoneId]) => [zoneId, [surface]] as const),
+    ]);
+  }
+
+  it('renders each one wrapped in its own zone once a plan declares it', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render(nineZonesPlan());
+
+    for (const [, testId, zoneId] of NINE) {
+      const surface = q(`[data-testid="${testId}"]`);
+      expect(surface).not.toBeNull();
+      expect(surface!.closest(`[data-zone-id="${zoneId}"]`)).not.toBeNull();
+    }
+  });
+
+  it('renders NONE of them under the real, unchanged cockpit manifest — never bare', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render(defaultPlan());
+
+    for (const [, testId] of NINE) expect(q(`[data-testid="${testId}"]`)).toBeNull();
+  });
+});
+
 describe('degrading to a single-receiver view model', () => {
   // "One compiled layout safely degrades across all pairs; no impossible
   // receiver/VFO labels." Kills: a shell that renders a second, empty strip
@@ -850,7 +915,20 @@ describe('operational audio-scope availability (scope=false + audioFft=true)', (
     // rendered no reason id at all (the very defect the rework fixes), so
     // this test never observed more than the TUNE-specific id; now every
     // field does, and the general form is required.
-    .replace(/tx-aux-reason-\d+-/g, 'tx-aux-reason-N-');
+    .replace(/tx-aux-reason-\d+-/g, 'tx-aux-reason-N-')
+    // MOR-2150: `scopeControls` now mounts through the same dual-composition
+    // `zoned()` path as every other optional surface, and unlike the other
+    // eight its OWN gate (`hasCap(caps, 'scope')`, radio-view-model-adapter
+    // .ts: deriveScopeControls) genuinely differs between `mainSubCaps()`
+    // (hardware scope) and `audioOnlyScopeCaps()` (audio-FFT only, no
+    // `'scope'` tag) — the one condition this describe block exists to hold
+    // constant everywhere else. Neither config mounts anything for it (no
+    // zone owns it here, and `allowBare=false`), so the only artifact is
+    // Svelte's own empty-block anchor comment for the branch that did not
+    // run — never an observable element, attribute or text node. Stripped
+    // here rather than widened into a real difference the test would then
+    // stop catching.
+    .replace(/<!---->/g, '');
 
   it('changes nothing in the cockpit, and denies nothing about the radio', () => {
     h.state = mainSubState('MAIN');
