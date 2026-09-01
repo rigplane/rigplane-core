@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
+from rigplane.commands._frame import build_civ_frame, decode_wire_tuple
 from rigplane.commands.scope import (
     SCOPE_RECEIVER_SELECTOR_SUBS,
     SCOPE_SELECTOR_MAIN,
@@ -138,6 +140,36 @@ class TestBuildStateQueries:
         q1 = build_state_queries(profile, caps)
         q2 = build_state_queries(profile, caps)
         assert q1 == q2
+
+    def test_ic9700_dual_watch_query_uses_profile_wire_tuple(self) -> None:
+        profile = resolve_radio_profile(model="IC-9700")
+        command, sub, prefix = decode_wire_tuple(
+            profile.command_map.get("get_dual_watch")
+        )
+        assert (command, sub, prefix) == (0x16, 0x59, b"")
+
+        dual_watch_delta = Counter(
+            build_state_queries(profile, {"dual_watch"})
+        ) - Counter(build_state_queries(profile, set()))
+
+        assert dual_watch_delta == Counter({(0x16, 0x59, None): 1})
+
+    def test_ic7610_dual_watch_query_preserves_wire_tuple(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        command, sub, prefix = decode_wire_tuple(
+            profile.command_map.get("get_dual_watch")
+        )
+        assert (command, sub, prefix) == (0x07, None, b"\xc2")
+
+        dual_watch_delta = Counter(
+            build_state_queries(profile, {"dual_watch"})
+        ) - Counter(build_state_queries(profile, set()))
+
+        assert dual_watch_delta == Counter({(0x07, 0xC2, None): 1})
+        assert (0x07, None, None) not in dual_watch_delta
+        assert build_civ_frame(0x98, 0xE0, 0x07, sub=0xC2) == bytes.fromhex(
+            "FE FE 98 E0 07 C2 FD"
+        )
 
 
 class TestScopeReceiverSelector:

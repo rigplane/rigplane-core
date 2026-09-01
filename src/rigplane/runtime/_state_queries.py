@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 
+from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.scope import (
     SCOPE_RECEIVER_SELECTOR_SUBS,
     SCOPE_SELECTOR_MAIN,
@@ -152,7 +153,10 @@ def build_state_queries(
     if profile.receiver_count > 1:
         queries.append((0x07, 0xD2, None))  # Active receiver
     if "dual_watch" in capabilities:
-        queries.append((0x07, 0xC2, None))  # Dual Watch status
+        command, sub, prefix = decode_wire_tuple(
+            profile.command_map.get("get_dual_watch")
+        )
+        queries.append((command, sub if sub is not None else prefix[0], None))
 
     # Common feature queries (data-driven: if radio has the command, poll it)
     _COMMON_FEATURE_QUERIES: list[tuple[int, int]] = [
