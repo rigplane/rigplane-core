@@ -139,6 +139,7 @@ class ReceiverStatePublic(_Strict):
     repeaterTsql: bool = False
     toneFreq: int = 0
     tsqlFreq: int = 0
+    repeaterShift: int = 0
 
     # Snapshot-path only: ``dcd`` is the canonical squelch-open status; it is
     # also dual-published as the deprecated ``sMeterSqlOpen`` alias (MOR-466).

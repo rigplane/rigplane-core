@@ -70,6 +70,7 @@ features = [
     "meters",
     "dial_lock",
     "sql_type",
+    "repeater_shift",
 ]
 
 [state_acquisition]
@@ -131,6 +132,7 @@ polling_only = [
     "receiver.main.operator_toggles.repeater_tsql",
     "receiver.main.operator_controls.tone_freq",
     "receiver.main.operator_controls.tsql_freq",
+    "receiver.main.operator_controls.repeater_shift",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -383,6 +385,16 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Repeater shift DIRECTION (MOR-2111). The MAIN-only CAT ``OS`` "OFFSET
+# (REPEATER SHIFT)" read (FTX-1_CAT_OM_ENG_2508-C) reports the P2 code
+# (0=Simplex, 1=Plus Shift, 2=Minus Shift, 3=ARS) directly onto the neutral
+# repeater_shift path — no derivation, unlike the tone/TSQL booleans above.
+# Slow-changing per-receiver operator control, so it uses the slow-control
+# cadence like the other receiver controls above.
+[state_acquisition.field_policies."receiver.main.operator_controls.repeater_shift"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
@@ -905,6 +917,17 @@ set_sql_type   = { cat = { write = "CT0{type};" } }
 # (000-049) is the standard 50-tone EIA tone-chart index. Read-only here (the
 # observation pipeline maps the index → centiHz onto tone_freq/tsql_freq).
 get_ctcss_tone = { cat = { read = "CN00;", parse = "CN00{code:03d};" } }
+
+# ── Repeater Shift (MOR-2111) ──
+# FTX-1_CAT_OM_ENG_2508-C, OS OFFSET (REPEATER SHIFT): P1=0 MAIN/1 SUB (MAIN
+# only here, matching CT0/CN00 above); P2 direction 0=Simplex, 1=Plus Shift,
+# 2=Minus Shift, 3=ARS (RepeaterShiftDirection). Manual footnote: this
+# command works only in FM mode. Magnitude is a separate, not-yet-built
+# surface (MOR-2125) — OS carries direction only. Reuses the existing
+# ``shift`` CAT placeholder (single char) already registered for the ``IF;``
+# bulk-status P10 field — same wire shape, no parser change needed.
+get_repeater_shift = { cat = { read = "OS0;", parse = "OS0{shift};" } }
+set_repeater_shift = { cat = { write = "OS0{shift};" } }
 
 # ── Bulk Status ──
 # IF; response layout: P1 chan(5, may be alphanumeric) + P2 freq(9 digits)

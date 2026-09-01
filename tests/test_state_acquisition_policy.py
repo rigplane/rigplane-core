@@ -910,7 +910,7 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition is not None
 
     assert acquisition.provider == "yaesu_cat"
-    assert len(acquisition.capabilities) == 53
-    assert len(acquisition.field_policies) == 46
+    assert len(acquisition.capabilities) == 54
+    assert len(acquisition.field_policies) == 47
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0

@@ -68,6 +68,7 @@ from .radio_protocol import (  # noqa: F401, E402
     ReceiverBankCapable,
     RecoverableConnection,
     RepeaterControlCapable,
+    RepeaterShiftCapable,
     RigctldRoutable,
     RitXitCapable,
     ScopeCapable,
@@ -92,7 +93,12 @@ from .runtime.session_lifecycle import (  # noqa: F401, E402
     RadioPresence,
     RadioSessionLifecycle,
 )
-from .types import AudioCodec, BreakInMode, Mode  # noqa: F401, E402
+from .types import (  # noqa: F401, E402
+    AudioCodec,
+    BreakInMode,
+    Mode,
+    RepeaterShiftDirection,
+)
 
 # === Tier 2 — lazy via PEP 562 ===
 #
@@ -307,6 +313,7 @@ __all__ = [
     "ReceiverBankCapable",
     "RecoverableConnection",
     "RepeaterControlCapable",
+    "RepeaterShiftCapable",
     "RigctldRoutable",
     "RitXitCapable",
     "ScopeCapable",
@@ -335,6 +342,7 @@ __all__ = [
     "Mode",
     "AudioCodec",
     "BreakInMode",
+    "RepeaterShiftDirection",
     # --- Tier 1: Public state types ---
     "RadioState",
     "RadioProfile",

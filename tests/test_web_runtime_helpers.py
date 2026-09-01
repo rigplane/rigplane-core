@@ -477,9 +477,16 @@ def test_runtime_capabilities_uses_explicit_caps_without_protocol_fallback() -> 
 
 
 def test_runtime_capabilities_falls_back_to_protocols_when_caps_missing() -> None:
-    from rigplane.radio_protocol import AudioCapable, DualReceiverCapable, ScopeCapable
+    from rigplane.radio_protocol import (
+        AudioCapable,
+        DualReceiverCapable,
+        RepeaterShiftCapable,
+        ScopeCapable,
+    )
 
-    class _ProtoRadio(ScopeCapable, AudioCapable, DualReceiverCapable):  # type: ignore[misc]
+    class _ProtoRadio(  # type: ignore[misc]
+        ScopeCapable, AudioCapable, DualReceiverCapable, RepeaterShiftCapable
+    ):
         def __init__(self) -> None:
             self.capabilities = None
 
@@ -512,9 +519,15 @@ def test_runtime_capabilities_falls_back_to_protocols_when_caps_missing() -> Non
         async def get_main_sub_tracking(self) -> bool:
             return False
 
+        async def get_repeater_shift(self, receiver: int = 0) -> int:
+            return 0
+
+        async def set_repeater_shift(self, direction: int, receiver: int = 0) -> None:
+            pass
+
     radio = _ProtoRadio()
     caps = runtime_capabilities(radio)
-    assert caps == {"scope", "audio", "dual_rx"}
+    assert caps == {"scope", "audio", "dual_rx", "repeater_shift"}
 
 
 def test_runtime_capabilities_fallback_recognises_usb_audio_only() -> None:
@@ -537,10 +550,50 @@ def test_runtime_capabilities_fallback_recognises_usb_audio_only() -> None:
 
 
 def test_runtime_capabilities_filters_incompatible_tags() -> None:
-    radio = _FakeRadio(caps={"scope", "audio", "dual_rx", "tx"})
+    radio = _FakeRadio(caps={"scope", "audio", "dual_rx", "repeater_shift", "tx"})
     caps = runtime_capabilities(radio)
-    # No Protocols implemented → scope/audio/dual_rx must be dropped, tx preserved
+    # No Protocols implemented -> scope/audio/dual_rx/repeater_shift dropped, tx preserved
     assert caps == {"tx"}
+
+
+def test_runtime_capabilities_drops_repeater_shift_without_both_methods() -> None:
+    """MOR-2111: a declared ``repeater_shift`` tag the backend cannot honour must
+    be dropped, not passed through silently (the ``dual_rx``/15-gates-dark
+    failure shape this guard exists to avoid).
+    """
+    from rigplane.radio_protocol import RepeaterShiftCapable
+
+    class _GetOnlyRadio:
+        def __init__(self) -> None:
+            self.capabilities = {"repeater_shift"}
+
+        async def get_repeater_shift(self, receiver: int = 0) -> int:
+            return 0
+
+        # deliberately no set_repeater_shift
+
+    radio = _GetOnlyRadio()
+    assert not isinstance(radio, RepeaterShiftCapable)
+    assert "repeater_shift" not in runtime_capabilities(radio)
+
+
+def test_runtime_capabilities_keeps_repeater_shift_with_both_methods() -> None:
+    """MOR-2111: a radio implementing both halves keeps the declared tag."""
+    from rigplane.radio_protocol import RepeaterShiftCapable
+
+    class _FullShiftRadio:
+        def __init__(self) -> None:
+            self.capabilities = {"repeater_shift"}
+
+        async def get_repeater_shift(self, receiver: int = 0) -> int:
+            return 0
+
+        async def set_repeater_shift(self, direction: int, receiver: int = 0) -> None:
+            pass
+
+    radio = _FullShiftRadio()
+    assert isinstance(radio, RepeaterShiftCapable)
+    assert "repeater_shift" in runtime_capabilities(radio)
 
 
 def test_radio_ready_prefers_radio_ready_flag() -> None:

@@ -14,6 +14,7 @@ from ..profiles import RadioProfile, resolve_radio_profile
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
+    RepeaterShiftCapable,
     ScopeCapable,
     UsbAudioCapable,
 )
@@ -86,6 +87,7 @@ _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "digisel_shift",
     "tone_freq",
     "tsql_freq",
+    "repeater_shift",
     "key_speed",
     "cw_pitch",
     "monitor_gain",
@@ -578,6 +580,8 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
             caps.discard("audio")
         if "dual_rx" in caps and not isinstance(radio, DualReceiverCapable):
             caps.discard("dual_rx")
+        if "repeater_shift" in caps and not isinstance(radio, RepeaterShiftCapable):
+            caps.discard("repeater_shift")
         return caps
 
     result: set[str] = set()
@@ -587,6 +591,8 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         result.add("audio")
     if isinstance(radio, DualReceiverCapable):
         result.add("dual_rx")
+    if isinstance(radio, RepeaterShiftCapable):
+        result.add("repeater_shift")
     return result
 
 
