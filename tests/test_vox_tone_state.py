@@ -26,6 +26,7 @@ from rigplane.web.radio_poller import (
     SetVoxDelay,
     SetVoxGain,
 )
+from test_poller_poll_priority import logical_civ_call
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -327,7 +328,8 @@ def test_civ_rx_0x1a_0x05_vox_delay(tmp_path: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> None:
+@pytest.mark.asyncio
+async def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> None:
     """MOR-661: the IC-7610 (HF/6m) has no FM-repeater CTCSS tone feature, so
     the capability-gated tone/tsql queries (0x16/0x42, 0x16/0x43, 0x1B/0x00,
     0x1B/0x01) are NOT polled — they read garbage (16.5 Hz) on this radio.
@@ -345,18 +347,29 @@ def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> None:
     radio.send_civ = AsyncMock()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
 
-    queries = poller._STATE_QUERIES  # noqa: SLF001
-    cmd_sub_pairs = {(cmd, sub) for cmd, sub, _ in queries}
-    assert (0x16, 0x42) not in cmd_sub_pairs, "repeater_tone should not be polled"
-    assert (0x16, 0x43) not in cmd_sub_pairs, "repeater_tsql should not be polled"
-    assert (0x1B, 0x00) not in cmd_sub_pairs, "tone_freq should not be polled"
-    assert (0x1B, 0x01) not in cmd_sub_pairs, "tsql_freq should not be polled"
-    # vox queries are unrelated and must still be polled.
-    assert (0x14, 0x16) in cmd_sub_pairs, "vox_gain not polled"
-    assert (0x14, 0x17) in cmd_sub_pairs, "anti_vox_gain not polled"
+    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
+        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+
+    calls = set(map(logical_civ_call, radio.send_civ.await_args_list))
+    assert not any(command == 0x16 and sub == 0x42 for _, command, sub, _ in calls), (
+        "repeater_tone should not be polled"
+    )
+    assert not any(command == 0x16 and sub == 0x43 for _, command, sub, _ in calls), (
+        "repeater_tsql should not be polled"
+    )
+    assert not any(command == 0x1B and sub == 0x00 for _, command, sub, _ in calls), (
+        "tone_freq should not be polled"
+    )
+    assert not any(command == 0x1B and sub == 0x01 for _, command, sub, _ in calls), (
+        "tsql_freq should not be polled"
+    )
+    assert (None, 0x14, 0x16, b"") in calls, "vox_gain not polled"
+    assert (None, 0x14, 0x17, b"") in calls, "anti_vox_gain not polled"
 
 
-def test_build_state_queries_includes_notch_width() -> None:
+@pytest.mark.asyncio
+async def test_build_state_queries_includes_notch_width() -> None:
     """_build_state_queries includes 0x16/0x57 (manual notch width) for IC-7610."""
     profile = resolve_radio_profile(model="IC-7610")
     radio = MagicMock()
@@ -367,12 +380,17 @@ def test_build_state_queries_includes_notch_width() -> None:
     radio.send_civ = AsyncMock()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
 
-    queries = poller._STATE_QUERIES  # noqa: SLF001
-    cmd_sub_pairs = {(cmd, sub) for cmd, sub, _ in queries}
-    assert (0x16, 0x57) in cmd_sub_pairs, "manual notch width (0x16/0x57) not polled"
+    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
+        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+
+    assert (None, 0x16, 0x57, b"") in set(
+        map(logical_civ_call, radio.send_civ.await_args_list)
+    ), "manual notch width (0x16/0x57) not polled"
 
 
-def test_build_state_queries_includes_break_in_delay() -> None:
+@pytest.mark.asyncio
+async def test_build_state_queries_includes_break_in_delay() -> None:
     """_build_state_queries includes 0x14/0x0F (break-in delay) as common query."""
     profile = resolve_radio_profile(model="IC-7610")
     radio = MagicMock()
@@ -383,9 +401,13 @@ def test_build_state_queries_includes_break_in_delay() -> None:
     radio.send_civ = AsyncMock()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
 
-    queries = poller._STATE_QUERIES  # noqa: SLF001
-    cmd_sub_pairs = {(cmd, sub) for cmd, sub, _ in queries}
-    assert (0x14, 0x0F) in cmd_sub_pairs, "break_in_delay (0x14/0x0F) not polled"
+    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
+        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+
+    assert (None, 0x14, 0x0F, b"") in set(
+        map(logical_civ_call, radio.send_civ.await_args_list)
+    ), "break_in_delay (0x14/0x0F) not polled"
 
 
 # ---------------------------------------------------------------------------

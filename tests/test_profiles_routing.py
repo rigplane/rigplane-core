@@ -16,6 +16,7 @@ from rigplane.rigctld.state_cache import StateCache
 from rigplane.web import radio_poller as radio_poller_module
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq, SetMode
+from test_poller_poll_priority import logical_civ_call
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -94,7 +95,17 @@ async def test_single_profile_poller_rejects_sub_receiver() -> None:
     with pytest.raises(CommandError, match="receiver=1"):
         await poller._execute(SetMode("USB", receiver=1))  # noqa: SLF001
 
-    assert all(receiver in {0, None} for _, _, receiver in poller._STATE_QUERIES)  # noqa: SLF001
+    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
+        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+
+    calls = [
+        logical_civ_call(call, selected_unselected=True)
+        for call in radio.send_civ.await_args_list
+    ]
+    assert {receiver for receiver, _, _, _ in calls} == {None, 0}
+    assert calls.count((None, 0x25, 0x01, b"")) == 1
+    assert calls.count((None, 0x26, 0x01, b"")) == 1
 
 
 async def test_control_handler_checks_capabilities_not_model_name() -> None:
