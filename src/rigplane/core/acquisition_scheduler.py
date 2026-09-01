@@ -380,6 +380,8 @@ class IcomCivAcquisitionExecutor:
         if path.scope.value == "receiver" and receiver is None:
             return None
         if path.scope.value == "receiver" and path.family.value == "freq_mode":
+            if receiver is None:
+                return None
             slot = None if path.slot is None else path.slot.value
             if slot in {"A", "B"}:
                 return None
