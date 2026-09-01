@@ -1954,11 +1954,11 @@ def load_rig(path: Path) -> RigConfig:
     # registry (`validation/registry/_assembly.py: REGISTRY_BY_ID`) --
     # `rigplane.profiles` may not import `rigplane.validation`, per
     # `.importlinter`'s validation-leaf contract -- so that cross-check is
-    # a test (`tests/test_rig_loader.py::TestFixedValueChecks::
-    # test_ic7300_fixed_value_check_ids_are_real_registry_check_ids`), not a
-    # parameter here (F4, MOR-2105 part 2 owner ruling: an unused
-    # ``known_check_ids`` parameter with no production caller was an
-    # orphan).
+    # a test (`tests/test_rig_loader.py:
+    # test_every_shipped_profiles_fixed_value_check_ids_are_real_registry_
+    # check_ids`), not a parameter here (F4, MOR-2105 part 2 owner ruling:
+    # an unused ``known_check_ids`` parameter with no production caller was
+    # an orphan).
     fixed_value_raw = data.get("validation", {}).get("fixed_value", {})
     for check_id, source in fixed_value_raw.items():
         if not isinstance(source, str) or not source.strip():

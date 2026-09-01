@@ -430,6 +430,20 @@ def get_scope_main_sub(
     )
 
 
+# scope_main_sub resolves "set_scope_main_sub", its own write key
+# (MOR-2106): the corrected shape. 12 other write builders in this file
+# (scope_single_dual, scope_set_mode, scope_set_span, scope_set_edge,
+# scope_set_hold, scope_set_ref, scope_set_speed, scope_set_during_tx,
+# scope_set_center_type, scope_set_vbw, scope_set_fixed_edge,
+# scope_set_rbw) still resolve their paired get_* key -- the known,
+# tracked defect (MOR-2113). The remaining 5 (scope_on, scope_off,
+# scope_data_output, scope_data_output_on, scope_data_output_off) are
+# NOT instances of that defect: no scope-capable profile (ic705,
+# ic7300, ic7610, ic9700) declares a get_*/set_*-prefixed variant of
+# scope_on/scope_off/scope_data_output at all, so each of the five
+# already resolves the only key its profile declares -- the same
+# "resolves its own declaration" shape MOR-2106 established as
+# correct.
 @expose_command_key(lambda cmd_map: "set_scope_main_sub")
 @require_cmd_map
 def scope_main_sub(

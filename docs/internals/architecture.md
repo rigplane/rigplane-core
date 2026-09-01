@@ -136,7 +136,7 @@ rigplane now uses a **shared-core backend-neutral architecture**. Consumers (CLI
 3. **Backend Adapters** — thin adapters for LAN (UDP) and serial (USB CI-V + audio)
 4. **Shared Core** — `CoreRadio` with commander, state, CI-V routing, scope assembly
 5. **Transports** — LAN uses UDP sockets, serial uses `SerialCivLink` + `UsbAudioDriver`
-6. **USB Audio Resolver** — `usb_audio_resolve.py` maps a serial port to the correct `sounddevice` indices via macOS IORegistry topology (used by `UsbAudioDriver` when `serial_port` is provided)
+6. **USB Audio Resolver** — `src/rigplane/audio/_usb_resolve.py` maps a serial port to the correct `sounddevice` indices via macOS IORegistry topology (used by `UsbAudioDriver` when `serial_port` is provided)
 
 ### Backend-Neutral Boundary
 
@@ -170,13 +170,13 @@ See [IC-7610 USB Serial Backend Setup Guide](../guide/ic7610-usb-setup.md) for d
 
 When multiple Icom radios are connected via USB simultaneously (e.g. IC-7300 + IC-7610), each exposes an identically named "USB Audio CODEC" device. The library cannot determine which audio device belongs to which radio by name alone.
 
-**`usb_audio_resolve.py`** solves this by correlating USB hub topology:
+**`src/rigplane/audio/_usb_resolve.py`** solves this by correlating USB hub topology:
 
 ```
 Serial port path  →  TTY suffix  →  IORegistry locationID
                                                                        │
 USB Audio CODEC entries in IORegistry  →  longest shared locationID   │
-                                          nibble prefix wins           │
+                                          component prefix wins        │
                                                                        ▼
                                           sounddevice index lookup  (by product-name identity)
                                                                        │
@@ -184,7 +184,7 @@ USB Audio CODEC entries in IORegistry  →  longest shared locationID   │
                                           AudioDeviceMapping(rx_device_index, tx_device_index)
 ```
 
-- **macOS**: Full support via `/usr/sbin/ioreg -l`. Zero external deps.
+- **macOS**: Full support via `/usr/sbin/ioreg -l`. Zero external deps. The candidate audio device sharing the longest common `locationID` component prefix with the serial port wins (`_common_location_prefix_score`): the top byte (bits 31-24, the USB controller) is compared as one whole unit, then each remaining hex digit individually, most-significant first (`_location_id_components`) — not a uniform nibble-by-nibble scan of the full 32 bits.
 - **Linux**: Implemented via sysfs USB-topology traversal (`_resolve_linux`): the serial port and each ALSA card are resolved to their USB device node, and the card sharing the longest common USB-device path prefix (`_common_usb_path_score`) wins, with `idVendor`/`idProduct` as a tie-break. Exercised by unit tests against a fixture sysfs tree.
 - **Windows**: Implemented via USB PnP topology (`_resolve_windows`): the serial COM port and audio endpoint are matched by their shared parent composite-device instance path, with VID:PID as a fallback. Unit-tested via an injected PnP query; the real PowerShell/WMI enumeration (`_query_windows_pnp_devices`) is, per its own docstring, unvalidated against real Windows hardware.
 
