@@ -2781,16 +2781,23 @@ class TestIc7300DeclaresAbsentCommands:
     ``quick_dual_watch`` entry alongside the bare ``quick_split`` row it
     was declared next to (-1, back to 27 -- a different 27 than D2's, not
     the same set reverted), then MOR-2105 part 1 (2026-09-01) added
-    ``get_scope_rbw``/``set_scope_rbw`` (+2, to 29 -- the current count,
-    per ``len(_EXPECTED_ABSENT)``). Pinned by name, not just count, so a
-    future D2 pass on another command can't silently swap one of these for
-    a different one and still pass a bare-count check.
+    ``get_scope_rbw``/``set_scope_rbw`` (+2, to 29), then the same day
+    MOR-2118 added ``get_antenna``/``set_antenna`` (no 0x12 row on this
+    radio) and MOR-2117 added the bare ``set_dual_watch`` (dispatches to
+    the two split names above, already absent, but was itself in neither
+    list) (+3, to 32 -- the current count, per ``len(_EXPECTED_ABSENT)``).
+    Pinned by name, not just count, so a future D2 pass on another command
+    can't silently swap one of these for a different one and still pass a
+    bare-count check.
     """
 
     _EXPECTED_ABSENT = frozenset(
         {
             "get_af_mute",
             "set_af_mute",
+            # MOR-2118: no 0x12 antenna-select command on this radio.
+            "get_antenna",
+            "set_antenna",
             "get_apf_type_level",
             "set_apf_type_level",
             "get_data2_mod_input",
@@ -2804,11 +2811,13 @@ class TestIc7300DeclaresAbsentCommands:
             "get_drive_gain",
             "set_drive_gain",
             "get_dual_watch",
-            # set_dual_watch_off/set_dual_watch_on, not the bare
-            # set_dual_watch the pre-migration fallback used to resolve
-            # (MOR-2007 ruling 1 split the setter key).
             "set_dual_watch_off",
             "set_dual_watch_on",
+            # MOR-2117: bare "set_dual_watch" dispatches to the two split
+            # names above (MOR-2007 ruling 1 split the setter key), which
+            # were already absent -- the bare name itself was in neither
+            # list, so supports_command answered True for it.
+            "set_dual_watch",
             "get_lan_mod_level",
             "set_lan_mod_level",
             "get_main_sub_band",

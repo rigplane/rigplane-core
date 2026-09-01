@@ -685,7 +685,6 @@ values = [0x01, 0x02, 0x03, 0x12, 0x13, 0x22, 0x23]
 values = [0xD0, 0xD3]
 
 [antenna]
-# CI-V 0x12: single antenna, no RX antenna
 tx_count = 1
 has_rx_ant = false
 
@@ -967,6 +966,10 @@ get_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3:
 # pre-migration fallback resolved -- MOR-2007 ruling 1 split the setter key)
 set_dual_watch_off = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
 set_dual_watch_on = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
+# MOR-2117: the bare name dispatches to set_dual_watch_on/set_dual_watch_off
+# above, both already absent for the same reason -- without this row,
+# supports_command answered True for a name the profile otherwise denies.
+set_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only; dispatches to set_dual_watch_on/set_dual_watch_off, both declared absent above" }
 get_main_sub_band = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table has no 0xD2" }
 get_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
 set_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
@@ -988,8 +991,15 @@ get_digisel_shift = { absent = "IC-7300 Advanced Manual (11a) command table pp.1
 set_digisel_shift = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x13" }
 
 # ── Antenna ──
-get_antenna = [0x12]                      # Single antenna
-set_antenna = [0x12]
+# MOR-2118: no 0x12 antenna-select command on this radio.
+# - Manual: IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8 --
+#   no 0x12 row (table runs 11* attenuator then 13 speech); no ANT1/ANT2/
+#   "antenna select" anywhere in the document; one physical [ANT] connector.
+# - Bench, 2026-09-01, remote testbed, /dev/cu.usbserial-143310 @115200, addr
+#   0x94: 12 00, 12, and 12 01 each NAK'd (fe fe e0 94 fa fd); 03 answered
+#   fe fe e0 94 03 00 80 23 07 00 fd (DATA) before and after.
+get_antenna = { absent = "IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8: no 0x12 row, no ANT1/ANT2 selection documented, one physical [ANT] connector; bench 2026-09-01 addr 0x94: 12 00/12/12 01 each NAK'd, 03 answered DATA before and after" }
+set_antenna = { absent = "IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8: no 0x12 row, no ANT1/ANT2 selection documented, one physical [ANT] connector; bench 2026-09-01 addr 0x94: 12 00/12/12 01 each NAK'd, 03 answered DATA before and after" }
 get_rx_antenna_ant2 = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 0x16 0x53 row; single antenna jack" }
 set_rx_antenna_ant2 = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 0x16 0x53 row; single antenna jack" }
 
@@ -1139,7 +1149,7 @@ scope_data_output = [0x27, 0x11]
 # (11a) command table p.19-7; live bench 2026-08-30 replied 27 12 00 (D2,
 # MOR-2014). Refutes the earlier "no scope_main_sub" note.
 get_scope_main_sub = [0x27, 0x12]         # source: IC-7300 Advanced Manual (11a) p.19-7 (fixed value 00 = Main only); live bench 2026-08-30 reply 27 12 00
-get_scope_single_dual = [0x27, 0x13]
+get_scope_single_dual = [0x27, 0x13]      # source: IC-7300 Advanced Manual (11a) p.19-7 (data column 00 = Single only); bench 2026-09-01: 27 13 -> fe fe e0 94 27 13 00 fd (27 12 -> fe fe e0 94 27 12 00 fd alongside it, 03 answering either side, 0x27 0x00 scope frames filtered out)
 get_scope_mode = [0x27, 0x14]
 get_scope_span = [0x27, 0x15]
 get_scope_edge = [0x27, 0x16]
@@ -1345,8 +1355,21 @@ get_data3_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.
 set_data3_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
 get_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 set_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
-get_civ_output_ant = [0x1A, 0x05, 0x00, 0x61]
-set_civ_output_ant = [0x1A, 0x05, 0x00, 0x61]
+# MOR-2118: measured 2026-09-01 14:39-14:41 UTC, remote testbed. Owner
+# toggled the front-panel "CI-V Output (for ANT)" setting OFF->ON between
+# two passes, changing nothing else:
+#   1A 05 00 61 -> 00     / 00        did NOT move
+#   1A 05 01 57 -> 00 14  / 00 14     unchanged (level-shaped, not a toggle)
+#   1A 05 00 73 -> 00     / 01        moved with the setting
+# The manual disagrees with itself on the address: p.19-5 assigns 1A 05
+# 0073 to "CI-V Output (for ANT) capability"; three notes on p.19-7 (under
+# 1C 00 and 1C 03) instead name 1A 05 0157 for the same setting, but p.19-6
+# assigns 0157 to "present number" (0001 to 9999), an unrelated counter --
+# the bench measurement above resolves the contradiction in favor of 0073.
+# Independent corroboration: docs/validation/cat-audits/ic7300.md (a
+# different manual extraction) also lists 1A 05 0073 for this setting.
+get_civ_output_ant = [0x1A, 0x05, 0x00, 0x73]  # source: IC-7300 Advanced Manual (11a) p.19-5
+set_civ_output_ant = [0x1A, 0x05, 0x00, 0x73]
 get_system_date = [0x1A, 0x05, 0x00, 0x94]
 set_system_date = [0x1A, 0x05, 0x00, 0x94]
 get_system_time = [0x1A, 0x05, 0x00, 0x95]
