@@ -12,6 +12,9 @@
  * 'lcd-cockpit' = force LCD cockpit (TS-990S-style dual-cockpit)
  * 'lcd-scope'   = force LCD scope (IC-7300-style scope-dominant)
  * 'standard'    = force standard layout
+ * 'peer-split'  = force the segmentline peer-split skin (MOR-2151/MOR-2155;
+ *                 two-column FTX-1 dual-receiver symmetry, see
+ *                 `skins/segmentline/PeerSplitLayout.svelte`)
  * 'dual-receiver-cockpit' = QA-ONLY (MOR-1257): reachable solely via the
  *                 exact `?layout=dual-receiver-cockpit` query param (see
  *                 `lib/stores/qa-cockpit-override.ts`) — deliberately NOT a
@@ -22,7 +25,7 @@
  */
 export type LayoutMode =
   | 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test'
-  | 'dual-receiver-cockpit';
+  | 'peer-split' | 'dual-receiver-cockpit';
 export type CanonicalLayoutMode = Exclude<LayoutMode, 'lcd' | 'dual-receiver-cockpit'>;
 
 export const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
@@ -31,6 +34,7 @@ export const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
   'lcd-scope',
   'standard',
   'sdr-test',
+  'peer-split',
 ]);
 
 export const LEGACY_LAYOUT_ALIASES: Record<string, CanonicalLayoutMode> = {
