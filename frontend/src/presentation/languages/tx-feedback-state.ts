@@ -1,15 +1,15 @@
 /**
  * MOR-2031 — the design-language-agnostic half of TX state feedback.
  *
- * `fieldline` and `studioline` each render TX state as a rail plus a
- * key/slab control, and until this ticket each language's own
- * `state-feedback-renderer.ts` re-derived the identical fail-closed decision
- * over its own private copy of the logic — `resolveTxFeedbackState` is that
- * one decision, extracted. (The `KEY_TREATMENT` ordering below — the F3/N3
- * fix that makes `keyBlocked` lose to a louder session — was itself
- * hand-duplicated into both files in a single commit, MOR-1275.)
+ * Each design language renders TX state in its own vocabulary, and until
+ * this ticket each language's own `state-feedback-renderer.ts` re-derived
+ * the identical fail-closed decision over its own private copy of the
+ * logic — `resolveTxFeedbackState` is that one decision, extracted. (The
+ * `KEY_TREATMENT` ordering below — the F3/N3 fix that makes `keyBlocked`
+ * lose to a louder session — was itself hand-duplicated into both files in
+ * a single commit, MOR-1275.)
  *
- * Lives under `presentation/languages/`, not `semantic/`: both renderers
+ * Lives under `presentation/languages/`, not `semantic/`: the renderers
  * that consume it are `presentation/` modules, and the v3 ADR's one-way
  * dependency direction only lets `presentation/` depend on `semantic/`
  * type-only (see `projection.ts`, pinned by `projection.test.ts`'s "imports
@@ -24,8 +24,8 @@
  * rail floods `pending` to a MID-tier 16px; studioline's rail thickens
  * `pending` to its TOP-tier 3px — both pinned in each language's own
  * `state-feedback-renderer.test.ts`), so a shared ordinal could not serve
- * both. Each language keeps its own `Record<TxFeedbackRail, …>` for
- * width/thickness/label/band, indexed by the bucket this function resolves.
+ * both. Each language keeps its own `Record<TxFeedbackRail, …>`, indexed
+ * by the bucket this function resolves.
  *
  * SAFETY INVARIANT R9, identical to `semantic/rx-tx-surface.ts`'s `rfState`/
  * `txSessionState`: this function DISPLAYS the App TX authority's
@@ -35,12 +35,24 @@
  * Unrecognised values fail CLOSED to the `'doubt'` rail, never to `'idle'`:
  * "nothing is happening" is the dangerous claim.
  */
+import type { DesignLanguageTokens } from './contract';
 import type { TxSessionState } from '../../semantic/rx-tx-surface';
 
 export type TxFeedbackRail = 'idle' | 'pending' | 'keyed' | 'releasing' | 'failed' | 'doubt';
 export type TxKeyTreatment = 'idle' | 'pending' | 'keyed' | 'fault' | 'blocked';
-/** Symbolic only — NOT a token value. Each language maps this to its own `tokens.rx.idle` / `tokens.tx.active` / `tokens.tx.tuning`. */
+/** Symbolic only — NOT a token value; `toneFor` below maps it onto a language's palette. */
 export type TxFeedbackTone = 'rx-idle' | 'tx-active' | 'tx-tuning';
+
+/**
+ * The symbolic tone, resolved against one language's palette. Extracted
+ * once a third `state-feedback-renderer.ts` carried a literal copy of this
+ * three-way choice (MOR-2149 added segmentline's). Each language still owns
+ * its own palette; only the choice between the three token slots is shared.
+ */
+export const toneFor = (tone: TxFeedbackTone, tokens: DesignLanguageTokens): string =>
+  tone === 'rx-idle' ? tokens.rx.idle
+    : tone === 'tx-active' ? tokens.tx.active
+      : tokens.tx.tuning;
 
 export interface TxFeedbackState {
   readonly rail: TxFeedbackRail;
