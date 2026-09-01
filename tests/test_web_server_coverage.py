@@ -3865,14 +3865,30 @@ async def test_info_endpoint_returns_structured_capabilities() -> None:
 
 
 @pytest.mark.asyncio
-async def test_info_endpoint_no_radio_refuses_instead_of_guessing() -> None:
-    """/api/v1/info raises when nothing identifies the radio (plan §8.1
-    Q5) rather than reporting a guessed default profile's capabilities."""
+async def test_info_endpoint_no_radio_serves_with_rig_connected_false() -> None:
+    """/api/v1/info works with no radio attached and no model configured
+    (all capabilities false) -- "no radio attached" is not "an
+    unidentified radio": WebServer must not call the profile resolver at
+    all in that state, and must not raise (MOR-2012 follow-up)."""
+    import json as _json
+
     srv = WebServer(None)
     writer = _FakeWriter()
+    await srv._serve_info(writer)  # noqa: SLF001
 
-    with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
-        await srv._serve_info(writer)  # noqa: SLF001
+    text = writer.buffer.decode("ascii", errors="replace")
+    body_start = text.index("\r\n\r\n") + 4
+    data = _json.loads(text[body_start:])
+    assert data["proto"] == 1
+    caps = data["capabilities"]
+    assert caps["hasSpectrum"] is False
+    assert caps["hasAudio"] is False
+    assert caps["hasDualReceiver"] is False
+    assert caps["maxReceivers"] == 1
+    assert caps["tags"] == []
+    conn = data["connection"]
+    assert conn["rigConnected"] is False
+    assert conn["radioReady"] is False
 
 
 # ---------------------------------------------------------------------------
