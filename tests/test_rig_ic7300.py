@@ -358,7 +358,10 @@ class TestCommandOverrides:
         assert cmdmap.get("get_scope_edge3_6mhz") == (0x1A, 0x05, 0x01, 0x20)
 
     def test_get_civ_output_ant(self, cmdmap):
-        assert cmdmap.get("get_civ_output_ant") == (0x1A, 0x05, 0x00, 0x61)
+        """MOR-2118: bench 2026-09-01 toggled front-panel "CI-V Output (for
+        ANT)" OFF->ON between two passes; 0073 moved with it, 0061 did not
+        (see rigs/ic7300.toml's own citation on this row)."""
+        assert cmdmap.get("get_civ_output_ant") == (0x1A, 0x05, 0x00, 0x73)
 
     def test_agc_time_constant(self, cmdmap):
         assert cmdmap.get("get_agc_time_constant") == (0x1A, 0x04)

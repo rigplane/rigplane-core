@@ -442,9 +442,7 @@ class RadioProfile:
     tx_interlock_disposition_overrides: dict[
         TxInterlockCommandFamily, TxInterlockDisposition
     ] = field(default_factory=dict)
-    # Measured per-radio transmit policy (MOR-1912). Parsed and carried
-    # here; nothing reads it yet — the transmit-authority engine that will
-    # consume it lands in a later row of the same epic.
+    # Measured per-radio transmit policy (MOR-1912).
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
 
     def supports_capability(self, capability: str) -> bool:
