@@ -6,6 +6,12 @@ MOR-1097) are both Done.
 
 Children: MOR-2147 … MOR-2153, plus MOR-2155 and MOR-2156.
 
+This document is a decision record — which direction was chosen and why,
+what the externally authored handoff got wrong, and what the owner decided —
+not a description of how the code currently works. Two review rounds found
+sections of the latter kind going stale as fast as they could be corrected;
+they have been cut rather than fixed a third time.
+
 ## 1. What this is
 
 A design bundle authored outside the repository — design language
@@ -77,41 +83,18 @@ cannot both be the specification. The `.ts` is the more careful of the two —
 it carries the comment explaining which zone ids the wiring owns — and is
 taken as the base.
 
-### 3.3 `peer-split` declares four zones the dual composition cannot mount
-
-`SemanticRadioSurfaces.svelte`'s `strips="dual"` branch renders only three of
-the twelve optional surfaces: `txAux`, `meters`, `scopeDisplay`. The other
-nine are not rendered in that composition at all.
+### 3.3 `peer-split` declares zones the dual composition could not mount
 
 `peer-split` declares `offsets` (`ritXitScan`), `dsp-rail`, `front-end-rail`
 and `band-rail`. In the design those rails are **inside the glass** — part of
 the instrument, not surrounding chrome — so they must render through the
-semantic vertical. MOR-2150 closes this, deliberately and separately, because
-`zoned()` renders a surface bare when no zone owns it and the change therefore
-alters what `dual-receiver-cockpit` puts in the DOM.
+semantic vertical. At the time this was found, `SemanticRadioSurfaces.svelte`'s
+dual composition had no path for any of the four.
 
 ### 3.4 The fallback points at a layout that will not exist
 
 `peer-split`'s `fallbackLayoutId` names `unified-instrument`. Retarget it to
 `lcd-cockpit`, where the persisted amber preference already routes.
-
-## 4. What the wiring actually emits
-
-Read from `SemanticRadioSurfaces.svelte`, and it settles what a manifest may
-choose:
-
-- In the **dual** composition the wiring itself emits `primary-vfo`,
-  `secondary-vfo` (per receiver, by index) and `global`. Those three ids are
-  decided in that file, not in a manifest. `rx-tx` is likewise hardcoded on
-  the bound RX/TX zone.
-- In that dual composition, every surface other than `primary-vfo`/
-  `secondary-vfo`/`global`/`rx-tx` renders through the generic `zoned()`
-  snippet, which emits `<div class="surface-zone" data-zone-id={zoneId}>`
-  when the resolved plan carries a zone declaring it, and renders **bare**
-  when it does not. There the zone id is the manifest's to choose. The
-  single/default composition also renders `vfo` and `rxTx` bare — through its
-  own `vfoSurface`/`rxTxSurface` snippets, not `zoned()` — so only its twelve
-  optional surfaces route through `zoned()`.
 
 ## 5. The second receiver before MOR-2144
 
@@ -143,15 +126,10 @@ Two of v3's independent knobs, not one:
 
 Constraints inherited, not renegotiated:
 
-- **A design language annotates; it does not draw.** `renderSlot` emits every
-  top-level primitive except `text` (returned separately as `.text`) as
-  `data-dl-<kebab>` and drops nested objects and arrays. The stylesheet draws
+- **A design language annotates; it does not draw.** The stylesheet draws
   from the annotations.
-- **Input field names are the caller's.** `MetersSurface.svelte` calls the
-  meters slot with exactly `{ value, max, s9 }`.
-- **No per-frame work in a renderer.** Spectrum pixels bypass Svelte
-  reactivity (`components/spectrum/SpectrumCanvas.svelte`); meter ballistics
-  live in `lib/utils/smoothing.svelte.ts`'s `createSmoother`.
+- **Input field names are the caller's.**
+- **No per-frame work in a renderer.**
 - **Unobserved is not zero.** An unread meter renders `?`, never a gauge
   resting at zero.
 - **Activation is one attribute** — `[data-design-language="segmentline"]`,
@@ -159,24 +137,6 @@ Constraints inherited, not renegotiated:
 - **Instruments scale, chrome does not** (MOR-1160).
 
 ## 7. Delivery
-
-Ordered by dependency. Each row is one PR, each inside the 10-file / 1000-line
-hard ceiling, each with an independent review.
-
-| # | Ticket | Change | Files |
-|---|---|---|---|
-| 1 | MOR-2147 | `ScaledStage` shared primitive | 4 |
-| 2 | MOR-2155 | `peer-split` as a loadable `SkinId` with a minimal shell | 5 |
-| 3 | MOR-2148 | `segmentline` tokens, stylesheet, language registration | 10 |
-| 4 | MOR-2151 | `peer-split` layout manifest, one `vfo`+`rxTx` zone | 5 |
-| 5 | MOR-2149 | The three `segmentline` renderers and their tests | 6 |
-| 6 | MOR-2150 | Route the remaining optional surfaces through zones in the dual composition | — |
-| 7 | MOR-2151 (cont.) | The manifest's remaining zones, once MOR-2150 can mount them | — |
-| 8 | MOR-2152 | Reachability from the skin picker | 3 |
-| 9 | MOR-2153 | Compose the glass | — |
-
-Approved visual baselines follow MOR-2153; they are not ticketed until the
-composition's shape is real.
 
 **MOR-2156 is a record of a mistake, not work.** An earlier version of this
 line described it as "a false CSS-specificity claim in the two shipped
