@@ -69,7 +69,7 @@ const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =
 
 describe('skin registry', () => {
   it('gives mobile precedence over every forced layout preference', () => {
-    for (const layoutPreference of ['auto', 'lcd', 'lcd-cockpit', 'lcd-scope', 'standard', 'sdr-test'] as const) {
+    for (const layoutPreference of ['auto', 'lcd', 'lcd-cockpit', 'lcd-scope', 'standard', 'sdr-test', 'peer-split'] as const) {
       expect(resolve({ isMobile: true, layoutPreference, hasAnyScope: true })).toBe('mobile');
     }
   });
@@ -80,6 +80,9 @@ describe('skin registry', () => {
     ['lcd-cockpit', 'lcd-cockpit'],
     ['lcd-scope', 'lcd-scope'],
     ['sdr-test', 'sdr-test'],
+    // MOR-2152: peer-split becomes a forced, selectable preference — the
+    // resolveSkinId branch this ticket adds.
+    ['peer-split', 'peer-split'],
   ] as const)('resolves forced %s preference to %s', (layoutPreference, skinId) => {
     expect(resolve({ layoutPreference, hasAnyScope: false })).toBe(skinId);
   });

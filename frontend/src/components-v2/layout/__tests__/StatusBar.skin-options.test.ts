@@ -28,4 +28,16 @@ describe('StatusBar skinOptions (MOR-1257 F1)', () => {
     const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
     expect(source).toMatch(/const skinOptions:\s*Array<\{\s*value:\s*CanonicalLayoutMode;/);
   });
+
+  // MOR-2152 — `skinOptions` is a plain array with no compile-time guard tying
+  // its membership to `CANONICAL_LAYOUT_MODES`: unlike the `contract.ts`
+  // sync pins (which fail `npm run check` on a missing key), an omitted skin
+  // here compiles cleanly and just leaves the id unreachable through the
+  // picker. This is that missing guard for `peer-split`.
+  it('lists peer-split with a Peer Split label', () => {
+    const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+    const match = source.match(/const skinOptions[^=]*=\s*\[([\s\S]*?)\n\s*\];/);
+    expect(match, 'expected to find the skinOptions array literal').not.toBeNull();
+    expect(match![1]).toMatch(/\{\s*value:\s*'peer-split',\s*label:\s*'Peer Split'\s*\}/);
+  });
 });

@@ -38,6 +38,7 @@ export interface SkinResolutionContext {
  * - User forced 'lcd' or 'lcd-cockpit' → lcd-cockpit
  * - User forced 'lcd-scope' → lcd-scope
  * - User forced 'standard' → desktop-v2
+ * - User forced 'peer-split' → peer-split
  * - Auto: use desktop-v2 (the v3 default); explicit LCD choices are the
  *   recoverable compatibility-window opt-out
  */
@@ -55,6 +56,7 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (layoutPreference === 'lcd-cockpit') return 'lcd-cockpit';
   if (layoutPreference === 'lcd-scope') return 'lcd-scope';
   if (layoutPreference === 'standard') return 'desktop-v2';
+  if (layoutPreference === 'peer-split') return 'peer-split';
   // MOR-1097 cutover: every non-mobile auto start uses the reworked
   // desktop-v2 composition. Scope availability remains presentation data, not
   // default-selection policy; explicit LCD preferences stay selectable.
@@ -84,9 +86,9 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   'lcd-cockpit': () => import('./lcd-cockpit/LcdCockpitSkin.svelte'),
   'lcd-scope': () => import('./lcd-scope/LcdScopeSkin.svelte'),
   'mobile': () => import('./mobile/MobileSkin.svelte'),
-  // MOR-2155: makes `peer-split` addressable and loadable only — a minimal
-  // shell with no layout manifest (MOR-2151) and no `resolveSkinId` branch
-  // (MOR-2152), same precedent as the `dual-receiver-cockpit` entry above.
+  // MOR-2155 made `peer-split` addressable and loadable; MOR-2152 (see the
+  // `resolveSkinId` branch below) is what makes a forced 'peer-split'
+  // preference actually resolve to it.
   'peer-split': () => import('./segmentline/PeerSplitLayout.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
 };
