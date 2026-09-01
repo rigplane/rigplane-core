@@ -1497,6 +1497,66 @@ class TestRunErrorHandling:
         assert "Error" in err
 
     @pytest.mark.asyncio
+    async def test_run_reports_unsupported_serial_model_cleanly(self, capsys) -> None:
+        """create_radio's own ValueError reaches the user as `Error: ...`, not a traceback.
+
+        X6100 has a rig profile (so _resolve_model accepts --model X6100 and
+        _build_backend_config returns), but backends.factory.create_radio has no
+        serial route for it and raises; that raise used to escape _run uncaught.
+        """
+        args = Namespace(
+            backend="serial",
+            serial_port="/dev/ttyUSB0",
+            serial_baud=None,
+            serial_ptt_mode="civ",
+            host="",
+            control_port=50001,
+            user="",
+            password="",
+            timeout=0.1,
+            model="X6100",
+            radio_addr=None,
+            rx_device=None,
+            tx_device=None,
+            command="status",
+            json=False,
+        )
+        rc = await _run(args)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert err.startswith("Error: Unsupported serial model 'X6100'")
+        assert "Traceback" not in err
+
+    @pytest.mark.asyncio
+    async def test_run_reports_unresolvable_profile_cleanly(self, capsys) -> None:
+        """A profile that cannot be resolved is a user-input error, not a crash.
+
+        `rigplane --host <ip>` with no --model leaves the config with neither a
+        model nor a radio_addr. create_radio is patched to raise, so this pins
+        _run's handling independently of what makes it raise.
+        """
+        args = Namespace(
+            host="192.168.1.100",
+            control_port=50001,
+            user="",
+            password="",
+            timeout=0.1,
+            model=None,
+            radio_addr=None,
+            command="status",
+            json=False,
+        )
+        with patch(
+            "rigplane.cli.create_radio",
+            side_effect=ValueError("Cannot resolve a radio profile: pass --model."),
+        ):
+            rc = await _run(args)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert err.startswith("Error: Cannot resolve a radio profile")
+        assert "Traceback" not in err
+
+    @pytest.mark.asyncio
     async def test_run_audio_rx_routes_to_handler(self) -> None:
         args = Namespace(
             host="192.168.1.100",
