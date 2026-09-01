@@ -2114,6 +2114,61 @@ class TestWriteOnlyControls:
         assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
 
 
+class TestFixedValueChecks:
+    """[validation.fixed_value] parsing and propagation (MOR-2105 part 2).
+
+    Only for a fact with no other home in ``RadioProfile`` (F1/F2, owner
+    ruling): ``scope_receiver.set`` (IC-7300's single-receiver fact) is NOT
+    declared here -- ``receiver_count``/``supports_receiver`` already say
+    so, and ``validation/hardware.py: _run_one_check`` derives it from that
+    directly instead of restating it. Only ``scope_dual.set`` (single-scope;
+    no ``receiver_count``-like field exists for "scope count") uses this
+    table.
+    """
+
+    def test_fixed_value_checks_parsed(self, tmp_path):
+        toml = (
+            _MINIMAL_TOML
+            + '\n[validation.fixed_value]\n"scope_dual.set" = "some source"\n'
+        )
+        rig = load_rig(_write_toml(tmp_path, toml))
+        assert rig.fixed_value_checks == {"scope_dual.set": "some source"}
+        assert rig.to_profile().fixed_value_checks == {"scope_dual.set": "some source"}
+
+    def test_fixed_value_checks_defaults_empty(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
+        assert rig.fixed_value_checks == {}
+        assert rig.to_profile().fixed_value_checks == {}
+
+    def test_fixed_value_checks_source_must_be_nonempty_string(self, tmp_path):
+        toml = _MINIMAL_TOML + '\n[validation.fixed_value]\n"scope_dual.set" = ""\n'
+        with pytest.raises(RigLoadError, match="non-empty string"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_ic7300_fixed_value_checks_is_exactly_scope_dual(self):
+        """MOR-2105 part 2, F1: after deriving scope_receiver.set from
+        receiver_count, rigs/ic7300.toml's [validation.fixed_value] table
+        must hold exactly one entry -- a second entry reappearing here
+        (e.g. a future edit re-adding scope_receiver.set) would silently
+        reinstate the two-sources-of-truth defect F1 removed.
+        """
+        profile = load_rig(RIGS_DIR / "ic7300.toml").to_profile()
+        assert profile.fixed_value_checks == {
+            "scope_dual.set": (
+                "IC-7300 Advanced Manual (11a) command table p.19-7: "
+                "27 13 data column = 00 (Single only)"
+            )
+        }
+
+    # The cross-check against the live validation registry
+    # (test_every_shipped_profiles_fixed_value_check_ids_are_real_registry_
+    # check_ids) lives below, parametrized over _SHIPPED_RIG_TOMLS rather
+    # than hardcoded to ic7300.toml here, per the directory-driven idiom
+    # TestAgcDomainDeclaredOrCapabilityAbsent's docstring states just below
+    # this class -- _SHIPPED_RIG_TOMLS is defined after this class, so the
+    # parametrize can't reference it from inside this class body.
+
+
 # ── AGC domain declaration, table-driven over every shipped profile ──────
 # (MOR-1522). "Shipped profile" = every rigs/*.toml except the UI-only
 # _keyboard-default.toml, taken from the directory listing itself rather
@@ -2123,6 +2178,29 @@ class TestWriteOnlyControls:
 _SHIPPED_RIG_TOMLS = sorted(
     p for p in RIGS_DIR.glob("*.toml") if p.name != "_keyboard-default.toml"
 )
+
+
+@pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+def test_every_shipped_profiles_fixed_value_check_ids_are_real_registry_check_ids(
+    toml_path,
+):
+    """[validation.fixed_value] check_id existence, cross-checked against the
+    live validation registry, over every shipped profile (MOR-2105 part 2) --
+    directory-driven like TestAgcDomainDeclaredOrCapabilityAbsent just below,
+    so a future profile adding this table lands under the same cross-check
+    without a hand-written addition here. Most profiles declare no
+    [validation.fixed_value] table at all (empty dict, trivially a subset);
+    today only rigs/ic7300.toml (scope_dual.set) is non-empty.
+    `rigplane.profiles` may not import `rigplane.validation`
+    (`.importlinter`'s validation-leaf contract), so `load_rig` itself
+    cannot raise on an unknown check_id at parse time -- this test is where
+    that guarantee is exercised instead, by a caller (this test file) that
+    may legally import both.
+    """
+    from rigplane.validation.registry import REGISTRY_BY_ID
+
+    profile = load_rig(toml_path).to_profile()
+    assert set(profile.fixed_value_checks) <= set(REGISTRY_BY_ID)
 
 
 class TestAgcDomainDeclaredOrCapabilityAbsent:
@@ -2702,9 +2780,11 @@ class TestIc7300DeclaresAbsentCommands:
     (+1, to 28), then MOR-2008 batch 1 deleted the dead bare
     ``quick_dual_watch`` entry alongside the bare ``quick_split`` row it
     was declared next to (-1, back to 27 -- a different 27 than D2's, not
-    the same set reverted). Pinned by name, not just count, so a future D2
-    pass on another command can't silently swap one of these for a
-    different one and still pass a bare-count check.
+    the same set reverted), then MOR-2105 part 1 (2026-09-01) added
+    ``get_scope_rbw``/``set_scope_rbw`` (+2, to 29 -- the current count,
+    per ``len(_EXPECTED_ABSENT)``). Pinned by name, not just count, so a
+    future D2 pass on another command can't silently swap one of these for
+    a different one and still pass a bare-count check.
     """
 
     _EXPECTED_ABSENT = frozenset(

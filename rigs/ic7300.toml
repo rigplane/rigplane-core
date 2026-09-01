@@ -107,6 +107,24 @@ features = [
 # guess rather than a data-driven fact.
 rf_sql_control_model = "combined"
 
+# Per-check_id validation classification (MOR-2105 part 2), a check_id-grained
+# sibling to a future [validation].write_only_controls list (IC-7300 does not
+# need one today). scope_dual.set (27 13, p.19-7) is documented and the radio
+# answers it, but IC-7300 has only one scope, so 00 (Single only) is the only
+# legal value it can ever hold -- the RMVR read-modify-verify-restore harness
+# would flip to a value the radio can never report back, not because
+# anything is broken. The source is the manual page and data-column fact
+# establishing that.
+#
+# scope_receiver.set (27 12, same page, live bench 2026-08-30: 27 12 00, see
+# get_scope_main_sub below) is fixed-value for the SAME reason -- one
+# receiver -- but is deliberately NOT declared here: receiver_count above
+# already states that fact, and validation/hardware.py derives
+# scope_receiver.set's fixed-value status from it instead of restating it as
+# a second, independently-editable source of truth (MOR-2105 part 2, F1).
+[validation.fixed_value]
+"scope_dual.set" = "IC-7300 Advanced Manual (11a) command table p.19-7: 27 13 data column = 00 (Single only)"
+
 [state_acquisition]
 provider = "icom_civ"
 default_cadence_seconds = 1.5

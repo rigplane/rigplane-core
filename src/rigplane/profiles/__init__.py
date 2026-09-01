@@ -417,6 +417,24 @@ class RadioProfile:
     # driven from ``[validation].write_only_controls`` in the rig TOML (MOR-208).
     # Empty by default: every control uses the standard RMVR path.
     write_only_controls: frozenset[str] = frozenset()
+    # Validation check_id -> source establishing that this radio has only one
+    # legal value for that control (MOR-2105 part 2): a check_id-grained
+    # sibling to ``write_only_controls`` above, needed because a capability
+    # like "scope" mixes fixed-value checks with genuinely multi-valued ones
+    # on the same radio (scope_span.set). A check_id named here makes the
+    # RMVR read-modify-verify-restore harness (`validation/hardware.py:
+    # _run_one_check`) report SKIP, quoting the source, instead of flipping
+    # to a value the radio can never report back and reporting a false FAIL.
+    # Data-driven from ``[validation.fixed_value]`` in the rig TOML -- but
+    # only for a fact with no other home. IC-7300's scope_dual.set (single
+    # scope) lives here because nothing else in this dataclass says so;
+    # scope_receiver.set (single receiver) does NOT, even though it is
+    # fixed-value for the same reason, because ``receiver_count``/
+    # ``supports_receiver`` above already say so and the harness derives it
+    # from that instead of restating it as a second, independently-editable
+    # source of truth (F1, MOR-2105 part 2 owner ruling). Empty by default:
+    # every control uses the standard RMVR path.
+    fixed_value_checks: dict[str, str] = field(default_factory=dict)
     # Provider-specific state acquisition metadata (MOR-344). This is profile
     # data only; future schedulers/adapters consume it instead of Web or
     # rigctld delivery code branching on radio model.
