@@ -53,8 +53,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import importlib
-import inspect
 import os
 import pathlib
 import typing
@@ -64,6 +62,7 @@ import pytest
 
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles.rig_loader import discover_rigs
+from support.command_builders import public_command_builders
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 COMMANDS_DIR = REPO_ROOT / "src" / "rigplane" / "commands"
@@ -92,26 +91,8 @@ def _ast_index() -> dict[Key, ast.FunctionDef]:
 
 @functools.lru_cache(maxsize=1)
 def _builders() -> dict[Key, typing.Any]:
-    """Every public builder in the package that takes a ``cmd_map``.
-
-    Same filtering as ``tests/test_command_map_parity.py: _builders`` --
-    reimplemented rather than imported, since importing that module would
-    also run its own module-level baseline collection as a side effect of
-    collecting this file.
-    """
-    found: dict[Key, typing.Any] = {}
-    for path in sorted(COMMANDS_DIR.glob("*.py")):
-        if path.stem == "__init__":
-            continue
-        module = importlib.import_module(f"rigplane.commands.{path.stem}")
-        for value in vars(module).values():
-            if not inspect.isfunction(value) or value.__name__.startswith("_"):
-                continue
-            if value.__module__ != module.__name__:
-                continue
-            if "cmd_map" in inspect.signature(value).parameters:
-                found[(path.name, value.__name__)] = value
-    return found
+    """Return the shared builder inventory used by both coverage guards."""
+    return public_command_builders(COMMANDS_DIR)
 
 
 def _static_literal_key(node: ast.FunctionDef) -> str | None:
