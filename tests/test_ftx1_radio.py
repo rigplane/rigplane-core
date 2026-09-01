@@ -1450,8 +1450,8 @@ async def test_get_sql_type_tone(connected_radio):
 @pytest.mark.asyncio
 async def test_set_sql_type(connected_radio):
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_sql_type(3)
-    connected_radio._transport.write.assert_called_once_with("CT003;")
+    await connected_radio.set_sql_type(2)
+    connected_radio._transport.write.assert_called_once_with("CT02;")
 
 
 # -- CTCSS tone frequency (CN command, MOR-458) -----------------------------
