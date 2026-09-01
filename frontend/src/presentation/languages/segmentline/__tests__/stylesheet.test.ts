@@ -7,13 +7,12 @@
  * `../../__tests__/activation-attribute.test.ts` (MOR-1275) — not repeated
  * here.
  *
- * Unlike `studioline`/`fieldline`, this file has no `.rx-tx-surface`/
- * `.rx-tx-key`/`.rx-tx-state` cascade to rank: those rules style the
- * stateFeedback renderer's output, and segmentline ships no renderers yet
- * (MOR-2149). What exists today is the glass, the cell, the seven-segment
- * readout cell, the segmented meter track and the DIM contrast preset —
- * pinned below directly, by parsing declarations rather than by ranking a
- * cascade collision (there is none yet to rank).
+ * Unlike `studioline`/`fieldline`, this file has no `.rx-tx-*` cascade to
+ * rank: `segmentline.css` declares no selector in that family at all, where
+ * both sibling sheets do. The glass, the cell, the seven-segment readout
+ * cell, the segmented meter track and the DIM contrast preset are pinned
+ * below directly, by parsing declarations rather than by ranking a cascade
+ * collision.
  */
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
