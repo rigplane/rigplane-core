@@ -6,12 +6,12 @@
 #              `commands/command_map.py: ReverseCommandIndex` builds, i.e.
 #              NOT collapsed to (command, sub) (see that class's docstring
 #              for why collapsing would be wrong).
-# colliding  = names that share a group of size > 1. Many of these still
-#              resolve cleanly via the read/write payload-length rule --
-#              "colliding" means "shares a declared prefix with another
-#              name", not "ambiguous"; see test_round_trip_contract for
-#              the resolved/ambiguous/wrong split this file does not carry.
-# Measured at aa96dfc3 (branch base) with:
+# colliding  = names that share an exact group of size > 1. Incoming lookup
+#              preserves every compatible exact or shorter prefix, so this
+#              count alone does not determine whether a frame resolves or is
+#              ambiguous. See
+#              test_all_profile_probe_census_returns_exact_viable_names.
+# Measured by test_census_matches_baseline; regenerate with:
 #   RIGPLANE_REGEN_REVERSE_COMMAND_INDEX_CENSUS=1 uv run pytest tests/test_reverse_command_index.py
 # Regenerate the same way after an intentional profile/command change --
 # do not hand-edit.

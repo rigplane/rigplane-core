@@ -21,6 +21,7 @@ parts:
 
 from __future__ import annotations
 
+import itertools
 import os
 import pathlib
 
@@ -31,6 +32,7 @@ from rigplane.commands._frame import parse_civ_frame
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import (
     CommandMap,
+    ReverseCommandIndex,
     ReverseLookupResult,
 )
 from rigplane.profiles import RadioProfile, get_radio_profile, reload_profiles
@@ -94,6 +96,63 @@ def _result_names(result: ReverseLookupResult) -> frozenset[str]:
     if result.name is not None:
         return frozenset({result.name})
     return result.candidates
+
+
+def test_result_contract_accepts_exactly_three_states() -> None:
+    unrecognized = ReverseLookupResult()
+    resolved = ReverseLookupResult(name="get_x")
+    ambiguous = ReverseLookupResult(candidates=frozenset({"get_x", "set_x"}))
+
+    assert unrecognized.unrecognized and not unrecognized.resolved
+    assert resolved.resolved and not resolved.ambiguous
+    assert ambiguous.ambiguous and not ambiguous.unrecognized
+    same_ambiguity = ReverseLookupResult(candidates=frozenset({"set_x", "get_x"}))
+    assert same_ambiguity == ambiguous
+    assert hash(same_ambiguity) == hash(ambiguous)
+
+
+@pytest.mark.parametrize(
+    ("name", "candidates"),
+    (
+        (None, frozenset({"get_x"})),
+        ("get_x", frozenset({"get_x", "set_x"})),
+    ),
+)
+def test_result_contract_rejects_invalid_states(
+    name: str | None, candidates: frozenset[str]
+) -> None:
+    with pytest.raises(ValueError):
+        ReverseLookupResult(name=name, candidates=candidates)
+
+
+def test_index_equality_hash_and_resolution_ignore_declaration_order() -> None:
+    declarations = (
+        ("get_x", (0x14, 0x01)),
+        ("set_x", (0x14, 0x01)),
+        ("set_x_on", (0x14, 0x01, 0x01)),
+    )
+    indexes = [
+        ReverseCommandIndex(CommandMap(dict(permutation)))
+        for permutation in itertools.permutations(declarations)
+    ]
+
+    assert all(index == indexes[0] for index in indexes)
+    assert len({hash(index) for index in indexes}) == 1
+    for index in indexes:
+        assert index.resolve(0x14, 0x01, b"\x01").candidates == frozenset(
+            {"get_x", "set_x", "set_x_on"}
+        )
+
+
+def test_index_equality_detects_semantic_prefix_difference() -> None:
+    baseline = ReverseCommandIndex(
+        CommandMap({"get_x": (0x14, 0x01), "set_x": (0x14, 0x01)})
+    )
+    changed = ReverseCommandIndex(
+        CommandMap({"get_x": (0x14, 0x01), "set_x": (0x14, 0x01, 0x01)})
+    )
+
+    assert baseline != changed
 
 
 def test_all_profile_probe_census_returns_exact_viable_names() -> None:

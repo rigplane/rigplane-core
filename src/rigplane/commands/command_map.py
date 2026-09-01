@@ -1,7 +1,7 @@
 """CommandMap — frozen lookup for CI-V wire bytes by command name.
 
 Also hosts :class:`ReverseCommandIndex`, the inverse of the map above:
-bytes off the wire to a declared command name (Z2 of
+bytes off the wire to compatible declared command names (Z2 of
 `docs/plans/2026-09-01-reverse-command-index.md`).
 
 **One index per profile, never a union across profiles.** Icom's top-level
@@ -88,19 +88,22 @@ class CommandMap:
 class ReverseLookupResult:
     """Outcome of :meth:`ReverseCommandIndex.resolve`.
 
-    Exactly one of two shapes: ``name`` set and ``candidates`` empty means
-    the frame resolved to exactly one declared command name; ``name`` is
-    ``None`` and ``candidates`` holds two or more names means the frame
-    matches a known ``(command, sub)`` and declared prefix but more than
-    one declared name shares it and nothing here can break the tie (the
-    class (c)/(d) collisions plan §2 describes -- a future annotation,
-    tracked as Z3, is what would decide these, not this step). Both empty
-    is CommandMap's own refuse-rather-than-guess posture applied to the
-    reverse direction: no declared row explains this frame at all.
+    Exactly one of three states is valid: ``name`` set with no candidates is
+    resolved; ``name`` unset with at least two candidates is ambiguous;
+    ``name`` unset with no candidates is unrecognized. Construction rejects
+    a singleton candidate set and any result carrying both shapes.
     """
 
     name: str | None = None
     candidates: frozenset[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        candidates = frozenset(self.candidates)
+        object.__setattr__(self, "candidates", candidates)
+        if self.name is not None and candidates:
+            raise ValueError("a resolved result cannot also carry candidates")
+        if self.name is None and len(candidates) == 1:
+            raise ValueError("an ambiguous result requires at least two candidates")
 
     @property
     def resolved(self) -> bool:
@@ -108,7 +111,7 @@ class ReverseLookupResult:
 
     @property
     def ambiguous(self) -> bool:
-        return self.name is None and bool(self.candidates)
+        return self.name is None and len(self.candidates) >= 2
 
     @property
     def unrecognized(self) -> bool:
@@ -116,7 +119,7 @@ class ReverseLookupResult:
 
 
 class ReverseCommandIndex:
-    """Resolve an incoming ``(command, sub, data)`` frame to a declared name.
+    """Resolve an incoming ``(command, sub, data)`` frame to candidates.
 
     Built once per profile from that profile's own :class:`CommandMap`
     (module docstring: never a union across profiles). Every declared
@@ -145,12 +148,12 @@ class ReverseCommandIndex:
     __slots__ = ("_buckets",)
 
     def __init__(self, command_map: CommandMap) -> None:
-        raw: dict[tuple[int, int | None], dict[bytes, list[str]]] = {}
+        raw: dict[tuple[int, int | None], dict[bytes, set[str]]] = {}
         for name in command_map:
             command, sub, prefix = decode_wire_tuple(command_map.get(name))
-            raw.setdefault((command, sub), {}).setdefault(prefix, []).append(name)
-        self._buckets: dict[tuple[int, int | None], dict[bytes, tuple[str, ...]]] = {
-            key: {prefix: tuple(names) for prefix, names in group.items()}
+            raw.setdefault((command, sub), {}).setdefault(prefix, set()).add(name)
+        self._buckets: dict[tuple[int, int | None], dict[bytes, frozenset[str]]] = {
+            key: {prefix: frozenset(names) for prefix, names in group.items()}
             for key, group in raw.items()
         }
 
@@ -176,7 +179,7 @@ class ReverseCommandIndex:
     def resolve(
         self, command: int, sub: int | None, data: bytes
     ) -> ReverseLookupResult:
-        """Resolve one incoming frame's ``(command, sub, data)`` to a name."""
+        """Return the enforced candidate outcome for one incoming frame."""
         bucket = self._buckets.get((command, sub))
         if not bucket:
             return ReverseLookupResult()

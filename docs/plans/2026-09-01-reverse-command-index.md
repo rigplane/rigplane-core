@@ -1,6 +1,10 @@
 # Reverse command index and ingress decode rules (MOR-1993 → MOR-2010)
 
-Status: owner-ratified design, 2026-08-31/09-01. Companion to
+Status: owner-ratified programme boundaries, 2026-08-31/09-01. The original
+Z2 payload-length resolution hypothesis is retained below as superseded
+history and replaced by the conservative incoming-frame contract established
+by [PR #2941 exact-head review](https://github.com/rigplane/rigplane-core/pull/2941#issuecomment-5498902048).
+Companion to
 `docs/plans/2026-08-29-profile-driven-command-bytes.md` (the completed MOR-2000
 epic); this plan covers the reverse half that epic's §8.1 Q3 explicitly deferred.
 
@@ -41,28 +45,28 @@ the tuple — the IC-7300 profile has 100 keys with 64 collisions (measured at
 
 ## 2. What the collision census actually showed
 
-Programmatic inversion of all eight profiles, with every colliding key
-classified by what disambiguates it:
+The original census classified collisions by outbound request shape. Its
+resolution conclusion was wrong for incoming frames:
 
-- **(a) payload length** — the majority class. A `get_x`/`set_x` pair shares a
-  prefix; the read form has no payload, the write form carries one. The rule
-  "no payload = the read name" resolves it. This is *derivable from the
-  declared tuples*; no annotation needed.
-- **(b) payload value** — the on/off write pairs (`ptt_on`/`ptt_off`,
-  `power_on`/`power_off`, scope on/off) are distinct full tuples differing in
-  the trailing byte. Full-tuple matching resolves them; the class recurs
-  identically across unrelated families, confirming it is a CI-V-wide
-  convention, not a per-radio fact.
-- **(c) direction-only** — families that exist only as writes and never elicit
-  a reply (scan `0x0E`, CW keying `0x17`). Nothing derivable marks them; this
-  is the class that needs an *annotation*.
-- **(d) genuine residual** — exactly one: `set_transceiver_status` on
-  IC-705/X6200 is byte-identical to its get form and has no builder anywhere in
-  `src/`. Real ambiguity, no live consumer; annotated for honesty, decides
-  nothing.
+- **(a) shared getter/setter prefix** — the rejected hypothesis said payload
+  length selected the write form. An incoming getter reply also carries a
+  payload, so both declarations remain viable without request or direction
+  context. IC-7300 AF-level reply `14 01 01 28` is the keystone
+  counterexample.
+- **(b) literal on/off write prefixes** — the rejected hypothesis gave the
+  longer literal prefix priority. The same byte can be a value returned for a
+  shorter getter prefix, so all compatible prefixes remain viable. IC-9700
+  dual-watch replies `16 59 00` and `16 59 01` prove both shapes.
+- **(c) direction-only write families** — scan `0x0E` and CW keying `0x17`
+  require sourced protocol facts before a consumer can narrow candidates.
+- **(d) exact duplicate declarations** — byte-identical names remain
+  ambiguous until independently established context distinguishes them.
 
-Conclusion the owner ratified: the rule set is a property of the CI-V protocol,
-not of individual radios. There are no per-radio rule exceptions today.
+The superseding conclusion is narrower: per-profile command data determines
+which declarations are byte-compatible, but payload bytes alone do not
+determine request direction. The base index preserves every compatible
+candidate. A later consumer may narrow that set only with independently
+established request, direction, or sourced annotation context.
 
 ## 3. Owner rulings (2026-08-31, in-session; recorded on MOR-1993/MOR-2010)
 
@@ -81,6 +85,15 @@ not of individual radios. There are no per-radio rule exceptions today.
 4. The shared-ICOM-base-profile idea is filed separately (MOR-2088,
    unscheduled) and does not shape this design.
 
+### Superseding Z2 evidence (2026-09-01)
+
+The sequence and source-of-truth rulings above remain in force. The original
+payload-length/full-tuple priority algorithm did not survive adversarial review
+at PR #2941 head `5712e7a116d1a212a7e9de1e33210fbebea825b6`: valid getter
+replies were confidently labeled as writes. Z2 therefore uses the conservative
+contract below. This paragraph records the correction rather than silently
+rewriting the earlier decision as though it had never existed.
+
 ## 4. Design
 
 ### 4.1 Reverse index
@@ -88,21 +101,16 @@ not of individual radios. There are no per-radio rule exceptions today.
 Built by the rig loader beside `command_map`, exposed as a sibling field on the
 profile (the layer precedent: `RadioProfile.command_map`; `core/` is
 layer-illegal for profile-specific structures per `.importlinter`). Resolution
-order for an incoming frame, all steps data-driven. An annotation is a fact
-attached to its declared row, consulted at whichever step below examines that
-row — never a separate later step that a derivable rule can preempt with a
-confident wrong answer:
+for an incoming frame is data-driven and conservative:
 
-1. **Full-tuple match** — the frame's `(command, sub, leading payload)` against
-   declared tuples; a matching row's own annotation, if any, decides the
-   outcome directly (resolves class (b) pairs exactly as declared).
-2. **Prefix match** — for a `(command, sub)` prefix with no full-tuple match:
-   if the row(s) declared at that prefix carry an annotation (class (c)/(d)),
-   the annotation decides; otherwise the payload-length rule applies — no
-   payload beyond the declared prefix = the read name, payload present = the
-   write name (class (a)).
-3. **No match** — an explicit "unrecognized frame" outcome (never a silent
-   guess; mirrors the D1 unknown-command refusal philosophy).
+1. Select the current profile's bucket for `(command, sub)`.
+2. Keep every declared prefix in that bucket that is a byte-prefix of the
+   incoming `data`. Exact and shorter compatible prefixes have equal standing.
+3. One viable name resolves. Two or more names return the complete candidate
+   set. No viable name returns an explicit unrecognized result.
+4. Request/direction context or a sourced annotation may narrow candidates in
+   a later consumer. The base index never infers direction from payload length
+   and never gives a longer write-shaped prefix implicit priority.
 
 The index is constructed once per profile load; collision counts per profile
 are pinned by a census test so the numbers in this plan fail loudly when the
@@ -153,10 +161,10 @@ before EXECUTE).
   same method behind the 105 total), the 18 `_handle_XX` functions carry 23
   of them.
 - **Z2 — reverse index + census pins.** Loader builds the index; per-profile
-  collision censuses pinned; the full-tuple match and prefix + payload-length
-  rule implemented, with no annotation lookups yet (added in Z3). Unit
-  contract: every declared name round-trips (build → decode) on every
-  profile.
+  collision censuses are pinned. Every prefix-compatible declaration survives;
+  only a singleton resolves, while multiple candidates remain explicit until
+  later context can narrow them. Unit contract: independently derived incoming
+  probes return the complete viable candidate set on every CI-V profile.
 - **Z3 — annotation vocabulary.** Loader + validation (unknown = load error);
   `reply = "none"`/`"echo"` rows added to the profiles from the class (c)/(d)
   census (D2 discipline: each row's source is the recon classification, cited);
@@ -181,9 +189,9 @@ before EXECUTE).
   pattern from the epic applies unchanged.
 - The mirror deletion (Z1) is the riskiest single step: the equivalence
   evidence must enumerate mirror outputs, not sample them.
-- `1C 00` four-name collision: resolved by steps 1–2 of the resolution order
-  for the three live names; the fourth (`set_transceiver_status`) is class (d),
-  annotated, no consumer.
+- `1C 00` four-name collision: the bare transceiver-status declarations remain
+  viable beside matching `ptt_on`/`ptt_off` literal prefixes. A later consumer
+  needs request/direction or sourced annotation context before selecting one.
 - The two CAT radios (ftx1, tx500) are outside the CI-V index entirely; the
   Yaesu path already resolves parsers by name
   (`backends/yaesu_cat/radio.py: YaesuCatRadio._query`) — the property this
