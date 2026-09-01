@@ -5,8 +5,7 @@
 commit; rows 0a–6 of §4 have since merged, listed with their commits in §1.6,
 and rows 7 onward are unbuilt);
 §9 owner decisions settled 2026-08-20, with three later questions — Q13 ruled
-2026-08-21, **Q14 and Q15 open**; the MOR-1792 baseline obligation
-stands (§10 — PR #2745 has since merged with no on-record discharge of it)
+2026-08-21, **Q14 and Q15 open**
 **Base commit:** `769bfc71` (main; re-anchored 2026-08-20 from the authoring
 base `fb7a86da` — three merges landed in between, see §1.6)
 **Format model:** `docs/plans/2026-06-09-target-audio-architecture.md`
@@ -247,9 +246,7 @@ Authored against `fb7a86da`; three PRs merged between it and `769bfc71`, and
   reason codes (`web/server.py:2161-2187`). Recorded honestly: the PR body's
   own **"HOLD for bench" merge gate has no on-record discharge** — every
   review comment reiterates the hold, no comment records the measurement, and
-  the owner merged it three days after the last review. The MOR-1792
-  first-key baseline obligation therefore stands as an owner-owned open item
-  (§10), not a satisfied gate.
+  the owner merged it three days after the last review.
 - **#2759** (`6bdb5846`, MOR-1900) — the `t`-poll mirror launder deleted
   (§1.4).
 - **#2760** (`769bfc71`, MOR-1904) — the rigctld key-down backstop shipped
@@ -1373,7 +1370,7 @@ had gone false under them (rows 3b and 6). Corrected 2026-08-21.
 | 0a | ~~Land PR #2759~~ — **DONE, merged `6bdb5846`** (the `t`-poll launder deleted, §1.4) | merged | [BC], shipped | its own refusal-replaces-fabrication tests |
 | 0b | ~~Land PR #2760~~ — **DONE, merged `769bfc71`** (MOR-1904 rigctld key bound, §1.5); absorbed later by row 12b | merged | [BC], shipped | its own tests |
 | 0c | ~~**Fix MOR-1905**~~ — **DONE, merged `c87c59c3`** (#2761; Yaesu `TX2` → transmitting, fail-closed predicate) | merged | [BC] on FTX-1 truth, shipped | restoring `== "1"` fails the TX2 test |
-| 0d | ~~PR #2745~~ — **DONE, merged `b3ab76b1`** by the owner; the PR's own bench hold has no on-record discharge (§1.6), so the MOR-1792 baseline stays an open owner item (§10); superseded mechanism deleted at row 9 either way | merged | — | — |
+| 0d | ~~PR #2745~~ — **DONE, merged `b3ab76b1`** by the owner; the PR's own bench hold has no on-record discharge (§1.6), superseded mechanism deleted at row 9 either way | merged | — | — |
 | 1 | ~~**Vocabulary + engine**~~ — **DONE, merged `67fbcbea`** (#2770, MOR-1909): `core/tx_authority.py` — `TxWriteClass`, the neutral family→class table with argument predicates (the per-backend method-name maps land with rows 7/8, beside the methods they pin), `TxRefusalCode`, `TxEvidence`, `TxDecisionRecord`, `TxRefusal`, `TransmitTruth` builder, `RADIO_READBACK_SOURCES`, `RAW_EXCLUDED`, the pure `TransmitAuthority` engine (injected read/unkey callables, own-transmit holds + deadline state, decision log) | 1-2 src + tests (~500 LOC src — declared; the engine and the vocabulary may split 1a/1b if review prefers) | [BP] — consumed by nothing | frozenset pins; the INV-1 totality harness (armed per backend as rows 7/8 land); add `"state_poller"` to the sources pin → red |
 | 2 | ~~**Characterisation pins**~~ — **DONE, merged `94168f4e`** (#2769, MOR-1910): the retained behaviors (§3.10 item 6) | tests only | [BP] | each pin names its mutation inline |
 | 3a | ~~**Profile `[tx_policy]`**~~ — **DONE, merged `ad89d10c`** (#2771, MOR-1912; extended to the six unmeasured rigs by `33947560`, MOR-1947): loader + `ftx1.toml` + `ic7300.toml` data from the measurements | `profiles/rig_loader.py`, 2 TOMLs, tests | [BP] — parsed, consumed by nothing | golden dry-run gates |
@@ -1560,7 +1557,7 @@ below is the disposition of each question as asked.
 
 | # | Question | Decision | By |
 |---|---|---|---|
-| Q1 | Fate of PR #2745 (web `ptt_on` immediate-block) | Ruled "not whether but when — once the bench clears, with the MOR-1792 first-key baseline taken before merge". **Overtaken: the owner merged it `b3ab76b1` (2026-08-20) with no on-record discharge of that gate** (§1.6) — the baseline stands as an open owner item (§10). Its mechanism is deleted at row 9; its rule (web `ptt_on` refused unless RF truth reads fresh RX) survives as seat policy | Coordinator; merge = Owner |
+| Q1 | Fate of PR #2745 (web `ptt_on` immediate-block) | Ruled "not whether but when — once the bench clears, with the MOR-1792 first-key baseline taken before merge". **Overtaken: the owner merged it `b3ab76b1` (2026-08-20) with no on-record discharge of that gate** (§1.6). Its mechanism is deleted at row 9; its rule (web `ptt_on` refused unless RF truth reads fresh RX) survives as seat policy | Coordinator; merge = Owner |
 | Q2 | Band change while keyed, ours: auto-unkey (Hamlib parity) or refuse? | **Refuse. Do not auto-unkey to make a band change safe.** The unkey-first sequence is not built | **Owner** |
 | Q3 | Foreign/unattributable TX on a band write | Refuse — already settled by the standing MOR-1175 ruling (a CAT unkey cannot release a mic PTT; another owner's transmission is not ours to end). With Q2 also refusing, **Q2 and Q3 collapse into one rule** — one fewer branch | Coordinator |
 | Q4 | Tune start while already keyed | **Refuse permanently**, not "until measured" — subsumed by the four-family rule. B2 is now informational (it measured: accepted, tuner ran; and both radios drop to minimum power before a tune cycle — operator knowledge found in no manufacturer source) | **Owner** (by the rule) |
@@ -1581,7 +1578,7 @@ below is the disposition of each question as asked.
 The 2026-08-20 morning session (IC-7300, dummy load, low power; full records
 in `rigplane-archives/tx-authority-owner-decisions.md`) closed most of what
 this document once listed as open. Nothing in the design now waits on a
-measurement except one item, named last.
+measurement.
 
 | # | Measurement | Status | Finding / consequence |
 |---|---|---|---|
@@ -1594,12 +1591,6 @@ measurement except one item, named last.
 | B7 | FTX-1: does a frequency write during TX land on both VFOs or only the transmitting one | Open — **gates nothing** | Split-operation UX only |
 | B8 | VFO select/swap while keyed | **DROPPED — by ruling** | Q11 closed it without measurement: the family is refused outright |
 | B9 | Does `stop_cw_text` (CI-V `0x17` data `0xFF`) stop an *in-progress* CW message? | Open — **informational** (new, from the C1 review finding) | B6 tested only the PTT unkey. The atomicity contract is an owner ruling and does not wait on this; a *yes* would let the deadline's CW effect upgrade from an inert `set_ptt(False)` to `stop_cw_text` (§3.6) |
-
-**The one owed measurement:** the **MOR-1792 first-key-press baseline**.
-Q1 ruled it must precede PR #2745's merge; the owner has since merged the PR
-(`b3ab76b1`) with no on-record discharge of that gate (§1.6), so the
-baseline is no longer a merge gate — it is an **open owner-owned obligation**
-for the next bench session.
 
 ## Appendix A — input-document claims that did not survive verification
 
@@ -1718,6 +1709,4 @@ Icom path parse through `tx_state_map`) **and Q15** (the connect-time bootstrap
 exemption cannot reach the backend admission the design creates, §3.5). This
 sentence claimed all of them were settled until 2026-08-21; it was already
 wrong about Q14 and Q15 is newly opened, and Q15 in particular must be visible
-from wherever a reader arrives (§9); the bench
-owes exactly one number (MOR-1792 — its PR has merged, the measurement is
-still on the books, §10).
+from wherever a reader arrives (§9).
