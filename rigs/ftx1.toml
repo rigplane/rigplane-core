@@ -358,11 +358,11 @@ freshness_ttl_seconds = 120.0
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
-# Tone / CTCSS squelch-type (MOR-457). The MAIN-only CAT ``CT`` "SQL TYPE" read
-# (FTX-1_CAT_OM_ENG_2507) is mapped onto the neutral, mutually-exclusive CTCSS
-# booleans repeater_tone (CTCSS ENC, "TONE") and repeater_tsql (CTCSS ENC+DEC,
-# "TSQL"). Slow-changing per-receiver operator toggles, so they use the
-# slow-control cadence, matching the other receiver DSP toggles above.
+# Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130). The MAIN-only CAT
+# ``CT`` "SQL TYPE" read (FTX-1_CAT_OM_ENG_2508-C) is mapped onto the neutral
+# CTCSS booleans repeater_tone (CTCSS ENC, "TONE") and repeater_tsql (CTCSS
+# ENC+DEC, "TSQL"). Slow-changing per-receiver operator toggles, so they use
+# the slow-control cadence, matching the other receiver DSP toggles above.
 [state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
@@ -372,7 +372,7 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 # CTCSS tone frequency (MOR-458). The MAIN-only CAT ``CN`` "CTCSS TONE
-# FREQUENCY" read (FTX-1_CAT_OM_ENG_2507) maps a 0-49 tone-chart index → Hz →
+# FREQUENCY" read (FTX-1_CAT_OM_ENG_2508-C) maps a 0-49 tone-chart index → Hz →
 # centiHz onto the neutral tone_freq/tsql_freq paths. The FTX-1 has a single
 # CTCSS tone shared by TONE (encode) and TSQL (decode), so both paths receive
 # the same centiHz value from one read. Slow-changing per-receiver operator

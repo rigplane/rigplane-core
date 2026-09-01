@@ -50,7 +50,7 @@ _RIGS_DIR = Path(__file__).parents[4] / "rigs"
 # command reports the tone as a 0-49 INDEX into the standard 50-tone EIA CTCSS
 # set, NOT as an absolute frequency (unlike the Icom 0x1B BCD-Hz encoding). The
 # index → Hz chart is verbatim from the official FTX-1 CAT manual
-# (``FTX-1_CAT_OM_ENG_2507``). Values are stored directly in centiHz
+# (``FTX-1_CAT_OM_ENG_2508-C``). Values are stored directly in centiHz
 # (round(Hz * 100)) so the neutral emission matches the Icom convention
 # (``round(_decode_tone_freq(...) * 100)``, MOR-451) with no float rounding
 # ambiguity at the call site. There is no shared cross-vendor CTCSS table in
@@ -2296,7 +2296,7 @@ class YaesuCatRadio:
         Pure CAT read used by the observation pipeline. Returns the FTX-1
         ``CT`` P2 code (0=CTCSS OFF, 1=ENC ON/DEC OFF "TONE", 2=ENC ON/DEC ON
         "TSQL", 3=DCS, 4=PR FREQ, 5=REV TONE) per the FTX-1 CAT Operation
-        Reference Manual (``FTX-1_CAT_OM_ENG_2507``). MAIN only (CT0).
+        Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``). MAIN only (CT0).
         """
         result = await self._query("get_sql_type")
         return int(result["type"])
@@ -2314,7 +2314,7 @@ class YaesuCatRadio:
 
         Sends ``CN00;`` (P1=0 MAIN, P2=0 CTCSS) and parses the ``CN00nnn;``
         answer, returning the 000-049 tone-chart index per the FTX-1 CAT
-        Operation Reference Manual (``FTX-1_CAT_OM_ENG_2507``). Pure CAT read
+        Operation Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``). Pure CAT read
         used by the observation pipeline: it does NOT mutate ``radio_state``.
         MAIN only (CN P1=0); the SUB receiver would need CN10, out of scope.
         """

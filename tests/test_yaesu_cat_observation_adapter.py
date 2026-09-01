@@ -546,8 +546,10 @@ class _SideEffectingYaesuRadio:
     async def read_sql_type(self, receiver: int = 0) -> int:
         # CAT ``CT`` P2 code 1 = "TONE" (ENC ON / DEC OFF). Pure read: the
         # derived neutral booleans must come from the observation pipeline, not
-        # from any legacy-state write (the pre-seeded main.repeater_tone/tsql=True
-        # is the impossible-via-CT combination that proves no mutation).
+        # from any legacy-state write. The pre-seeded main.repeater_tone/tsql
+        # (True, True) differs from what code 1 actually derives (True, False,
+        # MOR-2130), so a leak into legacy state would flip repeater_tsql and
+        # be caught.
         return 1
 
     async def get_sql_type(self, receiver: int = 0) -> int:
@@ -1342,7 +1344,9 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.break_in_delay == 888
     assert radio.radio_state.cw_spot is False
     # Tone/CTCSS read_sql_type must not mutate legacy state (MOR-457). The
-    # pre-seeded impossible-via-CT combination (both True) is preserved.
+    # pre-seeded sentinel pair (True, True) differs from what the fixture's
+    # fixed code 1 actually derives (True, False, MOR-2130), so it is
+    # preserved rather than overwritten.
     assert radio.radio_state.main.repeater_tone is True
     assert radio.radio_state.main.repeater_tsql is True
     # CTCSS tone freq read_ctcss_tone_index must not mutate legacy state
@@ -1494,19 +1498,26 @@ async def test_read_sql_type_is_a_pure_read() -> None:
     It delegates to the same ``CT0`` query/parse path as ``get_sql_type`` but
     must NOT write ``self._state`` — only the ``read_*`` variant feeds the
     observation pipeline (MOR-434 pattern). It returns the raw FTX-1 ``CT`` P2
-    "SQL TYPE" code (FTX-1_CAT_OM_ENG_2507); the neutral-boolean derivation
+    "SQL TYPE" code (FTX-1_CAT_OM_ENG_2508-C); the neutral-boolean derivation
     happens in the adapter, never here.
+
+    Pre-seeds ``(repeater_tone=False, repeater_tsql=True)`` — the one pair no
+    ``CT`` code can produce (MOR-2130's corrected mapping only reaches
+    (F,F)/(T,F)/(T,T)) — and feeds code 2, which derives (T,T). A leak of that
+    derived value into legacy state would flip ``repeater_tone`` to True,
+    which the assertion below catches; a pre-seed of (T,T) would not, since
+    code 2's derivation and the pre-seed would then be identical.
     """
     radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
-    radio.radio_state.main.repeater_tone = True
+    radio.radio_state.main.repeater_tone = False
     radio.radio_state.main.repeater_tsql = True
     state_before = radio.radio_state
 
     radio._query = AsyncMock(return_value={"type": "02"})  # type: ignore[method-assign]
     assert await radio.read_sql_type() == 2
     assert radio.radio_state is state_before
-    # The impossible-via-CT pre-seeded combination is untouched.
-    assert radio.radio_state.main.repeater_tone is True
+    # The pre-seeded, not-representable-via-CT pair is untouched.
+    assert radio.radio_state.main.repeater_tone is False
     assert radio.radio_state.main.repeater_tsql is True
 
     # get_sql_type delegates to the same pure read.
