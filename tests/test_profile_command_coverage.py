@@ -878,10 +878,19 @@ def reverse_implementation_census(
 
     Composite and mismatch evidence must point only to present declarations;
     explicit absent declarations remain distinct and retain their source.
+    Scanner-produced ``executor_graph`` may be a superset; unused rows are ignored.
     """
+    runtime_name_set = frozenset(runtime_names)
     composites = composites or {}
     name_mismatches = name_mismatches or {}
     executor_graph = executor_graph or {}
+    for label, evidence in (
+        ("composites", composites),
+        ("name_mismatches", name_mismatches),
+    ):
+        extra = sorted(evidence.keys() - runtime_name_set)
+        if extra:
+            raise ValueError(f"{label} keys outside runtime names: {extra}")
     overlap = composites.keys() & name_mismatches.keys()
     if overlap:
         raise ValueError(f"runtime names have two relations: {sorted(overlap)}")
@@ -900,7 +909,7 @@ def reverse_implementation_census(
         if target not in declared:
             raise ValueError(f"{runtime_name}: undeclared target {target!r}")
     rows: list[_ReverseCensusRow] = []
-    for runtime_name in sorted(set(runtime_names)):
+    for runtime_name in sorted(runtime_name_set):
         if runtime_name in composites:
             relation = _DeclarationRelation.COMPOSITE
             profile_names = tuple(sorted(composites[runtime_name]))
@@ -1171,6 +1180,22 @@ def test_reverse_census_hook_models_exact_composite_mismatch_and_gap() -> None:
     assert all(row.reachability is _ExecutionReachability.UNKNOWN for row in rows)
 
 
+def test_reverse_census_rejects_unused_composite_evidence() -> None:
+    profile = discover_rigs(RIGS_DIR)["IC-7300"].to_profile()
+    with pytest.raises(ValueError, match=r"composites.*runtime_typo"):
+        reverse_implementation_census(
+            profile, ("runtime_gap",), composites={"runtime_typo": ("get_freq",)}
+        )
+
+
+def test_reverse_census_rejects_unused_mismatch_evidence() -> None:
+    profile = discover_rigs(RIGS_DIR)["IC-7300"].to_profile()
+    with pytest.raises(ValueError, match=r"name_mismatches.*runtime_typo"):
+        reverse_implementation_census(
+            profile, ("runtime_gap",), name_mismatches={"runtime_typo": "get_freq"}
+        )
+
+
 def test_reverse_census_preserves_absent_and_rejects_false_evidence() -> None:
     profile = discover_rigs(RIGS_DIR)["IC-7300"].to_profile()
     (absent,) = reverse_implementation_census(profile, ("get_powerstat",))
@@ -1186,9 +1211,10 @@ def test_reverse_census_preserves_absent_and_rejects_false_evidence() -> None:
         ({"name_mismatches": {"runtime_alias": "get_powerstat"}}, "undeclared"),
         ({"composites": {"get_powerstat": ("get_freq",)}}, "explicitly absent"),
     )
+    runtime_names = ("runtime_gap", "runtime_combo", "runtime_alias", "get_powerstat")
     for kwargs, message in invalid_evidence:
         with pytest.raises(ValueError, match=message):
-            reverse_implementation_census(profile, ("runtime_gap",), **kwargs)
+            reverse_implementation_census(profile, runtime_names, **kwargs)
 
 
 def test_future_activation_api_returns_full_deterministic_gap_list(
