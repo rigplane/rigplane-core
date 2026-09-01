@@ -86,7 +86,8 @@ async def test_state_query_sends_background_priority() -> None:
     radio = _make_radio(active="MAIN")
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    await poller._send_one_state_query(0x03, None, None)  # noqa: SLF001
+    poller._poll_index = 1  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
 
     assert radio.send_civ.await_count >= 1
     for call in radio.send_civ.await_args_list:
@@ -115,7 +116,8 @@ async def test_state_query_sends_fire_and_forget() -> None:
     radio = _make_radio(active="MAIN")
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    await poller._send_one_state_query(0x03, None, None)  # noqa: SLF001
+    poller._poll_index = 1  # noqa: SLF001
+    await poller._send_query()  # noqa: SLF001
 
     assert radio.send_civ.await_count >= 1
     for call in radio.send_civ.await_args_list:

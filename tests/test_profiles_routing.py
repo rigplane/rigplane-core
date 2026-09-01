@@ -94,7 +94,14 @@ async def test_single_profile_poller_rejects_sub_receiver() -> None:
     with pytest.raises(CommandError, match="receiver=1"):
         await poller._execute(SetMode("USB", receiver=1))  # noqa: SLF001
 
-    assert all(receiver in {0, None} for _, _, receiver in poller._STATE_QUERIES)  # noqa: SLF001
+    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
+        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
+
+    assert all(
+        call.args[0] != 0x29 or call.kwargs["data"][0] != 0x01
+        for call in radio.send_civ.await_args_list
+    )
 
 
 async def test_control_handler_checks_capabilities_not_model_name() -> None:
