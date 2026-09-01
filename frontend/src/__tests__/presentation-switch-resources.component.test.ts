@@ -212,6 +212,9 @@ const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
   'lcd-cockpit': ['audio-fft'],
   'lcd-scope': ['audio-fft'],
   'mobile': ['hardware-scope'],
+  // MOR-2155: same reasoning as `dual-receiver-cockpit` above — the minimal
+  // shell mounts no scope panel of either kind.
+  'peer-split': [],
   'sdr-test': ['hardware-scope', 'audio-fft'],
 };
 
@@ -222,6 +225,7 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'lcd-scope': 900,
   'sdr-test': 1400,
   'mobile': 390,
+  'peer-split': 1600,
 };
 function widthToSkin(): SkinId {
   const width = window.innerWidth;

@@ -149,6 +149,11 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'lcd-scope': 900,
   'sdr-test': 1400,
   'mobile': 390,
+  // MOR-2155: `peer-split` has no picker/resolveSkinId path (MOR-2152), so
+  // this file's TX-authority sweeps never request it directly — it is here
+  // only to satisfy `Record<SkinId, number>` exhaustiveness. 1600 is unused
+  // by every other entry in this table.
+  'peer-split': 1600,
 };
 function widthToSkin(): SkinId {
   const width = window.innerWidth;
