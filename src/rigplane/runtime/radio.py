@@ -4148,31 +4148,37 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``_get_bool_value``-style getter it cannot assume the value lands
         in ``frame.sub``: IC-7610's ``[0x07, 0xC2]`` is a VFO-select-family
         command, and ``0x07`` carries no CI-V sub-command per
-        `commands/_frame.py: _COMMANDS_WITH_SUB` (so
+        `commands/_frame.py: command_carries_sub` (so
         `runtime/_civ_rx.py`'s unsolicited-frame decoding, which shares
         that same parser, is unaffected) -- the query's marker byte is
-        echoed as ``data[0]`` instead. IC-9700's ``[0x16, 0x59]`` is a real
-        CI-V sub-command family (``0x16`` IS in that set), so its marker
-        lands in ``frame.sub`` normally. Handling both keeps this getter
-        correct across profiles rather than pinned to whichever shape the
-        request happened to use.
+        echoed as ``data[0]`` instead, and ``BoundCommands.expect`` puts
+        that same byte at the front of ``prefix`` (``sub=None``) rather
+        than in ``sub``. IC-9700's ``[0x16, 0x59]`` is a real CI-V
+        sub-command family (``0x16`` IS in that set), so its marker lands
+        in ``frame.sub`` normally and ``prefix`` is empty. Handling both
+        keeps this getter correct across profiles rather than pinned to
+        whichever shape the request happened to use. Resolves its shape
+        via ``BoundCommands.expect`` directly rather than
+        ``self._expect_shape``: that helper asserts a non-``None`` ``sub``,
+        which IC-7610's row legitimately does not have.
         """
         self._check_connected()
-        command, sub, prefix = self._expect_shape(get_dual_watch)
+        command, sub, prefix = self._commands.expect(get_dual_watch)
         civ = self._commands.get_dual_watch(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_dual_watch")
         if resp.command != command:
             return False
         if resp.sub is not None:
-            # e.g. IC-9700's [0x16, 0x59]: 0x16 IS in _COMMANDS_WITH_SUB, so
-            # parse_civ_frame already split the marker into .sub.
+            # e.g. IC-9700's [0x16, 0x59]: 0x16 IS in command_carries_sub,
+            # so parse_civ_frame already split the marker into .sub.
             if resp.sub != sub:
                 return False
             data = resp.data[len(prefix) :]
             return bool(data) and data[0] != 0x00
         # e.g. IC-7610's [0x07, 0xC2]: 0x07 carries no CI-V sub-command, so
-        # the marker is echoed as data[0] instead of landing in .sub.
-        if not resp.data or resp.data[0] != sub:
+        # the marker is echoed as data[0] instead of landing in .sub, and
+        # BoundCommands.expect put it at prefix[0] instead of sub.
+        if not prefix or not resp.data or resp.data[0] != prefix[0]:
             return False
         data = resp.data[1:]
         return bool(data) and data[0] != 0x00
