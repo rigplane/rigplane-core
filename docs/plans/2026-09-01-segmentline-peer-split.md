@@ -20,18 +20,30 @@ visual reference and the source of the numeric values; it is not vendored.
 
 ## 2. Why `peer-split`
 
-The FTX-1 has two genuinely different receivers: MAIN is the HF receiver, SUB
-is a separate VHF/UHF receiver for 2 m and 70 cm. It is not a VFO A/B swap.
-`peer-split` — two equal columns, symmetry first — is the direction that says
-that about the radio; `unified-instrument` would demote the VHF/UHF receiver
-to a subordinate strip.
+The FTX-1 has two receivers, not a VFO A/B swap: `rigs/ftx1.toml` declares
+`receiver_count = 2` and `[vfo] scheme = "ab_shared"`, a distinct topology
+class from a single-receiver radio's `1/ab`. That MAIN is the HF receiver and
+SUB a separate VHF/UHF receiver for 2 m and 70 cm is the repository owner's
+own statement about the hardware, made directly in conversation — not
+something the profile establishes. `rigs/ftx1.toml` puts no band restriction
+on `set_band_sub` (it takes the same `{band:02d}` encoding as `set_band`),
+and the FTX-1 CAT manual's `BS` command uses one band table, starting at 1.8
+MHz, for both `P1=0` (MAIN-side) and `P1=1` (SUB-side); neither source
+confirms or rules out SUB being VHF/UHF-only.
+
+`peer-split` — two equal columns, symmetry first — is the direction that
+fits a two-receiver radio whether or not SUB turns out to be VHF-only;
+`unified-instrument` would demote the second receiver to a subordinate strip
+either way, so the choice below does not rest on the unestablished half.
 
 Three supporting facts, each established by reading or running, not assumed:
 
 - **Topology matches.** `rigs/ftx1.toml` declares `receiver_count = 2` and
-  `[vfo] scheme = "ab_shared"`, which `derivePresentationCapabilities`
-  resolves to `2/ab_shared` — one of `peer-split`'s two declared compatible
-  topologies.
+  `[vfo] scheme = "ab_shared"`; `derivePresentationCapabilities` resolves
+  that to a `structuralCount: 2, scheme: 'ab_shared'` topology. The
+  `2/ab_shared` string itself is built by `radio-view-model-adapter.ts`'s
+  `topologyId` field (a `structuralCount`/`scheme` template literal) — one of
+  `peer-split`'s two declared compatible topologies.
 - **It is the only manifest of the three that validates.** See §3.1.
 - **`panadapter-first` is out for this radio.** It requires a hardware scope;
   `rigs/ftx1.toml` declares no `[spectrum]` section and no `scope` feature. It
@@ -58,8 +70,8 @@ whose `surfaces` contains it.
 
 ### 3.2 The package's own prose and its own code disagree about zones
 
-`INTEGRATION.md` §3 gives each direction four or five zones carrying two or
-three surfaces each. `segmentline-declarations.ts` in the same package
+`INTEGRATION.md` §3 gives each direction four or five zones carrying one to
+four surfaces each. `segmentline-declarations.ts` in the same package
 declares nine or ten, each carrying exactly one, under different ids. They
 cannot both be the specification. The `.ts` is the more careful of the two —
 it carries the comment explaining which zone ids the wiring owns — and is
@@ -92,10 +104,14 @@ choose:
   `secondary-vfo` (per receiver, by index) and `global`. Those three ids are
   decided in that file, not in a manifest. `rx-tx` is likewise hardcoded on
   the bound RX/TX zone.
-- Every other surface renders through the generic `zoned()` snippet, which
-  emits `<div class="surface-zone" data-zone-id={zoneId}>` when the resolved
-  plan carries a zone declaring it, and renders **bare** when it does not.
-  There the zone id is the manifest's to choose.
+- In that dual composition, every surface other than `primary-vfo`/
+  `secondary-vfo`/`global`/`rx-tx` renders through the generic `zoned()`
+  snippet, which emits `<div class="surface-zone" data-zone-id={zoneId}>`
+  when the resolved plan carries a zone declaring it, and renders **bare**
+  when it does not. There the zone id is the manifest's to choose. The
+  single/default composition also renders `vfo` and `rxTx` bare — through its
+  own `vfoSurface`/`rxTxSurface` snippets, not `zoned()` — so only its twelve
+  optional surfaces route through `zoned()`.
 
 ## 5. The second receiver before MOR-2144
 
@@ -128,8 +144,9 @@ Two of v3's independent knobs, not one:
 Constraints inherited, not renegotiated:
 
 - **A design language annotates; it does not draw.** `renderSlot` emits every
-  top-level primitive as `data-dl-<kebab>` and drops nested objects and
-  arrays. The stylesheet draws from the annotations.
+  top-level primitive except `text` (returned separately as `.text`) as
+  `data-dl-<kebab>` and drops nested objects and arrays. The stylesheet draws
+  from the annotations.
 - **Input field names are the caller's.** `MetersSurface.svelte` calls the
   meters slot with exactly `{ value, max, s9 }`.
 - **No per-frame work in a renderer.** Spectrum pixels bypass Svelte
@@ -194,8 +211,10 @@ Three orders were tried and abandoned, each for a reason worth keeping:
 1. **Language first.** Its only `compatible: true` entry then named something
    that did not exist. Nothing catches that —
    `declaresNoLayoutCompatibility` asks only whether a `true` entry is
-   present, and no test anywhere cross-checks a language's ids against the
-   layouts barrel.
+   present, and nothing asserts that a `layoutCompatibility` entry names a
+   layout the barrel exports; `layout-compatibility-inventory.test.ts`'s
+   MOR-2070 block checks only the opposite direction (every barrel-exported
+   layout is mentioned by a language, or explicitly exempt).
 2. **Language plus the whole layout manifest in one change.** Established by
    building it and running the suite, not by reading: registering a manifest
    with the archived draft's full zone set fails 9 test files and needs ~14
@@ -211,9 +230,8 @@ Three orders were tried and abandoned, each for a reason worth keeping:
 
 What makes the current order fit: the SkinId lands alone (the F8 check in
 `cockpit-topology-adaptation.test.ts` is one-directional — every registered
-layout *manifest* names a loadable skin, with no reverse requirement, and
-`dual-receiver-cockpit` is the precedent for an addressable id with no
-`resolveSkinId` branch), and the manifest lands with a single `vfo`+`rxTx`
+layout *manifest* names a loadable skin, with no reverse requirement), and
+the manifest lands with a single `vfo`+`rxTx`
 zone. That one zone is what removes six of the fourteen files: the twelve
 optional surfaces each have a `*-declarability.test.ts`, and `vfo`/`rxTx`
 have none.
@@ -245,9 +263,13 @@ arithmetic that declaration implies:
 **`minScale` enforces none of this today.** `fitsViewport` and
 `resolveLayoutForViewport` (`presentation/layouts/contract.ts`) have no
 production caller: every reference to either name outside that file is in a
-test or a comment (established by grepping the whole of `frontend/src`). That
-is deliberate — MOR-1247 froze both declaration-only until a primitive existed
-to enforce the policy, and the freeze is still in place.
+test or a comment (established by grepping the whole of `frontend/src`).
+For `fitsViewport` that is deliberate: MOR-1247's tripwire
+(`__tests__/stage-sizing-boundary.test.ts`'s `GUARDED_NAMES`) freezes exactly
+`stageSizing` and `fitsViewport` declaration-only until a primitive exists to
+enforce the policy, and that freeze is still in place. `resolveLayoutForViewport`
+is not itself a guarded identifier — its production-caller vacancy today is
+not something the tripwire enforces.
 
 What actually keeps a phone off this layout is a different mechanism one layer
 up: `resolveSkinId` (`skins/registry.ts`) returns `'mobile'` on its first line
@@ -258,11 +280,6 @@ portrait does reach the mobile skin — by device detection, not by the
 An earlier version of this section claimed the fallback happened "by
 arithmetic, with no device-detection branch". That was exactly backwards, and
 is corrected here rather than softened.
-
-**Recorded gap, not ticketed:** a desktop browser window shrunk below
-`minScale` is not `isMobile`, so nothing currently falls it back — it would
-scale past the declared floor. Whether that needs enforcing is an owner call,
-and it is the natural home for the MOR-1247 unfreeze.
 
 This layout does not claim portrait support.
 
