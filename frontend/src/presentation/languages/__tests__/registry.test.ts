@@ -1,17 +1,20 @@
 /**
  * MOR-1072 registry: the two frozen family IDs (`studioline`/`fieldline`,
  * MOR-977 §4.6) are registered as declarations, and the registry does not
- * hardcode a family count — an arbitrary, hypothetical family registers and
- * validates the same way. MOR-1073 gave studioline its renderers and MOR-1074
- * gave fieldline its own, so BOTH declared families now fill every slot — the
- * "zero renderers declared" fallback path is exercised by the shared fixture
- * (`validManifest`) and by `renderer-contract.test.ts`.
+ * hardcode a family count — the "no hardcoded family count" block below
+ * proves that generically with an arbitrary fixture id, and MOR-2149's
+ * `segmentline` (below) is a real, non-hypothetical instance of the same
+ * claim. MOR-1073 gave studioline its renderers, MOR-1074 gave fieldline its
+ * own, and MOR-2149 gave segmentline its own, so all three declared families
+ * now fill every slot — the "zero renderers declared" fallback path is
+ * exercised by the shared fixture (`validManifest`) and by
+ * `renderer-contract.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
 import {
   listDesignLanguageIds, getDesignLanguage, registerDesignLanguage, RENDERER_SLOT_NAMES,
 } from '../contract';
-import { studioline, fieldline } from '../declarations';
+import { studioline, fieldline, segmentline } from '../declarations';
 import { validManifest } from './fixtures';
 
 describe('the two frozen v3 declarations', () => {
@@ -53,6 +56,28 @@ describe('the two frozen v3 declarations', () => {
 
   it('studioline holds all three density steps (MOR-977 §4.2.3)', () => {
     expect(studioline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact', 'dense'] });
+  });
+});
+
+describe('segmentline (MOR-2149) fills every slot, exactly as studioline and fieldline do', () => {
+  it('registers segmentline alongside studioline and fieldline', () => {
+    expect(listDesignLanguageIds()).toEqual(expect.arrayContaining(['segmentline']));
+    expect(getDesignLanguage('segmentline')).toBe(segmentline);
+  });
+
+  it('fills every renderer slot (MOR-2149)', () => {
+    expect(Object.keys(segmentline.renderers).sort()).toEqual([...RENDERER_SLOT_NAMES].sort());
+  });
+
+  // The inventory row that makes "third language" mean something: all three
+  // families occupy the same slots with DIFFERENT implementations, so no
+  // slot is silently shared and no family is a re-export of another.
+  it('shares no renderer instance with studioline or fieldline', () => {
+    for (const slot of RENDERER_SLOT_NAMES) {
+      expect(segmentline.renderers[slot]).toBeDefined();
+      expect(segmentline.renderers[slot]).not.toBe(studioline.renderers[slot]);
+      expect(segmentline.renderers[slot]).not.toBe(fieldline.renderers[slot]);
+    }
   });
 });
 
