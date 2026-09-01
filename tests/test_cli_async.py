@@ -1528,11 +1528,12 @@ class TestRunErrorHandling:
 
     @pytest.mark.asyncio
     async def test_run_reports_unresolvable_profile_cleanly(self, capsys) -> None:
-        """A profile that cannot be resolved is a user-input error, not a crash.
+        """A radio nothing identifies is a user-input error, not a crash.
 
         `rigplane --host <ip>` with no --model leaves the config with neither a
-        model nor a radio_addr. create_radio is patched to raise, so this pins
-        _run's handling independently of what makes it raise.
+        model nor a radio_addr, so profiles.resolve_radio_profile refuses rather
+        than guessing a default rig, and that ValueError leaves create_radio by
+        way of IcomRadio's constructor. No mock: this is the real path.
         """
         args = Namespace(
             host="192.168.1.100",
@@ -1545,11 +1546,7 @@ class TestRunErrorHandling:
             command="status",
             json=False,
         )
-        with patch(
-            "rigplane.cli.create_radio",
-            side_effect=ValueError("Cannot resolve a radio profile: pass --model."),
-        ):
-            rc = await _run(args)
+        rc = await _run(args)
         assert rc == 1
         err = capsys.readouterr().err
         assert err.startswith("Error: Cannot resolve a radio profile")
