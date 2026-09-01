@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Never, NotRequired, Required, TypedDict
 
-from rigplane.commands.command_map import CommandMap
+from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
@@ -337,6 +337,16 @@ class RadioProfile:
     # treats both the same way: it binds an empty `CommandMap` rather than
     # raising.
     command_map: CommandMap | None = None
+    # Reverse of ``command_map`` above (MOR-1993 Z2, `docs/plans/
+    # 2026-09-01-reverse-command-index.md`): resolves an incoming
+    # ``(command, sub, data)`` frame back to a declared command name.
+    # ``None`` under the same rule as ``command_map`` -- a hand-built
+    # ``RadioProfile`` constructed outside ``profiles/rig_loader.py`` with
+    # no map supplied at all. Built from this profile's own
+    # ``command_map`` and only ever consulted for it -- never a union
+    # across profiles (`commands/command_map.py: ReverseCommandIndex`'s
+    # own module docstring has the per-radio-menu evidence for why).
+    reverse_index: ReverseCommandIndex | None = None
     filter_width_min: int = 50
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
