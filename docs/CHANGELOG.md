@@ -468,6 +468,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/command_map_parity_uncovered.txt` does not carry; the file is
   also cited as evidence in ten docstring passages across five other
   test files, which a deletion would have left dangling.
+- **`rigplane.commands.set_attenuator` (the boolean CI-V frame builder) is
+  deleted (MOR-2086).** It hardcoded `18 if on else 0` -- an IC-7610 dB
+  step invalid on the five other CI-V profiles (IC-705, IC-7300, IC-9700,
+  X6100, X6200 declare a single, *different* non-zero attenuator value;
+  bench-confirmed on the IC-7300, where the radio silently ignored the
+  frame). The released 2.11.1 carries this bug (`git show
+  v2.11.1:src/rigplane/commands/dsp.py` still has the identical constant).
+  `runtime/radio.py: CoreRadio.set_attenuator` no longer builds a frame
+  through the deleted function; it resolves `on` from the connected
+  profile's own declared `[attenuator] values` instead: `on=False` always
+  resolves to 0, `on=True` resolves to the profile's single non-zero
+  value. Each of the five now sends its own declared value on the wire
+  (`fe fe 94 e0 11 20 fd` on the IC-7300); the pre-fix `11 18` frame was
+  bench-confirmed ignored on the IC-7300. A profile that declares more
+  than one non-zero value (IC-7610's 3..45 dB steps) has no well-defined
+  boolean "on", so
+  `CoreRadio.set_attenuator(on=True)` now raises `CommandError` naming
+  `set_attenuator_level` as the call to make instead of guessing a step;
+  the same refusal applies to a profile that declares no `[attenuator]
+  values` at all. `set_attenuator_level` itself is unchanged.
 
 ### Changed
 

@@ -9,7 +9,7 @@
 census	civ_profiles	6
 census	distinct_gap_keys	147
 census	profile_key_gaps	299
-census	public_builders	244
+census	public_builders	243
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	X6100,X6200
 gap	get_agc_time_constant	X6100,X6200

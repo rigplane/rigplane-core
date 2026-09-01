@@ -187,7 +187,10 @@ build_cmd29_frame(to_addr, from_addr, command, sub=None, data=None, receiver=REC
 # Attenuator
 get_attenuator(to_addr=0x98, receiver=RECEIVER_MAIN, cmd_map=cmd_map) -> bytes
 set_attenuator_level(db: int, to_addr=0x98, receiver=RECEIVER_MAIN, cmd_map=cmd_map) -> bytes
-set_attenuator(on: bool, to_addr=0x98, receiver=RECEIVER_MAIN, cmd_map=cmd_map) -> bytes  # compat
+# No set_attenuator(bool) builder at this layer (MOR-2086): a command
+# builder cannot see the profile, so it cannot resolve on/off to a valid
+# dB value. Use runtime/radio.py: CoreRadio.set_attenuator instead, which
+# resolves against the connected profile's declared values.
 
 # Preamp
 get_preamp(to_addr=0x98, receiver=RECEIVER_MAIN, cmd_map=cmd_map) -> bytes

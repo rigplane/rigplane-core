@@ -195,7 +195,6 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "get_rf_gain": ("rigplane.commands", "get_rf_gain"),
     "set_af_level": ("rigplane.commands", "set_af_level"),
     "set_rf_gain": ("rigplane.commands", "set_rf_gain"),
-    "set_attenuator": ("rigplane.commands", "set_attenuator"),
     "set_attenuator_level": ("rigplane.commands", "set_attenuator_level"),
     "set_freq": ("rigplane.commands", "set_freq"),
     "set_mode": ("rigplane.commands", "set_mode"),

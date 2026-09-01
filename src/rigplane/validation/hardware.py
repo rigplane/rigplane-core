@@ -1697,6 +1697,22 @@ async def _check_preamp_set(
     return _merge_evidence(result, extra)
 
 
+def _attenuator_probe_value(values: tuple[int, ...], *, avoid: int | None) -> int:
+    """An attenuator dB probe value from *values* (a profile's declared
+    ``[attenuator] values`` domain, MOR-2086) that differs from ``avoid``,
+    preferring a non-zero candidate -- never a hardcoded constant. Prefers
+    non-zero for the same reason ``_agc_probe_value`` does: the meaningful
+    RMVR probe is "turn the control on", not "turn it off" -- but with only
+    one non-zero value declared and ``avoid`` equal to it, the only
+    remaining candidate is 0, which this returns rather than raising.
+    """
+    candidates = (
+        [v for v in values if v != avoid] if avoid is not None else list(values)
+    )
+    non_zero = [v for v in candidates if v != 0]
+    return (non_zero or candidates or values)[0]
+
+
 async def _check_attenuator_set(
     radio: Radio,
     entry: CapabilityDeclarationEntry,
@@ -1704,10 +1720,71 @@ async def _check_attenuator_set(
     allow_writes: bool,
     per_check_timeout: float,
 ) -> CheckResult:
+    """RMVR the attenuator, boolean or level-based depending on the radio's
+    declared attenuator domain.
+
+    A profile declaring at most one non-zero ``[attenuator] values`` entry
+    (every shipped CI-V/Yaesu profile except IC-7610: IC-7300/705/9700,
+    FTX-1, X6100/X6200) makes the boolean form exactly equivalent to the
+    level form -- "on" IS the single declared value -- so this stays on
+    the boolean ``get_attenuator``/``set_attenuator`` RMVR, which every
+    backend implements. Routing every profiled radio onto the level API
+    unconditionally (an earlier version of this fix) regressed the FTX-1
+    from PASS to UNSUPPORTED (MOR-2086 review, MOR-2095):
+    ``backends/yaesu_cat/radio.py: YaesuCatRadio.get_attenuator_level``
+    raises ``NotImplementedError("Attenuator level (Icom) not supported on
+    Yaesu radios")`` even though ``rigs/ftx1.toml`` declares
+    ``[attenuator] values = [0, 1]`` (a truthy, profile-backed domain) --
+    the same downgrade shape MOR-499 already fixed once for ``nb.set``/
+    ``nr.set`` (see ``tests/validation/test_hardware_ftx1.py``).
+
+    A profile declaring more than one non-zero value (IC-7610's 3..45 dB
+    steps -- the only shipped profile shaped this way, and always
+    Icom/``CoreRadio``-backed, where ``get_attenuator_level`` is real) has
+    no such equivalence, so only that case moves onto
+    ``get_attenuator_level``/``set_attenuator_level``, the same resolution
+    ``runtime/radio.py: CoreRadio.set_attenuator`` itself performs. A
+    profile consulted but declaring no attenuator values at all is refused
+    (SKIP), never a guess. A radio with no RigPlane profile at all
+    (external Hamlib rigctld, e.g. ``RigctldClientRadio``, which never
+    defines ``.profile`` -- the same duck-typed test ``_resolve_level_range``
+    above already uses) keeps the boolean path unconditionally: there is
+    no profile to consult, and non_zero is always empty for it, so it
+    never reaches the level branch below.
+    """
     gate = _write_gate(radio, entry, allow_writes=allow_writes)
     if gate is not None:
         return gate
     antenna = cast(AntennaControlCapable, radio)
+    profile = getattr(radio, "profile", None)
+    values = (
+        tuple(getattr(profile, "att_values", None) or ()) if profile is not None else ()
+    )
+    if profile is not None and not values:
+        # Data-driven only, same as CoreRadio.set_attenuator (MOR-2086): a
+        # profile was consulted and declares nothing, so there is no safe
+        # probe value to guess -- SKIP before any write rather than
+        # falling back to a constant.
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={
+                "reason": (
+                    "profile declares no attenuator values; refusing to "
+                    "guess a probe value (MOR-2086)"
+                ),
+            },
+        )
+    non_zero = [v for v in values if v != 0]
+    if len(non_zero) > 1:
+        return await _read_modify_verify_restore(
+            radio,
+            entry,
+            read=lambda: antenna.get_attenuator_level(0),
+            write=lambda value: antenna.set_attenuator_level(value, 0),
+            make_changed=lambda current: _attenuator_probe_value(values, avoid=current),
+            per_check_timeout=per_check_timeout,
+        )
     return await _read_modify_verify_restore(
         radio,
         entry,

@@ -4305,19 +4305,44 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         logger.debug("set_attenuator(%d dB) sent (fire-and-forget)", db)
 
     async def set_attenuator(self, on: bool, receiver: int = RECEIVER_MAIN) -> None:
-        """Enable or disable attenuator (compat wrapper, Command29-aware)."""
+        """Enable or disable attenuator (compat wrapper, Command29-aware).
+
+        Resolves ``on`` to a value declared by the profile's ``[attenuator]
+        values`` and delegates to :meth:`set_attenuator_level` -- this
+        method no longer invents a level (MOR-2086; the deleted
+        ``commands/dsp.py: set_attenuator`` hardcoded 18, which is an
+        IC-7610 step invalid on every other CI-V profile). ``on=True``
+        requires the profile to declare exactly one non-zero attenuator
+        value; a stepped attenuator (e.g. IC-7610, several declared
+        non-zero steps) has no well-defined boolean "on", so it is refused
+        -- call :meth:`set_attenuator_level` directly with the desired dB
+        value instead. A profile declaring no ``[attenuator] values`` at
+        all is refused the same way.
+        """
         self._check_connected()
         self._require_capability("attenuator", operation="set_attenuator")
         self._require_receiver(receiver, operation="set_attenuator")
         self._require_cmd29_route(
             0x11, None, receiver=receiver, operation="set_attenuator"
         )
-        cmd29 = self._profile.supports_cmd29(0x11)
-        civ = self._commands.set_attenuator(
-            on, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
-        )
-        await self._send_civ_raw(civ, wait_response=False)
-        self._attenuator_state = on
+        att_values = self._profile.att_values
+        if att_values is None:
+            raise CommandError(
+                f"set_attenuator is not supported by profile "
+                f"{self._profile.model} (missing capability: attenuator values)"
+            )
+        if not on:
+            await self.set_attenuator_level(0, receiver=receiver)
+            return
+        non_zero = sorted({v for v in att_values if v != 0})
+        if len(non_zero) != 1:
+            raise CommandError(
+                f"set_attenuator(on=True) is ambiguous for profile "
+                f"{self._profile.model}: {len(non_zero)} declared non-zero "
+                f"attenuator values {non_zero}; call set_attenuator_level "
+                f"directly with the desired dB value instead"
+            )
+        await self.set_attenuator_level(non_zero[0], receiver=receiver)
 
     async def get_preamp(self, receiver: int = RECEIVER_MAIN) -> int:
         """Read preamp level (0=off, 1=PREAMP1, 2=PREAMP2) (Command29-aware).

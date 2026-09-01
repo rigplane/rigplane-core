@@ -1,4 +1,4 @@
-"""Extended tests for commands module — VFO, split, att, preamp, CW, power."""
+"""Extended tests for commands module — VFO, split, preamp, CW, power."""
 
 from pathlib import Path
 
@@ -13,7 +13,6 @@ from rigplane.commands import (
     parse_civ_frame,
     select_vfo,
     set_split,
-    set_attenuator,
     set_preamp,
     send_cw,
     stop_cw,
@@ -70,44 +69,6 @@ class TestSplit:
         frame = set_split(False, cmd_map=cmd_map)
         parsed = parse_civ_frame(frame)
         assert parsed.data == b"\x00"
-
-
-class TestAttenuator:
-    """commands/dsp.py migrated onto the bound command map in MOR-2008
-    (batch 3): set_attenuator/set_preamp now require cmd_map -- IC-7610's
-    own tuples are byte-identical to the deleted fallback's, so the
-    expected frames below are unchanged.
-    """
-
-    def test_att_on(self, cmd_map):
-        frame = set_attenuator(True, cmd_map=cmd_map)
-        parsed = parse_civ_frame(frame)
-        # Command29-wrapped: real command is 0x11, data is BCD 18
-        assert parsed.command == 0x11
-        assert parsed.data == b"\x18"
-
-    def test_att_off(self, cmd_map):
-        frame = set_attenuator(False, cmd_map=cmd_map)
-        parsed = parse_civ_frame(frame)
-        assert parsed.data == b"\x00"
-
-    def test_set_attenuator_requires_cmd_map(self) -> None:
-        """cmd_map is required keyword-only -- MOR-2006 Q6's API break.
-
-        Representative for the whole of dsp.py's 37 migrated builders
-        (MOR-2008 batch 3): the contract is enforced once, centrally, by
-        `_frame.py: require_cmd_map`, so this spot check mirrors the one
-        `TestCw`/`TestPowerOnOff` above already carry for their own
-        modules rather than repeating it per builder.
-        """
-        with pytest.raises(TypeError, match="MOR-2006"):
-            set_attenuator(True)  # type: ignore[call-arg]
-
-    def test_set_attenuator_rejects_explicit_none_the_same_way(self) -> None:
-        """An explicit ``cmd_map=None`` must hit the same Q6 explanation as
-        omitting it entirely."""
-        with pytest.raises(TypeError, match="MOR-2006"):
-            set_attenuator(True, cmd_map=None)
 
 
 class TestPreamp:

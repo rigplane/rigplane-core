@@ -34,7 +34,7 @@ census	frames_identical	0
 census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
 census	profiles	8
-census	public_builders	244
+census	public_builders	243
 census	sites_compared	0
 requires-map	antenna.py:get_antenna_1
 requires-map	antenna.py:get_antenna_2
@@ -84,7 +84,6 @@ requires-map	dsp.py:get_twin_peak_filter
 requires-map	dsp.py:get_vox
 requires-map	dsp.py:set_af_mute
 requires-map	dsp.py:set_agc
-requires-map	dsp.py:set_attenuator
 requires-map	dsp.py:set_attenuator_level
 requires-map	dsp.py:set_audio_peak_filter
 requires-map	dsp.py:set_auto_notch
