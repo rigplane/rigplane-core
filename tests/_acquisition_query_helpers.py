@@ -59,6 +59,8 @@ def acquisition_query(
     selector: int | None = None,
 ) -> AcquisitionQueryCase:
     """Build the legacy tuple while keeping test intent explicit."""
+    if type(command) is not int:
+        raise TypeError("command must be int")
     _require_byte("command", command)
     _require_byte("sub", sub)
     _require_byte("receiver", receiver)
@@ -201,6 +203,7 @@ def assert_acquisition_query_representation_contract() -> None:
         assert selector_parts.selector == 1
 
     rejected_construction = (
+        lambda: acquisition_query(None),  # type: ignore[arg-type]
         lambda: acquisition_query(0x07, sub=0xC2),
         lambda: acquisition_query(0x07, data=b"\xc2", receiver=0),
         lambda: acquisition_query(0x25, sub=1),
