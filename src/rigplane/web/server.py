@@ -738,7 +738,6 @@ class WebServer:
     ) -> None:
         self._radio = radio
         self._config = config or WebConfig()
-        self._profile_fallback_warned = False
         self._state_diagnostics = StateDiagnosticsRecorder(
             enabled=self._config.state_diagnostics
         )
@@ -948,8 +947,16 @@ class WebServer:
     # Helpers for scope callback operations
     # ------------------------------------------------------------------
 
-    def _get_profile(self) -> "RadioProfile":
-        """Resolve the RadioProfile for the connected radio."""
+    def _resolve_profile_if_identified(self) -> "RadioProfile | None":
+        """Return the radio's profile, or None if nothing identifies it.
+
+        "No radio attached and no model configured" is a normal state (the
+        server hasn't connected to a radio yet) rather than a caller error,
+        so it never reaches ``resolve_radio_profile`` at all here -- unlike
+        an identification *attempt* that fails (a named ``radio.model`` or
+        configured ``radio_model`` that resolve_radio_profile can't find),
+        which still goes through the usual resolve-or-refuse path below.
+        """
         from ..profiles import RadioProfile, resolve_radio_profile
 
         raw_profile = getattr(self._radio, "profile", None) if self._radio else None
@@ -962,24 +969,32 @@ class WebServer:
             for m in (radio_model, self._config.radio_model)
             if isinstance(m, str) and m.strip() and m != _RADIO_MODEL_UNSPECIFIED
         ]
+        if not candidates:
+            return None
         for candidate in candidates:
             try:
                 return resolve_radio_profile(model=candidate)
             except KeyError:
                 continue
-        # Unknown model: use the library-wide default resolution chain
-        # (reference LAN rig → any LAN rig → first loaded profile) and say
-        # so — never silently impersonate IC-7610 (MOR-174).
-        fallback = resolve_radio_profile()
-        if not self._profile_fallback_warned:
-            self._profile_fallback_warned = True
-            logger.warning(
-                "No rig profile matches radio model %r; falling back to %r — "
-                "capabilities, scope and CI-V behavior may not match the radio",
-                candidates[0] if candidates else self._config.radio_model,
-                fallback.model,
-            )
-        return fallback
+        # Every named candidate failed to resolve: resolve_radio_profile()
+        # itself now refuses rather than guessing a default profile (plan
+        # §8.1 Q5) — propagate that refusal instead of impersonating some
+        # other rig.
+        return resolve_radio_profile()
+
+    def _get_profile(self) -> "RadioProfile":
+        """Resolve the RadioProfile for the connected radio.
+
+        Raises if nothing identifies the radio -- callers that must
+        tolerate "no radio attached yet" (e.g. ``_serve_info``) use
+        :meth:`_resolve_profile_if_identified` instead.
+        """
+        profile = self._resolve_profile_if_identified()
+        if profile is None:
+            from ..profiles import resolve_radio_profile
+
+            return resolve_radio_profile()  # raises: nothing identifies the radio
+        return profile
 
     def _projected_runtime_capabilities(self) -> set[str]:
         """Return runtime tags with VFO primitives trusted only from a profile."""
@@ -2983,7 +2998,12 @@ class WebServer:
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
         caps = self._projected_runtime_capabilities()
         has_dual_rx = "dual_rx" in caps
-        profile = self._get_profile()
+        # No radio attached and no model configured is a normal "not
+        # connected yet" state, not an unidentified radio to refuse (plan
+        # §8.1 Q5 covers resolve_radio_profile and radio construction, not
+        # this): this endpoint must keep serving with neutral defaults for
+        # every profile-derived field instead of calling the resolver.
+        profile = self._resolve_profile_if_identified()
         raw_connected = (
             getattr(self._radio, "connected", False) if self._radio else False
         )
@@ -2994,29 +3014,24 @@ class WebServer:
         control_connected = (
             raw_control_connected if isinstance(raw_control_connected, bool) else False
         )
-        body = json.dumps(
-            {
-                # Backward-compatible legacy fields
-                "server": "rigplane",
-                "version": __version__,
-                "proto": WEB_API_CONTRACT_VERSION,
-                "radio": model,
-                # New structured fields
-                "model": model,
-                "capabilities": {
-                    "hasSpectrum": "scope" in caps,
-                    "hasAudio": "audio" in caps,
-                    "hasTx": "tx" in caps,
-                    "hasDualReceiver": has_dual_rx,
-                    "hasTuner": "tuner" in caps,
-                    "hasCw": "cw" in caps,
-                    "hasWebrtc": webrtc_available() and "audio" in caps,
-                    "maxReceivers": (
-                        profile.receiver_count
-                        if self._radio is not None
-                        else (2 if has_dual_rx else 1)
-                    ),
-                    "tags": sorted(caps),
+        capabilities: dict[str, object] = {
+            "hasSpectrum": "scope" in caps,
+            "hasAudio": "audio" in caps,
+            "hasTx": "tx" in caps,
+            "hasDualReceiver": has_dual_rx,
+            "hasTuner": "tuner" in caps,
+            "hasCw": "cw" in caps,
+            "hasWebrtc": webrtc_available() and "audio" in caps,
+            "maxReceivers": (
+                profile.receiver_count
+                if profile is not None
+                else (2 if has_dual_rx else 1)
+            ),
+            "tags": sorted(caps),
+        }
+        if profile is not None:
+            capabilities.update(
+                {
                     "modes": list(profile.modes),
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
@@ -3033,7 +3048,9 @@ class WebServer:
                         list(profile.pre_values) if profile.pre_values else None
                     ),
                     "preLabels": profile.pre_labels,
-                    "agcModes": list(profile.agc_modes) if profile.agc_modes else None,
+                    "agcModes": (
+                        list(profile.agc_modes) if profile.agc_modes else None
+                    ),
                     "agcLabels": profile.agc_labels,
                     "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
@@ -3047,7 +3064,18 @@ class WebServer:
                         for b in fr.bands
                     ]
                     or None,
-                },
+                }
+            )
+        body = json.dumps(
+            {
+                # Backward-compatible legacy fields
+                "server": "rigplane",
+                "version": __version__,
+                "proto": WEB_API_CONTRACT_VERSION,
+                "radio": model,
+                # New structured fields
+                "model": model,
+                "capabilities": capabilities,
                 "connection": {
                     "rigConnected": connected,
                     "radioReady": self._radio_ready(),

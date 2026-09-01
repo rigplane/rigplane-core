@@ -323,7 +323,7 @@ def radio(mock_transport: MockTransport):
     """Shared radio fixture with explicit teardown to silence the
     ``Radio collected with active connection/tasks`` __del__ warning
     from tests that bypass the real connect/disconnect lifecycle."""
-    r = IcomRadio("192.168.1.100", timeout=0.05)
+    r = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
@@ -336,7 +336,7 @@ class TestContextManager:
 
     @pytest.mark.asyncio
     async def test_disconnect(self, mock_transport: MockTransport) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -347,7 +347,7 @@ class TestContextManager:
 
     @pytest.mark.asyncio
     async def test_context_manager_exit(self, mock_transport: MockTransport) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1138,7 +1138,7 @@ class TestTimeout:
 
     @pytest.mark.asyncio
     async def test_timeout_on_no_response(self, mock_transport: MockTransport) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1149,7 +1149,7 @@ class TestTimeout:
     async def test_deadline_timeout_does_not_always_send_three_attempts(
         self, mock_transport: MockTransport
     ) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=0.2)
+        radio = IcomRadio("192.168.1.100", timeout=0.2, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1166,19 +1166,19 @@ class TestDisconnected:
 
     @pytest.mark.asyncio
     async def test_get_frequency_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await radio.get_freq()
 
     @pytest.mark.asyncio
     async def test_set_frequency_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await radio.set_freq(14_074_000)
 
     @pytest.mark.asyncio
     async def test_send_civ_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await radio.send_civ(0x03)
 
@@ -1199,7 +1199,7 @@ class TestConnectedProperty:
     """Test connected property."""
 
     def test_initially_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         assert not radio.connected
 
 
@@ -1285,7 +1285,7 @@ class TestAckSinkRobustness:
                 raise OSError("send failed")
 
         t = FailingTransport()
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._ctrl_transport = t
         radio._civ_transport = t
         radio._connected = True
@@ -1736,7 +1736,7 @@ class TestCivTimeoutIsolation:
         self, mock_transport: MockTransport
     ) -> None:
         """After a CI-V timeout, the next command must succeed independently."""
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1758,7 +1758,7 @@ class TestCivTimeoutIsolation:
         self, mock_transport: MockTransport
     ) -> None:
         """Multiple consecutive timeouts do not corrupt tracker state."""
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1780,7 +1780,7 @@ class TestCivTimeoutIsolation:
         self, mock_transport: MockTransport
     ) -> None:
         """A timeout on get_frequency does not block a subsequent set_frequency."""
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1887,7 +1887,7 @@ class TestSpeechTransceiverIdXfc:
 
     @pytest.fixture
     def radio(self, mock_transport: MockTransport) -> IcomRadio:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         r._connected = True
         r._radio_addr = 0x98
         r._civ_transport = mock_transport
@@ -1967,7 +1967,7 @@ class TestStateCacheFromUnsolicitedFrames:
     """_update_state_cache_from_frame populates cache from radio-pushed frames."""
 
     def _make_radio(self) -> IcomRadio:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         return radio
 
@@ -2056,7 +2056,7 @@ class TestGetFallbackToCache:
         self, mock_transport: MockTransport
     ) -> None:
         """get_frequency returns cached freq when radio is silent."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05)
+        radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2070,7 +2070,7 @@ class TestGetFallbackToCache:
         self, mock_transport: MockTransport
     ) -> None:
         """get_frequency raises TimeoutError when cache is empty and radio is silent."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05)
+        radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2083,7 +2083,7 @@ class TestGetFallbackToCache:
         self, mock_transport: MockTransport
     ) -> None:
         """get_mode_info returns cached mode/filter when radio is silent."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05)
+        radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2098,7 +2098,7 @@ class TestGetFallbackToCache:
         self, mock_transport: MockTransport
     ) -> None:
         """get_mode_info raises TimeoutError when cache is empty and radio is silent."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05)
+        radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2120,7 +2120,9 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_frequency raises TimeoutError when cached value is older than TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 10.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 10.0}, model="IC-7610"
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2136,7 +2138,9 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_frequency returns cached value when it is within TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 10.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 10.0}, model="IC-7610"
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2150,7 +2154,9 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_mode_info raises TimeoutError when cached value is older than TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"mode": 10.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"mode": 10.0}, model="IC-7610"
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2165,7 +2171,9 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_mode_info returns cached value when it is within TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"mode": 10.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"mode": 10.0}, model="IC-7610"
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2180,7 +2188,12 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_power raises TimeoutError when cached value is older than TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"rf_power": 30.0})
+        radio = IcomRadio(
+            "192.168.1.100",
+            timeout=0.05,
+            cache_ttl_s={"rf_power": 30.0},
+            model="IC-7610",
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2195,7 +2208,12 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_power returns cached value when it is within TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"rf_power": 30.0})
+        radio = IcomRadio(
+            "192.168.1.100",
+            timeout=0.05,
+            cache_ttl_s={"rf_power": 30.0},
+            model="IC-7610",
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2210,7 +2228,9 @@ class TestGetFallbackCacheTTL:
     ) -> None:
         """cache_ttl_s merges with defaults, overriding individual fields."""
         # Only override freq TTL; mode/rf_power keep defaults.
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 1.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 1.0}, model="IC-7610"
+        )
         assert radio._cache_ttl_freq == 1.0
         assert radio._cache_ttl_mode == 10.0
         assert radio._cache_ttl_rf_power == 30.0
@@ -2519,7 +2539,7 @@ class TestNbDepthWidthPollerDispatch:
         # must reflect the radio's REAL value, not the sent value. The readback
         # response is released only after the GET send (send #2) so the
         # fire-and-forget SET (send #1) does not consume it.
-        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio = IcomRadio("192.168.1.100", timeout=0.5, model="IC-7610")
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
@@ -2556,7 +2576,7 @@ class TestNbDepthWidthPollerDispatch:
         # Post-set write-through readback (MOR-491-B): radio reports 200 even
         # though 255 was sent. The web state reflects the radio's real value.
         # Release the readback response only after the GET send (send #2).
-        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio = IcomRadio("192.168.1.100", timeout=0.5, model="IC-7610")
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True

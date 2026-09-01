@@ -18,7 +18,7 @@ def mock_transport() -> MockTransport:
 
 @pytest.fixture
 def radio(mock_transport: MockTransport) -> IcomRadio:
-    r = IcomRadio("192.168.1.100")
+    r = IcomRadio("192.168.1.100", model="IC-7610")
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
@@ -53,7 +53,7 @@ class TestFullDuplex:
 
     @pytest.mark.asyncio
     async def test_start_audio_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.start_audio_opus(lambda pkt: None)
 

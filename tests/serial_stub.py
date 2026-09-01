@@ -192,7 +192,7 @@ class SerialMockRadio:
         self,
         *,
         profile: RadioProfile | str | None = None,
-        model: str | None = None,
+        model: str | None = "IC-7610",
     ) -> None:
         self._profile = resolve_radio_profile(profile=profile, model=model)
         self._connected = False

@@ -333,7 +333,7 @@ QUEUE_PATH_BACKENDS: tuple[str, ...] = ("yaesu-ftx1", "rigctld-client")
 
 async def _build_lan_icom() -> TxConformanceHarness:
     transport = ScriptedLanTransport()
-    radio = IcomRadio("192.168.99.1", timeout=0.2)
+    radio = IcomRadio("192.168.99.1", timeout=0.2, model="IC-7610")
     radio._civ_transport = transport
     radio._ctrl_transport = transport
     radio._connected = True

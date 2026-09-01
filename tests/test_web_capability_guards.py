@@ -264,10 +264,18 @@ class TestInfoEndpoint:
     ):
         """Empty-candidate guard: neither side ever reaches resolve_radio_profile.
 
-        ``resolve_radio_profile``'s empty-input path silently returns a
-        default rig profile, so ``projected_vfo_capability_tags`` must
-        short-circuit before calling it when both ``radio.model`` (absent
-        here) and ``configured_model`` (an empty string here) are unusable.
+        ``projected_vfo_capability_tags`` must short-circuit before calling
+        ``resolve_radio_profile`` when both ``radio.model`` (absent here)
+        and ``configured_model`` (an empty string here) are unusable. The
+        capabilities leg is checked against
+        ``_projected_runtime_capabilities()`` directly rather than through
+        ``_serve_capabilities()``: unlike ``_serve_info()``, that endpoint
+        has no fielded no-radio-attached case (MOR-2012 follow-up) and
+        still requires an identified radio for its other, unrelated
+        fields -- there is no candidate that identifies the radio for
+        ``_get_profile()`` without also making it a usable candidate for
+        ``projected_vfo_capability_tags``, since both check the same two
+        attributes in the same order.
         """
         reserved = {"vfo_swap", "vfo_equalize"}
         radio = _make_radio("IC-7300", caps=reserved)
@@ -279,9 +287,7 @@ class TestInfoEndpoint:
         await server._serve_info(info_writer)  # noqa: SLF001
         info = _parse_json_body(info_writer)
 
-        capabilities_writer = _FakeWriter()
-        await server._serve_capabilities(capabilities_writer)  # noqa: SLF001
-        capabilities = _parse_json_body(capabilities_writer)
+        capabilities_tags = sorted(server._projected_runtime_capabilities())  # noqa: SLF001
 
         sent: list[str] = []
 
@@ -294,7 +300,7 @@ class TestInfoEndpoint:
         hello = json.loads(sent.pop())
 
         assert not (reserved & set(info["capabilities"]["tags"]))
-        assert not (reserved & set(capabilities["capabilities"]))
+        assert not (reserved & set(capabilities_tags))
         assert not (reserved & set(hello["capabilities"]))
 
     @pytest.mark.asyncio

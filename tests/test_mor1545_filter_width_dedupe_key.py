@@ -83,7 +83,7 @@ def mock_transport() -> MockTransport:
 def ic7610_radio(mock_transport: MockTransport) -> Iterator[IcomRadio]:
     """Dual-RX profile that lists [0x1A, 0x03] in its cmd29 routes, so SUB
     takes the direct branch rather than the VFO-select fallback."""
-    r = IcomRadio("192.168.1.100", timeout=_CIV_TIMEOUT_S)
+    r = IcomRadio("192.168.1.100", timeout=_CIV_TIMEOUT_S, model="IC-7610")
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True

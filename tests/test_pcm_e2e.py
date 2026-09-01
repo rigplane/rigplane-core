@@ -35,7 +35,7 @@ class _DummyTranscoder:
 
 def _make_radio() -> IcomRadio:
     """Build an IcomRadio pre-wired with mocks for PCM pipeline tests."""
-    radio = IcomRadio("192.168.1.100")
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
     radio._connected = True
     radio._civ_transport = MagicMock()
     radio._audio_stream = MagicMock()

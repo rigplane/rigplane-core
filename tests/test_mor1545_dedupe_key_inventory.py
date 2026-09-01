@@ -390,7 +390,7 @@ async def _reader(row: _Race) -> AsyncIterator[tuple[IcomRadio, MockTransport]]:
     """
     transport = MockTransport()
     if row.profile == "IC-7610":
-        radio = _build_radio(_IC7610_HOST, transport)
+        radio = _build_radio(_IC7610_HOST, transport, model="IC-7610")
     else:
         radio = _build_radio(_IC9700_HOST, transport, model="IC-9700")
 

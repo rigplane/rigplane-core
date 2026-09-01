@@ -210,6 +210,7 @@ async def connected_radio(mock_radio: MockIcomRadio) -> AsyncGenerator[IcomRadio
         username="testuser",
         password="testpass",
         timeout=5.0,
+        model="IC-7610",
     )
     with fast_connect():
         await radio.connect()

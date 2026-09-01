@@ -38,7 +38,7 @@ def mock_transport() -> MockTransport:
 
 @pytest.fixture
 def radio(mock_transport: MockTransport) -> IcomRadio:
-    r = IcomRadio("192.168.1.100", timeout=0.05)
+    r = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
@@ -139,7 +139,7 @@ class TestVFO:
 
     @pytest.mark.asyncio
     async def test_set_vfo_wire_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r._set_vfo_wire("A")
 
@@ -157,22 +157,22 @@ class TestVFO:
 
     def test_set_vfo_attribute_removed(self) -> None:
         """Deprecated ``set_vfo`` overload is removed in v0.20 (#1206)."""
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         assert not hasattr(r, "set_vfo")
 
     def test_select_vfo_alias_removed(self) -> None:
         """Deprecated ``select_vfo`` alias is removed in v0.20 (#1206)."""
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         assert not hasattr(r, "select_vfo")
 
     def test_vfo_exchange_attribute_removed(self) -> None:
         """Deprecated ``vfo_exchange`` alias is removed in v0.19."""
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         assert not hasattr(r, "vfo_exchange")
 
     def test_vfo_equalize_attribute_removed(self) -> None:
         """Deprecated ``vfo_equalize`` alias is removed in v0.19."""
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         assert not hasattr(r, "vfo_equalize")
 
 
@@ -206,7 +206,7 @@ class TestSplitMode:
 
     @pytest.mark.asyncio
     async def test_split_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.set_split(True)
 
@@ -316,7 +316,7 @@ class TestAttenuator:
 
     @pytest.mark.asyncio
     async def test_att_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.set_attenuator(True)
 
@@ -369,7 +369,7 @@ class TestPreamp:
 
     @pytest.mark.asyncio
     async def test_preamp_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.set_preamp(1)
 
@@ -418,7 +418,7 @@ class TestCW:
 
     @pytest.mark.asyncio
     async def test_cw_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.send_cw_text("CQ")
 
@@ -494,7 +494,7 @@ class TestReceiverAwareContract:
 
     @pytest.mark.asyncio
     async def test_stop_cw_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.stop_cw_text()
 
@@ -539,7 +539,7 @@ class TestPowerControl:
 
     @pytest.mark.asyncio
     async def test_power_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.power_control(True)
 
@@ -552,19 +552,19 @@ class TestPowerControl:
 class TestAudio:
     @pytest.mark.asyncio
     async def test_start_rx_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.start_audio_rx_opus(lambda pkt: None)
 
     @pytest.mark.asyncio
     async def test_start_tx_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.start_audio_tx_opus()
 
     @pytest.mark.asyncio
     async def test_push_tx_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.push_audio_tx_opus(b"\x00" * 100)
 
@@ -575,7 +575,7 @@ class TestAudio:
 
     @pytest.mark.asyncio
     async def test_start_tx_pcm_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.start_audio_tx_pcm()
 
@@ -624,7 +624,7 @@ class TestAudio:
 class TestPttDisconnected:
     @pytest.mark.asyncio
     async def test_set_ptt_disconnected(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.set_ptt(True)
 
@@ -651,7 +651,7 @@ class TestPttDisconnected:
 
 class TestInternals:
     def test_check_connected_raises(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             r._check_connected()
 
@@ -685,7 +685,7 @@ class TestInternals:
 
 class TestConstructor:
     def test_defaults(self) -> None:
-        r = IcomRadio("10.0.0.1")
+        r = IcomRadio("10.0.0.1", model="IC-7610")
         assert r._host == "10.0.0.1"
         assert r._port == 50001
         assert r._radio_addr == IC_7610_ADDR

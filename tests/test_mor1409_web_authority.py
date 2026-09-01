@@ -76,7 +76,7 @@ async def test_success_is_lifecycle_only_until_provider_observation(
     public_value,
 ) -> None:
     radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
-    server = WebServer(radio, WebConfig())
+    server = WebServer(radio, WebConfig(radio_model="IC-7610"))
     server.command_queue.put = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
     generation = server.command_state_store.provider_generation
     server.command_service.apply_observation(_observation(path, confirmed, generation))
@@ -132,7 +132,7 @@ async def test_failed_enqueue_changes_no_radio_truth(
     _public_value,
 ) -> None:
     radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
-    server = WebServer(radio, WebConfig())
+    server = WebServer(radio, WebConfig(radio_model="IC-7610"))
     generation = server.command_state_store.provider_generation
     server.command_service.apply_observation(_observation(path, confirmed, generation))
 

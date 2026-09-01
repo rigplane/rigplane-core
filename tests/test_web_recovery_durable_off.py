@@ -509,7 +509,7 @@ class _ManagedRadio(CoreRadio):
     """
 
     def __init__(self, provider: _Provider) -> None:
-        super().__init__("127.0.0.1")
+        super().__init__("127.0.0.1", model="IC-7610")
         self.provider = provider
         self._civ_transport = _CivPort()  # type: ignore[assignment]
         self._ports: dict[int, tuple[int, object]] = {}

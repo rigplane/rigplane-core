@@ -25,6 +25,7 @@ def radio() -> IcomRadio:
         reconnect_delay=0.1,
         reconnect_max_delay=0.5,
         watchdog_timeout=0.3,
+        model="IC-7610",
     )
     mt = MockTransport()
     r._ctrl_transport = mt
@@ -44,7 +45,7 @@ class TestWatchdog:
 
     @pytest.mark.asyncio
     async def test_stop_when_not_started(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         r._control_phase._stop_watchdog()  # should not raise
 
     @pytest.mark.asyncio
@@ -81,7 +82,7 @@ class TestWatchdog:
 class TestReconnect:
     @pytest.mark.asyncio
     async def test_stop_reconnect_when_not_started(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         r._control_phase._stop_reconnect()  # should not raise
 
     @pytest.mark.asyncio
@@ -111,11 +112,11 @@ class TestReconnect:
 
 class TestAutoReconnectConfig:
     def test_default_off(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         assert r._auto_reconnect is False
 
     def test_enabled(self) -> None:
-        r = IcomRadio("192.168.1.100", auto_reconnect=True)
+        r = IcomRadio("192.168.1.100", auto_reconnect=True, model="IC-7610")
         assert r._auto_reconnect is True
         assert r._reconnect_delay == 2.0
         assert r._reconnect_max_delay == 60.0
@@ -128,6 +129,7 @@ class TestAutoReconnectConfig:
             reconnect_delay=5.0,
             reconnect_max_delay=120.0,
             watchdog_timeout=15.0,
+            model="IC-7610",
         )
         assert r._reconnect_delay == 5.0
         assert r._reconnect_max_delay == 120.0
