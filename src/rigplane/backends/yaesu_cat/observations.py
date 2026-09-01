@@ -173,6 +173,23 @@ _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_t
 # DCS (CN P2=1) is a documented limitation — NO neutral DCS path is emitted.
 _MAIN_TONE_FREQ = FieldPath.receiver("main", "operator_controls", "tone_freq")
 _MAIN_TSQL_FREQ = FieldPath.receiver("main", "operator_controls", "tsql_freq")
+# Repeater shift DIRECTION (MOR-2111). The FTX-1 CAT ``OS`` "OFFSET (REPEATER
+# SHIFT)" command (FTX-1_CAT_OM_ENG_2508-C) reports the MAIN P2 code directly
+# (0=Simplex, 1=Plus Shift, 2=Minus Shift, 3=ARS; see
+# ``core.types.RepeaterShiftDirection``) — no cross-vendor unification is
+# needed since the FTX-1 is the only implementer of ``RepeaterShiftCapable``
+# today, so the raw device code IS the neutral value. A dedicated ``OS`` read
+# is used rather than riding the ``IF;`` bulk-status P10 field: the manual
+# documents ``IF``'s P10 (and three sibling bulk-status commands sharing the
+# same position) with only 3 values, no ARS, against ``OS``'s own 4-value P2.
+# A bench measurement recorded in MOR-2125 found the radio itself reports all
+# 4 values through both ``IF`` (MAIN) and ``OI`` (SUB) — the mismatch is in
+# the manual, not the hardware. The reason to prefer ``OS`` is instead that
+# ``IF`` is MAIN-side only (SUB needs the differently-laid-out ``OI``), so a
+# dedicated ``OS``/``OS1`` read generalizes to both receivers where riding
+# ``IF`` would not. MAIN only (OS0) here; the SUB receiver would need OS1,
+# out of scope.
+_MAIN_REPEATER_SHIFT = FieldPath.receiver("main", "operator_controls", "repeater_shift")
 YAESU_PTT_PATH = _PTT
 
 
@@ -263,6 +280,8 @@ class YaesuObservationRadio(Protocol):
     async def read_sql_type(self, receiver: int = 0) -> int: ...
 
     async def read_ctcss_tone_index(self, receiver: int = 0) -> int: ...
+
+    async def read_repeater_shift(self, receiver: int = 0) -> int: ...
 
 
 @dataclass(slots=True)
@@ -853,6 +872,30 @@ class YaesuObservationAdapter:
                             native_id="read_ctcss_tone_index",
                         )
                     )
+        # Repeater shift DIRECTION (MOR-2111) — MAIN-only per-receiver
+        # ``operator_controls``. A SINGLE ``read_repeater_shift(0)`` CAT
+        # ``OS`` read (FTX-1_CAT_OM_ENG_2508-C) yields the 0-3 P2 code
+        # directly; no derivation is needed, unlike ``sql_type`` immediately
+        # above, which derives a boolean pair from a six-way selector —
+        # ``RepeaterShiftDirection``'s wire values already are the neutral
+        # representation, so there is nothing to map (see the module-level
+        # ``_MAIN_REPEATER_SHIFT`` comment for why a dedicated ``OS`` read is
+        # used rather than the ``IF;`` bulk-status P10 field). Gated on the
+        # dedicated ``repeater_shift`` capability, distinct from ``sql_type``
+        # above: shift and tone/TSQL are different CAT commands with
+        # independent readback surfaces.
+        if self._has_runtime_capability("repeater_shift"):
+            ok, shift_code = await self._safe_read(
+                "main.repeater_shift", self.radio.read_repeater_shift(0)
+            )
+            if ok and shift_code is not None and self._can_poll(_MAIN_REPEATER_SHIFT):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_REPEATER_SHIFT,
+                        shift_code,
+                        native_id="read_repeater_shift",
+                    )
+                )
         # active-slot (MOR-446) — the GLOBAL "which receiver is active" field.
         # Polled unconditionally (gated by policy only), mirroring the legacy
         # poller's always-on ``get_vfo_select`` read, like AGC/narrow. The

@@ -132,6 +132,7 @@ polling_only = [
     "receiver.main.operator_toggles.repeater_tsql",
     "receiver.main.operator_controls.tone_freq",
     "receiver.main.operator_controls.tsql_freq",
+    "receiver.main.operator_controls.repeater_shift",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -384,6 +385,16 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Repeater shift DIRECTION (MOR-2111). The MAIN-only CAT ``OS`` "OFFSET
+# (REPEATER SHIFT)" read (FTX-1_CAT_OM_ENG_2508-C) reports the P2 code
+# (0=Simplex, 1=Plus Shift, 2=Minus Shift, 3=ARS) directly onto the neutral
+# repeater_shift path — no derivation, unlike the tone/TSQL booleans above.
+# Slow-changing per-receiver operator control, so it uses the slow-control
+# cadence like the other receiver controls above.
+[state_acquisition.field_policies."receiver.main.operator_controls.repeater_shift"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 

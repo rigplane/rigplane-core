@@ -1523,6 +1523,24 @@ async def test_get_repeater_shift_ars(connected_radio):
 
 
 @pytest.mark.asyncio
+async def test_read_repeater_shift_is_a_pure_read(connected_radio):
+    """``read_repeater_shift`` must not mutate legacy ``radio_state``.
+
+    Pre-seed a sentinel value outside the real 0-3 range and confirm the
+    read leaves the state object identity and repeater_shift untouched
+    (MOR-434 pattern) — used by the observation pipeline via ``read_*``,
+    never ``get_*``.
+    """
+    connected_radio.radio_state.main.repeater_shift = 99
+    state_before = connected_radio.radio_state
+
+    connected_radio._transport.query = AsyncMock(return_value="OS02")
+    assert await connected_radio.read_repeater_shift() == 2
+    assert connected_radio.radio_state is state_before
+    assert connected_radio.radio_state.main.repeater_shift == 99
+
+
+@pytest.mark.asyncio
 async def test_set_repeater_shift_plus(connected_radio):
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_repeater_shift(RepeaterShiftDirection.PLUS)

@@ -2331,26 +2331,46 @@ class YaesuCatRadio:
         """
         return _ctcss_index_to_centihz(await self.read_ctcss_tone_index(receiver))
 
-    async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
-        """Get the MAIN repeater shift direction (OS0 command).
+    async def read_repeater_shift(self, receiver: int = 0) -> int:
+        """Read the MAIN repeater shift direction (OS0) — pure read.
 
         Sends ``OS0;`` (P1=0 MAIN) and parses the ``OS0n;`` answer per the
         FTX-1 CAT Operation Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``),
-        OS OFFSET (REPEATER SHIFT). Direction only (0=Simplex, 1=Plus Shift,
-        2=Minus Shift, 3=ARS) — shift magnitude is not covered by this
-        command (see :class:`RepeaterShiftCapable`). MAIN only (OS0); the SUB
-        receiver would need OS1, out of scope.
+        OS OFFSET (REPEATER SHIFT). Returns the raw 0-3 P2 code (0=Simplex,
+        1=Plus Shift, 2=Minus Shift, 3=ARS) — shift magnitude is not covered
+        by this command (see :class:`RepeaterShiftCapable`). Pure CAT read
+        used by the observation pipeline: it does NOT mutate ``radio_state``.
+        MAIN only (OS0); the SUB receiver would need OS1, out of scope.
         """
         result = await self._query("get_repeater_shift")
-        return RepeaterShiftDirection(int(result["shift"]))
+        return int(result["shift"])
+
+    async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
+        """Get the MAIN repeater shift direction (OS0 command)."""
+        return RepeaterShiftDirection(await self.read_repeater_shift(receiver))
 
     async def set_repeater_shift(
         self, direction: RepeaterShiftDirection | int, receiver: int = 0
     ) -> None:
         """Set the MAIN repeater shift direction (OS0 command).
 
-        Per the manual's own footnote, the radio accepts this command only
-        in FM mode and rejects it with ``?;`` otherwise.
+        Args:
+            direction: Target shift direction.
+            receiver: Ignored (FTX-1 writes MAIN only via OS0). Present for
+                protocol compat. As with other MAIN-only FTX-1 setters,
+                passing ``receiver=1`` still writes the MAIN frame, and the
+                poller then records the result under SUB — a pre-existing
+                convention across this file, not specific to this method.
+
+        The manual's own footnote says this command "can be activated only
+        with an FM mode" — nothing more; the manual documents no error
+        response for any command. Separately, a bench measurement recorded
+        in MOR-2125 found that with MAIN in a non-FM mode the radio refuses
+        with ``?;``, while in FM all four direction values are accepted.
+        ``transport.py`` documents ``?;`` as meaning "unrecognized command"
+        (see its module docstring); here the command is recognized and
+        refused only for the current mode — a different failure wearing the
+        same reply.
         """
         await self._write("set_repeater_shift", shift=int(direction))
 

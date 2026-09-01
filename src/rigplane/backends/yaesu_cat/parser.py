@@ -33,7 +33,7 @@ Supported placeholders
 {mem}         CW message text (write-only)
 {chan}        IF; channel selector, 5 characters (may be alphanumeric)
 {tone}        IF; tone-mode selector, single character
-{shift}       IF; repeater-shift selector, single character
+{shift}       Repeater-shift selector, single character (IF; OS)
 
 Usage
 -----
@@ -146,7 +146,9 @@ _PLACEHOLDER_REGEX: dict[str, tuple[str, Any]] = {
     # other command uses. P1 "chan" is 5 characters and may be non-numeric
     # (PMS channels like "P-01L", or the fixed literal "EMGCH"), so it is not
     # a digit-only field like the other fixed-width groups above. P8 "tone"
-    # and P10 "shift" are each a single character. All three are IF-only.
+    # and P10 "shift" are each a single character. "chan" and "tone" are
+    # IF-only; "shift" is also used by OS (MOR-2111), same single-character
+    # shape.
     "chan": (r"(?P<chan>.{5})", str),
     "tone": (r"(?P<tone>.)", str),
     "shift": (r"(?P<shift>.)", str),

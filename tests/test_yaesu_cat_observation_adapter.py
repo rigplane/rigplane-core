@@ -1587,6 +1587,52 @@ async def test_sql_type_skipped_without_ctcss_capability() -> None:
 
 
 @pytest.mark.parametrize(
+    "code",
+    [0, 1, 2, 3],  # Simplex, Plus Shift, Minus Shift, ARS
+)
+@pytest.mark.asyncio
+async def test_repeater_shift_code_emits_directly(code: int) -> None:
+    """MOR-2111: each ``OS`` P2 code emits as-is onto the neutral path.
+
+    Unlike sql_type's boolean-pair derivation, RepeaterShiftDirection's own
+    wire values ARE the neutral representation (FTX-1 is the only
+    implementer of RepeaterShiftCapable today) -- no mapping happens here.
+    """
+    radio = _make_radio()
+    radio.capabilities = radio.capabilities | {"repeater_shift"}
+    radio.read_repeater_shift = AsyncMock(return_value=code)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert by_path["receiver.main.operator_controls.repeater_shift"] == code
+    assert radio.read_repeater_shift.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_repeater_shift_skipped_without_capability() -> None:
+    """MOR-2111: shift direction does not emit when the ``repeater_shift`` cap is absent."""
+    radio = _make_radio()
+    radio.read_repeater_shift = AsyncMock(return_value=1)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = {str(item.path) for item in observations}
+
+    assert "receiver.main.operator_controls.repeater_shift" not in paths
+    radio.read_repeater_shift.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
     ("index", "expected_centihz"),
     [
         (0, 6700),  # 67.0 Hz
