@@ -73,9 +73,15 @@ def logical_civ_call(
 ) -> tuple[int | None, int, int | None, bytes]:
     """Normalize a recorded send_civ call to route, command, sub, and data."""
     command = call.args[0]
-    sub = call.kwargs["sub"]
-    data = call.kwargs["data"]
+    sub = call.kwargs.get("sub")
+    data = call.kwargs.get("data", b"")
+    if data is None:
+        data = b""
     if command == 0x29:
+        if sub is not None:
+            raise AssertionError("cmd29 outer sub must be absent")
+        if len(data) < 2:
+            raise AssertionError("cmd29 must carry receiver and inner command")
         receiver, command, *inner = data
         return receiver, command, inner[0] if inner else None, bytes(inner[1:])
     if (
@@ -88,6 +94,14 @@ def logical_civ_call(
     if command in (0x25, 0x26) and sub is None and data in (b"\x00", b"\x01"):
         return data[0], command, None, b""
     return None, command, sub, data
+
+
+def test_logical_civ_call_public_send_defaults_and_cmd29_validation() -> None:
+    assert logical_civ_call(mock_call(0x18)) == (None, 0x18, None, b"")
+    assert logical_civ_call(mock_call(0x16, sub=0x57)) == (None, 0x16, 0x57, b"")
+    assert logical_civ_call(mock_call(0x16, data=None)) == (None, 0x16, None, b"")
+    with pytest.raises(AssertionError, match="outer sub"):
+        logical_civ_call(mock_call(0x29, sub=0x42, data=b"\x00\x16"))
 
 
 @pytest.mark.asyncio

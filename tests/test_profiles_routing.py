@@ -103,7 +103,7 @@ async def test_single_profile_poller_rejects_sub_receiver() -> None:
         logical_civ_call(call, selected_unselected=True)
         for call in radio.send_civ.await_args_list
     ]
-    assert all(receiver != 1 for receiver, _, _, _ in calls)
+    assert {receiver for receiver, _, _, _ in calls} == {None, 0}
     assert calls.count((None, 0x25, 0x01, b"")) == 1
     assert calls.count((None, 0x26, 0x01, b"")) == 1
 
