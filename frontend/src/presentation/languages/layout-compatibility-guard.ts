@@ -31,9 +31,9 @@
  * nothing, so both must warn.
  *
  * WHERE THIS IS WIRED: `registerDesignLanguage` (`./contract.ts`) is the
- * one choke point every manifest passes through — the two built-in
- * families (`./declarations.ts`) and any third-party skin's manifest
- * alike — so guarding there, once, covers every manifest that will ever
+ * one choke point every manifest passes through — the built-in families
+ * (`./declarations.ts`) and any third-party skin's manifest alike — so
+ * guarding there, once, covers every manifest that will ever
  * reach `designLanguageActivation`. Unlike `guardRadioViewModel`
  * (`components-v2/wiring/radio-view-model-guard.ts`, MOR-2040), no eslint
  * layering boundary forces this guard into a different directory than the
