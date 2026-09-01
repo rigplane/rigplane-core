@@ -17,12 +17,13 @@
   // does. Imported here too so the activation effect below cannot depend on a
   // lazily-loaded skin having pulled the barrel in first.
   import './presentation/languages/declarations';
-  // Both scoped language stylesheets ship with the production composition
+  // Every scoped language stylesheet ships with the production composition
   // root. They stay inert until the canonical activation attribute below is
   // present; loading them here prevents the fixture harness from being their
   // only build path.
   import './presentation/languages/studioline/studioline.css';
   import './presentation/languages/fieldline/fieldline.css';
+  import './presentation/languages/segmentline/segmentline.css';
   import { getLayout } from './presentation/layouts/contract';
   // MOR-1082, the layout half of the same idiom: a side-effect import that
   // populates the LAYOUT registry, so `getLayout(skinId)` below can resolve
