@@ -21,6 +21,7 @@ regress the Icom radios that share the same checks.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from rigplane.core.radio_protocol import Radio
@@ -365,6 +366,103 @@ async def test_nb_bool_getter_icom_unchanged():
     assert check.evidence["changed"] is True
     assert check.evidence["readback"] is True
     assert store["on"] is False
+
+
+# ---------------------------------------------------------------------------
+# MOR-2086 review round — attenuator.set: route by declared domain, not by
+# radio type. An earlier version of that fix routed every profile-backed
+# radio onto get_attenuator_level/set_attenuator_level unconditionally.
+# ftx1.toml declares [attenuator] values = [0, 1] -- a truthy,
+# profile-backed domain -- so the FTX-1 took that path too, and
+# YaesuCatRadio.get_attenuator_level raises NotImplementedError("Attenuator
+# level (Icom) not supported on Yaesu radios"), downgrading attenuator.set
+# from PASS to UNSUPPORTED. Same shape as FIX 3's nb.set/nr.set downgrade.
+# The fix: a profile declaring at most one non-zero value (FTX-1's [0, 1]
+# included) makes the boolean form exactly equivalent to the level form, so
+# the check stays on get_attenuator/set_attenuator and never calls the
+# level API at all. Only a profile declaring more than one non-zero value
+# (IC-7610's 3..45 dB steps, always Icom-backed) moves onto the level API.
+# ---------------------------------------------------------------------------
+
+
+def _ftx1_attenuator_mock(*, on: bool = False):
+    """FTX-1-shaped attenuator: boolean get/set present and working; the
+    level API exists but raises NotImplementedError, exactly like the real
+    YaesuCatRadio.get_attenuator_level."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"attenuator"}
+    radio.profile = SimpleNamespace(att_values=(0, 1))
+    store = {"on": on}
+
+    async def _get(receiver: int = 0) -> bool:
+        return store["on"]
+
+    async def _set(state: bool, receiver: int = 0) -> None:
+        store["on"] = state
+
+    async def _get_level(receiver: int = 0) -> int:
+        raise NotImplementedError(
+            "Attenuator level (Icom) not supported on Yaesu radios"
+        )
+
+    radio.get_attenuator = AsyncMock(side_effect=_get)
+    radio.set_attenuator = AsyncMock(side_effect=_set)
+    radio.get_attenuator_level = AsyncMock(side_effect=_get_level)
+    return radio, store
+
+
+async def test_attenuator_ftx1_stays_on_boolean_path():
+    """FTX-1 declares a single non-zero attenuator value: the boolean form
+    is exactly equivalent, so the check must PASS without ever calling
+    get_attenuator_level -- which raises on the real backend."""
+    radio, store = _ftx1_attenuator_mock(on=False)
+    check = await _run(radio, check_id="attenuator.set", capability="attenuator")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] is False
+    assert check.evidence["changed"] is True
+    assert check.evidence["readback"] is True
+    assert store["on"] is False  # restored
+    radio.get_attenuator_level.assert_not_awaited()
+
+
+def _ic7610_attenuator_mock(*, level: int = 0):
+    """IC-7610-shaped attenuator: stepped domain, no bool getter/setter at
+    all -- the level API is the only correct path."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "IC-7610"
+    radio.capabilities = {"attenuator"}
+    radio.profile = SimpleNamespace(
+        att_values=(0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45)
+    )
+    del radio.get_attenuator
+    del radio.set_attenuator
+    store = {"level": level}
+
+    async def _get(receiver: int = 0) -> int:
+        return store["level"]
+
+    async def _set(db: int, receiver: int = 0) -> None:
+        store["level"] = db
+
+    radio.get_attenuator_level = AsyncMock(side_effect=_get)
+    radio.set_attenuator_level = AsyncMock(side_effect=_set)
+    return radio, store
+
+
+async def test_attenuator_ic7610_stepped_stays_on_level_path():
+    """IC-7610 declares 15 non-zero steps: the boolean form cannot
+    disambiguate them, so this must stay on the level API (no regression
+    on the radio the stepped case actually protects)."""
+    radio, store = _ic7610_attenuator_mock(level=0)
+    check = await _run(radio, check_id="attenuator.set", capability="attenuator")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] == 0
+    assert check.evidence["changed"] != 0
+    assert check.evidence["readback"] == check.evidence["changed"]
+    assert store["level"] == 0  # restored
 
 
 # ---------------------------------------------------------------------------

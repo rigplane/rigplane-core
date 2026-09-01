@@ -294,11 +294,17 @@ class TestSplitMode:
 
 class TestAttenuator:
     @pytest.mark.asyncio
-    async def test_att_on(
+    async def test_att_on_refused_for_stepped_attenuator(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        await radio.set_attenuator(True)
-        assert radio._attenuator_state is True
+        """MOR-2086: the ``radio`` fixture defaults to IC-7610, which
+        declares 15 non-zero attenuator steps -- the boolean "on" form has
+        no single defined answer there, so it is refused rather than
+        guessing (the deleted ``commands/dsp.py: set_attenuator`` used to
+        hardcode 18 here)."""
+        with pytest.raises(CommandError, match="set_attenuator_level"):
+            await radio.set_attenuator(True)
+        assert radio._attenuator_state is None
 
     @pytest.mark.asyncio
     async def test_att_off(
@@ -308,11 +314,14 @@ class TestAttenuator:
         assert radio._attenuator_state is False
 
     @pytest.mark.asyncio
-    async def test_att_no_response_needed(
+    async def test_att_off_no_response_needed(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """set_attenuator is fire-and-forget — completes without a radio response."""
-        await radio.set_attenuator(True)  # must not raise
+        """set_attenuator is fire-and-forget — completes without a radio
+        response. ``on=False`` is unambiguous (always resolves to 0) even
+        for a stepped attenuator, unlike ``on=True`` (see the refusal test
+        above)."""
+        await radio.set_attenuator(False)  # must not raise
 
     @pytest.mark.asyncio
     async def test_att_disconnected(self) -> None:

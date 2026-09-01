@@ -13,11 +13,13 @@ command-map key by exactly one of three routes -- statically, from a
 direct ``_build_from_map(cmd_map, "literal", ...)`` call or a
 ``cmd_name="literal"`` keyword forwarded to a ``commands/_builders.py``
 shared template (most builders, e.g. ``antenna.py: get_antenna_1``
-resolves ``"get_antenna"``); via one hop of delegation for the two
-compatibility wrappers with no literal of their own
-(``dsp.py: set_attenuator``, ``vfo.py: set_dual_watch``); or via the
-exposed ``cmd_map_key`` callable for the one builder whose key is a
-function of the map's own contents (``speech.py: get_speech``).
+resolves ``"get_antenna"``); via one hop of delegation for the one
+compatibility wrapper with no literal of its own (``vfo.py:
+set_dual_watch`` -- MOR-2086 deleted the other one, ``dsp.py:
+set_attenuator``, a boolean wrapper that could not resolve a correct
+value without the profile); or via the exposed ``cmd_map_key`` callable
+for the one builder whose key is a function of the map's own contents
+(``speech.py: get_speech``).
 ``test_every_builder_resolves_by_exactly_one_route`` below ties the split
 to an assertion rather than a count that would rot silently here.
 
@@ -141,10 +143,11 @@ def _static_literal_key(node: ast.FunctionDef) -> str | None:
 def _delegate_target_names(node: ast.FunctionDef) -> frozenset[str]:
     """Builder names *node* calls while forwarding ``cmd_map``.
 
-    Resolves ``dsp.py: set_attenuator`` and ``vfo.py: set_dual_watch``:
-    both dispatch to another public builder by an ``on: bool`` argument,
-    and every branch of each agrees on one key, so a single-hop,
-    name-based lookup needs no knowledge of which branch would run.
+    Resolves ``vfo.py: set_dual_watch`` (the other delegate this served,
+    ``dsp.py: set_attenuator``, was deleted in MOR-2086): it dispatches to
+    another public builder by its ``on: bool`` argument, so a single-hop,
+    name-based lookup finds one of its branches without needing to know
+    which one a given call would actually take.
     """
     return frozenset(
         child.func.id
@@ -200,7 +203,7 @@ def test_every_builder_resolves_by_exactly_one_route() -> None:
     ``cmd_map_key``-exposed (checked last -- ``ptt.py: ptt_on``/``ptt_off``
     expose it too but also carry a static literal, so only
     ``speech.py: get_speech`` actually falls through to this branch) must
-    sum to the full builder surface, and only the two named delegates and
+    sum to the full builder surface, and only the one named delegate and
     the one named ``cmd_map_key`` builder may be non-static.
     """
     builders = _builders()
@@ -218,10 +221,7 @@ def test_every_builder_resolves_by_exactly_one_route() -> None:
             delegated.add(key)
 
     assert len(static) + len(delegated) + len(cmd_map_key) == len(builders)
-    assert {f"{f}:{n}" for f, n in delegated} == {
-        "dsp.py:set_attenuator",
-        "vfo.py:set_dual_watch",
-    }
+    assert {f"{f}:{n}" for f, n in delegated} == {"vfo.py:set_dual_watch"}
     assert {f"{f}:{n}" for f, n in cmd_map_key} == {"speech.py:get_speech"}
 
 

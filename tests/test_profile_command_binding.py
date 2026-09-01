@@ -47,7 +47,7 @@ from rigplane.commands import get_speech, ptt_on
 from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
-from rigplane.commands.dsp import set_attenuator
+from rigplane.commands.vfo import set_dual_watch
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.runtime.radio import CoreRadio
 from rigplane.types import BandStackRegister, MemoryChannel
@@ -179,15 +179,19 @@ class TestExpect:
         # MOR-2008 batch 4 migrated freq.py's Group B builders too, so
         # every builder in the package now either exposes a key or
         # resolves one statically (tests/test_profile_command_coverage.py:
-        # test_every_builder_resolves_by_exactly_one_route). dsp.py:
-        # set_attenuator is a stable, permanent stand-in instead: it
-        # deliberately never exposes its own key (it delegates to
-        # set_attenuator_level, whose key is "set_attenuator") rather than
-        # being mid-migration, so this is not a "temporary until the next
-        # batch" choice.
-        bound = BoundCommands(CommandMap({"set_attenuator": (0x11,)}))
+        # test_every_builder_resolves_by_exactly_one_route). MOR-2086
+        # deleted the other delegate-without-a-key stand-in that used to
+        # serve here (dsp.py: set_attenuator -- a boolean wrapper that
+        # could not resolve a correct value without the profile, so
+        # CoreRadio.set_attenuator resolves it now instead). vfo.py:
+        # set_dual_watch is the sole remaining stable, permanent stand-in:
+        # it deliberately never exposes its own key (it delegates to
+        # set_dual_watch_on/set_dual_watch_off by the ``on`` argument)
+        # rather than being mid-migration, so this is not a "temporary
+        # until the next batch" choice.
+        bound = BoundCommands(CommandMap({"set_dual_watch_on": (0x07,)}))
         with pytest.raises(AttributeError, match="Steps 5..N"):
-            bound.expect(set_attenuator)
+            bound.expect(set_dual_watch)
 
 
 # ── the drift guard ──

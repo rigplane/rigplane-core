@@ -166,8 +166,11 @@ print(f"ATT: {db} dB")
 await radio.set_attenuator_level(18)  # 18 dB
 await radio.set_attenuator_level(0)   # Off
 
-# Simple toggle (compat — maps on=18dB, off=0dB)
-await radio.set_attenuator(True)
+# Simple toggle (compat): resolves against the connected profile's
+# declared attenuator values, never a fixed dB constant. off=0 dB always;
+# on=the profile's single non-zero value. Raises CommandError instead of
+# guessing when the profile declares more than one non-zero value (e.g.
+# IC-7610, shown above) -- use set_attenuator_level() for those.
 await radio.set_attenuator(False)
 
 # Boolean check
