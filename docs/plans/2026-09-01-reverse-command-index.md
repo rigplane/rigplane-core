@@ -40,7 +40,10 @@ re-derived rather than inherited from this ticket's 2026-08-29 numbers):
 Reverse lookup is not an inversion: at `(command, sub)` granularity — grouping
 by what `commands/_frame.py: parse_civ_frame` actually assigns to
 `frame.command`/`frame.sub` for each declared tuple, not a positional split of
-the tuple — the IC-7300 profile has 100 keys with 64 collisions (measured at
+the tuple. The current numeric counts are owned by
+`tests/reverse_command_index_census.txt`, which is the sole source of truth
+for that file's `(command, sub, prefix)` metric. A historical `(command, sub)`
+snapshot recorded 100 keys and 64 collisions for IC-7300 (measured at
 `bce3be1e`); on IC-705 and X6200 the tuple `1C 00` resolves to four names.
 
 ## 2. What the collision census actually showed
@@ -112,8 +115,9 @@ for an incoming frame is data-driven and conservative:
    a later consumer. The base index never infers direction from payload length
    and never gives a longer write-shaped prefix implicit priority.
 
-The index is constructed once per profile load; collision counts per profile
-are pinned by a census test so the numbers in this plan fail loudly when the
+The index is constructed once per profile load; the census test records the
+current counts in `tests/reverse_command_index_census.txt`. This plan does not
+duplicate those counts or claim that it independently fails loudly when the
 data moves.
 
 ### 4.2 Annotation vocabulary (TOML)
