@@ -192,3 +192,56 @@ def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
     sites above, not just editing the number.
     """
     assert _count_self_civ_call_sites() == 11
+
+
+# ---------------------------------------------------------------------------
+# resolve_radio_profile fails closed (plan §8.1 Q5, MOR-2012)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRadioProfileFailsClosed:
+    """The silent IC-7610/first-LAN-profile default fallback is removed:
+    an unidentified radio must refuse, never guess."""
+
+    def test_no_identifying_information_raises_a_clear_refusal(self) -> None:
+        """No profile, no model, no radio_addr — resolve_radio_profile()
+        must raise rather than silently return a default profile."""
+        with pytest.raises(ValueError) as excinfo:
+            resolve_radio_profile()
+
+        # Must not be KeyError: get_radio_profile() already raises KeyError
+        # for a *named* model that isn't found, so callers need to be able
+        # to tell "nothing identified the radio" apart from "you named an
+        # unknown one" by exception type alone.
+        assert not isinstance(excinfo.value, KeyError)
+        assert type(excinfo.value) is ValueError
+
+    @pytest.mark.parametrize("blank_model", ["", "   "])
+    def test_blank_model_raises_the_same_refusal(self, blank_model: str) -> None:
+        """A blank or whitespace-only model counts as "nothing identifies
+        the radio" — it must not silently resolve to a default profile."""
+        with pytest.raises(ValueError) as excinfo:
+            resolve_radio_profile(model=blank_model)
+
+        assert not isinstance(excinfo.value, KeyError)
+        assert type(excinfo.value) is ValueError
+
+    def test_unmatched_radio_addr_alone_also_refuses(self) -> None:
+        """A radio_addr that matches no loaded profile is also "nothing
+        identifies the radio" -- 0xFF is not any shipped rig's civ_addr."""
+        with pytest.raises(ValueError) as excinfo:
+            resolve_radio_profile(radio_addr=0xFF)
+
+        assert not isinstance(excinfo.value, KeyError)
+
+    def test_explicit_model_override_still_resolves(self) -> None:
+        """A profile/model passed explicitly by the caller remains the
+        deliberate override it already was -- unchanged by this ruling."""
+        profile = resolve_radio_profile(model="IC-7300")
+        assert profile.model == "IC-7300"
+
+        same_profile_object = resolve_radio_profile(profile=profile)
+        assert same_profile_object is profile
+
+        by_name = resolve_radio_profile(profile="IC-9700")
+        assert by_name.model == "IC-9700"

@@ -32,7 +32,7 @@ def _assert_doc_patterns(rel_path: str, patterns: list[str]) -> None:
 
 
 def test_runtime_invariant_radio_ready_tracks_civ_health() -> None:
-    radio = IcomRadio("127.0.0.1")
+    radio = IcomRadio("127.0.0.1", model="IC-7610")
     radio._conn_state = RadioConnectionState.CONNECTED
     radio._civ_transport = SimpleNamespace(_udp_error_count=0)
     radio._civ_stream_ready = True

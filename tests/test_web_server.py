@@ -536,7 +536,9 @@ async def server(mock_radio: MagicMock) -> WebServer:
 
 @pytest.fixture
 async def server_no_radio() -> WebServer:
-    config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    config = WebConfig(
+        host="127.0.0.1", port=0, keepalive_interval=9999.0, radio_model="IC-7610"
+    )
     srv = WebServer(None, config)
     await srv.start()
     yield srv
@@ -2822,7 +2824,12 @@ class TestConfigurableKeepalive:
 
     async def test_large_interval_no_pings_during_short_test(self) -> None:
         """With keepalive_interval=9999, no ping frames arrive in a short test."""
-        config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+        config = WebConfig(
+            host="127.0.0.1",
+            port=0,
+            keepalive_interval=9999.0,
+            radio_model="IC-7610",
+        )
         async with WebServer(None, config) as srv:
             host, port = _addr(srv)
             reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
@@ -2897,7 +2904,12 @@ class TestScopeEnableAtomic:
 
     async def test_server_responsive_after_connect_disconnect_cycles(self) -> None:
         """HTTP endpoint must return 200 after several WS connect/disconnect cycles."""
-        config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+        config = WebConfig(
+            host="127.0.0.1",
+            port=0,
+            keepalive_interval=9999.0,
+            radio_model="IC-7610",
+        )
         radio = MagicMock()
         _add_scope_capable_attrs(radio)
         _del_poller_factory_attrs(radio)
@@ -4271,48 +4283,22 @@ class TestGetProfileRouting:
         assert isinstance(profile, RadioProfile)
         assert "IC-7610" in profile.model
 
-    def test_unresolved_radio_model_warns_and_names_model(self, caplog):
-        """Unknown radio model logs a WARNING naming it instead of silently
-        impersonating IC-7610 (MOR-174)."""
-        import logging
-
-        from rigplane.profiles import RadioProfile, resolve_radio_profile
-
+    def test_unresolved_radio_model_refuses_instead_of_guessing(self):
+        """An unknown radio model refuses instead of silently impersonating
+        a default profile (plan §8.1 Q5)."""
         radio = SimpleNamespace(model="ACME-9000", capabilities=set())
-        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
-            srv = self._make_server(radio, radio_model="ACME-9000")
-            profile = srv._get_profile()
+        srv = self._make_server(radio, radio_model="ACME-9000")
 
-        assert isinstance(profile, RadioProfile)
-        warnings = [
-            r.getMessage()
-            for r in caplog.records
-            if r.levelno == logging.WARNING and "ACME-9000" in r.getMessage()
-        ]
-        assert warnings, "expected a WARNING naming the unresolved radio model"
-        # Fallback must be the library-wide default resolution chain, and the
-        # warning must name the profile actually used — never a silent
-        # hard-coded IC-7610.
-        assert profile == resolve_radio_profile()
-        assert profile.model in warnings[0]
+        with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+            srv._get_profile()
 
-    def test_unresolved_config_model_warns_when_no_radio(self, caplog):
-        """Unresolvable config radio_model (no radio) warns and still yields a
-        profile via the default resolution chain (MOR-174)."""
-        import logging
+    def test_unresolved_config_model_refuses_when_no_radio(self):
+        """Unresolvable config radio_model (no radio) refuses instead of
+        silently falling back to a guessed profile (plan §8.1 Q5)."""
+        srv = self._make_server(radio=None, radio_model="NOT-A-RADIO")
 
-        from rigplane.profiles import RadioProfile
-
-        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
-            srv = self._make_server(radio=None, radio_model="NOT-A-RADIO")
-            profile = srv._get_profile()
-
-        assert isinstance(profile, RadioProfile)
-        assert any(
-            "NOT-A-RADIO" in r.getMessage()
-            for r in caplog.records
-            if r.levelno == logging.WARNING
-        )
+        with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+            srv._get_profile()
 
     def test_default_config_radio_model_is_not_ic7610(self):
         """WebConfig.radio_model defaults to a neutral sentinel, not a silent
@@ -4321,46 +4307,26 @@ class TestGetProfileRouting:
 
     @pytest.mark.parametrize("blank_model", ["", "   "])
     def test_blank_radio_model_does_not_short_circuit_configured_model(
-        self, caplog, blank_model
+        self, blank_model
     ):
-        """A blank radio.model must not win the candidate loop and silently
-        yield the default resolution chain's rig — the configured
-        radio_model is still a usable candidate."""
-        import logging
-
-        from rigplane.profiles import resolve_radio_profile
-
+        """A blank radio.model must not win the candidate loop — the
+        configured radio_model is still a usable candidate."""
         radio = SimpleNamespace(model=blank_model, capabilities=set())
-        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
-            srv = self._make_server(radio, radio_model="FTX-1")
-            profile = srv._get_profile()
+        srv = self._make_server(radio, radio_model="FTX-1")
+        profile = srv._get_profile()
 
         assert profile.vfo_scheme == "ab_shared"
-        assert profile != resolve_radio_profile()
-        assert not any(r.levelno == logging.WARNING for r in caplog.records)
-        assert srv._profile_fallback_warned is False  # noqa: SLF001
+        assert profile.model == "FTX-1"
 
-    def test_blank_radio_and_config_model_still_warns_and_falls_back(self, caplog):
+    def test_blank_radio_and_config_model_refuses_instead_of_falling_back(self):
         """When both radio.model and the configured radio_model are blank,
-        _get_profile() still falls back through the default resolution
-        chain and emits the MOR-174 warning naming the profile actually
-        used — the fix must not turn a warned fallback into a silent one."""
-        import logging
-
-        from rigplane.profiles import RadioProfile, resolve_radio_profile
-
+        _get_profile() now refuses (plan §8.1 Q5) instead of silently
+        falling back to a guessed default profile."""
         radio = SimpleNamespace(model="", capabilities=set())
-        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
-            srv = self._make_server(radio, radio_model="")
-            profile = srv._get_profile()
+        srv = self._make_server(radio, radio_model="")
 
-        assert isinstance(profile, RadioProfile)
-        assert profile == resolve_radio_profile()
-        warnings = [
-            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
-        ]
-        assert warnings, "expected a WARNING for the MOR-174 fallback"
-        assert profile.model in warnings[0]
+        with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+            srv._get_profile()
 
 
 class TestGetMeterCalPayload:

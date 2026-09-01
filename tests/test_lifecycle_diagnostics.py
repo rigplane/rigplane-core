@@ -30,7 +30,7 @@ def test_radio_gc_with_active_connection_logs_warning(
 ) -> None:
     """When a Radio is collected while still 'connected', a WARN is emitted."""
     with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
-        radio = IcomRadio("192.168.1.1")
+        radio = IcomRadio("192.168.1.1", model="IC-7610")
         # Simulate still connected (e.g. user forgot disconnect() or async with exit)
         radio._conn_state = RadioConnectionState.CONNECTED
         del radio
@@ -53,7 +53,7 @@ def test_radio_gc_when_disconnected_does_not_log_warning(
     # test's warning boundary.
     gc.collect()
     with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
-        radio = IcomRadio("192.168.1.1")
+        radio = IcomRadio("192.168.1.1", model="IC-7610")
         assert radio._conn_state == RadioConnectionState.DISCONNECTED
         del radio
         gc.collect()

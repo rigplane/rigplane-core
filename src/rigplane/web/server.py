@@ -738,7 +738,6 @@ class WebServer:
     ) -> None:
         self._radio = radio
         self._config = config or WebConfig()
-        self._profile_fallback_warned = False
         self._state_diagnostics = StateDiagnosticsRecorder(
             enabled=self._config.state_diagnostics
         )
@@ -967,19 +966,12 @@ class WebServer:
                 return resolve_radio_profile(model=candidate)
             except KeyError:
                 continue
-        # Unknown model: use the library-wide default resolution chain
-        # (reference LAN rig → any LAN rig → first loaded profile) and say
-        # so — never silently impersonate IC-7610 (MOR-174).
-        fallback = resolve_radio_profile()
-        if not self._profile_fallback_warned:
-            self._profile_fallback_warned = True
-            logger.warning(
-                "No rig profile matches radio model %r; falling back to %r — "
-                "capabilities, scope and CI-V behavior may not match the radio",
-                candidates[0] if candidates else self._config.radio_model,
-                fallback.model,
-            )
-        return fallback
+        # No candidate identified the radio (missing/blank model on both the
+        # radio and the config) or every candidate failed to resolve:
+        # resolve_radio_profile() itself now refuses rather than guessing a
+        # default profile (plan §8.1 Q5) — propagate that refusal instead of
+        # impersonating some other rig.
+        return resolve_radio_profile()
 
     def _projected_runtime_capabilities(self) -> set[str]:
         """Return runtime tags with VFO primitives trusted only from a profile."""

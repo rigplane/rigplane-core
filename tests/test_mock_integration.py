@@ -31,6 +31,7 @@ class TestConnect:
             port=mock_radio.control_port,
             username="testuser",
             password="testpass",
+            model="IC-7610",
         )
         with fast_connect():
             await radio.connect()
@@ -46,6 +47,7 @@ class TestConnect:
                 port=mock_radio.control_port,
                 username="testuser",
                 password="testpass",
+                model="IC-7610",
             ) as radio:
                 assert radio.connected
         # After __aexit__, should be disconnected
@@ -59,6 +61,7 @@ class TestConnect:
             port=mock_radio.control_port,
             username="wronguser",
             password="wrongpass",
+            model="IC-7610",
         )
         with fast_connect():
             with pytest.raises(AuthenticationError):
@@ -76,6 +79,7 @@ class TestConnect:
                     port=mock_radio.control_port,
                     username="testuser",
                     password="testpass",
+                    model="IC-7610",
                 )
                 await radio.connect()
                 assert radio.connected

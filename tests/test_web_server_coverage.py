@@ -517,7 +517,7 @@ def test_state_store_s_meter_change_broadcasts_without_legacy_revision_event() -
 
 @pytest.mark.asyncio
 async def test_control_run_initial_full_state_counts_registered_client() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     ws = _RunOnceControlWs()
     handler = ControlHandler(ws, None, "0.0.0-test", "IC-TEST", server=srv)
 
@@ -531,7 +531,7 @@ async def test_control_run_initial_full_state_counts_registered_client() -> None
 
 
 def test_control_queue_lifecycle_broadcasts_ws_client_count_changes() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     observer: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
     peer: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
     srv.register_control_event_queue(observer)
@@ -550,7 +550,7 @@ def test_control_queue_lifecycle_broadcasts_ws_client_count_changes() -> None:
 
 
 def test_ws_client_lifecycle_delta_includes_public_state_sequence() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     observer: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
     peer: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
     first_envelope = srv.register_control_event_queue(observer)
@@ -576,7 +576,7 @@ def test_ws_client_lifecycle_delta_includes_public_state_sequence() -> None:
 
 @pytest.mark.asyncio
 async def test_scope_lifecycle_broadcasts_ws_client_count_changes() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     observer: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
     scope_handler = object()
     srv.register_control_event_queue(observer)
@@ -596,7 +596,7 @@ async def test_scope_lifecycle_broadcasts_ws_client_count_changes() -> None:
 
 @pytest.mark.asyncio
 async def test_audio_rx_lifecycle_broadcasts_ws_client_count_changes() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     observer: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
     srv.register_control_event_queue(observer)
     _drain_queue(observer)
@@ -919,7 +919,7 @@ async def test_http_power_is_lifecycle_only_until_provider_observation() -> None
         capabilities={"power_control"},
         set_powerstat=AsyncMock(),
     )
-    srv = WebServer(radio, WebConfig())
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
     srv._radio_state.power_on = True  # noqa: SLF001
     state_change = MagicMock()
     srv._on_radio_state_change = state_change  # type: ignore[method-assign]
@@ -1160,7 +1160,7 @@ async def test_set_freq_optimistic_overlay_suppressed_during_external_cat() -> N
         capabilities=set(),
         external_cat_session_active=True,
     )
-    srv = WebServer(radio, WebConfig())
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
     srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
 
     freq_path = FieldPath.active("0", "freq_mode", "freq_hz")
@@ -1365,7 +1365,7 @@ async def test_set_mod_input_overlay_yields_to_newer_external_readback() -> None
     # with a DIFFERENT source must win (last-writer-wins); the optimistic value
     # must not pin the source.
     radio = SimpleNamespace(connected=True, capabilities={"data_mode"})
-    srv = WebServer(radio, WebConfig())
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
     srv.command_queue.put = lambda *a, **k: None  # type: ignore[method-assign]
 
     intent = command_intent_from_request(
@@ -1895,7 +1895,7 @@ async def test_scope_health_and_radio_state_event_paths() -> None:
 async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revision() -> (
     None
 ):
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store.apply(
         _store_observation(
             FieldPath.active("0", "freq_mode", "freq_hz"),
@@ -1940,7 +1940,7 @@ async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revisi
 async def test_same_value_observation_metadata_updates_http_and_initial_ws_full_state() -> (
     None
 ):
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     path = FieldPath.active("0", "freq_mode", "freq_hz")
     srv.command_state_store.apply(
         Observation(
@@ -2008,7 +2008,7 @@ async def test_same_value_observation_metadata_updates_http_and_initial_ws_full_
 
 
 def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
 
     public_state = srv.build_public_state()
 
@@ -2036,7 +2036,7 @@ def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
 
 
 def test_partial_state_store_marks_observed_and_missing_fields_separately() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store.apply(
         _store_observation(
             FieldPath.active("0", "freq_mode", "freq_hz"),
@@ -2075,7 +2075,7 @@ def test_partial_state_store_marks_observed_and_missing_fields_separately() -> N
 def test_meter_only_state_store_change_emits_web_delta_without_legacy_revision() -> (
     None
 ):
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
     srv.command_state_store.apply(
@@ -2116,7 +2116,7 @@ def test_meter_only_state_store_change_emits_web_delta_without_legacy_revision()
 def test_freshness_only_state_store_change_emits_web_delta() -> None:
     clock = FreshnessClock(start=5.0)
     store = StateStore(freshness_clock=clock)
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store = store
     srv.command_service._state_store = store  # noqa: SLF001
     srv._http_command_service._state_store = store  # noqa: SLF001
@@ -2156,7 +2156,7 @@ def test_freshness_only_state_store_change_emits_web_delta() -> None:
 
 
 def test_same_value_observation_metadata_change_emits_web_delta() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
     path = FieldPath.active("0", "freq_mode", "freq_hz")
@@ -2213,7 +2213,7 @@ def test_same_value_observation_metadata_change_emits_web_delta() -> None:
 
 
 def test_initial_full_state_envelope_does_not_consume_broadcast_delta() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
     srv.command_state_store.apply(
@@ -2267,7 +2267,7 @@ def test_state_delivery_contract_is_bound_to_store_generation() -> None:
         _civ_epoch=99,
         managed_tx_generation=123,
     )
-    srv = WebServer(radio)
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
     generation = srv.command_state_store.begin_provider_generation()
 
     envelope = srv.build_state_update_envelope()
@@ -2280,7 +2280,7 @@ def test_state_delivery_contract_is_bound_to_store_generation() -> None:
 
 
 def test_generation_transition_forces_existing_encoder_to_emit_full() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     first = srv.build_state_update_envelope()
     first_seq = first["data"]["publicStateSeq"]
 
@@ -2307,7 +2307,7 @@ def test_lifecycle_observations_are_current_generation_and_idempotent() -> None:
         radio_ready=True,
         capabilities=set(),
     )
-    srv = WebServer(radio)
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
     generation = srv.command_state_store.begin_provider_generation()
 
     srv.build_public_state()
@@ -2342,7 +2342,7 @@ def test_lifecycle_observations_are_current_generation_and_idempotent() -> None:
 def test_lifecycle_retry_after_generation_advance_has_one_complete_current_tuple(
     advance_on_apply: int,
 ) -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     store = _GenerationAdvanceOnApplyStore(advance_on_apply=advance_on_apply)
     srv.command_state_store = store
 
@@ -2379,7 +2379,7 @@ def test_lifecycle_retry_after_generation_advance_has_one_complete_current_tuple
 def test_public_and_ws_retry_when_profile_projection_retires_generation(
     wire: str,
 ) -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     store = srv.command_state_store
     get_profile = srv._get_profile  # noqa: SLF001
     fired = False
@@ -2404,7 +2404,7 @@ def test_public_and_ws_retry_when_profile_projection_retires_generation(
 
 @pytest.mark.asyncio
 async def test_capabilities_retry_when_profile_build_retires_generation() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     store = srv.command_state_store
     get_profile = srv._get_profile  # noqa: SLF001
     fired = False
@@ -2450,7 +2450,7 @@ async def test_continuous_lifecycle_generation_churn_fails_closed_without_state_
 
 @pytest.mark.asyncio
 async def test_http_and_capabilities_share_the_current_store_generation() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     generation = srv.command_state_store.begin_provider_generation()
 
     state_writer = _FakeWriter()
@@ -2500,7 +2500,7 @@ async def test_capabilities_defaults_to_separate_rf_sql_control_model() -> None:
 
 @pytest.mark.asyncio
 async def test_generation_transition_changes_state_etag() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     first_writer = _FakeWriter()
     await srv._serve_state(first_writer)  # noqa: SLF001
     first_header = first_writer.buffer.decode("ascii", errors="replace").split(
@@ -2527,7 +2527,7 @@ async def test_generation_transition_changes_state_etag() -> None:
 async def test_initial_full_state_envelope_revisions_match_ingested_legacy_state() -> (
     None
 ):
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     legacy = RadioState()
     legacy.main.freq = 14_250_000
     legacy.main.mode = "USB"
@@ -2565,7 +2565,7 @@ async def test_state_response_refreshes_live_connection_payload_without_revision
         capabilities: set[str] = set()
 
     radio = _LiveConnectionRadio()
-    srv = WebServer(radio)
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
 
     writer = _FakeWriter()
     await srv._serve_state(writer)  # noqa: SLF001
@@ -2614,7 +2614,7 @@ def test_broadcast_state_update_refreshes_live_connection_payload_without_revisi
         capabilities: set[str] = set()
 
     radio = _LiveConnectionRadio()
-    srv = WebServer(radio)
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     first = srv.register_control_event_queue(q)
     initial = first["data"]
@@ -2633,7 +2633,7 @@ def test_broadcast_state_update_refreshes_live_connection_payload_without_revisi
 
 
 def test_legacy_state_store_sync_can_clear_default_boolean_values() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     transmitting = RadioState()
     transmitting.ptt = True
     srv.sync_state_store_from_radio_state(transmitting)
@@ -2647,7 +2647,7 @@ def test_legacy_state_store_sync_can_clear_default_boolean_values() -> None:
 
 
 def test_legacy_state_store_sync_preserves_receiver_fields() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     legacy = RadioState()
     legacy.main.data_mode = 2
     legacy.main.filter_width = 1_800
@@ -2671,7 +2671,7 @@ def test_legacy_sync_does_not_override_present_store_value_on_contended_path() -
     unlike the existing legacy-sync tests that only fill UNtouched paths.
     """
 
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     path = FieldPath.global_("tx_state", "ptt")
     store_source = SourceMetadata(
         source="civ_unsolicited",
@@ -2700,7 +2700,7 @@ def test_legacy_sync_does_not_override_present_store_value_on_contended_path() -
 
 
 def test_legacy_state_store_sync_can_clear_default_receiver_values() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     legacy = RadioState()
     legacy.main.data_mode = 2
     srv.sync_state_store_from_radio_state(legacy)
@@ -2714,7 +2714,7 @@ def test_legacy_state_store_sync_can_clear_default_receiver_values() -> None:
 
 
 def test_legacy_state_store_sync_preserves_global_rit_on() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     legacy = RadioState()
     legacy.rit_on = True
 
@@ -2726,7 +2726,7 @@ def test_legacy_state_store_sync_preserves_global_rit_on() -> None:
 def test_public_state_uses_ingested_legacy_active_after_state_store_observations() -> (
     None
 ):
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store.apply(
         _store_observation(
             FieldPath.active("0", "freq_mode", "freq_hz"),
@@ -2745,7 +2745,7 @@ def test_public_state_uses_ingested_legacy_active_after_state_store_observations
 
 
 def test_public_state_uses_ingested_legacy_global_toggle_after_observations() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store.apply(
         _store_observation(
             FieldPath.active("0", "freq_mode", "freq_hz"),
@@ -2763,7 +2763,7 @@ def test_public_state_uses_ingested_legacy_global_toggle_after_observations() ->
 
 
 def test_public_state_sync_can_clear_legacy_global_toggle_default() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store.apply(
         _store_observation(
             FieldPath.active("0", "freq_mode", "freq_hz"),
@@ -2785,7 +2785,7 @@ def test_public_state_sync_can_clear_legacy_global_toggle_default() -> None:
 
 @pytest.mark.asyncio
 async def test_http_and_ws_full_state_share_post_sync_legacy_snapshot() -> None:
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store.apply(
         _store_observation(
             FieldPath.active("0", "freq_mode", "freq_hz"),
@@ -3014,7 +3014,7 @@ async def test_send_response_and_run_web_server() -> None:
 @pytest.mark.asyncio
 async def test_broadcast_notification_puts_to_all_queues() -> None:
     """broadcast_notification pushes notification dict to all registered queues."""
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q1: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     q2: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q1)
@@ -3038,7 +3038,7 @@ async def test_broadcast_notification_puts_to_all_queues() -> None:
 @pytest.mark.asyncio
 async def test_broadcast_notification_default_category() -> None:
     """broadcast_notification uses 'system' as default category."""
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
@@ -3051,7 +3051,7 @@ async def test_broadcast_notification_default_category() -> None:
 @pytest.mark.asyncio
 async def test_broadcast_notification_full_queue_no_crash() -> None:
     """broadcast_notification silently skips full queues (dead clients)."""
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=1)
     q.put_nowait({"type": "other"})  # fill the queue
     srv.register_control_event_queue(q)
@@ -3071,7 +3071,7 @@ async def test_broadcast_notification_includes_reason_code_when_set() -> None:
     `params` are present only when the caller supplies them, so legacy
     consumers that only read `message` keep working.
     """
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
@@ -3094,7 +3094,7 @@ async def test_broadcast_notification_includes_reason_code_when_set() -> None:
 @pytest.mark.asyncio
 async def test_broadcast_notification_threads_params_through() -> None:
     """broadcast_notification copies `params` into the payload when provided."""
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
@@ -3114,7 +3114,7 @@ async def test_broadcast_notification_threads_params_through() -> None:
 @pytest.mark.asyncio
 async def test_broadcast_notification_omits_code_for_legacy_path() -> None:
     """Calls without an explicit `code` keep the legacy English-only shape."""
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
 
@@ -3234,7 +3234,7 @@ async def _ack_held(srv: WebServer) -> None:
 
 @pytest.mark.asyncio
 async def test_deferred_lifecycle_is_delivered_only_to_its_issuer() -> None:
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
 
@@ -3281,7 +3281,7 @@ async def test_interlock_refusal_reaches_only_its_issuer_machine_readably(
     reason: str,
 ) -> None:
     """MOR-1879: a failed lifecycle may carry the interlock refusal code."""
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
 
@@ -3347,7 +3347,7 @@ async def test_interlock_refusal_reaches_only_its_issuer_machine_readably(
 async def test_forged_interlock_refusal_details_are_rejected(
     details: dict[str, object],
 ) -> None:
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
 
@@ -3359,7 +3359,7 @@ async def test_forged_interlock_refusal_details_are_rejected(
 
 @pytest.mark.asyncio
 async def test_provider_generation_invalidates_only_active_web_commands() -> None:
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     service = srv.command_service
     service._executor = _StubCommandExecutor()  # noqa: SLF001
@@ -3441,7 +3441,7 @@ def test_provider_generation_subscribers_serialize_reentrant_advances() -> None:
 
 @pytest.mark.asyncio
 async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None:
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
     malformed = _life(
@@ -3503,7 +3503,7 @@ async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None
 async def test_malformed_reconciled_evidence_is_not_delivered(
     details: dict[str, object],
 ) -> None:
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
     event = _life(
@@ -3536,7 +3536,7 @@ async def test_malformed_reconciled_evidence_is_not_delivered(
 async def test_malformed_deferred_lifecycle_is_ignored(
     overrides: dict[str, object],
 ) -> None:
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
 
@@ -3547,7 +3547,7 @@ async def test_malformed_deferred_lifecycle_is_ignored(
 
 @pytest.mark.asyncio
 async def test_deferred_lifecycle_ack_identity_and_bounded_queue() -> None:
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     event = _life()
     srv._on_command_lifecycle_event(event)  # noqa: SLF001
@@ -3584,7 +3584,7 @@ async def test_post_ack_command_failure_notifies_issuer_only() -> None:
     production ``subscribe_lifecycle`` call in ``WebServer.__init__`` must
     turn this test red; a test-side redundant subscribe would mask that.
     """
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
     service = srv.command_service
@@ -3626,7 +3626,7 @@ async def test_command_failure_before_ack_notifies_no_one() -> None:
     as a WS response (and, client-side, as a refusal toast per MOR-1422) —
     a second notification from this seam would be a duplicate.
     """
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     service = _wire_stub_command_service(
         srv, _StubCommandExecutor(raises=ValueError("bad db value"))
@@ -3657,7 +3657,7 @@ async def test_command_timed_out_after_ack_notifies_issuer_only() -> None:
     handlers/control.py's register_control_event_queue(session_id=...)
     call sites runs against production wiring in more than one test.
     """
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
     service = srv.command_service
@@ -3703,7 +3703,7 @@ async def test_target_none_and_scoped_commands_do_not_leak_state_on_success() ->
     acknowledged" from CommandService's own history on demand, so there is
     no WebServer-owned per-command state to leak in the first place.
     """
-    srv = WebServer()
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
     service = _wire_stub_command_service(srv, _StubCommandExecutor())
@@ -3743,7 +3743,7 @@ async def test_state_response_includes_revision_and_updated_at() -> None:
     import datetime as _dt
     import json as _json
 
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     writer = _FakeWriter()
     await srv._serve_state(writer)  # noqa: SLF001
 
@@ -3765,7 +3765,7 @@ async def test_state_response_includes_lifecycle_observations_without_poller() -
     """A first delivery synchronously seeds the Store-owned lifecycle tuple."""
     import json as _json
 
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     assert srv._radio_poller is None  # noqa: SLF001
     writer = _FakeWriter()
     await srv._serve_state(writer)  # noqa: SLF001
@@ -3789,7 +3789,7 @@ async def test_on_radio_state_change_broadcasts_canonical_state_payload() -> Non
     radio.profile.vfo_sub_code = None
     radio.profile.vfo_main_code = None
 
-    srv = WebServer(radio)
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
     queue = BoundedQueue[dict[str, object]](maxsize=4)
     srv.register_control_event_queue(queue)
     srv.command_state_store.apply(
@@ -3865,26 +3865,14 @@ async def test_info_endpoint_returns_structured_capabilities() -> None:
 
 
 @pytest.mark.asyncio
-async def test_info_endpoint_no_radio() -> None:
-    """/api/v1/info works without a radio (all capabilities false)."""
-    import json as _json
-
+async def test_info_endpoint_no_radio_refuses_instead_of_guessing() -> None:
+    """/api/v1/info raises when nothing identifies the radio (plan §8.1
+    Q5) rather than reporting a guessed default profile's capabilities."""
     srv = WebServer(None)
     writer = _FakeWriter()
-    await srv._serve_info(writer)  # noqa: SLF001
 
-    text = writer.buffer.decode("ascii", errors="replace")
-    body_start = text.index("\r\n\r\n") + 4
-    data = _json.loads(text[body_start:])
-    caps = data["capabilities"]
-    assert caps["hasSpectrum"] is False
-    assert caps["hasAudio"] is False
-    assert caps["hasDualReceiver"] is False
-    assert caps["maxReceivers"] == 1
-    assert caps["tags"] == []
-    conn = data["connection"]
-    assert conn["rigConnected"] is False
-    assert conn["radioReady"] is False
+    with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+        await srv._serve_info(writer)  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
@@ -3980,7 +3968,7 @@ class TestCamelCaseState:
         """Integration: _serve_state HTTP response body is camelCase."""
         import json as _json
 
-        srv = WebServer(None)
+        srv = WebServer(None, WebConfig(radio_model="IC-7610"))
         writer = _FakeWriter()
         await srv._serve_state(writer)  # noqa: SLF001
         text = writer.buffer.decode("ascii", errors="replace")
@@ -4004,7 +3992,7 @@ class TestStateEtag:
     @pytest.mark.asyncio
     async def test_state_response_includes_etag(self) -> None:
         """GET /api/v1/state returns an ETag header."""
-        srv = WebServer(None)
+        srv = WebServer(None, WebConfig(radio_model="IC-7610"))
         writer = _FakeWriter()
         await srv._serve_state(writer)
         text = writer.buffer.decode("ascii", errors="replace")
@@ -4016,7 +4004,7 @@ class TestStateEtag:
         """GET /api/v1/state with matching If-None-Match returns 304 and empty body."""
 
         # First request — get the ETag
-        srv = WebServer(None)
+        srv = WebServer(None, WebConfig(radio_model="IC-7610"))
         writer = _FakeWriter()
         await srv._serve_state(writer)
         text = writer.buffer.decode("ascii", errors="replace")
@@ -4049,7 +4037,7 @@ class TestStateEtag:
             capabilities: set[str] = set()
 
         radio = _ConnectionRadio()
-        srv = WebServer(radio)
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
 
         writer = _FakeWriter()
         await srv._serve_state(writer)  # noqa: SLF001
@@ -4073,7 +4061,7 @@ class TestStateEtag:
     @pytest.mark.asyncio
     async def test_state_etag_changes_when_ws_client_counts_change(self) -> None:
         """WS client counts are part of the public state payload and ETag."""
-        srv = WebServer(None)
+        srv = WebServer(None, WebConfig(radio_model="IC-7610"))
 
         writer = _FakeWriter()
         await srv._serve_state(writer)  # noqa: SLF001
@@ -4099,7 +4087,7 @@ class TestStateEtag:
         self,
     ) -> None:
         """publicStateSeq distinguishes repeated live metadata values."""
-        srv = WebServer(None)
+        srv = WebServer(None, WebConfig(radio_model="IC-7610"))
 
         writer = _FakeWriter()
         await srv._serve_state(writer)  # noqa: SLF001
@@ -4153,7 +4141,7 @@ class TestStateEtag:
             capabilities: set[str] = set()
 
         radio = _HealthRadio()
-        srv = WebServer(radio)
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
         writer = _FakeWriter()
         await srv._serve_state(writer)
         text = writer.buffer.decode("ascii", errors="replace")
@@ -4182,7 +4170,7 @@ class TestStateEtag:
         self,
     ) -> None:
         """Same-value observations update fieldStatus and must invalidate ETag."""
-        srv = WebServer(None)
+        srv = WebServer(None, WebConfig(radio_model="IC-7610"))
         path = FieldPath.active("0", "freq_mode", "freq_hz")
         srv.command_state_store.apply(
             Observation(
@@ -4240,7 +4228,7 @@ class TestStateEtag:
     @pytest.mark.asyncio
     async def test_state_200_when_etag_differs(self) -> None:
         """GET /api/v1/state with stale If-None-Match returns 200 with full body."""
-        srv = WebServer(None)
+        srv = WebServer(None, WebConfig(radio_model="IC-7610"))
         writer = _FakeWriter()
         fake_headers = {"if-none-match": '"stale-etag-999"'}
         await srv._serve_state(writer, fake_headers)

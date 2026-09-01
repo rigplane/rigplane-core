@@ -160,7 +160,7 @@ class _TimeoutCivTransport(ConnectMockTransport):
 class TestFailedConnectRetryHygiene:
     async def test_failed_discovery_then_retry_leaves_no_orphans(self) -> None:
         """Stale-LAN-slot: discovery timeout, then a clean successful retry."""
-        radio = IcomRadio("192.168.1.100", username="u", password="p")
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
         ctrl = radio._ctrl_transport  # real IcomTransport — real keepalive tasks
         assert isinstance(ctrl, IcomTransport)
 

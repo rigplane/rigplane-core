@@ -83,7 +83,7 @@ def test_shipped_radio_is_dormant() -> None:
     # must still hold is the invariant that matters: nothing constructs or
     # arms a runtime until PR2, so the facade refuses to bind and the legacy
     # provider path stays untouched.
-    shipped = IcomRadio("127.0.0.1")
+    shipped = IcomRadio("127.0.0.1", model="IC-7610")
 
     assert ManagedTxApi.bind(shipped, _OWNER) is None
     assert ManagedTxApi.bind(object(), _OWNER) is None

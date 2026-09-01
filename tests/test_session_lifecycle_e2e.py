@@ -89,6 +89,7 @@ def _make_radio(sim: MockIcomRadio) -> IcomRadio:
         username="testuser",
         password="testpass",
         timeout=5.0,
+        model="IC-7610",
     )
 
 

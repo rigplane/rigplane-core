@@ -321,7 +321,7 @@ async def test_shutdown_error_is_shared(error: BaseException) -> None:
 
 @pytest.mark.asyncio
 async def test_real_core_radio_keyword_port_binds_effectless_generation() -> None:
-    radio = CoreRadio("127.0.0.1")
+    radio = CoreRadio("127.0.0.1", model="IC-7610")
     rt = runtime(lifecycle=radio)
     changed = await rt.replace_provider(ready=False)
     assert changed.snapshot.provider_generation == 1
@@ -332,7 +332,7 @@ async def test_real_core_radio_keyword_port_binds_effectless_generation() -> Non
 @pytest.mark.asyncio
 async def test_real_core_radio_fresh_read_preserves_healthy_generation() -> None:
     transport = MockTransport()
-    radio = CoreRadio("127.0.0.1", timeout=0.05)
+    radio = CoreRadio("127.0.0.1", timeout=0.05, model="IC-7610")
     radio._civ_transport = transport
     radio._connected = True
     rt = runtime(lifecycle=radio)

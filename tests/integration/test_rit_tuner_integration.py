@@ -279,6 +279,7 @@ async def rit_tuner_radio(
         username="testuser",
         password="testpass",
         timeout=5.0,
+        model="IC-7610",
     )
     with fast_connect():
         await radio.connect()
