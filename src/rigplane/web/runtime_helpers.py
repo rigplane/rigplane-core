@@ -87,6 +87,7 @@ _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "digisel_shift",
     "tone_freq",
     "tsql_freq",
+    "repeater_shift",
     "key_speed",
     "cw_pitch",
     "monitor_gain",
