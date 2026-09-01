@@ -31,9 +31,7 @@
   composes. Skins may not import transport, audioManager or `$lib/stores/*`
   (eslint `FORBIDDEN_SKINS_IMPORTS`, the last of those added by MOR-2039);
   `__tests__/architecture-boundaries.test.ts` exercises that rule for this
-  path. `SdrVfoScreen.svelte` next door is not mounted — MOR-1065 replaced
-  this top slot, and it is kept as the pre-migration prototype reference
-  pending MOR-1099.
+  path.
 -->
 <script lang="ts">
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';

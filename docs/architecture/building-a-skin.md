@@ -62,14 +62,9 @@ own header comment; it is the only place the VFO/RX-TX surfaces meet live
 state, and it is manifest-blind by construction (its own composition is
 fixed, regardless of what a manifest declares beyond `vfo`/`rxTx`).
 
-Two traps in this exact directory, both confirmed against current source
-rather than assumed from comments:
+One trap in this exact directory, confirmed against current source rather
+than assumed from comments:
 
-- `frontend/src/skins/sdr-test/SdrVfoScreen.svelte` is **not mounted by
-  anything**. It is a pre-migration prototype kept as a historical
-  reference pending deletion under MOR-1099 (see that file's own header).
-  Do not use it as a reference for how sdr-test's live wiring works — use
-  `SemanticRadioSurfaces.svelte` instead.
 - `SdrTestSkin.svelte`'s own comment says RadioLayout "branches on
   `skinId === 'sdr-test'`". That described the mechanism before MOR-1313.
   `RadioLayout.svelte`'s own header comment documents the replacement
