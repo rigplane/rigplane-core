@@ -2741,6 +2741,10 @@ class TestIc7300DeclaresAbsentCommands:
             # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
+            # MOR-2105: IC-7300 Advanced Manual (11a) 0x27 sub-command table
+            # (pp.19-7..19-8) runs 1E then 20 -- no 1F row.
+            "get_scope_rbw",
+            "set_scope_rbw",
         }
     )
 

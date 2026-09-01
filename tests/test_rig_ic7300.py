@@ -404,6 +404,12 @@ class TestRemovedCommands:
         assert not cmdmap.has("get_drive_gain")
         assert not cmdmap.has("set_drive_gain")
 
+    def test_no_scope_rbw(self, cmdmap):
+        """MOR-2105: IC-7300 Advanced Manual (11a) 0x27 sub-command table
+        (pp.19-7..19-8) runs 1E then 20 -- no 1F row."""
+        assert not cmdmap.has("get_scope_rbw")
+        assert not cmdmap.has("set_scope_rbw")
+
 
 # ── Spectrum params ────────────────────────────────────────────
 

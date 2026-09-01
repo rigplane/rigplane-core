@@ -1132,7 +1132,11 @@ get_scope_during_tx = [0x27, 0x1B]
 get_scope_center_type = [0x27, 0x1C]
 get_scope_vbw = [0x27, 0x1D]
 get_scope_fixed_edge = [0x27, 0x1E]
-get_scope_rbw = [0x27, 0x1F]
+# MOR-2105: the 0x27 sub-command table (IC-7300 Advanced Manual (11a)
+# pp.19-7..19-8) runs 1E then 20 -- no 1F row. Live bench: scope_rbw.set
+# timed out with no answer, consistent with an unimplemented command.
+get_scope_rbw = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-7..19-8: 0x27 sub-command table runs 1E then 20, no 1F row" }
+set_scope_rbw = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-7..19-8: 0x27 sub-command table runs 1E then 20, no 1F row" }
 
 # ── Scan ──
 scan_start = [0x0E]
