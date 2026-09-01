@@ -216,12 +216,10 @@ command_response_observable = [
     "global.tx_state.vox_on",
     "global.tx_state.monitor_on",
     # MOR-1483 (leg 2): voxDelay (1A-05 ctl-mem 01-91, this radio's control
-    # number — see docs/validation/cat-audits/ic7300.md) is now addable:
-    # AcquisitionQuerySender's ``sub`` element can carry the CI-V sub-command
-    # byte plus the 2-byte ctl-mem control number as ``bytes``
-    # (IcomCivAcquisitionExecutor._GLOBAL_CTL_MEM_QUERIES), and the ingress
-    # decode already matches this prefix too. Non-polling, same
-    # prime_unobserved mechanism as the toggles above.
+    # number — see docs/validation/cat-audits/ic7300.md) is now addable as
+    # sub=0x05 with data=01 91. The ingress decode already matches this
+    # prefix too. Non-polling, same prime_unobserved mechanism as the toggles
+    # above.
     "global.operator_controls.vox_delay",
     # MOR-1491 (field-policy membership wave, leg 2): filter/PBT facts.
     "receiver.main.active.freq_mode.filter_width",

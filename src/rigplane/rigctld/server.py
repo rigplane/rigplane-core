@@ -28,10 +28,10 @@ from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionRequest,
     AcquisitionScheduler,
+    AcquisitionQuery,
     RadioStateModelService,
     StateFreshnessService,
     civ_acquisition_executor_for_provider,
-    split_ctl_mem_sub,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import FieldPath
@@ -563,43 +563,32 @@ class RigctldServer:
 
     async def _send_one_state_query(
         self,
-        cmd_byte: int,
-        sub_byte: int | bytes | None,
-        receiver: int | None,
+        query: AcquisitionQuery,
     ) -> None:
         """Send a single acquisition-scheduler CI-V state query.
 
-        ``sub_byte`` is ``bytes`` only for multi-byte ctl-mem sub-addressing
-        (0x1A/0x05 "quick set" reads, e.g. voxDelay, MOR-1483) — always a
-        global (``receiver is None``) read today, so only the final branch
-        below needs to split it via ``split_ctl_mem_sub``.
+        The lossless query envelope keeps the CI-V sub-command, payload data,
+        and optional cmd29 receiver route separate.
         """
         radio = self._radio
         if not isinstance(radio, CivCommandCapable):
             raise _AcquisitionExecutorUnavailable(
                 "radio does not support CI-V state acquisition sends"
             )
-        if receiver is not None:
-            assert not isinstance(sub_byte, (bytes, bytearray)), (
-                "multi-byte ctl-mem sub-addressing is global-only (receiver=None)"
+        if query.receiver is not None:
+            inner = bytes([query.receiver, query.command])
+            if query.sub is not None:
+                inner += bytes([query.sub])
+            await radio.send_civ(
+                0x29,
+                data=inner + query.data,
+                wait_response=False,
             )
-            if cmd_byte in (0x25, 0x26):
-                await radio.send_civ(
-                    cmd_byte,
-                    data=bytes([receiver]),
-                    wait_response=False,
-                )
-                return
-            inner = bytes([receiver, cmd_byte])
-            if sub_byte is not None:
-                inner += bytes([sub_byte])
-            await radio.send_civ(0x29, data=inner, wait_response=False)
             return
-        civ_sub, extra_data = split_ctl_mem_sub(sub_byte)
         await radio.send_civ(
-            cmd_byte,
-            sub=civ_sub,
-            data=extra_data,
+            query.command,
+            sub=query.sub,
+            data=query.data,
             wait_response=False,
         )
 
