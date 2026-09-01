@@ -113,10 +113,7 @@ describe('every shipped design-language manifest declares at least one compatibl
  * decided will never carry design-language chrome (`lcd-cockpit`,
  * `lcd-scope`, `mobile`, `sdr-test` below). The distinction is recorded here,
  * on the layout side, as `LAYOUT_EXEMPTIONS` — an explicit list with a reason
- * per entry — rather than as a full language×layout matrix, which was
- * considered and deferred under the rule of three (only two design languages
- * are shipped today; a matrix generalizes over a count that does not exist
- * yet).
+ * per entry — rather than as a full language×layout matrix.
  *
  * A layout counts as "mentioned" the moment ANY shipped language's
  * `layoutCompatibility` names it — a `compatible: true` entry and a
