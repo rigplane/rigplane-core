@@ -582,7 +582,11 @@ or match a reply to a request the code itself just sent, so the code already
 knows which command it is dealing with. `_civ_rx.py` decodes frames the radio
 sends unprompted: it has bytes and must recover a name. `CommandMap`
 (`commands/command_map.py`) offers `get`, `has`, `__iter__`, `__len__` and
-`__repr__` — name to bytes only.
+`__repr__` — name to bytes only. This was the pre-Z2 surface observed for this
+historical census. It is superseded by merged [PR #2941](https://github.com/rigplane/rigplane-core/pull/2941):
+`commands/command_map.py: ReverseCommandIndex` now supplies the per-profile
+reverse surface described by
+[`2026-09-01-reverse-command-index.md`](2026-09-01-reverse-command-index.md).
 
 **The reverse index is not injective, and not marginally so.** *Measured* by
 loading each profile and inverting `RigConfig.to_command_map` twice — once into
@@ -612,12 +616,12 @@ names on one tuple. On IC-705, `0E` resolves to
 the ordinary get/set pair: `07` is `{get_vfo, set_vfo}`, `11` is
 `{get_attenuator, set_attenuator}`.
 
-**What that means for the design.** A reverse index alone answers neither
-consumer. What closes the gap is a small rule set — payload absent means a
-read, payload `00` or `01` distinguishes these two writes — and the important
-property is that those rules are **per radio language, not per model**: the
-get/set-by-payload convention is a fact about CI-V, not about an IC-7300. That
-is exactly the category C8.7 already lists as what a profile will never supply.
+**What that meant for the design at the time.** The payload-absence / `00` / `01`
+direction rule below was a historical hypothesis, not the current contract. It
+is superseded by merged [PR #2941](https://github.com/rigplane/rigplane-core/pull/2941)
+and [`2026-09-01-reverse-command-index.md`](2026-09-01-reverse-command-index.md):
+all prefix-compatible declared names remain candidates; only a singleton
+resolves; request or direction context is required to disambiguate the rest.
 
 So the reverse index and the per-language rules are **one deliverable with
 three customers**: `runtime/_civ_rx.py`, the single double of C8, and any
@@ -720,4 +724,3 @@ ordered, sized and pinned to named tests in:
 | All ten owner rulings — D1, D2, and Q3–Q8 | plan §8.1 |
 
 Neither document is complete on its own.
-

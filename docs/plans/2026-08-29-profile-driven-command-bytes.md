@@ -796,6 +796,12 @@ until MOR-1993 lands, unsolicited frames are still decoded against
 IC-7610-era literals, so a radio whose profile disagrees will have its own
 broadcasts misread even after every request and reply is profile-driven.
 
+This is the historical pre-Z2 state, not the current architecture. Merged
+[PR #2941](https://github.com/rigplane/rigplane-core/pull/2941) added the
+per-profile `commands/command_map.py: ReverseCommandIndex`; the current
+contract and remaining migration plan are canonical in
+[`2026-09-01-reverse-command-index.md`](2026-09-01-reverse-command-index.md).
+
 ---
 
 ## 7. What could go wrong
@@ -987,6 +993,12 @@ we send comes from the profile** (§2). Reading an unsolicited frame still
 resolves against `runtime/_civ_rx.py`'s literals until MOR-1993 lands, and
 evidence §C8's single test double stays unbuildable until then too, for the
 same reason.
+
+This Q3 ruling records the historical pre-Z2 state. Merged
+[PR #2941](https://github.com/rigplane/rigplane-core/pull/2941) established
+the per-profile `commands/command_map.py: ReverseCommandIndex`; consult
+[`2026-09-01-reverse-command-index.md`](2026-09-01-reverse-command-index.md)
+for the canonical current contract and migration sequence.
 
 **Q4 — The temporary measurement hook's charter exception is approved,
 bounded.** Step 1's logging wrapper installed over the exported builders at
