@@ -39,6 +39,10 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.rig_loader import load_rig
+from _acquisition_query_helpers import (
+    acquisition_query,
+    recording_executor,
+)
 
 
 RIGS_DIR = Path(__file__).parents[1] / "rigs"
@@ -806,14 +810,7 @@ def test_ic7610_real_profile_stale_active_rit_xit_acquisition_can_send_queries()
     store.mark_stale_due()
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
     service = RadioStateModelService(store=store, scheduler=scheduler, clock=clock)
-    sent: list[tuple[int, int | None, int | None]] = []
-
-    async def send_query(
-        command: int,
-        sub: int | None,
-        receiver: int | None,
-    ) -> None:
-        sent.append((command, sub, receiver))
+    executor, sent = recording_executor()
 
     result = service.ensure_fresh(
         tuple(path for path, _value in paths_and_values),
@@ -826,7 +823,6 @@ def test_ic7610_real_profile_stale_active_rit_xit_acquisition_can_send_queries()
     requests = scheduler.pending_requests()
     requested_paths = {path for request in requests for path in request.paths}
     assert requested_paths >= {path for path, _value in paths_and_values}
-    executor = IcomCivAcquisitionExecutor(send_query)
     for request in requests:
         execution = asyncio.run(
             executor.execute(request, already_sent_paths=frozenset())
@@ -835,10 +831,10 @@ def test_ic7610_real_profile_stale_active_rit_xit_acquisition_can_send_queries()
 
     assert len(sent) == 4
     assert set(sent) == {
-        (0x07, 0xD2, None),
-        (0x21, 0x00, None),
-        (0x21, 0x01, None),
-        (0x21, 0x02, None),
+        acquisition_query(0x07, data=b"\xd2"),
+        acquisition_query(0x21, sub=0x00),
+        acquisition_query(0x21, sub=0x01),
+        acquisition_query(0x21, sub=0x02),
     }
 
 
@@ -860,16 +856,7 @@ def test_ic7610_real_profile_freq_mode_are_pollable_and_emit_25_26() -> None:
     due_paths = {path for request in requests for path in request.paths}
     assert set(freq_mode_paths) <= due_paths
 
-    sent: list[tuple[int, int | None, int | None]] = []
-
-    async def send_query(
-        command: int,
-        sub: int | None,
-        receiver: int | None,
-    ) -> None:
-        sent.append((command, sub, receiver))
-
-    executor = IcomCivAcquisitionExecutor(send_query)
+    executor, sent = recording_executor()
     for request in requests:
         if not any(path in freq_mode_paths for path in request.paths):
             continue
@@ -878,9 +865,12 @@ def test_ic7610_real_profile_freq_mode_are_pollable_and_emit_25_26() -> None:
         )
         assert execution.failed_paths == ()
 
-    assert {(0x25, None, 0), (0x25, None, 1), (0x26, None, 0), (0x26, None, 1)} <= set(
-        sent
-    )
+    assert {
+        acquisition_query(0x25, selector=0),
+        acquisition_query(0x25, selector=1),
+        acquisition_query(0x26, selector=0),
+        acquisition_query(0x26, selector=1),
+    } <= set(sent)
 
 
 def test_ic7610_real_profile_ptt_is_pollable_and_emits_bare_1c00_read() -> None:
@@ -905,21 +895,11 @@ def test_ic7610_real_profile_ptt_is_pollable_and_emits_bare_1c00_read() -> None:
     due_paths = {path for request in requests for path in request.paths}
     assert ptt in due_paths
 
-    sent: list[tuple[int, int | None, int | None]] = []
-
-    async def send_query(
-        command: int,
-        sub: int | None,
-        receiver: int | None,
-    ) -> None:
-        sent.append((command, sub, receiver))
-
-    executor = IcomCivAcquisitionExecutor(send_query)
+    executor, sent = recording_executor()
 
     # The poll query is a pure READ of 0x1C 0x00 with no receiver/data byte;
-    # a data byte would key TX, and the third tuple element is the receiver
-    # index (None here), never a payload.
-    assert executor.query_for_path(ptt) == (0x1C, 0x00, None)
+    # a data byte would key TX, while this global read has no receiver route.
+    assert executor.query_for_path(ptt) == acquisition_query(0x1C, sub=0x00)
 
     for request in requests:
         if ptt not in request.paths:
@@ -928,28 +908,23 @@ def test_ic7610_real_profile_ptt_is_pollable_and_emits_bare_1c00_read() -> None:
             executor.execute(request, already_sent_paths=frozenset())
         )
         assert execution.failed_paths == ()
-    assert (0x1C, 0x00, None) in sent
+    assert acquisition_query(0x1C, sub=0x00) in sent
 
 
 def test_ic7610_real_profile_att_preamp_squelch_query_for_path() -> None:
-    sent: list[tuple[int, int | None, int | None]] = []
-
-    async def send_query(
-        command: int,
-        sub: int | None,
-        receiver: int | None,
-    ) -> None:
-        sent.append((command, sub, receiver))
-
-    executor = IcomCivAcquisitionExecutor(send_query)
+    executor, sent = recording_executor()
 
     att = FieldPath.receiver("main", "operator_controls", "att")
     preamp = FieldPath.receiver("main", "operator_controls", "preamp")
     squelch = FieldPath.receiver("main", "operator_controls", "squelch")
 
-    assert executor.query_for_path(att) == (0x11, None, 0)
-    assert executor.query_for_path(preamp) == (0x16, 0x02, 0)
-    assert executor.query_for_path(squelch) == (0x14, 0x03, 0)
+    assert executor.query_for_path(att) == acquisition_query(0x11, receiver=0)
+    assert executor.query_for_path(preamp) == acquisition_query(
+        0x16, sub=0x02, receiver=0
+    )
+    assert executor.query_for_path(squelch) == acquisition_query(
+        0x14, sub=0x03, receiver=0
+    )
 
 
 def test_ic7610_global_meter_query_for_path() -> None:
@@ -958,16 +933,7 @@ def test_ic7610_global_meter_query_for_path() -> None:
     power/swr/alc already mapped; comp/vd/id were missing, so on a
     scheduler-only radio (IC-7610) they were never polled and rendered 0.
     """
-    sent: list[tuple[int, int | None, int | None]] = []
-
-    async def send_query(
-        command: int,
-        sub: int | None,
-        receiver: int | None,
-    ) -> None:
-        sent.append((command, sub, receiver))
-
-    executor = IcomCivAcquisitionExecutor(send_query)
+    executor, sent = recording_executor()
 
     power = FieldPath.global_("meters", "power")
     swr = FieldPath.global_("meters", "swr")
@@ -976,12 +942,12 @@ def test_ic7610_global_meter_query_for_path() -> None:
     vd = FieldPath.global_("meters", "vd")
     id_ = FieldPath.global_("meters", "id")
 
-    assert executor.query_for_path(power) == (0x15, 0x11, None)
-    assert executor.query_for_path(swr) == (0x15, 0x12, None)
-    assert executor.query_for_path(alc) == (0x15, 0x13, None)
-    assert executor.query_for_path(comp) == (0x15, 0x14, None)
-    assert executor.query_for_path(vd) == (0x15, 0x15, None)
-    assert executor.query_for_path(id_) == (0x15, 0x16, None)
+    assert executor.query_for_path(power) == acquisition_query(0x15, sub=0x11)
+    assert executor.query_for_path(swr) == acquisition_query(0x15, sub=0x12)
+    assert executor.query_for_path(alc) == acquisition_query(0x15, sub=0x13)
+    assert executor.query_for_path(comp) == acquisition_query(0x15, sub=0x14)
+    assert executor.query_for_path(vd) == acquisition_query(0x15, sub=0x15)
+    assert executor.query_for_path(id_) == acquisition_query(0x15, sub=0x16)
 
 
 def test_ic7610_real_profile_comp_vd_id_meters_are_enrolled_and_sent() -> None:
@@ -1009,14 +975,7 @@ def test_ic7610_real_profile_comp_vd_id_meters_are_enrolled_and_sent() -> None:
     sent: list[FieldPath] = []
     failed: list[FieldPath] = []
 
-    async def send_query(
-        command: int,
-        sub: int | None,
-        receiver: int | None,
-    ) -> None:
-        return None
-
-    executor = IcomCivAcquisitionExecutor(send_query)
+    executor, _queries = recording_executor()
     for request in requests:
         execution = asyncio.run(
             executor.execute(request, already_sent_paths=frozenset())
@@ -1035,16 +994,7 @@ def test_ic7610_real_profile_sub_operator_controls_query_for_path() -> None:
     rf_gain/af_level/squelch route through the 0x14 level subs; att/preamp
     through the non-level mappings — all with the SUB receiver byte (1).
     """
-    sent: list[tuple[int, int | None, int | None]] = []
-
-    async def send_query(
-        command: int,
-        sub: int | None,
-        receiver: int | None,
-    ) -> None:
-        sent.append((command, sub, receiver))
-
-    executor = IcomCivAcquisitionExecutor(send_query)
+    executor, sent = recording_executor()
 
     rf_gain = FieldPath.receiver("sub", "operator_controls", "rf_gain")
     af_level = FieldPath.receiver("sub", "operator_controls", "af_level")
@@ -1052,11 +1002,19 @@ def test_ic7610_real_profile_sub_operator_controls_query_for_path() -> None:
     att = FieldPath.receiver("sub", "operator_controls", "att")
     preamp = FieldPath.receiver("sub", "operator_controls", "preamp")
 
-    assert executor.query_for_path(rf_gain) == (0x14, 0x02, 1)
-    assert executor.query_for_path(af_level) == (0x14, 0x01, 1)
-    assert executor.query_for_path(squelch) == (0x14, 0x03, 1)
-    assert executor.query_for_path(att) == (0x11, None, 1)
-    assert executor.query_for_path(preamp) == (0x16, 0x02, 1)
+    assert executor.query_for_path(rf_gain) == acquisition_query(
+        0x14, sub=0x02, receiver=1
+    )
+    assert executor.query_for_path(af_level) == acquisition_query(
+        0x14, sub=0x01, receiver=1
+    )
+    assert executor.query_for_path(squelch) == acquisition_query(
+        0x14, sub=0x03, receiver=1
+    )
+    assert executor.query_for_path(att) == acquisition_query(0x11, receiver=1)
+    assert executor.query_for_path(preamp) == acquisition_query(
+        0x16, sub=0x02, receiver=1
+    )
 
 
 def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
@@ -1086,16 +1044,7 @@ def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
     due_paths = {path for request in requests for path in request.paths}
     assert set(target_paths) <= due_paths
 
-    sent: list[tuple[int, int | None, int | None]] = []
-
-    async def send_query(
-        command: int,
-        sub: int | None,
-        receiver: int | None,
-    ) -> None:
-        sent.append((command, sub, receiver))
-
-    executor = IcomCivAcquisitionExecutor(send_query)
+    executor, sent = recording_executor()
     for request in requests:
         if not any(path in target_paths for path in request.paths):
             continue
@@ -1105,11 +1054,11 @@ def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
         assert execution.failed_paths == ()
 
     assert {
-        (0x14, 0x02, 0),
-        (0x14, 0x01, 0),
-        (0x11, None, 0),
-        (0x16, 0x02, 0),
-        (0x14, 0x03, 0),
+        acquisition_query(0x14, sub=0x02, receiver=0),
+        acquisition_query(0x14, sub=0x01, receiver=0),
+        acquisition_query(0x11, receiver=0),
+        acquisition_query(0x16, sub=0x02, receiver=0),
+        acquisition_query(0x14, sub=0x03, receiver=0),
     } <= set(sent)
 
 
