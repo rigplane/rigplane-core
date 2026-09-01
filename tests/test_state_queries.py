@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 from collections import Counter
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
 from rigplane.commands._frame import build_civ_frame, decode_wire_tuple
+from rigplane.commands.commander import Priority
 from rigplane.commands.scope import (
     SCOPE_RECEIVER_SELECTOR_SUBS,
     SCOPE_SELECTOR_MAIN,
 )
-from rigplane.runtime._state_queries import build_state_queries
+from rigplane.core.acquisition_scheduler import IcomCivAcquisitionExecutor
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.profiles import resolve_radio_profile
+from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime import _state_queries as state_queries_module
+from rigplane.runtime._state_queries import build_state_queries
+from rigplane.runtime.radio_initial_state import fetch_initial_state
+from rigplane.web.radio_poller import RadioPoller
 from _acquisition_query_helpers import (
     AcquisitionQueryCase,
     acquisition_query,
@@ -29,6 +37,210 @@ from _acquisition_query_helpers import (
 # to be made twice, deliberately (MOR-1981).
 _SELECTOR_SUBS = frozenset({0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1D, 0x1F})
 _BARE_SUBS = frozenset({0x12, 0x13, 0x1B, 0x1C})
+
+_FrameParts = tuple[int, int | None, bytes]
+
+
+class _RecordingCivRadio:
+    def __init__(self) -> None:
+        self.sent: list[_FrameParts] = []
+        self.options: list[tuple[bool, object, bool]] = []
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        wait_response: bool = True,
+        priority: object = None,
+        wait_dispatch: bool = True,
+    ) -> None:
+        self.sent.append((command, sub, b"" if data is None else data))
+        self.options.append((wait_response, priority, wait_dispatch))
+
+
+async def _send_through_initial(query: AcquisitionQueryCase) -> _FrameParts:
+    radio = _RecordingCivRadio()
+    radio._profile = SimpleNamespace(has_lan=True)
+    radio.capabilities = set()
+    radio._INITIAL_STATE_GAP_SERIAL = 0.0
+    radio._INITIAL_STATE_GAP_LAN = 0.0
+    radio._initial_state_fetched = False
+    with patch.object(
+        state_queries_module, "build_state_queries", return_value=[query]
+    ):
+        await fetch_initial_state(radio)  # type: ignore[arg-type]
+    assert radio.options == [(False, None, True)]
+    assert radio._initial_state_fetched is True
+    return radio.sent[0]
+
+
+async def _send_through_web(
+    query: AcquisitionQueryCase,
+    *,
+    scope_receiver: int | None = None,
+) -> _FrameParts:
+    poller = object.__new__(RadioPoller)
+    poller._radio_state = (
+        None
+        if scope_receiver is None
+        else SimpleNamespace(
+            scope_controls=SimpleNamespace(receiver=scope_receiver),
+        )
+    )
+    poller._civ = AsyncMock()
+    await RadioPoller._send_one_state_query(poller, query)  # noqa: SLF001
+    sent = poller._civ.await_args
+    assert sent.kwargs["priority"] is Priority.BACKGROUND
+    assert sent.kwargs["wait_dispatch"] is False
+    return (
+        sent.args[0],
+        sent.kwargs.get("sub"),
+        sent.kwargs.get("data", b""),
+    )
+
+
+async def _send_through_rigctld(query: AcquisitionQueryCase) -> _FrameParts:
+    radio = _RecordingCivRadio()
+    server = object.__new__(RigctldServer)
+    server._radio = radio
+    await RigctldServer._send_one_state_query(server, query)  # noqa: SLF001
+    assert radio.options == [(False, None, True)]
+    return radio.sent[0]
+
+
+@pytest.mark.parametrize(
+    ("wire", "receiver", "expected"),
+    [
+        ((0x18,), None, acquisition_query(0x18)),
+        ((0x16, 0x59), None, acquisition_query(0x16, sub=0x59)),
+        (
+            (0x1A, 0x05, 0x01, 0x91),
+            None,
+            acquisition_query(0x1A, sub=0x05, data=b"\x01\x91"),
+        ),
+        ((0x07, 0xC2), None, acquisition_query(0x07, data=b"\xc2")),
+        ((0x03, 0xAA, 0xBB), None, acquisition_query(0x03, data=b"\xaa\xbb")),
+        ((0x25, 0x01), None, acquisition_query(0x25, selector=1)),
+        ((0x26, 0x00), None, acquisition_query(0x26, selector=0)),
+        (
+            (0x1A, 0x05, 0x01, 0x91),
+            1,
+            acquisition_query(
+                0x1A,
+                sub=0x05,
+                data=b"\x01\x91",
+                receiver=1,
+            ),
+        ),
+    ],
+)
+def test_wire_tuple_converter_preserves_semantic_frame_parts(
+    wire: tuple[int, ...],
+    receiver: int | None,
+    expected: AcquisitionQueryCase,
+) -> None:
+    converter = state_queries_module.acquisition_query_from_wire_tuple
+    assert converter(wire, receiver=receiver) == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        acquisition_query(0x18),
+        acquisition_query(0x16, sub=0x59),
+        acquisition_query(0x1A, sub=0x05, data=b"\x01\x91"),
+        acquisition_query(0x07, data=b"\xc2"),
+        acquisition_query(0x03, data=b"\xaa\xbb"),
+        acquisition_query(0x25, selector=1),
+        acquisition_query(0x26, selector=0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_nonrouting_senders_emit_identical_exact_frames(
+    query: AcquisitionQueryCase,
+) -> None:
+    expected = (query.command, query.sub, query.data)
+    assert await _send_through_initial(query) == expected
+    assert await _send_through_web(query) == expected
+    assert await _send_through_rigctld(query) == expected
+
+
+@pytest.mark.asyncio
+async def test_all_senders_preserve_cmd29_receiver_sub_and_suffix() -> None:
+    query = acquisition_query(
+        0x1A,
+        sub=0x05,
+        data=b"\x01\x91",
+        receiver=1,
+    )
+    expected = (0x29, None, b"\x01\x1a\x05\x01\x91")
+    assert await _send_through_initial(query) == expected
+    assert await _send_through_web(query) == expected
+    assert await _send_through_rigctld(query) == expected
+
+
+@pytest.mark.asyncio
+async def test_web_scope_receiver_rewrite_preserves_data_suffix() -> None:
+    query = acquisition_query(0x27, sub=0x14, data=b"\x00\xaa\xbb")
+    assert await _send_through_web(query, scope_receiver=1) == (
+        0x27,
+        0x14,
+        b"\x01\xaa\xbb",
+    )
+
+
+@pytest.mark.asyncio
+async def test_receiver_zero_fallback_preserves_sub_and_data() -> None:
+    path = FieldPath.receiver("main", "operator_controls", "vox_delay")
+    query = acquisition_query(
+        0x1A,
+        sub=0x05,
+        data=b"\x01\x91",
+        receiver=0,
+    )
+    sent: list[AcquisitionQueryCase] = []
+
+    async def sender(sent_query: AcquisitionQueryCase) -> None:
+        sent.append(sent_query)
+
+    class _PrefixExecutor(IcomCivAcquisitionExecutor):
+        def query_for_path(self, _path: FieldPath) -> AcquisitionQueryCase:
+            return query
+
+    executor = _PrefixExecutor(
+        sender,
+        supports_cmd29=lambda _command, _sub: False,
+    )
+    request = SimpleNamespace(paths=(path,))
+    result = await executor.execute(  # type: ignore[arg-type]
+        request,
+        already_sent_paths=frozenset(),
+    )
+
+    assert sent == [
+        acquisition_query(0x1A, sub=0x05, data=b"\x01\x91"),
+    ]
+    assert result.sent_paths == (path,)
+    assert result.failed_paths == ()
+
+
+@pytest.mark.asyncio
+async def test_executor_does_not_swallow_sender_exception() -> None:
+    path = FieldPath.global_("tx_state", "ptt")
+
+    async def sender(_query: AcquisitionQueryCase) -> None:
+        raise RuntimeError("send failed")
+
+    executor = IcomCivAcquisitionExecutor(sender)
+    request = SimpleNamespace(paths=(path,))
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        await executor.execute(  # type: ignore[arg-type]
+            request,
+            already_sent_paths=frozenset(),
+        )
 
 
 def _scope_queries(
@@ -250,12 +462,9 @@ class TestScopeReceiverSelector:
     ) -> None:
         """The selector is payload, not the cmd29 receiver slot.
 
-        A receiver route uses cmd29 in both senders, which is a different
-        frame entirely and cannot carry scope selector data down that path:
-        ``runtime/radio_initial_state.py: fetch_initial_state`` wraps the
-        sub-command byte alone, and
-        ``web/radio_poller.py: RadioPoller._send_one_state_query`` asserts
-        the combination cannot arise.
+        A receiver route uses cmd29 in every sender, which is a different
+        frame entirely. The query envelope keeps selector data separate from
+        receiver routing, so no sender can confuse one for the other.
         """
         profile = resolve_radio_profile(model=model)
         caps = set(profile.capabilities)
@@ -310,11 +519,11 @@ class TestFetchInitialState:
         await radio._fetch_initial_state()
 
         assert (
-            call(0x25, data=b"\x01", wait_response=False)
+            call(0x25, sub=None, data=b"\x01", wait_response=False)
             in radio.send_civ.await_args_list
         )
         assert (
-            call(0x26, data=b"\x01", wait_response=False)
+            call(0x26, sub=None, data=b"\x01", wait_response=False)
             in radio.send_civ.await_args_list
         )
 
@@ -366,6 +575,7 @@ class TestFetchInitialState:
     @pytest.mark.asyncio
     async def test_send_failure_nonfatal(self, radio) -> None:
         call_count = 0
+        sleep = AsyncMock()
 
         async def flaky_send(*args, **kwargs):
             nonlocal call_count
@@ -374,6 +584,8 @@ class TestFetchInitialState:
                 raise RuntimeError("transient error")
 
         radio.send_civ = flaky_send
-        await radio._fetch_initial_state()
+        with patch("rigplane.runtime.radio_initial_state.asyncio.sleep", new=sleep):
+            await radio._fetch_initial_state()
         assert radio._initial_state_fetched is True
         assert call_count > 0
+        assert sleep.await_count == call_count
