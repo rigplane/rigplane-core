@@ -1517,11 +1517,13 @@ async def test_read_sql_type_is_a_pure_read() -> None:
 @pytest.mark.parametrize(
     ("code", "expected_tone", "expected_tsql"),
     [
-        # CAT ``CT`` P2 "SQL TYPE" codes (FTX-1_CAT_OM_ENG_2507) → neutral
-        # mutually-exclusive CTCSS booleans (Hamlib/Icom convention):
+        # CAT ``CT`` P2 "SQL TYPE" codes (FTX-1_CAT_OM_ENG_2508-C) → the two
+        # independent axes defined by ``RepeaterControlCapable``: repeater_tone
+        # is TX tone ENCODE, repeater_tsql is RX tone-squelch DECODE. Code 2 has
+        # encode ON *and* decode ON, so both booleans are True (MOR-2130).
         (0, False, False),  # CTCSS OFF
         (1, True, False),  # CTCSS ENC ON / DEC OFF ("TONE")
-        (2, False, True),  # CTCSS ENC ON / DEC ON ("TSQL")
+        (2, True, True),  # CTCSS ENC ON / DEC ON ("TSQL")
         (3, False, False),  # DCS — no neutral CTCSS-boolean representation
         (4, False, False),  # PR FREQ — no neutral CTCSS-boolean representation
         (5, False, False),  # REV TONE — no neutral CTCSS-boolean representation
