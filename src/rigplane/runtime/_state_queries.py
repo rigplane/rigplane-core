@@ -153,8 +153,10 @@ def build_state_queries(
     if profile.receiver_count > 1:
         queries.append((0x07, 0xD2, None))  # Active receiver
     if "dual_watch" in capabilities:
-        command, sub, _ = decode_wire_tuple(profile.command_map.get("get_dual_watch"))
-        queries.append((command, sub, None))
+        command, sub, prefix = decode_wire_tuple(
+            profile.command_map.get("get_dual_watch")
+        )
+        queries.append((command, sub if sub is not None else prefix[0], None))
 
     # Common feature queries (data-driven: if radio has the command, poll it)
     _COMMON_FEATURE_QUERIES: list[tuple[int, int]] = [
