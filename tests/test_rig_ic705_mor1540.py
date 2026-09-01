@@ -27,6 +27,7 @@ from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
+from test_poller_poll_priority import logical_civ_call
 from test_radio import MockTransport
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
@@ -86,10 +87,12 @@ class TestPollerSkipsDigiselQuery:
             poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
             await poller._send_query()  # noqa: SLF001
 
-        assert (0x16, 0x4E, b"") not in {
-            (call.args[0], call.kwargs["sub"], call.kwargs["data"])
-            for call in radio.send_civ.await_args_list
-        }
+        assert not any(
+            command == 0x16 and sub == 0x4E
+            for _, command, sub, _ in map(
+                logical_civ_call, radio.send_civ.await_args_list
+            )
+        )
 
 
 class TestD2DocumentaryCommandBytes:

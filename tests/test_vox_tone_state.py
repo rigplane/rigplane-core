@@ -26,6 +26,7 @@ from rigplane.web.radio_poller import (
     SetVoxDelay,
     SetVoxGain,
 )
+from test_poller_poll_priority import logical_civ_call
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -346,27 +347,25 @@ async def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> N
     radio.send_civ = AsyncMock()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
 
-    async def send_state_queries() -> None:
-        for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
-            poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
-            await poller._send_query()  # noqa: SLF001
+    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
+        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
 
-    await send_state_queries()
-
-    frames = {
-        (call.args[0], call.kwargs["sub"], call.kwargs["data"])
-        for call in radio.send_civ.await_args_list
-    }
-    assert (0x29, None, b"\x00\x16\x42") not in frames, (
+    calls = set(map(logical_civ_call, radio.send_civ.await_args_list))
+    assert not any(command == 0x16 and sub == 0x42 for _, command, sub, _ in calls), (
         "repeater_tone should not be polled"
     )
-    assert (0x29, None, b"\x00\x16\x43") not in frames, (
+    assert not any(command == 0x16 and sub == 0x43 for _, command, sub, _ in calls), (
         "repeater_tsql should not be polled"
     )
-    assert (0x29, None, b"\x00\x1b\x00") not in frames, "tone_freq should not be polled"
-    assert (0x29, None, b"\x00\x1b\x01") not in frames, "tsql_freq should not be polled"
-    assert (0x14, 0x16, b"") in frames, "vox_gain not polled"
-    assert (0x14, 0x17, b"") in frames, "anti_vox_gain not polled"
+    assert not any(command == 0x1B and sub == 0x00 for _, command, sub, _ in calls), (
+        "tone_freq should not be polled"
+    )
+    assert not any(command == 0x1B and sub == 0x01 for _, command, sub, _ in calls), (
+        "tsql_freq should not be polled"
+    )
+    assert (None, 0x14, 0x16, b"") in calls, "vox_gain not polled"
+    assert (None, 0x14, 0x17, b"") in calls, "anti_vox_gain not polled"
 
 
 @pytest.mark.asyncio
@@ -385,10 +384,9 @@ async def test_build_state_queries_includes_notch_width() -> None:
         poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
         await poller._send_query()  # noqa: SLF001
 
-    assert (0x16, 0x57, b"") in {
-        (call.args[0], call.kwargs["sub"], call.kwargs["data"])
-        for call in radio.send_civ.await_args_list
-    }, "manual notch width (0x16/0x57) not polled"
+    assert (None, 0x16, 0x57, b"") in set(
+        map(logical_civ_call, radio.send_civ.await_args_list)
+    ), "manual notch width (0x16/0x57) not polled"
 
 
 @pytest.mark.asyncio
@@ -407,10 +405,9 @@ async def test_build_state_queries_includes_break_in_delay() -> None:
         poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
         await poller._send_query()  # noqa: SLF001
 
-    assert (0x14, 0x0F, b"") in {
-        (call.args[0], call.kwargs["sub"], call.kwargs["data"])
-        for call in radio.send_civ.await_args_list
-    }, "break_in_delay (0x14/0x0F) not polled"
+    assert (None, 0x14, 0x0F, b"") in set(
+        map(logical_civ_call, radio.send_civ.await_args_list)
+    ), "break_in_delay (0x14/0x0F) not polled"
 
 
 # ---------------------------------------------------------------------------

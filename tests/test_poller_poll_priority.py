@@ -18,6 +18,7 @@ which drives ``CoreRadio.select_receiver`` against a mocked commander.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import call as mock_call
 
@@ -67,6 +68,28 @@ def _wait_dispatch_of(call) -> object:
     return call.kwargs.get("wait_dispatch")
 
 
+def logical_civ_call(
+    call: Any, *, selected_unselected: bool = False
+) -> tuple[int | None, int, int | None, bytes]:
+    """Normalize a recorded send_civ call to route, command, sub, and data."""
+    command = call.args[0]
+    sub = call.kwargs["sub"]
+    data = call.kwargs["data"]
+    if command == 0x29:
+        receiver, command, *inner = data
+        return receiver, command, inner[0] if inner else None, bytes(inner[1:])
+    if (
+        selected_unselected
+        and command in (0x25, 0x26)
+        and sub is None
+        and data == b"\x01"
+    ):
+        return None, command, 0x01, b""
+    if command in (0x25, 0x26) and sub is None and data in (b"\x00", b"\x01"):
+        return data[0], command, None, b""
+    return None, command, sub, data
+
+
 @pytest.mark.asyncio
 async def test_meter_poll_sends_background_priority() -> None:
     radio = _make_radio(active="MAIN")
@@ -86,12 +109,17 @@ async def test_state_query_sends_background_priority() -> None:
     radio = _make_radio(active="MAIN")
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    poller._poll_index = 1  # noqa: SLF001
-    await poller._send_query()  # noqa: SLF001
+    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
+        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
 
     assert radio.send_civ.await_count >= 1
+    calls = [logical_civ_call(call) for call in radio.send_civ.await_args_list]
+    assert any(receiver is not None for receiver, _, _, _ in calls)
+    assert any(command == 0x18 for _, command, _, _ in calls)
     for call in radio.send_civ.await_args_list:
         assert _priority_of(call) == Priority.BACKGROUND
+        assert _wait_dispatch_of(call) is False
 
 
 @pytest.mark.asyncio
@@ -116,10 +144,14 @@ async def test_state_query_sends_fire_and_forget() -> None:
     radio = _make_radio(active="MAIN")
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    poller._poll_index = 1  # noqa: SLF001
-    await poller._send_query()  # noqa: SLF001
+    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
+        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
+        await poller._send_query()  # noqa: SLF001
 
     assert radio.send_civ.await_count >= 1
+    calls = [logical_civ_call(call) for call in radio.send_civ.await_args_list]
+    assert any(receiver is not None for receiver, _, _, _ in calls)
+    assert any(command == 0x18 for _, command, _, _ in calls)
     for call in radio.send_civ.await_args_list:
         assert _priority_of(call) == Priority.BACKGROUND
         assert _wait_dispatch_of(call) is False
