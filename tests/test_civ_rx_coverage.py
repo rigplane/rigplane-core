@@ -1275,6 +1275,26 @@ def test_update_state_cache_level_af_level(radio: IcomRadio) -> None:
     radio._civ_runtime._update_state_cache_from_frame(frame)
 
 
+def test_update_state_cache_af_level_pins_canonical_four_nibble_value(
+    radio: IcomRadio,
+) -> None:
+    """cmd 0x14 sub 0x01 af_level via the public entry point (Z1a regression pin).
+
+    Forward guard only: this does not go red today — ``_handle_14`` already
+    decodes af_level with the canonical 4-nibble BCD formula and wins over
+    the (now-deleted) diverged 3-nibble inline mirror, so the correct value
+    already appears before this change. It locks that value in through the
+    public ``_update_state_cache_from_frame`` entry point so a later change
+    to the mirror cannot silently regress it.
+    """
+    radio._radio_state = RadioState()
+    frame = _make_frame(cmd=0x14, sub=0x01, data=bytes([0x02, 0x55]))
+
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    assert radio._radio_state.main.af_level == 255
+
+
 def test_update_state_cache_cmd29_sub_level_does_not_overwrite_main(
     radio: IcomRadio,
 ) -> None:
