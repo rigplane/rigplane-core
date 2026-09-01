@@ -173,19 +173,20 @@ When multiple Icom radios are connected via USB simultaneously (e.g. IC-7300 + I
 **`usb_audio_resolve.py`** solves this by correlating USB hub topology:
 
 ```
-Serial port path  →  TTY suffix  →  IORegistry locationID  →  hub prefix (upper 16 bits)
+Serial port path  →  TTY suffix  →  IORegistry locationID
                                                                        │
-USB Audio CODEC entries in IORegistry  →  filter by same hub prefix   │
+USB Audio CODEC entries in IORegistry  →  longest shared locationID   │
+                                          nibble prefix wins           │
                                                                        ▼
-                                          sounddevice index lookup  (by sorted position)
+                                          sounddevice index lookup  (by product-name identity)
                                                                        │
                                                                        ▼
                                           AudioDeviceMapping(rx_device_index, tx_device_index)
 ```
 
 - **macOS**: Full support via `/usr/sbin/ioreg -l`. Zero external deps.
-- **Linux**: Not yet implemented — falls back to name-based selection.
-- **Windows**: Not planned.
+- **Linux**: Implemented via sysfs USB-topology traversal (`_resolve_linux`): the serial port and each ALSA card are resolved to their USB device node, and the card sharing the longest common USB-device path prefix (`_common_usb_path_score`) wins, with `idVendor`/`idProduct` as a tie-break. Exercised by unit tests against a fixture sysfs tree.
+- **Windows**: Implemented via USB PnP topology (`_resolve_windows`): the serial COM port and audio endpoint are matched by their shared parent composite-device instance path, with VID:PID as a fallback. Unit-tested via an injected PnP query; the real PowerShell/WMI enumeration (`_query_windows_pnp_devices`) is, per its own docstring, unvalidated against real Windows hardware.
 
 `UsbAudioDriver` calls `resolve_audio_for_serial_port(serial_port)` when a `serial_port` is provided. If resolution succeeds, the returned device indices take precedence over any name-based or default selection. If resolution fails (platform not supported, `ioreg` missing, or no matching devices), name-based fallback applies.
 
