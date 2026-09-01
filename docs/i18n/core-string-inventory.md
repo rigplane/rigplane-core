@@ -795,7 +795,7 @@ catalog candidates:
 | Batch | Surfaces                                  | Files (approx) | Strings (approx) | Translatable subset |
 |-------|-------------------------------------------|----------------|------------------|---------------------|
 | P0    | shell, status, settings modal, report dialog, mobile sheets, connection/power overlays | ~10            | ~110             | ~95                 |
-| P1    | sidebars, spectrum, panel modals, memory, keyboard help, install/banner controls, BandPlan / EiBi, local extensions, SDR-test skin | ~25            | ~200             | ~80                 |
+| P1    | sidebars, spectrum, panel modals, memory, keyboard help, install/banner controls, BandPlan / EiBi, local extensions | ~25            | ~200             | ~80                 |
 | P2    | demo components, Python CLI, customer docs | ~10 + docs tree | ~550             | requires per-message review |
 | **Total** | All in-scope Core surfaces            | ~45            | ~860             | ~210 user-visible prose strings + glossary-stable labels |
 
