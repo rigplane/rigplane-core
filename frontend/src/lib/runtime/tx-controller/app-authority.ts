@@ -51,7 +51,6 @@ function controllerTarget(facts: TxCapabilityFacts | null): TxTarget {
 export function createAppAuthorityProjector() {
   let epoch = -1; let ordinal = 0;
   let lastPttAt: number | null = null;
-  let needsBaseline = true;
   return (state: ServerState | null, capabilities: Capabilities | null,
     session: ControlSessionTransition): AppAuthorityProjection => {
     const validEpoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0;
@@ -59,7 +58,6 @@ export function createAppAuthorityProjector() {
     if (!lowerEpoch && session.epoch > epoch) {
       epoch = session.epoch;
       lastPttAt = null;
-      needsBaseline = true;
     }
     const currentSession = validEpoch && session.epoch === epoch;
     const controlLive = currentSession && session.state === 'connected';
@@ -73,22 +71,27 @@ export function createAppAuthorityProjector() {
     const status = state?.fieldStatus?.ptt;
     const source = authoritySource(status?.source?.source);
     const at = status?.lastObservedMonotonic;
-    const qualifies = controlLive
+    const fresh = controlLive
       && typeof state?.ptt === 'boolean'
       && status?.observed === true
       && status.freshness === 'fresh'
       && status.availability === 'available'
       && typeof at === 'number'
       && Number.isFinite(at)
-      && source !== 'other'
-      && (lastPttAt === null || at > lastPttAt);
-    const baseline = qualifies && needsBaseline;
-    if (qualifies) { ordinal += 1; lastPttAt = at; needsBaseline = false; }
+      && source !== 'other';
+    // `ordinal`/`lastPttAt` only track WHEN the server's own timestamp moved
+    // forward, so a marker comparison (model.ts: newer()) can still tell two
+    // observations apart. They no longer gate `fresh` itself: the field's own
+    // status (observed/freshness/availability) is the server's contract, and
+    // delivery cadence — whether this projection happens to repeat a
+    // timestamp already seen, e.g. because a delta omitted this field — is a
+    // property of the network, not of the reading.
+    if (fresh && typeof at === 'number' && (lastPttAt === null || at > lastPttAt)) { ordinal += 1; lastPttAt = at; }
     return {
       epoch, facts, modInputSource: inputs.modInputSource, eligibility,
       ptt: {
         value: typeof state?.ptt === 'boolean' ? state.ptt : false,
-        observed: status?.observed === true, fresh: qualifies && !baseline, source,
+        observed: status?.observed === true, fresh, source,
         marker: {
           authorityEpoch: epoch,
           pttObservationSeq: ordinal,
