@@ -1502,7 +1502,7 @@ def test_serial_scope_pacing_profile_is_separate_from_lan(
         device="/dev/ttyUSB0",
         civ_link=_FakeSerialCivLink(),
     )
-    lan_radio = IcomRadio("192.168.55.40")
+    lan_radio = IcomRadio("192.168.55.40", model="IC-7610")
     assert serial_radio._civ_min_interval > lan_radio._civ_min_interval
 
 

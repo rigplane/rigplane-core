@@ -66,7 +66,7 @@ def _build_frame(spec: dict[str, Any]) -> CivFrame:
 @pytest.fixture
 def radio() -> IcomRadio:
     transport = MockTransport()
-    r = IcomRadio("192.168.1.100")
+    r = IcomRadio("192.168.1.100", model="IC-7610")
     r._civ_transport = transport
     r._ctrl_transport = transport
     r._connected = True

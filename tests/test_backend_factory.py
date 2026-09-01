@@ -68,12 +68,13 @@ class TestBackendConfigValidation:
 
 
 class TestCreateRadioFactory:
-    def test_create_radio_builds_lan_backend(self) -> None:
-        radio = create_radio(
-            LanBackendConfig(host="192.168.55.40", username="u", password="p")
-        )
-        assert isinstance(radio, IcomRadio)
-        assert radio.model == "IC-7610"
+    def test_create_radio_lan_backend_refuses_without_a_model(self) -> None:
+        """A LAN backend with no model/profile/radio_addr no longer
+        silently impersonates IC-7610 (plan §8.1 Q5) — it refuses."""
+        with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+            create_radio(
+                LanBackendConfig(host="192.168.55.40", username="u", password="p")
+            )
 
     def test_create_radio_uses_profile_civ_addr_when_model_provided(self) -> None:
         radio = create_radio(LanBackendConfig(host="192.168.55.40", model="IC-7300"))
@@ -119,7 +120,7 @@ class TestCreateRadioFactory:
         assert radio._serial_ptt_mode == "civ"
 
     def test_lan_backend_has_icom_lan_backend_id(self) -> None:
-        radio = create_radio(LanBackendConfig(host="192.168.55.40"))
+        radio = create_radio(LanBackendConfig(host="192.168.55.40", model="IC-7610"))
         assert radio.backend_id == "rigplane"
 
     def test_serial_icom_backend_has_icom_serial_backend_id(self) -> None:

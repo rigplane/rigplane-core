@@ -511,7 +511,7 @@ def test_an_unmanaged_radio_says_so_and_publishes_no_safety_fields() -> None:
     rest — idle phase, no obligation, no conflict — which is the one reading
     this block must never support.
     """
-    payload = build_tx_safety_payload(IcomRadio("127.0.0.1"))
+    payload = build_tx_safety_payload(IcomRadio("127.0.0.1", model="IC-7610"))
 
     assert payload["status"] == "unmanaged"
     for field in ("phase", "lease", "watchdog", "durableOff", "uncertainShutdown"):

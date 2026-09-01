@@ -558,7 +558,16 @@ def resolve_radio_profile(
     model: str | None = None,
     radio_addr: int | None = None,
 ) -> RadioProfile:
-    """Resolve runtime profile from explicit profile/model or CI-V address."""
+    """Resolve a runtime profile from an explicit override or a CI-V address.
+
+    A ``RadioProfile`` or a non-blank profile/model name is a deliberate
+    caller override and always wins over ``radio_addr``. When none of the
+    three identifies the radio — no profile, a ``None`` or
+    blank/whitespace-only model, and either no ``radio_addr`` or one that
+    matches no loaded profile — this raises :class:`ValueError` instead of
+    guessing a default profile (plan §8.1 Q5): an unidentified radio must
+    refuse rather than be silently driven as some other rig.
+    """
     _ensure_loaded()
     if isinstance(profile, RadioProfile):
         return profile
@@ -568,17 +577,11 @@ def resolve_radio_profile(
         return get_radio_profile(model)
     if radio_addr is not None and radio_addr in _by_civ_addr:
         return _by_civ_addr[radio_addr]
-    # Default fallback — prefer IC-7610 (primary LAN reference rig), then any LAN profile
-    profiles = _ensure_loaded()
-    ic7610 = profiles.get("IC-7610")
-    if ic7610 is not None and ic7610.has_lan:
-        return ic7610
-    for p in profiles.values():
-        if p.has_lan:
-            return p
-    if profiles:
-        return next(iter(profiles.values()))
-    raise KeyError("No rig profiles loaded — check rigs/ directory")
+    raise ValueError(
+        "Cannot resolve a radio profile: no profile, model, or matching "
+        "radio_addr identifies the radio. Pass an explicit profile= or "
+        "model= — rigplane no longer guesses a default rig."
+    )
 
 
 def reload_profiles() -> None:

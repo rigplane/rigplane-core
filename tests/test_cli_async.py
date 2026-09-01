@@ -586,7 +586,7 @@ class TestCmdPttManagedIngress:
         # member, so ``isinstance(..., ManagedTxCapable)`` now reads True
         # structurally -- the probe the protocol's own docstring says not to
         # trust. ``bind()`` returning ``None`` is the invariant that matters.)
-        shipped = RuntimeIcomRadio("127.0.0.1")
+        shipped = RuntimeIcomRadio("127.0.0.1", model="IC-7610")
         writes: list[bool] = []
 
         async def _record(on: bool) -> None:

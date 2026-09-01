@@ -74,7 +74,10 @@ class _FakeRadio:
         self.connected = connected
         self.radio_ready = radio_ready_flag
         self.control_connected = False
-        self.model = "IC-TEST"
+        # X6100: resolves (must not raise) but contributes zero VFO tags
+        # (swap/equal codes all None), so it doesn't perturb capability
+        # comparisons keyed off the fake's own declared .capabilities.
+        self.model = "X6100"
         self.conn_state = None
         self._last_civ_data_received = None
         self._civ_ready_idle_timeout = None

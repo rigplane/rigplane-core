@@ -74,7 +74,7 @@ _OWNER = TxOwner(TxSource.SDK, "session")
 
 def _unconnected_radio() -> IcomRadio:
     """A constructed-but-never-connected radio -- no transport, no runtime."""
-    return IcomRadio("127.0.0.1")
+    return IcomRadio("127.0.0.1", model="IC-7610")
 
 
 # --- (a) real class member, not a conjured attribute -----------------------
@@ -112,7 +112,7 @@ def test_unconnected_radio_managed_tx_is_none() -> None:
 
 def test_bare_core_radio_managed_tx_is_none() -> None:
     # Not just the LAN subclass -- the member is inert on the shared base too.
-    radio = CoreRadio("127.0.0.1")
+    radio = CoreRadio("127.0.0.1", model="IC-7610")
 
     assert radio.managed_tx is None
 
@@ -268,7 +268,7 @@ class _AssembledRadio(CoreRadio):
         answers_probe: bool = True,
         host: str = "127.0.0.1",
     ) -> None:
-        super().__init__(host)
+        super().__init__(host, model="IC-7610")
         self.provider = provider
         self.answers_probe = answers_probe
         self.probes: list[bytes] = []

@@ -12,7 +12,7 @@ from test_radio import MockTransport
 
 @pytest.fixture
 def radio() -> IcomRadio:
-    r = IcomRadio("192.168.1.100")
+    r = IcomRadio("192.168.1.100", model="IC-7610")
     mt = MockTransport()
     r._ctrl_transport = mt
     r._connected = True

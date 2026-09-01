@@ -19,7 +19,8 @@ runtime/backend layers consult for routing, validation, and UI surfacing.
 - `KeyboardBinding`, `KeyboardConfig` — UI-surfaced shortcut config.
 - `get_radio_profile(name_or_id)` — registry lookup by model or id.
 - `resolve_radio_profile(profile=, model=, radio_addr=)` — unified
-  resolution entry; falls back to IC-7610 / first LAN-capable profile.
+  resolution entry; raises `ValueError` when none of the three identifies
+  the radio (plan §8.1 Q5 — no silent default profile).
 - `reload_profiles()` — test/dev helper that resets the lazy registry.
 
 `profiles/rig_loader.py` exposes `discover_rigs()` and the TOML schema

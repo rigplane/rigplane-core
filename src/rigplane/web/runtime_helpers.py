@@ -617,8 +617,7 @@ def projected_vfo_capability_tags(
       ``test_unknown_runtime_model_fails_closed_for_reserved_vfo_tags_across_consumers``.
     - A candidate that is not a non-empty string (``radio.model`` absent or
       blank and ``configured_model`` likewise) never reaches
-      ``resolve_radio_profile`` — whose empty-input path silently returns a
-      default rig profile — and instead yields no tags — pinned by
+      ``resolve_radio_profile`` and instead yields no tags — pinned by
       ``test_reserved_vfo_tags_absent_when_no_usable_candidate_model_exists``.
     """
     profile = getattr(radio, "profile", None)

@@ -102,7 +102,7 @@ class TestDspControlCapableSatisfaction:
     """Both IcomRadio and YaesuCatRadio satisfy the extended DspControlCapable."""
 
     def test_icom_radio_is_dsp_control_capable(self) -> None:
-        radio = IcomRadio(host="127.0.0.1", username="x", password="y")
+        radio = IcomRadio(host="127.0.0.1", username="x", password="y", model="IC-7610")
         assert isinstance(radio, DspControlCapable)
 
     def test_yaesu_cat_radio_is_dsp_control_capable(self) -> None:
@@ -131,7 +131,7 @@ class TestDspControlCapableSatisfaction:
 # ---------------------------------------------------------------------------
 
 
-def _connected_icom(*, model: str | None = None) -> IcomRadio:
+def _connected_icom(*, model: str | None = "IC-7610") -> IcomRadio:
     """Build a minimally-connected IcomRadio for unit tests."""
     kwargs: dict[str, str] = {}
     if model is not None:

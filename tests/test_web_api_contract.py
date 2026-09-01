@@ -250,7 +250,10 @@ def test_command_batch_docs_use_numeric_data_mode_contract() -> None:
 
 @pytest.mark.asyncio
 async def test_stable_http_payloads_satisfy_required_field_contract() -> None:
-    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, auth_token="token"))
+    srv = WebServer(
+        None,
+        WebConfig(host="127.0.0.1", port=0, auth_token="token", radio_model="IC-7610"),
+    )
     srv._server = type(  # noqa: SLF001
         "_Server",
         (),

@@ -333,7 +333,7 @@ def test_icom_radio_satisfies_scope_capable_with_extended_surface() -> None:
     from rigplane.radio import IcomRadio
     from rigplane.radio_protocol import ScopeCapable
 
-    radio = IcomRadio(host="")
+    radio = IcomRadio(host="", model="IC-7610")
     assert isinstance(radio, ScopeCapable)
 
     expected_methods = (

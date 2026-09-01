@@ -57,7 +57,7 @@ def _make_radio_with_state() -> IcomRadio:
     """IcomRadio with RadioState wired up for _update_radio_state_from_frame tests."""
     from test_civ_rx_coverage import MockTransport  # type: ignore[import]
 
-    r = IcomRadio("192.168.1.100")
+    r = IcomRadio("192.168.1.100", model="IC-7610")
     r._civ_transport = MockTransport()
     r._ctrl_transport = r._civ_transport
     r._connected = True

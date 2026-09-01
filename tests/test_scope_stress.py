@@ -114,7 +114,7 @@ def _make_scope_udp_packets(count: int) -> list[bytes]:
 def radio_with_mock() -> tuple[IcomRadio, MockTransport]:
     """Radio with mock CIV/ctrl transport, connected state, radio_addr set for scope."""
     t = MockTransport()
-    r = IcomRadio("192.168.1.1")
+    r = IcomRadio("192.168.1.1", model="IC-7610")
     r._civ_transport = t  # type: ignore[assignment]
     r._ctrl_transport = t  # type: ignore[assignment]
     r._connected = True

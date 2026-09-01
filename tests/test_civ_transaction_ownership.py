@@ -30,7 +30,7 @@ def transport() -> MockTransport:
 
 @pytest.fixture
 def radio(transport: MockTransport):
-    r = IcomRadio("192.168.1.100", timeout=0.05)
+    r = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
     r._civ_transport = transport
     r._ctrl_transport = transport
     r._connected = True

@@ -426,7 +426,12 @@ class TestWebServerDXBroadcast:
         """_broadcast_dx_spot() pushes dx_spot message to control event queues."""
         from rigplane.web.server import WebConfig, WebServer
 
-        config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+        config = WebConfig(
+            host="127.0.0.1",
+            port=0,
+            keepalive_interval=9999.0,
+            radio_model="IC-7610",
+        )
         srv = WebServer(None, config)
 
         q: asyncio.Queue = asyncio.Queue()
@@ -507,7 +512,12 @@ class TestWebServerDXBroadcast:
         from rigplane.web.server import WebConfig, WebServer
         from rigplane.web.websocket import WS_OP_TEXT, WebSocketConnection
 
-        config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+        config = WebConfig(
+            host="127.0.0.1",
+            port=0,
+            keepalive_interval=9999.0,
+            radio_model="IC-7610",
+        )
         srv = WebServer(None, config)
 
         spot = DXSpot(spotter="K1ABC", freq=14074000, call="JA1XYZ")

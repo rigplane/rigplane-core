@@ -989,7 +989,7 @@ def _ack_udp() -> bytes:
 @pytest.fixture
 def radio_with_mock() -> tuple[IcomRadio, MockTransport]:
     t = MockTransport()
-    r = IcomRadio("192.168.1.1")
+    r = IcomRadio("192.168.1.1", model="IC-7610")
     r._civ_transport = t  # type: ignore[assignment]
     r._ctrl_transport = t  # type: ignore[assignment]
     r._connected = True
