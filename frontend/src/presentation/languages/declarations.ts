@@ -10,14 +10,17 @@
  * which retires the shared placeholder bundle that used to stand in for it.
  * The contract's `var(--accent)` default is deliberately left untouched.
  *
- * The two bundles are imported under family-qualified aliases because they
- * export the same three renderer names: that symmetry IS the proof — the
- * second language plugs into identical slots with no contract change.
+ * Each bundle is imported under family-qualified aliases because all three
+ * export the same three renderer names: that symmetry IS the proof — every
+ * language plugs into identical slots with no contract change. Below,
+ * studioline and fieldline (MOR-1073/1074) illustrate the pattern first;
+ * segmentline (MOR-2148/2149) follows it identically further down.
  *
- * MOR-2148 registers `segmentline`, the amber-LCD instrument family, as
- * tokens + stylesheet + manifest only — `renderers: {}`, which
- * `resolveRenderer` (`./contract.ts`) falls back on safely. Renderers are
- * MOR-2149's job.
+ * MOR-2148 registered `segmentline`, the amber-LCD instrument family, as
+ * tokens + stylesheet + manifest only (`renderers: {}`, which
+ * `resolveRenderer` (`./contract.ts`) fell back on safely). MOR-2149 fills
+ * its three renderer slots below, the same way MOR-1073/1074 filled
+ * studioline's and fieldline's.
  *
  * `layoutCompatibility` declares `peer-split: true` and `desktop-v2:
  * false`. Activation matches the resolved `SkinId`, not a
@@ -45,6 +48,9 @@ import { renderFrequency as fieldlineFrequency } from './fieldline/frequency-ren
 import { renderMeter as fieldlineMeter } from './fieldline/meters-renderer';
 import { renderStateFeedback as fieldlineStateFeedback } from './fieldline/state-feedback-renderer';
 import { FIELDLINE_TOKENS } from './fieldline/tokens';
+import { renderFrequency as segmentlineFrequency } from './segmentline/frequency-renderer';
+import { renderMeter as segmentlineMeter } from './segmentline/meters-renderer';
+import { renderStateFeedback as segmentlineStateFeedback } from './segmentline/state-feedback-renderer';
 import { SEGMENTLINE_TOKENS } from './segmentline/tokens';
 
 export const studioline: DesignLanguageManifest = {
@@ -103,9 +109,11 @@ export const segmentline: DesignLanguageManifest = {
       reason: 'segmentline assumes a fixed-native instrument glass; desktop-v2 is fluid chrome.',
     },
   ],
-  // MOR-2149 fills these three slots; `resolveRenderer` falls back to a
-  // safe no-op for an unfilled slot in the meantime.
-  renderers: {},
+  renderers: {
+    frequencyDisplay: segmentlineFrequency,
+    meters: segmentlineMeter,
+    stateFeedback: segmentlineStateFeedback,
+  },
 };
 
 registerDesignLanguage(studioline);
