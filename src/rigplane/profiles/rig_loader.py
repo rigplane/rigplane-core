@@ -30,7 +30,7 @@ from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
     TxInterlockDisposition,
 )
-from rigplane.commands.command_map import CommandMap
+from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 
 __all__ = [
     "RigConfig",
@@ -695,6 +695,8 @@ class RigConfig:
                 published_controls[name] = cast(ControlDomainSpec, published_domain)
             controls = published_controls
 
+        command_map = self.to_command_map()
+
         return RadioProfile(
             id=self.id,
             model=self.model,
@@ -729,7 +731,8 @@ class RigConfig:
                 for name, spec in self.commands.items()
                 if isinstance(spec, AbsentCommandSpec)
             },
-            command_map=self.to_command_map(),
+            command_map=command_map,
+            reverse_index=ReverseCommandIndex(command_map),
             filter_width_min=self.filter_width_min,
             filter_width_max=self.filter_width_max,
             filter_width_encoding=self.filter_width_encoding,

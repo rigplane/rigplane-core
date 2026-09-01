@@ -1,10 +1,29 @@
-"""CommandMap — frozen lookup for CI-V wire bytes by command name."""
+"""CommandMap — frozen lookup for CI-V wire bytes by command name.
+
+Also hosts :class:`ReverseCommandIndex`, the inverse of the map above:
+bytes off the wire to compatible declared command names (Z2 of
+`docs/plans/2026-09-01-reverse-command-index.md`).
+
+**One index per profile, never a union across profiles.** Icom's top-level
+opcodes (the CI-V command byte, e.g. 0x1A) are stable across the family,
+but the ``0x1A 0x05`` menu sub-address space is per-model: the identical
+wire prefix ``1A 05 01 12`` is ``get_scope_edge1_1p6mhz`` on IC-7300,
+``get_civ_transceive`` on IC-7610, and ``get_acc1_mod_level`` on IC-9700 --
+three different meanings, each independently sourced from its own radio's
+CI-V reference guide (verified by grepping ``rigs/ic7300.toml``,
+``rigs/ic7610.toml``, ``rigs/ic9700.toml`` for that exact byte tuple).
+Resolving a frame therefore requires knowing which radio sent it; nothing
+here ever merges two profiles' declared names into one lookup.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 
-__all__ = ["CommandMap"]
+from ._frame import decode_wire_tuple
+
+__all__ = ["CommandMap", "ReverseCommandIndex", "ReverseLookupResult"]
 
 
 class CommandMap:
@@ -63,3 +82,116 @@ class CommandMap:
 
     def __hash__(self) -> int:
         return hash(frozenset(self._commands.items()))
+
+
+@dataclass(frozen=True, slots=True)
+class ReverseLookupResult:
+    """Outcome of :meth:`ReverseCommandIndex.resolve`.
+
+    Exactly one of three states is valid: ``name`` set with no candidates is
+    resolved; ``name`` unset with at least two candidates is ambiguous;
+    ``name`` unset with no candidates is unrecognized. Construction rejects
+    a singleton candidate set and any result carrying both shapes.
+    """
+
+    name: str | None = None
+    candidates: frozenset[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        candidates = frozenset(self.candidates)
+        object.__setattr__(self, "candidates", candidates)
+        if self.name is not None and candidates:
+            raise ValueError("a resolved result cannot also carry candidates")
+        if self.name is None and len(candidates) == 1:
+            raise ValueError("an ambiguous result requires at least two candidates")
+
+    @property
+    def resolved(self) -> bool:
+        return self.name is not None
+
+    @property
+    def ambiguous(self) -> bool:
+        return self.name is None and len(self.candidates) >= 2
+
+    @property
+    def unrecognized(self) -> bool:
+        return self.name is None and not self.candidates
+
+
+class ReverseCommandIndex:
+    """Resolve an incoming ``(command, sub, data)`` frame to candidates.
+
+    Built once per profile from that profile's own :class:`CommandMap`
+    (module docstring: never a union across profiles). Every declared
+    name's wire tuple is decoded with :func:`commands._frame.decode_wire_tuple`
+    -- the same split :func:`commands._frame.parse_civ_frame` uses on a
+    received frame, via the shared :func:`commands._frame.command_carries_sub`
+    predicate, so a tuple grouped here and a frame handed to :meth:`resolve`
+    agree on where the sub-command byte ends and the constant prefix bytes
+    begin.
+
+    Names are grouped by their full ``(command, sub, prefix)`` key --
+    deliberately not collapsed to ``(command, sub)``: on IC-7300 alone the
+    ``0x1A 0x05`` menu family holds 84 distinct prefixes; a
+    ``(command, sub)``-only index would collapse all of them into one
+    bucket and could never name a single one back.
+
+    Every declared prefix under the incoming ``(command, sub)`` that is a
+    byte-prefix of ``data`` remains viable. A single viable name resolves;
+    multiple names are returned as candidates; no viable name is
+    unrecognized. This deliberately retains both a shorter getter prefix and
+    a longer write prefix when the same incoming bytes can be either a getter
+    reply payload or an echoed write. Direction or request context can narrow
+    that set in a later consumer, but payload length alone cannot.
+    """
+
+    __slots__ = ("_buckets",)
+
+    def __init__(self, command_map: CommandMap) -> None:
+        raw: dict[tuple[int, int | None], dict[bytes, set[str]]] = {}
+        for name in command_map:
+            command, sub, prefix = decode_wire_tuple(command_map.get(name))
+            raw.setdefault((command, sub), {}).setdefault(prefix, set()).add(name)
+        self._buckets: dict[tuple[int, int | None], dict[bytes, frozenset[str]]] = {
+            key: {prefix: frozenset(names) for prefix, names in group.items()}
+            for key, group in raw.items()
+        }
+
+    def __eq__(self, other: object) -> bool:
+        """Compare by contents -- the same MOR-2003 reason ``CommandMap.__eq__``
+        above gives: two instances built from the same profile twice (as
+        `tests/test_ftx1_control_domains.py:
+        test_ftx1_scalar_domains_are_exact_loader_published_capabilities`
+        does) must compare equal for ``RadioProfile``'s own field-by-field
+        equality sweep, not by identity.
+        """
+        if not isinstance(other, ReverseCommandIndex):
+            return NotImplemented
+        return self._buckets == other._buckets
+
+    def __hash__(self) -> int:
+        return hash(
+            frozenset(
+                (key, frozenset(group.items())) for key, group in self._buckets.items()
+            )
+        )
+
+    def resolve(
+        self, command: int, sub: int | None, data: bytes
+    ) -> ReverseLookupResult:
+        """Return the enforced candidate outcome for one incoming frame."""
+        bucket = self._buckets.get((command, sub))
+        if not bucket:
+            return ReverseLookupResult()
+
+        candidates = frozenset(
+            name
+            for prefix, names in bucket.items()
+            if data.startswith(prefix)
+            for name in names
+        )
+        if not candidates:
+            return ReverseLookupResult()
+        if len(candidates) == 1:
+            return ReverseLookupResult(name=next(iter(candidates)))
+        return ReverseLookupResult(candidates=candidates)
