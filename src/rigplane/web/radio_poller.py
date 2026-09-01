@@ -3133,22 +3133,30 @@ class RadioPoller:
                     await self.restore_scope_session()
                     logger.info("radio-poller: scope session state restored")
             case SwitchScopeReceiver(receiver=receiver):
-                # Fire-and-forget scope receiver select (0x27 0x12)
+                # Fire-and-forget scope receiver select (0x27 0x12), routed
+                # through the profile-bound command map (self._cmd_map) via
+                # ``_send_cmd`` instead of a hardcoded literal -- a profile
+                # that doesn't declare set_scope_main_sub can now refuse
+                # this write (MOR-2106). ``_send_cmd`` returns False, sending
+                # nothing, on a miss; the mirror/reconfirm/log below are
+                # gated on that return the same way the MOR-2004 SetAgc
+                # branch above gates its state event on ``agc_sent``.
                 self._ensure_receiver_supported(
                     receiver,
                     operation="switch_scope_receiver",
                 )
-                await self._civ(0x27, sub=0x12, data=bytes([receiver]))
-                if self._radio_state:
-                    self._radio_state.scope_controls.receiver = receiver
-                if CAP_SCOPE in self._caps:
-                    await self._reconfirm_scope_field(
-                        "get_scope_receiver", radio.get_scope_receiver
+                sent = await self._send_cmd("set_scope_main_sub", bytes([receiver]))
+                if sent:
+                    if self._radio_state:
+                        self._radio_state.scope_controls.receiver = receiver
+                    if CAP_SCOPE in self._caps:
+                        await self._reconfirm_scope_field(
+                            "get_scope_receiver", radio.get_scope_receiver
+                        )
+                    logger.info(
+                        "radio-poller: scope receiver → %s",
+                        "SUB" if receiver else "MAIN",
                     )
-                logger.info(
-                    "radio-poller: scope receiver → %s",
-                    "SUB" if receiver else "MAIN",
-                )
             case SetScopeDuringTx(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_during_tx(on)

@@ -38,6 +38,7 @@ import pytest
 from rigplane.commands._codec import bcd_encode_value
 from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.command_map import CommandMap
+from rigplane.core.exceptions import CommandError
 from rigplane.core.types import CivFrame, bcd_encode
 from rigplane.runtime.radio import CoreRadio
 
@@ -674,3 +675,100 @@ async def test_set_scope_fixed_edge_reply_shape_comes_from_the_map(
     # its own request's echo; deriving the shape from the same map instead
     # (this call site's retrofit) must not raise here.
     await radio.set_scope_fixed_edge(edge=1, start_hz=1_000_000, end_hz=2_000_000)
+
+
+# MOR-2106: `commands/scope.py: scope_main_sub` (the WRITE builder) used to
+# resolve "get_scope_main_sub" -- the READ key -- through `_build_from_map`,
+# so a profile that declared only the getter (or declared the setter
+# explicitly absent) could not refuse the write: the getter's declared bytes
+# went out regardless. The two tests below build a profile explicitly missing
+# `set_scope_main_sub` (never relying on any shipped `rigs/*.toml` staying
+# that way -- sibling ticket MOR-2105 is editing `rigs/ic7300.toml`) and
+# assert both that `CoreRadio.set_scope_receiver` raises `CommandError`
+# naming the setter key AND that no frame reaches the transport.
+def _drop_command_map_key(cmd_map: CommandMap, key: str) -> CommandMap:
+    return CommandMap({k: cmd_map.get(k) for k in cmd_map if k != key})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+async def test_scope_main_sub_setter_refuses_when_only_getter_declared(
+    model: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile declaring `get_scope_main_sub` but NOT `set_scope_main_sub`
+    must refuse `set_scope_receiver` before any CI-V bytes are sent.
+
+    Pre-fix, this was false: `scope_main_sub` (the write builder) resolved
+    "get_scope_main_sub" through `_build_from_map`, so the getter's declared
+    wire bytes went out on write too, unconditionally.
+    """
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None
+    if not cmd_map.has("get_scope_main_sub"):
+        pytest.skip(f"{model} does not declare get_scope_main_sub")
+
+    mutated_map = _drop_command_map_key(cmd_map, "set_scope_main_sub")
+    mutated_profile = dataclasses.replace(profile, command_map=mutated_map)
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    frames: list[bytes] = []
+
+    async def _record_send_civ_raw(civ: bytes, **kwargs: Any) -> None:
+        frames.append(civ)
+        return None
+
+    monkeypatch.setattr(radio, "_send_civ_raw", _record_send_civ_raw)
+
+    with pytest.raises(CommandError, match="set_scope_main_sub"):
+        await radio.set_scope_receiver(1)
+
+    assert frames == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+async def test_scope_main_sub_setter_refuses_when_declared_absent(
+    model: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stronger form of the test above: `set_scope_main_sub` is declared
+    ABSENT (D1 state 2, `commands/bound.py: BoundCommands._refusal_for`)
+    rather than merely missing (state 3) -- this cannot pass by accident
+    off a KeyError from an unrelated typo, because the refusal message must
+    quote the declared source.
+    """
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None
+    if not cmd_map.has("get_scope_main_sub"):
+        pytest.skip(f"{model} does not declare get_scope_main_sub")
+
+    mutated_map = _drop_command_map_key(cmd_map, "set_scope_main_sub")
+    source = "test fixture (MOR-2106): scope MAIN/SUB write declared absent"
+    mutated_profile = dataclasses.replace(
+        profile,
+        command_map=mutated_map,
+        absent_command_sources={
+            **profile.absent_command_sources,
+            "set_scope_main_sub": source,
+        },
+    )
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    frames: list[bytes] = []
+
+    async def _record_send_civ_raw(civ: bytes, **kwargs: Any) -> None:
+        frames.append(civ)
+        return None
+
+    monkeypatch.setattr(radio, "_send_civ_raw", _record_send_civ_raw)
+
+    with pytest.raises(CommandError, match="set_scope_main_sub") as excinfo:
+        await radio.set_scope_receiver(1)
+
+    assert source in str(excinfo.value)
+    assert frames == []
