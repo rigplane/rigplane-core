@@ -251,14 +251,17 @@ have none.
 ## 9. Viewport reach, and what actually enforces it
 
 The manifest declares `fixed-native` 1280x540 at `minScale: 0.5`. The
-arithmetic that declaration implies:
+arithmetic that declaration implies, and — since `resolveSkinId`'s `isMobile`
+check already runs today, ahead of any layout logic — whether each viewport
+actually reaches `peer-split`, are two different questions with two different
+answers:
 
-| Viewport | Achievable scale | Declared result |
-|---|---|---|
-| 1920x1080 desktop | 1.50 | renders |
-| 1024x768 tablet | 0.80 | renders |
-| 844x390 phone landscape | 0.66 | renders |
-| 390x844 phone portrait | 0.30 | below `minScale` |
+| Viewport | Achievable scale | Declared result | Reaches `peer-split`? |
+|---|---|---|---|
+| 1920x1080 desktop | 1.50 | renders | yes — not `isMobile` |
+| 1024x768 tablet | 0.80 | renders | yes — not `isMobile` |
+| 844x390 phone landscape | 0.66 | renders | no — `isMobile` fires first (`min(844,390)=390<640`) |
+| 390x844 phone portrait | 0.30 | below `minScale` | no — `isMobile` fires first (`min(390,844)=390<640`) |
 
 **`minScale` enforces none of this today.** `fitsViewport` and
 `resolveLayoutForViewport` (`presentation/layouts/contract.ts`) have no
