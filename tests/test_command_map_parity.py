@@ -85,6 +85,7 @@ import pytest
 from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
+from support.command_builders import public_command_builders
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 COMMANDS_DIR = REPO_ROOT / "src" / "rigplane" / "commands"
@@ -213,19 +214,7 @@ def _builders() -> dict[Key, typing.Any]:
     collapses onto the function it aliases instead of being compared twice
     under both names.
     """
-    found: dict[Key, typing.Any] = {}
-    for path in sorted(COMMANDS_DIR.glob("*.py")):
-        if path.stem == "__init__":
-            continue
-        module = importlib.import_module(f"rigplane.commands.{path.stem}")
-        for value in vars(module).values():
-            if not inspect.isfunction(value) or value.__name__.startswith("_"):
-                continue
-            if value.__module__ != module.__name__:
-                continue
-            if "cmd_map" in inspect.signature(value).parameters:
-                found[(path.name, value.__name__)] = value
-    return found
+    return public_command_builders(COMMANDS_DIR)
 
 
 @functools.lru_cache(maxsize=1)
