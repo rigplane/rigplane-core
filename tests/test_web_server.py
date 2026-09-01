@@ -3429,7 +3429,17 @@ class TestRadioPoller:
 
         poller.start()
         queue.put(SetBreakIn(1))
-        await asyncio.sleep(0.03)
+        # MOR-2121: a fixed ``asyncio.sleep(0.03)`` here raced the poller
+        # task's own scheduling under ``pytest -n auto`` on a loaded host --
+        # 30ms is not a guaranteed wall-clock budget for the task to run.
+        # Poll for the awaited call instead of assuming a fixed delay covers
+        # it (same idiom as ``TestHalfOpenWsReaper._wait_until`` above).
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (
+            radio.set_break_in.await_count == 0
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.01)
         poller.stop()
 
         radio.set_break_in.assert_awaited_once_with(1)

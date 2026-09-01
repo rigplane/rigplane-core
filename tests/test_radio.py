@@ -322,8 +322,21 @@ def mock_transport() -> MockTransport:
 def radio(mock_transport: MockTransport):
     """Shared radio fixture with explicit teardown to silence the
     ``Radio collected with active connection/tasks`` __del__ warning
-    from tests that bypass the real connect/disconnect lifecycle."""
-    r = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
+    from tests that bypass the real connect/disconnect lifecycle.
+
+    MOR-2121: ``timeout`` was ``0.05`` (giving ``_civ_get_timeout`` the
+    same 50ms), which raced real event-loop scheduling delay under
+    ``pytest -n auto`` on a loaded host -- a remote-testbed run caught
+    ``TestOperatorToggleParity::test_get_enum_operator_toggle[get_break_in]``
+    raising ``TimeoutError: CI-V response timed out`` from
+    ``_civ_rx.py:_execute_civ_raw``'s ``asyncio.wait_for(pending,
+    timeout=_civ_get_timeout)`` even though ``MockTransport.queue_response``
+    had already queued the answer before the call. ``2.0`` matches the
+    production default cap (``_civ_get_timeout = min(timeout, 2.0)`` in
+    ``runtime/radio.py``) and only widens the margin for a slow host --
+    every test here still resolves as soon as the queued response is
+    processed."""
+    r = IcomRadio("192.168.1.100", timeout=2.0, model="IC-7610")
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
@@ -3283,7 +3296,9 @@ class TestToneTsqlParity:
 
     @pytest.fixture
     def radio(self, mock_transport: MockTransport):
-        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r = IcomRadio(
+            "192.168.1.104", timeout=2.0, model="IC-7300"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3408,7 +3423,9 @@ class TestToneTsqlDualRxCmd29Guard:
 
     @pytest.fixture
     def ic9700_radio(self, mock_transport: MockTransport):
-        r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
+        r = IcomRadio(
+            "192.168.1.102", timeout=2.0, model="IC-9700"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3590,7 +3607,9 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
 
     @pytest.fixture
     def radio(self, mock_transport: MockTransport):
-        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r = IcomRadio(
+            "192.168.1.104", timeout=2.0, model="IC-7300"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3599,11 +3618,12 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
 
     @pytest.fixture
     def ic9700_radio(self, mock_transport: MockTransport):
-        # Same shape as TestToneTsqlDualRxCmd29Guard.ic9700_radio above,
-        # including timeout=0.05. Whether a larger timeout would reduce
-        # this test's flake rate under -n auto is unmeasured and deferred
-        # -- not decided here.
-        r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
+        # Same shape as TestToneTsqlDualRxCmd29Guard.ic9700_radio above.
+        # MOR-2121: was timeout=0.05 -- see radio() fixture above for the
+        # measured mechanism this was previously deferred pending.
+        r = IcomRadio(
+            "192.168.1.102", timeout=2.0, model="IC-9700"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3699,7 +3719,9 @@ class TestRequireReceiverToneMethodsPin:
 
     @pytest.fixture
     def single_rx_radio(self, mock_transport: MockTransport):
-        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r = IcomRadio(
+            "192.168.1.104", timeout=2.0, model="IC-7300"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
