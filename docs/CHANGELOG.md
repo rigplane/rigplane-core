@@ -578,6 +578,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set_tsql_freq` encoded a 100 Hz BCD digit outside its documented 0-2
   range for most tones (88.5 Hz encoded as `00 88 05`, digit 8). The
   released 2.11.1 carries this bug.
+- **FTX-1 `set_sql_type` write template used two digits where the
+  manual documents one (MOR-2104).** `rigs/ftx1.toml`'s write template
+  rendered `CT002;` for squelch-type value 2; the FTX-1 CAT OM ENG
+  2508-C's `CT SQL TYPE` table documents P2 as a single digit (0-5).
+  Narrowed the template to `CT0{type};`, matching the read side's
+  parse, which already used the correct width.
 
 ## [2.11.1] — 2026-06-22
 
