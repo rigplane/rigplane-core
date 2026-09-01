@@ -256,28 +256,24 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
 ) -> None:
     """Keystone case for ``get_dual_watch``, which cannot register in
     ``MATCHER_BACKED_GETTERS`` above: 0x07 carries no CI-V sub-command
-    (``_frame.py: _COMMANDS_WITH_SUB`` excludes it, unlike 0x1A/0x16 for
+    (``_frame.py: command_carries_sub`` excludes it, unlike 0x1A/0x16 for
     the getters above), so its reply marker is echoed in ``data[0]``
     rather than landing in ``.sub`` -- it cannot route through
     ``_get_bcd_level``/``_get_bool_value`` at all, and
     ``runtime/radio.py: CoreRadio.get_dual_watch`` handles both wire
-    shapes itself instead.
+    shapes itself instead, resolving its shape via
+    ``BoundCommands.expect`` directly rather than ``self._expect_shape``
+    (which asserts a non-``None`` ``sub``, wrong for IC-7610's row).
 
     Proven against two profiles whose ``get_dual_watch`` commands are
-    wire-incompatible -- IC-7610's ``[0x07, 0xC2]`` (marker in data[0])
-    and IC-9700's ``[0x16, 0x59]`` (marker in .sub, since 0x16 IS in
-    ``_COMMANDS_WITH_SUB``) -- so a marker hardcoded to either family's
-    byte answers the OTHER family's reply wrongly regardless of the
-    actual on/off value: exactly the "requests moved, replies not"
-    failure mode this file exists to make impossible (plan §7).
-
-    Manually confirmed red for the half-done shape: reverting
-    ``get_dual_watch`` to its pre-migration check (literal
-    ``resp.data[0] == 0xC2``, ignoring ``resp.sub``/the map) makes
-    ``test_ic9700`` below fail -- IC-9700's real reply is
-    ``command=0x16, sub=0x59, data=[value]``, which never contains
-    ``0xC2`` anywhere, so the reverted check would always return
-    ``False`` regardless of the actual toggle state.
+    wire-incompatible -- IC-7610's ``[0x07, 0xC2]`` (marker in data[0],
+    ``sub=None``, so ``BoundCommands.expect`` puts the marker byte at
+    ``prefix[0]`` instead) and IC-9700's ``[0x16, 0x59]`` (marker in
+    .sub, since 0x16 IS in ``command_carries_sub``) -- so a marker
+    hardcoded to either family's byte answers the OTHER family's reply
+    wrongly regardless of the actual on/off value: exactly the "requests
+    moved, replies not" failure mode this file exists to make impossible
+    (plan §7).
     """
 
     async def _get_dual_watch_answering(radio: CoreRadio, frame) -> bool:
@@ -291,7 +287,7 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
     # IC-7610: [0x07, 0xC2] -- 0x07 has no CI-V sub-command, marker in data[0].
     ic7610 = _civ_rig_configs()["IC-7610"].to_profile()
     command, sub, prefix = decode_wire_tuple(ic7610.command_map.get("get_dual_watch"))
-    assert (command, sub, prefix) == (0x07, 0xC2, b"")
+    assert (command, sub, prefix) == (0x07, None, b"\xc2")
     radio_7610 = CoreRadio("198.51.100.1", profile=ic7610)
 
     on_reply = CivFrame(
@@ -311,7 +307,7 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
     )
     assert await _get_dual_watch_answering(radio_7610, wrong_marker) is False
 
-    # IC-9700: [0x16, 0x59] -- 0x16 IS in _COMMANDS_WITH_SUB, marker in .sub.
+    # IC-9700: [0x16, 0x59] -- 0x16 IS in command_carries_sub, marker in .sub.
     ic9700 = _civ_rig_configs()["IC-9700"].to_profile()
     command9700, sub9700, prefix9700 = decode_wire_tuple(
         ic9700.command_map.get("get_dual_watch")

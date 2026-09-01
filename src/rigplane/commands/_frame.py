@@ -266,6 +266,19 @@ _COMMANDS_WITH_SUB: set[int] = {
 }
 
 
+def command_carries_sub(command: int) -> bool:
+    """Whether *command*'s wire bytes include a CI-V sub-command byte.
+
+    The one place this question is answered: :func:`decode_wire_tuple`
+    (splitting a declared ``[commands]`` tuple) and :func:`parse_civ_frame`
+    (splitting a received frame's payload) both call this instead of each
+    keeping its own copy of :data:`_COMMANDS_WITH_SUB`, so a tuple split
+    for a request and a frame split for its reply agree on where the
+    sub-command byte is.
+    """
+    return command in _COMMANDS_WITH_SUB
+
+
 def build_civ_frame(
     to_addr: int,
     from_addr: int,
@@ -342,22 +355,29 @@ def build_cmd29_frame(
 def decode_wire_tuple(wire: tuple[int, ...]) -> tuple[int, int | None, bytes]:
     """Decode one ``[commands]`` wire tuple into ``(command, sub, prefix)``.
 
-    The single decoder named in
-    `docs/plans/2026-08-29-profile-driven-command-bytes.md` §2 ("Exactly one
-    decoder of a `[commands]` wire tuple into `(command, sub, prefix)`") and
-    used by Step 3 (§4) to build `commands/bound.py: BoundCommands.expect`
-    from the same map entry `_build_from_map` builds the request from.
+    The first element is the CI-V command. Whether the next element is a
+    sub-command byte is decided by :func:`command_carries_sub` -- the same
+    predicate :func:`parse_civ_frame` uses to split a received frame's
+    payload, so a reply parsed off the wire agrees with a tuple decoded
+    here on where the sub-command byte is. When the command does not carry
+    one, ``sub`` is ``None`` and that byte stays in ``prefix`` instead.
 
-    The first element is the CI-V command, the second (if present) is the
-    sub-command, and any remaining elements are the frame's further constant
-    bytes -- per the tuple contract ruled in Q7 (§8.1): a tuple holds every
-    constant byte of the frame, whether that is extended menu addressing
-    (e.g. 0x1A 0x05 0x00 0x64 for IC-7300 ACC1 mod level), a selector byte,
-    or a constant payload byte (e.g. 0x1C 0x00 0x01 for X6100 ptt_on).
+    Any remaining elements are the frame's further constant bytes -- per
+    the tuple contract ruled in Q7 (§8.1 of
+    `docs/plans/2026-08-29-profile-driven-command-bytes.md`): a tuple holds
+    every constant byte of the frame, whether that is extended menu
+    addressing (e.g. 0x1A 0x05 0x00 0x64 for IC-7300 ACC1 mod level), a
+    selector byte, or a constant payload byte (e.g. 0x1C 0x00 0x01 for
+    X6100 ptt_on).
     """
     command = wire[0]
-    sub = wire[1] if len(wire) > 1 else None
-    prefix = bytes(wire[2:])
+    rest = wire[1:]
+    if rest and command_carries_sub(command):
+        sub: int | None = rest[0]
+        prefix = bytes(rest[1:])
+    else:
+        sub = None
+        prefix = bytes(rest)
     return command, sub, prefix
 
 
@@ -491,7 +511,7 @@ def parse_civ_frame(data: bytes) -> CivFrame:
         real_command = payload[1]
         inner_payload = payload[2:]
         # Check if real command uses sub-commands
-        if real_command in _COMMANDS_WITH_SUB and len(inner_payload) >= 1:
+        if command_carries_sub(real_command) and len(inner_payload) >= 1:
             return CivFrame(
                 to_addr=to_addr,
                 from_addr=from_addr,
@@ -520,7 +540,7 @@ def parse_civ_frame(data: bytes) -> CivFrame:
         )
 
     # Determine if first payload byte is a sub-command
-    if command in _COMMANDS_WITH_SUB and len(payload) >= 1:
+    if command_carries_sub(command) and len(payload) >= 1:
         return CivFrame(
             to_addr=to_addr,
             from_addr=from_addr,
