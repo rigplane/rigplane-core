@@ -8,10 +8,7 @@
  * family name.
  *
  * Contract instance only. Declares no renderer, imports no runtime, store,
- * transport or radio code. Renderers are MOR-2149's job: the manifest that
- * registers this token set (`../declarations.ts`) ships `renderers: {}`
- * until then, which `resolveRenderer` (`../contract.ts`) falls back on
- * safely — no renderer slot is filled yet.
+ * transport or radio code.
  */
 import type { DesignLanguageTokens } from '../contract';
 

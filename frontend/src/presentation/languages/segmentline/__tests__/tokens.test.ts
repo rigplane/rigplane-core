@@ -121,10 +121,6 @@ describe('segmentline token set implements the MOR-2148 amber-LCD grammar', () =
       },
     ]);
   });
-
-  it('declares no renderers yet — MOR-2149 fills the three slots', () => {
-    expect(Object.keys(segmentline.renderers)).toEqual([]);
-  });
 });
 
 describe('does not lend its token set to studioline or fieldline — the family is independent', () => {
