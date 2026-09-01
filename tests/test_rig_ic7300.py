@@ -5,18 +5,22 @@ TDD: these tests were written FIRST, then the TOML was created to pass them.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from rigplane.commands._codec import filter_hz_to_index, filter_index_to_hz
+from rigplane.core.exceptions import CommandError
 from rigplane.meter_cal import interpolate_meter
+from rigplane.radio import CoreRadio
 from rigplane.rig_loader import load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 IC7300_PATH = RIGS_DIR / "ic7300.toml"
 
-EXPECTED_41_BASELINE = {
+EXPECTED_BASELINE_CAPABILITIES = {
     "audio",
     "af_level",
     "rf_gain",
@@ -28,7 +32,6 @@ EXPECTED_41_BASELINE = {
     "nb",
     "nr",
     "notch",
-    "apf",
     "twin_peak",
     "pbt",
     "filter_width",
@@ -197,7 +200,7 @@ class TestVFOScheme:
 
 
 class TestCapabilities:
-    """IC-7300 capabilities: no dual_rx, digisel; includes ip_plus per wfview."""
+    """IC-7300 capabilities follow the radio-specific profile evidence."""
 
     def test_has_audio(self, profile):
         assert "audio" in profile.capabilities
@@ -213,6 +216,56 @@ class TestCapabilities:
 
     def test_has_nb(self, profile):
         assert "nb" in profile.capabilities
+
+    def test_no_apf_declarations_while_nb_remains_supported(self, profile, cmdmap):
+        raw = tomllib.loads(IC7300_PATH.read_text())
+        acquisition = raw["state_acquisition"]
+        apf_path = "receiver.main.operator_controls.audio_peak_filter"
+
+        assert "apf" not in profile.capabilities
+        assert "apf" not in raw
+        assert not cmdmap.has("get_audio_peak_filter")
+        assert not cmdmap.has("set_audio_peak_filter")
+        assert (
+            apf_path not in acquisition["capabilities"]["command_response_observable"]
+        )
+        assert apf_path not in acquisition["field_policies"]
+
+        assert "nb" in profile.capabilities
+        assert "nb" in raw
+        assert cmdmap.has("get_nb")
+        assert cmdmap.has("set_nb")
+
+    def test_apf_support_is_profile_driven(self, profile):
+        ic7300 = CoreRadio("127.0.0.1", profile=profile)
+        ic7610_profile = load_rig(RIGS_DIR / "ic7610.toml").to_profile()
+        ic7610 = CoreRadio("127.0.0.1", profile=ic7610_profile)
+
+        for command in ("get_audio_peak_filter", "set_audio_peak_filter"):
+            assert command not in CoreRadio._KNOWN_COMMANDS
+            assert command not in profile.command_names
+            assert not ic7300.supports_command(command)
+
+            assert command in ic7610_profile.command_names
+            assert ic7610.supports_command(command)
+
+    @pytest.mark.asyncio
+    async def test_apf_calls_fail_before_wire_when_profile_omits_commands(
+        self, profile
+    ):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        get_wire = AsyncMock()
+        set_wire = AsyncMock()
+        radio._get_bcd_level = get_wire
+        radio._send_fire_and_forget = set_wire
+
+        with pytest.raises(CommandError, match="not declared by this profile"):
+            await radio.get_audio_peak_filter()
+        with pytest.raises(CommandError, match="not declared by this profile"):
+            await radio.set_audio_peak_filter(1)
+
+        get_wire.assert_not_awaited()
+        set_wire.assert_not_awaited()
 
     def test_has_nr(self, profile):
         assert "nr" in profile.capabilities
@@ -233,7 +286,7 @@ class TestCapabilities:
         assert "ip_plus" in profile.capabilities
 
     def test_capabilities_match_pre_speech_baseline(self, profile):
-        assert profile.capabilities - {"speech"} == EXPECTED_41_BASELINE
+        assert profile.capabilities - {"speech"} == EXPECTED_BASELINE_CAPABILITIES
 
 
 # ── Command overrides ──────────────────────────────────────────

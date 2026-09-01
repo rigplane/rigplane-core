@@ -2062,11 +2062,11 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
 ):
     """MOR-1501 acceptance criterion.
 
-    Simulates the real IC-7300 acquisition profile's 23 non-polling
+    Simulates the real IC-7300 acquisition profile's 22 non-polling
     ``field_policies`` fields populating from a cold connect (empty store).
     Before adaptive pacing, the flat 30s re-derivation interval combined
     with the unchanged 5-field burst cap gave this profile a ~120s tail
-    (``ceil(23 / 5) == 5`` waves, 30s apart), even though each field's true
+    (``ceil(22 / 5) == 5`` waves, 30s apart), even though each field's true
     CI-V round-trip cost is ~1.1s — the interval, not the serial link, was
     the bottleneck. With the 5s adaptive interval the same 5 waves complete
     in ~20-25s. This drives the scheduler/service pair directly (no real
@@ -2085,10 +2085,15 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
         for path in acquisition.field_policies
         if not acquisition.capability_for(path).can_poll
     )
+    apf_path = FieldPath.receiver("main", "operator_controls", "audio_peak_filter")
+    nb_level_path = FieldPath.receiver("main", "operator_controls", "nb_level")
     # Measured baseline this ticket's motivation is stated against
     # (MOR-1501) — guards against silent membership drift changing the
-    # shape of this regression test without anyone noticing.
-    assert len(non_polling_paths) == 23
+    # shape of this regression test without anyone noticing. MOR-2144 removes
+    # only the unsupported APF path; the supported NB level stays scheduled.
+    assert apf_path not in acquisition.field_policies
+    assert nb_level_path in acquisition.field_policies
+    assert len(non_polling_paths) == 22
 
     clock = FreshnessClock(start=2000.0)
     store = StateStore(freshness_clock=clock)

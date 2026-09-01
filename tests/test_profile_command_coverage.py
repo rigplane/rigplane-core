@@ -25,6 +25,9 @@ to an assertion rather than a count that would rot silently here.
 
 A resolved key is a gap for a profile when it is neither in
 ``RadioProfile.command_names`` nor in ``RadioProfile.absent_command_names``.
+The exception is a key contracted to an optional capability the profile does
+not declare: that is model-level hardware absence, while declaring the
+capability makes every contracted key mandatory again.
 Known gaps live in ``tests/profile_command_coverage_gaps.txt``, one row per
 command-map key -- deduplicated by key, per the plan's own phrasing
 ("enumerate every public builder KEY") -- with the profiles missing that
@@ -43,8 +46,9 @@ file is the durable record now, not restated here; this file's baseline is
 meant to shrink only, never grow silently.
 
 That baseline measures declaration completeness only: absent markers are not
-manual proof. The MOR-2144 foundation inventories normalized specs independently
-and reports implementation gaps without an allowlist.
+manual proof, and an omitted optional capability is the authority for excluding
+its contracted keys. The MOR-2144 foundation inventories normalized specs
+independently and reports implementation gaps without an allowlist.
 
 Regenerate after an intentional change (a profile gains or loses a
 declaration, or a builder's key changes)::
@@ -64,7 +68,7 @@ import pathlib
 import textwrap
 import typing
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -237,6 +241,39 @@ class _Report(typing.NamedTuple):
     census: dict[str, int]
 
 
+# A feature that is absent from a model must not force that model to declare
+# command-map keys for hardware it does not have. Conversely, once a profile
+# declares the feature, these keys are required and the state-3 guard below
+# remains red until each is implemented or explicitly declared absent.
+_REQUIRED_COMMAND_KEYS_BY_CAPABILITY: dict[str, frozenset[str]] = {
+    "apf": frozenset({"get_audio_peak_filter", "set_audio_peak_filter"}),
+    "nb": frozenset({"get_nb", "set_nb"}),
+}
+_REQUIRED_CAPABILITY_BY_COMMAND_KEY = {
+    key: capability
+    for capability, keys in _REQUIRED_COMMAND_KEYS_BY_CAPABILITY.items()
+    for key in keys
+}
+
+
+def _profile_gap_keys(
+    profile: typing.Any,
+    command_keys: typing.Iterable[str],
+) -> set[str]:
+    gaps: set[str] = set()
+    for name in command_keys:
+        if name in profile.command_names or name in profile.absent_command_names:
+            continue
+        required_capability = _REQUIRED_CAPABILITY_BY_COMMAND_KEY.get(name)
+        if (
+            required_capability is not None
+            and required_capability not in profile.capabilities
+        ):
+            continue
+        gaps.add(name)
+    return gaps
+
+
 @functools.lru_cache(maxsize=1)
 def _civ_rigs() -> dict[str, typing.Any]:
     return {
@@ -259,13 +296,9 @@ def _report() -> _Report:
             _key_for(key, builder, command_map, static_cache)
             for key, builder in builders.items()
         }
-        for name in keys:
-            if (
-                name not in profile.command_names
-                and name not in profile.absent_command_names
-            ):
-                gaps[name].add(model)
-                total_pairs += 1
+        for name in _profile_gap_keys(profile, keys):
+            gaps[name].add(model)
+            total_pairs += 1
     return _Report(
         gaps={name: tuple(sorted(models)) for name, models in gaps.items()},
         census={
@@ -958,7 +991,8 @@ def _render(report: _Report) -> str:
         "#   census  <name>              <count>",
         "#   gap     <command-map key>   <profiles missing it, comma sep.>",
         "# One 'gap' row per key: neither declared nor declared absent for",
-        "# every profile named -- D1's state 3. Fails on a pair missing here",
+        "# every profile named, unless its contracted optional capability is",
+        "# omitted -- D1's state 3. Fails on a pair missing here",
         "# or a row no longer a gap -- delete it, never keep it. Fill a gap",
         '# via { absent = "<source>" } (plan §8.1 D2) or a real command-byte',
         "# entry in the profile's own TOML. Regenerate, do not hand-edit.",
@@ -1011,6 +1045,33 @@ def test_census_matches(report: _Report) -> None:
     rows = _read_rows(GAPS_FILE)
     census = {r[1]: int(r[2]) for r in rows if r[0] == "census"}
     assert census == report.census
+
+
+def test_capability_required_commands_only_gap_when_feature_is_declared() -> None:
+    profile = _civ_rigs()["IC-7300"].to_profile()
+    apf_keys = _REQUIRED_COMMAND_KEYS_BY_CAPABILITY["apf"]
+    nb_keys = _REQUIRED_COMMAND_KEYS_BY_CAPABILITY["nb"]
+
+    assert len(_REQUIRED_CAPABILITY_BY_COMMAND_KEY) == sum(
+        len(keys) for keys in _REQUIRED_COMMAND_KEYS_BY_CAPABILITY.values()
+    )
+
+    assert "apf" not in profile.capabilities
+    assert _profile_gap_keys(profile, apf_keys) == set()
+
+    apf_without_commands = replace(
+        profile,
+        capabilities=profile.capabilities | {"apf"},
+    )
+    assert _profile_gap_keys(apf_without_commands, apf_keys) == set(apf_keys)
+
+    assert "nb" in profile.capabilities
+    assert _profile_gap_keys(profile, nb_keys) == set()
+    nb_without_commands = replace(
+        profile,
+        command_names=profile.command_names - nb_keys,
+    )
+    assert _profile_gap_keys(nb_without_commands, nb_keys) == set(nb_keys)
 
 
 # ── MOR-2144 implementation-completeness foundation ──
@@ -1215,6 +1276,23 @@ def test_reverse_census_preserves_absent_and_rejects_false_evidence() -> None:
     for kwargs, message in invalid_evidence:
         with pytest.raises(ValueError, match=message):
             reverse_implementation_census(profile, runtime_names, **kwargs)
+
+
+def test_ic7300_apf_runtime_names_are_reverse_absent_without_profile_markers() -> None:
+    profile = _civ_rigs()["IC-7300"].to_profile()
+    rows = reverse_implementation_census(
+        profile,
+        ("get_audio_peak_filter", "set_audio_peak_filter"),
+    )
+
+    assert {row.runtime_name for row in rows} == {
+        "get_audio_peak_filter",
+        "set_audio_peak_filter",
+    }
+    assert all(row.relation is _DeclarationRelation.ABSENT for row in rows)
+    assert all(row.profile_names == () for row in rows)
+    assert all(row.declared_absent is False for row in rows)
+    assert all(row.absent_source is None for row in rows)
 
 
 def test_future_activation_api_returns_full_deterministic_gap_list(

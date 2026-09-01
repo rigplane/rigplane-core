@@ -361,8 +361,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             "set_manual_notch",
             "get_manual_notch_width",
             "set_manual_notch_width",
-            "get_audio_peak_filter",
-            "set_audio_peak_filter",
             "get_twin_peak_filter",
             "set_twin_peak_filter",
             # Levels

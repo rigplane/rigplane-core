@@ -53,7 +53,6 @@ features = [
     "nb",
     "nr",
     "notch",
-    "apf",
     "twin_peak",
     # Filter
     "pbt",
@@ -257,7 +256,6 @@ command_response_observable = [
     "global.operator_controls.break_in_delay",
     "global.operator_controls.key_speed",
     "global.operator_controls.cw_pitch",
-    "receiver.main.operator_controls.audio_peak_filter",
     "receiver.main.operator_toggles.twin_peak_filter",
 ]
 supported_controls = [
@@ -640,12 +638,6 @@ freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
-[state_acquisition.field_policies."receiver.main.operator_controls.audio_peak_filter"]
-cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
-reconciliation_priority = "command_response"
-adaptive_decay = false
-
 [state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
@@ -685,12 +677,6 @@ values = [0xD0, 0xD3]
 [antenna]
 tx_count = 1
 has_rx_ant = false
-
-[apf]
-# CI-V 0x16 0x32: 0=OFF, 1=ON (simple toggle, no WIDE/MID/NAR)
-# Different from IC-7610 which has 0-3!
-values = [0, 1]
-labels = { "0" = "OFF", "1" = "ON" }
 
 [notch]
 # CI-V 0x16 0x57: Manual notch width
@@ -1028,12 +1014,6 @@ get_notch_filter = [0x14, 0x0D]           # Notch position 0-255
 set_notch_filter = [0x14, 0x0D]
 get_manual_notch_width = [0x16, 0x57]     # 0=WIDE, 1=MID, 2=NAR
 set_manual_notch_width = [0x16, 0x57]
-get_audio_peak_filter = [0x16, 0x32]      # IC-7300: 0=OFF, 1=ON only
-set_audio_peak_filter = [0x16, 0x32]
-# The 7300 APF is a plain 0x16 0x32 ON/OFF toggle (above); there is no 0x14 0x05
-# APF position like the IC-7610's WIDE/MID/NAR 3-level control. The dead 0x14
-# 0x05 command string was removed (MOR-681) so it cannot be emitted to a radio
-# that ignores it.
 get_apf_type_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family skips 04/05" }
 set_apf_type_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family skips 04/05" }
 get_twin_peak_filter = [0x16, 0x4F]

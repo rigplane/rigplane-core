@@ -377,8 +377,8 @@ class TestNbLevelGating:
 
 
 class TestApfTypeLevelGating:
-    """IC-7300 doesn't declare apf_type_level at all, but IC-705 does (and
-    has no [cmd29] section) -- IC-705 is the unwrapped case here."""
+    """IC-7300 marks apf_type_level absent, but IC-705 declares it (and has
+    no [cmd29] section) -- IC-705 is the unwrapped case here."""
 
     @pytest.mark.asyncio
     async def test_set_apf_type_level_unwrapped_on_ic705(self) -> None:
@@ -430,20 +430,6 @@ class TestDigiselShiftGating:
 
 
 class TestAudioPeakFilterGating:
-    @pytest.mark.asyncio
-    async def test_set_audio_peak_filter_unwrapped_on_ic7300(self) -> None:
-        radio = _connected_icom(model="IC-7300")
-        mock = _mock_raw(radio)
-        await radio.set_audio_peak_filter(AudioPeakFilter.WIDE, receiver=0)
-        expected = set_audio_peak_filter(
-            AudioPeakFilter.WIDE,
-            to_addr=_IC7300_ADDR,
-            receiver=0,
-            command29=False,
-            cmd_map=_IC7300_CMD_MAP,
-        )
-        assert _sent_civ(mock) == expected
-
     @pytest.mark.asyncio
     async def test_set_audio_peak_filter_wrapped_on_ic7610(self) -> None:
         radio = _connected_icom(model="IC-7610")
