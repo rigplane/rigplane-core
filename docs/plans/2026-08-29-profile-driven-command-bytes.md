@@ -191,7 +191,12 @@ compares `frame.command` / `frame.sub` against integer literals **105 times**
 (census of `ast.Compare` nodes at `a2de2ab0`; the whole tree has 108, the other
 three being 2 in `runtime/radio.py` and 1 in `core/civ.py`). That code decodes
 *unsolicited* frames the radio sends on its own, so it needs the opposite
-lookup — bytes to name — which today's `CommandMap` does not offer. See Q3.
+lookup — bytes to name — which the pre-Z2 `CommandMap` did not offer. This is
+a historical observation at `a2de2ab0`: merged
+[PR #2941](https://github.com/rigplane/rigplane-core/pull/2941) now provides
+the per-profile `commands/command_map.py: ReverseCommandIndex`. Its canonical
+current contract is in
+[`2026-09-01-reverse-command-index.md`](2026-09-01-reverse-command-index.md).
 
 The good news, *observed*: `_builders.py: parse_level_response` and
 `_builders.py: parse_bool_response` take exactly `(command, sub, prefix)` — the
@@ -786,9 +791,9 @@ They disappear into `expect()` rather than being migrated.
 
 **Population 3 — `runtime/_civ_rx.py`, 105 comparisons.** Structurally
 different: it decodes frames the radio sends unprompted, so it needs bytes to
-name, and `CommandMap` offers only name to bytes. Building a reverse index is a
-change to `CommandMap`'s surface, which this design was told not to reopen. Q3
-(§8.1) settles it: the reverse index is a separate programme, tracked as
+name, and the pre-Z2 `CommandMap` offered only name to bytes. Building a reverse
+index was a change to `CommandMap`'s surface, which this design was told not to
+reopen. Q3 (§8.1) settles it: the reverse index is a separate programme, tracked as
 **MOR-1993**, which now blocks **MOR-2010**. The plan therefore stops at
 population 2, and this document's end state is *every byte we **send** comes
 from the profile* — narrower than "every byte" (§2). Leaving it is not free:
@@ -981,7 +986,8 @@ a second pass the same evening.
 **Q3 — The reverse index is a separate programme.** `runtime/_civ_rx.py`
 decodes what the radio sends unprompted by comparing against 105 hardcoded
 command/sub literals. Making that profile-driven needs a **bytes-to-name**
-lookup; the code can only go name-to-bytes today (`commands/command_map.py:
+lookup; at the pre-Z2 snapshot, the code could only go name-to-bytes
+(`commands/command_map.py:
 CommandMap` offers `get`, `has`, `__iter__`, `__len__`, `__repr__` and nothing
 else). It is real, non-trivial work: a reverse index is **not injective**, and
 not marginally so — on IC-7300, 142 of 177 wire tuples carry more than one

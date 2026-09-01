@@ -482,14 +482,17 @@ two more hardcoded command families into a test double, deepening the exact
 hole being filled. So this is recorded as a **known blind spot with a named
 closure** — the closure is C8, and C8 comes after plan Step Z.
 
-### C8.5 The shared missing piece
+### C8.5 The historical shared missing piece
 
-The double needs **bytes → name**. So does `runtime/_civ_rx.py`. Neither exists
-today. That is Q3 (plan §8.1), settled as one deliverable with three
-customers rather than as one decoder for one consumer — and ruled out of this
-programme's scope, tracked separately as **MOR-1993**, which now blocks
-**MOR-2010**. The measured finding behind that scoping — the reverse index is
-one-to-many and needs a small per-language rule set beside it — is §C9.
+At the pre-Z2 snapshot, the double and `runtime/_civ_rx.py` both needed
+**bytes → name**, and neither surface existed. Q3 (plan §8.1) therefore
+recorded a historical proposal for one deliverable with three customers, with
+a reverse index plus a small per-language rule set. That proposal is superseded
+by merged [PR #2941](https://github.com/rigplane/rigplane-core/pull/2941): the
+per-profile `commands/command_map.py: ReverseCommandIndex` preserves every
+prefix-compatible candidate and does not infer direction. The canonical current
+contract is in
+[`2026-09-01-reverse-command-index.md`](2026-09-01-reverse-command-index.md).
 
 ### C8.6 The state the double needs already exists — checked
 
@@ -570,7 +573,7 @@ and none should be inferred.
 
 ---
 
-## C9. The third population, and the reverse index it needs
+## C9. The third population, and the historical reverse-index requirement
 
 Plan §1.4 records that a third population of hardcoded command bytes exists —
 `runtime/_civ_rx.py` compares `frame.command` / `frame.sub` against integer
@@ -623,12 +626,13 @@ and [`2026-09-01-reverse-command-index.md`](2026-09-01-reverse-command-index.md)
 all prefix-compatible declared names remain candidates; only a singleton
 resolves; request or direction context is required to disambiguate the rest.
 
-So the reverse index and the per-language rules are **one deliverable with
-three customers**: `runtime/_civ_rx.py`, the single double of C8, and any
-future consumer that must interpret a frame it did not build. Whether that
-deliverable belongs to this programme or its own was plan §8.1 Q3, ruled
-separate — tracked as **MOR-1993**, which now blocks **MOR-2010** — precisely
-because it is one thing serving three, not one thing serving one.
+The historical proposal treated a reverse index and per-language rules as one
+deliverable for three customers: `runtime/_civ_rx.py`, the single double of C8,
+and future consumers that interpret frames they did not build. That proposal is
+superseded by the candidate-preservation contract above: the current resolver
+does not infer direction. Its source of truth is
+[`2026-09-01-reverse-command-index.md`](2026-09-01-reverse-command-index.md)
+and `commands/command_map.py: ReverseCommandIndex`.
 
 ---
 
