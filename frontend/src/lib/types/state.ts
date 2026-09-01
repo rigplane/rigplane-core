@@ -189,6 +189,7 @@ export interface ReceiverStatePublic {
   repeaterTsql?: boolean;
   toneFreq?: number;
   tsqlFreq?: number;
+  repeaterShift?: number;
   dcd?: boolean | null;
 }
 /**

@@ -61,6 +61,7 @@ from ..capabilities import (
     CAP_NR,
     CAP_POWER_CONTROL,
     CAP_PREAMP,
+    CAP_REPEATER_SHIFT,
     CAP_REPEATER_TONE,
     CAP_RF_GAIN,
     CAP_RX_ANTENNA,
@@ -190,6 +191,7 @@ __all__ = [
     "SetNbDepth",
     "SetNbWidth",
     "SetDashRatio",
+    "SetRepeaterShift",
     "SetRepeaterTone",
     "SetRepeaterTsql",
     "SetRxAntenna",
@@ -438,6 +440,7 @@ from .._poller_types import (  # noqa: E402
     SetQuickDualWatch,
     SetQuickSplit,
     SetRefAdjust,
+    SetRepeaterShift,
     SetRepeaterTone,
     SetRepeaterTsql,
     SetRfGain,
@@ -3448,6 +3451,15 @@ class RadioPoller:
                     await radio.set_dash_ratio(value)
                 if self._radio_state:
                     self._radio_state.dash_ratio = value
+            case SetRepeaterShift(direction=direction, receiver=rx):
+                self._ensure_receiver_supported(rx, operation="set_repeater_shift")
+                if CAP_REPEATER_SHIFT in self._caps:
+                    await radio.set_repeater_shift(direction, receiver=rx)
+                if self._radio_state:
+                    target = (
+                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                    )
+                    target.repeater_shift = direction
             case SetRepeaterTone(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_repeater_tone")
                 if CAP_REPEATER_TONE in self._caps:

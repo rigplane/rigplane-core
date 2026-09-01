@@ -19,7 +19,7 @@ from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.profiles import TxPolicy
 from rigplane.rig_loader import load_rig
-from rigplane.types import BreakInMode
+from rigplane.types import BreakInMode, RepeaterShiftDirection
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -1495,6 +1495,45 @@ async def test_get_ctcss_tone_returns_centihz(connected_radio):
     """
     connected_radio._transport.query = AsyncMock(return_value="CN00008")
     assert await connected_radio.get_ctcss_tone() == 8850
+
+
+# -- Repeater shift (OS command, MOR-2111) ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_repeater_shift_simplex(connected_radio):
+    """MAIN repeater shift read sends ``OS0;`` and parses ``OS0n;``.
+
+    OS P1=0 (MAIN); the answer's P2 (0-3) is the direction code.
+    FTX-1_CAT_OM_ENG_2508-C, OS OFFSET (REPEATER SHIFT).
+    """
+    connected_radio._transport.query = AsyncMock(return_value="OS00")
+    result = await connected_radio.get_repeater_shift()
+    assert result == RepeaterShiftDirection.SIMPLEX
+    assert isinstance(result, RepeaterShiftDirection)
+    connected_radio._transport.query.assert_called_once_with("OS0;")
+
+
+@pytest.mark.asyncio
+async def test_get_repeater_shift_ars(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="OS03")
+    result = await connected_radio.get_repeater_shift()
+    assert result == RepeaterShiftDirection.ARS
+    connected_radio._transport.query.assert_called_once_with("OS0;")
+
+
+@pytest.mark.asyncio
+async def test_set_repeater_shift_plus(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_repeater_shift(RepeaterShiftDirection.PLUS)
+    connected_radio._transport.write.assert_called_once_with("OS01;")
+
+
+@pytest.mark.asyncio
+async def test_set_repeater_shift_minus_accepts_bare_int(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_repeater_shift(2)
+    connected_radio._transport.write.assert_called_once_with("OS02;")
 
 
 @pytest.mark.parametrize(

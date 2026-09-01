@@ -16,7 +16,7 @@ from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.tx_authority import TxStateReading
-from ...types import AudioCodec, BreakInMode
+from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
 from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
@@ -2330,6 +2330,29 @@ class YaesuCatRadio:
         by both TONE (encode) and TSQL (decode).
         """
         return _ctcss_index_to_centihz(await self.read_ctcss_tone_index(receiver))
+
+    async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
+        """Get the MAIN repeater shift direction (OS0 command).
+
+        Sends ``OS0;`` (P1=0 MAIN) and parses the ``OS0n;`` answer per the
+        FTX-1 CAT Operation Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``),
+        OS OFFSET (REPEATER SHIFT). Direction only (0=Simplex, 1=Plus Shift,
+        2=Minus Shift, 3=ARS) — shift magnitude is not covered by this
+        command (see :class:`RepeaterShiftCapable`). MAIN only (OS0); the SUB
+        receiver would need OS1, out of scope.
+        """
+        result = await self._query("get_repeater_shift")
+        return RepeaterShiftDirection(int(result["shift"]))
+
+    async def set_repeater_shift(
+        self, direction: RepeaterShiftDirection | int, receiver: int = 0
+    ) -> None:
+        """Set the MAIN repeater shift direction (OS0 command).
+
+        Per the manual's own footnote, the radio accepts this command only
+        in FM mode and rejects it with ``?;`` otherwise.
+        """
+        await self._write("set_repeater_shift", shift=int(direction))
 
     # -- D10: System --------------------------------------------------------
 

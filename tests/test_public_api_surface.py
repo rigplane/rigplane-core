@@ -63,6 +63,7 @@ TIER1_SYMBOLS: tuple[str, ...] = (
     "VoiceControlCapable",
     "SystemControlCapable",
     "RepeaterControlCapable",
+    "RepeaterShiftCapable",
     "AdvancedControlCapable",
     "TransceiverStatusCapable",
     "RitXitCapable",
@@ -83,6 +84,7 @@ TIER1_SYMBOLS: tuple[str, ...] = (
     "Mode",
     "AudioCodec",
     "BreakInMode",
+    "RepeaterShiftDirection",
     # Public state types
     "RadioState",
     "RadioProfile",

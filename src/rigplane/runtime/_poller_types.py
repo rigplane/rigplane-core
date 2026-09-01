@@ -98,6 +98,7 @@ __all__ = [
     "SetQuickDualWatch",
     "SetQuickSplit",
     "SetRefAdjust",
+    "SetRepeaterShift",
     "SetRepeaterTone",
     "SetRepeaterTsql",
     "SetRfGain",
@@ -675,6 +676,12 @@ class SetNbWidth:
 @dataclass(frozen=True, slots=True)
 class SetDashRatio:
     value: int
+
+
+@dataclass(frozen=True, slots=True)
+class SetRepeaterShift:
+    direction: int
+    receiver: int = 0
 
 
 @dataclass(frozen=True, slots=True)

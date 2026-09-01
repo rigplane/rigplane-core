@@ -59,7 +59,7 @@ from typing import (
 
 from .radio_state import RadioState, VfoSlotState
 from .tx_safety import TxOwner, TxReleaseReason, TxTransition
-from .types import AudioCodec, BreakInMode, Mode
+from .types import AudioCodec, BreakInMode, Mode, RepeaterShiftDirection
 
 if TYPE_CHECKING:
     from ._state_cache import StateCache
@@ -1875,6 +1875,44 @@ class RepeaterControlCapable(Protocol):
 
     async def get_tsql_freq(self, receiver: int = 0) -> int:
         """Get TSQL (tone squelch) RX frequency in hundredths of Hz."""
+        ...
+
+
+@runtime_checkable
+class RepeaterShiftCapable(Protocol):
+    """Repeater shift DIRECTION control (simplex / plus / minus / automatic).
+
+    Sibling to :class:`RepeaterControlCapable` (MOR-2111), not a member of
+    it: that protocol covers CTCSS tone and TSQL; this one covers only the
+    direction a repeater offset is applied in, never its magnitude — shift
+    magnitude is a separate, not-yet-built surface.
+
+    This protocol expresses direction only, and that is a deliberate choice
+    between two documented wire shapes, not an oversight. The FTX-1 CAT
+    ``OS`` command matches this shape exactly: one register, direction only,
+    no magnitude parameter. Icom's shape differs: on the IC-7300, shift
+    magnitude and direction travel together in a single per-band register
+    (``1A 05 0031``/``0032``, BCD magnitude plus an explicit direction byte),
+    separate from a plain split on/off toggle (``0x0F``) that carries no
+    duplex information at all — and that radio has no ARS state. Neither
+    IC-7300 register is wired to this protocol. An implementer on that
+    combined-register shape must read-modify-write it to realize
+    ``set_repeater_shift`` alone — reading current magnitude, preserving it,
+    and writing only the direction — rather than assume this protocol hands
+    it a magnitude parameter to write.
+
+    :class:`RepeaterShiftDirection` is an :class:`IntEnum`; its ``ARS``
+    member is FTX-1's automatic-repeater-shift state, not a universal one.
+    """
+
+    async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
+        """Get repeater shift direction."""
+        ...
+
+    async def set_repeater_shift(
+        self, direction: RepeaterShiftDirection | int, receiver: int = 0
+    ) -> None:
+        """Set repeater shift direction."""
         ...
 
 
