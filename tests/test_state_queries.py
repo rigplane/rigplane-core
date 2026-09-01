@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
+from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.scope import (
     SCOPE_RECEIVER_SELECTOR_SUBS,
     SCOPE_SELECTOR_MAIN,
@@ -138,6 +140,19 @@ class TestBuildStateQueries:
         q1 = build_state_queries(profile, caps)
         q2 = build_state_queries(profile, caps)
         assert q1 == q2
+
+    def test_ic9700_dual_watch_query_uses_profile_wire_tuple(self) -> None:
+        profile = resolve_radio_profile(model="IC-9700")
+        command, sub, prefix = decode_wire_tuple(
+            profile.command_map.get("get_dual_watch")
+        )
+        assert prefix == b""
+
+        dual_watch_delta = Counter(
+            build_state_queries(profile, {"dual_watch"})
+        ) - Counter(build_state_queries(profile, set()))
+
+        assert dual_watch_delta == Counter({(command, sub, None): 1})
 
 
 class TestScopeReceiverSelector:
