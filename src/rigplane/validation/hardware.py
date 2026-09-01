@@ -209,6 +209,7 @@ async def execute_hardware_checks(
     allow_writes: bool,
     per_check_timeout: float = DEFAULT_PER_CHECK_TIMEOUT,
     write_only_capabilities: frozenset[str] = frozenset(),
+    fixed_value_checks: dict[str, str] = {},  # noqa: B006 -- read-only
     prompter: InteractivePrompter | None = None,
     tx_actuate: bool = False,
     audio_probe_frames: Sequence[bytes | None] | None = None,
@@ -238,6 +239,13 @@ async def execute_hardware_checks(
     it (dry-run/CI, or a non-AudioCapable radio) those probes keep their
     MANUAL_REQUIRED behaviour. ``audio.tx.byte_perfect`` is out of scope here
     and is never run against live hardware (it needs TX loopback).
+
+    *fixed_value_checks* (MOR-2105 part 2) names, by check_id, RMVR_SAFE_WRITE
+    checks this radio has only one legal value for (e.g. IC-7300's
+    scope_receiver.set/scope_dual.set — single receiver, single scope). Such
+    a check reports SKIP, quoting the source, instead of flipping to a value
+    the radio can never report back and reporting a false FAIL. Empty by
+    default: every check uses the standard RMVR path.
     """
     # MOR-666: resolve the single pre-TX confirmation up front so it is asked at
     # most once per run (not per check). ``confirm()`` ignores ``--assume-yes``,
@@ -257,6 +265,7 @@ async def execute_hardware_checks(
                 allow_writes=allow_writes,
                 per_check_timeout=per_check_timeout,
                 write_only_capabilities=write_only_capabilities,
+                fixed_value_checks=fixed_value_checks,
                 prompter=prompter,
                 tx_actuate_confirmed=tx_actuate_confirmed,
                 audio_probe_frames=audio_probe_frames,
@@ -335,6 +344,7 @@ async def _run_one_check(
     allow_writes: bool,
     per_check_timeout: float,
     write_only_capabilities: frozenset[str] = frozenset(),
+    fixed_value_checks: dict[str, str] = {},  # noqa: B006 -- read-only
     prompter: InteractivePrompter | None = None,
     tx_actuate_confirmed: bool = False,
     audio_probe_frames: Sequence[bytes | None] | None = None,
@@ -413,6 +423,56 @@ async def _run_one_check(
             return await _set_and_observe(
                 radio, entry, spec, per_check_timeout=per_check_timeout
             )
+
+    # Per-radio fixed-value classification (MOR-2105 part 2): a control this
+    # radio has only one legal value for reports SKIP, naming the source,
+    # instead of the RMVR cycle flipping to a value the radio can never
+    # report back and reporting a false FAIL. Two sources, both checked
+    # before any radio I/O and independent of --read-only:
+    # - scope_receiver.set is DERIVED from RadioProfile.receiver_count (F1,
+    #   owner ruling): a single-receiver radio already says so via
+    #   receiver_count/supports_receiver, so this is not restated as TOML
+    #   data that could silently disagree with it.
+    # - every other entry is TOML-DECLARED, via [validation.fixed_value] in
+    #   the rig TOML (fixed_value_checks, keyed by check_id -- finer than
+    #   write_only_capabilities' per-capability grain above, since a
+    #   capability like "scope" mixes fixed-value checks with genuinely
+    #   multi-valued ones, e.g. scope_span.set), for a fact with no other
+    #   home in RadioProfile (IC-7300's scope_dual.set: single scope).
+    # Checked ahead of Pre-gate 4 (not inside a per-check_id handler) so it
+    # applies uniformly whether or not entry.check_id has a named handler in
+    # _SUPPORTED_HANDLERS -- a fixed-value declaration for one of those 15
+    # would otherwise be silently ignored.
+    if entry.check_id == "scope_receiver.set":
+        receiver_count = getattr(
+            getattr(radio, "profile", None), "receiver_count", None
+        )
+        if isinstance(receiver_count, int) and receiver_count <= 1:
+            return _base_result(
+                entry,
+                CheckStatus.SKIP,
+                evidence={
+                    "reason": (
+                        "scope_receiver.set is fixed-value: this radio's "
+                        f"profile declares receiver_count={receiver_count}, "
+                        "so there is no second receiver to select; not "
+                        "attempting the flip"
+                    )
+                },
+            )
+    fixed_source = fixed_value_checks.get(entry.check_id)
+    if fixed_source is not None:
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={
+                "reason": (
+                    f"{entry.check_id} is declared fixed-value (single "
+                    f"legal value) by the profile, per {fixed_source}; "
+                    "not attempting the flip"
+                )
+            },
+        )
 
     # Pre-gate 4: SUPPORTED -> check-specific logic.
     handler = _SUPPORTED_HANDLERS.get(entry.check_id)

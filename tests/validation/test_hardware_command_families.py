@@ -96,12 +96,19 @@ def _stateful_value_radio(
     return radio, store
 
 
-async def _run(radio, check_id: str, *, safety: OperatorSafetyBlock | None = None):
+async def _run(
+    radio,
+    check_id: str,
+    *,
+    safety: OperatorSafetyBlock | None = None,
+    fixed_value_checks: dict[str, str] | None = None,
+):
     levels = await execute_hardware_checks(
         radio,
         _template_for(check_id),
         safety or OperatorSafetyBlock(),
         allow_writes=True,
+        fixed_value_checks=fixed_value_checks or {},
     )
     return _flatten(levels)[check_id]
 
@@ -514,6 +521,141 @@ async def test_scope_receiver_set_flips_main_sub():
     assert result.status is CheckStatus.PASS
     assert store["value"] == 0  # restored to MAIN
     assert 1 in store["writes"]  # flipped to SUB during the check
+
+
+async def test_scope_receiver_set_skips_via_derived_receiver_count():
+    """MOR-2105 part 2, F1 (owner ruling): scope_receiver.set's fixed-value
+    status is DERIVED from RadioProfile.receiver_count, not declared a
+    second time in TOML -- IC-7300's real profile (receiver_count=1) is
+    used directly, so this proves the derivation reads that field rather
+    than any independently-editable [validation.fixed_value] entry (none
+    exists for scope_receiver.set -- see TestFixedValueChecks in
+    tests/test_rig_loader.py). No frame may reach the transport (the fake
+    radio's get/set ops must never be awaited), unlike
+    test_scope_receiver_set_flips_main_sub just above, which drives the
+    SAME check_id on a radio with no ``.profile`` at all and must keep
+    actually flipping.
+    """
+    from rigplane.profiles import get_radio_profile
+
+    profile = get_radio_profile("IC-7300")
+    assert profile.receiver_count == 1
+    assert "scope_receiver.set" not in profile.fixed_value_checks
+
+    radio, _store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_receiver",
+        set_op="set_scope_receiver",
+        start=0,
+        receiver_kw=False,
+    )
+    radio.profile = profile
+    result = await _run(radio, "scope_receiver.set")
+    assert result.status is CheckStatus.SKIP
+    assert "scope_receiver.set" in result.evidence["reason"]
+    assert "receiver_count=1" in result.evidence["reason"]
+    radio.get_scope_receiver.assert_not_awaited()
+    radio.set_scope_receiver.assert_not_awaited()
+
+
+async def test_scope_receiver_set_still_flips_when_receiver_count_is_two():
+    """Negative control for the derivation above: IC-7610's real profile
+    declares receiver_count=2, so scope_receiver.set must NOT be treated as
+    fixed-value on it -- proving the derivation is conditional on the
+    profile's own data, not a blanket skip for the check_id.
+    """
+    from rigplane.profiles import get_radio_profile
+
+    profile = get_radio_profile("IC-7610")
+    assert profile.receiver_count == 2
+
+    radio, store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_receiver",
+        set_op="set_scope_receiver",
+        start=0,
+        receiver_kw=False,
+    )
+    radio.profile = profile
+    result = await _run(radio, "scope_receiver.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 0  # restored to MAIN
+    assert 1 in store["writes"]  # flipped to SUB during the check
+
+
+async def test_scope_dual_set_skips_on_ic7300_fixed_value_declaration():
+    """MOR-2105 part 2: IC-7300 declares scope_dual.set fixed-value in
+    [validation.fixed_value] (single scope -- 00 is the only legal value the
+    command can ever hold, and there is no RadioProfile field like
+    receiver_count to derive it from -- F2, owner ruling), so the RMVR
+    harness must report SKIP naming that declaration instead of attempting
+    the flip -- and no frame may reach the transport (the fake radio's
+    get/set ops must never be awaited), unlike
+    test_scope_dual_set_rmvr_roundtrip just above, which drives the SAME
+    check_id on a radio with no such declaration and must keep actually
+    flipping.
+    """
+    from rigplane.profiles import get_radio_profile
+
+    profile = get_radio_profile("IC-7300")
+    assert profile.fixed_value_checks.keys() == {"scope_dual.set"}
+
+    radio, _store = _stateful_value_radio(
+        capability="scope",
+        get_op="get_scope_dual",
+        set_op="set_scope_dual",
+        start=False,
+        receiver_kw=False,
+    )
+    result = await _run(
+        radio, "scope_dual.set", fixed_value_checks=profile.fixed_value_checks
+    )
+    assert result.status is CheckStatus.SKIP
+    assert "scope_dual.set" in result.evidence["reason"]
+    assert profile.fixed_value_checks["scope_dual.set"] in result.evidence["reason"]
+    radio.get_scope_dual.assert_not_awaited()
+    radio.set_scope_dual.assert_not_awaited()
+
+
+async def test_fixed_value_declaration_is_honoured_for_a_named_handler_check_id():
+    """Review finding (independent of the coordinator's F3): before the gate
+    moved to _run_one_check, it lived inside _check_from_spec, which is only
+    reached when entry.check_id has no entry in _SUPPORTED_HANDLERS (15
+    check_ids, 13 of them RMVR_SAFE_WRITE -- af_level.set, agc.set,
+    attenuator.set, filter_width.set, freq.write, mode.set, nb.set,
+    notch.set, nr.set, preamp.set, rf_gain.set, rit.set, xit.set). A
+    [validation.fixed_value] entry for any of those 13 was silently ignored
+    -- the named handler ran the real RMVR cycle regardless. nb.set is one
+    of them; no shipped profile declares it fixed-value (this is a synthetic
+    declaration proving the mechanism, not a real IC-7300 fact). Same input,
+    with and without the declaration:
+    """
+    radio, store = _stateful_value_radio(
+        capability="nb",
+        get_op="get_nb",
+        set_op="set_nb",
+        start=False,
+        receiver_kw=False,
+    )
+    result_without = await _run(radio, "nb.set")
+    assert result_without.status is CheckStatus.PASS
+    assert True in store["writes"]  # the real handler actually flipped it
+
+    radio2, store2 = _stateful_value_radio(
+        capability="nb",
+        get_op="get_nb",
+        set_op="set_nb",
+        start=False,
+        receiver_kw=False,
+    )
+    result_with = await _run(
+        radio2, "nb.set", fixed_value_checks={"nb.set": "synthetic test declaration"}
+    )
+    assert result_with.status is CheckStatus.SKIP
+    assert "nb.set" in result_with.evidence["reason"]
+    assert store2["writes"] == []  # the named handler never ran
+    radio2.get_nb.assert_not_awaited()
+    radio2.set_nb.assert_not_awaited()
 
 
 async def test_scope_edge_set_cycles_within_valid_edges():
