@@ -11,11 +11,8 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // projector alone. The sibling integration files
 // (`integration-lifecycle-matrix.isolated.test.ts`,
 // `integration-reconnect-dekey-matrix.isolated.test.ts`) already join the
-// real projector to the real reducer the same way this file does — but every
-// PTT observation either of them dispatches uses a strictly advancing
-// `lastObservedMonotonic` (checked directly: every `dispatchStart`/
-// `confirmAuthority` call in both files passes a timestamp higher than the
-// one before it). Neither ever dispatches `start` against a REPEATED,
+// real projector to the real reducer the same way this file does. Neither
+// ever dispatches `start` against a REPEATED,
 // non-advancing timestamp — the exact shape MOR-1880 fixes and closed PR
 // #2921 broke (it set `pttObservationSeq: null` unconditionally, and 8163
 // other tests in this suite stayed green while keying was impossible end to

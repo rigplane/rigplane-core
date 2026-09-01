@@ -271,7 +271,7 @@ async function mountConnectedApp(): Promise<{
   const socket = instances[0];
   socket.simulateOpen();
 
-  await observePtt(false, 2); // first fresh (non-baseline) PTT reading
+  await observePtt(false, 2);
 
   const controller = capturedController();
   if (!controller) throw new Error('TxControllerProbe never captured a controller');

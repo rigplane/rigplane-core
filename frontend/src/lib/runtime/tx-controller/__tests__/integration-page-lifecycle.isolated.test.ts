@@ -195,13 +195,7 @@ const settle = async () => { await Promise.resolve(); await Promise.resolve(); }
 /** Bump the PTT fieldStatus to a fresh, newer monotonic reading and force
  * `App.svelte`'s own `$effect` (which depends on the mocked `runtime.state`/
  * `runtime.caps`) to re-run, which calls the REAL `txHost.refreshAuthority()`
- * — the same reactivity glue a real backend push does in production. The
- * very first authority projection computed once the control session goes
- * 'connected' is deliberately swallowed as a non-fresh baseline (this is
- * `app-authority.ts`'s own anti-replay guard, not a test artifact — see
- * `integration-lifecycle-matrix.isolated.test.ts`'s `dispatchStart` for the identical
- * two-step shape), so every caller needs at least one of these before a PTT
- * observation is treated as authoritative. */
+ * — the same reactivity glue a real backend push does in production. */
 async function observePtt(value: boolean, at: number): Promise<void> {
   h.radio = { ...h.radio, ptt: value, fieldStatus: { ...h.radio.fieldStatus, ptt: field(at) } };
   h.notifyRuntime();
@@ -250,7 +244,7 @@ async function mountConnectedApp(): Promise<{
   const socket = instances[0];
   socket.simulateOpen(); // fires the real subscribeSession callback in app-host
 
-  await observePtt(false, 2); // first fresh (non-baseline) PTT reading
+  await observePtt(false, 2);
 
   const controller = capturedController();
   if (!controller) throw new Error('TxControllerProbe never captured a controller');
