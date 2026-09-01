@@ -397,13 +397,15 @@ export interface Fixture {
   audioRuntime?: Partial<AudioRuntimeState>;
   /**
    * MOR-1085. Which real component this fixture mounts: the
-   * dual-receiver-cockpit shell (default, unchanged from MOR-1070) or
+   * dual-receiver-cockpit shell (default, unchanged from MOR-1070),
    * `ReferenceLayout.svelte` (`SemanticRadioSurfaces strips="single"` — the
-   * same wiring `desktop-v2`/`sdr-test` compose today). One fixture id is
-   * one grid cell; `toReferenceFixture()` below derives every `--reference`
-   * id from its cockpit sibling.
+   * same wiring `desktop-v2`/`sdr-test` compose today), or — MOR-2153 —
+   * `PeerSplitLayout.svelte` (`skins/segmentline/`), the segmentline
+   * `peer-split` glass chassis. One fixture id is one grid cell;
+   * `toReferenceFixture()` below derives every `--reference` id from its
+   * cockpit sibling; `peer-split` fixtures have no such derivation.
    */
-  layout?: 'cockpit' | 'reference';
+  layout?: 'cockpit' | 'reference' | 'peer-split';
   /**
    * MOR-1355. `true` ⇒ `fixtures/main.ts` mounts this fixture with a REAL
    * resolved `SurfacePlan` (`resolveSurfacePlan(dualReceiverCockpitLayout,
@@ -412,7 +414,18 @@ export interface Fixture {
    * Default `false`/absent: the pre-MOR-1355 plan-less mount, unchanged.
    */
   planned?: boolean;
-  expect: Expectation;
+  /**
+   * MOR-2153. Absent for `layout: 'peer-split'` ONLY: `runAssertions`
+   * (`assertions.ts`, lines 171-683 — 513 lines) is written against the
+   * cockpit/reference `zonedComposition` binary, which `peer-split`'s
+   * five-band chassis is neither — building a third branch through that
+   * pipeline is real, separately-scoped work this ticket does not take on
+   * (the chassis is mostly empty rows today; MOR-2151(cont.) is what gives
+   * it something to assert against). `fixtures/main.ts` skips
+   * `runAssertions` when this is absent rather than passing it a shape it
+   * was never written to check.
+   */
+  expect?: Expectation;
 }
 
 const DUAL_ZONES = ['primary-vfo', 'secondary-vfo', 'global', 'rx-tx'] as const;
@@ -450,7 +463,15 @@ const mainSubExpect = (over: Partial<Expectation> = {}): Expectation => ({
  * reference-layout twin of each (except `tx-adjacent-alerts`, a
  * cockpit-zone-specific acceptance gate — see `toReferenceFixture`).
  */
-const CORE_FIXTURES: readonly Fixture[] = [
+/**
+ * MOR-2153 review: typed `Fixture & { expect: Expectation }`, not plain
+ * `Fixture` — every entry below sets `expect`, and this is what lets
+ * `.map(toReferenceFixture)` typecheck now that `expect` is optional on
+ * `Fixture` in general (see `toReferenceFixture`'s own comment). Still
+ * assignable everywhere a `Fixture` is expected (a narrower object type is
+ * a subtype), so `FIXTURES`'s `...CORE_FIXTURES` spread below is unaffected.
+ */
+const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
   {
     id: 'topology-1-single',
     what: '1/single — one receiver, one unslotted VFO; the cockpit degrades to one strip.',
@@ -805,7 +826,20 @@ const REFERENCE_SELECT_GATING_OVERRIDE: Readonly<Record<string, Pick<Expectation
   'topology-2-ab-shared-unsupported-controls': { selectsEnabled: 1, selectsDisabled: 0 },
 };
 
-function toReferenceFixture(f: Fixture): Fixture {
+/**
+ * MOR-2153 review: `f: Fixture` alone made `{ ...f.expect, … }` below
+ * unsound the moment `expect` became optional on `Fixture` — the spread's
+ * inferred type carries every `Expectation` field as possibly `undefined`
+ * (e.g. `tiles: number | undefined`), not assignable to the function's own
+ * `Fixture` return type. Every real call site (`CORE_FIXTURES` entries,
+ * `audioRuntimeFixture`'s inline literal) already always sets `expect`; the
+ * parameter type now says so, closing the gap rather than asserting past
+ * it. Verified with a scratch tsconfig adding `fixtures/**\/*.ts` to
+ * `include` (fixtures/ is otherwise typechecked by nothing —
+ * `tsconfig.app.json` includes only `src/**`): HEAD reports 1 error here,
+ * this fix reports 0.
+ */
+function toReferenceFixture(f: Fixture & { expect: Expectation }): Fixture {
   return {
     id: `${f.id}--reference`,
     what: `${f.what} [reference layout: SemanticRadioSurfaces strips="single", the wiring `
@@ -913,19 +947,49 @@ const PLANNED_FIXTURES: readonly Fixture[] = [
 ];
 
 /**
+ * MOR-2153 — `peer-split` (`skins/segmentline/PeerSplitLayout.svelte`), the
+ * segmentline glass CHASSIS. Reuses `abSharedState`/`abSharedCaps` verbatim
+ * (peer-split's manifest declares `2/ab_shared` as one of its two compatible
+ * topologies — `presentation/layouts/segmentline-declarations.ts` — and it
+ * is also the FTX-1's real topology, the accepted spec's own justification
+ * for building this direction first). `withMeters` overlays the sample
+ * meter readings the same way `topology-2-main-sub` does, so the (currently
+ * bare) meters surface has something to show.
+ *
+ * No `--reference`/`--planned` derivation: those exist for the
+ * cockpit/reference behavior-assertion comparison (`toReferenceFixture`
+ * above), which does not apply here (`expect` is deliberately absent — see
+ * that field's own doc comment on `Fixture`). This fixture is for LOOKING
+ * at the chassis, not for pinning its behavior.
+ */
+const PEER_SPLIT_FIXTURES: readonly Fixture[] = [
+  {
+    id: 'peer-split-chassis',
+    what: 'segmentline peer-split glass chassis: 2/ab_shared, both receivers present, meters '
+      + 'evidence populated. DSP rail, memory rail and the offsets row render EMPTY — no zone '
+      + 'declares dsp/rfFrontEnd/band/ritXitScan yet (MOR-2151(cont.), not this ticket).',
+    state: () => withMeters(abSharedState()), caps: abSharedCaps, tx: tx({}),
+    layout: 'peer-split',
+  },
+];
+
+/**
  * The full MOR-1085 grid: every `CORE_FIXTURES` (dual-receiver-cockpit)
  * entry, plus its reference-layout twin — except `tx-adjacent-alerts`, whose
  * whole point is the cockpit's OWN zone-containment acceptance gate (b) and
  * has no reference-layout equivalent (the reference/single composition has
  * no zone concept for the three alerts to be "inside" or "outside" of; see
  * `zonedComposition` in `assertions.ts`) — plus MOR-1355's `PLANNED_FIXTURES`
- * (no reference twin either; see the comment above `PLANNED_FIXTURES`).
+ * (no reference twin either; see the comment above `PLANNED_FIXTURES`) and
+ * MOR-2153's `PEER_SPLIT_FIXTURES` (no reference/planned twin either — see
+ * the comment above that array).
  */
 export const FIXTURES: readonly Fixture[] = [
   ...CORE_FIXTURES,
   ...CORE_FIXTURES.filter((f) => f.id !== 'tx-adjacent-alerts').map(toReferenceFixture),
   ...PLANNED_FIXTURES,
   ...AUDIO_RUNTIME_FIXTURES,
+  ...PEER_SPLIT_FIXTURES,
 ];
 
 export const fixtureById = (id: string): Fixture | undefined =>
