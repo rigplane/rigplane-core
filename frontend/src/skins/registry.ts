@@ -16,7 +16,8 @@ import {
 } from '$lib/runtime/adapters/layout-mode-adapter';
 
 export type SkinId =
-  | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'sdr-test';
+  | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
+  | 'sdr-test';
 
 export interface SkinResolutionContext {
   capabilities: Capabilities | null;
@@ -83,6 +84,10 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   'lcd-cockpit': () => import('./lcd-cockpit/LcdCockpitSkin.svelte'),
   'lcd-scope': () => import('./lcd-scope/LcdScopeSkin.svelte'),
   'mobile': () => import('./mobile/MobileSkin.svelte'),
+  // MOR-2155: makes `peer-split` addressable and loadable only — a minimal
+  // shell with no layout manifest (MOR-2151) and no `resolveSkinId` branch
+  // (MOR-2152), same precedent as the `dual-receiver-cockpit` entry above.
+  'peer-split': () => import('./segmentline/PeerSplitLayout.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
 };
 
@@ -121,6 +126,12 @@ const SKIN_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
   'lcd-cockpit': ['audio-fft'],
   'lcd-scope': ['audio-fft'],
   'mobile': ['hardware-scope'],
+  // Empty by construction, same reasoning as `dual-receiver-cockpit` above:
+  // the dual composition mounts neither SpectrumPanel nor AudioSpectrumPanel,
+  // and membership only permits bridging, so naming a resource this tree
+  // cannot consume would be a presentation manufacturing a live service (v3
+  // ADR invariant 12).
+  'peer-split': [],
   'sdr-test': ['hardware-scope', 'audio-fft'],
 };
 
