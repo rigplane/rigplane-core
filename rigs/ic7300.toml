@@ -685,7 +685,6 @@ values = [0x01, 0x02, 0x03, 0x12, 0x13, 0x22, 0x23]
 values = [0xD0, 0xD3]
 
 [antenna]
-# CI-V 0x12: single antenna, no RX antenna
 tx_count = 1
 has_rx_ant = false
 
@@ -1362,10 +1361,14 @@ set_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 #   1A 05 00 61 -> 00     / 00        did NOT move
 #   1A 05 01 57 -> 00 14  / 00 14     unchanged (level-shaped, not a toggle)
 #   1A 05 00 73 -> 00     / 01        moved with the setting
-# Established: 0061 did not move with the setting; 0073 did. Not
-# established: that 0073 moves with *only* this setting -- one reported
-# operator change, not an isolation test.
-get_civ_output_ant = [0x1A, 0x05, 0x00, 0x73]
+# The manual disagrees with itself on the address: p.19-5 assigns 1A 05
+# 0073 to "CI-V Output (for ANT) capability"; three notes on p.19-7 (under
+# 1C 00 and 1C 03) instead name 1A 05 0157 for the same setting, but p.19-6
+# assigns 0157 to "present number" (0001 to 9999), an unrelated counter --
+# the bench measurement above resolves the contradiction in favor of 0073.
+# Independent corroboration: docs/validation/cat-audits/ic7300.md (a
+# different manual extraction) also lists 1A 05 0073 for this setting.
+get_civ_output_ant = [0x1A, 0x05, 0x00, 0x73]  # source: IC-7300 Advanced Manual (11a) p.19-5
 set_civ_output_ant = [0x1A, 0x05, 0x00, 0x73]
 get_system_date = [0x1A, 0x05, 0x00, 0x94]
 set_system_date = [0x1A, 0x05, 0x00, 0x94]
