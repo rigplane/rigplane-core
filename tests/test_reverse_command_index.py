@@ -1,17 +1,15 @@
 """Reverse command index (MOR-1993 Z2,
 `docs/plans/2026-09-01-reverse-command-index.md` §4.1/§5).
 
-``ReverseCommandIndex`` (``commands/command_map.py``) is the inverse of
-``CommandMap``: given an incoming ``(command, sub, data)`` frame, resolve
-the declared name it came from. This file has three parts:
+``ReverseCommandIndex`` (``commands/command_map.py``) is the conservative
+inverse of ``CommandMap``: given an incoming ``(command, sub, data)`` frame,
+return every declared name compatible with those bytes. This file has three
+parts:
 
-- ``test_round_trip_contract``: for every declared name in every CI-V
-  profile, building a frame from that name's own declared tuple and
-  decoding it back must yield that name, or an explicitly-recorded
-  ambiguity -- never a *different*, wrong name. ``ftx1``/``tx500`` are CAT
-  radios (Yaesu text protocol) and carry no CI-V ``[commands]`` entries,
-  so they are excluded the same way ``tests/test_profile_command_coverage.py``
-  excludes them (``config.protocol_type == "civ"``).
+- ``test_all_profile_probe_census_returns_exact_viable_names``: independently
+  derives the viable name set for every declared prefix plus representative
+  reply payloads on every CI-V profile. ``ftx1``/``tx500`` are CAT radios
+  (Yaesu text protocol) and carry no CI-V ``[commands]`` entries.
 - ``TestKnownCollisionShapes``: a handful of structurally distinct cases
   pinned individually, so a regression names the specific shape that broke
   instead of only the aggregate counts below.
@@ -29,7 +27,12 @@ import pathlib
 import pytest
 
 from rigplane.commands._frame import decode_wire_tuple
-from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
+from rigplane.commands._frame import parse_civ_frame
+from rigplane.commands.bound import BoundCommands
+from rigplane.commands.command_map import (
+    CommandMap,
+    ReverseLookupResult,
+)
 from rigplane.profiles import RadioProfile, get_radio_profile, reload_profiles
 from rigplane.profiles.rig_loader import discover_rigs
 
@@ -72,83 +75,122 @@ def _group_names(command_map: CommandMap) -> Groups:
     }
 
 
-def _safe_write_probe(
-    index: ReverseCommandIndex,
+def _viable_names(
+    groups: Groups,
     command: int,
     sub: int | None,
-    prefix: bytes,
-    group: frozenset[str],
-) -> bytes | None:
-    """A 1-byte suffix appended to *prefix* that resolves back into *group*.
-
-    Needed to round-trip a non-``get_`` group member: its own declared
-    tuple is byte-identical to its ``get_`` sibling's (that identity *is*
-    the collision), so testing it requires a frame with something past
-    the declared prefix -- but a naive fixed byte can collide with an
-    unrelated, longer sibling prefix at the same ``(command, sub)`` (e.g.
-    ``0x1C 0x00``'s bare group sits alongside ``ptt_on``/``ptt_off``'s own
-    longer, unique prefixes). Tries every byte and keeps the first one
-    ``resolve()`` itself confirms stays inside *group* (resolved to a
-    member, or ambiguous with candidates that are a subset of *group*).
-    Returns ``None`` if no byte in 0..255 is safe.
-    """
-    for value in range(256):
-        candidate = bytes([value])
-        result = index.resolve(command, sub, prefix + candidate)
-        if result.name in group or (result.ambiguous and result.candidates <= group):
-            return candidate
-    return None
+    data: bytes,
+) -> frozenset[str]:
+    """Names whose independently grouped declared prefix matches *data*."""
+    return frozenset(
+        name
+        for prefix, names in groups.get((command, sub), {}).items()
+        if data.startswith(prefix)
+        for name in names
+    )
 
 
-def test_round_trip_contract() -> None:
-    resolved = 0
-    ambiguous = 0
-    wrong: list[str] = []
+def _result_names(result: ReverseLookupResult) -> frozenset[str]:
+    if result.name is not None:
+        return frozenset({result.name})
+    return result.candidates
+
+
+def test_all_profile_probe_census_returns_exact_viable_names() -> None:
+    probes = 0
     for model, profile in _civ_profiles().items():
         command_map = profile.command_map
         index = profile.reverse_index
         assert command_map is not None and index is not None, model
-        for (command, sub), prefix_groups in _group_names(command_map).items():
-            for prefix, names in prefix_groups.items():
-                group = frozenset(names)
-                for name in names:
-                    if len(names) == 1 or name.startswith("get_"):
-                        data = prefix
-                    else:
-                        suffix = _safe_write_probe(index, command, sub, prefix, group)
-                        assert suffix is not None, (
-                            f"{model}: no safe write probe for {name!r} at "
-                            f"command={command:#x} sub={sub} prefix={prefix!r}"
-                        )
-                        data = prefix + suffix
+        groups = _group_names(command_map)
+        for (command, sub), prefix_groups in groups.items():
+            for prefix in prefix_groups:
+                for data in (prefix, prefix + b"\x00", prefix + b"\x01"):
+                    probes += 1
                     result = index.resolve(command, sub, data)
-                    if result.name == name:
-                        resolved += 1
-                    elif result.ambiguous and name in result.candidates:
-                        ambiguous += 1
-                    else:
-                        wrong.append(f"{model}:{name} -> {result}")
-    assert not wrong, "resolved to the wrong name:\n" + "\n".join(wrong)
-    # Not vacuous: both outcomes are expected to occur across six profiles.
-    assert resolved > 0
-    assert ambiguous > 0
+                    expected = _viable_names(groups, command, sub, data)
+                    assert _result_names(result) == expected, (
+                        f"{model}: command={command:#x} sub={sub} data={data!r}"
+                    )
+                    assert result.resolved is (len(expected) == 1)
+                    assert result.ambiguous is (len(expected) > 1)
+    assert probes > 0
+
+
+def test_all_strict_prefix_overlaps_preserve_shorter_candidates() -> None:
+    overlaps = 0
+    for model, profile in _civ_profiles().items():
+        command_map = profile.command_map
+        index = profile.reverse_index
+        assert command_map is not None and index is not None, model
+        groups = _group_names(command_map)
+        for (command, sub), prefix_groups in groups.items():
+            prefixes = tuple(prefix_groups)
+            for shorter in prefixes:
+                for longer in prefixes:
+                    if len(shorter) >= len(longer) or not longer.startswith(shorter):
+                        continue
+                    overlaps += 1
+                    result = index.resolve(command, sub, longer)
+                    expected = _viable_names(groups, command, sub, longer)
+                    assert _result_names(result) == expected, (
+                        f"{model}: command={command:#x} sub={sub} "
+                        f"shorter={shorter!r} longer={longer!r}"
+                    )
+                    assert frozenset(prefix_groups[shorter]) <= expected
+    assert overlaps == 14
 
 
 class TestKnownCollisionShapes:
     """Individually pinned, structurally distinct cases (established
     directly from ``rigs/*.toml`` -- see each test's own docstring)."""
 
-    def test_ptt_on_off_are_distinct_full_tuples(self) -> None:
-        index = get_radio_profile("ic7300").reverse_index
-        assert index is not None
-        assert index.resolve(0x1C, 0x00, b"\x01").name == "ptt_on"
-        assert index.resolve(0x1C, 0x00, b"\x00").name == "ptt_off"
+    @pytest.mark.parametrize(
+        ("reply_data", "setter"),
+        ((b"\x00", "set_dual_watch_off"), (b"\x01", "set_dual_watch_on")),
+    )
+    def test_ic9700_dual_watch_reply_retains_getter(
+        self, reply_data: bytes, setter: str
+    ) -> None:
+        profile = get_radio_profile("ic9700")
+        command_map = profile.command_map
+        index = profile.reverse_index
+        assert command_map is not None and index is not None
 
-    def test_get_set_pair_resolves_by_payload_length(self) -> None:
-        index = get_radio_profile("ic7300").reverse_index
-        assert index is not None
-        assert index.resolve(0x14, 0x01, b"").name == "get_af_level"
-        assert index.resolve(0x14, 0x01, b"\x50").name == "set_af_level"
+        request = parse_civ_frame(
+            BoundCommands(command_map).get_dual_watch(to_addr=profile.civ_addr)
+        )
+        assert (request.command, request.sub, request.data) == (0x16, 0x59, b"")
+
+        result = index.resolve(0x16, 0x59, reply_data)
+        assert result.ambiguous
+        assert result.candidates == frozenset({"get_dual_watch", setter})
+
+    def test_ic7300_af_level_reply_retains_getter(self) -> None:
+        profile = get_radio_profile("ic7300")
+        command_map = profile.command_map
+        index = profile.reverse_index
+        assert command_map is not None and index is not None
+        commands = BoundCommands(command_map)
+
+        get_request = parse_civ_frame(commands.get_af_level(to_addr=profile.civ_addr))
+        set_request = parse_civ_frame(
+            commands.set_af_level(128, to_addr=profile.civ_addr)
+        )
+        assert (get_request.command, get_request.sub, get_request.data) == (
+            0x14,
+            0x01,
+            b"",
+        )
+        assert (set_request.command, set_request.sub, set_request.data) == (
+            0x14,
+            0x01,
+            b"\x01\x28",
+        )
+
+        result = index.resolve(0x14, 0x01, b"\x01\x28")
+        assert result.ambiguous
+        assert result.candidates == frozenset({"get_af_level", "set_af_level"})
 
     def test_menu_family_does_not_collapse_to_one_key(self) -> None:
         """IC-7300 declares 84 distinct prefixes under 0x1A 0x05 (168
@@ -159,8 +201,8 @@ class TestKnownCollisionShapes:
         assert index is not None
         first = index.resolve(0x1A, 0x05, b"\x00\x01")
         second = index.resolve(0x1A, 0x05, b"\x00\x02")
-        assert first.name == "get_ssb_rx_hpflpf"
-        assert second.name == "get_ssb_rx_bass"
+        assert first.candidates == frozenset({"get_ssb_rx_hpflpf", "set_ssb_rx_hpflpf"})
+        assert second.candidates == frozenset({"get_ssb_rx_bass", "set_ssb_rx_bass"})
 
     def test_direction_only_write_family_stays_ambiguous(self) -> None:
         """Scan (0x0E, class (c)): five write-only names share one bare
@@ -187,22 +229,38 @@ class TestKnownCollisionShapes:
         assert index is not None
         result = index.resolve(0x12, None, b"")
         assert result.ambiguous
-        assert result.candidates == frozenset({"get_antenna", "get_rx_antenna_ant2"})
+        assert result.candidates == frozenset(
+            {
+                "get_antenna",
+                "set_antenna",
+                "get_rx_antenna_ant2",
+                "set_rx_antenna_ant2",
+            }
+        )
 
-    def test_transceiver_status_family_resolves_all_four_names(self) -> None:
+    def test_transceiver_status_family_preserves_strict_prefix_candidates(
+        self,
+    ) -> None:
         """rigs/x6100.toml (and ic705/x6200) declares four names under
         0x1C 0x00: get_/set_transceiver_status share the empty prefix,
         ptt_on/ptt_off each declare their own longer, unique prefix at
         the same (command, sub). The full-prefix (non-prefix-blind) index
-        this design requires resolves all four -- see this session's
-        report to the coordinator for why that reads against plan §2(d)'s
-        "genuine residual, decides nothing" framing of the fourth name."""
+        this design requires keeps the bare names viable when the incoming
+        byte also matches either PTT tuple."""
         index = get_radio_profile("x6100").reverse_index
         assert index is not None
-        assert index.resolve(0x1C, 0x00, b"").name == "get_transceiver_status"
-        assert index.resolve(0x1C, 0x00, b"\x02").name == "set_transceiver_status"
-        assert index.resolve(0x1C, 0x00, b"\x01").name == "ptt_on"
-        assert index.resolve(0x1C, 0x00, b"\x00").name == "ptt_off"
+        assert index.resolve(0x1C, 0x00, b"").candidates == frozenset(
+            {"get_transceiver_status", "set_transceiver_status"}
+        )
+        assert index.resolve(0x1C, 0x00, b"\x02").candidates == frozenset(
+            {"get_transceiver_status", "set_transceiver_status"}
+        )
+        assert index.resolve(0x1C, 0x00, b"\x01").candidates == frozenset(
+            {"get_transceiver_status", "set_transceiver_status", "ptt_on"}
+        )
+        assert index.resolve(0x1C, 0x00, b"\x00").candidates == frozenset(
+            {"get_transceiver_status", "set_transceiver_status", "ptt_off"}
+        )
 
     def test_unknown_command_is_unrecognized(self) -> None:
         index = get_radio_profile("ic7300").reverse_index

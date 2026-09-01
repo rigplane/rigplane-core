@@ -25,14 +25,6 @@ from ._frame import decode_wire_tuple
 
 __all__ = ["CommandMap", "ReverseCommandIndex", "ReverseLookupResult"]
 
-# Convention this index relies on to break a shared-prefix collision: every
-# read-form command name in this codebase is spelled ``get_<x>`` (see
-# `commands/__init__.py`'s exports). This is a fact about the profiles'
-# *declared names*, not a CI-V protocol byte -- the one signal available to
-# an index built purely from ``CommandMap`` contents, which never sees the
-# runtime payload a real ``set_<x>`` builder appends (MOR-1993 Z2 report).
-_READ_NAME_PREFIX = "get_"
-
 
 class CommandMap:
     """Immutable mapping from command names to CI-V wire byte tuples.
@@ -141,26 +133,13 @@ class ReverseCommandIndex:
     ``(command, sub)``-only index would collapse all of them into one
     bucket and could never name a single one back.
 
-    Resolution order, given an incoming frame's ``(command, sub, data)``:
-
-    1. Look up every declared prefix filed under this ``(command, sub)``
-       and keep the longest one that is a byte-prefix of ``data`` (an
-       *exact* length match, where ``data`` equals the declared prefix
-       with nothing left over, is the specific case of this that resolves
-       class (b) on/off pairs -- e.g. ``ptt_on``/``ptt_off`` -- directly,
-       since each declares its own complete, distinct prefix).
-    2. If nothing declared at this ``(command, sub)`` is a prefix of
-       ``data``, the frame is unrecognized.
-    3. If exactly one name declares the matched prefix, that name is the
-       answer, regardless of ``data``'s length past it.
-    4. If more than one name shares the matched prefix (class (a)/(c)/(d)):
-       partition that group by whether the name starts with ``get_`` --
-       the read-side names if ``data`` carries nothing past the declared
-       prefix, the write-side (everything else) names if it does not
-       ("no payload beyond the declared prefix = the read name, payload
-       present = the write name", plan §4.1 step 2). Whichever side
-       applies, a unique candidate resolves; two or more (or zero) is
-       reported ambiguous with that side's candidates -- never guessed.
+    Every declared prefix under the incoming ``(command, sub)`` that is a
+    byte-prefix of ``data`` remains viable. A single viable name resolves;
+    multiple names are returned as candidates; no viable name is
+    unrecognized. This deliberately retains both a shorter getter prefix and
+    a longer write prefix when the same incoming bytes can be either a getter
+    reply payload or an echoed write. Direction or request context can narrow
+    that set in a later consumer, but payload length alone cannot.
     """
 
     __slots__ = ("_buckets",)
@@ -202,24 +181,14 @@ class ReverseCommandIndex:
         if not bucket:
             return ReverseLookupResult()
 
-        longest: bytes | None = None
-        for prefix in bucket:
-            if data.startswith(prefix) and (
-                longest is None or len(prefix) > len(longest)
-            ):
-                longest = prefix
-        if longest is None:
+        candidates = frozenset(
+            name
+            for prefix, names in bucket.items()
+            if data.startswith(prefix)
+            for name in names
+        )
+        if not candidates:
             return ReverseLookupResult()
-
-        names = bucket[longest]
-        if len(names) == 1:
-            return ReverseLookupResult(name=names[0])
-
-        extra_present = len(data) > len(longest)
-        if extra_present:
-            candidates = [n for n in names if not n.startswith(_READ_NAME_PREFIX)]
-        else:
-            candidates = [n for n in names if n.startswith(_READ_NAME_PREFIX)]
         if len(candidates) == 1:
-            return ReverseLookupResult(name=candidates[0])
-        return ReverseLookupResult(candidates=frozenset(candidates))
+            return ReverseLookupResult(name=next(iter(candidates)))
+        return ReverseLookupResult(candidates=candidates)
