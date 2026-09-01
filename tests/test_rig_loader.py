@@ -2907,10 +2907,11 @@ class TestIc9700DeclaresAbsentCommands:
 
 class TestIc705DeclaresAbsentCommands:
     """MOR-2016 (D2): IC-705 is filled with the ``{ absent = "<source>" }``
-    spelling for 25 commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
+    spelling for 26 commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
     Jul.2020) confirms have no row on this radio (24 at D2 time; MOR-2007
     ruling 1 later split ``set_dual_watch`` into
-    ``set_dual_watch_off``/``set_dual_watch_on``, +1 net). Pinned by name,
+    ``set_dual_watch_off``/``set_dual_watch_on``, +1 net; MOR-2143 added the
+    bare ``set_dual_watch`` name, +1, for the current 26). Pinned by name,
     not just count, so a future D2 pass on another command can't silently
     swap one of these for a different one and still pass a bare-count
     check.
@@ -2931,6 +2932,7 @@ class TestIc705DeclaresAbsentCommands:
             "get_digisel",
             "set_digisel",
             "get_dual_watch",
+            "set_dual_watch",
             "set_dual_watch_off",
             "set_dual_watch_on",
             "get_ip_plus",
