@@ -6,12 +6,6 @@ MOR-1097) are both Done.
 
 Children: MOR-2147 … MOR-2153, plus MOR-2155 and MOR-2156.
 
-This document is a decision record — which direction was chosen and why,
-what the externally authored handoff got wrong, and what the owner decided —
-not a description of how the code currently works. Two review rounds found
-sections of the latter kind going stale as fast as they could be corrected;
-they have been cut rather than fixed a third time.
-
 ## 1. What this is
 
 A design bundle authored outside the repository — design language
