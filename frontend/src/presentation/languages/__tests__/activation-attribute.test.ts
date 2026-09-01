@@ -70,7 +70,7 @@ describe('MOR-1278 — the glob finds design-language stylesheets to pin', () =>
     // Named on purpose: a family whose sheet stopped being discovered (moved,
     // renamed) would otherwise silently drop out of every pin below.
     expect(SHEETS.map((s) => s.language)).toEqual(
-      expect.arrayContaining(['studioline', 'fieldline']),
+      expect.arrayContaining(['studioline', 'fieldline', 'segmentline']),
     );
   });
 });
@@ -87,10 +87,10 @@ describe.each(SHEETS)(
     });
 
     it('opens every selector with the sanctioned attribute, doubled for specificity', () => {
-      // The doubled attribute is the deliberate one-step raise both sheets use
-      // to outrank Svelte's own (0,2,0) component rules; a single attribute
-      // would tie and lose on order, i.e. the language would silently fail to
-      // restyle the surfaces it exists to restyle.
+      // The doubled attribute is the deliberate one-step raise all three
+      // sheets use; a single attribute would tie and lose on order, i.e. the
+      // language would silently fail to restyle the surfaces it exists to
+      // restyle.
       const unscoped = SELECTORS.filter(
         (s) => !s.startsWith(`${attribute}[data-design-language]`));
       expect(unscoped).toEqual([]);
