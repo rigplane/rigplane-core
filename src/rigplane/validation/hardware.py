@@ -48,6 +48,7 @@ from rigplane.core.radio_protocol import (
     RitXitCapable,
     ScopeCapable,
     SystemControlCapable,
+    TransmitStateReadable,
     UsbAudioCapable,
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource, TxTransition
@@ -607,9 +608,14 @@ async def _actuate_tx_ptt(
     """ACTUALLY key PTT briefly at minimum power, verify, then always unkey.
 
     Sequence: read original TX power → set power to MINIMUM → key PTT → brief
-    wait → verify it keyed, preferring a real read-back (``get_ptt``) over the
-    legacy ``radio_state`` mirror where the backend offers one (MOR-1941; see
-    ``ptt_state_source`` in the evidence) → unkey → restore power.
+    wait → verify it keyed, preferring a real read-back
+    (:meth:`~rigplane.core.radio_protocol.TransmitStateReadable.read_transmit_state`)
+    over the legacy ``radio_state`` mirror on a backend that implements the
+    protocol (MOR-1941 introduced the preference; MOR-2089 moved the
+    capability check off a hardcoded ``get_ptt`` probe onto the protocol
+    itself, so an Icom radio -- which never had ``get_ptt`` -- gets a real
+    read too; see ``ptt_state_source`` in the evidence) → unkey → restore
+    power.
     The unkey AND power-restore run in a ``finally`` that ALWAYS executes and
     never raises (contained by ``_RESTORE_ERRORS``, which includes ``OSError``),
     so a mid-check exception/timeout/LAN drop can never leave the radio keyed or
@@ -713,46 +719,63 @@ async def _actuate_tx_ptt(
             # takes (MOR-1941 review).
             await asyncio.sleep(_TX_PTT_KEY_SECONDS)
             # Verify the keyed state from a real read-back where the backend
-            # offers one, rather than the legacy ``radio_state`` mirror
-            # (MOR-1941): some backends no longer self-write that mirror
-            # from ``set_ptt``, so it is not radio truth on its own.
+            # implements ``TransmitStateReadable`` (MOR-1914), rather than
+            # the legacy ``radio_state`` mirror (MOR-1941): some backends no
+            # longer self-write that mirror from ``set_ptt``, so it is not
+            # radio truth on its own. MOR-2089: this used to probe for a
+            # ``get_ptt`` attribute, which no Icom backend defines, so on an
+            # Icom the check fell back to the ``radio_state`` mirror instead
+            # of any solicited read; on the IC-7300 bench that mirror read
+            # ``False`` and a good key reported ``keyed: False``. The
+            # capability check is now ``isinstance(radio,
+            # TransmitStateReadable)``, which ``runtime.radio.CoreRadio``
+            # satisfies too.
             #
-            # Best-effort means genuinely best-effort here, on the one
-            # backend (Yaesu) this repoint exists for: a read failure must
-            # not report a confident "did not key" when the write itself
-            # was accepted (``key_refusal is None`` already means
-            # ``set_ptt(True)`` did not raise) -- reporting `keyed: false`
-            # from a measurement that never happened would be a fabricated
-            # observation, and a false negative at that, not merely an
-            # unconfirmed positive. Note what this reasoning does and does
-            # not lean on: the transmit-authority ADR's rule that our own
-            # commands may source "transmitting" but never "receiving"
-            # licenses declining to say ``False`` here. It does not license
-            # claiming the value was verified, which is why the provenance
-            # tag below is not optional. So a read failure falls back to
-            # trusting the accepted write
-            # (``ptt_state = True``), not to the mirror -- on Yaesu the
-            # mirror is now permanently stale (the self-write is deleted),
-            # so it is exactly as fabricated a signal as a bare ``False``
-            # would be. ``ptt_state_source`` records which of "readback" /
-            # "mirror" / "unverified-write" produced the reported value, so
-            # a PASS backed by a real read stays distinguishable from one
-            # that is not, and the failure itself is never silent — see
-            # ``ptt_read_error``. Deliberately ``except Exception``, not
-            # ``_RESTORE_ERRORS``: this function is generic across backends
-            # and must not import a specific backend's transport exception
-            # types to enumerate them (MOR-1941 review).
+            # Best-effort means genuinely best-effort: neither an exception
+            # from ``read_transmit_state()`` nor a normal return with no
+            # usable value (``TxStateReading.value is None`` -- a timed-out
+            # or malformed reply) may report a confident "did not key" when
+            # the write itself was accepted (``key_refusal is None`` already
+            # means ``set_ptt(True)`` did not raise) -- reporting
+            # ``keyed: false`` from a measurement that never happened would
+            # be a fabricated observation, and a false negative at that, not
+            # merely an unconfirmed positive. Note what this reasoning does
+            # and does not lean on: the transmit-authority ADR's rule that
+            # our own commands may source "transmitting" but never
+            # "receiving" licenses declining to say ``False`` here. It does
+            # not license claiming the value was verified, which is why the
+            # provenance tag below is not optional. So either failure falls
+            # back to trusting the accepted write (``ptt_state = True``),
+            # not to the mirror -- as fabricated a signal as a bare
+            # ``False`` would be.
+            #
+            # A radio that does not implement ``TransmitStateReadable`` at
+            # all is a distinct case: the mirror is reported (unchanged from
+            # before this ticket), but ``ptt_read_unavailable`` says so in
+            # the evidence -- a consumer must not have to already know that
+            # ``ptt_state_source == "mirror"`` can mean "no read capability"
+            # (MOR-2089).
+            #
+            # ``ptt_state_source`` records which of "readback" / "mirror" /
+            # "unverified-write" produced the value, so neither failure mode
+            # is silent -- see ``ptt_read_error`` / ``ptt_read_unavailable``.
+            # Deliberately ``except Exception``, not ``_RESTORE_ERRORS``:
+            # generic across backends, must not import a specific backend's
+            # transport exception types (MOR-1941 review). Its own protocol
+            # docstring is explicit that ``read_transmit_state()`` is not a
+            # blanket "never raises" guarantee: besides the ahead-of-wire
+            # ``_check_connected()`` precondition, ``CoreRadio`` can also
+            # raise from a transport-recovery failure reached mid-send
+            # (``runtime/_civ_rx.py: _send_civ_raw`` ->
+            # ``_wait_for_civ_transport_recovery``) -- this catch is not
+            # narrowed to either.
             ptt_state = bool(radio.radio_state.ptt)
             ptt_state_source = "mirror"
-            _get_ptt_attr = getattr(radio, "get_ptt", None)
-            if callable(_get_ptt_attr):
+            if isinstance(radio, TransmitStateReadable):
                 try:
-                    ptt_state = bool(
-                        await asyncio.wait_for(
-                            _get_ptt_attr(), timeout=per_check_timeout
-                        )
+                    reading = await asyncio.wait_for(
+                        radio.read_transmit_state(), timeout=per_check_timeout
                     )
-                    ptt_state_source = "readback"
                 except Exception as exc:
                     evidence["ptt_read_error"] = str(exc)
                     _LOGGER.warning(
@@ -763,6 +786,31 @@ async def _actuate_tx_ptt(
                     )
                     ptt_state = True
                     ptt_state_source = "unverified-write"
+                else:
+                    if reading.value is None:
+                        evidence["ptt_read_error"] = reading.failure or "unverifiable"
+                        _LOGGER.warning(
+                            "tx.ptt readback returned no value after a "
+                            "successful key (failure=%s); trusting the "
+                            "accepted write rather than reporting an "
+                            "unverified key as a failure",
+                            reading.failure,
+                        )
+                        ptt_state = True
+                        ptt_state_source = "unverified-write"
+                    else:
+                        ptt_state = reading.value
+                        ptt_state_source = "readback"
+            else:
+                evidence["ptt_read_unavailable"] = (
+                    "radio does not implement TransmitStateReadable"
+                )
+                _LOGGER.warning(
+                    "tx.ptt has no TransmitStateReadable capability; "
+                    "falling back to the radio_state mirror (%s), which is "
+                    "not a solicited read of radio truth",
+                    ptt_state,
+                )
             evidence["ptt_state"] = ptt_state
             evidence["ptt_state_source"] = ptt_state_source
             keyed = ptt_state
