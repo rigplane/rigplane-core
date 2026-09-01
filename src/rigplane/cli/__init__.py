@@ -1888,7 +1888,11 @@ async def _run(args: argparse.Namespace) -> int:
         return 1
     if args.command == "audio" and args.audio_command == "probe":
         return await _cmd_audio_probe(config, args)
-    radio = create_radio(config)
+    try:
+        radio = create_radio(config)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     if args.command in ("web", "station"):
         # Declared listeners are checked before the radio connects (MOR-1437):

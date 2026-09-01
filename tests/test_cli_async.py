@@ -1484,7 +1484,6 @@ class TestRunErrorHandling:
             command="status",
             json=False,
         )
-        # Mock create_radio to raise immediately instead of attempting real network connect
         mock_radio = MagicMock()
         mock_radio.__aenter__ = AsyncMock(
             side_effect=ConnectionError("test connection failed")
@@ -1495,6 +1494,63 @@ class TestRunErrorHandling:
         assert rc == 1
         err = capsys.readouterr().err
         assert "Error" in err
+
+    @pytest.mark.asyncio
+    async def test_run_reports_unsupported_serial_model_cleanly(self, capsys) -> None:
+        """create_radio's own ValueError reaches the user as `Error: ...`, not a traceback.
+
+        X6100 has a rig profile (so _resolve_model accepts --model X6100 and
+        _build_backend_config returns), but backends.factory.create_radio has no
+        serial route for it and raises; that raise used to escape _run uncaught.
+        """
+        args = Namespace(
+            backend="serial",
+            serial_port="/dev/ttyUSB0",
+            serial_baud=None,
+            serial_ptt_mode="civ",
+            host="",
+            control_port=50001,
+            user="",
+            password="",
+            timeout=0.1,
+            model="X6100",
+            radio_addr=None,
+            rx_device=None,
+            tx_device=None,
+            command="status",
+            json=False,
+        )
+        rc = await _run(args)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert err.startswith("Error: Unsupported serial model 'X6100'")
+        assert "Traceback" not in err
+
+    @pytest.mark.asyncio
+    async def test_run_reports_unresolvable_profile_cleanly(self, capsys) -> None:
+        """A radio nothing identifies is a user-input error, not a crash.
+
+        `rigplane --host <ip>` with no --model leaves the config with neither a
+        model nor a radio_addr, so profiles.resolve_radio_profile refuses rather
+        than guessing a default rig, and that ValueError leaves create_radio by
+        way of IcomRadio's constructor. No mock: this is the real path.
+        """
+        args = Namespace(
+            host="192.168.1.100",
+            control_port=50001,
+            user="",
+            password="",
+            timeout=0.1,
+            model=None,
+            radio_addr=None,
+            command="status",
+            json=False,
+        )
+        rc = await _run(args)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert err.startswith("Error: Cannot resolve a radio profile")
+        assert "Traceback" not in err
 
     @pytest.mark.asyncio
     async def test_run_audio_rx_routes_to_handler(self) -> None:
