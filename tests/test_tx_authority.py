@@ -1,9 +1,4 @@
-"""Unit tests for the transmit-authority vocabulary and pure engine.
-
-Row 1 of the transmit-authority migration: the engine is consumed by nothing,
-so every test here drives it directly with real fakes and a fake clock. No
-MagicMock anywhere near the authority (repo hard rule).
-"""
+"""Unit contracts for the dormant transmit-authority classifier."""
 
 from __future__ import annotations
 
@@ -26,8 +21,6 @@ from rigplane.core.tx_authority import (
     TransmitAuthority,
     TxFamily,
     TxMethodEntry,
-    TxRefusal,
-    TxRefusalCode,
     TxWriteClass,
 )
 
@@ -88,108 +81,11 @@ METHOD_MAP: Mapping[str, TxMethodEntry] = {
 }
 
 
-class Clock:
-    """Deterministic monotonic clock."""
-
-    def __init__(self, start: float = 100.0) -> None:
-        self.now = start
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-class FakeTransmitStateLink:
-    """Scripted transmit-state answers plus a wire log."""
-
-    def __init__(self, clock: Clock) -> None:
-        self._clock = clock
-        self.reads: list[float] = []
-        self.answers: list[TxStateReading | str] = []
-        self.read_started: asyncio.Event | None = None
-        self.release_read: asyncio.Event | None = None
-        self.read_latency = 0.01
-        self.default = TxStateReading(
-            value=False,
-            attributed="rx",
-            source="poll_response",
-            verified_readback=True,
-            failure=None,
-        )
-        self.on_read: list[object] = []
-
-    def script(self, *answers: TxStateReading | str) -> None:
-        self.answers.extend(answers)
-
-    async def read(self) -> TxStateReading:
-        self.reads.append(self._clock())
-        if self.read_started is not None:
-            self.read_started.set()
-        if self.release_read is not None:
-            await self.release_read.wait()
-        for hook in self.on_read:
-            hook()  # type: ignore[operator]
-        answer = self.answers.pop(0) if self.answers else self.default
-        if answer == "hang":
-            await asyncio.sleep(3600)
-        if answer == "boom":
-            raise OSError("transport is down")
-        if answer == "garbage":
-            raise ValueError("the row-5 parser could not decode the reply")
-        self._clock.advance(self.read_latency)
-        assert isinstance(answer, TxStateReading)
-        return answer
-
-
-class PoisonedLink:
-    """A read callable that must never be invoked."""
-
-    async def read(self) -> TxStateReading:  # pragma: no cover - must not run
-        raise AssertionError("transmit truth was consulted on a PASS write")
-
-
-RX = TxStateReading(
-    value=False,
-    attributed="rx",
-    source="poll_response",
-    verified_readback=True,
-    failure=None,
-)
-TX = TxStateReading(
-    value=True,
-    attributed="tx_other",
-    source="poll_response",
-    verified_readback=True,
-    failure=None,
-)
-UNVERIFIED_RX = TxStateReading(
-    value=False,
-    attributed="rx",
-    source="hamlib_response",
-    verified_readback=False,
-    failure=None,
-)
-NO_CAPABILITY = TxStateReading(
-    value=None,
-    attributed=None,
-    source=None,
-    verified_readback=False,
-    failure="no-capability",
-)
-
-
 def build_authority(
-    clock: Clock,
-    link: FakeTransmitStateLink | PoisonedLink,
-    *,
     method_map: Mapping[str, TxMethodEntry] | None = None,
 ) -> TransmitAuthority:
     return TransmitAuthority(
-        read_transmit_state=link.read,
         method_map=METHOD_MAP if method_map is None else method_map,
-        clock=clock,
     )
 
 
@@ -250,7 +146,6 @@ def test_transmit_truth_projection_is_absent() -> None:
 
 
 def test_dormant_authority_watchdog_surface_is_absent() -> None:
-    """The authority retains admission records, not a second TX watchdog."""
     for name in ("_Hold", "TxDeadlineExpiry"):
         assert not hasattr(tx_authority, name)
     assert not hasattr(TransmitAuthority, "poll")
@@ -265,23 +160,12 @@ def test_dormant_authority_watchdog_surface_is_absent() -> None:
     ):
         assert name not in parameters
 
-    authority = TransmitAuthority(
-        read_transmit_state=PoisonedLink().read,
-        method_map=METHOD_MAP,
-        clock=Clock(),
-    )
+    authority = build_authority()
     for name in ("_last_resort_unkey", "_holds", "_deadline", "_lease_active"):
         assert not hasattr(authority, name)
-    assert [field.name for field in fields(tx_authority.TxAdmission)] == [
-        "family",
-        "write_class",
-        "evidence",
-    ]
-    assert "own_transmit_hold" not in get_type_hints(tx_authority.TxEvidence)
 
 
 def test_dormant_decision_surface_is_absent() -> None:
-    """MOR-2179 leaves the authority as an admission gate, not an audit ring."""
     for name in (
         "DECISION_LOG_CAPACITY",
         "TX_ENGINE_FAILURE_TAGS",
@@ -296,11 +180,7 @@ def test_dormant_decision_surface_is_absent() -> None:
     assert not hasattr(TransmitAuthority, "_commit")
     assert not hasattr(TransmitAuthority, "_record")
 
-    authority = TransmitAuthority(
-        read_transmit_state=PoisonedLink().read,
-        method_map=METHOD_MAP,
-        clock=Clock(),
-    )
+    authority = build_authority()
     for name in ("_provider_generation", "_records"):
         assert not hasattr(authority, name)
 
@@ -347,7 +227,7 @@ async def test_fixed_ptt_and_powerstat_families_ignore_arguments(
     family: TxFamily,
     write_class: TxWriteClass,
 ) -> None:
-    authority = build_authority(Clock(), PoisonedLink())
+    authority = build_authority()
 
     async with authority.admit(method, args, kwargs) as admission:
         assert admission.family is family
@@ -368,290 +248,136 @@ def test_dormant_band_classification_surface_is_absent() -> None:
     assert "bands" not in parameters
     assert "current_frequency_hz" not in parameters
 
-    authority = TransmitAuthority(
-        read_transmit_state=PoisonedLink().read,
-        method_map=METHOD_MAP,
-        clock=Clock(),
-    )
+    authority = build_authority()
     assert not hasattr(authority, "_bands")
     assert not hasattr(authority, "_current_frequency_hz")
 
 
-# --------------------------------------------------------------------------
-# Fail-direction per class × per truth answer (§3.3)
-# --------------------------------------------------------------------------
-
-
-async def test_pass_class_never_consults_truth() -> None:
-    """INV-3: a poisoned read callable must not be reachable from PASS."""
-    clock = Clock()
-    authority = build_authority(clock, PoisonedLink())
-    sent: list[str] = []
-    for method, args in (
-        ("set_mode", ("USB",)),
-        ("set_split", (True,)),
-        ("set_power", (50,)),
-        ("set_powerstat", (True,)),
-        ("stop_cw_text", ()),
-    ):
-        async with authority.admit(method, args):
-            sent.append(method)
-    assert len(sent) == 5
-
-
-async def test_hazard_at_confirmed_rx_reads_before_the_write() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX)
-    authority = build_authority(clock, link)
-    wire: list[str] = []
-    link.on_read.append(lambda: wire.append("read"))
-
-    async with authority.admit("set_antenna_1", ()) as admission:
-        wire.append("write")
-
-    assert wire == ["read", "write"]
-    assert admission.family is TxFamily.ANTENNA
-    assert admission.write_class is TxWriteClass.HAZARD
-    assert admission.evidence is not None
-    assert admission.evidence.solicited is True
-    assert admission.evidence.value is False
-    assert admission.evidence.age_seconds == pytest.approx(link.read_latency)
-
-
-async def test_hazard_at_transmit_is_refused_with_evidence() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(TX)
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_tuner_status", (1,)):
-            pytest.fail("hazard write reached the wire while transmitting")
-
-    refusal = excinfo.value
-    assert refusal.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
-    assert refusal.evidence.value is True
-    assert refusal.evidence.attributed == "tx_other"
-    assert refusal.evidence.source == "poll_response"
-    assert refusal.evidence.solicited is True
-
-
-async def test_hazard_read_timeout_fails_closed() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script("hang")
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_band", (20,)):
-            pytest.fail("hazard write reached the wire on an unanswered read")
-
-    refusal = excinfo.value
-    assert refusal.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
-    assert refusal.evidence.failure == "timeout"
-    assert refusal.evidence.value is None
-    assert refusal.evidence.solicited is True
-
-
-async def test_hazard_transport_error_fails_closed() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script("boom")
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_vfo_slot", ("B",)):
-            pytest.fail("hazard write reached the wire on a failed read")
-    assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
-    assert excinfo.value.evidence.failure == "transport"
-
-
-async def test_an_unexpected_read_error_is_still_a_typed_refusal() -> None:
-    """§3.4: ``TxRefusal`` is the one exception consumers of the gate handle."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script("garbage")
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_antenna_1", ()):
-            pytest.fail("hazard write reached the wire on an undecodable reply")
-    assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
-    assert excinfo.value.evidence.failure == "read-error"
-
-
-async def test_hazard_without_capability_fails_closed() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(NO_CAPABILITY)
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("memory_to_vfo", (3,)):
-            pytest.fail("hazard write reached the wire without a read primitive")
-    assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
-    assert excinfo.value.evidence.failure == "no-capability"
-
-
-async def test_unverifiable_readback_fails_closed() -> None:
-    """§3.7: an unverified readback cannot admit a hazard write."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(UNVERIFIED_RX)
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_antenna_1", ()):
-            pytest.fail("hazard write admitted on an unverifiable readback")
-    assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
-    assert excinfo.value.evidence.failure == "unverifiable-provenance"
-    assert excinfo.value.evidence.verified_readback is False
-
-
-@pytest.mark.parametrize(
-    "answer",
-    [TX, "hang", "boom", NO_CAPABILITY, UNVERIFIED_RX],
-)
-async def test_every_refusal_carries_evidence(answer: TxStateReading | str) -> None:
-    """INV-14: no refusal is exempt from carrying its evidence."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(answer)
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_tuner_status", (0,)):
-            pytest.fail("refused write reached the wire")
-    evidence = excinfo.value.evidence
-    assert evidence is not None
-    assert (evidence.value is not None) or (evidence.failure is not None)
-
-
-# --------------------------------------------------------------------------
-# KEYING
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("answer", [RX, TX, "boom"])
-async def test_keying_is_admitted_on_every_truth_answer(
-    answer: TxStateReading | str,
-) -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(answer)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    assert link.reads == []  # a key is explicit operator intent, never truth-gated
-
-
-# --------------------------------------------------------------------------
-# INV-4 — the read is not shared and is invalidated by a transmit event
-# --------------------------------------------------------------------------
-
-
-async def test_a_transmit_observation_between_read_and_write_invalidates_it() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX)
-    authority = build_authority(clock, link)
-    link.on_read.append(lambda: authority.note_transmit_observation(True))
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_antenna_1", ()):
-            pytest.fail("hazard write used a read a transmit event invalidated")
-    assert excinfo.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
-
-
-async def test_a_key_cannot_slip_between_a_hazard_read_and_its_write() -> None:
-    """INV-4: the admission lock spans the read and the write it authorised.
-
-    Counts cannot see this — both writes happen either way. Only the *order*
-    of the effects distinguishes a held lock from an open window, and only if
-    the hazard body *awaits*: every real transport write does, and a purely
-    synchronous body reaches its append before the loop can schedule anybody
-    else, so it cannot tell a lock held through the write handoff from one
-    released at the verdict.
-
-    # MUTATION: in `src/rigplane/core/tx_authority.py`, dedent `yield ticket`
-    # so it sits after the `async with self._lock:` body rather than inside it
-    # -> this row goes red with
-    # `["key-write", "hazard-relay-throw"]`: a key completed inside the
-    # relay-throw window.
-    """
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX)
-    link.read_started = asyncio.Event()
-    link.release_read = asyncio.Event()
-    authority = build_authority(clock, link)
-    order: list[str] = []
-
-    async def hazard() -> None:
-        async with authority.admit("set_antenna_1", ()):
-            await asyncio.sleep(0)  # the write handoff every transport makes
-            order.append("hazard-relay-throw")
-
-    async def key() -> None:
-        async with authority.admit("set_ptt", (True,)):
-            order.append("key-write")
-
-    hazard_task = asyncio.create_task(hazard())
-    await asyncio.wait_for(link.read_started.wait(), 1.0)
-
-    key_task = asyncio.create_task(key())
-    for _ in range(20):
-        await asyncio.sleep(0)  # the key gets every chance to slip in
-    assert order == [], "the key ran while a hazard admission held the lock"
-
-    link.release_read.set()
-    await asyncio.gather(hazard_task, key_task)
-    assert order == ["hazard-relay-throw", "key-write"]
-
-
-async def test_concurrent_hazard_admissions_do_not_share_a_read() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX, RX)
-    authority = build_authority(clock, link)
-    order: list[str] = []
-
-    async def hazard(tag: str) -> None:
-        async with authority.admit("set_antenna_1", ()):
-            order.append(f"write:{tag}")
-
-    await asyncio.gather(hazard("a"), hazard("b"))
-    assert len(link.reads) == 2
-    assert len(order) == 2
-
-
-# --------------------------------------------------------------------------
-async def test_an_unmapped_method_fails_closed() -> None:
-    """INV-1's fail direction: nothing defaults to PASS by omission."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_something_new", (1,)):
-            pytest.fail("an unmapped write reached the wire")
-    assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
-    assert excinfo.value.evidence.failure == "unclassified"
-
-
 @pytest.mark.parametrize(
     "method",
-    ("send_civ", "send_civ_transaction", "send_civ_raw_fire_and_forget"),
+    ("set_band", "set_tuner_status", "set_antenna_1", "set_vfo_slot"),
 )
-async def test_former_raw_methods_fail_closed_as_unclassified(method: str) -> None:
-    """Former raw exclusions are unmapped writes and therefore typed refusals."""
-    authority = build_authority(Clock(), PoisonedLink())
+@pytest.mark.parametrize(
+    "answer",
+    (
+        TxStateReading(
+            value=True,
+            attributed="tx_other",
+            source="poll_response",
+            verified_readback=True,
+        ),
+        TxStateReading(value=None, failure="no-capability"),
+        TxStateReading(
+            value=False,
+            attributed="rx",
+            source="hamlib_response",
+            verified_readback=False,
+        ),
+        OSError("transport is down"),
+    ),
+)
+async def test_dormant_hazard_admission_ignores_every_observation_input(
+    method: str,
+    answer: TxStateReading | OSError,
+) -> None:
+    authority = build_authority()
+    reads = 0
+    body_executed = False
 
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit(method, (b"\xfe\xfe",)):
-            pytest.fail("an unmapped raw write reached the wire")
+    async def read_observation() -> TxStateReading:
+        nonlocal reads
+        reads += 1
+        if isinstance(answer, OSError):
+            raise answer
+        return answer
 
-    assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
-    assert excinfo.value.evidence.failure == "unclassified"
+    setattr(authority, "_read_transmit_state", read_observation)
+    async with authority.admit(method):
+        body_executed = True
+
+    assert body_executed
+    assert reads == 0
+
+
+async def test_dormant_hazard_admission_bodies_can_overlap() -> None:
+    """The dormant skeleton does not serialize unrelated backend writes."""
+    authority = build_authority()
+    both_entered = asyncio.Event()
+    release = asyncio.Event()
+    entered = 0
+
+    async def hazard(method: str) -> None:
+        nonlocal entered
+        async with authority.admit(method):
+            entered += 1
+            if entered == 2:
+                both_entered.set()
+            await release.wait()
+
+    tasks = [
+        asyncio.create_task(hazard("set_antenna_1")),
+        asyncio.create_task(hazard("set_tuner_status")),
+    ]
+    overlapped = False
+    try:
+        await asyncio.wait_for(both_entered.wait(), 0.1)
+        overlapped = True
+    except TimeoutError:
+        pass
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+
+    assert overlapped, "hazard admission bodies were serialized"
+
+
+def test_observation_driven_admission_surface_is_absent() -> None:
+    for name in ("TxRefusalCode", "TxEvidence", "TxRefusal"):
+        assert not hasattr(tx_authority, name)
+
+    assert list(inspect.signature(TransmitAuthority).parameters) == ["method_map"]
+    authority = build_authority()
+    assert set(vars(authority)) == {"_method_map"}
+    for name in (
+        "note_transmit_observation",
+        "_admit_keying",
+        "_admit_hazard",
+        "_refuse",
+    ):
+        assert not hasattr(TransmitAuthority, name)
+    for name in (
+        "_read_transmit_state",
+        "_clock",
+        "_read_deadline_seconds",
+        "_lock",
+        "_transmit_epoch",
+    ):
+        assert not hasattr(authority, name)
+
+    assert [field.name for field in fields(tx_authority.TxAdmission)] == [
+        "family",
+        "write_class",
+    ]
+    assert get_type_hints(tx_authority.TxAdmission) == {
+        "family": TxFamily,
+        "write_class": TxWriteClass,
+    }
+
+
+@pytest.mark.parametrize(
+    ("method", "family", "write_class"),
+    tuple(
+        (method, entry.family, FAMILY_WRITE_CLASS[entry.family])
+        for method, entry in METHOD_MAP.items()
+    ),
+)
+async def test_every_mapped_method_yields_classification_metadata(
+    method: str,
+    family: TxFamily,
+    write_class: TxWriteClass,
+) -> None:
+    authority = build_authority()
+
+    async with authority.admit(method) as admission:
+        assert admission.family is family
+        assert admission.write_class is write_class

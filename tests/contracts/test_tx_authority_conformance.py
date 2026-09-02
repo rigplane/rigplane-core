@@ -7,7 +7,7 @@ queue liveness against every backend's real fake wire.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 import pytest
 from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
@@ -26,6 +26,11 @@ from tx_authority_fakes import (
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat import YaesuCatRadio
 from rigplane.core.tx_observation import RADIO_READBACK_SOURCES, TxStateReading
+from rigplane.core.tx_authority import (
+    TransmitAuthority,
+    TxFamily,
+    TxMethodEntry,
+)
 
 # ---------------------------------------------------------------------------
 # Pinned literals
@@ -54,6 +59,17 @@ CIV_BACKENDS: tuple[str, ...] = (
     "ic7300-serial",
     "ic9700-serial",
 )
+
+CONFORMANCE_METHOD_MAP: Mapping[str, TxMethodEntry] = {
+    "set_tuner_status": TxMethodEntry(TxFamily.TUNER),
+    "set_tuner": TxMethodEntry(TxFamily.TUNER),
+    "set_vfo_slot": TxMethodEntry(TxFamily.VFO_SELECT),
+    "set_ptt": TxMethodEntry(TxFamily.PTT_ON),
+}
+
+
+def build_authority() -> TransmitAuthority:
+    return TransmitAuthority(method_map=CONFORMANCE_METHOD_MAP)
 
 
 @pytest.fixture
@@ -254,6 +270,24 @@ async def test_no_failing_answer_ever_resolves_to_receiving(
 # ---------------------------------------------------------------------------
 # 2. Queue liveness and self-write provenance
 # ---------------------------------------------------------------------------
+
+
+@every_backend()
+async def test_dormant_admission_at_scripted_tx_reads_nothing_and_writes_once(
+    harness: TxConformanceHarness,
+) -> None:
+    """Dormant classification wraps, but does not gate, a real backend write."""
+    harness.script("tx_cat")
+    authority = build_authority()
+    wire_before = len(harness.wire())
+    writes_before = len(harness.writes())
+
+    async with authority.admit(harness.hazard_method, harness.hazard_args):
+        await harness.hazard()
+
+    wire = list(harness.wire())[wire_before:]
+    assert [entry for entry in wire if harness.is_read(entry)] == []
+    assert len(harness.writes()) == writes_before + 1
 
 
 @pytest.mark.parametrize("harness", QUEUE_PATH_BACKENDS, indirect=True)
