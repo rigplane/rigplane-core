@@ -154,9 +154,6 @@ class RigctldTransport:
         reader: asyncio.StreamReader | None,
         writer: asyncio.StreamWriter | None,
     ) -> None:
-        """Discard any unread bytes left in the socket buffer from a prior
-        transaction (e.g. a late/out-of-band frame the bridge injected) so the
-        next command reads only its own reply."""
         if reader is None:
             return
         while True:
