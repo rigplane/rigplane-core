@@ -212,7 +212,6 @@ class SerialMockRadio:
         self._monitor_on = False
         self._vox_on = False
         self._dual_watch = False
-        self._tx_freq_monitor = False
         self._state_cache = StateCache()
         self._radio_state = RadioState()
         self._scope_callback: Any = None
@@ -517,9 +516,6 @@ class SerialMockRadio:
     async def set_dual_watch(self, on: bool) -> None:
         self._dual_watch = on
 
-    async def set_tx_freq_monitor(self, on: bool) -> None:
-        self._tx_freq_monitor = on
-
     def create_observation_poller(
         self,
         *,
@@ -620,7 +616,6 @@ class SerialMockRadio:
             "monitor_on": self._monitor_on,
             "vox_on": self._vox_on,
             "dual_watch": self._dual_watch,
-            "tx_freq_monitor": self._tx_freq_monitor,
         }
         for name, flag in global_toggles.items():
             _obs(FieldPath.global_("tx_state", name), flag)
@@ -769,7 +764,6 @@ class _MockObservationPoller:
             SetSplit,
             SetSquelch,
             SetTunerStatus,
-            SetTxFreqMonitor,
             SetVox,
         )
 
@@ -833,8 +827,6 @@ class _MockObservationPoller:
                 await radio.set_vox(on)
             case SetDualWatch(on=on):
                 await radio.set_dual_watch(on)
-            case SetTxFreqMonitor(on=on):
-                await radio.set_tx_freq_monitor(on)
             case _:
                 # Unsupported commands are intentionally ignored — the mock only
                 # backs the v2-rendered field surface, not the full CI-V map.

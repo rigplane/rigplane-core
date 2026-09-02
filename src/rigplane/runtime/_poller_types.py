@@ -129,7 +129,6 @@ __all__ = [
     "SetTunerStatus",
     "SetTuningStep",
     "SetTwinPeak",
-    "SetTxFreqMonitor",
     "SetUsbModLevel",
     "SetUtcOffset",
     "SetVox",
@@ -789,11 +788,6 @@ class SetXfcStatus:
 
 
 @dataclass(frozen=True, slots=True)
-class SetTxFreqMonitor:
-    on: bool
-
-
-@dataclass(frozen=True, slots=True)
 class SetUtcOffset:
     hours: int
     minutes: int
@@ -959,7 +953,6 @@ Command: TypeAlias = (
     | SetTunerStatus
     | SetTuningStep
     | SetXfcStatus
-    | SetTxFreqMonitor
     | SetUtcOffset
     | QuickSplit
     | QuickDualWatch

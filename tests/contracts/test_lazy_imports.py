@@ -53,7 +53,6 @@ TIER1_NAMES = [
     "StatePoller",
     "SystemControlCapable",
     "TransceiverBankCapable",
-    "TransceiverStatusCapable",
     "UsbAudioCapable",
     "VfoSlotCapable",
     "VoiceControlCapable",

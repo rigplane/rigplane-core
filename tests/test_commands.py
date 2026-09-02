@@ -31,8 +31,6 @@ from rigplane.commands import (
     set_mode,
     set_rf_power,
 )
-from rigplane.commands.bound import BoundCommands
-from rigplane.exceptions import CommandError
 from rigplane.types import (
     AgcMode,
     AudioPeakFilter,
@@ -1303,12 +1301,10 @@ class TestTransceiverStatusBuilders:
 
     Migrated onto the bound command map in MOR-2008
     (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps 5..N):
-    batch 1 for the system.py builders here -- band edge, tuner/XFC/
-    TX-freq-monitor status, RIT/XIT; batch 2 for the meters.py builders --
-    various-squelch and the power/comp/Vd/Id meters. Every builder here now
-    requires ``cmd_map``. The legacy TX-frequency-monitor pair is explicitly
-    absent on IC-7610 because 1C/03 is a read-only frequency payload; the
-    remaining builders use the profile-declared bytes below.
+    batch 1 for the system.py builders here -- band edge, tuner/XFC
+    status, RIT/XIT; batch 2 for the meters.py builders -- various-squelch
+    and the power/comp/Vd/Id meters. Every builder here now requires
+    ``cmd_map``.
     """
 
     @pytest.fixture()
@@ -1405,29 +1401,6 @@ class TestTransceiverStatusBuilders:
 
         with pytest.raises(TypeError, match="MOR-2006"):
             set_tuner_status(1, cmd_map=None)
-
-    def test_get_tx_freq_monitor_fails_closed(self) -> None:
-        profile = load_rig(RIG_DIR / "ic7610.toml").to_profile()
-        assert profile.command_map is not None
-        commands = BoundCommands(
-            profile.command_map,
-            profile.absent_command_sources,
-        )
-
-        with pytest.raises(CommandError, match="declared absent"):
-            commands.get_tx_freq_monitor(to_addr=profile.civ_addr)
-
-    @pytest.mark.parametrize("on", (True, False))
-    def test_set_tx_freq_monitor_fails_closed(self, on: bool) -> None:
-        profile = load_rig(RIG_DIR / "ic7610.toml").to_profile()
-        assert profile.command_map is not None
-        commands = BoundCommands(
-            profile.command_map,
-            profile.absent_command_sources,
-        )
-
-        with pytest.raises(CommandError, match="declared absent"):
-            commands.set_tx_freq_monitor(on, to_addr=profile.civ_addr)
 
     def test_get_rit_frequency(self, cmd_map) -> None:
         from rigplane.commands import get_rit_frequency

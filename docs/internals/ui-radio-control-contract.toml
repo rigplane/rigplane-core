@@ -461,13 +461,13 @@ gap_owner = "MOR-1407,MOR-1408,MOR-1409"
 
 [[families]]
 id = "tx_band_advanced"
-capabilities = ["tx_band", "tx_monitor", "ssb_tx_bandwidth"]
-intents = ["set_ssb_tx_bw", "get_band_edge_freq", "get_xfc_status", "set_xfc_status", "get_tx_freq_monitor", "set_tx_freq_monitor"]
+capabilities = ["tx_band", "ssb_tx_bandwidth"]
+intents = ["set_ssb_tx_bw", "get_band_edge_freq", "get_xfc_status", "set_xfc_status"]
 command_route = "existing TX-band/control command route"
 observation_route = "existing provider readback/acquisition when supported"
-field_paths = ["global.tx_state.tx_freq_monitor", "global.operator_controls.ssb_tx_bandwidth", "global.slow_state.tx_band_edges"]
+field_paths = ["global.operator_controls.ssb_tx_bandwidth", "global.slow_state.tx_band_edges"]
 field_path_gaps = []
-public_fields = ["server.ssbTxBandwidth", "server.txFreqMonitor", "server.txBandEdges"]
+public_fields = ["server.ssbTxBandwidth", "server.txBandEdges"]
 ws_property = "state_update TX-band facts"
 selector = "shared TX auxiliary selector"
 pending = "control lifecycle only"

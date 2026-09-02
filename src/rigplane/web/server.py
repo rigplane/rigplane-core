@@ -271,7 +271,6 @@ _LEGACY_GLOBAL_TX_FIELDS: tuple[tuple[str, str], ...] = (
     ("compressor_on", "compressor_on"),
     ("main_sub_tracking", "main_sub_tracking"),
     ("dial_lock", "dial_lock"),
-    ("tx_freq_monitor", "tx_freq_monitor"),
 )
 _LEGACY_GLOBAL_CONTROL_FIELDS: tuple[tuple[str, str], ...] = (
     ("power_level", "power_level"),

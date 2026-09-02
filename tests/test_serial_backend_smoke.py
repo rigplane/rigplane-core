@@ -522,7 +522,6 @@ _V2_GLOBAL_FIELDS = (
     "monitorOn",
     "voxOn",
     "dualWatch",
-    "txFreqMonitor",
 )
 
 

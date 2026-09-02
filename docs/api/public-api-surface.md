@@ -161,7 +161,7 @@ available directly via `from rigplane import …`.
 - `DspControlCapable`, `AntennaControlCapable`, `CwControlCapable`,
   `VoiceControlCapable`
 - `SystemControlCapable`, `RepeaterControlCapable`, `AdvancedControlCapable`
-- `TransceiverStatusCapable`, `RitXitCapable`, `MemoryCapable`
+- `RitXitCapable`, `MemoryCapable`
 - `SplitCapable` (new in v0.19)
 - `UsbAudioCapable` (new in v0.19)
 - `AudioTransport` (new in v2.9 — codec-neutral audio surface, MOR-532/MOR-538)

@@ -3630,19 +3630,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         civ = self._commands.set_xfc_status(on, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
-    async def get_tx_freq_monitor(self) -> bool:
-        """Read TX frequency monitor status."""
-        self._check_connected()
-        civ = self._commands.get_tx_freq_monitor(to_addr=self._radio_addr)
-        resp = await self._send_civ_expect(civ, label="get_tx_freq_monitor")
-        return bool(resp.data[0]) if resp.data else False
-
-    async def set_tx_freq_monitor(self, on: bool) -> None:
-        """Set TX frequency monitor on/off. Fire-and-forget."""
-        self._check_connected()
-        civ = self._commands.set_tx_freq_monitor(on, to_addr=self._radio_addr)
-        await self._send_civ_raw(civ, wait_response=False)
-
     async def get_rit_frequency(self) -> int:
         """Read the RIT frequency offset in Hz (±9999)."""
         self._check_connected()

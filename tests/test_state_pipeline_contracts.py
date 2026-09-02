@@ -359,6 +359,15 @@ def test_global_dial_lock_registered_as_tx_state_bool() -> None:
     assert spec.writable is True
 
 
+def test_global_tx_freq_monitor_has_no_registered_spec() -> None:
+    """MOR-2246: the misnamed ``tx_freq_monitor`` field was deleted from the
+    registry; XFC (``get_xfc_status``/``set_xfc_status``) is the real
+    transmit-frequency monitor and is unaffected."""
+    path = FieldPath.global_("tx_state", "tx_freq_monitor")
+    with pytest.raises(KeyError):
+        DEFAULT_FIELD_REGISTRY.require(path)
+
+
 def test_global_scope_control_display_leaves_registered() -> None:
     """MOR-557: the public scope-control leaves have canonical FieldSpecs.
 

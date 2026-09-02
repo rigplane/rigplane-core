@@ -120,7 +120,6 @@ __all__ = [
     "StatePoller",
     "StateStoreCapable",
     "RitXitCapable",
-    "TransceiverStatusCapable",
     "TransmitStateReadable",
     "UsbAudioCapable",
     "MemoryCapable",
@@ -1949,23 +1948,6 @@ class RitXitCapable(Protocol):
 
     async def set_rit_tx_status(self, on: bool) -> None:
         """Set RIT TX (XIT) on/off status."""
-        ...
-
-
-@runtime_checkable
-class TransceiverStatusCapable(Protocol):
-    """Radio supports TX frequency monitor (M4 transceiver_status family).
-
-    RIT/XIT lives in :class:`RitXitCapable` — the two were previously bundled
-    here but have unrelated semantics.
-    """
-
-    async def get_tx_freq_monitor(self) -> bool:
-        """Get TX frequency monitor on/off status."""
-        ...
-
-    async def set_tx_freq_monitor(self, on: bool) -> None:
-        """Set TX frequency monitor on/off status."""
         ...
 
 

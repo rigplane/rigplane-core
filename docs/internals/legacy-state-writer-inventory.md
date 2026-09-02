@@ -155,7 +155,7 @@ observation-backed — leave until each family gains an observation emitter):
 - notch_filter, if_shift, filter_shape (0x16 56), cw_pitch (0x14 09 mirror in
   poller kept although observation-backed — not in this lane's family list),
   dial_lock (0x16 50), break_in (0x16 47), drive_gain, ref_adjust,
-  tx_freq_monitor (0x1C 03), af_mute, tuning_step (0x10), scan state
+  af_mute, tuning_step (0x10), scan state
   (scanning/scan_type/scan_resume_mode, 0x0E), main_sub_tracking,
   ssb_tx_bandwidth (0x16 58), repeater_tone/tsql (0x16 42/43) and tone/tsql
   freq (0x1B), antenna (0x12: tx_antenna/rx_antenna_1/2), apf (0x16 32),

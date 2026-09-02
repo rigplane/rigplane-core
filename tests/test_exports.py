@@ -57,7 +57,6 @@ def test_public_api_surface() -> None:
         "StatePoller",
         "SystemControlCapable",
         "TransceiverBankCapable",
-        "TransceiverStatusCapable",
         "UsbAudioCapable",
         "VfoSlotCapable",
         "VoiceControlCapable",

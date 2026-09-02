@@ -31,7 +31,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
-from rigplane.exceptions import CommandError  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
@@ -506,23 +505,6 @@ class TestTunerStatus:
         result = await rit_tuner_radio.get_tuner_status()
         assert result == 0
         assert rit_tuner_mock._tuner_status == 0
-
-
-# ---------------------------------------------------------------------------
-# 5. TX Freq Monitor
-# ---------------------------------------------------------------------------
-
-
-class TestTxFreqMonitor:
-    """Legacy boolean API must not write the read-only 1C/03 command."""
-
-    async def test_get_fails_closed(self, rit_tuner_radio: IcomRadio) -> None:
-        with pytest.raises(CommandError, match="declared absent"):
-            await rit_tuner_radio.get_tx_freq_monitor()
-
-    async def test_set_fails_closed(self, rit_tuner_radio: IcomRadio) -> None:
-        with pytest.raises(CommandError, match="declared absent"):
-            await rit_tuner_radio.set_tx_freq_monitor(True)
 
 
 # ---------------------------------------------------------------------------

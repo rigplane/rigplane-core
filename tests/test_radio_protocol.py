@@ -10,7 +10,6 @@ from rigplane.radio_protocol import (
     PowerControlCapable,
     Radio,
     RitXitCapable,
-    TransceiverStatusCapable,
     VoiceControlCapable,
 )
 from rigplane.radio_state import RadioState
@@ -249,7 +248,7 @@ def test_voice_compressor_round_trip_protocol_typed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# RitXitCapable / TransceiverStatusCapable split (issue #1099)
+# RitXitCapable (issue #1099)
 # ---------------------------------------------------------------------------
 
 
@@ -270,19 +269,6 @@ class _RitXitStub:
     async def set_rit_tx_status(self, on: bool) -> None: ...
 
 
-class _TxMonitorStub:
-    """Minimal stub that satisfies the reduced TransceiverStatusCapable."""
-
-    async def get_tx_freq_monitor(self) -> bool:
-        return False
-
-    async def set_tx_freq_monitor(self, on: bool) -> None: ...
-
-
-class _IcomLikeStub(_RitXitStub, _TxMonitorStub):
-    """Stub mimicking IcomRadio: satisfies BOTH protocols simultaneously."""
-
-
 def test_ritxit_capable_in_all() -> None:
     """The new RitXitCapable protocol is publicly exported."""
     assert "RitXitCapable" in radio_protocol.__all__
@@ -291,20 +277,6 @@ def test_ritxit_capable_in_all() -> None:
 def test_ritxit_capable_isinstance() -> None:
     """A class implementing the six RIT/XIT methods satisfies RitXitCapable."""
     assert isinstance(_RitXitStub(), RitXitCapable)
-
-
-def test_transceiver_status_capable_only_tx_monitor() -> None:
-    """TransceiverStatusCapable is now only the tx_freq_monitor pair."""
-    assert isinstance(_TxMonitorStub(), TransceiverStatusCapable)
-    # A stub with only RIT methods must NOT satisfy TransceiverStatusCapable.
-    assert not isinstance(_RitXitStub(), TransceiverStatusCapable)
-
-
-def test_icom_like_stub_satisfies_both_protocols() -> None:
-    """IcomRadio-shaped class satisfies both RitXitCapable and TransceiverStatusCapable."""
-    stub = _IcomLikeStub()
-    assert isinstance(stub, RitXitCapable)
-    assert isinstance(stub, TransceiverStatusCapable)
 
 
 def test_yaesu_cat_radio_satisfies_ritxit_capable() -> None:

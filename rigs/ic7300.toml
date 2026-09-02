@@ -1132,10 +1132,6 @@ get_ssb_tx_bandwidth = [0x16, 0x58]
 set_ssb_tx_bandwidth = [0x16, 0x58]
 
 # ── Split ──
-# MOR-2190 fail-closed ruling from direct official-manual evidence, not an
-# inherited unsupported marker. The explicit absences are authoritative.
-get_tx_freq_monitor = { absent = "IC-7300 Advanced Manual (11a) command table p.19-7: 1C 03 is Read transmit frequency, not transmit-frequency monitor; no SET form is documented" }
-set_tx_freq_monitor = { absent = "IC-7300 Advanced Manual (11a) command table p.19-7: 1C 03 is Read transmit frequency, not transmit-frequency monitor; no SET form is documented" }
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
 
