@@ -2879,7 +2879,8 @@ class TestIc9700DeclaresAbsentCommands:
     copied-but-wrong 1A05 address with no real replacement) and the
     nb_depth/nb_width pair (no single global control, per-band only).
     MOR-1983 adds the two legacy TX-frequency-monitor boolean names because
-    1C/03 is a read-only frequency payload, not a boolean get/set command.
+    1C/03 is a read-only frequency payload, plus RBW because the scope table
+    ends at 1E.
     Pinned by name, not just count, so a future D2 pass on another
     command can't silently swap one of these for a different one and
     still pass a bare-count check.
@@ -2910,6 +2911,8 @@ class TestIc9700DeclaresAbsentCommands:
             "get_powerstat",
             "get_quick_dual_watch",
             "set_quick_dual_watch",
+            "get_scope_rbw",
+            "set_scope_rbw",
             "get_tx_freq_monitor",
             "set_tx_freq_monitor",
             # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
@@ -2936,7 +2939,8 @@ class TestIc705DeclaresAbsentCommands:
     ruling 1 later split ``set_dual_watch`` into
     ``set_dual_watch_off``/``set_dual_watch_on``, +1 net; MOR-2143 added the
     bare ``set_dual_watch`` name, +1). MOR-1983 adds the two legacy boolean
-    TX-frequency-monitor names because 1C/03 is read-only. Pinned by name,
+    TX-frequency-monitor names because 1C/03 is read-only and the two RBW
+    names because the scope table ends at 1E. Pinned by name,
     not just count, so a future D2 pass on another command can't silently
     swap one of these for a different one and still pass a bare-count
     check.
@@ -2968,6 +2972,8 @@ class TestIc705DeclaresAbsentCommands:
             "get_quick_dual_watch",
             "set_quick_dual_watch",
             "quick_dual_watch",
+            "get_scope_rbw",
+            "set_scope_rbw",
             "get_tx_freq_monitor",
             "set_tx_freq_monitor",
             "get_rx_antenna_ant2",

@@ -124,8 +124,6 @@ meter_coalescing_window_seconds = 0.2
 polling_only = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
-    "receiver.sub.active.freq_mode.freq_hz",
-    "receiver.sub.active.freq_mode.mode",
     "receiver.main.operator_controls.af_level",
     "receiver.main.operator_controls.rf_gain",
     "receiver.main.operator_controls.squelch",
@@ -151,7 +149,6 @@ polling_only = [
     "scope_controls.global.display.center_type",
     "scope_controls.global.display.vbw_narrow",
     "scope_controls.global.display.fixed_edge",
-    "scope_controls.global.display.rbw",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -503,7 +500,7 @@ routes = []
 
 [commands]
 
-# PROVENANCE OPEN (D2, MOR-2015): the following 8 declared base-family
+# PROVENANCE OPEN (D2, MOR-2015): the following 7 declared base-family
 # entries were NOT covered by this ticket's documentary audit (Part 3 of
 # the audit report was a spot-check, not exhaustive, over the base-opcode
 # families) and are not independently confirmed against the IC-9700 CI-V
@@ -518,7 +515,6 @@ routes = []
 #   - get_rit_tx_status / set_rit_tx_status [0x21, 0x02]
 #   - get_audio_peak_filter / set_audio_peak_filter [0x16, 0x32]
 #   - get_scope_single_dual                 [0x27, 0x13]
-#   - get_scope_rbw                         [0x27, 0x1F]
 #
 # Added (D2, MOR-2008 batch 4), left deliberately undeclared rather than
 # guessed:
@@ -765,7 +761,8 @@ get_scope_during_tx = [0x27, 0x1B]
 get_scope_center_type = [0x27, 0x1C]
 get_scope_vbw = [0x27, 0x1D]
 get_scope_fixed_edge = [0x27, 0x1E]
-get_scope_rbw = [0x27, 0x1F]
+get_scope_rbw = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.12: the 0x27 scope table ends at 1E, with no 1F RBW command" }
+set_scope_rbw = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) p.12: the 0x27 scope table ends at 1E, with no 1F RBW command" }
 
 # ── Scan ──
 scan_start = [0x0E]

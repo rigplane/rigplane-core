@@ -165,7 +165,6 @@ polling_only = [
     "scope_controls.global.display.center_type",
     "scope_controls.global.display.vbw_narrow",
     "scope_controls.global.display.fixed_edge",
-    "scope_controls.global.display.rbw",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -846,8 +845,8 @@ get_scope_vbw = [0x27, 0x1D]
 set_scope_vbw = [0x27, 0x1D]
 get_scope_fixed_edge = [0x27, 0x1E]
 set_scope_fixed_edge = [0x27, 0x1E]
-get_scope_rbw = [0x27, 0x1F]
-set_scope_rbw = [0x27, 0x1F]
+get_scope_rbw = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15: the 0x27 scope table ends at 1E, with no 1F RBW command" }
+set_scope_rbw = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15: the 0x27 scope table ends at 1E, with no 1F RBW command" }
 
 # ── D-STAR voice / protocol ack ──
 get_voice_tx = [0x28]

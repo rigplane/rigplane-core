@@ -650,12 +650,53 @@ class TestBuildStateQueries:
         } | {
             FieldPath.receiver("sub", "operator_toggles", name) for name in ("nb", "nr")
         }
+        excluded_sub_freq_mode = {
+            FieldPath.active("sub", "freq_mode", name) for name in ("freq_hz", "mode")
+        }
 
         assert profile.cmd29_routes == frozenset()
         assert not excluded_sub_controls.intersection(pollable)
+        assert not excluded_sub_freq_mode.intersection(pollable)
         queries = build_state_queries(profile, set(profile.capabilities))
-        assert len(pollable) == len(queries) == 37
+        assert len(pollable) == len(queries) == 34
         assert all(query.receiver is None for query in queries)
+        assert not any(
+            query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries
+        )
+
+    @pytest.mark.parametrize("model", ("IC-705", "IC-9700"))
+    def test_profiles_without_documented_scope_rbw_emit_no_271f(
+        self, model: str
+    ) -> None:
+        profile = resolve_radio_profile(model=model)
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        rbw_path = FieldPath.scope_control("display", "rbw")
+        commands = BoundCommands(
+            profile.command_map or CommandMap({}),
+            profile.absent_command_sources,
+        )
+
+        assert rbw_path not in acquisition.pollable_paths()
+        assert not any(
+            query.command == 0x27 and query.sub == 0x1F
+            for query in build_state_queries(profile, set(profile.capabilities))
+        )
+        with pytest.raises(CommandError, match="get_scope_rbw is not supported"):
+            commands.get_scope_rbw(to_addr=profile.civ_addr)
+        with pytest.raises(CommandError, match="get_scope_rbw is not supported"):
+            commands.scope_set_rbw(1, to_addr=profile.civ_addr)
+
+    def test_ic7610_documented_scope_rbw_remains_pollable(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        rbw_path = FieldPath.scope_control("display", "rbw")
+
+        assert rbw_path in acquisition.pollable_paths()
+        assert acquisition_query(0x27, sub=0x1F, data=b"\x00") in build_state_queries(
+            profile, set(profile.capabilities)
+        )
 
     @pytest.mark.parametrize("model", _shipped_civ_models())
     def test_legacy_tx_freq_monitor_builders_fail_closed(self, model: str) -> None:

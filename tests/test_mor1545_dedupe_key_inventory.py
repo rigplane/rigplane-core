@@ -31,19 +31,10 @@ What is pinned here, and what is not:
 
 * :func:`test_no_receiver_scoped_read_authors_a_bare_dedupe_key` covers all
   27 sites at once -- it fails on any one of them reverting to a bare key.
-* The race tests *execute* 26 of the 27 sites, which is not the same as
-  *detecting* a regression at each. Reverting one site at a time, 6 of the 27
-  redden the invariant alone and no race test: both ``get_repeater_tone``
-  sites, both ``get_repeater_tsql`` sites, ``get_filter_width``'s VFO-select
-  fallback site, and ``get_manual_notch_width``. Two sites sharing a family
-  only collide when *both* lose their scoping, and tone/TSQL are not declared
-  on IC-7610 at all, so no row can pin either of their sites alone.
-* ``get_manual_notch_width`` is the one site no race row even executes: its
-  0x16/0x57 is absent from the IC-7610 ``[cmd29] routes`` and IC-9700 has
-  ``routes = []``, so ``_dual_rx_runtime.py: _require_cmd29_route`` rejects
-  ``receiver=1``. That is measured against every profile declaring
-  ``receiver_count = 2`` -- read from ``rigs/``, not listed here -- by
-  :func:`test_declared_exception_cannot_host_a_dual_receiver_race`.
+* The race table now executes all 27 sites. Some families have both a direct
+  and VFO-fallback call site, so the source-derived inventory assertion remains
+  necessary alongside the wire races. ``get_manual_notch_width`` is raced on
+  IC-7610 because its official guide marks 0x16/0x57 as Command 29 supported.
 * That ``IcomCommander.send`` coalesces at all is *not* pinned here; the
   same-receiver control tests only keep a change that stopped deduping
   altogether from passing this file silently.
@@ -320,6 +311,13 @@ _IC7610_ROWS = [
         main=(b"\x01", FilterShape.SOFT),
         sub_rx=(b"\x00", FilterShape.SHARP),
     ),
+    _byte(
+        "get_manual_notch_width",
+        0x16,
+        0x57,
+        main=(b"\x00", 0),
+        sub_rx=(b"\x02", 2),
+    ),
     _byte("get_filter_width", 0x1A, 0x03, main=(b"\x01", 100), sub_rx=(b"\x02", 150)),
 ]
 
@@ -335,14 +333,7 @@ _IC9700_ROWS = [
 
 _RACE_TABLE = [*_IC7610_ROWS, *_IC9700_ROWS]
 
-_NO_DUAL_RX_HOST = {
-    # 0x16/0x57 is absent from IC-7610's [cmd29] routes and IC-9700 declares
-    # none at all, so ``_dual_rx_runtime.py: _require_cmd29_route`` rejects
-    # receiver=1 on both: there is no profile on which this family's two
-    # receivers can race. Held to that claim by
-    # test_declared_exception_cannot_host_a_dual_receiver_race.
-    "get_manual_notch_width",
-}
+_NO_DUAL_RX_HOST: set[str] = set()
 
 
 def _dual_rx_models() -> list[str]:

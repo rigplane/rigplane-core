@@ -384,9 +384,9 @@ async def test_build_state_queries_includes_notch_width() -> None:
         poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
         await poller._send_query()  # noqa: SLF001
 
-    assert (None, 0x16, 0x57, b"") in set(
+    assert (0, 0x16, 0x57, b"") in set(
         map(logical_civ_call, radio.send_civ.await_args_list)
-    ), "manual notch width (0x16/0x57) not polled"
+    ), "manual notch width (0x16/0x57) not polled through command 29"
 
 
 @pytest.mark.asyncio
