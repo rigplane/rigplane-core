@@ -249,23 +249,77 @@ _GATE_LIVE_MULTI = re.compile(r"\A\s*if \((!\w+(?: \|\| !\w+)+)\) return undefin
 _GATE_LIVE_SINGLE = re.compile(r"\A\s*if \((![a-zA-Z]+)\) return undefined;")
 
 
+def _match_if_return_undefined(text: str, i: int) -> str | None:
+    """If `text[i:]` is `if (<balanced condition>) return undefined;` — `i`
+    the index of the leading `if`, any whitespace including a newline
+    between the condition and the keyword — the matched text, else None.
+
+    The condition is matched by counting parens, not by stopping at the
+    first `)`: an arrow function's parameter list or a nested call puts a
+    `)` inside the condition itself, and a text scan that treats the first
+    one as the close reads the whole guard as absent."""
+    depth = 1
+    j = i + 4  # past "if ("
+    n = len(text)
+    while j < n and depth > 0:
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+        j += 1
+    if depth != 0:
+        return None
+    k = j
+    while k < n and text[k] in " \t\r\n":
+        k += 1
+    if text.startswith("return undefined;", k):
+        return text[i : k + len("return undefined;")]
+    return None
+
+
 def _later_return_undefined(stripped: str, after: int) -> str | None:
-    """The first `if (...) return undefined;` appearing strictly after
-    index `after`, or None.
+    """The first `if (...) return undefined;` at brace depth 0, outside a
+    comment, appearing strictly after index `after` — or None.
 
     A top guard matching one of the STATIC patterns answers Phase 1's "first
-    question for any block" only if it is the ONLY guard. `deriveTxAux` is
-    the counter-example that motivated this: a recognised `!hasCap(caps,
+    question for any block" only if it is the ONLY such guard. `deriveTxAux`
+    is the counter-example that motivated this: a recognised `!hasCap(caps,
     'tx')` guard at the top, and a second `if (!hasEvidence) return
     undefined;` later, where `hasEvidence` is itself computed from live
     `state?.*` values — exactly the "half static, half live" shape
-    `_classify_gate`'s own docstring assigns to `not-derivable`, missed
-    because nothing looked past the first match. Called only from the
-    static-pattern branches below: `scattered` and `not-derivable` already
-    read past the top guard by construction, so a later guard there is not
-    news."""
-    m = re.search(r"if \([^)]*\) return undefined;", stripped[after:])
-    return m.group(0) if m else None
+    `_classify_gate`'s own docstring assigns to `not-derivable`.
+
+    Brace depth excludes a guard that belongs to a NESTED block — a local
+    helper function's own body, a `.map()`/`.filter()` callback — which is
+    not a second early return from the function this scan is reading,
+    however it reads as text. A `//` or `/* */` comment is skipped outright
+    for the same reason: text documenting a guard that used to exist is not
+    a guard that still runs. Called only from the static-pattern branches
+    below: `scattered` and `not-derivable` already read past the top guard
+    by construction, so a later guard there is not news."""
+    depth = 0
+    i = after
+    n = len(stripped)
+    while i < n:
+        ch = stripped[i]
+        if ch == "/" and stripped[i + 1 : i + 2] == "/":
+            nl = stripped.find("\n", i)
+            i = n if nl == -1 else nl + 1
+            continue
+        if ch == "/" and stripped[i + 1 : i + 2] == "*":
+            end = stripped.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif depth == 0 and stripped.startswith("if (", i):
+            matched = _match_if_return_undefined(stripped, i)
+            if matched is not None:
+                return matched
+        i += 1
+    return None
 
 
 def _classify_gate(body: str) -> tuple[str, str]:
@@ -273,7 +327,12 @@ def _classify_gate(body: str) -> tuple[str, str]:
 
     Three classifications, matching Phase 1's own "first question for any
     block": `static` — a single, legible condition read purely from `caps`,
-    at the top of the function, AND the only early-return guard in the body.
+    at the top of the function, AND no other `if (...) return undefined;` —
+    that exact, unbraced shape, the only one `_later_return_undefined`
+    looks for — at the function's own top-level control flow (brace depth
+    0, outside a comment). A guard nested inside a local helper's own body
+    or a callback does not count: it is not a second early return from THIS
+    function no matter how it reads as text.
     `scattered` — the only top-of-function guard is a generic `!caps`, and
     the real decision (an array length, an OR of several capability flags
     computed further down) is further into the body; read the function.
