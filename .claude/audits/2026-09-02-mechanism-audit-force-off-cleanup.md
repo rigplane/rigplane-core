@@ -59,9 +59,11 @@ the normal OFF attempt budget before `ManagedTxEffectLane.settle` is reached.
 Prior ruling: accepted 2026-09-01 ADR, pending implementation
 In-flight: test-only authority/fence/lane assembly; legacy runtime still live
 Required surface: a nonblocking fence advance/cancellation snapshot followed
-by immediate current-epoch urgent `force_receive`; cleanup completion is not a
-precondition to submission
-Depends on: none
+by urgent `force_receive` only after effective exclusion of old writes, or by
+retained debt plus a subsequent current `force_receive` after a possible old
+write; cleanup completion is not a precondition to submission
+Depends on: implementation none; safe acceptance depends on F2's write-ordering
+proof
 Confidence: high
 Falsifier: production assembly that advances and snapshots synchronously, then
 proves urgent OFF starts while a callback remains blocked
@@ -84,7 +86,7 @@ In-flight: lane claim/isolation machinery exists, but no future adapter has
 been installed to establish this ordering
 Required surface: if an old ON may escape, issue a subsequent current OFF;
 isolate old work separately from the final-OFF obligation
-Depends on: F1
+Depends on: none; this characterization supplies F1's safety-acceptance proof
 Confidence: medium
 Falsifier: an installed adapter proves every possible late ON is rejected
 before transport acceptance, or a later current OFF is ordered after it
@@ -97,13 +99,19 @@ Verdict: C — legitimately local
 Rank: name-collision
 Elements: `runtime/managed_tx_fence.py: TxAbortFence`,
 `runtime/managed_tx_state.py: EffectToken`,
+`runtime/managed_tx_state.py: ManagedTxState`,
+`runtime/managed_tx_state.py: reduce_managed_tx`,
 `runtime/managed_tx_effect_lane.py: ManagedTxEffectLane`,
 `runtime/managed_tx_effect_service.py: _Service`,
+`commands/commander.py: IcomCommander`,
 `runtime/_civ_rx.py: CivRuntime`
 Consumers: fence/authority/lane have test consumers; `_Service` has legacy
 runtime consumers; `CivRuntime` has production radio-runtime consumers
-Definition site: fence registry, reducer state/debt, lane claims/isolation,
-legacy commander queue, and physical transport-port identity respectively
+Definition site: fence registry; `EffectToken` attempt identity;
+`ManagedTxState`/`reduce_managed_tx` state and debt; lane claims/isolation;
+`_Service` legacy provider-attempt claims, cancellation, and retirement;
+`IcomCommander` command queue; and physical transport-port identity
+respectively
 Divergence: their names overlap around cancellation, but their ownership does
 not: no competing epoch or duplicate owner is established.
 Prior ruling: accepted ADR calls for replacement, not wrapping, at cutover
