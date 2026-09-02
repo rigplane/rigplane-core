@@ -32,7 +32,9 @@ from ..core.acquisition_scheduler import (
     RadioStateModelService,
     StateFreshnessService,
     civ_acquisition_executor_for_provider,
+    provider_uses_civ_acquisition,
 )
+from ..profiles import RadioProfile
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import FieldPath
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
@@ -44,6 +46,7 @@ from ..radio_protocol import (
     StateStoreCapable,
 )
 from ..runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
+from ..runtime._state_queries import acquisition_query_resolver_for_profile
 from ..startup_checks import assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
@@ -355,13 +358,7 @@ class RigctldServer:
         return None
 
     def _provider_uses_civ_executor(self, provider: str) -> bool:
-        return (
-            civ_acquisition_executor_for_provider(
-                provider,
-                self._send_one_state_query,
-            )
-            is not None
-        )
+        return provider_uses_civ_acquisition(provider)
 
     def _default_acquisition_executor_for_scheduler(
         self,
@@ -372,10 +369,13 @@ class RigctldServer:
         if not isinstance(self._radio, CivCommandCapable):
             return None
         profile = self._resolved_radio_profile()
+        if not isinstance(profile, RadioProfile):
+            return None
         supports_cmd29 = getattr(profile, "supports_cmd29", None)
         return civ_acquisition_executor_for_provider(
             scheduler.provider,
             self._send_one_state_query,
+            resolve_query=acquisition_query_resolver_for_profile(profile),
             supports_cmd29=supports_cmd29 if callable(supports_cmd29) else None,
         )
 

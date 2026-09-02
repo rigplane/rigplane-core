@@ -856,7 +856,7 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
     acquisition = profile.state_acquisition
     assert acquisition is not None
 
-    executor, _sent = recording_executor()
+    executor, _sent = recording_executor(profile)
     radio = IcomRadio(host="192.168.1.100", model="IC-7300")
 
     non_polling_paths = [

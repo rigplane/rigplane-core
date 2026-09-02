@@ -20,6 +20,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime import _state_queries as state_queries_module
 from rigplane.runtime._state_queries import build_state_queries
+from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 from rigplane.runtime.radio_initial_state import fetch_initial_state
 from rigplane.web.radio_poller import RadioPoller
 from _acquisition_query_helpers import (
@@ -39,6 +40,185 @@ _SELECTOR_SUBS = frozenset({0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1D, 0x1F})
 _BARE_SUBS = frozenset({0x12, 0x13, 0x1B, 0x1C})
 
 _FrameParts = tuple[int, int | None, bytes]
+
+
+def _profile_resolver_cases() -> list[tuple[FieldPath, str]]:
+    cases = [
+        (FieldPath.active("main", "freq_mode", "freq_hz"), "get_selected_freq"),
+        (
+            FieldPath.unselected("main", "freq_mode", "freq_hz"),
+            "get_unselected_freq",
+        ),
+        (FieldPath.active("main", "freq_mode", "mode"), "get_selected_mode"),
+        (
+            FieldPath.unselected("main", "freq_mode", "mode"),
+            "get_unselected_mode",
+        ),
+        (
+            FieldPath.active("main", "freq_mode", "filter_width"),
+            "get_filter_width",
+        ),
+        (
+            FieldPath.active("main", "freq_mode", "filter_num"),
+            "get_selected_mode",
+        ),
+        (
+            FieldPath.unselected("main", "freq_mode", "filter_num"),
+            "get_unselected_mode",
+        ),
+        (FieldPath.active("main", "freq_mode", "data_mode"), "get_data_mode"),
+        (FieldPath.receiver("main", "meters", "s_meter"), "get_s_meter"),
+    ]
+    cases.extend(
+        (FieldPath.receiver("main", "operator_toggles", field), getter)
+        for field, getter in {
+            "digisel": "get_digisel",
+            "ipplus": "get_ip_plus",
+            "nb": "get_nb",
+            "nr": "get_nr",
+            "auto_notch": "get_auto_notch",
+            "manual_notch": "get_manual_notch",
+            "twin_peak_filter": "get_twin_peak_filter",
+            "repeater_tone": "get_repeater_tone",
+            "repeater_tsql": "get_repeater_tsql",
+        }.items()
+    )
+    cases.extend(
+        (FieldPath.receiver("main", "operator_controls", field), getter)
+        for field, getter in {
+            "af_level": "get_af_level",
+            "rf_gain": "get_rf_gain",
+            "squelch": "get_squelch",
+            "apf_type_level": "get_apf_type_level",
+            "nr_level": "get_nr_level",
+            "pbt_inner": "get_pbt_inner",
+            "pbt_outer": "get_pbt_outer",
+            "notch_filter": "get_notch_filter",
+            "nb_level": "get_nb_level",
+            "digisel_shift": "get_digisel_shift",
+            "att": "get_attenuator",
+            "preamp": "get_preamp",
+            "agc": "get_agc",
+            "audio_peak_filter": "get_audio_peak_filter",
+            "filter_shape": "get_filter_shape",
+            "manual_notch_width": "get_manual_notch_width",
+            "agc_time_constant": "get_agc_time_constant",
+            "tone_freq": "get_tone_freq",
+            "tsql_freq": "get_tsql_freq",
+        }.items()
+    )
+    cases.extend(
+        (FieldPath.global_("meters", field), getter)
+        for field, getter in {
+            "power": "get_power_meter",
+            "swr": "get_swr",
+            "alc": "get_alc",
+            "comp": "get_comp_meter",
+            "vd": "get_vd_meter",
+            "id": "get_id_meter",
+        }.items()
+    )
+    cases.append((FieldPath.global_("slow_state", "active"), "get_main_sub_band"))
+    cases.extend(
+        (FieldPath.global_("tx_state", field), getter)
+        for field, getter in {
+            "ptt": "get_transceiver_status",
+            "rit_on": "get_rit_status",
+            "rit_tx": "get_rit_tx_status",
+            "compressor_on": "get_compressor",
+            "monitor_on": "get_monitor",
+            "vox_on": "get_vox",
+            "split": "get_split",
+            "dual_watch": "get_dual_watch",
+        }.items()
+    )
+    cases.extend(
+        (FieldPath.global_("operator_controls", field), getter)
+        for field, getter in {
+            "rit_freq": "get_rit_frequency",
+            "vox_delay": "get_vox_delay",
+            "tuner_status": "get_tuner_status",
+            "break_in": "get_break_in",
+            "power_level": "get_rf_power",
+            "mic_gain": "get_mic_gain",
+            "cw_pitch": "get_cw_pitch",
+            "key_speed": "get_key_speed",
+            "compressor_level": "get_compressor_level",
+            "break_in_delay": "get_break_in_delay",
+            "drive_gain": "get_drive_gain",
+            "monitor_gain": "get_monitor_gain",
+            "vox_gain": "get_vox_gain",
+            "anti_vox_gain": "get_anti_vox_gain",
+        }.items()
+    )
+    assert len(cases) == 66
+    return cases
+
+
+def test_acquisition_profile_resolver_six_profile_census_and_exact_declared_bytes() -> (
+    None
+):
+    models = ("IC-705", "IC-7300", "IC-7610", "IC-9700", "X6100", "X6200")
+    former_divergences = {
+        ("IC-705", "get_vox_delay"),
+        ("IC-7610", "get_vox_delay"),
+        ("IC-9700", "get_dual_watch"),
+        ("IC-9700", "get_vox_delay"),
+    }
+    census = Counter()
+    selector_getters = {
+        "get_selected_freq",
+        "get_unselected_freq",
+        "get_selected_mode",
+        "get_unselected_mode",
+    }
+
+    for model in models:
+        profile = resolve_radio_profile(model=model)
+        resolver = acquisition_query_resolver_for_profile(profile)
+        assert profile.command_map is not None
+        for path, getter in _profile_resolver_cases():
+            if profile.command_map.has(getter):
+                census[
+                    "diverge" if (model, getter) in former_divergences else "agree"
+                ] += 1
+                receiver = (
+                    0
+                    if path.scope.value == "receiver" and getter not in selector_getters
+                    else None
+                )
+                assert resolver(
+                    path
+                ) == state_queries_module.acquisition_query_from_wire_tuple(
+                    profile.command_map.get(getter), receiver=receiver
+                )
+            elif getter in profile.absent_command_names:
+                census["absent"] += 1
+                assert resolver(path) is None
+            else:
+                census["missing"] += 1
+                assert resolver(path) is None
+
+    assert census == Counter(agree=299, diverge=4, absent=23, missing=70)
+
+
+def test_acquisition_profile_resolver_relative_vfo_and_refusal_rules() -> None:
+    resolver = acquisition_query_resolver_for_profile(
+        resolve_radio_profile(model="IC-7610")
+    )
+    assert resolver(FieldPath.active("main", "freq_mode", "mode")) == acquisition_query(
+        0x26, selector=0
+    )
+    assert resolver(FieldPath.active("sub", "freq_mode", "mode")) == acquisition_query(
+        0x26, selector=1
+    )
+    assert resolver(FieldPath.unselected("main", "freq_mode", "mode")) == (
+        acquisition_query(0x26, selector=1)
+    )
+    assert resolver(FieldPath.unselected("sub", "freq_mode", "mode")) is None
+    assert resolver(FieldPath.vfo_slot("main", "A", "freq_mode", "mode")) is None
+    assert resolver(FieldPath.unselected("main", "freq_mode", "filter_width")) is None
+    assert resolver(FieldPath.unselected("main", "freq_mode", "data_mode")) is None
 
 
 class _RecordingCivRadio:
@@ -205,12 +385,9 @@ async def test_receiver_zero_fallback_preserves_sub_and_data() -> None:
     async def sender(sent_query: AcquisitionQueryCase) -> None:
         sent.append(sent_query)
 
-    class _PrefixExecutor(IcomCivAcquisitionExecutor):
-        def query_for_path(self, _path: FieldPath) -> AcquisitionQueryCase:
-            return query
-
-    executor = _PrefixExecutor(
+    executor = IcomCivAcquisitionExecutor(
         sender,
+        resolve_query=lambda _path: query,
         supports_cmd29=lambda _command, _sub: False,
     )
     request = SimpleNamespace(paths=(path,))
@@ -233,7 +410,10 @@ async def test_executor_does_not_swallow_sender_exception() -> None:
     async def sender(_query: AcquisitionQueryCase) -> None:
         raise RuntimeError("send failed")
 
-    executor = IcomCivAcquisitionExecutor(sender)
+    executor = IcomCivAcquisitionExecutor(
+        sender,
+        resolve_query=lambda _path: acquisition_query(0x1C, sub=0x00),
+    )
     request = SimpleNamespace(paths=(path,))
 
     with pytest.raises(RuntimeError, match="send failed"):
