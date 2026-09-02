@@ -7,10 +7,9 @@ consult transmit truth; everything the manufacturers permit passes without
 consulting it at all.
 
 The engine performs no I/O of its own: a backend injects the solicited
-transmit-state read and a last-resort unkey, drives :meth:`poll` from a loop it
-already owns, and receives due effects as data. Nothing in the product consumes
-this module yet — it lands ahead of the backend admission rows so the contracts
-exist before any call site cites them.
+transmit-state read. Nothing in the product consumes this module yet — it lands
+ahead of the backend admission rows so the contracts exist before any call site
+cites them.
 
 One requirement those rows inherit: an admission that passes its argument by
 keyword must also pass ``target``, so classification reads the method's real
@@ -30,13 +29,12 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field as dataclass_field, replace
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from functools import lru_cache
 from types import MappingProxyType
 from typing import Final, Literal, NoReturn
 
-from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
 from .tx_observation import (
     RADIO_READBACK_SOURCES,  # noqa: F401
     TX_READ_DEADLINE_SECONDS,
@@ -144,7 +142,6 @@ class TxEvidence:
     solicited: bool = False
     verified_readback: bool = False
     failure: str | None = None
-    own_transmit_hold: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,27 +230,6 @@ class _UnresolvedArgument:
 #: permissive branch — the unkey short-circuit, a PASS retune — is exactly what
 #: a mis-spelled admission must never reach (MOR-1954).
 #:
-#: **This path is the expensive one, deliberately.** Measured against a de-key
-#: that would otherwise have taken the UNKEY branch — the two latencies below
-#: are constants of the harness that produced them, never properties of this
-#: module; only the *bound* stated with them is:
-#:
-#: * it classifies KEYING, so it enters the admission lock that the UNKEY
-#:   branch never takes — 0.199 s behind a single in-flight hazard read where
-#:   the resolvable spelling waited 0.000 s, bounded by that admission's
-#:   solicited read (:data:`TX_READ_DEADLINE_SECONDS`) *plus its write body*,
-#:   which the lock also spans;
-#: * it neither clears the live deadline nor the live hold, and stacks a
-#:   second one: holds ``("key", "key")`` and a whole
-#:   :data:`BACKEND_MAX_KEY_DOWN_SECONDS` of deadline, for whose duration
-#:   hazard writes are then refused with ``own_transmit_hold="key"`` — after a
-#:   de-key that really did happen.
-#:
-#: That is the correct direction to be expensive in. The other reading of an
-#: argument nobody can read is that a key-down passes as an unkey, and RF into
-#: a load nobody chose has no such bound. Latency and a stuck hold expire; that
-#: does not. The way to not pay it is to admit positionally, or to pass
-#: ``target`` — see :meth:`TransmitAuthority.admit`.
 UNRESOLVED_ARGUMENT: Final = _UnresolvedArgument()
 
 #: How many gated signatures the resolver keeps. A backend gates on the order
@@ -347,9 +323,7 @@ def ptt_family(context: TxArgumentContext) -> TxFamily:
     An unresolved argument is read as the key, not the unkey: PTT_ON is the
     KEYING branch, which has no refusal path, so answering it can never turn
     an admission into a refusal — while answering PTT_OFF would walk a
-    key-down straight through the gate. That is not the same as free: the
-    KEYING branch takes the admission lock and leaves a hold and a deadline
-    behind it, which :data:`UNRESOLVED_ARGUMENT` prices.
+    key-down straight through the gate.
     """
     value = context.first()
     if value is UNRESOLVED_ARGUMENT:
@@ -380,16 +354,6 @@ def frequency_family(context: TxArgumentContext) -> TxFamily:
     target_hz = float(target) if isinstance(target, (int, float)) else None
     relation = band_relation(context.current_frequency_hz, target_hz, context.bands)
     return TxFamily.BAND if relation is BandRelation.CROSS_BAND else TxFamily.FREQUENCY
-
-
-def is_tune_start(context: TxArgumentContext) -> bool:
-    """``set_tuner_status(2)`` starts a tune cycle — a transmission we asked for.
-
-    Unresolved counts as a tune start: holding the key-down bound over a write
-    that turned out to be a plain tuner toggle is the survivable error.
-    """
-    value = context.first()
-    return value is UNRESOLVED_ARGUMENT or value == 2
 
 
 TX_ARGUMENT_PREDICATES: Mapping[str, ArgumentPredicate] = MappingProxyType(
@@ -442,8 +406,8 @@ def short_circuit_family(method: str, context: TxArgumentContext) -> TxFamily | 
             # because of how its argument was spelled (MOR-1954). Each is safe
             # for its own reason, and the two reasons are not interchangeable:
             #   set_ptt       — PTT_ON is KEYING, a branch with no refusal path
-            #                   at all; the strict answer arms the watchdog and
-            #                   cannot become a refusal.
+            #                   at all, so the strict answer cannot become a
+            #                   refusal.
             #   set_powerstat — POWER_ON and POWER_OFF are *both* PASS in
             #                   FAMILY_WRITE_CLASS, so the branch is inert here
             #                   whichever way it answers. The KEYING argument
@@ -467,31 +431,11 @@ class TxMethodEntry:
     predicate: str | None = None
 
 
-# Effects and view
-
-
-@dataclass(frozen=True, slots=True)
-class TxDeadlineExpiry:
-    """A due key-down deadline, returned as data for a driver to execute."""
-
-    monotonic: float
-    reason: str = "backend_max_key_down"
-
-
 @dataclass(frozen=True, slots=True)
 class TxAuthorityView:
     """Read-only debuggability surface: why did it decide that."""
 
     records: tuple[TxDecisionRecord, ...]
-    own_transmit_holds: tuple[str, ...]
-    deadline_monotonic: float | None
-    lease_active: bool
-
-
-@dataclass
-class _Hold:
-    kind: str
-    expires_at: float | None = None
 
 
 @dataclass
@@ -505,7 +449,6 @@ class TxAdmission:
     family: TxFamily | None
     write_class: TxWriteClass
     evidence: TxEvidence | None = None
-    holds: list[_Hold] = dataclass_field(default_factory=list)
 
 
 class TransmitAuthority:
@@ -515,33 +458,23 @@ class TransmitAuthority:
         self,
         *,
         read_transmit_state: Callable[[], Awaitable[TxStateReading]],
-        last_resort_unkey: Callable[[], Awaitable[None]],
         method_map: Mapping[str, TxMethodEntry],
         clock: Callable[[], float] = time.monotonic,
         bands: Sequence[tuple[int, int]] = (),
         current_frequency_hz: Callable[[], float | None] | None = None,
-        lease_active: Callable[[], bool] | None = None,
         provider_generation: Callable[[], int] | None = None,
-        cw_hold_duration: Callable[[TxArgumentContext], float] | None = None,
         read_deadline_seconds: float = TX_READ_DEADLINE_SECONDS,
-        max_key_down_seconds: float = BACKEND_MAX_KEY_DOWN_SECONDS,
     ) -> None:
         self._read_transmit_state = read_transmit_state
-        self._last_resort_unkey = last_resort_unkey
         self._method_map = dict(method_map)
         self._clock = clock
         self._bands = tuple(bands)
         self._current_frequency_hz = current_frequency_hz
-        self._lease_active = lease_active
         self._provider_generation = provider_generation
-        self._cw_hold_duration = cw_hold_duration
         self._read_deadline_seconds = read_deadline_seconds
-        self._max_key_down_seconds = max_key_down_seconds
 
         self._lock = asyncio.Lock()
         self._records: deque[TxDecisionRecord] = deque(maxlen=DECISION_LOG_CAPACITY)
-        self._holds: list[_Hold] = []
-        self._deadline: float | None = None
         self._transmit_epoch = 0
 
     # -- intake ------------------------------------------------------------
@@ -557,30 +490,12 @@ class TransmitAuthority:
         if transmitting:
             self._transmit_epoch += 1
 
-    async def fire_last_resort_unkey(self) -> None:
-        """The last-resort OFF rail, for a driver with no better one."""
-        await self._last_resort_unkey()
-
     # -- inspection --------------------------------------------------------
 
     def view(self) -> TxAuthorityView:
         return TxAuthorityView(
             records=tuple(self._records),
-            own_transmit_holds=tuple(
-                hold.kind for hold in self._active_holds(self._clock())
-            ),
-            deadline_monotonic=self._deadline,
-            lease_active=bool(self._lease_active and self._lease_active()),
         )
-
-    def poll(self, now: float) -> tuple[TxDeadlineExpiry, ...]:
-        """Return due effects and disarm. Drivers execute them on their rails."""
-        deadline = self._deadline
-        if deadline is None or now < deadline:
-            return ()
-        self._deadline = None
-        self._holds = [hold for hold in self._holds if hold.kind == "cw"]
-        return (TxDeadlineExpiry(monotonic=deadline),)
 
     # -- admission ---------------------------------------------------------
 
@@ -656,22 +571,20 @@ class TransmitAuthority:
             return
 
         if write_class is TxWriteClass.UNKEY:
-            self._deadline = None
-            self._holds = []
             yield TxAdmission(family, write_class)
             self._record(method, family, write_class, "sent", None, None)
             return
 
         async with self._lock:
             if write_class is TxWriteClass.KEYING:
-                ticket = self._admit_keying(family, context)
+                ticket = self._admit_keying(family)
             else:
-                ticket = await self._admit_hazard(method, family, context)
+                ticket = await self._admit_hazard(method, family)
             try:
                 yield ticket
             finally:
                 # A write that raised may already have reached the radio, so
-                # the hold, the deadline and the record land either way.
+                # the decision record lands either way.
                 self._commit(method, ticket)
 
     # -- internals ---------------------------------------------------------
@@ -683,8 +596,7 @@ class TransmitAuthority:
         entry = self._method_map.get(method)
         if entry is None:
             return False
-        # TUNER carries no predicate but `is_tune_start` reads the argument.
-        return entry.predicate is not None or entry.family is TxFamily.TUNER
+        return entry.predicate is not None
 
     def _classify(self, method: str, context: TxArgumentContext) -> TxFamily | None:
         entry = self._method_map.get(method)
@@ -694,38 +606,17 @@ class TransmitAuthority:
             return entry.family
         return TX_ARGUMENT_PREDICATES[entry.predicate](context)
 
-    def _admit_keying(
-        self, family: TxFamily, context: TxArgumentContext
-    ) -> TxAdmission:
+    def _admit_keying(self, family: TxFamily) -> TxAdmission:
         self._transmit_epoch += 1
-        if family is TxFamily.CW_TEXT:
-            duration = (
-                self._cw_hold_duration(context) if self._cw_hold_duration else None
-            )
-            hold = _Hold(
-                "cw", None if duration is None else self._clock() + float(duration)
-            )
-        else:
-            hold = _Hold("key")
-        return TxAdmission(family, TxWriteClass.KEYING, holds=[hold])
+        return TxAdmission(family, TxWriteClass.KEYING)
 
-    async def _admit_hazard(
-        self, method: str, family: TxFamily, context: TxArgumentContext
-    ) -> TxAdmission:
+    async def _admit_hazard(self, method: str, family: TxFamily) -> TxAdmission:
         def refuse(code: TxRefusalCode, evidence: TxEvidence) -> NoReturn:
             self._refuse(method, family, TxWriteClass.HAZARD, code, evidence)
 
         unavailable = TxRefusalCode.TX_TRUTH_UNAVAILABLE
 
-        # Step 1 — our own transmission, refused with no wire read at all.
-        held = self._own_transmit_hold(self._clock())
-        if held is not None:
-            refuse(
-                TxRefusalCode.REFUSED_WHILE_TRANSMITTING,
-                TxEvidence(own_transmit_hold=held),
-            )
-
-        # Step 2 — one solicited read on this admission's own deadline.
+        # One solicited read on this admission's own deadline.
         epoch = self._transmit_epoch
         started = self._clock()
         try:
@@ -753,7 +644,7 @@ class TransmitAuthority:
         if reading.value is None:
             refuse(unavailable, evidence)
         if not reading.verified_readback:
-            # The rigctld-client answer is an upstream cache, not radio truth.
+            # This admission has no verified-readback evidence.
             refuse(
                 unavailable,
                 replace(evidence, failure="unverifiable-provenance"),
@@ -761,36 +652,10 @@ class TransmitAuthority:
         if reading.value or epoch != self._transmit_epoch:
             refuse(TxRefusalCode.REFUSED_WHILE_TRANSMITTING, evidence)
 
-        holds: list[_Hold] = []
-        if family is TxFamily.TUNER and is_tune_start(context):
-            holds.append(_Hold("tune"))
-        return TxAdmission(family, TxWriteClass.HAZARD, evidence=evidence, holds=holds)
-
-    def _own_transmit_hold(self, now: float) -> str | None:
-        if self._lease_active is not None and self._lease_active():
-            return "lease"
-        active = self._active_holds(now)
-        return active[0].kind if active else None
-
-    def _active_holds(self, now: float) -> list[_Hold]:
-        self._holds = [
-            hold
-            for hold in self._holds
-            if hold.expires_at is None or now < hold.expires_at
-        ]
-        return self._holds
+        return TxAdmission(family, TxWriteClass.HAZARD, evidence=evidence)
 
     def _commit(self, method: str, ticket: TxAdmission) -> None:
         """Called once the caller's write has been handed off."""
-        if ticket.holds:
-            # `cw` keeps its computed duration; `key` and `tune` inherit the
-            # key-down bound, so `_active_holds` clears them on the injected
-            # clock even where no driver ever calls `poll()`.
-            deadline = self._clock() + self._max_key_down_seconds
-            for hold in ticket.holds:
-                hold.expires_at = hold.expires_at or deadline
-                self._holds.append(hold)
-            self._deadline = deadline
         family = str(ticket.family)
         self._record(method, family, ticket.write_class, "sent", None, ticket.evidence)
 

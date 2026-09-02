@@ -16,8 +16,7 @@ so the matrix runs each ADR-named row twice:
 fake wire, with the admission driven from the test. These prove the component
 composes: a hazard write at scripted TX is refused and nothing reaches the
 wire; at scripted RX the solicited read precedes the write; an unmapped value
-is never receiving; an unkey is never refused; a key arms the one deadline and
-the last-resort rail fires the OFF on a fake clock.
+is never receiving; and an unkey is never refused.
 
 *Cutover rows (``xfail(strict=True)``).* The same behaviours driven the way a
 consumer will drive them — a plain method call, or a command through
@@ -71,7 +70,6 @@ from rigplane.core.tx_authority import (
     TxRefusal,
     TxRefusalCode,
 )
-from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
 
 # ---------------------------------------------------------------------------
 # Pinned literals
@@ -127,28 +125,14 @@ class FakeClock:
         self.now += seconds
 
 
-class RecordingUnkey:
-    """The authority's injected last-resort OFF rail, wired to a real backend."""
-
-    def __init__(self, harness: TxConformanceHarness) -> None:
-        self._harness = harness
-        self.calls = 0
-
-    async def __call__(self) -> None:
-        self.calls += 1
-        await self._harness.unkey()
-
-
 def build_authority(
     harness: TxConformanceHarness,
     *,
     clock: FakeClock | None = None,
-    unkey: RecordingUnkey | None = None,
 ) -> TransmitAuthority:
     """The real engine over a real backend's real fake wire."""
     return TransmitAuthority(
         read_transmit_state=harness.read_transmit_state,
-        last_resort_unkey=unkey or RecordingUnkey(harness),
         method_map=CONFORMANCE_METHOD_MAP,
         clock=clock or FakeClock(),
     )
@@ -417,8 +401,8 @@ async def test_a_hazard_write_at_scripted_tx_is_refused_and_no_wire_write_occurs
     if harness.verified_readback:
         assert excinfo.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
     else:
-        # §3.7: the hamlib-provider answer is an upstream cache, never radio
-        # truth, so its hazard families are fail-closed by provenance.
+        # §3.7: this column supplies no verified-readback evidence, so its
+        # hazard families are fail-closed by provenance.
         assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
         assert excinfo.value.evidence.failure == "unverifiable-provenance"
 
@@ -430,12 +414,12 @@ async def test_a_hazard_write_at_scripted_rx_reads_before_it_writes(
     """§3.10 item 3, row 2: on the wire, the read precedes the write.
 
     Counts cannot see this — both happen either way. Only the order on the
-    wire distinguishes a solicited read from a cached one (T3/INV-4).
+    wire proves that the backend read preceded the write (T3/INV-4).
 
     The ``rigctld-client`` column is absent by design, not by omission: its
-    readback is permanently unverifiable (§3.7), so it never reaches a write
-    to order the read against. ``test_..._refused_and_no_wire_write_occurs``
-    covers it instead.
+    current contract supplies ``verified_readback=False`` (§3.7), so it never
+    reaches a write to order the read against.
+    ``test_..._refused_and_no_wire_write_occurs`` covers it instead.
 
     # MUTATION: in `src/rigplane/core/tx_authority.py`, in `admit()`, change
     # `if write_class is TxWriteClass.PASS:` at :522 to
@@ -486,79 +470,6 @@ async def test_an_unkey_is_never_refused(
 
 
 @every_backend()
-async def test_our_own_key_makes_the_gate_stricter_never_looser(
-    harness: TxConformanceHarness,
-) -> None:
-    """INV-16 / §3.7's own-commands rule, composed over a real backend.
-
-    The wire is scripted to answer *receiving* throughout — the B6 blind spot,
-    where the IC-7300 reported RX while audibly still sending. Our own key
-    must refuse the hazard write anyway, with no wire read at all.
-
-    # MUTATION: in `src/rigplane/core/tx_authority.py`, in `_admit_hazard`,
-    # delete the step-1 `if held is not None:` refusal at :580-584 -> this row
-    # goes red on every column: the scripted RX answer clears our own key.
-    """
-    harness.script("rx")
-    authority = build_authority(harness)
-
-    async with authority.admit("set_ptt", (True,)):
-        await harness.key()
-
-    reads_before = len(harness.reads())
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit(harness.hazard_method, harness.hazard_args):
-            pytest.fail(f"{harness.name}: a hazard write ran during our own key")
-
-    assert excinfo.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
-    assert excinfo.value.evidence.own_transmit_hold == "key"
-    assert harness.reads()[reads_before:] == [], (
-        f"{harness.name}: the own-transmit refusal touched the wire"
-    )
-
-
-@every_backend()
-async def test_a_key_arms_the_one_deadline_and_the_off_fires_on_a_fake_clock(
-    harness: TxConformanceHarness,
-) -> None:
-    """§3.10 item 3, row 5, backend half: the arm and the last-resort rail.
-
-    The three *shipped* drivers (web ``call_later``, the observation poller's
-    drain, the rigctld drain) arrive at rows 12a/12b and are reserved below;
-    what is live here is that a key through the authority arms the one
-    deadline and that the OFF, once due, reaches the real backend's real
-    unkey on the real wire.
-
-    # MUTATION: in `src/rigplane/core/tx_authority.py`, in `_commit`, change
-    # `self._deadline = deadline` at :651 to `self._deadline = None` -> this
-    # row goes red on every column: the key arms nothing and no OFF is due.
-    """
-    harness.script("rx")
-    clock = FakeClock()
-    unkey = RecordingUnkey(harness)
-    authority = build_authority(harness, clock=clock, unkey=unkey)
-
-    async with authority.admit("set_ptt", (True,)):
-        await harness.key()
-
-    assert authority.view().deadline_monotonic == pytest.approx(
-        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
-    )
-    assert authority.poll(clock.now) == (), "the deadline fired early"
-
-    clock.advance(BACKEND_MAX_KEY_DOWN_SECONDS + 0.001)
-    due = authority.poll(clock.now)
-    assert len(due) == 1
-
-    writes_before = len(harness.writes())
-    await authority.fire_last_resort_unkey()
-    assert unkey.calls == 1
-    assert harness.writes()[writes_before:], (
-        f"{harness.name}: the due OFF never reached the wire"
-    )
-
-
-@every_backend()
 async def test_a_pass_class_write_never_consults_transmit_truth(
     harness: TxConformanceHarness,
 ) -> None:
@@ -574,7 +485,6 @@ async def test_a_pass_class_write_never_consults_transmit_truth(
 
     authority = TransmitAuthority(
         read_transmit_state=poisoned,
-        last_resort_unkey=RecordingUnkey(harness),
         method_map=CONFORMANCE_METHOD_MAP,
         clock=FakeClock(),
     )
@@ -630,12 +540,12 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
     drives one for real — the same method the production polling loop calls
     (``YaesuCatPoller._emit_medium_observations`` /
     ``RigctldClientObservationPoller._poll_medium``), over the same scripted
-    wire the bare write just used, no sleep and no mock. A genuine
-    ``yaesu_poll_response`` / ``hamlib_response`` readback of the current PTT
-    state is expected and correct — §3.7's ``verified_readback`` is what
-    decides whether that readback may be trusted, not this row. What must
-    never appear is a ``global.tx_state.ptt`` observation under any other
-    source: that would be a write outcome wearing a readback's clothes.
+    wire the bare write just used, no sleep and no mock. A
+    ``yaesu_poll_response`` / ``hamlib_response`` observation is expected —
+    §3.7's ``verified_readback`` decides whether it can admit a hazard write,
+    not this row. What must never appear is a ``global.tx_state.ptt``
+    observation under any other source: that would be a write outcome wearing
+    a readback's clothes.
 
     # MUTATION: in `src/rigplane/backends/yaesu_cat/observations.py`, in
     # `YaesuObservationAdapter._adapter` at :1141, change
@@ -1010,20 +920,3 @@ async def test_a_yaesu_self_write_leaves_no_transmit_truth_claim_anywhere(
     before = harness.radio._state.ptt
     await harness.key()
     assert harness.radio._state.ptt == before
-
-
-@every_backend()
-@pytest.mark.xfail(
-    strict=True,
-    reason="rows 12a/12b: the shipped deadline drivers. 12a wires the web "
-    "`call_later` (Icom branch) and the observation poller's drain to the "
-    "authority's deadline, both enqueuing `PttOff`; 12b wires the rigctld "
-    "drain and the Icom backend loops. Until then the only rail is the "
-    "authority's own last resort, which the live row above already exercises.",
-)
-async def test_a_shipped_driver_polls_the_authority_deadline(
-    harness: TxConformanceHarness,
-) -> None:
-    """INV-7: every delivery carries a driver for the one deadline."""
-    driver = getattr(harness.radio, "_tx_authority_deadline_driver", None)
-    assert driver is not None
