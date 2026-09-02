@@ -392,9 +392,12 @@ class TestTrackedWriteGuard:
         loop = asyncio.get_running_loop()
         callback = loop.call_soon(trace.append, "yielded")
         try:
-            assert await transport.send_tracked(
-                _build_data_packet(), is_current=is_current
-            ) is None
+            assert (
+                await transport.send_tracked(
+                    _build_data_packet(), is_current=is_current
+                )
+                is None
+            )
             transport._handle_packet(self._request(0))
             assert trace == ["guard", "write", "guard", "write"]
         finally:
@@ -477,9 +480,7 @@ class TestTrackedWriteGuard:
         assert len(transport._tx_guards) == BUFSIZE
         assert 1 not in transport._tx_guards
 
-    def test_guard_metadata_clears_on_rollover(
-        self, transport: IcomTransport
-    ) -> None:
+    def test_guard_metadata_clears_on_rollover(self, transport: IcomTransport) -> None:
         transport._track_sent(0xFFFF, b"old", is_current=lambda: False)
         transport._track_sent(0, b"new")
         assert transport.tx_buffer == {0: b"new"}
