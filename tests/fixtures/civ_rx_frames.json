@@ -178,14 +178,6 @@
     }
   },
   {
-    "name": "cmd1C_sub03_transmit_frequency",
-    "comment": "0x1C/0x03 is a transmit-frequency payload; it does not update the legacy tx_freq_monitor boolean, which stays at its default.",
-    "frame": {"command": 28, "sub": 3, "data": "01"},
-    "expected_state": {
-      "tx_freq_monitor": false
-    }
-  },
-  {
     "name": "cmd21_sub00_rit_freq_positive",
     "comment": "0x21/0x00 RIT freq +50 Hz",
     "frame": {"command": 33, "sub": 0, "data": "500000"},

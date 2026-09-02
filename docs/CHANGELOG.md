@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **The misnamed `tx_freq_monitor` field and commands are deleted; XFC is
+  the real transmit-frequency monitor (MOR-2246).** `Radio.get_tx_freq_monitor`/
+  `Radio.set_tx_freq_monitor` (0x1C 0x03) are removed, along with the
+  `tx_freq_monitor` key in `RadioState.to_dict()` and the `txFreqMonitor`
+  field on the JSON/WebSocket state API. Every shipped profile already
+  declared these commands absent or left them undeclared, since 0x1C 0x03
+  is Read transmit frequency, not a transmit-frequency monitor toggle;
+  `get_xfc_status`/`set_xfc_status` (0x1C 0x02) remain the real,
+  unaffected transmit-frequency monitor.
 - **`rigplane.commands.config` builders require `cmd_map`; there is no
   hardcoded fallback (MOR-2006, Steps 5..N module 1 of
   `docs/plans/2026-08-29-profile-driven-command-bytes.md`).**

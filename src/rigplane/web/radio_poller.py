@@ -202,7 +202,6 @@ __all__ = [
     "SetTunerStatus",
     "SetTuningStep",
     "SetXfcStatus",
-    "SetTxFreqMonitor",
     "SetUtcOffset",
     "SetQuickSplit",
     "SetQuickDualWatch",
@@ -455,7 +454,6 @@ from .._poller_types import (  # noqa: E402
     SetTunerStatus,
     SetTuningStep,
     SetTwinPeak,
-    SetTxFreqMonitor,
     SetUsbModLevel,
     SetUtcOffset,
     SetVox,
@@ -3522,10 +3520,6 @@ class RadioPoller:
                     self._radio_state.tuning_step = step
             case SetXfcStatus(on=on):
                 await _r.set_xfc_status(on)
-            case SetTxFreqMonitor(on=on):
-                await _r.set_tx_freq_monitor(on)
-                if self._radio_state:
-                    self._radio_state.tx_freq_monitor = on
             case SetUtcOffset(hours=hours, minutes=minutes, is_negative=is_negative):
                 await _r.set_utc_offset(hours, minutes, is_negative)
             case QuickSplit():

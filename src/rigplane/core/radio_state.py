@@ -266,7 +266,6 @@ class RadioState:
     tuning_step: int = 0
     overflow: bool = False
     tuner_status: int = 0  # 0=off, 1=on, 2=tuning
-    tx_freq_monitor: bool = False
     rit_freq: int = 0  # signed Hz (±9999)
     rit_on: bool = False
     rit_tx: bool = False
@@ -333,7 +332,6 @@ class RadioState:
             "tuning_step": self.tuning_step,
             "overflow": self.overflow,
             "tuner_status": self.tuner_status,
-            "tx_freq_monitor": self.tx_freq_monitor,
             "rit_freq": self.rit_freq,
             "rit_on": self.rit_on,
             "rit_tx": self.rit_tx,

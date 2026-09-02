@@ -138,7 +138,6 @@ _GLOBAL_TX_FIELDS = {
     "compressor_on",
     "main_sub_tracking",
     "dial_lock",
-    "tx_freq_monitor",
     "tx_target",
 }
 _GLOBAL_OPERATOR_CONTROL_FIELDS = {

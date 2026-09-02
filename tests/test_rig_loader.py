@@ -2797,8 +2797,10 @@ class TestIc7300DeclaresAbsentCommands:
     radio) and MOR-2117 added the bare ``set_dual_watch`` (dispatches to
     the two split names above, already absent, but was itself in neither
     list) (+3, to 32), then MOR-2190 replaced six proven-wrong positive
-    bindings with direct official-manual absent entries (+6, to 38 -- the
-    current count, per ``len(_EXPECTED_ABSENT)``).
+    bindings with direct official-manual absent entries (+6, to 38), then
+    MOR-2246 deleted the misnamed ``get_tx_freq_monitor``/
+    ``set_tx_freq_monitor`` pair entirely rather than leave it declared
+    absent (-2, to 36 -- the current count, per ``len(_EXPECTED_ABSENT)``).
     Pinned by name, not just count, so a future D2 pass on another command
     can't silently swap one of these for a different one and still pass a
     bare-count check.
@@ -2852,8 +2854,6 @@ class TestIc7300DeclaresAbsentCommands:
             "set_scope_rbw",
             "get_scope_marker_position",
             "set_scope_marker_position",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
         }
     )
 
@@ -2878,9 +2878,9 @@ class TestIc9700DeclaresAbsentCommands:
     quick_dual_watch, rx_antenna_ant2), plus civ_output_ant (a
     copied-but-wrong 1A05 address with no real replacement) and the
     nb_depth/nb_width pair (no single global control, per-band only).
-    MOR-1983 adds the two legacy TX-frequency-monitor boolean names because
-    1C/03 is a read-only frequency payload, plus RBW because the scope table
-    ends at 1E.
+    MOR-1983 adds RBW because the scope table ends at 1E; the legacy
+    TX-frequency-monitor boolean names MOR-1983 also added here were
+    deleted entirely by MOR-2246, not merely left declared absent.
     Pinned by name, not just count, so a future D2 pass on another
     command can't silently swap one of these for a different one and
     still pass a bare-count check.
@@ -2913,8 +2913,6 @@ class TestIc9700DeclaresAbsentCommands:
             "set_quick_dual_watch",
             "get_scope_rbw",
             "set_scope_rbw",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
             # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
             # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
@@ -2938,12 +2936,13 @@ class TestIc705DeclaresAbsentCommands:
     Jul.2020) confirms have no row on this radio (24 at D2 time; MOR-2007
     ruling 1 later split ``set_dual_watch`` into
     ``set_dual_watch_off``/``set_dual_watch_on``, +1 net; MOR-2143 added the
-    bare ``set_dual_watch`` name, +1). MOR-1983 adds the two legacy boolean
-    TX-frequency-monitor names because 1C/03 is read-only and the two RBW
-    names because the scope table ends at 1E. Pinned by name,
-    not just count, so a future D2 pass on another command can't silently
-    swap one of these for a different one and still pass a bare-count
-    check.
+    bare ``set_dual_watch`` name, +1). MOR-1983 adds the two RBW names
+    because the scope table ends at 1E; the legacy boolean
+    TX-frequency-monitor names MOR-1983 also added here were deleted
+    entirely by MOR-2246, not merely left declared absent. Pinned by
+    name, not just count, so a future D2 pass on another command can't
+    silently swap one of these for a different one and still pass a
+    bare-count check.
     """
 
     _EXPECTED_ABSENT = frozenset(
@@ -2974,8 +2973,6 @@ class TestIc705DeclaresAbsentCommands:
             "quick_dual_watch",
             "get_scope_rbw",
             "set_scope_rbw",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
         }
@@ -3002,8 +2999,10 @@ class TestIc7610DeclaresAbsentCommands:
     IC-9700/IC-705 above, this is not a documentary D2 pass over the
     whole command table -- it is one feature family's absence, already
     established by MOR-660/661/682 well before this ticket, just not
-    previously spelled with the formal marker. MOR-1983 also marks the legacy
-    TX-frequency-monitor boolean names absent because 1C/03 is read-only.
+    previously spelled with the formal marker. MOR-1983 had also marked the
+    legacy TX-frequency-monitor boolean names absent here because 1C/03 is
+    read-only; MOR-2246 deleted that pair entirely rather than leave it
+    declared absent.
     Pinned by name, not just
     count, so a future D2 pass on another command can't silently swap
     one of these for a different one and still pass a bare-count check.
@@ -3019,8 +3018,6 @@ class TestIc7610DeclaresAbsentCommands:
             "set_tone_freq",
             "get_tsql_freq",
             "set_tsql_freq",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
         }
     )
 
