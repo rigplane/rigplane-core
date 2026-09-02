@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections import deque
 from dataclasses import dataclass
 
@@ -6,6 +7,8 @@ import pytest
 
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
+from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+from rigplane.runtime.managed_tx_fence import TxAbortFence, TxAbortResult
 from rigplane.runtime.managed_tx_state import (
     AbortFailed,
     AbortOperation,
@@ -16,6 +19,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxEffect,
     ManagedTxIntentKind,
     ManagedTxOutcome,
+    ManagedTxTransition,
     ReleasePlan,
 )
 
@@ -808,6 +812,141 @@ async def test_shutdown_is_shielded_idempotent_and_blocks_new_ingress() -> None:
 
 async def _append_async(values: list[int], value: int) -> None:
     values.append(value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arrival_point", ["debt_committed", "callback_pending"])
+async def test_shutdown_real_lane_waits_for_fence_completion_on_arrival(
+    monkeypatch: pytest.MonkeyPatch, arrival_point: str
+) -> None:
+    events: list[str] = []
+    actuator_calls: list[tuple[EffectToken, ActuationOperation | AbortOperation]] = []
+    debt_committed = asyncio.Event()
+    callback_finished = asyncio.Event()
+    callback_release = asyncio.Event()
+    fence_completed = asyncio.Event()
+    actuator_entered = asyncio.Event()
+    actuator_release = asyncio.Event()
+    termination = asyncio.Event()
+    fence = TxAbortFence()
+
+    class Actuator:
+        async def actuate(
+            self, token: EffectToken, operation: ActuationOperation | AbortOperation
+        ) -> ActuationResult:
+            events.append(f"actuator:{operation.value}:fence_epoch={fence.epoch}")
+            actuator_calls.append((token, operation))
+            actuator_entered.set()
+            await actuator_release.wait()
+            return ActuationResult.ACCEPTED
+
+    lane = ManagedTxEffectLane(Actuator())
+    managed = ManagedTxAuthority(
+        lane,
+        FakeConfigStore(),
+        fence,
+        provider_generation=None,
+        attempt_timeout_seconds=5.0,
+    )
+    await managed._stop_scheduler(managed._scheduler_task)
+    original_force_off = fence.force_off
+    original_settle = lane.settle
+    original_settle_abort = lane.settle_abort
+    original_transition = managed._force_off_locked
+
+    def commit_shutdown_debt() -> ManagedTxTransition:
+        transition = original_transition()
+        events.append("debt:committed")
+        debt_committed.set()
+        return transition
+
+    async def logged_force_off() -> TxAbortResult:
+        events.append("fence:entry")
+        result = await original_force_off()
+        events.append("fence:complete")
+        fence_completed.set()
+        return result
+
+    async def logged_settle(
+        effect: ManagedTxEffect, *, deadline_monotonic: float
+    ) -> ActuationSettled | None:
+        events.append(f"lane:settle:{effect.operation.value}")
+        return await original_settle(effect, deadline_monotonic=deadline_monotonic)
+
+    async def logged_abort(
+        token: EffectToken,
+        operation: AbortOperation,
+        *,
+        deadline_monotonic: float,
+    ) -> AbortFailed | None:
+        events.append(f"lane:abort:{operation.value}")
+        return await original_settle_abort(
+            token, operation, deadline_monotonic=deadline_monotonic
+        )
+
+    async def cancel_and_read() -> None:
+        events.append(f"callback:entry:fence_epoch={fence.epoch}")
+        snapshot = await managed.snapshot()
+        assert snapshot.state.release_required
+        events.append("callback:snapshot_complete")
+        callback_finished.set()
+        await callback_release.wait()
+        events.append("callback:complete")
+
+    async def arrive() -> None:
+        trigger = (
+            debt_committed if arrival_point == "debt_committed" else callback_finished
+        )
+        await trigger.wait()
+        events.append("provider:arrival")
+        await managed.provider_available(8)
+
+    async def retire(generation: int) -> None:
+        events.append(f"provider:retire:{generation}")
+
+    monkeypatch.setattr(managed, "_force_off_locked", commit_shutdown_debt)
+    monkeypatch.setattr(fence, "force_off", logged_force_off)
+    monkeypatch.setattr(lane, "settle", logged_settle)
+    monkeypatch.setattr(lane, "settle_abort", logged_abort)
+    fence.register(fence.issue(), cancel_and_read)
+    arrival = asyncio.create_task(arrive())
+    shutdown = asyncio.create_task(
+        managed.shutdown(retire_provider=retire, termination=termination)
+    )
+    try:
+        await asyncio.wait_for(callback_finished.wait(), 1.0)
+        try:
+            await asyncio.wait_for(actuator_entered.wait(), 0.2)
+        except TimeoutError:
+            pass
+        provider_io_before_fence_completion = actuator_entered.is_set()
+        held = await asyncio.wait_for(managed.snapshot(), 1.0)
+        assert held.state.release_required
+        assert held.state.intent.kind is ManagedTxIntentKind.RX
+        assert not fence_completed.is_set()
+
+        callback_release.set()
+        await asyncio.wait_for(fence_completed.wait(), 1.0)
+        await asyncio.wait_for(actuator_entered.wait(), 1.0)
+        actuator_release.set()
+        await asyncio.wait_for(arrival, 1.0)
+        assert await asyncio.wait_for(shutdown, 1.0) is ShutdownResult.DRAINED
+        final = await managed.snapshot()
+        assert not final.state.release_required
+        assert final.state.pending_effect is None
+        assert all(token.provider_generation == 8 for token, _ in actuator_calls)
+        assert [operation for _, operation in actuator_calls] == [
+            ActuationOperation.FORCE_RECEIVE
+        ]
+        assert not provider_io_before_fence_completion, events
+    finally:
+        callback_release.set()
+        actuator_release.set()
+        termination.set()
+        await asyncio.wait_for(
+            asyncio.gather(arrival, shutdown, return_exceptions=True), 2.0
+        )
+        print(json.dumps({"arrival_point": arrival_point, "events": events}))
 
 
 @pytest.mark.asyncio
