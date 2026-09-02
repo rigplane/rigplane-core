@@ -80,11 +80,20 @@
     const native: StageBox = { width: nativeW, height: nativeH };
 
     // Writes only to `scale`/`offsetX`/`offsetY` — never back onto `holder`
-    // (MOR-2147, see file header).
+    // (MOR-2147, see file header). `scale` is written but never READ as
+    // `$state` inside this effect: `computeStageCenterOffset` takes the
+    // local `nextScale` below instead of the `scale` binding. Reading
+    // `scale` here would register it as a dependency of this effect, and
+    // since the write just above just changed it, the effect would
+    // self-invalidate and re-run once per mount — tearing down and
+    // reconstructing the `ResizeObserver` below for no observable benefit
+    // (the re-run recomputes the same scale from the same unchanged host
+    // box). Regression found by an independent verifier on this branch.
     const measure = (host: StageBox) => {
       if (host.width <= 0 || host.height <= 0) return;
-      scale = computeStageScale(host, native);
-      const offset = computeStageCenterOffset(host, native, scale);
+      const nextScale = computeStageScale(host, native);
+      scale = nextScale;
+      const offset = computeStageCenterOffset(host, native, nextScale);
       offsetX = offset.x;
       offsetY = offset.y;
     };

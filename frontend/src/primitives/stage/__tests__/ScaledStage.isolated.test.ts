@@ -199,6 +199,24 @@ describe('ScaledStage — measure/write regression (MOR-2147)', () => {
   });
 });
 
+describe('ScaledStage — measure() does not self-trigger its own effect', () => {
+  // Regression pin: `measure()` used to read the `scale` `$state` binding as
+  // the third argument to `computeStageCenterOffset`, right after writing
+  // it. That read registers `scale` as a dependency of the enclosing
+  // `$effect`, and since the write just above just changed it, the effect
+  // invalidated and re-ran itself once per mount — tearing down the first
+  // `ResizeObserver` and constructing a second one. `FakeResizeObserver`
+  // (declared above, shared with the MOR-2147 describe block) already
+  // records every instance constructed; this test reuses that same list
+  // rather than adding a second stub.
+  it('constructs exactly one ResizeObserver per mount', () => {
+    containerSize = { width: 100, height: 100 };
+    mountStage(200, 200);
+
+    expect(FakeResizeObserver.instances.length).toBe(1);
+  });
+});
+
 describe('ScaledStage — anchor prop (MOR-2251)', () => {
   it('defaults to top-left: the transform is exactly `scale(n)`, with no translate() prefix', () => {
     // Exact-string check, not the `readScale` regex above: a regex match on
