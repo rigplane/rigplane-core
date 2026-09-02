@@ -41,15 +41,27 @@ Read, and report what you actually read:
   — plus the capabilities it declares, for what this particular radio reports.
   A field existing in the view model does not mean this radio has it.
 
-The state vocabulary is the part designs get wrong. A reading is
-`{status:'known', value}` or `{status:'unknown'}`, and an unknown carries a
-reason: **`not-observed`** (never asked), **`stale`** (asked, answer aged out),
-**`unsupported`** (this radio cannot), **`contradiction`** (conflicting
-answers). Availability is carried separately from the reading.
+The state vocabulary is the part designs get wrong, and there are **two
+mechanisms, not one**. Do not generalise either.
 
-Those four are not shades of "no value". *Unsupported* and *stale* mean
-opposite things to an operator, and telling them apart matters more than any
-aesthetic decision in the proposal.
+**General, carried by every field.** A reading is `{status:'known', value}` or
+`{status:'unknown'}`, and `Availability` carries `structural` and `operational`
+alongside it. So the states a design must draw are: known; unknown while the
+radio has the capability; unknown because it does not. *Has it but cannot read
+it* and *does not have it* are opposite things to an operator, and the flags
+are the only way to tell them apart.
+
+**Not general.** One type — `TxTargetViewModel` — carries an explicit
+`reason` union of `not-observed`, `stale`, `unsupported`, `contradiction`.
+It is the only one. An earlier version of the extractor took the first
+occurrence of that union and printed it as the model-wide vocabulary; the
+resulting document told a designer to distinguish four states that thirteen of
+fourteen surfaces cannot express. Run the extractor and read what it reports
+per type; never carry a vocabulary across from one field to the rest.
+
+If a design needs *never asked* distinguished from *answer aged out* on a field
+that does not carry the reason union, that is a request for a state the model
+does not have, and belongs on the unbacked list rather than in the drawing.
 
 Output of this phase: per surface, the fields, their state sets, and whether
 this radio backs them. Say which are structurally absent and which are merely

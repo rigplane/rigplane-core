@@ -48,15 +48,35 @@ def surfaces() -> list[str]:
     return names
 
 
-def unknown_reasons(text: str) -> list[str]:
-    """Why a reading can be absent. This is the vocabulary designs collapse."""
-    m = re.search(r"status:\s*'unknown';\s*reason:\s*([^}]+)", text)
-    if not m:
-        die("no `status:'unknown'; reason:` union found — the state model moved")
-    reasons = re.findall(r"'([a-z-]+)'", m.group(1))
-    if not reasons:
-        die("unknown-reason union parsed to zero entries")
-    return reasons
+def absence_model(text: str) -> dict:
+    """How absence is expressed. There are TWO mechanisms and they are not the
+    same; reporting either one as universal produces a false contract.
+
+    An earlier version of this function took the FIRST `reason:` union it found
+    and printed it as the model-wide vocabulary. It occurs once, on one type,
+    and the resulting document told a designer to distinguish four states that
+    thirteen of fourteen surfaces cannot express. Find every occurrence and say
+    which type carries it.
+    """
+    general = re.search(r"export interface Availability\s*\{(.*?)\n\}", text, re.S)
+    if not general:
+        die("no `Availability` interface found — the state model moved")
+    flags = re.findall(r"^\s{2}(\w+):\s*([^;]+);", general.group(1), re.M)
+    if not flags:
+        die("Availability parsed to zero members")
+
+    # Every named-reason union, with the type that declares it.
+    named: dict[str, list[str]] = {}
+    for m in re.finditer(
+        r"export type (\w+)\s*=(.*?);\s*$", text, re.S | re.M
+    ):
+        body = m.group(2)
+        r = re.search(r"status:\s*'unknown';\s*reason:\s*([^}]+)", body)
+        if r:
+            named[m.group(1)] = re.findall(r"'([a-z-]+)'", r.group(1))
+
+    return {"availability": [{"name": n, "type": t.strip()} for n, t in flags],
+            "namedReasons": named}
 
 
 def view_models(text: str) -> dict[str, list[tuple[str, str]]]:
@@ -116,7 +136,7 @@ def main() -> None:
     vm_text = read(VIEW_MODEL)
     data = {
         "surfaces": surfaces(),
-        "unknownReasons": unknown_reasons(vm_text),
+        "absence": absence_model(vm_text),
         "viewModels": {k: dict(v) for k, v in view_models(vm_text).items()},
         "fieldShapes": field_shapes(vm_text),
         "radio": args.radio,
@@ -136,12 +156,23 @@ def main() -> None:
     print(f"## Surfaces a layout may mount ({len(data['surfaces'])})\n")
     print(", ".join(f"`{s}`" for s in data["surfaces"]) + "\n")
 
-    print("## Why a reading can be absent\n")
-    print("A reading is `known` with a value, or `unknown` with one of these "
-          "reasons. They are not shades of the same thing — *unsupported* and "
-          "*stale* mean opposite things to an operator.\n")
-    for r in data["unknownReasons"]:
-        print(f"- `{r}`")
+    print("## How absence is expressed\n")
+    ab = data["absence"]
+    print("**The general mechanism, carried by every field.** A reading is "
+          "`known` with a value or `unknown` with none, and `Availability` "
+          "carries these flags alongside it:\n")
+    for f in ab["availability"]:
+        print(f"- `{f['name']}`: `{f['type']}`")
+    print("\nSo the states a design must draw are: known; unknown but the "
+          "radio has the capability; and unknown because it does not. Not "
+          "five — three, plus whatever the flags distinguish.\n")
+    if ab["namedReasons"]:
+        print("**Named-reason unions, which are NOT general.** Only these "
+              "types carry an explicit reason. Do not generalise them:\n")
+        for t, rs in sorted(ab["namedReasons"].items()):
+            print(f"- `{t}`: " + ", ".join(f"`{r}`" for r in rs))
+    else:
+        print("_No type carries a named-reason union._")
     print()
 
     print("## Field shapes\n")
