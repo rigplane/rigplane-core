@@ -25,6 +25,7 @@ from ...core.state_pipeline_contracts import (
 )
 from ...core.tx_observation import TxStateReading
 from ...radio_state import RadioState
+from ...runtime.callable_support import supports_explicit_callable
 from .transport import RigctldTransport
 
 if TYPE_CHECKING:
@@ -655,9 +656,14 @@ class RigctldClientRadio:
         return caps
 
     def supports_command(self, command: str) -> bool:
-        if command in {"get_vfo_slot", "set_vfo_slot"}:
-            return self._vfo_supported
-        return command in _SUPPORTED_COMMANDS
+        supported = set(_SUPPORTED_COMMANDS)
+        if self._vfo_supported:
+            supported.update({"get_vfo_slot", "set_vfo_slot"})
+        return supports_explicit_callable(
+            command,
+            supported,
+            lambda name: callable(getattr(self, name, None)),
+        )
 
     def create_observation_poller(
         self,

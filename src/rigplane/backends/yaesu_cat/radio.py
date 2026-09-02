@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
 from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
+from ...runtime.callable_support import supports_callable
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.tx_observation import TxStateReading
 from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
@@ -727,8 +728,10 @@ class YaesuCatRadio:
         )
 
     def supports_command(self, command: str) -> bool:
-        """Check if a command is defined in the rig profile."""
-        return self._has_command(command)
+        """Return profile-derived support only for an executable operation."""
+        return supports_callable(self.profile, command) and callable(
+            getattr(self, command, None)
+        )
 
     def _default_nb_level(self) -> int:
         """Default NB level for turning on when current level is 0."""
