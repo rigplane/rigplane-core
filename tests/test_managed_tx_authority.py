@@ -928,6 +928,8 @@ async def test_real_fence_releases_before_cleanup_and_shutdown_waits_for_cleanup
             assert not task.done() and retired == []
     finally:
         finish_cleanup.set()
+        if (await managed.snapshot()).provider_generation is None:
+            await managed.provider_available(8)
         await task
         await managed.close()
     assert retired == (
