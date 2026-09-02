@@ -55,26 +55,52 @@ Output of this phase: per surface, the fields, their state sets, and whether
 this radio backs them. Say which are structurally absent and which are merely
 unobserved right now — they are different findings.
 
-## Phase 2 — read the design reference structurally
+## Phase 2 — read the design reference for its reasoning, not its layout
 
 Not pixels. A pixel comparison between a reference and a render is close to
 100% different and carries no signal — different data, different resolution,
 different rasterisation.
 
-Extract instead: what elements exist, how they group, what is dominant and what
-is subordinate, what is emphasised and what is dimmed, what the reading order
-appears to be.
+An inventory is not enough either. **A list of what sits where does not
+transfer, because the element set differs**: the reference will show things no
+field can fill, and omit fields that exist. Only the reasoning survives that
+gap.
+
+So extract, in this order:
+
+1. **The parts.** What elements exist, how they group.
+2. **The measurements.** Relative size, aspect ratio, proportion between
+   groups, what is dimmed against what is bright. Measured off the image, not
+   estimated in adjectives.
+3. **Why each part is where it is.** What is read continuously, what is glanced
+   at, what is set once a session and then ignored. What must be adjacent to
+   what because they are operated together. What is separated because
+   confusing them is expensive.
+
+**Step 3 is inference and must be labelled as such, per claim.** The designer's
+reasons are not in the image. An agent will produce a confident rationale for a
+placement that was arbitrary, and a plausible-but-wrong rationale is worse than
+none — it will be carried forward as a constraint.
+
+Split the output in two:
+
+- **Established** — supported by something outside the picture: a vendor's
+  documented convention, an operating practice, a physical panel that works
+  this way.
+- **Inferred** — a reading of the image alone. Ranked by confidence, and short
+  enough that the owner can strike half of it in a minute.
 
 A vendor's conventions (Icom, Yaesu) are a legitimate reference of the same
-kind, and can be used with no image at all.
+kind and can be used with no image at all — and they land in **established**,
+which is why they are worth more than a screenshot.
 
 **State the reference's own limits.** It shows one moment, usually with invented
 values, and cannot show what transmit, a fault, or a lost connection look like.
-Anything it implies about those is inference, and must be labelled as such.
+Anything it implies about those is inference of the weakest kind.
 
 ## Phase 3 — cross them
 
-Produce three lists, in this order:
+First, three lists:
 
 1. **Backed.** Element, the field that feeds it, and a treatment for *every*
    member of that field's state set. An element whose unknown-states have no
@@ -85,6 +111,28 @@ Produce three lists, in this order:
    able to see what the reference wanted.
 3. **Unshown.** Fields that exist, that the reference has no element for.
    Usually the larger list, and usually where the real work is.
+
+## Phase 4 — place, by the reasoning rather than by the picture
+
+Group the backed fields into functional blocks — things operated together,
+read together, or dangerous to confuse. Then place the blocks by the rules
+Phase 2 extracted.
+
+**The unshown fields are placed by the same rules, not appended.** This is the
+test of whether Phase 2 produced reasoning or an inventory. If a rule says the
+continuously-read value dominates, it decides where an antenna selector goes
+just as it decided where the frequency goes. If it cannot, it was a description
+of the picture and should be marked as such and discarded.
+
+**Do not reproduce the reference's proportions when the content differs.** A
+measurement is evidence for a rule — "the readout takes roughly a third of the
+width because it is read at a glance from across the room" — and it is the rule
+that carries over, not the third.
+
+Every block states: which fields it holds, which rule placed it, and whether
+that rule was **established** or **inferred**. A block placed by an inferred
+rule is a proposal; a block placed by an established one is closer to a
+finding.
 
 ## Rules
 
