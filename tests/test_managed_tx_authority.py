@@ -596,11 +596,26 @@ async def test_provider_arrival_wins_retry_tie_without_duplicate_effect() -> Non
     await managed.force_off()
     managed._retry_due = clock.now
 
-    await asyncio.gather(managed.provider_available(8), managed._process_due())
+    release_gate = lane.block_next()
+    arrival = asyncio.create_task(managed.provider_available(8))
+    try:
+        pending = await asyncio.wait_for(lane.started.get(), 0.2)
+        due = asyncio.create_task(managed._process_due())
+        await asyncio.wait_for(due, 0.2)
+        retry_due_while_pending = managed._retry_due
+    finally:
+        release_gate.set()
+        await arrival
 
     assert len(lane.effects) == 1
-    assert lane.effects[0].operation is ActuationOperation.FORCE_RECEIVE
-    assert lane.effects[0].token.provider_generation == 8
+    assert lane.effects[0] == pending
+    assert pending.operation is ActuationOperation.FORCE_RECEIVE
+    assert pending.token.provider_generation == 8
+    assert retry_due_while_pending is None
+    settled = await managed.snapshot()
+    assert not settled.state.release_required
+    assert settled.state.pending_effect is None
+    assert managed._retry_due is None
     await managed.close()
 
 
