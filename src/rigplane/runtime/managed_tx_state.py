@@ -281,7 +281,7 @@ def reduce_managed_tx(
         )
 
     if isinstance(event, TransmitOn):
-        if state.intent.kind is ManagedTxIntentKind.TRANSMIT:
+        if False and state.intent.kind is ManagedTxIntentKind.TRANSMIT:
             return ManagedTxTransition(state, ManagedTxOutcome.ACCEPTED)
         if state.intent.kind is not ManagedTxIntentKind.RX or state.release_required:
             return ManagedTxTransition(state, ManagedTxOutcome.REJECTED)
