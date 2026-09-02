@@ -22,24 +22,18 @@
   --dl-segmentline-bezel: #1a1410;
   --dl-segmentline-bezel-edge: #8a7020;
 
-  /* Ink ramp — one ink, five alphas. HIGH contrast preset. */
+  /* Ink ramp — one ink, three alphas. HIGH contrast preset. */
   --dl-segmentline-ink: 26 16 0;
   --dl-segmentline-ink-strong: rgba(var(--dl-segmentline-ink) / 1);
-  --dl-segmentline-ink-mid: rgba(var(--dl-segmentline-ink) / 0.65);
   --dl-segmentline-ink-soft: rgba(var(--dl-segmentline-ink) / 0.34);
   --dl-segmentline-ink-ghost: rgba(var(--dl-segmentline-ink) / 0.09);
 
-  --dl-segmentline-tx-active: #d61c08;
   --dl-segmentline-tx-mark: #7a1a0a;
   --dl-segmentline-rx-tuning: #a97400;
 
   --dl-segmentline-cell-border: 1.25px;
   --dl-segmentline-cell-radius: 2px;
   --dl-segmentline-grid-opacity: 1;
-
-  /* The meter pitch, republished from tokens.ts's `meters` group. Anything
-     that draws a segmented track derives from these two and never from a
-     literal — a hardcoded pitch drifts silently the moment a token moves. */
 
   color: var(--dl-segmentline-ink-strong);
   font-family: 'Share Tech Mono', ui-monospace, monospace;
@@ -130,7 +124,8 @@
 
 /* One cell per glyph, width from the renderer. This is what keeps the readout
    from reflowing when DSEG7 is unavailable. */
-[data-design-language='segmentline'][data-design-language] .digit {
+[data-design-language='segmentline'][data-design-language] .digit,
+[data-design-language='segmentline'][data-design-language] .sep {
   display: inline-block;
   text-align: center;
 }

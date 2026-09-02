@@ -95,10 +95,12 @@ describe('the shipped gauges take a tone annotation via data-dl-*, never a geome
 });
 
 describe('the root declares the HIGH ink ramp and cell geometry at their literal values', () => {
-  it('scales the ink ramp to the declared 1/0.65/0.34/0.09 alphas', () => {
+  it('scales the ink ramp to the declared 1/0.34/0.09 alphas', () => {
+    // `--dl-segmentline-ink-mid` (0.65) is gone (MOR-2163 review: its last
+    // consumer, the removed `.dl-freq [data-tone='muted']`/`.dl-meter-scale`
+    // rules, no longer exists) — three alphas remain, not the original five.
     const root = findExact(ATTR)!;
     expect(root.declarations['--dl-segmentline-ink-strong']).toBe('rgba(var(--dl-segmentline-ink) / 1)');
-    expect(root.declarations['--dl-segmentline-ink-mid']).toBe('rgba(var(--dl-segmentline-ink) / 0.65)');
     expect(root.declarations['--dl-segmentline-ink-soft']).toBe('rgba(var(--dl-segmentline-ink) / 0.34)');
     expect(root.declarations['--dl-segmentline-ink-ghost']).toBe('rgba(var(--dl-segmentline-ink) / 0.09)');
   });
@@ -110,6 +112,18 @@ describe('the root declares the HIGH ink ramp and cell geometry at their literal
 });
 
 describe('the CSS half honours the same constraints as the token half', () => {
+  // Restored (review finding, MOR-2163): these two were deleted alongside
+  // the DIM-preset `it` block's third assertion (`toMatch(/\[data-dl-contrast=
+  // 'dim'\]/)`, correctly dropped — that rule no longer exists, retargeted
+  // onto no reachable class). These two forbid a DIFFERENT rule from EVER
+  // appearing, an invariant unrelated to whether `[data-dl-contrast='dim']`
+  // itself is still declared — deleting them alongside it left `data-density`
+  // guarded nowhere in the repo.
+  it('never keys density or the OS colour-scheme signal into a rule (MOR-977 §3.2)', () => {
+    expect(css).not.toMatch(/data-density/);
+    expect(css).not.toMatch(/prefers-color-scheme/);
+  });
+
   it('adds and removes nothing — a language may not become a capability fork', () => {
     expect(css).not.toMatch(/display:\s*none/);
     expect(css).not.toMatch(/visibility:\s*hidden/);
@@ -132,9 +146,13 @@ describe('the CSS half honours the same constraints as the token half', () => {
   });
 
   it('declares every palette entry it references as a custom property', () => {
+    // `txHot` dropped (MOR-2163 review, same fix that removed
+    // `--dl-segmentline-tx-active`): its sole CSS consumer, the TX-active
+    // perimeter border-color rule, was already deleted by the retarget —
+    // no rule in this file uses that hex any more, under any name.
     for (const hex of [
       SEGMENTLINE_SURFACES.glass, SEGMENTLINE_SURFACES.bezel,
-      SEGMENTLINE_PALETTE.txHot, SEGMENTLINE_PALETTE.txMark, SEGMENTLINE_PALETTE.tuning,
+      SEGMENTLINE_PALETTE.txMark, SEGMENTLINE_PALETTE.tuning,
     ]) {
       expect(css.toLowerCase()).toContain(hex.toLowerCase());
     }

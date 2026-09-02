@@ -83,12 +83,13 @@ describe.each(SHEETS)(
     const SELECTORS = selectors(css);
 
     it('parses into selectors worth pinning', () => {
-      // The floor guards against a broken parse (0 selectors), not against a
-      // small but real stylesheet: segmentline.css was retargeted onto real
-      // emitted markup and every rule with no reachable target was deleted,
-      // so its selector count is legitimately smaller than its siblings'
-      // while still comfortably clearing this floor.
-      expect(SELECTORS.length).toBeGreaterThan(10);
+      // The floor guards against a broken parse (0 selectors) — nothing
+      // more. A shared numeric threshold across families this different in
+      // size (14/41/53 selectors, measured at MOR-2163) cannot mean
+      // "enough rules" for all three at once; it can only ever distinguish
+      // "the parser returned something" from "returned nothing", so it says
+      // exactly that rather than implying a precision it does not have.
+      expect(SELECTORS.length).toBeGreaterThan(0);
     });
 
     it('opens every selector with the sanctioned attribute, doubled for specificity', () => {

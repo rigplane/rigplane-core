@@ -476,6 +476,32 @@ describe('reachable() judges a trailing pseudo-element by its subject', () => {
         expect(reachable(`${LIVE}${tail}`), `${LIVE}${tail} should be reachable`).toBe(true);
         expect(reachable(`${DEAD}${tail}`), `${DEAD}${tail} should NOT be reachable`).toBe(false);
       }
+
+      // ── OVER-REACH GUARD (review finding, blocking). A pseudo-CLASS tail
+      // must NEVER be stripped — only a pseudo-ELEMENT may be. Every
+      // assertion above tests UNDER-reach (a pseudo-element wrongly left
+      // un-stripped); none of them can catch OVER-reach, because
+      // `SAMPLE_TAILS` is entirely pseudo-elements. Found in review: widening
+      // the single-colon branch by one token —
+      // `:(?:before|after|first-line|first-letter)$` to `:[-\w]+$` —
+      // silently strips `:hover`, `:focus-visible`, `:disabled`, … too, and
+      // NOTHING above reddens. That specific widening would disable the
+      // `:focus-visible` verification the two focus scenes above exist to
+      // prove: a `:focus-visible` rule on a class no scene ever focuses
+      // would report reachable regardless, because the pseudo-class gets
+      // stripped before `querySelectorAll` ever sees it.
+      //
+      // `.rx-tx-surface` exists, but nothing is hovering it in this test
+      // environment, so a correctly-scoped `:hover` tail must stay
+      // unreachable — this is the exact case the widening above breaks.
+      expect(reachable(`${LIVE}:hover`), `${LIVE}:hover should NOT be reachable`).toBe(false);
+      // A parenthesised single-colon pseudo-class — the shape most likely to
+      // slip past a DIFFERENT careless widening, since the double-colon
+      // branch already accepts a parenthesised argument and "make the two
+      // branches consistent" is a plausible next bad edit. `.rx-tx-key` is a
+      // real descendant of `.rx-tx-surface` (RxTxSurface.svelte's template).
+      expect(reachable(`${LIVE}:has(.rx-tx-key)`), `${LIVE}:has(.rx-tx-key) should be reachable`).toBe(true);
+      expect(reachable(`${LIVE}:has(.no-such-descendant)`), `${LIVE}:has(.no-such-descendant) should NOT be reachable`).toBe(false);
     } finally {
       cleanup();
       deactivate();
