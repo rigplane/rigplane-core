@@ -3,9 +3,9 @@
 Profiles remain authoritative for radio/model support and wire facts.  This
 module owns only backend-neutral operation mechanics: public name, reviewed
 Radio method, parameter binding, semantic target, timeout, queue policy, and
-explicit TX-interlock disposition.  Every migrated operation is admitted,
-queued, invoked, and audited through the same descriptor; drains must not add
-operation-specific branches.
+explicit TX policy.  Every migrated operation is admitted, queued, invoked,
+and audited through the same descriptor; drains must not add operation-specific
+branches.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import asyncio
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
@@ -23,11 +24,11 @@ from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
 )
-from rigplane.core.tx_interlock_contract import TxInterlockDisposition
 
 __all__ = [
     "CommandDescriptor",
     "CommandUnsupportedError",
+    "DescriptorTxPolicy",
     "command_descriptor",
     "command_descriptors",
     "enqueue_command_intent",
@@ -61,6 +62,13 @@ Binder = Callable[[Mapping[str, Any]], dict[str, Any]]
 TargetBuilder = Callable[[Mapping[str, Any]], FieldPath]
 
 
+class DescriptorTxPolicy(StrEnum):
+    """TX policies admitted by descriptor-backed dispatch."""
+
+    ALWAYS_PASS = "always_pass"
+    TX_SAFE = "tx_safe"
+
+
 @dataclass(frozen=True, slots=True)
 class CommandDescriptor:
     """One operation's backend-neutral execution mechanics."""
@@ -70,7 +78,7 @@ class CommandDescriptor:
     bind: Binder
     target: TargetBuilder
     argument_names: tuple[str, ...]
-    tx_interlock_disposition: TxInterlockDisposition
+    tx_policy: DescriptorTxPolicy
     timeout: float = 10.0
     queue_policy: Literal["ordered"] = "ordered"
 
@@ -110,30 +118,29 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             bind=_bind_repeater_shift,
             target=_repeater_shift_target,
             argument_names=("direction", "receiver"),
-            tx_interlock_disposition=TxInterlockDisposition.TX_SAFE,
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
         )
     }
 )
 
 
-_DESCRIPTOR_POLICIES_WITHOUT_SHARED_SEAT = frozenset(
+_ADMITTED_DESCRIPTOR_TX_POLICIES = frozenset(
     {
-        TxInterlockDisposition.ALWAYS_PASS,
-        TxInterlockDisposition.TX_SAFE,
+        DescriptorTxPolicy.ALWAYS_PASS,
+        DescriptorTxPolicy.TX_SAFE,
     }
 )
 
 
 def _require_descriptor_policy_seat(descriptor: CommandDescriptor) -> None:
-    """Reject disruptive descriptors until every drain has one shared seat."""
+    """Reject values outside the descriptor-local admitted vocabulary."""
 
-    policy = descriptor.tx_interlock_disposition
-    if not isinstance(policy, TxInterlockDisposition) or policy not in (
-        _DESCRIPTOR_POLICIES_WITHOUT_SHARED_SEAT
+    policy = descriptor.tx_policy
+    if not isinstance(policy, DescriptorTxPolicy) or policy not in (
+        _ADMITTED_DESCRIPTOR_TX_POLICIES
     ):
         raise CommandError(
-            f"descriptor {descriptor.name!r} policy "
-            f"{policy!r} has no shared enforcement seat"
+            f"descriptor {descriptor.name!r} policy {policy!r} is not admitted"
         )
 
 

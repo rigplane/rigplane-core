@@ -19,7 +19,7 @@ from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
-from rigplane.core.tx_interlock_contract import TxInterlockDisposition
+from rigplane.core.command_dispatch import DescriptorTxPolicy
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import RadioPoller
@@ -250,39 +250,41 @@ async def test_all_three_drains_execute_the_same_neutral_intent() -> None:
 @pytest.mark.parametrize(
     "policy",
     [
-        TxInterlockDisposition.DEFER,
-        TxInterlockDisposition.BLOCK,
+        cast(Any, "defer"),
+        cast(Any, "block"),
         cast(Any, None),
     ],
 )
-def test_descriptor_admission_rejects_policy_without_shared_seat(
+def test_descriptor_admission_rejects_non_admitted_policy(
     monkeypatch: pytest.MonkeyPatch,
-    policy: TxInterlockDisposition,
+    policy: DescriptorTxPolicy,
 ) -> None:
     from rigplane.core import command_dispatch
     from rigplane.core.command_dispatch import prepare_command_intent
 
     descriptor = command_dispatch.command_descriptor("set_repeater_shift")
     assert descriptor is not None
-    mutated = replace(descriptor, tx_interlock_disposition=policy)
+    mutated = replace(descriptor, tx_policy=policy)
     monkeypatch.setattr(
         command_dispatch, "_COMMAND_DESCRIPTORS", {mutated.name: mutated}
     )
 
-    with pytest.raises(CommandError, match="has no shared enforcement seat"):
-        prepare_command_intent(_radio(), mutated.name, {"direction": 1}, source="http")
+    radio = _radio()
+    with pytest.raises(CommandError, match="is not admitted"):
+        prepare_command_intent(radio, mutated.name, {"direction": 1}, source="http")
+    radio.supports_command.assert_not_called()
+    radio.set_repeater_shift.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "policy", [TxInterlockDisposition.DEFER, TxInterlockDisposition.BLOCK]
-)
-async def test_all_three_drains_reject_unsafe_descriptor_before_invocation(
+async def test_descriptor_enqueue_rejects_non_admitted_policy(
     monkeypatch: pytest.MonkeyPatch,
-    policy: TxInterlockDisposition,
 ) -> None:
     from rigplane.core import command_dispatch
-    from rigplane.core.command_dispatch import prepare_command_intent
+    from rigplane.core.command_dispatch import (
+        enqueue_command_intent,
+        prepare_command_intent,
+    )
 
     radio = _radio()
     intent = prepare_command_intent(
@@ -290,30 +292,96 @@ async def test_all_three_drains_reject_unsafe_descriptor_before_invocation(
     )
     descriptor = command_dispatch.command_descriptor(intent.name)
     assert descriptor is not None
-    mutated = replace(descriptor, tx_interlock_disposition=policy)
+    mutated = replace(descriptor, tx_policy=cast(Any, "defer"))
+    monkeypatch.setattr(
+        command_dispatch, "_COMMAND_DESCRIPTORS", {mutated.name: mutated}
+    )
+    queue = MagicMock()
+    future = asyncio.get_running_loop().create_future()
+
+    with pytest.raises(CommandError, match="is not admitted"):
+        enqueue_command_intent(
+            queue,
+            intent,
+            future=future,
+            command_id=intent.id,
+            source=intent.source,
+            session_id=None,
+            command_service=object(),
+            timeout=intent.timeout,
+        )
+    queue.put_ordered.assert_not_called()
+    radio.set_repeater_shift.assert_not_awaited()
+
+
+def _install_non_admitted_descriptor(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rigplane.core import command_dispatch
+
+    descriptor = command_dispatch.command_descriptor("set_repeater_shift")
+    assert descriptor is not None
+    mutated = replace(descriptor, tx_policy=cast(Any, "block"))
     monkeypatch.setattr(
         command_dispatch, "_COMMAND_DESCRIPTORS", {mutated.name: mutated}
     )
 
-    for drain in ("icom", "yaesu", "rigctld"):
-        with pytest.raises(CommandError, match="has no shared enforcement seat"):
-            if drain == "icom":
-                poller = SimpleNamespace(
-                    _radio=radio,
-                    _enforce_tx_interlock=lambda command: None,
-                    _provider_generation=lambda: 0,
-                )
-                await RadioPoller._execute(poller, intent)  # type: ignore[arg-type] # noqa: SLF001
-            elif drain == "yaesu":
-                poller = YaesuCatPoller.__new__(YaesuCatPoller)
-                poller._radio = radio  # type: ignore[attr-defined]
-                await poller._execute_command(intent)  # noqa: SLF001
-            else:
-                poller = RigctldClientObservationPoller.__new__(
-                    RigctldClientObservationPoller
-                )
-                poller._radio = radio  # type: ignore[attr-defined]
-                await poller._execute_command(intent)  # noqa: SLF001
+
+@pytest.mark.asyncio
+async def test_icom_drain_rejects_non_admitted_policy_before_radio_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.core.command_dispatch import prepare_command_intent
+
+    radio = _radio()
+    intent = prepare_command_intent(
+        radio, "set_repeater_shift", {"direction": 3}, source="http"
+    )
+    _install_non_admitted_descriptor(monkeypatch)
+    poller = SimpleNamespace(
+        _radio=radio,
+        _enforce_tx_interlock=lambda command: None,
+        _provider_generation=lambda: 0,
+    )
+
+    with pytest.raises(CommandError, match="is not admitted"):
+        await RadioPoller._execute(poller, intent)  # type: ignore[arg-type] # noqa: SLF001
+    radio.set_repeater_shift.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_drain_rejects_non_admitted_policy_before_radio_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.core.command_dispatch import prepare_command_intent
+
+    radio = _radio()
+    intent = prepare_command_intent(
+        radio, "set_repeater_shift", {"direction": 3}, source="http"
+    )
+    _install_non_admitted_descriptor(monkeypatch)
+    poller = YaesuCatPoller.__new__(YaesuCatPoller)
+    poller._radio = radio  # type: ignore[attr-defined]
+
+    with pytest.raises(CommandError, match="is not admitted"):
+        await poller._execute_command(intent)  # noqa: SLF001
+    radio.set_repeater_shift.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rigctld_drain_rejects_non_admitted_policy_before_radio_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.core.command_dispatch import prepare_command_intent
+
+    radio = _radio()
+    intent = prepare_command_intent(
+        radio, "set_repeater_shift", {"direction": 3}, source="http"
+    )
+    _install_non_admitted_descriptor(monkeypatch)
+    poller = RigctldClientObservationPoller.__new__(RigctldClientObservationPoller)
+    poller._radio = radio  # type: ignore[attr-defined]
+
+    with pytest.raises(CommandError, match="is not admitted"):
+        await poller._execute_command(intent)  # noqa: SLF001
     radio.set_repeater_shift.assert_not_awaited()
 
 
@@ -524,11 +592,9 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
 
     assert set(command_descriptors()) == {"set_repeater_shift"}
     descriptor = command_descriptors()["set_repeater_shift"]
-    assert descriptor.tx_interlock_disposition is TxInterlockDisposition.TX_SAFE
+    assert descriptor.tx_policy is DescriptorTxPolicy.TX_SAFE
     policy_field = next(
-        field
-        for field in fields(CommandDescriptor)
-        if field.name == "tx_interlock_disposition"
+        field for field in fields(CommandDescriptor) if field.name == "tx_policy"
     )
     assert policy_field.default is MISSING
     assert "set_repeater_shift" in ControlHandler._COMMANDS  # noqa: SLF001
