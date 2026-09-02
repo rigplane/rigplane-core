@@ -38,6 +38,10 @@ from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, EnableScope, RadioPoller
 from rigplane.web.server import WebConfig, WebServer, _send_response, run_web_server
+from test_radio_poller_coverage import (
+    _instrument_guarded_vfo_wire,
+    _make_radio,
+)
 
 
 class _FakeSocket:
@@ -2846,56 +2850,41 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
 
 
 @pytest.mark.asyncio
-async def test_on_radio_reconnect_establishes_vfo_identity_after_readiness_gate() -> (
-    None
-):
-    """MOR-1443 review R3, finding F4: the F1 server-side fix — calling
-    ``RadioPoller.establish_vfo_identity()`` from
-    ``_refetch_and_reenable()``'s ``finally`` block — had zero test
-    coverage. Every other reconnect test above leaves ``srv._radio_poller``
-    as ``None``, so deleting the fix's ``server.py`` lines left the whole
-    suite green. Wire a real ``RadioPoller`` (IC-7300 profile, so
-    ``vfo_readback == "selected_unselected"``) onto the server, replace its
-    ``establish_vfo_identity`` with an ``AsyncMock`` that captures whether
-    the poller readiness gate was already re-set at call time, fire the
-    reconnect hook, and assert the establish call happened — and happened
-    after ``_initial_fetch_done.set()``, not before.
-    """
-    radio = _scope_radio(ready=False)
+async def test_passive_reconnect_attempts_no_vfo_select_or_swap() -> None:
+    radio = _make_radio(model="IC-7300")
+    radio.radio_ready = False
     radio._fetch_initial_state = AsyncMock()
-    radio.profile = resolve_radio_profile(model="IC-7300")
-    radio.model = radio.profile.model
+    ledger = _instrument_guarded_vfo_wire(radio)
     srv = WebServer(radio)
 
-    poller = RadioPoller(radio, CommandQueue(), state_store=StateStore())
-    gate_set_at_call_time: bool | None = None
-
-    async def _fake_establish() -> None:
-        nonlocal gate_set_at_call_time
-        gate_set_at_call_time = poller._initial_fetch_done.is_set()  # noqa: SLF001
-
-    poller.establish_vfo_identity = AsyncMock(  # type: ignore[method-assign]
-        side_effect=_fake_establish
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    store.apply(
+        Observation(
+            path=FieldPath.active_slot("0"),
+            value="B",
+            source=SourceMetadata(source="command_response", provider="test"),
+            timestamp_monotonic=time.monotonic(),
+            provider_generation=generation,
+        )
     )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
     srv._radio_poller = poller  # noqa: SLF001
 
     srv._on_radio_reconnect()  # noqa: SLF001
     await asyncio.sleep(0.05)  # let the refetch task complete
 
-    poller.establish_vfo_identity.assert_awaited_once()  # type: ignore[attr-defined]
-    assert gate_set_at_call_time is True
+    assert poller._initial_fetch_done.is_set()  # noqa: SLF001
+    assert ledger.mutation_counts() == {
+        "attempted_guard_blocked": {"07 00": 0, "07 01": 0, "07 B0": 0},
+        "actual_admitted": {"07 00": 0, "07 01": 0, "07 B0": 0},
+    }
+    assert "receiver.0.vfo.active_slot" not in store.snapshot().as_dict()
 
 
 @pytest.mark.asyncio
 async def test_on_radio_reconnect_reseeds_scan_facts() -> None:
-    """MOR-1495 review R2: the scan-facts seed must re-run on every
-    soft-reconnect too, sitting right beside ``establish_vfo_identity`` in
-    the same ``finally`` block. ``RadioPoller._run()``'s one-time startup
-    section never fires again after a soft-reconnect (same reasoning as the
-    VFO-identity call above), so without this the scan controls would only
-    ever unlock once, at process start, and a reconnect would leave the web
-    trusting whatever pre-reconnect value happened to survive forever.
-    """
+    """The scan-facts seed must re-run on every soft-reconnect."""
     radio = _scope_radio(ready=False)
     radio._fetch_initial_state = AsyncMock()
     radio.profile = resolve_radio_profile(model="IC-7300")
@@ -2904,7 +2893,6 @@ async def test_on_radio_reconnect_reseeds_scan_facts() -> None:
 
     store = StateStore()
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
-    poller.establish_vfo_identity = AsyncMock()  # type: ignore[method-assign]
     seed_call_count = 0
     real_seed = poller._seed_scan_facts_at_connect  # noqa: SLF001
 

@@ -454,25 +454,21 @@ async def test_direct_defer_family_emit_is_refused_at_the_execute_seat(
     radio.set_split.assert_not_awaited()
 
 
-async def test_vfo_selection_is_not_observed_rf_gated_at_bootstrap() -> None:
-    for connection_epoch_bootstrap in (False, True):
-        poller, _radio, _store = _poller()
-        with pytest.raises(CommandError) as dispatched:
-            await poller._execute(  # noqa: SLF001
-                SelectVfo(vfo="A"),
-                connection_epoch_bootstrap=connection_epoch_bootstrap,
-            )
-        assert "RF state" not in str(dispatched.value)
-        assert "VFO selection" in str(dispatched.value)
+async def test_vfo_selection_is_not_observed_rf_gated() -> None:
+    poller, _radio, _store = _poller()
+    with pytest.raises(CommandError) as dispatched:
+        await poller._execute(SelectVfo(vfo="A"))  # noqa: SLF001
+    assert "RF state" not in str(dispatched.value)
+    assert "VFO selection" in str(dispatched.value)
 
 
-def test_bootstrap_exemption_has_exactly_one_production_call_site() -> None:
+def test_connection_epoch_bootstrap_exemption_is_absent_from_production() -> None:
     from pathlib import Path
 
     import rigplane.web.radio_poller as radio_poller_module
 
     source = Path(radio_poller_module.__file__).read_text()
-    assert source.count("connection_epoch_bootstrap=True") == 1
+    assert "connection_epoch_bootstrap" not in source
 
 
 async def test_teardown_drain_unkey_stays_outside_the_execute_seat() -> None:

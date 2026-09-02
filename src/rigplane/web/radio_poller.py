@@ -1676,12 +1676,7 @@ class RadioPoller:
         known before it will enable the button that would send the very
         first command. Nothing breaks that cycle without an explicit seed.
 
-        PURE LOCAL SEED — never sends anything to the radio. Unlike
-        :meth:`establish_vfo_identity` (its sibling call site in
-        :meth:`_run`'s startup section and in the server's reconnect path),
-        which commands VFO A over the wire and therefore pauses while an
-        external CAT session owns it, this seed touches only the local
-        StateStore and needs no such guard.
+        PURE LOCAL SEED — never sends anything to the radio.
 
         "Not scanning until we command it" is an ASSUMED-UNTIL-COMMANDED
         fact — the same accepted-dishonesty class as this PR's documented
@@ -1849,17 +1844,6 @@ class RadioPoller:
             await self._fetch_mod_inputs()
         except Exception:
             logger.debug("radio-poller: MOD-input initial fetch failed", exc_info=True)
-
-        # MOR-1443: some CI-V radios can never passively report which VFO
-        # slot (A/B) is active; command VFO A once so identity is known.
-        try:
-            await self.establish_vfo_identity()
-        except Exception:
-            # A ruled behaviour (owner decision, MOR-1443) silently not
-            # happening is worth surfacing above debug (review R2).
-            logger.warning(
-                "radio-poller: auto VFO identity establish failed", exc_info=True
-            )
 
         # MOR-1495 review R2: scan (CI-V 0x0E) is SET-ONLY, so nothing else
         # ever seeds scanning/scan_resume_mode — without this, the web UI's
@@ -2234,21 +2218,16 @@ class RadioPoller:
         source: CommandSource = "websocket",
         session_id: str | None = None,
         command_service: CommandService | None = None,
-        connection_epoch_bootstrap: bool = False,
     ) -> None:
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
             return
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
-        # emits alike. The single exemption is the connection-epoch bootstrap
-        # ``SelectVfo`` in :meth:`establish_vfo_identity`: at connection start
-        # RF is structurally UNKNOWN, and that one ruled write (MOR-1443) is
-        # what makes RF/VFO truth observable at all. Emergency commands need
-        # no exemption — ``_enforce_tx_interlock`` is structurally incapable
-        # of blocking them before any table is consulted.
-        if not connection_epoch_bootstrap:
-            self._enforce_tx_interlock(cmd)
+        # emits alike. Emergency commands need no exemption —
+        # ``_enforce_tx_interlock`` is structurally incapable of blocking them
+        # before any table is consulted.
+        self._enforce_tx_interlock(cmd)
         radio = self._radio
         provider_generation = self._provider_generation()
         _r: Any = radio  # cast for capability methods not on base Radio protocol
@@ -3979,78 +3958,6 @@ class RadioPoller:
     def _relative_vfo_fields() -> tuple[str, ...]:
         return ("freq_hz", "mode", "filter_num", "data_mode")
 
-    async def establish_vfo_identity(self) -> None:
-        """Command VFO A once, but only when the radio cannot ever report
-        which slot (A/B) is active on its own (MOR-1443).
-
-        Discriminator: ``vfo_readback == "selected_unselected"`` is
-        profile/capability data (``rigs/<model>.toml``), not a hardcoded
-        model check. It already means "this CI-V radio can read the
-        selected/unselected VFO's frequency+mode, but never which physical
-        slot is selected" — issue #2303 forbids learning that passively
-        (a swap-based probe would itself mutate the radio), so absent a
-        commanded write, ``activeSlot`` stays unknown forever and the UI is
-        stuck behind the manual "Select VFO A/B" fallback.
-
-        Ruled exception to the no-uncommanded-writes doctrine (owner
-        decision, MOR-1443, session 19): the owner explicitly accepted the
-        radio-visible side effect — a radio left on VFO B at app start gets
-        switched to A once. Radios that CAN report identity on their own
-        (absolute CI-V VFO readback, Yaesu CAT ``get_vfo_select``, the
-        rigctld client) declare a different ``vfo_readback`` value (or use a
-        backend that never touches this poller at all) and never reach this
-        branch — they keep reading, never writing.
-
-        Called once per connect from the one-time startup section of
-        :meth:`_run`, and again from the web server's reconnect path
-        (``WebServer._on_radio_reconnect`` → its ``_refetch_and_reenable``
-        closure, right after the poller readiness gate is re-set) so that a
-        soft-reconnect re-establishes identity too, instead of staying
-        unknown until process restart (MOR-1443 review R2, finding 1).
-        ``reset_vfo_session()`` always runs first on that path and
-        unconditionally discards ``active_slot`` — no reconnect path
-        retains it. The already-observed gate below therefore is not about
-        surviving a reconnect: between ``reset_vfo_session()`` clearing
-        identity and this coroutine's own read of the state store, the
-        poll loop is still running and may drain an operator-initiated
-        ``SelectVfo`` in that window, legitimately observing identity again
-        first — the gate exists to avoid a redundant second commanded
-        write over that observation (and to guard any future retention
-        path). Also paused, like the rest of this poller's writes, while an
-        external CAT session owns the wire (MOR-166 slice 2) — a commanded
-        VFO A here would collide with the owner's byte stream.
-
-        Goes through the normal :class:`SelectVfo` command path so the
-        existing confirmed-select readback is what marks identity observed,
-        exactly like an operator-issued "Select VFO A/B" would.
-        """
-
-        # External CAT session (e.g. Hamlib A1 bridge) owns the wire — this
-        # write must not escape that pause any more than the poll loop's own
-        # writes do (MOR-1443 review R2, finding 2). ``is True`` (not just
-        # truthy), matching the poll loop's own guard, so duck-typed / mock
-        # radios never quiesce by accident — only a real bool flag does.
-        if getattr(self._radio, "external_cat_session_active", False) is True:
-            return
-        if self._profile.vfo_readback != "selected_unselected":
-            return
-        receiver = 1 if self._current_active().upper() == "SUB" else 0
-        try:
-            self._state_store.snapshot().field(FieldPath.active_slot(str(receiver)))
-        except KeyError:
-            pass
-        else:
-            return  # identity already observed — nothing to establish
-        logger.info(
-            "radio-poller: active-VFO identity unqueryable and unobserved; "
-            "auto-commanding VFO A once (MOR-1443, receiver=%d)",
-            receiver,
-        )
-        # MOR-1884: the ONE exempted write. RF is structurally UNKNOWN at
-        # connection start, and this ruled bootstrap (MOR-1443) is what makes
-        # identity observable — the seat would otherwise fail it closed forever.
-        await self._execute(SelectVfo(vfo="A"), connection_epoch_bootstrap=True)
-
     def _vfo_identity_paths(self, receiver: int) -> tuple[FieldPath, ...]:
         receiver_id = str(receiver)
         paths: list[FieldPath] = [FieldPath.active_slot(receiver_id)]
@@ -4093,10 +4000,7 @@ class RadioPoller:
         self._state_store.discard(self._vfo_identity_paths(receiver))
 
     def _tx_target_receiver(self) -> tuple[int, TxReceiver]:
-        """Resolve the receiver index + MAIN/SUB label carrying TX.
-
-        Mirrors :meth:`establish_vfo_identity`'s own resolution (MOR-1443).
-        """
+        """Resolve the receiver index + MAIN/SUB label carrying TX."""
         receiver = 1 if self._current_active().upper() == "SUB" else 0
         label: TxReceiver = "SUB" if receiver == 1 else "MAIN"
         return receiver, label
@@ -4124,9 +4028,7 @@ class RadioPoller:
         ``backends/yaesu_cat/observations.py``), Icom CI-V never reports a TX
         target directly. The facts that determine it are already tracked
         independently in the state store: active-VFO identity
-        (``receiver.<rx>.vfo.active_slot``, established once per connect by
-        :meth:`establish_vfo_identity`, MOR-1443, since this CI-V scheme can
-        never passively report which slot is active), split
+        (``receiver.<rx>.vfo.active_slot``), split
         (``global.tx_state.split``, cmd 0x0F), and the selected/unselected
         frequencies (``receiver.<rx>.[active|unselected].freq_mode.freq_hz``,
         cmd 0x25).
@@ -4139,10 +4041,10 @@ class RadioPoller:
         only ever as good as its weakest input.
 
         Only radios that can never passively report VFO identity
-        (``vfo_readback == "selected_unselected"``, the exact gate
-        :meth:`establish_vfo_identity` uses) get a derivation; other CI-V VFO
-        schemes (absolute readback, MAIN/SUB-only radios like IC-9700/IC-7610)
-        stay ``unsupported`` rather than guess at unvalidated split semantics.
+        (``vfo_readback == "selected_unselected"``) get a derivation; other
+        CI-V VFO schemes (absolute readback, MAIN/SUB-only radios like
+        IC-9700/IC-7610) stay ``unsupported`` rather than guess at unvalidated
+        split semantics.
         """
         if self._profile.vfo_readback != "selected_unselected":
             return UnknownTxTarget(reason="unsupported")
