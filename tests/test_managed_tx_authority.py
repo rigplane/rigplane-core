@@ -816,7 +816,7 @@ async def _append_async(values: list[int], value: int) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("arrival_point", ["debt_committed", "callback_pending"])
-async def test_shutdown_real_lane_waits_for_fence_completion_on_arrival(
+async def test_diagnostic_shutdown_epoch_before_actuator_on_arrival(
     monkeypatch: pytest.MonkeyPatch, arrival_point: str
 ) -> None:
     events: list[str] = []
@@ -829,12 +829,30 @@ async def test_shutdown_real_lane_waits_for_fence_completion_on_arrival(
     actuator_release = asyncio.Event()
     termination = asyncio.Event()
     fence = TxAbortFence()
+    initial_epoch = fence.epoch
+    epoch_failures: list[AssertionError] = []
+    callback_pending_at_entry: list[bool] = []
 
     class Actuator:
         async def actuate(
             self, token: EffectToken, operation: ActuationOperation | AbortOperation
         ) -> ActuationResult:
-            events.append(f"actuator:{operation.value}:fence_epoch={fence.epoch}")
+            epoch_at_entry = fence.epoch
+            callback_pending = (
+                callback_finished.is_set() and not callback_release.is_set()
+            )
+            callback_pending_at_entry.append(callback_pending)
+            events.append(
+                f"actuator:{operation.value}:fence_epoch={epoch_at_entry}"
+                f":callback_pending={callback_pending}"
+            )
+            try:
+                assert epoch_at_entry > initial_epoch, (
+                    f"actuator entered before epoch advanced: "
+                    f"initial={initial_epoch}, entry={epoch_at_entry}"
+                )
+            except AssertionError as error:
+                epoch_failures.append(error)
             actuator_calls.append((token, operation))
             actuator_entered.set()
             await actuator_release.wait()
@@ -938,7 +956,10 @@ async def test_shutdown_real_lane_waits_for_fence_completion_on_arrival(
         assert [operation for _, operation in actuator_calls] == [
             ActuationOperation.FORCE_RECEIVE
         ]
-        assert not provider_io_before_fence_completion, events
+        assert provider_io_before_fence_completion, events
+        assert all(callback_pending_at_entry), events
+        if epoch_failures:
+            raise epoch_failures[0]
     finally:
         callback_release.set()
         actuator_release.set()
@@ -946,7 +967,19 @@ async def test_shutdown_real_lane_waits_for_fence_completion_on_arrival(
         await asyncio.wait_for(
             asyncio.gather(arrival, shutdown, return_exceptions=True), 2.0
         )
-        print(json.dumps({"arrival_point": arrival_point, "events": events}))
+        print(
+            json.dumps(
+                {
+                    "diagnostic_only": True,
+                    "arrival_point": arrival_point,
+                    "event_loop": type(asyncio.get_running_loop()).__name__,
+                    "initial_epoch": initial_epoch,
+                    "epoch_failures": [str(error) for error in epoch_failures],
+                    "callback_pending_at_entry": callback_pending_at_entry,
+                    "events": events,
+                }
+            )
+        )
 
 
 @pytest.mark.asyncio

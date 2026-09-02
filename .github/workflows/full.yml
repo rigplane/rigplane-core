@@ -261,13 +261,39 @@ jobs:
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
 
-  shutdown-fence-characterization:
+  shutdown-epoch-diagnostic:
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
     env:
-      UV_PYTHON: '3.11'
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v6
+      - name: Record diagnostic identity and restrict runner
+        shell: bash
+        run: |
+          {
+            echo 'diagnostic_only=true'
+            echo "head_sha=$GITHUB_SHA"
+            echo "checkout_sha=$(git rev-parse HEAD)"
+            echo "runner_name=$RUNNER_NAME"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "python_request=$UV_PYTHON"
+            echo "event=$GITHUB_EVENT_NAME"
+            echo "ref=$GITHUB_REF"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo 'command=uv run pytest tests/test_managed_tx_authority.py::test_diagnostic_shutdown_epoch_before_actuator_on_arrival -q -s --tb=short'
+            echo 'rc=NOT_RUN'
+          } | tee shutdown-epoch-proof.txt
+          case "$RUNNER_NAME" in
+            mm-build-core-1|mm-build-core-2) ;;
+            *) echo 'Rejected non-Mini runner' | tee -a shutdown-epoch-proof.txt; exit 2 ;;
+          esac
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
@@ -275,34 +301,28 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
-      - name: Set up Python 3.11
-        run: uv python install 3.11
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install "$UV_PYTHON"
       - name: Install dependencies
         run: uv sync --all-extras
-      - name: Characterize real fence and lane
+      - name: Diagnose real fence and lane
+        id: proof
         shell: bash
         run: |
-          command='uv run pytest tests/test_managed_tx_authority.py::test_shutdown_real_lane_waits_for_fence_completion_on_arrival -q -s --tb=short'
-          {
-            echo "head_sha=$GITHUB_SHA"
-            echo "runner_name=$RUNNER_NAME"
-            echo "runner_arch=$RUNNER_ARCH"
-            echo "command=$command"
-          } | tee shutdown-fence-proof.txt
-          case "$RUNNER_NAME" in
-            mm-build-core-1|mm-build-core-2) ;;
-            *) echo 'Rejected non-Mini runner' | tee -a shutdown-fence-proof.txt; exit 2 ;;
-          esac
+          uv run python --version 2>&1 | tee -a shutdown-epoch-proof.txt
           set +e
-          uv run pytest tests/test_managed_tx_authority.py::test_shutdown_real_lane_waits_for_fence_completion_on_arrival -q -s --tb=short 2>&1 | tee -a shutdown-fence-proof.txt
+          uv run pytest tests/test_managed_tx_authority.py::test_diagnostic_shutdown_epoch_before_actuator_on_arrival -q -s --tb=short 2>&1 | tee -a shutdown-epoch-proof.txt
           rc=${PIPESTATUS[0]}
           set -e
-          echo "rc=$rc" | tee -a shutdown-fence-proof.txt
+          echo "rc=$rc" | tee -a shutdown-epoch-proof.txt
           exit "$rc"
-      - name: Upload characterization
+      - name: Record step outcome
+        if: always()
+        run: echo 'proof_step_outcome=${{ steps.proof.outcome }}' | tee -a shutdown-epoch-proof.txt
+      - name: Upload diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: shutdown-fence-ordering-base
-          path: shutdown-fence-proof.txt
+          name: shutdown-epoch-diagnostic-${{ matrix.python-version }}
+          path: shutdown-epoch-proof.txt
           retention-days: 14
