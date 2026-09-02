@@ -940,7 +940,9 @@ async def test_real_fence_releases_before_cleanup_and_shutdown_waits_for_cleanup
 
 
 @pytest.mark.asyncio
-async def test_shutdown_termination_cancels_owned_cleanup_without_waiting_for_gate() -> None:
+async def test_shutdown_termination_cancels_owned_cleanup_without_waiting_for_gate() -> (
+    None
+):
     fence = TxAbortFence()
     started, stopped, never, termination = (asyncio.Event() for _ in range(4))
 
@@ -979,9 +981,7 @@ async def test_late_physical_on_retains_debt_until_a_fresh_off(
     with_isolation: bool,
 ) -> None:
     clock, wakeup = FakeClock(), FakeWakeup()
-    started, allow_late_on, late_on, off_written = (
-        asyncio.Event() for _ in range(4)
-    )
+    started, allow_late_on, late_on, off_written = (asyncio.Event() for _ in range(4))
     writes: list[tuple[str, EffectToken]] = []
 
     class Actuator:
@@ -1100,3 +1100,39 @@ async def test_ptt_up_does_not_cancel_unrelated_registered_work() -> None:
     assert await managed.ptt_up("owner") is ManagedTxOutcome.ACCEPTED
     assert fence.is_current(token) and cancelled == []
     await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_can_be_rejoined_until_cleanup_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fence = TxAbortFence()
+    finish_cleanup, closing = asyncio.Event(), asyncio.Event()
+    fence.register(fence.issue(), finish_cleanup.wait)
+    managed = ManagedTxAuthority(
+        FakeLane(), FakeConfigStore(None), fence, provider_generation=7
+    )
+    await managed.force_off()
+    finish = managed._finish_abort_cleanup
+
+    async def tracked_finish() -> None:
+        closing.set()
+        await finish()
+
+    monkeypatch.setattr(managed, "_finish_abort_cleanup", tracked_finish)
+    first = asyncio.create_task(managed.close())
+    second = None
+    try:
+        await asyncio.wait_for(closing.wait(), 1)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        second = asyncio.create_task(managed.close())
+        await asyncio.sleep(0)
+        assert not second.done()
+    finally:
+        finish_cleanup.set()
+        await asyncio.gather(first, return_exceptions=True)
+        if second is not None:
+            await second
+    assert managed._closed and not managed._closing
