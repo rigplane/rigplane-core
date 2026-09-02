@@ -82,14 +82,16 @@ class FakeConfigStore:
 FenceOrderLog = list[tuple[str, object] | tuple[str]]
 
 
-class FakeFence:
+class FakeFence(TxAbortFence):
     def __init__(self, log: FenceOrderLog | None = None) -> None:
+        super().__init__()
         self.calls = 0
         self.log: FenceOrderLog = log if log is not None else []
 
-    async def force_off(self) -> None:
+    def force_off(self):
         self.calls += 1
         self.log.append(("fence",))
+        return super().force_off()
 
 
 class FakeLane:
@@ -1037,3 +1039,64 @@ async def test_late_physical_on_retains_debt_until_a_fresh_off(
         if (await managed.snapshot()).state.release_required:
             await managed.force_off()
         await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_force_off_and_retry_leave_cleanup_owned_until_close() -> None:
+    fence, clock = TxAbortFence(), FakeClock()
+    cleanup_started, finish_cleanup = asyncio.Event(), asyncio.Event()
+    calls: list[EffectToken] = []
+
+    class Actuator:
+        async def actuate(self, token, operation):
+            if operation is ActuationOperation.FORCE_RECEIVE:
+                calls.append(token)
+                if len(calls) == 1:
+                    return ActuationResult.REJECTED
+            return ActuationResult.ACCEPTED
+
+    async def cleanup() -> None:
+        cleanup_started.set()
+        await finish_cleanup.wait()
+
+    fence.register(fence.issue(), cleanup)
+    managed = ManagedTxAuthority(
+        ManagedTxEffectLane(Actuator(), clock=clock),
+        FakeConfigStore(None),
+        fence,
+        provider_generation=7,
+        clock=clock,
+    )
+    await managed._stop_scheduler(managed._scheduler_task)
+    try:
+        await asyncio.wait_for(managed.force_off(), 1)
+        await asyncio.wait_for(cleanup_started.wait(), 1)
+        assert managed._retry_due is not None
+        clock.now = managed._retry_due
+        await managed._process_due()
+        assert not (await managed.snapshot()).state.release_required
+        await managed.force_off()
+        assert len(set(calls)) == 3 and fence.epoch == 2
+        closing = asyncio.create_task(managed.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+    finally:
+        finish_cleanup.set()
+        await managed.close()
+    await closing
+
+
+@pytest.mark.asyncio
+async def test_ptt_up_does_not_cancel_unrelated_registered_work() -> None:
+    fence = TxAbortFence()
+    token = fence.issue()
+    cancelled: list[bool] = []
+    fence.register(token, lambda: cancelled.append(True))
+    managed = ManagedTxAuthority(
+        FakeLane(), FakeConfigStore(None), fence, provider_generation=7
+    )
+    await managed.ptt_down("owner")
+    assert await managed.ptt_up("other") is ManagedTxOutcome.REJECTED
+    assert await managed.ptt_up("owner") is ManagedTxOutcome.ACCEPTED
+    assert fence.is_current(token) and cancelled == []
+    await managed.close()

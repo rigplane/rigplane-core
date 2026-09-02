@@ -266,11 +266,9 @@ async def test_force_receive_awaits_isolation_and_maps_failure(
         assert not force.done() and not on_release.is_set()
         isolated.set()
     forced = await asyncio.wait_for(force, 0.2)
-    expected = (
-        ActuationResult.ACCEPTED if mode == "success" else ActuationResult.UNCERTAIN
-    )
-    assert forced.result is expected
+    assert forced.result is ActuationResult.UNCERTAIN
     errors = {
+        "success": "release preceded ON isolation",
         "failure": "isolation failed",
         "deadline": "isolation deadline expired",
         "cancel": "CancelledError",
@@ -282,6 +280,9 @@ async def test_force_receive_awaits_isolation_and_maps_failure(
     if not preexisting:
         assert (await on).result is ActuationResult.UNCERTAIN
     on_release.set()
+    if mode == "success":
+        retry = effect(ActuationOperation.FORCE_RECEIVE, epoch=4, attempt="retry")
+        assert (await settle(lane, retry)).result is ActuationResult.ACCEPTED
 
 
 @pytest.mark.asyncio

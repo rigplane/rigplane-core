@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from inspect import isawaitable
+from typing import Any
 
 
 Cancellation = Callable[[], Awaitable[None] | None]
@@ -55,16 +57,29 @@ class TxAbortFence:
     def remove(self, token: TxAbortToken) -> bool:
         return self._cancellations.pop(token, None) is not None
 
-    async def force_off(self) -> TxAbortResult:
+    def force_off(self) -> Coroutine[Any, Any, TxAbortResult]:
+        """Invalidate immediately; await the returned coroutine to finish cleanup."""
         self._epoch += 1
         cancellations = tuple(self._cancellations.items())
         self._cancellations.clear()
-        failures: list[TxAbortFailure] = []
-        for token, cancellation in cancellations:
+        return self._cancel(self._epoch, cancellations)
+
+    @staticmethod
+    async def _cancel(
+        epoch: int, cancellations: tuple[tuple[TxAbortToken, Cancellation], ...]
+    ) -> TxAbortResult:
+        async def cancel_one(
+            token: TxAbortToken, cancellation: Cancellation
+        ) -> TxAbortFailure | None:
             try:
                 result = cancellation()
                 if isawaitable(result):
                     await result
             except BaseException as error:
-                failures.append(TxAbortFailure(token, error))
-        return TxAbortResult(self._epoch, tuple(failures))
+                return TxAbortFailure(token, error)
+            return None
+
+        failures = await asyncio.gather(
+            *(cancel_one(token, cancellation) for token, cancellation in cancellations)
+        )
+        return TxAbortResult(epoch, tuple(failure for failure in failures if failure))

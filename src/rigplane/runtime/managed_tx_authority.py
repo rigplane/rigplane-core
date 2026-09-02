@@ -3,17 +3,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from rigplane.runtime.managed_tx_config import (
     ManagedTxTotConfig,
     ManagedTxTotConfigStore,
 )
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
-from rigplane.runtime.managed_tx_fence import TxAbortFence
+from rigplane.runtime.managed_tx_fence import TxAbortFence, TxAbortResult
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
@@ -100,6 +100,8 @@ class ManagedTxAuthority:
         self._lane = lane
         self._config_store = config_store
         self._abort_fence = abort_fence
+        self._pending_abort_cleanup: list[Coroutine[Any, Any, TxAbortResult]] = []
+        self._abort_cleanup: set[asyncio.Task[TxAbortResult]] = set()
         self._clock = clock or time.monotonic
         self._wakeup = wakeup or _EventWakeup(self._clock)
         self._attempt_timeout = attempt_timeout_seconds
@@ -223,10 +225,11 @@ class ManagedTxAuthority:
                 self._shutdown_termination = termination
                 transition = self._force_off_locked()
                 self._wakeup.wake()
-                task = asyncio.create_task(
-                    self._complete_shutdown(transition, retire_provider, termination)
-                )
-                self._shutdown_task = task
+        if task is None:
+            task = asyncio.create_task(
+                self._complete_shutdown(transition, retire_provider, termination)
+            )
+            self._shutdown_task = task
         return await asyncio.shield(task)
 
     async def close(self) -> None:
@@ -239,6 +242,7 @@ class ManagedTxAuthority:
         termination: asyncio.Event,
     ) -> ShutdownResult:
         try:
+            self._start_abort_cleanup()
             drain = asyncio.create_task(
                 self._wait_for_release_or_termination(termination)
             )
@@ -261,6 +265,7 @@ class ManagedTxAuthority:
                 async with self._lock:
                     scheduler = self._scheduler_task
                 await self._stop_scheduler(scheduler)
+                await self._cancel_abort_cleanup()
                 return ShutdownResult.TERMINATED
 
             async with self._lock:
@@ -287,9 +292,9 @@ class ManagedTxAuthority:
         self, termination: asyncio.Event
     ) -> bool:
         async with self._lock:
-            if self._state_is_clean_locked():
+            if self._state_is_clean_locked() and not self._abort_cleanup:
                 return True
-        drained = asyncio.create_task(self._release_drained.wait())
+        drained = asyncio.create_task(self._wait_for_clean_release())
         terminated = asyncio.create_task(termination.wait())
         try:
             done, _ = await asyncio.wait(
@@ -298,7 +303,7 @@ class ManagedTxAuthority:
             async with self._lock:
                 if self._terminated:
                     return False
-                if self._state_is_clean_locked():
+                if drained in done and self._state_is_clean_locked():
                     return True
                 if terminated in done:
                     self._terminated = True
@@ -309,6 +314,35 @@ class ManagedTxAuthority:
                 if not waiter.done():
                     waiter.cancel()
             await asyncio.gather(drained, terminated, return_exceptions=True)
+
+    async def _wait_for_clean_release(self) -> None:
+        while True:
+            await self._release_drained.wait()
+            await self._finish_abort_cleanup()
+            if self._release_drained.is_set():
+                return
+
+    def _start_abort_cleanup(self) -> None:
+        pending, self._pending_abort_cleanup = self._pending_abort_cleanup, []
+        for cleanup in pending:
+            task = asyncio.create_task(cleanup)
+            self._abort_cleanup.add(task)
+            task.add_done_callback(self._abort_cleanup.discard)
+
+    async def _finish_abort_cleanup(self) -> None:
+        self._start_abort_cleanup()
+        while self._abort_cleanup:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tuple(self._abort_cleanup))
+            )
+            self._start_abort_cleanup()
+
+    async def _cancel_abort_cleanup(self) -> None:
+        self._start_abort_cleanup()
+        tasks = tuple(self._abort_cleanup)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _dispose_clean(self, *, from_shutdown: bool) -> None:
         async with self._lock:
@@ -321,6 +355,7 @@ class ManagedTxAuthority:
             self._closing = True
             scheduler = self._scheduler_task
         await self._stop_scheduler(scheduler)
+        await self._finish_abort_cleanup()
         async with self._lock:
             self._closed = True
             self._closing = False
@@ -394,6 +429,7 @@ class ManagedTxAuthority:
 
     def _force_off_locked(self) -> ManagedTxTransition:
         self._retry_due = None
+        self._pending_abort_cleanup.append(self._abort_fence.force_off())
         return self._reduce_locked(
             ForceOff(self._provider_generation, self._attempt_id_locked())
         )
@@ -411,10 +447,9 @@ class ManagedTxAuthority:
         self, effects: tuple[ManagedTxEffect, ...], *, full_force: bool
     ) -> None:
         while True:
+            self._start_abort_cleanup()
             deadline = self._clock() + self._attempt_timeout
             events: list[ManagedTxEvent] = []
-            if full_force:
-                await self._abort_fence.force_off()
             for effect in effects:
                 if full_force:
                     aborts = [
