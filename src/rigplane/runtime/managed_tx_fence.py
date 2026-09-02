@@ -56,7 +56,6 @@ class TxAbortFence:
         return self._cancellations.pop(token, None) is not None
 
     async def force_off(self) -> TxAbortResult:
-        self._epoch += 1
         cancellations = tuple(self._cancellations.items())
         self._cancellations.clear()
         failures: list[TxAbortFailure] = []
@@ -67,4 +66,5 @@ class TxAbortFence:
                     await result
             except BaseException as error:
                 failures.append(TxAbortFailure(token, error))
+        self._epoch += 1
         return TxAbortResult(self._epoch, tuple(failures))
