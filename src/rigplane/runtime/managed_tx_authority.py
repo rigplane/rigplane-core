@@ -444,8 +444,7 @@ class ManagedTxAuthority:
                 for event in events:
                     transition = self._reduce_locked(event)
                     if (
-                        transition.outcome is ManagedTxOutcome.APPLIED
-                        and isinstance(event, ActuationSettled)
+                        isinstance(event, ActuationSettled)
                         and event.operation
                         in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON)
                         and event.result is ActuationResult.UNCERTAIN
