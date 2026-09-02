@@ -311,6 +311,7 @@ class ManagedTxAuthority:
             await asyncio.gather(drained, terminated, return_exceptions=True)
 
     async def _dispose_clean(self, *, from_shutdown: bool) -> None:
+        await self._execute((), full_force=True)
         async with self._lock:
             if self._closed or self._closing:
                 return
