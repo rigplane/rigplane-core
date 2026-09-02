@@ -444,12 +444,6 @@ def _scope_queries(
     return [query for query in queries if query_command(query) == 0x27]
 
 
-def _ic7610_caps() -> set[str]:
-    """Return the full capability set for IC-7610."""
-    profile = resolve_radio_profile(model="IC-7610")
-    return set(profile.capabilities)
-
-
 def _ic7300_caps() -> set[str]:
     """Return the full capability set for IC-7300."""
     profile = resolve_radio_profile(model="IC-7300")
@@ -462,7 +456,7 @@ class TestBuildStateQueries:
     def test_returns_current_acquisition_query_representation(self) -> None:
         assert_acquisition_query_representation_contract()
         profile = resolve_radio_profile(model="IC-7610")
-        queries = build_state_queries(profile, _ic7610_caps())
+        queries = build_state_queries(profile)
         assert isinstance(queries, list)
         assert len(queries) > 0
         for query in queries:
@@ -471,7 +465,7 @@ class TestBuildStateQueries:
     def test_ic7610_includes_dual_receiver_queries(self) -> None:
         """IC-7610 has 2 receivers — freq/mode must appear for rx 0 and rx 1."""
         profile = resolve_radio_profile(model="IC-7610")
-        queries = build_state_queries(profile, _ic7610_caps())
+        queries = build_state_queries(profile)
         freq_selectors = [
             query_selector(query) for query in queries if query_command(query) == 0x25
         ]
@@ -481,7 +475,7 @@ class TestBuildStateQueries:
     def test_ic7300_single_receiver(self) -> None:
         """IC-7300 has selected/unselected reads on its one receiver."""
         profile = resolve_radio_profile(model="IC-7300")
-        queries = build_state_queries(profile, _ic7300_caps())
+        queries = build_state_queries(profile)
         freq_queries = [query for query in queries if query_command(query) == 0x25]
         assert freq_queries == [
             acquisition_query(0x25, selector=0),
@@ -495,14 +489,14 @@ class TestBuildStateQueries:
     def test_ic7610_includes_scope_queries(self) -> None:
         """IC-7610 should have scope sub-commands (0x27)."""
         profile = resolve_radio_profile(model="IC-7610")
-        queries = build_state_queries(profile, _ic7610_caps())
+        queries = build_state_queries(profile)
         scope_queries = [query for query in queries if query_command(query) == 0x27]
         assert len(scope_queries) > 0
 
     def test_ic7300_has_scope_queries_if_capable(self) -> None:
         """IC-7300 has scope capability — should include 0x27 queries."""
         profile = resolve_radio_profile(model="IC-7300")
-        queries = build_state_queries(profile, _ic7300_caps())
+        queries = build_state_queries(profile)
         scope_queries = [query for query in queries if query_command(query) == 0x27]
         if "scope" in _ic7300_caps():
             assert len(scope_queries) > 0
@@ -511,7 +505,7 @@ class TestBuildStateQueries:
 
     def test_queries_follow_profile_field_capabilities_and_command_map(self) -> None:
         profile = resolve_radio_profile(model="IC-7610")
-        queries = build_state_queries(profile, _ic7610_caps())
+        queries = build_state_queries(profile)
         assert profile.state_acquisition is not None
         pollable = profile.state_acquisition.pollable_paths()
         resolve = acquisition_query_resolver_for_profile(profile)
@@ -540,8 +534,8 @@ class TestBuildStateQueries:
         commands["get_rf_power"] = (0x14, 0x7E)
         mutated = replace(profile, command_map=CommandMap(commands))
 
-        original_queries = build_state_queries(profile, set())
-        mutated_queries = build_state_queries(mutated, set())
+        original_queries = build_state_queries(profile)
+        mutated_queries = build_state_queries(mutated)
 
         assert acquisition_query(0x14, sub=0x0A) in original_queries
         assert acquisition_query(0x14, sub=0x7E) not in original_queries
@@ -563,22 +557,18 @@ class TestBuildStateQueries:
             state_acquisition=replace(acquisition, capabilities=capabilities),
         )
 
-        assert acquisition_query(0x14, sub=0x0A) in build_state_queries(profile, set())
-        assert acquisition_query(0x14, sub=0x0A) not in build_state_queries(
-            mutated, set()
-        )
+        assert acquisition_query(0x14, sub=0x0A) in build_state_queries(profile)
+        assert acquisition_query(0x14, sub=0x0A) not in build_state_queries(mutated)
 
-    def test_legacy_arguments_do_not_override_profile_declarations(self) -> None:
+    def test_removed_capabilities_and_is_serial_arguments_raise_type_error(
+        self,
+    ) -> None:
+        """MOR-2244: both legacy arguments were unread and are now removed."""
         profile = resolve_radio_profile(model="IC-7610")
-        expected = build_state_queries(profile, set(), is_serial=False)
-        assert (
-            build_state_queries(
-                profile,
-                set(profile.capabilities),
-                is_serial=True,
-            )
-            == expected
-        )
+        with pytest.raises(TypeError):
+            build_state_queries(profile, capabilities=set())  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            build_state_queries(profile, is_serial=False)  # type: ignore[call-arg]
 
     @pytest.mark.parametrize("model", _shipped_civ_models())
     def test_every_shipped_civ_profile_has_traceable_acquisition(
@@ -606,7 +596,7 @@ class TestBuildStateQueries:
             if query not in expected:
                 expected.append(query)
 
-        queries = build_state_queries(profile, set(profile.capabilities))
+        queries = build_state_queries(profile)
         assert queries
         assert queries == expected
         assert len(queries) == len(set(queries))
@@ -637,7 +627,7 @@ class TestBuildStateQueries:
 
         assert result.sent_paths == pollable
         assert result.failed_paths == ()
-        assert sent == build_state_queries(profile, set(profile.capabilities))
+        assert sent == build_state_queries(profile)
 
     def test_ic9700_polling_paths_have_exact_executable_query_parity(self) -> None:
         profile = resolve_radio_profile(model="IC-9700")
@@ -657,7 +647,7 @@ class TestBuildStateQueries:
         assert profile.cmd29_routes == frozenset()
         assert not excluded_sub_controls.intersection(pollable)
         assert not excluded_sub_freq_mode.intersection(pollable)
-        queries = build_state_queries(profile, set(profile.capabilities))
+        queries = build_state_queries(profile)
         assert len(pollable) == len(queries) == 34
         assert all(query.receiver is None for query in queries)
         assert not any(
@@ -680,7 +670,7 @@ class TestBuildStateQueries:
         assert rbw_path not in acquisition.pollable_paths()
         assert not any(
             query.command == 0x27 and query.sub == 0x1F
-            for query in build_state_queries(profile, set(profile.capabilities))
+            for query in build_state_queries(profile)
         )
         with pytest.raises(CommandError, match="get_scope_rbw is not supported"):
             commands.get_scope_rbw(to_addr=profile.civ_addr)
@@ -695,7 +685,7 @@ class TestBuildStateQueries:
 
         assert rbw_path in acquisition.pollable_paths()
         assert acquisition_query(0x27, sub=0x1F, data=b"\x00") in build_state_queries(
-            profile, set(profile.capabilities)
+            profile
         )
 
     @pytest.mark.parametrize("model", _shipped_civ_models())
@@ -729,9 +719,8 @@ class TestBuildStateQueries:
     def test_deterministic_output(self) -> None:
         """Same inputs should produce identical output."""
         profile = resolve_radio_profile(model="IC-7610")
-        caps = _ic7610_caps()
-        q1 = build_state_queries(profile, caps)
-        q2 = build_state_queries(profile, caps)
+        q1 = build_state_queries(profile)
+        q2 = build_state_queries(profile)
         assert q1 == q2
 
     def test_ic7610_dual_watch_query_preserves_wire_tuple(self) -> None:
@@ -740,7 +729,7 @@ class TestBuildStateQueries:
             profile.command_map.get("get_dual_watch")
         )
         assert (command, sub, prefix) == (0x07, None, b"\xc2")
-        queries = build_state_queries(profile, set())
+        queries = build_state_queries(profile)
         assert queries.count(acquisition_query(0x07, data=b"\xc2")) == 1
         assert acquisition_query(0x07) not in queries
         assert build_civ_frame(0x98, 0xE0, 0x07, sub=0xC2) == bytes.fromhex(
@@ -764,7 +753,7 @@ class TestBuildStateQueries:
             state_acquisition=replace(acquisition, capabilities=capabilities),
         )
 
-        queries = build_state_queries(mutated, set())
+        queries = build_state_queries(mutated)
         assert len(queries) == len(set(queries))
         assert queries.count(acquisition_query(0x26, selector=0)) == 1
 
@@ -798,7 +787,7 @@ class TestScopeReceiverSelector:
 
     def test_sweep_scope_reads_follow_declared_commands_and_shapes(self) -> None:
         profile = resolve_radio_profile(model="IC-7300")
-        scope = _scope_queries(build_state_queries(profile, _ic7300_caps()))
+        scope = _scope_queries(build_state_queries(profile))
 
         frame_parts = [civ_frame_parts(query) for query in scope]
         with_selector = {
@@ -816,7 +805,7 @@ class TestScopeReceiverSelector:
 
     def test_sweep_selector_is_one_byte_and_main(self) -> None:
         profile = resolve_radio_profile(model="IC-7300")
-        scope = _scope_queries(build_state_queries(profile, _ic7300_caps()))
+        scope = _scope_queries(build_state_queries(profile))
 
         carried = [
             part.data
@@ -838,8 +827,7 @@ class TestScopeReceiverSelector:
         receiver routing, so no sender can confuse one for the other.
         """
         profile = resolve_radio_profile(model=model)
-        caps = set(profile.capabilities)
-        queries = build_state_queries(profile, caps)
+        queries = build_state_queries(profile)
 
         assert _scope_queries(queries), "no scope reads to check"
         assert all(
@@ -878,7 +866,7 @@ class TestFetchInitialState:
     @pytest.mark.parametrize("model", _shipped_civ_models())
     async def test_dispatches_all_queries(self, radio, model: str) -> None:
         radio._profile = resolve_radio_profile(model=model)
-        queries = build_state_queries(radio._profile, set(radio._profile.capabilities))
+        queries = build_state_queries(radio._profile)
         assert queries, f"{model}: initial/periodic acquisition must not be empty"
         poller = object.__new__(RadioPoller)
         poller._profile = radio._profile

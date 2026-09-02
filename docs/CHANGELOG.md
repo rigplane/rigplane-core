@@ -488,6 +488,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set_attenuator_level` as the call to make instead of guessing a step;
   the same refusal applies to a profile that declares no `[attenuator]
   values` at all. `set_attenuator_level` itself is unchanged.
+- **`rigplane.runtime._state_queries.build_state_queries(profile,
+  capabilities, *, is_serial=False)` drops the `capabilities` and
+  `is_serial` parameters (MOR-2244).** After MOR-1983 (#3020, merge
+  `3683b297`) rewrote query membership to come from the profile's own
+  field-level acquisition capabilities, both parameters went unread in the
+  function body. The two production callers,
+  `runtime/radio_initial_state.py: fetch_initial_state` and
+  `web/radio_poller.py: RadioPoller._build_state_queries`, now call
+  `build_state_queries(profile)`; a call still passing either as a keyword
+  now raises `TypeError`. The compatibility re-export at
+  `rigplane._state_queries` (a `sys.modules` alias of the canonical module)
+  carries the same signature change.
 
 ### Changed
 
