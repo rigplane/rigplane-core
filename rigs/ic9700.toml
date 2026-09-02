@@ -131,17 +131,9 @@ polling_only = [
     "receiver.main.operator_controls.squelch",
     "receiver.main.operator_controls.att",
     "receiver.main.operator_controls.preamp",
-    "receiver.sub.operator_controls.af_level",
-    "receiver.sub.operator_controls.rf_gain",
-    "receiver.sub.operator_controls.squelch",
-    "receiver.sub.operator_controls.att",
-    "receiver.sub.operator_controls.preamp",
     "receiver.main.operator_controls.agc",
-    "receiver.sub.operator_controls.agc",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
-    "receiver.sub.operator_toggles.nb",
-    "receiver.sub.operator_toggles.nr",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",
@@ -693,8 +685,8 @@ get_ssb_tx_bandwidth = [0x16, 0x58]
 set_ssb_tx_bandwidth = [0x16, 0x58]
 
 # ── Split ──
-get_tx_freq_monitor = [0x1C, 0x03]
-set_tx_freq_monitor = [0x1C, 0x03]
+get_tx_freq_monitor = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) pp.10,13: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
+set_tx_freq_monitor = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) pp.10,13: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
 

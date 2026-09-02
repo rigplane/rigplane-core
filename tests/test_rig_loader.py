@@ -2869,7 +2869,7 @@ class TestIc7300DeclaresAbsentCommands:
 
 class TestIc9700DeclaresAbsentCommands:
     """MOR-2015 (D2): IC-9700 is filled with the ``{ absent = "<source>" }``
-    spelling for 25 commands the IC-9700 CI-V Reference Guide (Icom, 2019)
+    spelling for commands the IC-9700 CI-V Reference Guide (Icom, 2019)
     confirms have no row on this radio (26 at D2 time; MOR-2008 batch 1
     later deleted the dead bare ``quick_dual_watch`` entry, -1 net -- see
     ``rigs/ic9700.toml``'s own comment on that section) -- 10 unique
@@ -2878,6 +2878,8 @@ class TestIc9700DeclaresAbsentCommands:
     quick_dual_watch, rx_antenna_ant2), plus civ_output_ant (a
     copied-but-wrong 1A05 address with no real replacement) and the
     nb_depth/nb_width pair (no single global control, per-band only).
+    MOR-1983 adds the two legacy TX-frequency-monitor boolean names because
+    1C/03 is a read-only frequency payload, not a boolean get/set command.
     Pinned by name, not just count, so a future D2 pass on another
     command can't silently swap one of these for a different one and
     still pass a bare-count check.
@@ -2908,6 +2910,8 @@ class TestIc9700DeclaresAbsentCommands:
             "get_powerstat",
             "get_quick_dual_watch",
             "set_quick_dual_watch",
+            "get_tx_freq_monitor",
+            "set_tx_freq_monitor",
             # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
             # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
@@ -2927,11 +2931,12 @@ class TestIc9700DeclaresAbsentCommands:
 
 class TestIc705DeclaresAbsentCommands:
     """MOR-2016 (D2): IC-705 is filled with the ``{ absent = "<source>" }``
-    spelling for 26 commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
+    spelling for commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
     Jul.2020) confirms have no row on this radio (24 at D2 time; MOR-2007
     ruling 1 later split ``set_dual_watch`` into
     ``set_dual_watch_off``/``set_dual_watch_on``, +1 net; MOR-2143 added the
-    bare ``set_dual_watch`` name, +1, for the current 26). Pinned by name,
+    bare ``set_dual_watch`` name, +1). MOR-1983 adds the two legacy boolean
+    TX-frequency-monitor names because 1C/03 is read-only. Pinned by name,
     not just count, so a future D2 pass on another command can't silently
     swap one of these for a different one and still pass a bare-count
     check.
@@ -2963,6 +2968,8 @@ class TestIc705DeclaresAbsentCommands:
             "get_quick_dual_watch",
             "set_quick_dual_watch",
             "quick_dual_watch",
+            "get_tx_freq_monitor",
+            "set_tx_freq_monitor",
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
         }
@@ -2989,7 +2996,9 @@ class TestIc7610DeclaresAbsentCommands:
     IC-9700/IC-705 above, this is not a documentary D2 pass over the
     whole command table -- it is one feature family's absence, already
     established by MOR-660/661/682 well before this ticket, just not
-    previously spelled with the formal marker. Pinned by name, not just
+    previously spelled with the formal marker. MOR-1983 also marks the legacy
+    TX-frequency-monitor boolean names absent because 1C/03 is read-only.
+    Pinned by name, not just
     count, so a future D2 pass on another command can't silently swap
     one of these for a different one and still pass a bare-count check.
     """
@@ -3004,6 +3013,8 @@ class TestIc7610DeclaresAbsentCommands:
             "set_tone_freq",
             "get_tsql_freq",
             "set_tsql_freq",
+            "get_tx_freq_monitor",
+            "set_tx_freq_monitor",
         }
     )
 

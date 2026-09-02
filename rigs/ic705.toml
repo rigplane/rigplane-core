@@ -787,8 +787,8 @@ get_tuner_status = [0x1C, 0x01]
 set_tuner_status = [0x1C, 0x01]
 get_xfc_status = [0x1C, 0x02]
 set_xfc_status = [0x1C, 0x02]
-get_tx_freq_monitor = [0x1C, 0x03]
-set_tx_freq_monitor = [0x1C, 0x03]
+get_tx_freq_monitor = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) pp.7,16: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
+set_tx_freq_monitor = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) pp.7,16: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
 
 # ── RIT / XIT ──
 get_rit_frequency = [0x21, 0x00]

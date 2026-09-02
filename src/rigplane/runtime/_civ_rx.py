@@ -2725,6 +2725,14 @@ class CivRuntime:
             # responses so the Web TX authority gate cannot treat an ACK, setter
             # success, or unrelated response as radio truth.
             source = "poll_response"
+        max_age = _OBSERVATION_MAX_AGE_SECONDS.get(
+            (path.scope.value, path.family.value, path.name)
+        )
+        if path == FieldPath.global_("tx_state", "tx_target"):
+            acquisition = getattr(self._host._profile, "state_acquisition", None)
+            if acquisition is not None:
+                policy_ttl = acquisition.policy_for(path).freshness_ttl_seconds
+                max_age = policy_ttl
         return Observation(
             path=path,
             value=value,
@@ -2736,9 +2744,7 @@ class CivRuntime:
                 capability_id=str(path),
             ),
             timestamp_monotonic=time.monotonic(),
-            max_age=_OBSERVATION_MAX_AGE_SECONDS.get(
-                (path.scope.value, path.family.value, path.name)
-            ),
+            max_age=max_age,
             quality=quality,
         )
 

@@ -39,4 +39,5 @@ class TestNoStrayCivOutputKeys:
 
     def test_neighboring_key_still_present(self, cmdmap) -> None:
         """Discrimination guard: the map is loaded and non-empty."""
-        assert cmdmap.has("get_tx_freq_monitor")
+        assert cmdmap.has("get_xfc_status")
+        assert not cmdmap.has("get_tx_freq_monitor")

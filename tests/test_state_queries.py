@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, call, patch
 import pytest
 
 from rigplane.commands._frame import build_civ_frame, decode_wire_tuple
+from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.commands.commander import Priority
 from rigplane.commands.scope import (
@@ -19,6 +20,7 @@ from rigplane.commands.scope import (
 )
 from rigplane.core.acquisition_scheduler import IcomCivAcquisitionExecutor
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.rigctld.server import RigctldServer
@@ -596,8 +598,10 @@ class TestBuildStateQueries:
             if query.receiver is not None and not profile.supports_cmd29(
                 query.command, query.sub
             ):
-                if query.receiver != 0:
-                    continue
+                assert query.receiver == 0, (
+                    f"{model}: declared pollable path {path} has no "
+                    "executable receiver route"
+                )
                 query = replace(query, receiver=None)
             if query not in expected:
                 expected.append(query)
@@ -606,6 +610,80 @@ class TestBuildStateQueries:
         assert queries
         assert queries == expected
         assert len(queries) == len(set(queries))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", _shipped_civ_models())
+    async def test_every_shipped_civ_pollable_path_is_scheduler_executable(
+        self, model: str
+    ) -> None:
+        profile = resolve_radio_profile(model=model)
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        pollable = acquisition.pollable_paths()
+        sent: list[AcquisitionQueryCase] = []
+
+        async def sender(query: AcquisitionQueryCase) -> None:
+            sent.append(query)
+
+        executor = IcomCivAcquisitionExecutor(
+            sender,
+            resolve_query=acquisition_query_resolver_for_profile(profile),
+            supports_cmd29=profile.supports_cmd29,
+        )
+        result = await executor.execute(  # type: ignore[arg-type]
+            SimpleNamespace(paths=pollable),
+            already_sent_paths=frozenset(),
+        )
+
+        assert result.sent_paths == pollable
+        assert result.failed_paths == ()
+        assert sent == build_state_queries(profile, set(profile.capabilities))
+
+    def test_ic9700_polling_paths_have_exact_executable_query_parity(self) -> None:
+        profile = resolve_radio_profile(model="IC-9700")
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        pollable = acquisition.pollable_paths()
+        excluded_sub_controls = {
+            FieldPath.receiver("sub", "operator_controls", name)
+            for name in ("af_level", "rf_gain", "squelch", "att", "preamp", "agc")
+        } | {
+            FieldPath.receiver("sub", "operator_toggles", name) for name in ("nb", "nr")
+        }
+
+        assert profile.cmd29_routes == frozenset()
+        assert not excluded_sub_controls.intersection(pollable)
+        queries = build_state_queries(profile, set(profile.capabilities))
+        assert len(pollable) == len(queries) == 37
+        assert all(query.receiver is None for query in queries)
+
+    @pytest.mark.parametrize("model", _shipped_civ_models())
+    def test_legacy_tx_freq_monitor_builders_fail_closed(self, model: str) -> None:
+        profile = resolve_radio_profile(model=model)
+        commands = BoundCommands(
+            profile.command_map or CommandMap({}),
+            profile.absent_command_sources,
+        )
+
+        with pytest.raises(CommandError, match="get_tx_freq_monitor is not supported"):
+            commands.get_tx_freq_monitor(to_addr=profile.civ_addr)
+        with pytest.raises(CommandError, match="set_tx_freq_monitor is not supported"):
+            commands.set_tx_freq_monitor(True, to_addr=profile.civ_addr)
+
+    @pytest.mark.parametrize("model", ("IC-705", "IC-7300", "IC-7610", "IC-9700"))
+    def test_xfc_builders_remain_bound_to_boolean_1c02(self, model: str) -> None:
+        profile = resolve_radio_profile(model=model)
+        commands = BoundCommands(
+            profile.command_map or CommandMap({}),
+            profile.absent_command_sources,
+        )
+
+        assert commands.get_xfc_status(to_addr=profile.civ_addr) == build_civ_frame(
+            profile.civ_addr, 0xE0, 0x1C, sub=0x02
+        )
+        assert commands.set_xfc_status(
+            True, to_addr=profile.civ_addr
+        ) == build_civ_frame(profile.civ_addr, 0xE0, 0x1C, sub=0x02, data=b"\x01")
 
     def test_deterministic_output(self) -> None:
         """Same inputs should produce identical output."""

@@ -4170,11 +4170,56 @@ def test_update_radio_state_tx_freq_monitor_decodes_transmit_frequency_not_boole
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
 
     snapshot = radio_with_state._state_store.snapshot()
-    assert snapshot.field("global.tx_state.tx_target").value == KnownTxTarget(
+    field = snapshot.field("global.tx_state.tx_target")
+    assert field.value == KnownTxTarget(
         receiver="MAIN", slot=None, frequency_hz=7_100_000
+    )
+    assert field.max_age == 8.0
+    radio_with_state._state_store.mark_stale_due(
+        now=field.last_observed_monotonic + field.max_age + 0.001
+    )
+    assert (
+        radio_with_state._state_store.snapshot()
+        .field("global.tx_state.tx_target")
+        .freshness
+        is FreshnessState.STALE
     )
     with pytest.raises(KeyError):
         snapshot.field("global.tx_state.tx_freq_monitor")
+
+
+def test_direct_tx_frequency_coexists_with_ic7300_derived_target() -> None:
+    radio = IcomRadio("192.0.2.1", model="IC-7300")
+    radio._radio_state = RadioState()
+    frame = parse_civ_frame(bytes.fromhex("FE FE E0 94 1C 03 00 00 50 14 00 FD"))
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    path = FieldPath.global_("tx_state", "tx_target")
+    direct = radio._state_store.snapshot().field(path)
+    assert direct.value == KnownTxTarget(
+        receiver="MAIN", slot=None, frequency_hz=14_500_000
+    )
+    assert direct.max_age == 3.0
+
+    # The ordinary IC-7300 derivation remains authoritative when it follows a
+    # one-off direct response, and retains the same finite profile TTL.
+    derived_at = direct.last_observed_monotonic + 0.1
+    radio._state_store.apply(
+        Observation(
+            path=path,
+            value=KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=14_250_000),
+            source=SourceMetadata(source="local_reconcile", provider="icom_civ"),
+            timestamp_monotonic=derived_at,
+            max_age=direct.max_age,
+            provider_generation=radio._state_store.provider_generation,
+        )
+    )
+    derived = radio._state_store.snapshot().field(path)
+    assert derived.value == KnownTxTarget(
+        receiver="MAIN", slot="A", frequency_hz=14_250_000
+    )
+    radio._state_store.mark_stale_due(now=derived_at + derived.max_age + 0.001)
+    assert radio._state_store.snapshot().field(path).freshness is FreshnessState.STALE
 
 
 def test_update_radio_state_rit_frequency(radio_with_state: IcomRadio) -> None:

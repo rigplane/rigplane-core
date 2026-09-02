@@ -8,7 +8,7 @@ Commands under test:
   2. RIT Status (0x21 sub 0x01) — get/set on/off
   3. RIT TX Status (0x21 sub 0x02) — get/set on/off
   4. Tuner Status (0x1C sub 0x01) — get/set 0/1/2
-  5. TX Freq Monitor (0x1C sub 0x05) — get/set on/off
+  5. Legacy TX Freq Monitor API — fails closed; XFC is 0x1C sub 0x02
 
 Run with::
 
@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
+from rigplane.exceptions import CommandError  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
@@ -45,7 +46,6 @@ _SUB_RIT_TX = 0x02
 
 _CMD_TUNER = 0x1C
 _SUB_TUNER_STATUS = 0x01
-_SUB_TX_FREQ_MON = 0x03
 
 _SETTLE = 0.05  # seconds: wait after fire-and-forget SET before GET
 
@@ -100,7 +100,6 @@ class RitTunerMockRadio(MockIcomRadio):
       - 0x21 / sub 0x01: RIT on/off
       - 0x21 / sub 0x02: RIT TX on/off
       - 0x1C / sub 0x01: tuner status get/set (0=off, 1=on, 2=tuning)
-      - 0x1C / sub 0x05: TX freq monitor on/off
 
     All other commands are forwarded to the parent MockIcomRadio.
     """
@@ -111,7 +110,6 @@ class RitTunerMockRadio(MockIcomRadio):
         self._rit_on: int = 0  # 0=off, 1=on
         self._rit_tx_on: int = 0  # 0=off, 1=on
         self._tuner_status: int = 0  # 0=off, 1=on, 2=tuning
-        self._tx_freq_mon: int = 0  # 0=off, 1=on
 
     # ------------------------------------------------------------------
     # CI-V dispatch override
@@ -200,11 +198,11 @@ class RitTunerMockRadio(MockIcomRadio):
         )
 
     # ------------------------------------------------------------------
-    # Tuner / TX freq monitor dispatch (0x1C)
+    # Tuner dispatch (0x1C)
     # ------------------------------------------------------------------
 
     def _dispatch_tuner(self, payload: bytes, from_addr: int) -> bytes:
-        """Dispatch tuner/TX-freq-monitor commands (cmd 0x1C)."""
+        """Dispatch tuner commands (cmd 0x1C)."""
         if not payload:
             return self._civ_nak(from_addr, self._radio_addr)
 
@@ -213,8 +211,6 @@ class RitTunerMockRadio(MockIcomRadio):
 
         if sub == _SUB_TUNER_STATUS:
             return self._handle_tuner_status(rest, from_addr)
-        if sub == _SUB_TX_FREQ_MON:
-            return self._handle_tx_freq_mon(rest, from_addr)
         return self._civ_nak(from_addr, self._radio_addr)
 
     def _handle_tuner_status(self, rest: bytes, from_addr: int) -> bytes:
@@ -233,24 +229,6 @@ class RitTunerMockRadio(MockIcomRadio):
             _CMD_TUNER,
             sub=_SUB_TUNER_STATUS,
             data=bytes([self._tuner_status]),
-        )
-
-    def _handle_tx_freq_mon(self, rest: bytes, from_addr: int) -> bytes:
-        """Handle TX freq monitor on/off (0x1C sub 0x05)."""
-        to = from_addr
-        frm = self._radio_addr
-
-        if rest:  # SET
-            self._tx_freq_mon = rest[0]
-            return self._civ_ack(to, frm)
-
-        # GET
-        return self._civ_frame(
-            to,
-            frm,
-            _CMD_TUNER,
-            sub=_SUB_TX_FREQ_MON,
-            data=bytes([self._tx_freq_mon]),
         )
 
 
@@ -536,51 +514,15 @@ class TestTunerStatus:
 
 
 class TestTxFreqMonitor:
-    """TX frequency monitor on/off roundtrip tests."""
+    """Legacy boolean API must not write the read-only 1C/03 command."""
 
-    async def test_default_off(self, rit_tuner_radio: IcomRadio) -> None:
-        """Default TX freq monitor is OFF."""
-        result = await rit_tuner_radio.get_tx_freq_monitor()
-        assert result is False
+    async def test_get_fails_closed(self, rit_tuner_radio: IcomRadio) -> None:
+        with pytest.raises(CommandError, match="declared absent"):
+            await rit_tuner_radio.get_tx_freq_monitor()
 
-    async def test_set_on(
-        self, rit_tuner_radio: IcomRadio, rit_tuner_mock: RitTunerMockRadio
-    ) -> None:
-        """Set TX freq monitor ON and verify via GET."""
-        await rit_tuner_radio.set_tx_freq_monitor(True)
-        await asyncio.sleep(_SETTLE)
-
-        result = await rit_tuner_radio.get_tx_freq_monitor()
-        assert result is True
-        assert rit_tuner_mock._tx_freq_mon == 1
-
-    async def test_set_off_after_on(
-        self, rit_tuner_radio: IcomRadio, rit_tuner_mock: RitTunerMockRadio
-    ) -> None:
-        """Set TX freq monitor ON then OFF; GET returns False."""
-        await rit_tuner_radio.set_tx_freq_monitor(True)
-        await asyncio.sleep(_SETTLE)
-
-        await rit_tuner_radio.set_tx_freq_monitor(False)
-        await asyncio.sleep(_SETTLE)
-
-        result = await rit_tuner_radio.get_tx_freq_monitor()
-        assert result is False
-        assert rit_tuner_mock._tx_freq_mon == 0
-
-    async def test_toggle_on_off_on(self, rit_tuner_radio: IcomRadio) -> None:
-        """Toggle TX freq monitor on → off → on."""
-        await rit_tuner_radio.set_tx_freq_monitor(True)
-        await asyncio.sleep(_SETTLE)
-        assert await rit_tuner_radio.get_tx_freq_monitor() is True
-
-        await rit_tuner_radio.set_tx_freq_monitor(False)
-        await asyncio.sleep(_SETTLE)
-        assert await rit_tuner_radio.get_tx_freq_monitor() is False
-
-        await rit_tuner_radio.set_tx_freq_monitor(True)
-        await asyncio.sleep(_SETTLE)
-        assert await rit_tuner_radio.get_tx_freq_monitor() is True
+    async def test_set_fails_closed(self, rit_tuner_radio: IcomRadio) -> None:
+        with pytest.raises(CommandError, match="declared absent"):
+            await rit_tuner_radio.set_tx_freq_monitor(True)
 
 
 # ---------------------------------------------------------------------------

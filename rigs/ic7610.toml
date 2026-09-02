@@ -1104,6 +1104,7 @@ routes = [
     [0x16, 0x4F],     # Twin Peak Filter
     [0x16, 0x53],     # RX Antenna
     [0x16, 0x56],     # Filter Shape
+    [0x16, 0x57],     # Manual Notch Width (PDF p.4 29-glyph)
     [0x16, 0x65],     # IP+
     [0x1A, 0x03],     # Filter Width
     [0x1A, 0x04],     # AGC Time Constant
@@ -1270,8 +1271,8 @@ set_ssb_tx_bandwidth = [0x16, 0x58]
 # ── Split ──
 get_xfc_status = [0x1C, 0x02]             # Transmit frequency monitor (XFC)
 set_xfc_status = [0x1C, 0x02]
-get_tx_freq_monitor = [0x1C, 0x03]
-set_tx_freq_monitor = [0x1C, 0x03]
+get_tx_freq_monitor = { absent = "IC-7610 CI-V Reference Guide (2021) pp.9,14: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
+set_tx_freq_monitor = { absent = "IC-7610 CI-V Reference Guide (2021) pp.9,14: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
 
 # ── CW ──
 send_cw = [0x17]
