@@ -4916,8 +4916,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Stop CW sending."""
         self._check_connected()
         civ = self._commands.stop_cw(to_addr=self._radio_addr)
-        await self._send_civ_raw(civ, priority=Priority.IMMEDIATE)
-        # Stop CW may not return ACK, just ignore
+        resp = await self._send_civ_raw(civ, priority=Priority.IMMEDIATE)
+        if resp is not None and parse_ack_nak(resp) is False:
+            raise CommandError("Radio rejected CW stop")
 
     async def power_control(self, on: bool) -> None:
         """Power the radio on or off.
