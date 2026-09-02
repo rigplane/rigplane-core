@@ -1295,13 +1295,12 @@ class RadioPoller:
         *,
         priority: Priority = Priority.BACKGROUND,
     ) -> None:
-        """Send a single state query (shared by initial fetch and slow rotation).
+        """Send a single state query
 
-        Defaults to ``Priority.BACKGROUND`` so both the odd-cycle state poll
-        and the acquisition-scheduler executor (which is bound to this method)
+        Defaults to ``Priority.BACKGROUND`` so
+        the acquisition-scheduler executor (which is bound to this method)
         yield to user commands on the shared CI-V lane (MOR-497i).  All sends
-        here are fire-and-forget (``wait_dispatch=False``) so the poll burst
-        does not park the poll loop on the commander future (MOR-497ii); the
+        here are fire-and-forget (``wait_dispatch=False``) so the
         response still arrives via the CI-V RX path.
 
         The lossless query envelope keeps the CI-V sub-command, payload data,

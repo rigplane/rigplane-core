@@ -2410,7 +2410,7 @@
         "rigplane.radio:IcomRadio.get_tuner_status",
         "rigplane.radio:IcomRadio.set_tuner_status",
         "rigplane._civ_rx:_CivRxMixin._update_radio_state_from_frame",
-        "rigplane.web.radio_poller:RadioPoller._build_state_queries"
+        "rigplane.runtime._state_queries:build_state_queries"
       ],
       "test_patterns": [
         "tests/test_commands.py::test_get_tuner_status",
@@ -2506,7 +2506,7 @@
         "rigplane.radio:IcomRadio.get_rit_frequency",
         "rigplane.radio:IcomRadio.set_rit_frequency",
         "rigplane._civ_rx:_CivRxMixin._update_radio_state_from_frame",
-        "rigplane.web.radio_poller:RadioPoller._build_state_queries"
+        "rigplane.runtime._state_queries:build_state_queries"
       ],
       "test_patterns": [
         "tests/test_commands.py::test_get_rit_frequency",
@@ -2533,7 +2533,7 @@
         "rigplane.radio:IcomRadio.get_rit_status",
         "rigplane.radio:IcomRadio.set_rit_status",
         "rigplane._civ_rx:_CivRxMixin._update_radio_state_from_frame",
-        "rigplane.web.radio_poller:RadioPoller._build_state_queries"
+        "rigplane.runtime._state_queries:build_state_queries"
       ],
       "test_patterns": [
         "tests/test_commands.py::test_get_rit_status",
@@ -2559,7 +2559,7 @@
         "rigplane.radio:IcomRadio.get_rit_tx_status",
         "rigplane.radio:IcomRadio.set_rit_tx_status",
         "rigplane._civ_rx:_CivRxMixin._update_radio_state_from_frame",
-        "rigplane.web.radio_poller:RadioPoller._build_state_queries"
+        "rigplane.runtime._state_queries:build_state_queries"
       ],
       "test_patterns": [
         "tests/test_commands.py::test_get_rit_tx_status",
