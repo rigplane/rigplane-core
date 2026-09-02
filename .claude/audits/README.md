@@ -13,6 +13,13 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-02 — Icom STOP CW NAK handling (tree `4cbd5ba4`)
+
+- [2026-09-02-mechanism-audit-icom-stop-cw.md](2026-09-02-mechanism-audit-icom-stop-cw.md)
+  — bounded canonical-adapter tract: a delivered STOP-CW NAK reached the
+  existing response wait but was discarded by its caller. The report makes no
+  manufacturer, RF-stop, or whole-adapter claim.
+
 ## 2026-09-02 — ForceOff cleanup ordering (tree `7387c84e`)
 
 - [2026-09-02-mechanism-audit-force-off-cleanup.md](2026-09-02-mechanism-audit-force-off-cleanup.md)
