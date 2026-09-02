@@ -71,7 +71,6 @@ from rigplane.core.tx_authority import (
     TxRefusal,
     TxRefusalCode,
     TxStateReading,
-    build_transmit_truth,
 )
 from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
 
@@ -692,10 +691,9 @@ async def test_an_icom_self_write_leaves_the_store_silent_on_transmit_truth(
     await asyncio.sleep(0)
 
     store = harness.radio._state_store
-    truth = build_transmit_truth(
-        store.snapshot(), provider_generation=store.provider_generation
-    )
-    assert truth.value is None, f"{harness.name}: our own set_ptt became transmit truth"
+    assert "global.tx_state.ptt" not in {
+        str(field.path) for field in store.snapshot().fields
+    }, f"{harness.name}: our own set_ptt became a store observation"
 
 
 # ---------------------------------------------------------------------------
